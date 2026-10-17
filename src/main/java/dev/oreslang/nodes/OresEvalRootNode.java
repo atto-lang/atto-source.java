@@ -134,6 +134,8 @@ public final class OresEvalRootNode extends RootNode {
         /** Exact immutable image published by link(); shared by all source actors. */
         private volatile SharedCodeImageStore.CodeImage linkedCodeImage;
         private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+        // Exact-arity callable slots take precedence over this single fallback.
+        private final Map<String, Ast.FunctionDecl> variadicFunctions = new HashMap<>();
         private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
         private final IdentityHashMap<Ast.FunctionDecl, String> declarationModules =
                 new IdentityHashMap<>();
@@ -314,10 +316,18 @@ public final class OresEvalRootNode extends RootNode {
             } else {
                 ambiguousFunctions.add(fn.name());
                 functions.remove(fn.name());
+                variadicFunctions.remove(fn.name());
             }
         }
 
         private void indexFunctionSlot(String key, Ast.FunctionDecl fn) {
+            if (!fn.parameters().isEmpty() && fn.parameters().getLast().rest()) {
+                if (variadicFunctions.putIfAbsent(key, fn) != null) {
+                    throw new IllegalArgumentException(
+                            "callable '" + key + "' already has a rest overload");
+                }
+                return;
+            }
             LinkedHashMap<Integer, Ast.FunctionDecl> family =
                     functions.computeIfAbsent(key, ignored -> new LinkedHashMap<>());
             Ast.FunctionDecl previous = family.putIfAbsent(fn.parameters().size(), fn);
@@ -425,7 +435,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "ambiguous function " + name + "; qualify it with its module");
             }
-            return functions.containsKey(name);
+            return functions.containsKey(name) || variadicFunctions.containsKey(name);
         }
 
         private Ast.FunctionDecl findFunction(String name, int arity) {
@@ -434,7 +444,10 @@ public final class OresEvalRootNode extends RootNode {
                         "ambiguous function " + name + "; qualify it with its module");
             }
             LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(name);
-            return family == null ? null : family.get(arity);
+            Ast.FunctionDecl fixed = family == null ? null : family.get(arity);
+            if (fixed != null) return fixed;
+            Ast.FunctionDecl rest = variadicFunctions.get(name);
+            return rest != null && arity >= rest.parameters().size() - 1 ? rest : null;
         }
 
         private Ast.FunctionDecl findSingleFunction(String name) {
@@ -442,12 +455,19 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "ambiguous function " + name + "; qualify it with its module");
             }
+            if (variadicFunctions.containsKey(name)) {
+                throw new IllegalArgumentException(
+                        "variadic callable '" + name + "' requires explicit caller arity");
+            }
             return singleFunction(functions.get(name), name);
         }
 
         private Ast.FunctionDecl findQualifiedFunction(String qualifiedName, int arity) {
             LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(qualifiedName);
-            return family == null ? null : family.get(arity);
+            Ast.FunctionDecl fixed = family == null ? null : family.get(arity);
+            if (fixed != null) return fixed;
+            Ast.FunctionDecl rest = variadicFunctions.get(qualifiedName);
+            return rest != null && arity >= rest.parameters().size() - 1 ? rest : null;
         }
 
         private Ast.FunctionDecl singleFunction(
@@ -861,17 +881,22 @@ public final class OresEvalRootNode extends RootNode {
                 List<Ast.Param> parameters,
                 List<?> args,
                 String label) {
-            if (parameters.size() != args.size()) {
+            boolean hasRest = !parameters.isEmpty() && parameters.getLast().rest();
+            int minimum = hasRest ? parameters.size() - 1 : parameters.size();
+            if (args.size() < minimum || (!hasRest && parameters.size() != args.size())) {
                 throw new IllegalArgumentException(
                         label + " argument arity mismatch: expected "
-                                + parameters.size() + ", got " + args.size());
+                                + (hasRest ? "at least " : "") + minimum
+                                + ", got " + args.size());
             }
 
             ArrayList<Object> tuple = new ArrayList<>(args.size());
+            for (int i = 0; i < args.size(); i++) tuple.add(args.get(i));
             for (int i = 0; i < parameters.size(); i++) {
                 Ast.Param param = parameters.get(i);
-                Object value = args.get(i);
-                tuple.add(value);
+                Object value = param.rest()
+                        ? new ArrayList<>(args.subList(i, args.size()))
+                        : args.get(i);
                 env.define(
                         param.name(),
                         value,
@@ -4794,6 +4819,15 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private List<Object> normalizeFunctionArguments(Ast.FunctionDecl fn, List<?> args) {
+            if (!fn.parameters().isEmpty() && fn.parameters().getLast().rest()) {
+                int minimum = fn.parameters().size() - 1;
+                if (args.size() < minimum) {
+                    throw new IllegalArgumentException(
+                            "function " + fn.name() + " expects at least "
+                                    + minimum + " arguments, got " + args.size());
+                }
+                return objectArguments(args);
+            }
             if (args.size() != fn.parameters().size()) {
                 if (fn.parameters().isEmpty()
                         && args.size() == 1
