@@ -151,7 +151,7 @@ final class PatternMatchingHardeningTest {
                 fnc classify(Animal animal): int {
                   match animal over
                     on Dog dog -> { return 1; }
-                    on Animal any -> { return 2; }
+                    on Animal fallbackAnimal -> { return 2; }
                   end
                 }
                 """)));
@@ -165,7 +165,7 @@ final class PatternMatchingHardeningTest {
 
                 fnc classify(Animal animal): int {
                   match animal over
-                    on Animal any -> { return 2; }
+                    on Animal fallbackAnimal -> { return 2; }
                     on Dog dog -> { return 1; }
                   end
                 }
