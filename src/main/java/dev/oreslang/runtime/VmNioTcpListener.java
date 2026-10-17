@@ -113,7 +113,9 @@ public final class VmNioTcpListener implements AutoCloseable {
             // and is required by the manager's exclusive readiness-key lease.
             try {
                 source = readiness.acceptAsync(server);
-                exported = new OresFuture<>(() -> source.cancel(false), () -> { });
+                exported = new OresFuture<>(
+                        () -> source.cancel(false),
+                        this::releaseOperation);
                 pendingAccept = exported;
             } catch (RuntimeException | Error failure) {
                 --admittedOperations;
@@ -155,7 +157,6 @@ public final class VmNioTcpListener implements AutoCloseable {
                 synchronized (gate) {
                     if (pendingAccept == exported) pendingAccept = null;
                 }
-                releaseOperation();
             }
         });
         return exported;
@@ -254,7 +255,10 @@ public final class VmNioTcpListener implements AutoCloseable {
                 releaseSocketOperation();
                 throw failure;
             }
-            OresFuture<List<Long>> exposed = new OresFuture<>(() -> raw.cancel(false), () -> { });
+            OresFuture<List<Long>> exposed = new OresFuture<>(
+                    () -> raw.cancel(false),
+                    () -> { },
+                    this::releaseSocketOperation);
             raw.whenCompleteRuntime((bytes, failure) -> {
                 try {
                     // Internal read revocation can synchronously notify this
@@ -273,8 +277,6 @@ public final class VmNioTcpListener implements AutoCloseable {
                     exposed.failFromRuntime(mappingFailure);
                     if (mappingFailure instanceof VirtualMachineError fatal) throw fatal;
                     if (mappingFailure instanceof ThreadDeath fatal) throw fatal;
-                } finally {
-                    releaseSocketOperation();
                 }
             });
             return track(exposed);
@@ -302,8 +304,16 @@ public final class VmNioTcpListener implements AutoCloseable {
                 releaseSocketOperation();
                 throw failure;
             }
-            written.whenCompleteRuntime((value, failure) -> releaseSocketOperation());
-            return track(written);
+            OresFuture<Integer> exposed = new OresFuture<>(
+                    () -> written.cancel(false),
+                    () -> { },
+                    this::releaseSocketOperation);
+            written.whenCompleteRuntime((value, failure) -> {
+                if (written.isCancelled()) return;
+                if (failure != null) exposed.failFromRuntime(failure);
+                else exposed.completeFromRuntime(value);
+            });
+            return track(exposed);
         }
 
         public OresFuture<Void> closeAsync() {
