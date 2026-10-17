@@ -18,6 +18,8 @@ SNAP_HEAD = "3" * 40
 CARRIER_HEAD = "4" * 40
 SOURCE_COMMIT = "5" * 40
 SOURCE_TREE = "6" * 40
+REVIEWER_LOGIN = "external-security-reviewer"
+REVIEWER_ID = 9000001
 
 class ReviewPinnedPrivateCiTest(unittest.TestCase):
     def setUp(self):
@@ -37,25 +39,33 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             p.write_text(value, encoding="utf-8")
         return str(p)
 
-    def pr(self, repo, number, head):
+    def pr(self, repo, number, head, author_id=None):
+        if author_id is None:
+            author_id = 8000000 + number
         return {
             "number": number,
             "state": "open",
             "merged": False,
             "draft": False,
+            "user": {"login": "security-author", "id": author_id, "type": "User"},
             "head": {"sha": head, "repo": {"full_name": repo}},
             "base": {"ref": "main", "repo": {"full_name": repo}},
         }
 
-    def reviews(self, head, reviewer="ORESoftware", reviewer_id=None,
-                state="APPROVED", rid=1):
-        if reviewer_id is None:
-            reviewer_id = MOD.REVIEWER_ID
+    def reviews(self, head, reviewer=REVIEWER_LOGIN, reviewer_id=REVIEWER_ID,
+                state="APPROVED", rid=1, association="COLLABORATOR"):
         return [{"id": rid, "state": state, "commit_id": head,
-                 "user": {"login": reviewer, "id": reviewer_id}}]
+                 "author_association": association,
+                 "user": {"login": reviewer, "id": reviewer_id, "type": "User"}}]
 
     def fixture(self):
         args = {
+            "reviewer_policy": self.write("reviewer-policy.json", {
+                "schema": 1,
+                "enabled": True,
+                "requiredAuthorAssociation": "COLLABORATOR",
+                "reviewer": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID},
+            }),
             "publisher_pr": self.write("publisher-pr.json",
                 self.pr(MOD.SOURCE_REPO, 1123, PUBLISHER_HEAD)),
             "publisher_reviews": self.write("publisher-reviews.json",
@@ -84,7 +94,8 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                     + " source_tree=" + SOURCE_TREE
                     + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)
                 ),
-                "user": {"login": "ORESoftware", "id": MOD.REVIEWER_ID},
+                "author_association": "COLLABORATOR",
+                "user": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID, "type": "User"},
             }]),
             "source_commit": self.write("source-commit.json", {
                 "sha": SOURCE_COMMIT,
@@ -137,6 +148,53 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         with self.assertRaises(MOD.Denied):
             self.run_fixture(fx)
 
+    def test_disabled_reviewer_policy_denied(self):
+        def mutate(fx):
+            fx["reviewer_policy"] = self.write("reviewer-policy-disabled.json", {
+                "schema": 1,
+                "enabled": False,
+                "requiredAuthorAssociation": "COLLABORATOR",
+                "reviewer": None,
+            })
+        self.assertDenied(mutate)
+
+    def test_member_association_cannot_count_as_independent(self):
+        def mutate(fx):
+            fx["publisher_reviews"] = self.write(
+                "publisher-reviews-member.json",
+                self.reviews(PUBLISHER_HEAD, association="MEMBER"))
+        self.assertDenied(mutate)
+
+    def test_reviewer_cannot_be_pr_author(self):
+        def mutate(fx):
+            fx["publisher_pr"] = self.write(
+                "publisher-pr-self-review.json",
+                self.pr(MOD.SOURCE_REPO, 1123, PUBLISHER_HEAD,
+                        author_id=REVIEWER_ID))
+        self.assertDenied(mutate)
+
+    def test_malformed_reviewer_policy_denied(self):
+        for value in (
+            {},
+            {"schema": 2, "enabled": True,
+             "requiredAuthorAssociation": "COLLABORATOR",
+             "reviewer": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID}},
+            {"schema": 1, "enabled": True,
+             "requiredAuthorAssociation": "MEMBER",
+             "reviewer": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID}},
+            {"schema": 1, "enabled": True,
+             "requiredAuthorAssociation": "COLLABORATOR",
+             "reviewer": {"login": "bad name", "id": REVIEWER_ID}},
+            {"schema": 1, "enabled": True,
+             "requiredAuthorAssociation": "COLLABORATOR",
+             "reviewer": {"login": REVIEWER_LOGIN, "id": 0}},
+        ):
+            with self.subTest(value=value):
+                def mutate(fx, value=value):
+                    fx["reviewer_policy"] = self.write(
+                        "reviewer-policy-bad.json", value)
+                self.assertDenied(mutate)
+
     def test_stale_review_commit_denied(self):
         def mutate(fx):
             fx["publisher_reviews"] = self.write("publisher-reviews-stale.json",
@@ -153,7 +211,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
     def test_wrong_reviewer_denied(self):
         def mutate(fx):
             fx["carrier_reviews"] = self.write("carrier-reviews-wrong.json",
-                self.reviews(CARRIER_HEAD, reviewer="the1mills"))
+                self.reviews(CARRIER_HEAD, reviewer="wrong-reviewer"))
         self.assertDenied(mutate)
 
     def test_duplicate_exact_approvals_denied(self):
@@ -207,7 +265,8 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         def mutate(fx):
             fx["incident_comments"] = self.write("incident-self.json", [{
                 "id": 99, "body": MOD.RESUME_MARKER + " unbound",
-                "user": {"login": "the1mills"},
+                "author_association": "MEMBER",
+                "user": {"login": "wrong-reviewer", "id": 42, "type": "User"},
             }])
         self.assertDenied(mutate)
 
@@ -235,7 +294,8 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         def mutate(fx):
             fx["incident_comments"] = self.write("incident-unbound.json", [{
                 "id": 99, "body": MOD.RESUME_MARKER + " generic",
-                "user": {"login": "ORESoftware", "id": MOD.REVIEWER_ID},
+                "author_association": "COLLABORATOR",
+                "user": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID, "type": "User"},
             }])
         self.assertDenied(mutate)
 
@@ -250,7 +310,8 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                     + " source_tree=" + SOURCE_TREE
                     + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)
                 ),
-                "user": {"login": "ORESoftware", "id": MOD.REVIEWER_ID},
+                "author_association": "COLLABORATOR",
+                "user": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID, "type": "User"},
             }])
         self.assertDenied(mutate)
 
