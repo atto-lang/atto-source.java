@@ -90,12 +90,17 @@ public final class OresKeyedMap<K, V> {
     private final ValueDomain valueDomain;
     private final KeyDomain domain;
     private final EntryValidator entryValidator;
-    private final LinkedHashMap<K, V> entries = new LinkedHashMap<>();
+    // Replaced atomically after bulk admission; all callers hold this monitor.
+    private LinkedHashMap<K, V> entries = new LinkedHashMap<>();
     // Tracked while holding this map's monitor; never expose a mutable view.
     private long storedKeyWireBytes;
     // Java monitors are reentrant. A key-aware validator must never be able
     // to mutate this same map while an outer mutation is still validating.
     private boolean entryValidationActive;
+    // A caller-supplied host Map can invoke this map's methods from size(),
+    // entrySet(), iterator.next() or Entry getters during a putAll snapshot.
+    // Reject such reentrant mutation until the whole batch is committed.
+    private boolean bulkMutationActive;
 
     private OresKeyedMap(
             KeyDomain domain,
@@ -300,9 +305,9 @@ public final class OresKeyedMap<K, V> {
     }
 
     private void rejectReentrantMutation() {
-        if (entryValidationActive) {
+        if (entryValidationActive || bulkMutationActive) {
             throw new IllegalStateException(
-                    "typed Map entry validator cannot mutate the map being validated");
+                    "typed Map entry validator or batch input cannot mutate the map being validated");
         }
     }
 
@@ -340,6 +345,8 @@ public final class OresKeyedMap<K, V> {
     public synchronized void putAll(Map<? extends K, ? extends V> values) {
         rejectReentrantMutation();
         Objects.requireNonNull(values, "map entries");
+        bulkMutationActive = true;
+        try {
         // Host-supplied Map.size() is not trusted. Enforce the guest bound
         // before using it as an allocation hint, then enforce it again while
         // consuming entries (custom Maps may lie about their size).
@@ -383,10 +390,17 @@ public final class OresKeyedMap<K, V> {
         if (additions.size() > MAX_ENTRIES - entries.size()) {
             throw new IllegalArgumentException("typed Map exceeds maximum key count");
         }
+        // Stage every host allocation/hash-table expansion in a detached map.
+        // Publishing entry-by-entry can leave a partial batch on OOME.
+        LinkedHashMap<K, V> staged = new LinkedHashMap<>(entries);
         for (Map.Entry<K, V> entry : prepared) {
-            entries.put(entry.getKey(), entry.getValue());
+            staged.put(entry.getKey(), entry.getValue());
         }
+        entries = staged;
         storedKeyWireBytes += additionalKeyWireBytes;
+        } finally {
+            bulkMutationActive = false;
+        }
     }
 
     /**
