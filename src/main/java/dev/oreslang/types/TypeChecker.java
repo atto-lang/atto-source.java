@@ -5104,6 +5104,7 @@ public final class TypeChecker {
         return env.lookup("Integer") == null
                 && !modules.containsKey("Integer")
                 && findClass("Integer") == null
+                && !hasFunctionFamily("Integer")
                 && !importedValues.contains("Integer");
     }
 
