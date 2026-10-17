@@ -184,6 +184,48 @@ compiled binaries nor Surefire XML are uploaded. Independent reviewer must
 check GitHub run/job/step and JUnit logs; an artifact by itself is **not**
 runtime or release certification.
 
+### Explicit Option-pattern candidate verification (October 17, 2026)
+
+The exact-candidate source-local workflow now provides an additional **opt-in**
+`workflow_dispatch` boolean `verify_option_pattern` (default **false**).
+It does not run private source on an untrusted hosted carrier and cannot be
+used without the workflow's existing reviewed protected-main, numeric source
+repository ID, exact candidate commit/tree and disposable-runner admission.
+
+For an independently reviewed candidate containing the full Option feature
+branch ([Java #1121](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1121)),
+the reviewer/administrator must dispatch the pinned workflow on `main` with
+`candidate_sha=<reviewed #1121 immutable head>` and
+`verify_option_pattern=true`. The branch must be re-reviewed and its
+approved SHA/tree repinned if it changes. The security-integration candidate
+itself need not contain Option fixtures and may use
+`verify_option_pattern=false`; **such a run MUST NOT be reported as
+Option-conformance evidence**.
+
+When requested, the trusted workflow verifies the real candidate contains
+`OptionIfMatchesTest.java`, the shared Option manifest and checker; discards
+the previous actor-memory Surefire reports; executes the JUnit class under
+GraalVM JDK 25 with native carriers and skip flags disabled; and checks a new
+Surefire XML with exactly the **13 named** reference methods, no missing,
+duplicated, failed, errored, skipped, flaky or rerun cases. It then requires
+the Option class again in the **fresh full** Maven `clean verify` report set.
+This only proves JUnit execution when corresponding GitHub job steps and
+test logs independently agree with the immutable candidate tree. AOT/hybrid
+and strict isolate validation remain mandatory and separate.
+
+The final identity-only artifact now records
+`option_pattern_requested=true/false` and
+`option_pattern_junit_methods_required=13/0`, but still explicitly has
+`verified_execution_claim=false` and
+`native_guest_parity_certified=false`. No raw source, binaries or Surefire
+reports are uploaded; approval and execution must be independently audited.
+`PrivateExactMainValidationWorkflowSecurityTest` also checks the opt-in
+workflow guards, ordering, fresh report enforcement and artifact honesty.
+
+**No source-local Option suite or JDK 25 runtime test has executed on this
+integration head.** The private-source export allowlists remain empty; no
+cross-organization source transfer is authorized.
+
 ### Administrator-controlled prerequisites (not satisfied by this PR)
 
 1. Address open private-source exposure incident
