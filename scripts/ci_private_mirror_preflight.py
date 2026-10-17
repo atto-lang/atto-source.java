@@ -7,6 +7,7 @@ visibility throughout a mirror upload or GitHub-side deletion of old objects.
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -22,6 +23,26 @@ BEARER_TOKEN = re.compile(r"[A-Za-z0-9._~+/-]+={0,16}\Z", re.ASCII)
 
 class MirrorPreflightError(Exception):
     pass
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise MirrorPreflightError("duplicate repository metadata field")
+        result[key] = value
+    return result
+
+
+def _bad_constant(value):
+    raise MirrorPreflightError("non-finite repository metadata number")
+
+
+def _finite_float(text):
+    value = float(text)
+    if not math.isfinite(value):
+        raise MirrorPreflightError("non-finite repository metadata number")
+    return value
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -87,8 +108,15 @@ def fetch_metadata(name, token, opener=None):
         # Never include raw HTTP exception text: it can contain request data.
         raise MirrorPreflightError("repository metadata unavailable") from None
     try:
-        return json.loads(data)
-    except (UnicodeError, json.JSONDecodeError):
+        return json.loads(
+            data,
+            object_pairs_hook=_unique_object,
+            parse_constant=_bad_constant,
+            parse_float=_finite_float,
+        )
+    except MirrorPreflightError:
+        raise
+    except (UnicodeError, json.JSONDecodeError, RecursionError, ValueError):
         raise MirrorPreflightError("invalid repository metadata") from None
 
 
