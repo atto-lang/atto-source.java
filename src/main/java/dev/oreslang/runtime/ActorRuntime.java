@@ -2065,7 +2065,23 @@ public final class ActorRuntime implements AutoCloseable {
             for (ActorRef<?> stage : this.stages) {
                 stage.done().whenCompleteRuntime((ignored, failure) -> {
                     if (failure != null) {
-                        firstFailure.compareAndSet(null, OresFuture.unwrap(failure));
+                        Throwable cause = OresFuture.unwrap(failure);
+                        if (firstFailure.compareAndSet(null, cause)) {
+                            // done() callbacks may run inline while an actor's
+                            // lifecycle monitor is still held. Never re-enter
+                            // sibling termination or router retirement here.
+                            // Move terminal propagation onto the host dispatcher.
+                            try {
+                                privateDispatcher.execute(() ->
+                                        failRemainingStages(stage, cause));
+                            } catch (RejectedExecutionException unavailable) {
+                                if (!closed.get()) {
+                                    done.failFromRuntime(new IllegalStateException(
+                                            "ActorStream supervision dispatcher rejected terminal propagation",
+                                            unavailable));
+                                }
+                            }
+                        }
                     }
                     if (pendingDone.decrementAndGet() == 0) {
                         Throwable terminal = firstFailure.get();
@@ -2079,6 +2095,25 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                     }
                 });
+            }
+        }
+
+        private void failRemainingStages(
+                ActorRef<?> failedStage, Throwable cause) {
+            try {
+                router.close();
+            } catch (RuntimeException retirementFailure) {
+                cause.addSuppressed(retirementFailure);
+            }
+            IllegalStateException aborted = new IllegalStateException(
+                    "ActorStream stage failed; terminating remaining stages",
+                    cause);
+            for (ActorRef<?> sibling : stages) {
+                if (sibling == failedStage) continue;
+                ActorCell<?> cell = actors.get(sibling.id());
+                if (cell != null && !cell.finalized()) {
+                    cell.fail(aborted);
+                }
             }
         }
 
@@ -2098,6 +2133,11 @@ public final class ActorRuntime implements AutoCloseable {
                         "ActorStream ingress belongs to the supervisor/root turn");
             }
             Objects.requireNonNull(value, "ActorStream payload");
+            Throwable terminal = firstFailure.get();
+            if (terminal != null || done.isDone()) {
+                throw new IllegalStateException(
+                        "ActorStream is already terminal", terminal);
+            }
             if (!ingressUsed.compareAndSet(false, true)) {
                 throw new IllegalStateException(
                         "ActorStream admits exactly one root flow");
