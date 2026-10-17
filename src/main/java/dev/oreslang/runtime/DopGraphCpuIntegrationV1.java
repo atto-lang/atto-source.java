@@ -98,7 +98,15 @@ public final class DopGraphCpuIntegrationV1 {
                                 "owned CPU graph requires a queued worker executor, not inline dispatch");
                     }
                     try {
-                        schedulerAdmitted.await();
+                        // A broken executor may wait for this worker to
+                        // finish before returning from execute(...). Never
+                        // park the bounded CPU worker indefinitely.
+                        if (!schedulerAdmitted.await(30,
+                                java.util.concurrent.TimeUnit.SECONDS)) {
+                            future.failFromRuntime(new java.util.concurrent.RejectedExecutionException(
+                                    "trusted CPU executor admission timed out"));
+                            return;
+                        }
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
                         future.failFromRuntime(interrupted);
