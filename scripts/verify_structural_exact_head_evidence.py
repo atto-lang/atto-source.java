@@ -9,6 +9,7 @@ import re
 import subprocess
 import tempfile
 from xml.etree import ElementTree as ET
+from unittest.mock import patch
 
 SUITES = (
     "StructuralTuplePolicyTest",
@@ -170,6 +171,13 @@ def self_test():
         provenance.write_text(json.dumps(actual), encoding="utf-8")
         require(inspect(reports, provenance, checkout)["tests_total"] == len(SUITES),
                 "exact synthetic HEAD/tree was not accepted")
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}):
+            try:
+                inspect(reports, provenance, checkout, require_ci=True)
+            except ValueError:
+                pass
+            else:
+                raise ValueError("offline report was promoted to actual-runner evidence")
         for field in ("source_sha", "source_tree"):
             forged = dict(actual)
             forged[field] = "f" * 40
