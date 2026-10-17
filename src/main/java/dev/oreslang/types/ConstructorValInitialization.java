@@ -192,7 +192,14 @@ public final class ConstructorValInitialization {
             for (Object value : values) scan(value, state, required, klass);
             return;
         }
-        if (!(node instanceof Record record) || node.getClass().getEnclosingClass() != Ast.class) return;
+        if (!(node instanceof Record record)) {
+            if (node instanceof Ast.Expr || node instanceof Ast.Stmt) {
+                throw new IllegalArgumentException("unsupported constructor AST node: "
+                        + node.getClass().getName());
+            }
+            return;
+        }
+        if (node.getClass().getEnclosingClass() != Ast.class) return;
         for (RecordComponent component : record.getClass().getRecordComponents()) {
             try {
                 scan(component.getAccessor().invoke(record), state, required, klass);
