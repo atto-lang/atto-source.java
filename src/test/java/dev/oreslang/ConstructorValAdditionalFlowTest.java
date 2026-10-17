@@ -294,4 +294,98 @@ final class ConstructorValAdditionalFlowTest {
     }
 
 
+    @Test void mutableClassFieldMayBeAssignedMoreThanOnce() {
+        ok("""
+            define class MutableValue as
+              let int x;
+              constructor(int n) {
+                self.x = 1;
+                self.x = n;
+              }
+            end
+            """);
+    }
+
+    @Test void mutableClassFieldIsRequiredOnEveryNormalExit() {
+        String source = """
+            define class MutableValue as
+              let int x;
+              constructor(bool flag) {
+                if flag then self.x = 1; fi
+              }
+            end
+            """;
+        var klass = (dev.oreslang.ast.Ast.ClassDecl) Parser.parse(source)
+                .modules().getFirst().declarations().getFirst();
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.ConstructorValInitialization.check(klass));
+        assertTrue(failure.getMessage().contains("did not initialize field 'x'"),
+                failure.getMessage());
+    }
+
+    @Test void mutableFieldReadBeforeItsFirstAssignmentIsRejected() {
+        String source = """
+            define class MutableValue as
+              let int x;
+              constructor(int n) {
+                let int y = self.x;
+                self.x = n;
+              }
+            end
+            """;
+        var klass = (dev.oreslang.ast.Ast.ClassDecl) Parser.parse(source)
+                .modules().getFirst().declarations().getFirst();
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.ConstructorValInitialization.check(klass));
+        assertTrue(failure.getMessage().contains("read before constructor initialization"),
+                failure.getMessage());
+    }
+
+    @Test void mixedMutableAndImmutableFieldsAreEachRequired() {
+        ok("""
+            define class Mixed as
+              val int immutable;
+              let int mutableValue;
+              constructor(bool flag) {
+                if flag then
+                  self.immutable = 1;
+                  self.mutableValue = 10;
+                else
+                  self.mutableValue = 20;
+                  self.immutable = 2;
+                fi
+                self.mutableValue = 30;
+              }
+            end
+            """);
+    }
+
+    @Test void mutableSecondWriteIsAllowedAfterConditionalJoinWhenDefinitelyInitialized() {
+        ok("""
+            define class MutableValue as
+              let int x;
+              constructor(bool flag) {
+                if flag then self.x = 1; else self.x = 2; fi
+                self.x = 3;
+              }
+            end
+            """);
+    }
+
+    @Test void mutableFirstWriteHiddenInNestedExpressionCannotEstablishInitialization() {
+        String source = """
+            define class MutableValue as
+              let int x;
+              constructor() {
+                val int y = (self.x = 1);
+              }
+            end
+            """;
+        var klass = (dev.oreslang.ast.Ast.ClassDecl) Parser.parse(source)
+                .modules().getFirst().declarations().getFirst();
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.ConstructorValInitialization.check(klass));
+    }
+
+
 }
