@@ -20,13 +20,21 @@ native pointer is exposed to guest code.
 Logical actor retirement revokes all arena access immediately. Before the owning
 `Arena` is physically closed, every native slot is explicitly overwritten with
 zeroes; deterministic lifetime alone is not treated as a zeroization guarantee.
-A persistent read loan may outlive
-an actor turn and can therefore defer physical close; its bytes remain charged
-to the actor/runtime quota until the final loan closes. Scratch has no loan API
-and is reclaimed at the turn boundary.
+A persistent read loan may outlive an actor turn and can therefore defer
+physical close; its bytes remain charged to the actor/runtime quota until the
+final loan closes. Scratch has no loan API and is reclaimed at the turn
+boundary.
 
-Completion-thread loan release deliberately does not acquire the actor slice
-monitor. Retirement owns `slice -> region`; acquiring `region -> slice`
+A continuation/FFI/I/O completion may instead hold a lifetime-only persistent
+pin. The pin exposes no native-memory read/write operation and may be released
+from an arbitrary completion carrier. `trackExternalCompletion` acquires that
+pin before the actor yields and releases it when the registered future settles.
+Logical retirement still closes admission immediately. Scratch can reclaim
+independently because it is forbidden to escape the turn; the persistent FFM
+region remains charged until its final loan and lifetime pin are gone.
+
+Completion-thread loan/pin release deliberately does not acquire the actor
+slice monitor. Retirement owns `slice -> region`; acquiring `region -> slice`
 would create a lock inversion. Native accounting completion uses the runtime
 memory-budget lock instead.
 
