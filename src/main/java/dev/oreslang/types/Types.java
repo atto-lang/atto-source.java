@@ -13,7 +13,12 @@ public final class Types {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
     }
 
-    /** Erased top type for ordinary runtime values. It carries no callable signature. */
+    /**
+     * Erased top type for ordinary owned runtime values.
+     * Borrow capabilities and class namespaces are deliberately excluded so
+     * erasure cannot extend a lexical lifetime or turn compile-time metadata
+     * into a storable runtime value. Concrete callables remain ordinary values.
+     */
     public enum Any implements Type { INSTANCE }
 
     /** Erased supertype of reifiable callable values. It is not itself directly invocable. */
