@@ -13,6 +13,8 @@ on:
       - "src/test/java/dev/oreslang/runtime/OresSchedulerTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorForceSourceCleanupRevocationTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorStructuredCancellationTest.java"
+      - "src/test/java/dev/oreslang/runtime/ActorReadinessLifecycleTest.java"
+      - "src/test/java/dev/oreslang/runtime/SerialHttpStalledActorTest.java"
       - "src/test/java/dev/oreslang/ActorContinuationTeardownTest.java"
       - "src/test/java/dev/oreslang/SourceContinuationSingleDeliveryTest.java"
       - "src/test/java/dev/oreslang/SourceTerminalFlowPolicyTest.java"
@@ -47,7 +49,7 @@ jobs:
           git ls-files -z | xargs -0 -r sha256sum > /tmp/canonical-continuation-source.sha256
           sha256sum /tmp/canonical-continuation-source.sha256
           echo "Verified head SHA: $EXPECTED_SHA"
-      - uses: graalvm/setup-graalvm@v1
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
           version: "25.3"
           java-version: "25"
@@ -57,13 +59,13 @@ jobs:
       - name: Execute guest-source continuation and state-handoff regressions
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
-            -Dtest=OresSchedulerTest,ActorForceSourceCleanupRevocationTest,ActorStructuredCancellationTest,ActorContinuationTeardownTest,SourceContinuationSingleDeliveryTest,SourceTerminalFlowPolicyTest,SourceInlineCriticalStateHandoffTest,SourceCriticalActorStateTest,SourceLoopSoftPreemptionTest,WithUsingLoanSuspensionAuditTest,GeneratorLanguageTest,AsyncAwaitLanguageTest,AsyncChannelBoundaryTest \
+            -Dtest=OresSchedulerTest,ActorForceSourceCleanupRevocationTest,ActorStructuredCancellationTest,ActorReadinessLifecycleTest,SerialHttpStalledActorTest,ActorContinuationTeardownTest,SourceContinuationSingleDeliveryTest,SourceTerminalFlowPolicyTest,SourceInlineCriticalStateHandoffTest,SourceCriticalActorStateTest,SourceLoopSoftPreemptionTest,WithUsingLoanSuspensionAuditTest,GeneratorLanguageTest,AsyncAwaitLanguageTest,AsyncChannelBoundaryTest \
             test
       - name: Execute full Maven regression suite
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Archive JUnit evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: canonical-source-continuations-surefire
           path: target/surefire-reports/
