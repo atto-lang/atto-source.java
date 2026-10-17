@@ -365,14 +365,18 @@ public final class NioReadinessGroup implements AutoCloseable {
                             // The same claim token makes a later retry safe
                             // even when a nonconforming executor schedules
                             // work and then throws an unexpected exception.
-                            if (next.claimed.get()) continue;
+                            if (next.claimed.get()) {
+                                if (submissionFailure instanceof VirtualMachineError fatal) throw fatal;
+                                if (submissionFailure instanceof ThreadDeath fatal) throw fatal;
+                                continue;
+                            }
                             next.mayBeQueuedAfterSubmissionFailure.set(true);
                             stagedNotifications.addFirst(next);
                             if (next.claimed.get()) stagedNotifications.remove(next);
-                            // Treat unexpected executor runtime failures as
-                            // temporarily unavailable. Retry only on another
-                            // explicit capacity signal, never spin on a
-                            // permanently broken executor on the reactor.
+                            // Treat unexpected executor runtime/nonfatal Error
+                            // failures as temporarily unavailable. Retry only
+                            // on another explicit capacity signal, never spin
+                            // on a permanently broken executor on the reactor.
                             rejected = true;
                             if (submissionFailure instanceof VirtualMachineError fatal) throw fatal;
                             if (submissionFailure instanceof ThreadDeath fatal) throw fatal;
