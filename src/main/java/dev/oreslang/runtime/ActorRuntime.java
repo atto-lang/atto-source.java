@@ -277,7 +277,12 @@ public final class ActorRuntime implements AutoCloseable {
     public record ActorRuntimeStats(
             int liveActors,
             long userMessagesAccepted,
+            long userMessagesProcessed,
             long mailboxFullRejections,
+            long sealedSendRejections,
+            long terminatedSendRejections,
+            long invalidReferenceSendRejections,
+            long lifecycleFenceSendRejections,
             long continuationAdmissionFailures,
             long normalTerminations,
             long cancelledTerminations,
@@ -289,7 +294,12 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorRuntimeStats {
             if (liveActors < 0
                     || userMessagesAccepted < 0
+                    || userMessagesProcessed < 0
                     || mailboxFullRejections < 0
+                    || sealedSendRejections < 0
+                    || terminatedSendRejections < 0
+                    || invalidReferenceSendRejections < 0
+                    || lifecycleFenceSendRejections < 0
                     || continuationAdmissionFailures < 0
                     || normalTerminations < 0
                     || cancelledTerminations < 0
@@ -628,7 +638,12 @@ public final class ActorRuntime implements AutoCloseable {
     private final ConcurrentLinkedQueue<WatchdogNotice> watchdogNotices =
             new ConcurrentLinkedQueue<>();
     private final AtomicLong userMessagesAccepted = new AtomicLong();
+    private final AtomicLong userMessagesProcessed = new AtomicLong();
     private final AtomicLong mailboxFullRejections = new AtomicLong();
+    private final AtomicLong sealedSendRejections = new AtomicLong();
+    private final AtomicLong terminatedSendRejections = new AtomicLong();
+    private final AtomicLong invalidReferenceSendRejections = new AtomicLong();
+    private final AtomicLong lifecycleFenceSendRejections = new AtomicLong();
     private final AtomicLong continuationAdmissionFailures = new AtomicLong();
     private final AtomicLong normalTerminations = new AtomicLong();
     private final AtomicLong cancelledTerminations = new AtomicLong();
@@ -801,7 +816,12 @@ public final class ActorRuntime implements AutoCloseable {
         return new ActorRuntimeStats(
                 actorCount.get(),
                 userMessagesAccepted.get(),
+                userMessagesProcessed.get(),
                 mailboxFullRejections.get(),
+                sealedSendRejections.get(),
+                terminatedSendRejections.get(),
+                invalidReferenceSendRejections.get(),
+                lifecycleFenceSendRejections.get(),
                 continuationAdmissionFailures.get(),
                 normalTerminations.get(),
                 cancelledTerminations.get(),
@@ -5423,14 +5443,24 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) {
+            invalidReferenceSendRejections.incrementAndGet();
             throw new ActorInvalidReferenceException(
                     "ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (cell == null || cell.stopped.get()) {
+            terminatedSendRejections.incrementAndGet();
+            throw terminated(ref);
+        }
         synchronized (cell.lifecycleLock) {
-            if (cell.stopped.get() || cell.finalized) throw terminated(ref);
-            if (cell.sealing) throw new ActorSealedException(ref.id());
+            if (cell.stopped.get() || cell.finalized) {
+                terminatedSendRejections.incrementAndGet();
+                throw terminated(ref);
+            }
+            if (cell.sealing) {
+                sealedSendRejections.incrementAndGet();
+                throw new ActorSealedException(ref.id());
+            }
             if (!cell.reserveMailboxSlot()) {
                 mailboxFullRejections.incrementAndGet();
                 throw new ActorMailboxFullException(ref.id());
@@ -5507,12 +5537,15 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 synchronized (cell.lifecycleLock) {
                     if (cell.stopped.get() || cell.finalized) {
+                        terminatedSendRejections.incrementAndGet();
                         throw terminated(ref);
                     }
                     if (cell.sealing) {
+                        sealedSendRejections.incrementAndGet();
                         throw new ActorSealedException(ref.id());
                     }
                     if (cell.forceKillFenced) {
+                        lifecycleFenceSendRejections.incrementAndGet();
                         throw new IllegalStateException(
                                 "actor " + ref.id()
                                         + " is fenced while force cancellation is pending");
@@ -7399,6 +7432,7 @@ public final class ActorRuntime implements AutoCloseable {
                             "nonsequential actor message completion for " + ref.id());
                 }
                 lastProcessedUserMessageSequence = sequence;
+                userMessagesProcessed.incrementAndGet();
                 for (int i = pendingDrains.size() - 1; i >= 0; --i) {
                     DrainWaiter waiter = pendingDrains.get(i);
                     if (waiter.sequence() <= sequence) {
