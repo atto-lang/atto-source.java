@@ -8800,9 +8800,18 @@ public final class OresEvalRootNode extends RootNode {
                 if (!(value instanceof Number)) throw returnTypeMismatch(callable, declared, value);
                 return value;
             }
-            if (java.util.Set.of("complex64","complex128","complex").contains(declared.name())) {
-                if (!(value instanceof Number) && !(value instanceof Complex)) throw returnTypeMismatch(callable, declared, value);
-                return value;
+            if (declared.name().equals("complex")
+                    || declared.name().equals("complex128")) {
+                if (!(value instanceof Number) && !(value instanceof Complex))
+                    throw returnTypeMismatch(callable, declared, value);
+                // Declared complex returns are a coercion boundary too. Route
+                // through the same guarded binary64 conversion as arithmetic
+                // so Decimal/BigInt and lossy integral values cannot bypass it.
+                return asComplex(value);
+            }
+            if (declared.name().equals("complex64")) {
+                throw new IllegalArgumentException(
+                        "complex64 return shaping requires a dedicated binary32 complex precision contract");
             }
             if (declared.name().equals("void")) {
                 if (value != null) throw returnTypeMismatch(callable, declared, value);
