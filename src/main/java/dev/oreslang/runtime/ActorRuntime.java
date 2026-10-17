@@ -24,7 +24,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
@@ -35,6 +34,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.BiPredicate;
@@ -226,6 +226,20 @@ public final class ActorRuntime implements AutoCloseable {
             failureMessage = failureMessage == null ? "" : failureMessage;
         }
     }
+
+    /** Internal payload published into the bounded ordered MPSC journal. */
+    private record ActorTerminationPayload(
+            ActorId actorId,
+            long generation,
+            ActorKind actorKind,
+            Optional<ActorId> parentId,
+            ActorTerminationKind terminationKind,
+            long acceptedUserMessages,
+            long processedUserMessages,
+            int abandonedUserMessages,
+            int abandonedContinuations,
+            String failureType,
+            String failureMessage) { }
 
     /** Lock-free-to-read aggregate counters for host/supervisor telemetry. */
     public record ActorRuntimeStats(
@@ -586,12 +600,15 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong normalTerminations = new AtomicLong();
     private final AtomicLong cancelledTerminations = new AtomicLong();
     private final AtomicLong failedTerminations = new AtomicLong();
-    private final AtomicLong supervisionEventSequence = new AtomicLong();
+    // Bounded ordered MPSC terminal journal. Producers reserve monotonically
+    // increasing sequence slots; consumers cannot overtake an earlier claimed
+    // but not-yet-published slot.
+    private final AtomicLong supervisionEventHead = new AtomicLong();
+    private final AtomicLong supervisionEventTail = new AtomicLong();
+    private final AtomicReferenceArray<ActorTerminationPayload> supervisionEvents =
+            new AtomicReferenceArray<>(SUPERVISION_EVENT_CAPACITY);
     private final AtomicLong supervisionEventsDropped = new AtomicLong();
     private final AtomicLong lifecyclePublicationFailures = new AtomicLong();
-    private final AtomicInteger supervisionEventsQueued = new AtomicInteger();
-    private final ConcurrentLinkedQueue<ActorTerminationEvent> supervisionEvents =
-            new ConcurrentLinkedQueue<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
 
@@ -765,15 +782,39 @@ public final class ActorRuntime implements AutoCloseable {
     /** Host/supervisor nonblocking terminal-event drain. */
     public Optional<ActorTerminationEvent> pollTerminationEvent() {
         requireSupervisorContext("drain actor termination diagnostics");
-        ActorTerminationEvent event = supervisionEvents.poll();
-        if (event == null) return Optional.empty();
-        int remaining = supervisionEventsQueued.decrementAndGet();
-        if (remaining < 0) {
-            supervisionEventsQueued.incrementAndGet();
-            throw new IllegalStateException(
-                    "actor termination diagnostic queue accounting underflow");
+        for (;;) {
+            long sequence = supervisionEventHead.get();
+            if (sequence >= supervisionEventTail.get()) return Optional.empty();
+            int slot = (int) (sequence % SUPERVISION_EVENT_CAPACITY);
+            ActorTerminationPayload payload = supervisionEvents.get(slot);
+            if (payload == null) {
+                // A producer has reserved this exact sequence but has not yet
+                // published its immutable payload. Never expose a later event
+                // out of order; the nonblocking supervisor can retry.
+                return Optional.empty();
+            }
+
+            ActorTerminationEvent event = new ActorTerminationEvent(
+                    sequence,
+                    payload.actorId(),
+                    payload.generation(),
+                    payload.actorKind(),
+                    payload.parentId(),
+                    payload.terminationKind(),
+                    payload.acceptedUserMessages(),
+                    payload.processedUserMessages(),
+                    payload.abandonedUserMessages(),
+                    payload.abandonedContinuations(),
+                    payload.failureType(),
+                    payload.failureMessage());
+
+            if (!supervisionEvents.compareAndSet(slot, payload, null)) continue;
+            if (!supervisionEventHead.compareAndSet(sequence, sequence + 1L)) {
+                throw new IllegalStateException(
+                        "actor termination diagnostic head advanced without owning its slot");
+            }
+            return Optional.of(event);
         }
-        return Optional.of(event);
     }
 
     public long supervisionEventsDropped() {
@@ -878,67 +919,44 @@ public final class ActorRuntime implements AutoCloseable {
             case FAILED -> failedTerminations.incrementAndGet();
         }
 
+        String failureType = failure == null ? "" : failure.getClass().getName();
+        ActorTerminationPayload payload = new ActorTerminationPayload(
+                cell.ref.id(),
+                cell.ref.generation(),
+                cell.kind,
+                cell.parent == null
+                        ? Optional.empty()
+                        : Optional.of(cell.parent.ref.id()),
+                kind,
+                acceptedUserMessages,
+                processedUserMessages,
+                abandonedUserMessages,
+                abandonedContinuations,
+                failureType,
+                "");
+
         long sequence;
         for (;;) {
-            long current = supervisionEventSequence.get();
-            if (current == Long.MAX_VALUE) {
+            long head = supervisionEventHead.get();
+            long tail = supervisionEventTail.get();
+            if (tail == Long.MAX_VALUE
+                    || tail - head >= SUPERVISION_EVENT_CAPACITY) {
                 supervisionEventsDropped.incrementAndGet();
                 return;
             }
-            if (supervisionEventSequence.compareAndSet(current, current + 1L)) {
-                sequence = current;
+            if (supervisionEventTail.compareAndSet(tail, tail + 1L)) {
+                sequence = tail;
                 break;
             }
         }
 
-        String failureType = failure == null ? "" : failure.getClass().getName();
-        ActorTerminationEvent event;
-        try {
-            event = new ActorTerminationEvent(
-                    sequence,
-                    cell.ref.id(),
-                    cell.ref.generation(),
-                    cell.kind,
-                    cell.parent == null
-                            ? Optional.empty()
-                            : Optional.of(cell.parent.ref.id()),
-                    kind,
-                    acceptedUserMessages,
-                    processedUserMessages,
-                    abandonedUserMessages,
-                    abandonedContinuations,
-                    failureType,
-                    "");
-        } catch (Throwable diagnosticsFailure) {
-            // Diagnostic allocation/validation is explicitly non-authoritative.
-            // In particular, an OOME while allocating Optional/event state must
-            // not leave an otherwise-quiescent actor permanently unfinalized.
+        int slot = (int) (sequence % SUPERVISION_EVENT_CAPACITY);
+        // Capacity reservation guarantees this slot was consumed/cleared
+        // before reuse. A non-null value here is an internal journal invariant
+        // failure; drop rather than perturb actor finalization.
+        if (!supervisionEvents.compareAndSet(slot, null, payload)) {
             supervisionEventsDropped.incrementAndGet();
-            return;
-        }
-        for (;;) {
-            int queued = supervisionEventsQueued.get();
-            if (queued >= SUPERVISION_EVENT_CAPACITY) {
-                supervisionEventsDropped.incrementAndGet();
-                return;
-            }
-            if (!supervisionEventsQueued.compareAndSet(queued, queued + 1)) continue;
-            boolean published = false;
-            try {
-                supervisionEvents.add(event);
-                published = true;
-            } catch (Throwable diagnosticsFailure) {
-                // Observability is non-authoritative. Even OOME/other host
-                // failures here must not strand an actor after guest
-                // execution has already quiesced.
-                supervisionEventsDropped.incrementAndGet();
-            } finally {
-                if (!published) {
-                    int remaining = supervisionEventsQueued.decrementAndGet();
-                    if (remaining < 0) supervisionEventsQueued.set(0);
-                }
-            }
-            return;
+            lifecyclePublicationFailures.incrementAndGet();
         }
     }
 
