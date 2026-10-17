@@ -256,6 +256,63 @@ final class PersistentActorMapTest {
     }
 
     @Test
+    void sharedPersistentMailboxCreditsAccountForLiveActorLocalArena() throws Exception {
+        var limited = new IsolatePolicy(IsolatePolicy.developer().capabilities(),
+                16L * 1024 * 1024, 8192, java.time.Duration.ofSeconds(30));
+        PersistentActorMap root = PersistentActorMap.empty();
+        for (int i = 0; i < 4_000; i++) root = root.with("field-" + i, i);
+        PersistentActorMap messageRoot = root;
+        var localAllocated = new java.util.concurrent.CountDownLatch(1);
+        var releaseTurn = new java.util.concurrent.CountDownLatch(1);
+        var first = new java.util.concurrent.atomic.AtomicBoolean();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var owner = runtime.<Object>spawnShared(limited, () -> (message, context) -> {
+                assertSame(messageRoot, message,
+                        "trusted SHARED delivery must preserve verified HAMT root identity");
+                if (first.compareAndSet(false, true)) {
+                    context.localMemory().orElseThrow().allocateActorLocalBytes(8L * 1024 * 1024);
+                    localAllocated.countDown();
+                    assertTrue(releaseTurn.await(15, TimeUnit.SECONDS));
+                }
+            });
+            owner.send(messageRoot);
+            assertTrue(localAllocated.await(5, TimeUnit.SECONDS));
+            assertEquals(8L * 1024 * 1024, runtime.sharedActorLocalMemoryBytes());
+            assertEquals(0L, runtime.privateMemoryBytes(),
+                    "SHARED actor-local arena bytes must never be charged to PRIVATE");
+
+            boolean quotaDenied = false;
+            for (int i = 0; i < 256; i++) {
+                try {
+                    owner.send(messageRoot);
+                } catch (IllegalStateException denied) {
+                    assertTrue(denied.getMessage().contains("shared actor mailbox memory limit"),
+                            () -> "unexpected admission rejection: " + denied);
+                    quotaDenied = true;
+                    break;
+                }
+            }
+            assertTrue(quotaDenied,
+                    "retaining HAMT identity must not evade per-message credits or live arena bytes");
+            assertEquals(8L * 1024 * 1024, runtime.sharedActorLocalMemoryBytes(),
+                    "denied delivery must not release or increase live local arena credits");
+
+            releaseTurn.countDown();
+            owner.drain().get(10, TimeUnit.SECONDS);
+            assertEquals(0L, runtime.sharedMemoryBytes(),
+                    "drained immutable messages must return shared mailbox credits");
+            assertEquals(8L * 1024 * 1024, runtime.sharedActorLocalMemoryBytes(),
+                    "draining the mailbox does not retire actor-owned persistent memory");
+            owner.stop();
+            owner.getDone().get(5, TimeUnit.SECONDS);
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes(),
+                    "actor retirement must release all local arena credits");
+        } finally {
+            releaseTurn.countDown();
+        }
+    }
+
+    @Test
     void sharedMailboxPreservesRootButPrivateMailboxStillIsolates() throws Exception {
         var payload = PersistentActorMap.empty()
                 .with("id", "pipeline-1")
