@@ -12,17 +12,21 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Supplier;
 
 /**
- * Host-only integration of the checked route ledger and real ActorRuntime
- * mailboxes. Graph/actor bindings and ingress are installed by the supervisor;
- * guest actors never construct or deserialize MailFrame capabilities.
+ * Integration of the checked route ledger and real ActorRuntime mailboxes.
  *
- * Each successful forward enqueues the ordinary typed payload, while its
- * immutable route frame travels on the VM's separate envelope metadata lane.
- * A turn without a routed envelope cannot gain routing authority merely by
- * guessing the source or a connected actor name.
+ * <p>The default construction mode is host/supervisor-only and preserves the
+ * original no-scheduler registration rule. The compiler may opt into a
+ * separate source-root mode for a checked ActorStream topology; that mode
+ * still rejects actor turns, Mailman CONTROL turns, force-cancel hooks and
+ * foreign/non-SHARED actor bindings.</p>
  *
- * This is a trusted SHARED Java actor bridge, NOT source-level self.* lowering,
- * PRIVATE/UNTRUSTED transfer or a general-purpose guest capability.
+ * <p>Each successful hop enqueues the ordinary typed payload while its
+ * immutable route frame and matching turn authority travel on the VM's
+ * separate envelope metadata lane. Guest actors never construct, deserialize
+ * or select these capabilities. A turn without a routed envelope cannot gain
+ * routing authority by guessing an actor name or route identifier.</p>
+ *
+ * <p>PRIVATE/UNTRUSTED transfer remains unsupported.</p>
  */
 final class ActorPipelineCorrelatedMailboxRouter<M>
         implements ActorRuntime.PipelineTurnAuthority {
@@ -45,6 +49,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     private final Map<String, ActorRuntime.ActorRef<M>> targets;
     private final Map<ActorRuntime.ActorId, String> identities;
     private final Map<ActorPipelineRoutePlan.Edge, Integer> edges;
+    private final boolean sourceRootRegistration;
     // Host retirement has exclusive publication authority. A guest actor
     // must never PARK its carrier waiting for this host-controlled gate.
     private final ReentrantReadWriteLock publicationGate =
@@ -55,8 +60,19 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
             ActorPipelineRoutePlan plan,
             Map<String, ActorRuntime.ActorRef<M>> bindings,
             long generation, int maxActiveFrames) {
+        this(runtime, plan, bindings, generation, maxActiveFrames, false);
+    }
+
+    ActorPipelineCorrelatedMailboxRouter(
+            ActorRuntime runtime,
+            ActorPipelineRoutePlan plan,
+            Map<String, ActorRuntime.ActorRef<M>> bindings,
+            long generation, int maxActiveFrames,
+            boolean sourceRootRegistration) {
         owner = Objects.requireNonNull(runtime);
-        owner.requirePipelineRegistrationHostAuthority();
+        this.sourceRootRegistration = sourceRootRegistration;
+        if (sourceRootRegistration) owner.requireSourcePipelineRegistrationAuthority();
+        else owner.requirePipelineRegistrationHostAuthority();
         graph = Objects.requireNonNull(plan);
         Objects.requireNonNull(bindings);
         Set<String> required = new HashSet<>();
@@ -74,7 +90,8 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
         Map<ActorRuntime.ActorId, String> reverse = new HashMap<>();
         for (String instance : required) {
             var ref = Objects.requireNonNull(bindings.get(instance));
-            owner.requireSharedPipelineBinding(ref);
+            if (sourceRootRegistration) owner.requireSharedSourcePipelineBinding(ref);
+            else owner.requireSharedPipelineBinding(ref);
             if (reverse.putIfAbsent(ref.id(), instance) != null)
                 throw new IllegalArgumentException("duplicate bound actor identity");
             bound.put(instance, ref);
@@ -107,7 +124,8 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
 
     /** The ONLY entry to a new flow: an authorized supervisor-selected root. */
     void ingress(String root, M message) {
-        owner.requirePipelineRegistrationHostAuthority();
+        if (sourceRootRegistration) owner.requireSourcePipelineRegistrationAuthority();
+        else owner.requirePipelineRegistrationHostAuthority();
         inLiveGeneration(() -> {
             Objects.requireNonNull(message, "pipeline payload");
             // Verify the root before reserving a frame or publishing any mail.
