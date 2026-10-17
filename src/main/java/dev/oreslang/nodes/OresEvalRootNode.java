@@ -8482,8 +8482,7 @@ public final class OresEvalRootNode extends RootNode {
                 Object left,
                 Object right,
                 IdentityHashMap<Object, IdentityHashMap<Object, Boolean>> seen) {
-            if (left == right) return true;
-            if (left == null || right == null) return false;
+            if (left == null || right == null) return left == right;
 
             if (left instanceof dev.oreslang.runtime.OresSymbol
                     || right instanceof dev.oreslang.runtime.OresSymbol) {
@@ -8503,6 +8502,10 @@ public final class OresEvalRootNode extends RootNode {
                     return false;
                 }
             }
+
+            // IEEE numeric comparisons precede reference identity: NaN != NaN,
+            // even for the same immutable boxed float or complex instance.
+            if (left == right) return true;
 
             // Class/actor instances have identity equality by default.
             if (left instanceof OresObject || right instanceof OresObject) return false;
@@ -9177,9 +9180,104 @@ public final class OresEvalRootNode extends RootNode {
         @Override public Iterable<?> sharedStateChildren(){return List.of();}
         private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
         private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
-        private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
-        private Complex div(Complex o){double d=o.real*o.real+o.imaginary*o.imaginary;return new Complex((real*o.real+imaginary*o.imaginary)/d,(imaginary*o.real-real*o.imaginary)/d);}
-        @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
+        private Complex mul(Complex o) {
+            double ac = real * o.real, bd = imaginary * o.imaginary;
+            double ad = real * o.imaginary, bc = imaginary * o.real;
+            double realResult = ac - bd, imaginaryResult = ad + bc;
+            if (Double.isFinite(real) && Double.isFinite(imaginary)
+                    && Double.isFinite(o.real) && Double.isFinite(o.imaginary)
+                    && (Double.isNaN(realResult) || Double.isNaN(imaginaryResult)
+                        || (realResult == 0.0 && ac != 0.0 && bd != 0.0)
+                        || (imaginaryResult == 0.0 && ad != 0.0 && bc != 0.0)
+                        || (ac == 0.0 && real != 0.0 && o.real != 0.0)
+                        || (bd == 0.0 && imaginary != 0.0 && o.imaginary != 0.0)
+                        || (ad == 0.0 && real != 0.0 && o.imaginary != 0.0)
+                        || (bc == 0.0 && imaginary != 0.0 && o.real != 0.0))) {
+                // Exact binary64 inputs and exact products/sums recover components
+                // erased by intermediate underflow or overflow/cancellation.
+                // Only exceptional finite operands take this allocating path.
+                java.math.BigDecimal a = new java.math.BigDecimal(real);
+                java.math.BigDecimal b = new java.math.BigDecimal(imaginary);
+                java.math.BigDecimal c = new java.math.BigDecimal(o.real);
+                java.math.BigDecimal d = new java.math.BigDecimal(o.imaginary);
+                double exactReal = a.multiply(c).subtract(b.multiply(d)).doubleValue();
+                double exactImaginary = a.multiply(d).add(b.multiply(c)).doubleValue();
+                // Preserve the binary64 sign of an existing zero when the
+                // reference calculation also produces a mathematical zero.
+                if (exactReal == 0.0 && realResult == 0.0) {
+                    exactReal = Math.copySign(0.0, realResult);
+                }
+                if (exactImaginary == 0.0 && imaginaryResult == 0.0) {
+                    exactImaginary = Math.copySign(0.0, imaginaryResult);
+                }
+                return new Complex(exactReal, exactImaginary);
+            }
+            return new Complex(realResult, imaginaryResult);
+        }
+        private Complex div(Complex o) {
+            // Use power-of-two scaling, not magnitude division: the latter
+            // can overflow to Infinity before multiplying an exactly zero
+            // imaginary component, yielding NaN instead of signed zero.
+            // Scaling by powers of two is exact for normal inputs and keeps
+            // subnormal magnitudes representable during intermediate products.
+            double numeratorScale = Math.max(Math.abs(real), Math.abs(imaginary));
+            double divisorScale = Math.max(Math.abs(o.real), Math.abs(o.imaginary));
+            if (numeratorScale > 0.0 && divisorScale > 0.0
+                    && Double.isFinite(numeratorScale) && Double.isFinite(divisorScale)) {
+                int numeratorExponent = Math.getExponent(numeratorScale);
+                int divisorExponent = Math.getExponent(divisorScale);
+                double a = Math.scalb(real, -numeratorExponent);
+                double b = Math.scalb(imaginary, -numeratorExponent);
+                double c = Math.scalb(o.real, -divisorExponent);
+                double d = Math.scalb(o.imaginary, -divisorExponent);
+                // A small nonzero component can disappear when the larger
+                // component is hundreds of orders of magnitude bigger.
+                // Its *quotient* component may still be representable.
+                // Fall back to an exact binary64-input decimal rational
+                // calculation in just those exceptional cases.
+                if ((real != 0.0 && a == 0.0)
+                        || (imaginary != 0.0 && b == 0.0)
+                        || (o.real != 0.0 && c == 0.0)
+                        || (o.imaginary != 0.0 && d == 0.0)) {
+                    return divExtremeFinite(o);
+                }
+                double denominator = c * c + d * d;
+                int exponent = numeratorExponent - divisorExponent;
+                return new Complex(
+                        Math.scalb((a * c + b * d) / denominator, exponent),
+                        Math.scalb((b * c - a * d) / denominator, exponent));
+            }
+            double denominator = o.real * o.real + o.imaginary * o.imaginary;
+            return new Complex((real * o.real + imaginary * o.imaginary) / denominator,
+                    (imaginary * o.real - real * o.imaginary) / denominator);
+        }
+
+        private Complex divExtremeFinite(Complex o) {
+            // Every operand here is a finite binary64; BigDecimal(double)
+            // captures its *exact* rational value, not an approximate string.
+            // Products/sums are exact. Only the final quotient is rounded.
+            // 1800 decimal digits exceed the range needed to distinguish
+            // binary64 components even for extreme finite exponent gaps.
+            // This slow path allocates bounded, temporary decimal objects;
+            // it is deliberately not the fast-path or a zero-allocation API.
+            java.math.BigDecimal a = new java.math.BigDecimal(real);
+            java.math.BigDecimal b = new java.math.BigDecimal(imaginary);
+            java.math.BigDecimal c = new java.math.BigDecimal(o.real);
+            java.math.BigDecimal d = new java.math.BigDecimal(o.imaginary);
+            java.math.BigDecimal denominator = c.multiply(c).add(d.multiply(d));
+            java.math.BigDecimal realNumerator = a.multiply(c).add(b.multiply(d));
+            java.math.BigDecimal imaginaryNumerator = b.multiply(c).subtract(a.multiply(d));
+            java.math.MathContext context = new java.math.MathContext(
+                    1800, java.math.RoundingMode.HALF_EVEN);
+            return new Complex(realNumerator.divide(denominator, context).doubleValue(),
+                    imaginaryNumerator.divide(denominator, context).doubleValue());
+        }
+
+        @Override public String toString() {
+            String imaginaryText = Double.toString(imaginary);
+            // Comparing with < 0 fails for IEEE negative zero.
+            return real + (imaginaryText.startsWith("-") ? "" : "+") + imaginaryText + "i";
+        }
     }
 
     /**
