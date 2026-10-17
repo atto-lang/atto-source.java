@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.BooleanIntrinsicLowering;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -103,6 +104,10 @@ public final class TypeChecker {
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
+    // Exact call identities proven to resolve to builtin Boolean intrinsics.
+    // Identity is intentional: CallExpr is a structural record and a source
+    // program may contain equal-looking calls with different shadowing scopes.
+    private final IdentityHashMap<Ast.CallExpr, String> booleanIntrinsicCalls = new IdentityHashMap<>();
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
     public record TypeCheckResult(Ast.Program program, List<String> warnings) {
@@ -129,6 +134,7 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
+        program = BooleanIntrinsicLowering.lower(program, checker.booleanIntrinsicCalls);
         return new TypeCheckResult(program, checker.warnings);
     }
 
@@ -179,7 +185,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
-        return program;
+        return BooleanIntrinsicLowering.lower(program, checker.booleanIntrinsicCalls);
     }
 
     private void validateImports(Ast.Program program) {
@@ -4092,6 +4098,7 @@ public final class TypeChecker {
         if (call.typeArgumentsPresent()) {
             throw new IllegalArgumentException(name + " does not accept call-site type arguments");
         }
+        booleanIntrinsicCalls.put(call, name);
         List<Ast.Expr> arguments = call.arguments();
         if (arguments.size() == 1) {
             Type aggregate = deref(typeOf(arguments.getFirst(), env, generics, self));
