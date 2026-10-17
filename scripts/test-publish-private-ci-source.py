@@ -57,6 +57,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source_private = [True] * 100
         self.source_visibility = ["private"] * 100
         self.source_protected = [True] * 100
+        self.incident_repository_identity = [pub.SOURCE_INCIDENT_REPOSITORY] * 300
+        self.incident_repository_ids = [pub.SOURCE_INCIDENT_REPOSITORY_ID] * 300
+        self.incident_repository_private = [True] * 300
+        self.incident_repository_visibility = ["private"] * 300
+        self.incident_repository_archived = [False] * 300
+        self.incident_repository_disabled = [False] * 300
+        self.incident_issue_ids = [pub.SOURCE_INCIDENT_ISSUE_ID] * 300
+        self.incident_pull_requests = [None] * 300
         self.incident_numbers = [22] * 300
         self.incident_states = ["closed"] * 300
         self.incident_reasons = ["completed"] * 300
@@ -128,10 +136,21 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == pub.PROTECTED_BRANCH_ROUTE:
             return dict(name="main", protected=self.source_protected.pop(0),
                         commit={"sha": self.source_main_shas.pop(0)})
+        if route == pub.SOURCE_INCIDENT_METADATA_ROUTE:
+            return {
+                "full_name": self.incident_repository_identity.pop(0),
+                "id": self.incident_repository_ids.pop(0),
+                "private": self.incident_repository_private.pop(0),
+                "visibility": self.incident_repository_visibility.pop(0),
+                "archived": self.incident_repository_archived.pop(0),
+                "disabled": self.incident_repository_disabled.pop(0),
+            }
         if route == pub.SOURCE_INCIDENT_ROUTE:
             return {
+                "id": self.incident_issue_ids.pop(0),
                 "url": self.incident_urls.pop(0),
                 "repository_url": self.incident_repository_urls.pop(0),
+                "pull_request": self.incident_pull_requests.pop(0),
                 "number": self.incident_numbers.pop(0),
                 "state": self.incident_states.pop(0),
                 "state_reason": self.incident_reasons.pop(0),
@@ -265,6 +284,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_incident_metadata_must_be_completed_and_exactly_identified(self):
         substitutions = (
+            ("incident_issue_ids", True),
+            ("incident_issue_ids", pub.SOURCE_INCIDENT_ISSUE_ID + 1),
+            ("incident_pull_requests", {"url": "https://api.github.com/repos/x/y/pulls/22"}),
             ("incident_numbers", True),
             ("incident_numbers", 23),
             ("incident_states", "open"),
@@ -275,8 +297,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             ("incident_repository_urls", "https://api.github.com/repos/foreign"),
             ("incident_closed_at", None),
             ("incident_closed_at", "2026-10-17T17:00:00+00:00"),
+            ("incident_closed_at", "2026-02-30T17:00:00Z"),
         )
         expected = {
+            "incident_issue_ids": pub.SOURCE_INCIDENT_ISSUE_ID,
+            "incident_pull_requests": None,
             "incident_numbers": 22,
             "incident_states": "closed",
             "incident_reasons": "completed",
@@ -294,6 +319,38 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with patch.object(pub, "collect_source",
                                   side_effect=AssertionError("source read before containment")):
                     with self.assertRaisesRegex(pub.Denied, "incident #22 remains unresolved"):
+                        self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        for key, default in expected.items():
+            setattr(self, key, [default] * 300)
+
+    def test_incident_repository_identity_must_be_stable_private_and_active(self):
+        expected = {
+            "incident_repository_identity": pub.SOURCE_INCIDENT_REPOSITORY,
+            "incident_repository_ids": pub.SOURCE_INCIDENT_REPOSITORY_ID,
+            "incident_repository_private": True,
+            "incident_repository_visibility": "private",
+            "incident_repository_archived": False,
+            "incident_repository_disabled": False,
+        }
+        substitutions = (
+            ("incident_repository_identity", "foreign/recreated"),
+            ("incident_repository_ids", True),
+            ("incident_repository_ids", pub.SOURCE_INCIDENT_REPOSITORY_ID + 1),
+            ("incident_repository_private", False),
+            ("incident_repository_visibility", "public"),
+            ("incident_repository_archived", True),
+            ("incident_repository_disabled", True),
+        )
+        for name, value in substitutions:
+            with self.subTest(field=name, value=value):
+                for key, default in expected.items():
+                    setattr(self, key, [default] * 300)
+                setattr(self, name, [value] * 300)
+                self.route_calls.clear()
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("source read before incident repository identity")):
+                    with self.assertRaises(pub.Denied):
                         self.publish()
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
         for key, default in expected.items():
@@ -735,7 +792,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     api.assert_called_once_with("rate_limit")
 
     def test_core_api_budget_denies_before_creating_git_objects(self):
-        for remaining in (0, 100, 183, 184, 185, None, "15000", True, -1):
+        for remaining in (0, 100, 183, 184, 185, 186, None, "15000", True, -1):
             with self.subTest(remaining=remaining):
                 self.route_calls.clear()
                 self.api_core_remaining = remaining
@@ -745,8 +802,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.api_core_remaining = 15000
 
     def test_core_api_budget_at_exact_reserve_allows_synthetic_upload(self):
-        # One source file: 26 * 1 + 160 == 186 API requests reserved.
-        self.api_core_remaining = 186
+        # One source file: 27 * 1 + 160 == 187 API requests reserved.
+        self.api_core_remaining = 187
         self.publish()
         self.assertTrue(any(method == "POST" for method, _, _ in self.route_calls))
 

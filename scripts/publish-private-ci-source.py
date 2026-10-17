@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 # An approved destination must include its stable numeric GitHub repository ID.
@@ -38,9 +39,12 @@ SOURCE_METADATA_ROUTE = "repos/" + SOURCE_REPOSITORY
 # Even a closed incident never replaces protected-branch review, exact
 # snapshot approval, destination privacy, or immutable-tree verification.
 SOURCE_INCIDENT_REPOSITORY = "ores-truffle-oreslang/oreslang-platform-conformance"
+SOURCE_INCIDENT_REPOSITORY_ID = 1413795502
+SOURCE_INCIDENT_ISSUE_ID = 5832921751
 SOURCE_INCIDENT_NUMBER = 22
+SOURCE_INCIDENT_METADATA_ROUTE = "repos/" + SOURCE_INCIDENT_REPOSITORY
 SOURCE_INCIDENT_ROUTE = (
-    "repos/" + SOURCE_INCIDENT_REPOSITORY + "/issues/" + str(SOURCE_INCIDENT_NUMBER)
+    SOURCE_INCIDENT_METADATA_ROUTE + "/issues/" + str(SOURCE_INCIDENT_NUMBER)
 )
 PROTECTED_BRANCH_ROUTE = SOURCE_METADATA_ROUTE + "/branches/main"
 PROTECTED_POLICY_ROUTE = (
@@ -503,26 +507,47 @@ def require_protected_carrier_codeowners(repository):
 
 
 def require_incident_containment():
-    """Require an independently observable completed incident before export.
+    """Require the exact independently observable completed incident.
 
-    Closing the issue alone does not authorize a transfer; protected-main,
-    CODEOWNER, exact-snapshot, private-carrier and runtime gates remain
-    mandatory. Recheck on each Git write to reject incident reopening.
+    Repository path + issue number are not durable identities: a repository
+    can be renamed/deleted/recreated and a pull request also occupies the
+    issues API namespace. Bind both objects to immutable numeric GitHub IDs,
+    require the incident repository to remain private, and reject PR-shaped
+    payloads before treating closure as containment.
     """
+    incident_repository = gh_api(SOURCE_INCIDENT_METADATA_ROUTE)
+    if (incident_repository.get("full_name") != SOURCE_INCIDENT_REPOSITORY
+            or type(incident_repository.get("id")) is not int
+            or incident_repository["id"] != SOURCE_INCIDENT_REPOSITORY_ID
+            or incident_repository.get("private") is not True
+            or incident_repository.get("visibility") != "private"
+            or incident_repository.get("archived") is not False
+            or incident_repository.get("disabled") is not False):
+        raise Denied("private-source incident repository identity is not verified")
     issue = gh_api(SOURCE_INCIDENT_ROUTE)
     canonical_url = "https://api.github.com/" + SOURCE_INCIDENT_ROUTE
     canonical_repository_url = (
-        "https://api.github.com/repos/" + SOURCE_INCIDENT_REPOSITORY
+        "https://api.github.com/" + SOURCE_INCIDENT_METADATA_ROUTE
     )
-    if (type(issue.get("number")) is not int
+    closed_at = issue.get("closed_at")
+    if (type(issue.get("id")) is not int
+            or issue["id"] != SOURCE_INCIDENT_ISSUE_ID
+            or type(issue.get("number")) is not int
             or issue["number"] != SOURCE_INCIDENT_NUMBER
             or issue.get("url") != canonical_url
             or issue.get("repository_url") != canonical_repository_url
+            or issue.get("pull_request") is not None
             or issue.get("state") != "closed"
             or issue.get("state_reason") != "completed"
-            or not isinstance(issue.get("closed_at"), str)
-            or not issue["closed_at"].endswith("Z")):
+            or not isinstance(closed_at, str)):
         raise Denied("private-source exposure incident #22 remains unresolved")
+    try:
+        parsed_closed_at = datetime.strptime(
+            closed_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError) as exc:
+        raise Denied("private-source exposure incident closure timestamp is invalid") from exc
+    if parsed_closed_at.year < 2026:
+        raise Denied("private-source exposure incident closure timestamp is invalid")
 
 
 def require_protected_main_policy(approved_policy):
@@ -1010,8 +1035,9 @@ def require_private_ci_api_budget(file_count, estimated_writes=None):
         raise Denied("GitHub core API budget unavailable")
     # Each write revalidates both source and carrier CODEOWNERS, the pinned
     # carrier validation-workflow blob, and all immutable approvals. Reserve
-    # two extra reads per write: pinned carrier workflow AND incident state.
-    required = 26 * estimated_writes + 160
+    # three extra reads per write: pinned carrier workflow, incident repository
+    # identity, and exact incident state.
+    required = 27 * estimated_writes + 160
     if remaining < required:
         raise Denied("insufficient GitHub core API budget for safe private CI export")
 
