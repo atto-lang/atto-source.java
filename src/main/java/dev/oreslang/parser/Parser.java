@@ -268,7 +268,18 @@ public final class Parser {
         // Keep the pre-"as" spelling accepted while existing source migrates.
         match(AS);
         List<Ast.Decl> declarations = new ArrayList<>();
-        while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
+        while (!check(END) && !check(EOF)) {
+            // The frozen source-level actor scheduling enum can appear inside
+            // a module, but is a language-owned type, not a generated class.
+            // Ordinary enums remain unsupported until typed enum AST lowering.
+            if (check(DEFINE) && checkNext(ENUM)) {
+                advance();
+                advance();
+                parseBuiltInMaxActorThreadsEnum();
+                continue;
+            }
+            declarations.add(parseModuleMember());
+        }
         consume(END, "expected 'end' to close module " + name);
         return new Ast.ModuleDecl(name, annotations, contracts, declarations);
     }
