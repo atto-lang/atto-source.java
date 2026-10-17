@@ -755,6 +755,57 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void erasedStructuralMatchesAreReadOnlyIncludingNestedFields() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc readVerified(any source): int {
+                  match source over
+                    on structural { amount: int } record -> { return record.amount; }
+                    on _ -> { return 0; }
+                  end
+                }
+
+                pub fnc readUnverified(unknown source): int {
+                  match source over
+                    on structural { amount: int } record -> { return record.amount; }
+                    on _ -> { return 0; }
+                  end
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub fnc bad(any source): int {
+                  match source over
+                    on structural { inner: { amount: int } } record -> {
+                      record.inner.amount = 3;
+                      return 1;
+                    }
+                    on _ -> { return 0; }
+                  end
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub fnc bad(unknown source): int {
+                  val rec = source as { amount: int };
+                  rec.amount = 3;
+                  return 1;
+                }
+                """)));
+    }
+
+    @Test
+    void nullablePatternBindingsDoNotThrowHostMapExceptions() throws Exception {
+        String output = run("""
+                pub fnc main(): void {
+                  stdio.stdout.write(null is type !int first ? 1 : 0);
+                  stdio.stdout.write(null matches is !int second ? 1 : 0);
+                  return;
+                }
+                """);
+        assertEquals("11", output);
+    }
+
+    @Test
     void integerIntrinsicCannotBeExtractedOrRecoveredThroughShadowing() {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
