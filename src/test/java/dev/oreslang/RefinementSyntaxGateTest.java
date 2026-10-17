@@ -159,17 +159,20 @@ final class RefinementSyntaxGateTest {
 
 
     @Test void unenforcedConstraintAnnotationsFailClosed() {
-        String[] invalid = {
-                "@NotEmpty pub fnc main(): void { return; }",
-                "@MinLength(1) pub fnc main(): void { return; }",
-                "@Max(10) pub fnc main(): void { return; }",
-                "define class Person as @NotEmpty name: string; end",
-                "pub fnc main(): void { @NotEmpty val string value = \"x\"; return; }"
+        String[][] invalid = {
+                {"@NotEmpty pub fnc main(): void { return; }", "not yet executable"},
+                {"@MinLength(1) pub fnc main(): void { return; }", "not yet executable"},
+                {"@Max(10) pub fnc main(): void { return; }", "not yet executable"},
+                {"define class Person as @NotEmpty name: string; end", "not yet executable"},
+                {"pub fnc main(): void { @NotEmpty val string value = \"x\"; return; }",
+                        "unsupported local annotation @NotEmpty"}
         };
-        for (String source : invalid) {
+        for (String[] testCase : invalid) {
+            String source = testCase[0];
+            String expected = testCase[1];
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class, () -> Parser.parse(source), source);
-            assertTrue(error.getMessage().contains("not yet executable"),
+            assertTrue(error.getMessage().contains(expected),
                     () -> "constraint annotation silently ignored or failed for wrong reason: " + error.getMessage());
         }
         assertNotNull(alias("@NotEmpty type N = string;").refinement());
