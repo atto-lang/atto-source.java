@@ -298,4 +298,22 @@ final class NumericComplexIntegrationTest {
                 """));
     }
 
+
+    @Test
+    void complexDivisionPinsCancellationScaleAndZeroNumeratorRegressions() {
+        assertTrue(evaluatesTrue("""
+                val complex cancellation =
+                    (0.9999999947592926 + 1.0000000008845844i)
+                    / (0.9999999973991033 + 1.0000000035243972i);
+                val complex separatedScale =
+                    (1e300 + 1e-20i) / 1i;
+                val complex zeroNumerator =
+                    (0.0 + 0.0i) / 5e-324i;
+                return cancellation
+                        eq (0.9999999973601883 - 1.0466270614337854e-15i)
+                    && separatedScale eq (1e-20 - 1e300i)
+                    && zeroNumerator eq 0;
+                """));
+    }
+
 }
