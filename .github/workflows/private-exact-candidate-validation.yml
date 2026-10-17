@@ -168,8 +168,76 @@ jobs:
           for name, count in sorted(executed.items()):
               print(f"VERIFIED_SECURITY_JUNIT {name}: {count} executed")
           PY
+      - name: Reset actor-memory Surefire reports before focused execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          # No report created by a previous step or the candidate checkout
+          # can satisfy the upcoming required actor regression check.
+          test ! -L target
+          test ! -L target/surefire-reports
+          if test -e target/surefire-reports && test ! -d target/surefire-reports; then
+            echo "::error::Invalid actor-memory Surefire report directory"
+            exit 1
+          fi
+          rm -rf -- target/surefire-reports
+          test ! -e target/surefire-reports
+      - name: Execute exact candidate actor-memory regression classes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native -DskipTests=false -Dmaven.test.skip=false \
+            '-Dtest=PersistentActorMapTest,ActorSharedLocalMemoryTest,ActorStateModeContractsTest' test
+      - name: Prove actor-memory regression classes executed
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Trusted workflow checks report provenance without executing a
+          # candidate-provided evidence-verifier script.
+          python3 -I - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          required = {
+              "dev.oreslang.runtime.PersistentActorMapTest",
+              "dev.oreslang.runtime.ActorSharedLocalMemoryTest",
+              "dev.oreslang.types.ActorStateModeContractsTest",
+          }
+          reports = Path("target/surefire-reports")
+          if not reports.is_dir() or reports.is_symlink() or reports.parent.is_symlink():
+              raise SystemExit("Missing or symlinked fresh actor-memory test reports")
+          total_cases = 0
+          for classname in sorted(required):
+              report = reports / ("TEST-" + classname + ".xml")
+              if report.is_symlink() or not report.is_file():
+                  raise SystemExit("Missing required actor-memory JUnit report: " + str(report))
+              if not 0 < report.stat().st_size <= 16 * 1024 * 1024:
+                  raise SystemExit("Empty/oversized actor-memory JUnit report: " + str(report))
+              root = ElementTree.parse(report).getroot()
+              if root.tag != "testsuite" or root.get("name") != classname:
+                  raise SystemExit("Actor-memory JUnit suite identity mismatch: " + str(report))
+              cases = root.findall("testcase")
+              try:
+                  tests = int(root.get("tests", "-1"))
+                  counts = [int(root.get(k, "-1")) for k in ("failures", "errors", "skipped")]
+              except ValueError as exc:
+                  raise SystemExit("Invalid actor-memory JUnit count: " + str(report)) from exc
+              if tests < 1 or tests != len(cases) or any(value != 0 for value in counts):
+                  raise SystemExit("Missing, failed or skipped actor-memory cases: " + str(report))
+              for case in cases:
+                  if case.get("classname") != classname or any(
+                      case.find(k) is not None for k in (
+                          "failure", "error", "skipped", "flakyFailure",
+                          "flakyError", "rerunFailure", "rerunError"
+                      )
+                  ):
+                      raise SystemExit("Invalid actor-memory testcase: " + str(report))
+              total_cases += tests
+              print("VERIFIED_ACTOR_MEMORY_JUNIT", classname, tests)
+          print("VERIFIED_ACTOR_MEMORY_JUNIT_TOTAL", total_cases)
+          PY
       - name: Full Java 25 Maven candidate verification
-        # Clean again so focused six-class reports cannot masquerade as a
+        # Clean again so focused security/actor reports cannot masquerade as a
         # complete full-suite verification run.
         run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests=false -Dmaven.test.skip=false clean verify
       - name: Prove full Maven suite executed beyond focused security classes
@@ -189,6 +257,9 @@ jobs:
               "dev.oreslang.runtime.ScopedPermissionInteropTest",
               "dev.oreslang.runtime.VerifiedTcpSocketTest",
               "dev.oreslang.runtime.NativeSocketBoundaryTest",
+              "dev.oreslang.runtime.PersistentActorMapTest",
+              "dev.oreslang.runtime.ActorSharedLocalMemoryTest",
+              "dev.oreslang.types.ActorStateModeContractsTest",
           }
           report_dir = Path("target/surefire-reports")
           if (not report_dir.is_dir() or report_dir.is_symlink()
