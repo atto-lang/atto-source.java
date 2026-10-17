@@ -48,9 +48,16 @@ public final class OresVM implements AutoCloseable {
     }
 
     static void runAsNioWorker(Runnable work) {
+        // Completion callbacks can nest on an existing I/O worker. Clearing
+        // the marker unconditionally would let the outer callback bypass the
+        // no-self-join VM teardown guard after the inner scope returns.
+        Boolean previous = ON_NIO_WORKER.get();
         ON_NIO_WORKER.set(Boolean.TRUE);
         try { work.run(); }
-        finally { ON_NIO_WORKER.remove(); }
+        finally {
+            if (previous == null) ON_NIO_WORKER.remove();
+            else ON_NIO_WORKER.set(previous);
+        }
     }
 
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
