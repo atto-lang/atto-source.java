@@ -8530,7 +8530,10 @@ public final class TypeChecker {
 
     private boolean definitelyReturns(List<Ast.Stmt> body) {
         for (Ast.Stmt stmt : body) {
-            if (stmt instanceof Ast.ReturnStmt) return true;
+            if (stmt instanceof Ast.ReturnStmt
+                    || stmt instanceof Ast.ThrowStmt
+                    || stmt instanceof Ast.RaiseStmt
+                    || stmt instanceof Ast.PanicStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && !containsBreakForCurrentLoop(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
