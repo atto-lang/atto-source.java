@@ -35,6 +35,71 @@ final class ActorAffinityDispatcherTest {
     }
 
     @Test
+    void nioHostNotificationsReuseAlreadyStartedLanesWithoutBootstrappingColdLanes()
+            throws Exception {
+        var executors = new java.util.ArrayList<java.util.concurrent.ThreadPoolExecutor>();
+        var dispatcher = new ActorAffinityDispatcher(3, 64, new int[0], index -> {
+            var pool = new java.util.concurrent.ThreadPoolExecutor(
+                    1, 1, 60L, TimeUnit.SECONDS,
+                    new java.util.concurrent.ArrayBlockingQueue<Runnable>(64),
+                    task -> new Thread(task, "test-affinity-lane-" + index));
+            executors.add(pool);
+            return pool;
+        });
+        try {
+            var initial = new CountDownLatch(1);
+            dispatcher.executeOnLane(2, initial::countDown);
+            assertTrue(initial.await(2, TimeUnit.SECONDS));
+            assertEquals(0, executors.get(0).getPoolSize());
+            assertEquals(0, executors.get(1).getPoolSize());
+            assertEquals(1, executors.get(2).getPoolSize());
+
+            var delivered = new CountDownLatch(24);
+            var wrongLane = new AtomicInteger();
+            for (int i = 0; i < 24; i++) {
+                dispatcher.executeHostOnWarmLane(() -> {
+                    if (!Thread.currentThread().getName().equals("test-affinity-lane-2"))
+                        wrongLane.incrementAndGet();
+                    delivered.countDown();
+                });
+            }
+            assertTrue(delivered.await(3, TimeUnit.SECONDS));
+            assertEquals(0, wrongLane.get());
+            assertEquals(0, executors.get(0).getPoolSize(),
+                    "host-only notifications must not bootstrap an unused actor lane");
+            assertEquals(0, executors.get(1).getPoolSize(),
+                    "host-only notifications must not bootstrap an unused actor lane");
+        } finally {
+            dispatcher.shutdownNow();
+            assertTrue(dispatcher.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void firstColdNioNotificationDeterministicallyStartsLaneZero() throws Exception {
+        var executors = new java.util.ArrayList<java.util.concurrent.ThreadPoolExecutor>();
+        var dispatcher = new ActorAffinityDispatcher(3, 16, new int[0], index -> {
+            var pool = new java.util.concurrent.ThreadPoolExecutor(
+                    1, 1, 60L, TimeUnit.SECONDS,
+                    new java.util.concurrent.ArrayBlockingQueue<Runnable>(16),
+                    task -> new Thread(task, "test-cold-host-lane-" + index));
+            executors.add(pool);
+            return pool;
+        });
+        try {
+            var delivered = new CountDownLatch(1);
+            dispatcher.executeHostOnWarmLane(delivered::countDown);
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+            assertEquals(1, executors.get(0).getPoolSize());
+            assertEquals(0, executors.get(1).getPoolSize());
+            assertEquals(0, executors.get(2).getPoolSize());
+        } finally {
+            dispatcher.shutdownNow();
+            assertTrue(dispatcher.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void defaultRuntimeReportsLaneAffinityWithoutClaimingCpuBinding() throws Exception {
         try (var runtime = new ActorRuntime()) {
             var actor = runtime.spawnShared(() -> (message, context) -> {});
