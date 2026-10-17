@@ -63,6 +63,8 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
+    private static final int SUPERVISION_EVENT_CAPACITY = 4_096;
+    private static final int MAX_DIAGNOSTIC_MESSAGE_CHARS = 512;
     /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
     private static final int UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS = 32;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
@@ -181,6 +183,111 @@ public final class ActorRuntime implements AutoCloseable {
             ActorKind kind,
             long elapsedNanos,
             long sinceCheckpointNanos) { }
+
+    /** Stable terminal classification for supervisor diagnostics. */
+    public enum ActorTerminationKind { NORMAL, CANCELLED, FAILED }
+
+    /**
+     * Bounded immutable supervisor diagnostic. This is NOT actor mail and is
+     * never required for lifecycle correctness; a full observer queue may drop
+     * records rather than delaying actor finalization.
+     */
+    public record ActorTerminationEvent(
+            long sequence,
+            ActorId actorId,
+            long generation,
+            ActorKind actorKind,
+            Optional<ActorId> parentId,
+            ActorTerminationKind terminationKind,
+            long acceptedUserMessages,
+            long processedUserMessages,
+            int abandonedUserMessages,
+            int abandonedContinuations,
+            String failureType,
+            String failureMessage) {
+        public ActorTerminationEvent {
+            if (sequence < 0) throw new IllegalArgumentException("sequence must be >= 0");
+            Objects.requireNonNull(actorId, "actorId");
+            Objects.requireNonNull(actorKind, "actorKind");
+            parentId = parentId == null ? Optional.empty() : parentId;
+            Objects.requireNonNull(parentId, "parentId");
+            Objects.requireNonNull(terminationKind, "terminationKind");
+            if (acceptedUserMessages < 0 || processedUserMessages < 0
+                    || processedUserMessages > acceptedUserMessages
+                    || abandonedUserMessages < 0 || abandonedContinuations < 0) {
+                throw new IllegalArgumentException("invalid actor termination counters");
+            }
+            failureType = failureType == null ? "" : failureType;
+            failureMessage = failureMessage == null ? "" : failureMessage;
+        }
+    }
+
+    /** Lock-free-to-read aggregate counters for host/supervisor telemetry. */
+    public record ActorRuntimeStats(
+            int liveActors,
+            long userMessagesAccepted,
+            long mailboxFullRejections,
+            long continuationAdmissionFailures,
+            long normalTerminations,
+            long cancelledTerminations,
+            long failedTerminations,
+            long supervisionEventsDropped,
+            long watchdogOverruns,
+            long watchdogNoticesDropped) {
+        public ActorRuntimeStats {
+            if (liveActors < 0
+                    || userMessagesAccepted < 0
+                    || mailboxFullRejections < 0
+                    || continuationAdmissionFailures < 0
+                    || normalTerminations < 0
+                    || cancelledTerminations < 0
+                    || failedTerminations < 0
+                    || supervisionEventsDropped < 0
+                    || watchdogOverruns < 0
+                    || watchdogNoticesDropped < 0) {
+                throw new IllegalArgumentException("actor runtime stats cannot be negative");
+            }
+        }
+    }
+
+    /** Point-in-time supervisor view; never exposes mutable guest state. */
+    public record ActorSnapshot(
+            ActorId actorId,
+            long generation,
+            ActorKind actorKind,
+            Optional<ActorId> parentId,
+            boolean readySettled,
+            boolean stopped,
+            boolean sealing,
+            boolean finalized,
+            boolean scheduled,
+            boolean carrierActive,
+            int activeTurns,
+            int queuedUserMessages,
+            int queuedContinuations,
+            long acceptedUserMessages,
+            long processedUserMessages,
+            int childCount,
+            int pendingOperations,
+            boolean sourceReceiveSuspended,
+            boolean forceKillFenced,
+            long sharedMailboxBytes,
+            long outputBytes,
+            String terminationType) {
+        public ActorSnapshot {
+            Objects.requireNonNull(actorId, "actorId");
+            Objects.requireNonNull(actorKind, "actorKind");
+            parentId = parentId == null ? Optional.empty() : parentId;
+            Objects.requireNonNull(parentId, "parentId");
+            if (activeTurns < 0 || queuedUserMessages < 0 || queuedContinuations < 0
+                    || acceptedUserMessages < 0 || processedUserMessages < 0
+                    || childCount < 0 || pendingOperations < 0
+                    || sharedMailboxBytes < 0 || outputBytes < 0) {
+                throw new IllegalArgumentException("invalid actor snapshot counters");
+            }
+            terminationType = terminationType == null ? "" : terminationType;
+        }
+    }
 
     public static final class UntrustedActorQuotaExceededException extends SecurityException {
         public enum Resource { FUEL, WALL_TIME, CPU_TIME }
@@ -466,6 +573,16 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong watchdogNoticesDropped = new AtomicLong();
     private final ArrayBlockingQueue<WatchdogNotice> watchdogNotices =
             new ArrayBlockingQueue<>(1024);
+    private final AtomicLong userMessagesAccepted = new AtomicLong();
+    private final AtomicLong mailboxFullRejections = new AtomicLong();
+    private final AtomicLong continuationAdmissionFailures = new AtomicLong();
+    private final AtomicLong normalTerminations = new AtomicLong();
+    private final AtomicLong cancelledTerminations = new AtomicLong();
+    private final AtomicLong failedTerminations = new AtomicLong();
+    private final AtomicLong supervisionEventSequence = new AtomicLong();
+    private final AtomicLong supervisionEventsDropped = new AtomicLong();
+    private final ArrayBlockingQueue<ActorTerminationEvent> supervisionEvents =
+            new ArrayBlockingQueue<>(SUPERVISION_EVENT_CAPACITY);
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
 
@@ -617,6 +734,43 @@ public final class ActorRuntime implements AutoCloseable {
     public long watchdogNoticesDropped() {
         requireSupervisorContext("inspect dropped actor watchdog notices");
         return watchdogNoticesDropped.get();
+    }
+
+    /** Aggregate actor-runtime telemetry. Reading it never mutates actors. */
+    public ActorRuntimeStats runtimeStats() {
+        requireSupervisorContext("inspect actor runtime statistics");
+        return new ActorRuntimeStats(
+                actorCount.get(),
+                userMessagesAccepted.get(),
+                mailboxFullRejections.get(),
+                continuationAdmissionFailures.get(),
+                normalTerminations.get(),
+                cancelledTerminations.get(),
+                failedTerminations.get(),
+                supervisionEventsDropped.get(),
+                watchdogOverruns.get(),
+                watchdogNoticesDropped.get());
+    }
+
+    /** Host/supervisor nonblocking terminal-event drain. */
+    public Optional<ActorTerminationEvent> pollTerminationEvent() {
+        requireSupervisorContext("drain actor termination diagnostics");
+        return Optional.ofNullable(supervisionEvents.poll());
+    }
+
+    public long supervisionEventsDropped() {
+        requireSupervisorContext("inspect dropped actor termination diagnostics");
+        return supervisionEventsDropped.get();
+    }
+
+    /** Immutable point-in-time actor state for debugging and control planes. */
+    public Optional<ActorSnapshot> snapshot(ActorRef<?> ref) {
+        requireSupervisorContext("inspect actor state");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this))
+            throw new IllegalArgumentException("ActorRef belongs to another runtime");
+        ActorCell<?> cell = actors.get(ref.id());
+        return cell == null ? Optional.empty() : Optional.of(cell.snapshot());
     }
 
     /** Number of recoverable watchdog monitor/observer failures in this JVM. */
@@ -1830,6 +1984,7 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = actors.get(actorId);
         if (cell == null || cell.stopped.get() || closed.get()) return false;
         if (!cell.reserveContinuationSlot()) {
+            continuationAdmissionFailures.incrementAndGet();
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
             return false;
@@ -5022,6 +5177,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
             if (cell.sealing) throw new ActorSealedException(ref.id());
             if (!cell.reserveMailboxSlot()) {
+                mailboxFullRejections.incrementAndGet();
                 throw new ActorMailboxFullException(ref.id());
             }
         }
@@ -5118,9 +5274,11 @@ public final class ActorRuntime implements AutoCloseable {
                     envelope = MessageEnvelope.message(
                             prepared, release, sender, sequence);
                     if (!cell.mailbox.tryWrite(envelope)) {
+                        mailboxFullRejections.incrementAndGet();
                         throw new ActorMailboxFullException(ref.id());
                     }
                     cell.nextUserMessageSequence = nextSequence;
+                    userMessagesAccepted.incrementAndGet();
                     mailboxSlotTransferred = true;
                     admitted = true;
                     commitSharedMutexBindings(sharedMutexReservations);
