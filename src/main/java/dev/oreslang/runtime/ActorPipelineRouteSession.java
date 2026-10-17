@@ -82,6 +82,9 @@ final class ActorPipelineRouteSession {
 
     private final ActorPipelineRoutePlan graph;
     private final int capacity;
+    // Only runtime-bound sessions may enter a real actor mailbox.
+    // Selector-only standalone ledgers intentionally carry no authority.
+    private final Map<String, ?> runtimeRecipients;
     private final IdentityHashMap<MailFrame, Boolean> active = new IdentityHashMap<>();
     // Cursor is scoped to this trusted graph session / generation.
     private final Map<String, Integer> roundRobin = new HashMap<>();
@@ -94,12 +97,27 @@ final class ActorPipelineRouteSession {
 
     ActorPipelineRouteSession(ActorPipelineRoutePlan graph,
                                      long generation, int maxActiveFrames) {
+        this(graph, generation, maxActiveFrames, Map.of());
+    }
+
+    ActorPipelineRouteSession(ActorPipelineRoutePlan graph,
+                              long generation, int maxActiveFrames,
+                              Map<String, ?> runtimeRecipients) {
         this.graph = Objects.requireNonNull(graph);
         if (generation < 1 || maxActiveFrames < 1 || maxActiveFrames > 65536) {
             throw new IllegalArgumentException("invalid route generation or frame budget");
         }
         this.generation = generation;
         this.capacity = maxActiveFrames;
+        this.runtimeRecipients = Map.copyOf(Objects.requireNonNull(runtimeRecipients));
+        if (!this.runtimeRecipients.isEmpty()) {
+            for (var edge : graph.edges()) {
+                if (!this.runtimeRecipients.containsKey(edge.source())
+                        || !this.runtimeRecipients.containsKey(edge.target()))
+                    throw new IllegalArgumentException(
+                            "bound session must name every graph instance");
+            }
+        }
     }
 
     public synchronized long generation() { return generation; }
@@ -109,6 +127,22 @@ final class ActorPipelineRouteSession {
     /** VM-only validation for host-reported immutable correlation metadata. */
     synchronized void requireLive(MailFrame frame) {
         requireActive(frame);
+    }
+
+    /** Final mailbox admission guard. Verifies frame liveness and that the
+     * recipient is the exact actor bound to its immutable graph instance.
+     * Selector-only frames (no VM binding) are never deliverable. */
+    static void verifyMailboxRecipient(MailFrame frame, Object recipientId) {
+        Objects.requireNonNull(frame, "pipeline frame");
+        frame.session.verifyRecipient(frame, recipientId);
+    }
+
+    private synchronized void verifyRecipient(MailFrame frame, Object recipientId) {
+        requireActive(frame);
+        Object allowed = runtimeRecipients.get(frame.receiver());
+        if (allowed == null || !allowed.equals(recipientId))
+            throw new SecurityException(
+                    "pipeline frame destination does not match bound actor");
     }
 
     /** Called ONLY after supervisor authenticates the entering source actor. */
