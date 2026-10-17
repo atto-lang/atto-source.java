@@ -16,8 +16,10 @@ import java.util.concurrent.TimeUnit;
  * are linearized by a short host-only monitor. Neither I/O nor guest callbacks
  * execute inside this monitor. Tasks are never executed on the submitting thread.
  *
- * <p>The initial core size is the minimum resident capacity. Temporary workers
- * are retired after their configured keepalive when demand subsides.
+ * <p>The initial core size is the minimum resident capacity and may be zero.
+ * A zero-minimum pool creates its first carrier only when runnable work is
+ * admitted. Temporary workers are retired after their configured keepalive
+ * when demand subsides.
  */
 final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
     private final int minimum;
@@ -41,13 +43,14 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
     }
 
     private static int validateMinimum(int minimum) {
-        if (minimum < 1) throw new IllegalArgumentException("minimum carriers must be >= 1");
+        if (minimum < 0) throw new IllegalArgumentException("minimum carriers must be >= 0");
         return minimum;
     }
 
     private static int validateMaximum(int minimum, int maximum) {
-        if (maximum < minimum || maximum > 256)
-            throw new IllegalArgumentException("maximum carriers must be between min and 256");
+        if (maximum < 1 || maximum < minimum || maximum > 256)
+            throw new IllegalArgumentException(
+                    "maximum carriers must be between max(1,min) and 256");
         return maximum;
     }
 
