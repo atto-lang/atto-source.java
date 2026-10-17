@@ -12,6 +12,7 @@
 /docs/security/PRIVATE_CI_POLICY_INTEGRATION_REVIEW_2026-10-16.md @ORESoftware
 /docs/security/PRIVATE_EXACT_MAIN_VALIDATION.md @ORESoftware
 /scripts/check-private-ci-destination.sh @ORESoftware
+/scripts/ci_private_mirror_preflight.py @ORESoftware
 /scripts/publish-private-ci-source.py @ORESoftware
 /scripts/run-in-private-ci-destination.sh @ORESoftware
 /scripts/test-private-ci-destination.sh @ORESoftware
