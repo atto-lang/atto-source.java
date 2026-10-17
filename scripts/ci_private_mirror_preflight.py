@@ -69,16 +69,24 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise MirrorPreflightError("repository metadata redirect refused")
 
 
+def hardened_ssl_context():
+    """Construct TLS trust explicitly; do not consult SSLKEYLOGFILE/CA env."""
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
+        context.load_verify_locations(cafile=SYSTEM_CA_BUNDLE)
+    except (OSError, ssl.SSLError, ValueError) as exc:
+        raise MirrorPreflightError("trusted system CA bundle unavailable") from exc
+    return context
+
+
 def hardened_https_open():
     """Ignore caller proxy/CA environment for authenticated GitHub metadata."""
-    try:
-        context = ssl.create_default_context(cafile=SYSTEM_CA_BUNDLE)
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
-    except (OSError, ssl.SSLError) as exc:
-        raise MirrorPreflightError("trusted system CA bundle unavailable") from exc
     return urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
-        urllib.request.HTTPSHandler(context=context),
+        urllib.request.HTTPSHandler(context=hardened_ssl_context()),
         NoRedirect(),
     ).open
 
