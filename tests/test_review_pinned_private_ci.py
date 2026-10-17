@@ -109,7 +109,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             "carrier_reviewer_permission": self.write(
                 "carrier-reviewer-permission.json", self.permission("maintain")),
             "publisher_pr": self.write("publisher-pr.json",
-                self.pr(MOD.SOURCE_REPO, 1123, PUBLISHER_HEAD)),
+                self.pr(MOD.SOURCE_REPO, 1198, PUBLISHER_HEAD)),
             "publisher_reviews": self.write("publisher-reviews.json",
                 self.reviews(PUBLISHER_HEAD, rid=11)),
             "destination_pr": self.write("destination-pr.json",
@@ -224,7 +224,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
     def test_reviewer_cannot_be_pr_author(self):
         def mutate(fx):
             fx["publisher_pr"] = self.write("self-author.json",
-                self.pr(MOD.SOURCE_REPO, 1123, PUBLISHER_HEAD, author_id=REVIEWER_ID))
+                self.pr(MOD.SOURCE_REPO, 1198, PUBLISHER_HEAD, author_id=REVIEWER_ID))
         self.assertDenied(mutate)
 
     def test_source_live_permission_read_denied(self):
@@ -319,7 +319,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
 
     def test_closed_security_pr_denied(self):
         def mutate(fx):
-            p = self.pr(MOD.SOURCE_REPO, 1123, PUBLISHER_HEAD)
+            p = self.pr(MOD.SOURCE_REPO, 1198, PUBLISHER_HEAD)
             p["state"] = "closed"
             fx["publisher_pr"] = self.write("closed.json", p)
         self.assertDenied(mutate)
