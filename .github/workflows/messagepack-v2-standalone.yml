@@ -81,5 +81,5 @@ jobs:
         with:
           name: portable-messagepack-v2-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/portable-v2-evidence/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
