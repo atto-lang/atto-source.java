@@ -117,7 +117,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             "destination_reviews": self.write("destination-reviews.json",
                 self.reviews(DEST_HEAD, rid=12)),
             "snapshot_pr": self.write("snapshot-pr.json",
-                self.pr(MOD.SOURCE_REPO, 1189, SNAP_HEAD)),
+                self.pr(MOD.SOURCE_REPO, 1197, SNAP_HEAD)),
             "snapshot_reviews": self.write("snapshot-reviews.json",
                 self.reviews(SNAP_HEAD, rid=13)),
             "carrier_pr": self.write("carrier-pr.json",
@@ -347,6 +347,12 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         def mutate(fx):
             fx["publisher_pr"] = self.write("legacy-publisher.json",
                 self.pr(MOD.SOURCE_REPO, 1123, PUBLISHER_HEAD))
+        self.assertDenied(mutate)
+
+    def test_legacy_snapshot_pr_1189_denied(self):
+        def mutate(fx):
+            fx["snapshot_pr"] = self.write("legacy-snapshot.json",
+                self.pr(MOD.SOURCE_REPO, 1189, SNAP_HEAD))
         self.assertDenied(mutate)
 
     def test_resume_marker_wrong_reviewer_denied(self):
