@@ -5262,18 +5262,9 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     executeBlock(recovered.finallyBody(), env, true);
                 } catch (RuntimeException | Error cleanupFailure) {
-                    if (pendingFailure != null
-                            && (isUnmaskableFailure(pendingFailure)
-                                    || cleanupFailure instanceof ProcessExitSignal)) {
-                        if (pendingFailure != cleanupFailure) {
-                            pendingFailure.addSuppressed(cleanupFailure);
-                        }
-                    } else {
-                        if (pendingFailure != null && pendingFailure != cleanupFailure) {
-                            cleanupFailure.addSuppressed(pendingFailure);
-                        }
-                        throw cleanupFailure;
-                    }
+                    if (pendingFailure == null) throw cleanupFailure;
+                    Throwable merged = mergeControlFailure(pendingFailure, cleanupFailure);
+                    if (merged != pendingFailure) rethrowFailure(merged);
                 }
             }
         }
@@ -5521,18 +5512,9 @@ public final class OresEvalRootNode extends RootNode {
                     try {
                         executeBlock(tried.finallyBody(), env, true);
                     } catch (RuntimeException | Error cleanupFailure) {
-                        if (pendingTryFailure != null
-                                && (isUnmaskableFailure(pendingTryFailure)
-                                        || cleanupFailure instanceof ProcessExitSignal)) {
-                            if (pendingTryFailure != cleanupFailure) {
-                                pendingTryFailure.addSuppressed(cleanupFailure);
-                            }
-                        } else {
-                            if (pendingTryFailure != null && pendingTryFailure != cleanupFailure) {
-                                cleanupFailure.addSuppressed(pendingTryFailure);
-                            }
-                            throw cleanupFailure;
-                        }
+                        if (pendingTryFailure == null) throw cleanupFailure;
+                        Throwable merged = mergeControlFailure(pendingTryFailure, cleanupFailure);
+                        if (merged != pendingTryFailure) rethrowFailure(merged);
                     }
                 }
                 return;
