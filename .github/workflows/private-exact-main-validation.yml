@@ -94,7 +94,7 @@ jobs:
           set -euo pipefail
           # Only trusted workflow-owned verification; never execute a
           # candidate-owned report checker.
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           from pathlib import Path
           from xml.etree import ElementTree
 
