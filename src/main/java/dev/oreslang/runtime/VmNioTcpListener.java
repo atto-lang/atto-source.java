@@ -28,6 +28,7 @@ public final class VmNioTcpListener implements AutoCloseable {
     private final Object gate = new Object();
     private final Set<Connection> connections = new HashSet<>();
     private OresFuture<Connection> pendingAccept;
+    private final OresFuture<Void> listenerClosed = new OresFuture<>();
     private int admittedOperations; // guarded by gate; includes Future callbacks
     private boolean closed;
 
@@ -82,11 +83,15 @@ public final class VmNioTcpListener implements AutoCloseable {
     }
 
     private void releaseOperation() {
+        boolean quiesced;
         synchronized (gate) {
             if (admittedOperations <= 0)
                 throw new IllegalStateException("TCP operation reservation underflow");
             --admittedOperations;
+            quiesced = closed && admittedOperations == 0
+                    && pendingAccept == null && connections.isEmpty();
         }
+        if (quiesced) listenerClosed.completeFromRuntime(null);
     }
 
     public OresFuture<Connection> acceptAsync() {
@@ -155,7 +160,7 @@ public final class VmNioTcpListener implements AutoCloseable {
 
     public OresFuture<Void> closeAsync() {
         close();
-        return OresFuture.completed(null);
+        return listenerClosed;
     }
 
     @Override public void close() {
@@ -172,6 +177,12 @@ public final class VmNioTcpListener implements AutoCloseable {
         try { server.close(); } catch (IOException ignored) { }
         if (pending != null) pending.cancel(false);
         for (Connection connection : snapshot) connection.close();
+        boolean quiesced;
+        synchronized (gate) {
+            quiesced = admittedOperations == 0
+                    && pendingAccept == null && connections.isEmpty();
+        }
+        if (quiesced) listenerClosed.completeFromRuntime(null);
     }
 
     public final class Connection implements AutoCloseable {
