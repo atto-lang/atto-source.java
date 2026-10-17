@@ -1,8 +1,11 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayDeque;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
@@ -37,6 +40,15 @@ public final class SupervisorProcess implements AutoCloseable {
 
     private enum State { RUNNING, FAILED, CLOSED }
 
+    private static final class Pending {
+        private final SupervisorFailureControl.Notice notice;
+        private final CompletableFuture<Void> acknowledgement = new CompletableFuture<>();
+
+        private Pending(SupervisorFailureControl.Notice notice) {
+            this.notice = Objects.requireNonNull(notice);
+        }
+    }
+
     private final ActorRuntime.SupervisorId supervisorId;
     private final ActorRuntime.ActorGroupId groupId;
     private final Executor controlDispatcher;
@@ -44,8 +56,7 @@ public final class SupervisorProcess implements AutoCloseable {
     private final Function<SupervisorFailureControl.Notice,
             CompletionStage<Directive>> onFailure;
     private final Consumer<Resolution> decisionSink;
-    private final ArrayDeque<SupervisorFailureControl.Notice> mailbox =
-            new ArrayDeque<>();
+    private final ArrayDeque<Pending> mailbox = new ArrayDeque<>();
     private final AtomicLong admitted = new AtomicLong();
     private final AtomicLong resolved = new AtomicLong();
     private final AtomicLong undelivered = new AtomicLong();
@@ -87,8 +98,12 @@ public final class SupervisorProcess implements AutoCloseable {
         return Optional.ofNullable(fatal).map(Throwable::toString);
     }
 
-    /** Called only from the trusted runtime CONTROL lane. */
-    void accept(SupervisorFailureControl.Notice notice) {
+    public synchronized List<SupervisorFailureControl.Notice> pendingSnapshot() {
+        return mailbox.stream().map(pending -> pending.notice).toList();
+    }
+
+    /** Completion is the durable acknowledgement boundary back to CONTROL. */
+    CompletionStage<Void> accept(SupervisorFailureControl.Notice notice) {
         Objects.requireNonNull(notice);
         if (!supervisorId.equals(notice.supervisorId())
                 || !groupId.equals(notice.groupId())) {
@@ -97,19 +112,16 @@ public final class SupervisorProcess implements AutoCloseable {
         synchronized (this) {
             if (state != State.RUNNING || mailbox.size() >= capacity) {
                 undelivered.incrementAndGet();
-                // Stop consuming CONTROL rather than misreporting loss as success.
-                throw new IllegalStateException("supervisor process cannot admit notice");
+                CompletableFuture<Void> rejected = new CompletableFuture<>();
+                rejected.completeExceptionally(
+                        new IllegalStateException("supervisor process cannot admit notice"));
+                return rejected;
             }
-            mailbox.addLast(notice);
+            Pending pending = new Pending(notice);
+            mailbox.addLast(pending);
             admitted.incrementAndGet();
             scheduleLocked();
-            // Dispatch refusal is an admission failure. A caller such as the
-            // parent CONTROL lane must not record the notice as handed off
-            // after this process has already failed closed.
-            if (state != State.RUNNING) {
-                throw new IllegalStateException(
-                        "supervisor process failed during CONTROL admission", fatal);
-            }
+            return pending.acknowledgement;
         }
     }
 
