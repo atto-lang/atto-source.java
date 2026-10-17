@@ -313,6 +313,14 @@ public final class ActorRuntime implements AutoCloseable {
         public static ActorGroupId create() { return new ActorGroupId(UUID.randomUUID()); }
     }
 
+    public enum ActorHealthPhase {
+        STARTING, IDLE, RUNNING, SUSPENDED, STOPPING, FINALIZING, TERMINATED
+    }
+
+    public enum ActorTerminalClass {
+        NONE, CANCELLED, QUOTA_EXCEEDED, FAILURE
+    }
+
     /**
      * Host/supervisor-only structural actor snapshot.
      *
@@ -344,12 +352,13 @@ public final class ActorRuntime implements AutoCloseable {
             int childCount,
             Optional<ActorId> parentId,
             Optional<ActorGroupId> managedByGroup,
-            boolean failed) {
+            ActorTerminalClass terminalClass) {
         public ActorHealthSnapshot {
             Objects.requireNonNull(actorId, "actorId");
             Objects.requireNonNull(kind, "kind");
             parentId = Objects.requireNonNull(parentId, "parentId");
             managedByGroup = Objects.requireNonNull(managedByGroup, "managedByGroup");
+            Objects.requireNonNull(terminalClass, "terminalClass");
             if (generation <= 0
                     || queuedUserMessages < 0
                     || queuedContinuations < 0
@@ -360,6 +369,21 @@ public final class ActorRuntime implements AutoCloseable {
                     || childCount < 0) {
                 throw new IllegalArgumentException("invalid actor health counters");
             }
+        }
+
+        public ActorHealthPhase phase() {
+            if (finalized) return ActorHealthPhase.TERMINATED;
+            if (finalCleanupActive) return ActorHealthPhase.FINALIZING;
+            if (stopped || sealing || endRequested) return ActorHealthPhase.STOPPING;
+            if (!initialized) return ActorHealthPhase.STARTING;
+            if (sourceReceiveSuspended) return ActorHealthPhase.SUSPENDED;
+            if (activeTurns > 0 || carrierActive) return ActorHealthPhase.RUNNING;
+            return ActorHealthPhase.IDLE;
+        }
+
+        public boolean failed() {
+            return terminalClass == ActorTerminalClass.FAILURE
+                    || terminalClass == ActorTerminalClass.QUOTA_EXCEEDED;
         }
     }
 
@@ -632,42 +656,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("ActorRef belongs to another runtime");
         }
         ActorCell<?> cell = actors.get(ref.id());
-        if (cell == null) return Optional.empty();
+        if (cell == null) return Optional.ofNullable(ref.terminalHealth);
 
         synchronized (cell.lifecycleLock) {
-            final int queuedUser;
-            final int queuedControl;
-            synchronized (cell.mailboxAccountingLock) {
-                queuedUser = cell.queuedUserMessages;
-                queuedControl = cell.queuedContinuations;
-            }
-            ActorTurnWatchdog.Lease lease = cell.watchdogLease;
-            return Optional.of(new ActorHealthSnapshot(
-                    ref.id(),
-                    cell.kind,
-                    ref.generation(),
-                    !cell.stopped.get() && !cell.finalized,
-                    cell.sealing,
-                    cell.stopped.get(),
-                    cell.finalized,
-                    cell.behavior != null || cell.codeActorState != null,
-                    queuedUser,
-                    queuedControl,
-                    cell.activeTurns,
-                    cell.carrierActive,
-                    cell.sourceReceiveSuspended,
-                    cell.endRequested,
-                    cell.finalCleanupActive,
-                    lease != null && lease.preemptionRequested(),
-                    cell.sharedMailboxBytes.get(),
-                    cell.outputBytes.get(),
-                    cell.mailboxRejections.get(),
-                    cell.children.size(),
-                    cell.parent == null
-                            ? Optional.empty()
-                            : Optional.of(cell.parent.ref.id()),
-                    Optional.ofNullable(cell.managedByGroup.get()),
-                    ref.terminationCause.get() != null));
+            return Optional.of(snapshotHealthLocked(cell));
         }
     }
 
@@ -675,6 +667,52 @@ public final class ActorRuntime implements AutoCloseable {
      * Aggregate host health snapshot. Individual actor snapshots are separate
      * so taking a fleet overview never serializes all actor lifecycle locks.
      */
+    private ActorHealthSnapshot snapshotHealthLocked(ActorCell<?> cell) {
+        final int queuedUser;
+        final int queuedControl;
+        synchronized (cell.mailboxAccountingLock) {
+            queuedUser = cell.queuedUserMessages;
+            queuedControl = cell.queuedContinuations;
+        }
+        ActorTurnWatchdog.Lease lease = cell.watchdogLease;
+        Throwable terminal = cell.ref.terminationCause.get();
+        ActorTerminalClass terminalClass =
+                terminal == null
+                        ? ActorTerminalClass.NONE
+                        : terminal instanceof java.util.concurrent.CancellationException
+                                ? ActorTerminalClass.CANCELLED
+                                : terminal instanceof UntrustedActorQuotaExceededException
+                                        ? ActorTerminalClass.QUOTA_EXCEEDED
+                                        : ActorTerminalClass.FAILURE;
+
+        return new ActorHealthSnapshot(
+                cell.ref.id(),
+                cell.kind,
+                cell.ref.generation(),
+                !cell.stopped.get() && !cell.finalized,
+                cell.sealing,
+                cell.stopped.get(),
+                cell.finalized,
+                cell.behavior != null || cell.codeActorState != null,
+                queuedUser,
+                queuedControl,
+                cell.activeTurns,
+                cell.carrierActive,
+                cell.sourceReceiveSuspended,
+                cell.endRequested,
+                cell.finalCleanupActive,
+                lease != null && lease.preemptionRequested(),
+                cell.sharedMailboxBytes.get(),
+                cell.outputBytes.get(),
+                cell.mailboxRejections.get(),
+                cell.children.size(),
+                cell.parent == null
+                        ? Optional.empty()
+                        : Optional.of(cell.parent.ref.id()),
+                Optional.ofNullable(cell.managedByGroup.get()),
+                terminalClass);
+    }
+
     public RuntimeHealthSnapshot runtimeHealth() {
         requireSupervisorContext("inspect actor runtime health");
         return new RuntimeHealthSnapshot(
@@ -2030,6 +2068,8 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        /** Final structural diagnostics retained after the ActorCell is unregistered. */
+        private volatile ActorHealthSnapshot terminalHealth;
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind, long generation) {
@@ -7164,10 +7204,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
             drainMailboxReservations();
             staticSelectCursors.clear();
-            codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
             if (memorySlice != null) memorySlice.close();
+            // Capture only bounded structural state before releasing source
+            // actor state. ActorRef may outlive ActorCell for post-mortem use.
+            ref.terminalHealth = snapshotHealthLocked(this);
+            codeActorState = null;
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
