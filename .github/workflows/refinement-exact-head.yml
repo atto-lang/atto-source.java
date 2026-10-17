@@ -8,9 +8,16 @@ on:
       - 'src/main/java/dev/oreslang/parser/RefinementSyntax.java'
       - 'src/main/java/dev/oreslang/types/RefinementRules.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/compiler/ZordeSchemaGenerator.java'
       - 'src/test/java/dev/oreslang/RefinementRulesTest.java'
       - 'src/test/java/dev/oreslang/RefinementSyntaxGateTest.java'
+      - 'src/test/java/dev/oreslang/ZordeSchemaGeneratorTest.java'
+      - 'src/test/java/dev/oreslang/ZordeStdlibSourceTest.java'
+      - 'stdlib/zorde.ores'
       - '.github/workflows/refinement-exact-head.yml'
+  push:
+    branches:
+      - 'ci/refinement-exact-head-*'
   workflow_dispatch:
 
 permissions:
@@ -40,8 +47,8 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
           cache: maven
-      - name: Execute refinement parser and proof-core regressions
-        run: mvn -B -ntp -Dtest=RefinementRulesTest,RefinementSyntaxGateTest test
+      - name: Execute refinement parser, schema, and stdlib regressions
+        run: mvn -B -ntp -Dtest=RefinementRulesTest,RefinementSyntaxGateTest,ZordeSchemaGeneratorTest,ZordeStdlibSourceTest test
       - name: Recheck source tree after tests
         shell: bash
         env:
