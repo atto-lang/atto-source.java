@@ -3484,6 +3484,12 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 try {
+                                    if (Set.of("TrapResult", "TrapError", "RecoverySignal")
+                                            .contains(cast.targetType().name())) {
+                                        throw new IllegalArgumentException(
+                                                cast.targetType().name()
+                                                        + " is compiler-managed and cannot be forged with a cast");
+                                    }
                                     boolean matches =
                                             oresTypeMatches(
                                                     value,
@@ -6538,6 +6544,11 @@ public final class OresEvalRootNode extends RootNode {
                 return patternMatches(test.pattern(), value, new LinkedHashMap<>());
             }
             if (expr instanceof Ast.CastExpr cast) {
+                if (Set.of("TrapResult", "TrapError", "RecoverySignal")
+                        .contains(cast.targetType().name())) {
+                    throw new IllegalArgumentException(
+                            cast.targetType().name() + " is compiler-managed and cannot be forged with a cast");
+                }
                 Object value = eval(cast.value(), env);
                 boolean matches = oresTypeMatches(value, cast.targetType());
                 if (cast.mode() == Ast.CastMode.OPTIONAL) {
