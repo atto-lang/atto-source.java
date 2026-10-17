@@ -298,4 +298,12 @@ final class NumericComplexIntegrationTest {
                 """));
     }
 
+    @Test
+    void complexDivisionPreservesSmallComponentAcrossSubnormalNormalization() {
+        assertTrue(evaluatesTrue("""
+                return ((1e300 + 1e-20i) / 1i)
+                    eq (1e-20 - 1e300i);
+                """));
+    }
+
 }
