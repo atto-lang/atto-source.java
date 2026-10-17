@@ -313,6 +313,79 @@ public final class ActorRuntime implements AutoCloseable {
         public static ActorGroupId create() { return new ActorGroupId(UUID.randomUUID()); }
     }
 
+    /**
+     * Host/supervisor-only structural actor snapshot.
+     *
+     * <p>No mailbox payload, guest state, exception message, source frame,
+     * thread reference or heap object is retained. The generation is the
+     * runtime-issued incarnation and is suitable for correlating numeric
+     * diagnostics without treating carrier identity as actor identity.</p>
+     */
+    public record ActorHealthSnapshot(
+            ActorId actorId,
+            ActorKind kind,
+            long generation,
+            boolean alive,
+            boolean sealing,
+            boolean stopped,
+            boolean finalized,
+            boolean initialized,
+            int queuedUserMessages,
+            int queuedContinuations,
+            int activeTurns,
+            boolean carrierActive,
+            boolean sourceReceiveSuspended,
+            boolean endRequested,
+            boolean finalCleanupActive,
+            boolean watchdogPreemptionRequested,
+            long sharedMailboxBytes,
+            long outputBytes,
+            int childCount,
+            Optional<ActorId> parentId,
+            Optional<ActorGroupId> managedByGroup,
+            boolean failed) {
+        public ActorHealthSnapshot {
+            Objects.requireNonNull(actorId, "actorId");
+            Objects.requireNonNull(kind, "kind");
+            parentId = Objects.requireNonNull(parentId, "parentId");
+            managedByGroup = Objects.requireNonNull(managedByGroup, "managedByGroup");
+            if (generation <= 0
+                    || queuedUserMessages < 0
+                    || queuedContinuations < 0
+                    || activeTurns < 0
+                    || sharedMailboxBytes < 0
+                    || outputBytes < 0
+                    || childCount < 0) {
+                throw new IllegalArgumentException("invalid actor health counters");
+            }
+        }
+    }
+
+    /** Host/supervisor-only aggregate runtime health; never contains guest data. */
+    public record RuntimeHealthSnapshot(
+            UUID runtimeId,
+            int actorCount,
+            long privateMemoryBytes,
+            long sharedMemoryBytes,
+            long watchdogOverruns,
+            long watchdogNoticesDropped,
+            long watchdogObserverFailures,
+            CarrierBackend carrierBackend,
+            boolean closed) {
+        public RuntimeHealthSnapshot {
+            Objects.requireNonNull(runtimeId, "runtimeId");
+            Objects.requireNonNull(carrierBackend, "carrierBackend");
+            if (actorCount < 0
+                    || privateMemoryBytes < 0
+                    || sharedMemoryBytes < 0
+                    || watchdogOverruns < 0
+                    || watchdogNoticesDropped < 0
+                    || watchdogObserverFailures < 0) {
+                throw new IllegalArgumentException("invalid runtime health counters");
+            }
+        }
+    }
+
     /** Stable machine-readable causes for synchronous mailbox admission failure. */
     public interface SendError {
         enum Reason {
@@ -545,6 +618,74 @@ public final class ActorRuntime implements AutoCloseable {
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
+    /**
+     * Snapshot one actor without executing guest code or retaining guest
+     * payload/state. The snapshot is structurally consistent under the actor
+     * lifecycle lock; it is diagnostic state, not a scheduling fence.
+     */
+    public Optional<ActorHealthSnapshot> actorHealth(ActorRef<?> ref) {
+        requireSupervisorContext("inspect actor health");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException("ActorRef belongs to another runtime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) return Optional.empty();
+
+        synchronized (cell.lifecycleLock) {
+            final int queuedUser;
+            final int queuedControl;
+            synchronized (cell.mailboxAccountingLock) {
+                queuedUser = cell.queuedUserMessages;
+                queuedControl = cell.queuedContinuations;
+            }
+            ActorTurnWatchdog.Lease lease = cell.watchdogLease;
+            return Optional.of(new ActorHealthSnapshot(
+                    ref.id(),
+                    cell.kind,
+                    ref.generation(),
+                    !cell.stopped.get() && !cell.finalized,
+                    cell.sealing,
+                    cell.stopped.get(),
+                    cell.finalized,
+                    cell.behavior != null || cell.codeActorState != null,
+                    queuedUser,
+                    queuedControl,
+                    cell.activeTurns,
+                    cell.carrierActive,
+                    cell.sourceReceiveSuspended,
+                    cell.endRequested,
+                    cell.finalCleanupActive,
+                    lease != null && lease.preemptionRequested(),
+                    cell.sharedMailboxBytes.get(),
+                    cell.outputBytes.get(),
+                    cell.children.size(),
+                    cell.parent == null
+                            ? Optional.empty()
+                            : Optional.of(cell.parent.ref.id()),
+                    Optional.ofNullable(cell.managedByGroup.get()),
+                    ref.terminationCause.get() != null));
+        }
+    }
+
+    /**
+     * Aggregate host health snapshot. Individual actor snapshots are separate
+     * so taking a fleet overview never serializes all actor lifecycle locks.
+     */
+    public RuntimeHealthSnapshot runtimeHealth() {
+        requireSupervisorContext("inspect actor runtime health");
+        return new RuntimeHealthSnapshot(
+                runtimeInstanceId,
+                actorCount.get(),
+                privateMemoryBytes.get(),
+                sharedMemoryBytes.get(),
+                watchdogOverruns.get(),
+                watchdogNoticesDropped.get(),
+                ActorTurnWatchdog.observerFailures(),
+                carrierBackend(),
+                closed.get());
+    }
+
     /** Total overrun detections, including notices dropped from the bounded queue. */
     public long watchdogOverruns() {
         requireSupervisorContext("inspect actor watchdog overruns");
@@ -579,6 +720,10 @@ public final class ActorRuntime implements AutoCloseable {
     private void recordWatchdogOverrun(ActorCell<?> cell, ActorTurnWatchdog.Lease lease) {
         long now = System.nanoTime();
         watchdogOverruns.incrementAndGet();
+        CoreLog.record(
+                CoreLog.Level.WARN,
+                CoreLog.ACTOR_WATCHDOG_OVERRUN,
+                cell.ref.generation());
         if (!watchdogNotices.offer(new WatchdogNotice(
                 cell.ref.id(), cell.kind,
                 lease.elapsedNanos(now), lease.sinceCheckpointNanos(now)))) {
@@ -4943,6 +5088,10 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
             if (cell.sealing) throw new ActorSealedException(ref.id());
             if (!cell.reserveMailboxSlot()) {
+                CoreLog.record(
+                        CoreLog.Level.WARN,
+                        CoreLog.ACTOR_MAILBOX_REJECTED,
+                        ref.generation());
                 throw new ActorMailboxFullException(ref.id());
             }
         }
@@ -5039,6 +5188,10 @@ public final class ActorRuntime implements AutoCloseable {
                     envelope = MessageEnvelope.message(
                             prepared, release, sender, sequence);
                     if (!cell.mailbox.tryWrite(envelope)) {
+                        CoreLog.record(
+                                CoreLog.Level.WARN,
+                                CoreLog.ACTOR_MAILBOX_REJECTED,
+                                ref.generation());
                         throw new ActorMailboxFullException(ref.id());
                     }
                     cell.nextUserMessageSequence = nextSequence;
@@ -7554,6 +7707,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void terminateTree(Throwable cause, boolean recordCause) {
+            if (recordCause && cause != null) {
+                CoreLog.record(
+                        cause instanceof ActorCancelledException
+                                ? CoreLog.Level.INFO
+                                : CoreLog.Level.ERROR,
+                        cause instanceof ActorCancelledException
+                                ? CoreLog.ACTOR_CANCELLED
+                                : CoreLog.ACTOR_TERMINAL_FAILURE,
+                        ref.generation());
+            }
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             List<DrainWaiter> failedDrainWaiters;
