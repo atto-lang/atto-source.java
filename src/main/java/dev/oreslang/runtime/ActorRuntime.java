@@ -58,7 +58,11 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
     private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
     private static final int MAX_EVENT_TOPICS_PER_GROUP = 1_024;
-    private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
+    // ActorRuntime.close() is a physical carrier-exit barrier, including
+    // Truffle context unwinding after a suspended guest actor is stopped.
+    // 250 ms proved insufficient under repeated native-carrier HTTP teardown.
+    // Stay bounded and fail closed if a noncooperative carrier outlives 1 s.
+    private static final long CLOSE_WAIT_NANOS = TimeUnit.SECONDS.toNanos(1);
     /** Structured STOP may finish lexical cleanup; deadline revokes its lane. */
     private static final long ACTOR_CLEANUP_GRACE_MILLIS = 2_000L;
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
