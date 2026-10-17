@@ -35,5 +35,6 @@ type NonBlank = string where it.trim().length > 0;
 7. Actor-message, serialization, FFI, imported module and hot-reload fail-closed validation.
 8. Mutable collection refinements cannot be invalidated by aliasing/mutation; reject unsupported writes, do not silently trust one-time validation.
 9. Tests with expected diagnostic codes, observed runtime `Result`, and CI artifact evidence.
+10. Emit reflection-free Zorde schema/validator descriptors from normalized refinements and route dynamic `try_from`, serialization, FFI, HTTP/RPC and actor DATA admission through the same generated predicate contract. Do not duplicate validation semantics in Java host code.
 
 Until these pass, the correct status is **unimplemented** rather than "supported by annotation" or "parser recognizes syntax".
