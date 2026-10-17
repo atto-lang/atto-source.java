@@ -106,6 +106,7 @@ final class TernaryAnyGuardLanguageTest {
         reject("fnc bad(any v): int { return typeof v == int ? v : 0; }");
         reject("fnc bad(any v): bool { return Integer.is_int(); }");
         reject("fnc bad(any v): bool { return Integer.is_int(v, v); }");
+        reject("fnc bad(any v): bool { return Integer.is_int<int>(v); }");
         reject("fnc bad(any v): int { return Integer.is_int(v) ? v : v; }");
     }
 
