@@ -145,6 +145,17 @@ public final class OresVM implements AutoCloseable {
 
     int nioReactorCount() { return nioReadiness.reactorCount(); }
 
+    /** CPU-only NIO result conversion, never a guest turn or a selector task.
+     * This bounded CONTROL pool cannot execute submitted work inline.
+     * A shutdown/overload rejection is handled by the caller's Future bridge.
+     */
+    void dispatchHostIoMapping(Runnable task) {
+        Objects.requireNonNull(task, "task");
+        if (closed.get() || !started())
+            throw new RejectedExecutionException("VM CONTROL mapping dispatcher is closed");
+        controlExecutor.execute(task);
+    }
+
     public OresScheduler rootScheduler() {
         if (!started()) {
             throw new IllegalStateException(
