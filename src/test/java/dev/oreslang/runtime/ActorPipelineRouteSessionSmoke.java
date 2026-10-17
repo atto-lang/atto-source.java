@@ -110,6 +110,39 @@ public final class ActorPipelineRouteSessionSmoke {
                 "reverse delivery leaked quota at capacity boundary");
         returns.close();
 
+        // A direct reply bypasses intermediate handler turns but MUST keep
+        // the exact ingress actor and each fork's immutable branch lineage.
+        var direct = new ActorPipelineRouteSession(plan, 12, 5);
+        var directRoot = direct.ingress("source");
+        reject(() -> direct.returnToOrigin(directRoot),
+                "source was allowed to reply to itself");
+        var directFork = direct.forwardAll(directRoot);
+        var directSinkA = direct.forward(directFork.get(0));
+        var directSinkB = direct.forward(directFork.get(1));
+        var directReplyA = direct.returnToOrigin(directSinkA);
+        var directReplyB = direct.returnToOrigin(directSinkB);
+        check(directReplyA.receiver().equals("source")
+                        && directReplyB.receiver().equals("source"),
+                "direct reply did not reach the authenticated ingress");
+        check(directReplyA.flowId() == directReplyB.flowId()
+                        && directReplyA.routeId() != directReplyB.routeId(),
+                "direct fan-in collapsed distinct reply correlations");
+        reject(() -> direct.returnToOrigin(directSinkA),
+                "one-shot direct reply frame replay accepted");
+        reject(() -> direct.forward(directReplyA),
+                "reply DATA incorrectly entered forward selection");
+        reject(() -> direct.returnToOrigin(directReplyB),
+                "returning DATA fabricated another full-path reply");
+        check(direct.outstanding() == 5,
+                "direct reply duplicated or silently retired live frames");
+        direct.complete(directReplyA);
+        direct.complete(directReplyB);
+        direct.complete(directFork.get(0));
+        direct.complete(directFork.get(1));
+        direct.complete(directRoot);
+        check(direct.outstanding() == 0, "direct reply leaked frame credits");
+        direct.close();
+
         var old = ledger.ingress("source");
         reject(() -> ledger.advanceGeneration(8),
                 "clean generation change lost an in-flight message");
@@ -205,6 +238,6 @@ public final class ActorPipelineRouteSessionSmoke {
         check(errors.get() == 0 && parallel.outstanding() == 1,
                 "concurrent branches raced or leaked");
         parallel.complete(r);
-        System.out.println("ORES_ACTOR_REPLY_CORRELATION_OK cases=17 concurrent_branches=2000");
+        System.out.println("ORES_ACTOR_REPLY_CORRELATION_OK cases=18 concurrent_branches=2000");
     }
 }
