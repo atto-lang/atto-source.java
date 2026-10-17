@@ -157,6 +157,39 @@ final class ProjectRootImportTest {
     }
 
     @Test
+    void invalidModernMarkerNeverFallsBackToLegacyManifest() throws Exception {
+        Path root = makeProject("modern-marker-shadow");
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        Path modern = root.resolve(OresProjectConfig.MANIFEST_NAME);
+        Path legacy = root.resolve(OresProjectConfig.LEGACY_MANIFEST_NAME);
+        Files.writeString(legacy, "schema_version = \"1\"\\n");
+
+        Files.delete(modern);
+        assertEquals(legacy, OresProjectConfig.discover(importer, Map.of())
+                .manifestPath().orElseThrow());
+
+        Files.createDirectory(modern);
+        IllegalArgumentException directoryMarker = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(importer, Map.of()));
+        assertTrue(directoryMarker.getMessage().contains("not an Oreslang project manifest"),
+                directoryMarker.getMessage());
+        Files.delete(modern);
+
+        try {
+            Files.createSymbolicLink(modern, root.resolve("deleted-elsewhere.toml"));
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "symlinks unavailable: " + unsupported);
+        }
+        IllegalArgumentException danglingMarker = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(importer, Map.of()));
+        assertTrue(danglingMarker.getMessage().contains("not an Oreslang project manifest"),
+                danglingMarker.getMessage());
+    }
+
+    @Test
     void modernManifestWinsAtSameDirectoryAndLegacyRemainsSupported() throws Exception {
         Path root = makeProject("dual");
         Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
