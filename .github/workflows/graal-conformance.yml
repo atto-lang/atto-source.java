@@ -15,6 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Test AI smoke evidence admission (no compiler claims)
         run: python3 scripts/test_ai_conformance_smoke.py
@@ -55,7 +56,7 @@ jobs:
       - name: Verify Option-pattern reference admission (no runtime parity claim)
         run: |
           python3 scripts/check_option_pattern_contract.py --backend graal \
-            --revision "${{ github.sha }}" --report target/option-pattern-graal.json \
+            --revision "${{ github.event.pull_request.head.sha || github.sha }}" --report target/option-pattern-graal.json \
             -- python3 contracts/v1/java_probe.py '{source}'
       - name: Execute Option-pattern JUnit runtime and ownership regression suite
         run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=OptionIfMatchesTest test
@@ -70,7 +71,7 @@ jobs:
             --source-sha "${{ github.sha }}" \
             --report target/ai-conformance-graal.json
       - name: Validate Java borrow and semantic diagnostic cases
-        run: python3 contracts/v1/semantics/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --run-command 'python3 contracts/v1/java_probe.py {source} --execute' --revision "${{ github.sha }}" --report target/semantics-graal.json
+        run: python3 contracts/v1/semantics/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --run-command 'python3 contracts/v1/java_probe.py {source} --execute' --revision "${{ github.event.pull_request.head.sha || github.sha }}" --report target/semantics-graal.json
       - name: Verify real shared actor mailbox trace against the contract
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native -Dtest=ActorTraceContractIntegrationTest test
