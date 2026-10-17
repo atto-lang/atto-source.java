@@ -34,6 +34,22 @@ public final class ActorThreadAdmission {
         return requested;
     }
 
+    /**
+     * Consume Java-host annotation metadata without requiring runtime reflection.
+     * A native-image bridge may supply the build-time resolved annotation.
+     * The result is policy data only, not a scheduler execution credential.
+     */
+    public static Ast.ActorThreadPolicy requireExclusiveJavaAnnotation(
+            dev.oreslang.runtime.ActorThreads annotation) {
+        if (annotation == null) return Ast.ActorThreadPolicy.defaults();
+        Ast.ActorThreadPolicy policy = new Ast.ActorThreadPolicy(annotation.min(), annotation.max());
+        if (policy.max() != 1) {
+            throw new IllegalArgumentException(
+                    "Java @ActorThreads max > 1 requires verified actor scheduler admission");
+        }
+        return policy;
+    }
+
     public static void requireExclusiveBackend(Ast.Program program) {
         Objects.requireNonNull(program, "program");
         for (Ast.ModuleDecl module : program.modules()) {
