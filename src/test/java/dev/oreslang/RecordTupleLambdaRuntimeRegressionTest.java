@@ -16,14 +16,18 @@ final class RecordTupleLambdaRuntimeRegressionTest {
     @Test
     void runtimeDistinguishesScalarTupleAndRecordShapeProjection() throws Exception {
         String program = """
+                type Mapper = (int) => int;
                 pub fnc main(): void {
                   const multiply = |int n|: int -> n * 3;
+                  const mapper: Mapper = |int n| -> (n * 3) as int;
                   const point = struct{x: int, y: int}{x: 7, y: 9};
                   const xOnly = point as {x: int};
                   const pair = tuple(multiply(7), xOnly.x) as Tuple[int, int];
                   stdio.stdout.write(pair[0]);
                   stdio.stdout.write("|");
                   stdio.stdout.write(pair[1]);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(mapper(5));
                   return;
                 }
                 """;
@@ -36,6 +40,6 @@ final class RecordTupleLambdaRuntimeRegressionTest {
                 .allowAllAccess(false).out(out).build()) {
             context.eval(source);
         }
-        assertEquals("21|7", out.toString(StandardCharsets.UTF_8));
+        assertEquals("21|7|15", out.toString(StandardCharsets.UTF_8));
     }
 }

@@ -163,6 +163,35 @@ final class LambdaReturnAndTupleSyntaxTest {
     }
 
     @Test
+    void recordFieldNamesIgnoreOrderButTuplesRetainPosition() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc f(): void {
+                  val reversed = struct{x: int, y: bool}{y: true, x: 7};
+                  val projected = reversed as {y: bool, x: int};
+                  return;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc f(): void {
+                  val wrongOrder = tuple(7, true) as Tuple[bool, int];
+                  return;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc f(): void {
+                  val wrongArity = tuple(7, true) as Tuple[int];
+                  return;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc f(): void {
+                  val duplicated = infer struct{x: 7, x: 8};
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void unrelatedOrErasedTupleCastsFailClosed() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc f(): void {

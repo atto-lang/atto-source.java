@@ -321,7 +321,7 @@ val pair: Tuple<
     allocator=Arena,
     align=64,
     size=2
->[int, string] = (7, "seven");
+>[int, string] = tuple(7, "seven");
 
 val fixed: FixedArray<size=4, align=32>[4 of int] = [1, 2, 3, 4];
 ```
