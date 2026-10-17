@@ -588,10 +588,17 @@ public final class ActorRuntime implements AutoCloseable {
             try { notification.run(); }
             finally { nioCompletionCapacityHook.run(); }
         };
-        if (privateDispatcher instanceof ActorAffinityDispatcher lanes)
+        if (privateDispatcher instanceof ActorAffinityDispatcher lanes) {
             lanes.executeHostOnWarmLane(hostOnly);
-        else
+        } else if (NioReadinessGroup.onReactorThread()
+                && privateDispatcher instanceof NativeCarrierExecutor nativePool) {
+            nativePool.executeWithoutBootstrap(hostOnly);
+        } else if (NioReadinessGroup.onReactorThread()
+                && privateDispatcher instanceof AdaptiveCarrierExecutor javaPool) {
+            javaPool.executeWithoutCarrierGrowth(hostOnly);
+        } else {
             privateDispatcher.execute(hostOnly);
+        }
     }
 
     /** Total overrun detections, including notices dropped from the bounded queue. */
