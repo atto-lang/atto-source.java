@@ -209,6 +209,53 @@ final class OptionIfMatchesTest {
     }
 
     @Test
+    void projectedSomePayloadCannotBeMovedSeparatelyFromHolder() {
+        String program = """
+                define class Box as
+                end
+                define class Holder as
+                  final Option<Box> slot: None;
+                end
+                fnc consumeBox(Box value): void { return; }
+                fnc consumeHolder(Holder value): void { return; }
+
+                fnc bad(Holder holder): void {
+                  if holder.slot matches Some(payload) then
+                    consumeBox(payload);
+                    consumeHolder(holder);
+                  fi
+                  return;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(program));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> OwnershipChecker.check(typed));
+        assertTrue(error.getMessage().contains("moved value"), error::getMessage);
+    }
+
+    @Test
+    void independentProjectedSomePayloadsHaveDistinctOwners() {
+        String program = """
+                define class Box as
+                end
+                define class Holder as
+                  final Option<Box> slot: None;
+                end
+                fnc consume(Box box): void { return; }
+
+                fnc good(Holder first, Holder second): void {
+                  if first.slot matches Some(a) && second.slot matches Some(b) then
+                    consume(a);
+                    consume(b);
+                  fi
+                  return;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(program));
+        assertDoesNotThrow(() -> OwnershipChecker.check(typed));
+    }
+
+    @Test
     void ordinaryFooIsNotAutomaticallyOptional() {
         String program = FOO + """
                 fnc bad(Foo m2): int {
