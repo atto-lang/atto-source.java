@@ -44,7 +44,7 @@ public final class TypeChecker {
             "Symbol", "Array", "List", "Vector", "Slice",
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
-            "ActorOutputStream", "Option", "Result", "Mutex",
+            "ActorOutputStream", "ActorRouteReceipt", "Option", "Result", "Mutex",
             "SharedMutex", "Channel", "Future", "Fnc", "Function");
 
     // Reserved non-overridable actor pipeline operations. Until the typed
@@ -196,7 +196,7 @@ public final class TypeChecker {
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
-                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
+                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorRouteReceipt", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
                 "self", "null"));
@@ -1817,6 +1817,7 @@ public final class TypeChecker {
                                 "FixedArray", "FixedList", "DynamicStruct", "Option",
                                 "Result", "Future", "ActorId", "ActorKind",
                                 "ActorMail", "ActorOutput", "ActorOutputStream",
+                                "ActorRouteReceipt",
                                 "MutexGuard", "Mutex", "SharedMutex", "Channel",
                                 "Generator", "AsyncGenerator", "Iterator", "AsyncIterator",
                                 "IteratorResult", "Fnc", "Function").contains(name)
@@ -2778,14 +2779,9 @@ public final class TypeChecker {
                                 "self." + operation
                                         + " currently requires a SHARED actor routed receive");
                     }
-                    if (operation.equals("forward_all")) {
-                        throw new IllegalArgumentException(
-                                "self.forward_all requires the typed per-edge admission receipt ABI; "
-                                        + "source lowering remains fail-closed");
-                    }
                     int payloadIndex;
                     switch (operation) {
-                        case "forward", "forward_round_robin", "backward", "reply" -> {
+                        case "forward", "forward_all", "forward_round_robin", "backward", "reply" -> {
                             if (call.arguments().size() != 1) {
                                 throw new IllegalArgumentException(
                                         "self." + operation + " expects exactly one value");
@@ -2817,6 +2813,10 @@ public final class TypeChecker {
                             currentActorKind,
                             false,
                             "self." + operation + " outbound value");
+                    if (operation.equals("forward_all")) {
+                        return new ListType(
+                                new Named("ActorRouteReceipt", List.of()));
+                    }
                     return Primitive.VOID;
                 }
                 if (actorSelf && (member.member().equals("on_start")
@@ -3430,6 +3430,23 @@ public final class TypeChecker {
             if (httpMember != null) return httpMember;
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
+            if (sumReceiver instanceof Named receipt
+                    && receipt.name().equals("ActorRouteReceipt")) {
+                if (!receipt.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "ActorRouteReceipt does not accept type arguments");
+                }
+                return switch (member.member()) {
+                    case "edge_index", "flow_id", "route_id" -> Primitive.INT;
+                    case "target" -> Primitive.STRING;
+                    case "admitted" -> Primitive.BOOL;
+                    case "error" -> new Named(
+                            "Option", List.of(Primitive.STRING));
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorRouteReceipt member '"
+                                    + member.member() + "'");
+                };
+            }
             if (sumReceiver instanceof Named actorRef
                     && actorRef.name().equals("ActorRef")) {
                 actorClassForRef(actorRef);
@@ -5149,6 +5166,7 @@ public final class TypeChecker {
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
+                || named.name().equals("ActorRouteReceipt")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
@@ -5230,7 +5248,8 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("Iterator")
+                || named.name().equals("Future") || named.name().equals("ActorRouteReceipt")
+                || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
@@ -8220,7 +8239,7 @@ public final class TypeChecker {
             case "DynamicStruct" -> throw new IllegalArgumentException(
                     "DynamicStruct has been removed for AOT-safe static shape semantics; "
                             + "use infer struct{...} or struct{field: Type,...}{...}");
-            case "ActorId", "ActorKind" -> {
+            case "ActorId", "ActorKind", "ActorRouteReceipt" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException(
                             ref.name() + " does not accept type arguments");
