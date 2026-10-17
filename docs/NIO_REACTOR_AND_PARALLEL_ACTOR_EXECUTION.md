@@ -3,6 +3,38 @@
 Status: **staged implementation contract**, not a claim of feature parity or production readiness.
 Native LLVM companion: `oreslang-source.llvm/docs/NIO_REACTOR_AND_PARALLEL_ACTOR_EXECUTION.md`.
 
+## New guest std/net migration slice (October 17, 2026)
+
+The guest-facing `network.listen_nonblocking("127.0.0.1", ...)` entry point
+now constructs `VmNioTcpListener`, which owns only a caller-context-scoped
+IPv4 socket and borrows the already-started VM's `NioReadinessGroup`.
+The `net_core.accept/read/write/close` guest facade dispatches through the
+adapter's `Connection`, not `NativeNioFutureReactor`. Multiple listeners
+therefore share the VM readiness selector without a per-listener selector
+thread. The older `NativeNioFutureReactor` remains for legacy host tests
+and is not a permitted fallback in the new guest path.
+
+This initial migration keeps conservative one-operation-per-channel leases:
+accepted connections are supervisor-owned, cannot be transferred to an actor,
+and accept/read/write Future cancellations arbitrate against kernel work.
+Nonblocking reads and writes are capped at 64 KiB. Writes snapshot caller
+data and support short kernel writes; TCP reads return a possibly short
+byte-array and an empty array on EOF. Permission checks and context teardown
+still gate listener and connection ownership. Two dedicated bounded NIO
+completion workers isolate synchronous Future subscribers from SELECTOR and
+CONTROL carriers; the three-thread total startup target is not yet achieved.
+
+Tests staged on the Java branch include `VmNioTcpListenerTest` for two
+listeners sharing a selector, echo, cancellation, ownership and closed
+connections, and the existing compiled-source `NativeNetStdlibTest` echo.
+**These new guest/runtime changes have not been validated by an executing
+JDK25/GraalVM full-tree CI run.** Keep PR #1100 draft until exact-head guest
+tests, partial-write/cancel/STOP races, and thread accounting are verified.
+
+The historical October 16 notes below describe the earlier staged state;
+in particular, statements that guest `std/net` still uses a per-listener
+selector are superseded by this section.
+
 ## Implementation status on this draft branch (October 16)
 
 - `AdaptiveCarrierExecutor` now provides bounded runnable-demand growth and queue backpressure, with a prestarted CONTROL minimum. `OresVM` uses it and exposes `ores.runtime.control.max.parallelism` (default at least 20 or the configured minimum).
