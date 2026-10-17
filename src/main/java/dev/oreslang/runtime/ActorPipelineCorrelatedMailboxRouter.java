@@ -288,6 +288,79 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
         });
     }
 
+    /**
+     * Source projection of fan-out receipts. Both success and rejection
+     * variants are fully allocated before the first irreversible mailbox send.
+     * Do not replace this with a post-hoc mapping of host Admission values:
+     * allocation failure after a successful branch would lose guest evidence.
+     */
+    List<ActorRuntime.ActorRouteReceipt> forwardAllSource(M value) {
+        return inLiveGeneration(() -> {
+            var frame = current();
+            Objects.requireNonNull(value, "pipeline payload");
+            var out = graph.forwardAll(frame.receiver());
+            var result = new ArrayList<ActorRuntime.ActorRouteReceipt>(out.size());
+            var completed = Collections.unmodifiableList(result);
+            var children = session.forwardAll(frame);
+
+            List<ActorRuntime.ActorRouteReceipt> admitted;
+            List<ActorRuntime.ActorRouteReceipt> rejected;
+            try {
+                var allAdmitted =
+                        new ArrayList<ActorRuntime.ActorRouteReceipt>(children.size());
+                var allRejected =
+                        new ArrayList<ActorRuntime.ActorRouteReceipt>(children.size());
+                for (int i = 0; i < children.size(); i++) {
+                    var child = children.get(i);
+                    long edgeIndex = edges.get(out.get(i));
+                    allAdmitted.add(new ActorRuntime.ActorRouteReceipt(
+                            edgeIndex,
+                            child.receiver(),
+                            child.flowId(),
+                            child.routeId(),
+                            true,
+                            ""));
+                    allRejected.add(new ActorRuntime.ActorRouteReceipt(
+                            edgeIndex,
+                            child.receiver(),
+                            child.flowId(),
+                            child.routeId(),
+                            false,
+                            "mailbox admission rejected for " + child.receiver()));
+                }
+                admitted = allAdmitted;
+                rejected = allRejected;
+            } catch (RuntimeException | Error preflight) {
+                for (var unpublished : children) {
+                    ActorPipelineRouteSession.retireDelivered(unpublished);
+                }
+                throw preflight;
+            }
+
+            int next = 0;
+            try {
+                for (; next < children.size(); next++) {
+                    var child = children.get(next);
+                    try {
+                        owner.sendWithPipelineFrame(
+                                targets.get(child.receiver()), value, child, this);
+                        result.add(admitted.get(next));
+                    } catch (RuntimeException branchFailure) {
+                        ActorPipelineRouteSession.retireDelivered(child);
+                        result.add(rejected.get(next));
+                    }
+                }
+                ActorPipelineRouteSession.retireDelivered(frame);
+                return completed;
+            } catch (RuntimeException | Error terminal) {
+                for (int rest = next; rest < children.size(); rest++) {
+                    ActorPipelineRouteSession.retireDelivered(children.get(rest));
+                }
+                throw terminal;
+            }
+        });
+    }
+
     private void sendChild(ActorPipelineRouteSession.MailFrame child, M value) {
         try {
             owner.sendWithPipelineFrame(targets.get(child.receiver()),
@@ -307,6 +380,12 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     @SuppressWarnings("unchecked")
     public void routeForward(Object value) {
         forward((M) value);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public List<ActorRuntime.ActorRouteReceipt> routeForwardAll(Object value) {
+        return forwardAllSource((M) value);
     }
 
     @Override
