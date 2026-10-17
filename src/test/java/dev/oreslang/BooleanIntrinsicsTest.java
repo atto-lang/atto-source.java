@@ -131,6 +131,32 @@ final class BooleanIntrinsicsTest {
     }
 
     @Test
+    void aggregateReducersRemainEagerAfterSourceTaskHandoff() {
+        for (String expression : new String[]{
+                "And([false, [true][99]])",
+                "BooleanOps.Or([true, [false][99]])",
+                "Xor([false, [true][99]])"}) {
+            String program = """
+                    async fnc probe(): void {
+                      rt cooperate;
+                      stdio.println(EXPR);
+                      return;
+                    }
+
+                    pub fnc main(): void {
+                      await probe();
+                      return;
+                    }
+                    """.replace("EXPR", expression);
+            PolyglotException failure = assertThrows(
+                    PolyglotException.class,
+                    () -> run(program, "boolean-suspendable-aggregate-eager.ores"),
+                    expression);
+            assertTrue(failure.getMessage().contains("99"), failure.getMessage());
+        }
+    }
+
+    @Test
     void everyIntrinsicRejectsEmptyCallsScalarSingletonsAndNonBooleanOperands() {
         for (String prefix : new String[]{"", "BooleanOps."}) {
             for (String name : new String[]{"And", "Or", "Xor"}) {
