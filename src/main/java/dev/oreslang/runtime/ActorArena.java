@@ -171,7 +171,18 @@ public final class ActorArena implements AutoCloseable {
         public synchronized ExplicitNativeI64Region.Slot allocate(long value) {
             requireActive();
             var slot = scratch.allocate(value);
-            slots.push(slot);
+            try {
+                slots.push(slot);
+            } catch (RuntimeException | Error failure) {
+                // If ArrayDeque must grow and its allocation fails, the native
+                // slot must not remain live but absent from the scratch ledger.
+                try {
+                    scratch.drop(slot);
+                } catch (RuntimeException | Error cleanup) {
+                    if (cleanup != failure) failure.addSuppressed(cleanup);
+                }
+                throw failure;
+            }
             return slot;
         }
 
