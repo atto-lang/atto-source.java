@@ -33,8 +33,8 @@ final class OresVMNioLifecycleTest {
         try {
             assertEquals(1, vm.nioReactorCount(), "one initial process-level readiness thread");
             assertTrue(vm.controlCarrierCount() >= 2);
-            assertTrue(vm.nioReadiness().usesVmCompletionCarriers(),
-                    "VM NIO completions reuse CONTROL; no two extra prestarted notifier threads");
+            assertFalse(vm.nioReadiness().usesVmCompletionCarriers(),
+                    "arbitrary NIO Future subscribers must not consume CONTROL carriers");
             var nio = vm.nioReadiness();
             var pending = new ArrayList<OresFuture<Integer>>();
             for (int i = 0; i < 5; i++) {
@@ -60,6 +60,46 @@ final class OresVMNioLifecycleTest {
                 pipe.source().close();
                 pipe.sink().close();
             }
+        }
+    }
+
+    @Test void stalledNioFutureSubscribersCannotStarveControl() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        var firstPipe = Pipe.open();
+        var secondPipe = Pipe.open();
+        var entered = new java.util.concurrent.CountDownLatch(2);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        try {
+            for (var pipe : new Pipe[] {firstPipe, secondPipe}) {
+                pipe.source().configureBlocking(false);
+                var ready = vm.nioReadiness().watch(pipe.source(), SelectionKey.OP_READ);
+                ready.whenCompleteRuntime((events, failure) -> {
+                    // These callbacks intentionally occupy BOTH NIO-completion
+                    // workers. They must never run on VM CONTROL carriers.
+                    if (OresVM.onControlCarrier() || !OresVM.onNioWorker())
+                        return;
+                    entered.countDown();
+                    try { release.await(3, TimeUnit.SECONDS); }
+                    catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+                });
+            }
+            assertEquals(1, firstPipe.sink().write(ByteBuffer.wrap(new byte[]{1})));
+            assertEquals(1, secondPipe.sink().write(ByteBuffer.wrap(new byte[]{2})));
+            assertTrue(entered.await(2, TimeUnit.SECONDS),
+                    "NIO callbacks must occupy their own completion workers");
+
+            var controlProgress = new java.util.concurrent.CountDownLatch(1);
+            vm.dispatchHostIoMapping(controlProgress::countDown);
+            assertTrue(controlProgress.await(2, TimeUnit.SECONDS),
+                    "blocking both NIO completion workers must not stall CONTROL");
+            assertEquals(2, vm.nioReadiness().pendingNotifications());
+        } finally {
+            release.countDown();
+            vm.close(); // external test driver waits for NIO before CONTROL
+            firstPipe.source().close();
+            firstPipe.sink().close();
+            secondPipe.source().close();
+            secondPipe.sink().close();
         }
     }
 
