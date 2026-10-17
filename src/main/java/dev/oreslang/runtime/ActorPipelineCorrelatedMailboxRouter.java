@@ -45,6 +45,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     private final Map<String, ActorRuntime.ActorRef<M>> targets;
     private final Map<ActorRuntime.ActorId, String> identities;
     private final Map<ActorPipelineRoutePlan.Edge, Integer> edges;
+    private final boolean sourceRootRegistration;
     // Host retirement has exclusive publication authority. A guest actor
     // must never PARK its carrier waiting for this host-controlled gate.
     private final ReentrantReadWriteLock publicationGate =
@@ -55,8 +56,19 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
             ActorPipelineRoutePlan plan,
             Map<String, ActorRuntime.ActorRef<M>> bindings,
             long generation, int maxActiveFrames) {
+        this(runtime, plan, bindings, generation, maxActiveFrames, false);
+    }
+
+    ActorPipelineCorrelatedMailboxRouter(
+            ActorRuntime runtime,
+            ActorPipelineRoutePlan plan,
+            Map<String, ActorRuntime.ActorRef<M>> bindings,
+            long generation, int maxActiveFrames,
+            boolean sourceRootRegistration) {
         owner = Objects.requireNonNull(runtime);
-        owner.requirePipelineRegistrationHostAuthority();
+        this.sourceRootRegistration = sourceRootRegistration;
+        if (sourceRootRegistration) owner.requireSourcePipelineRegistrationAuthority();
+        else owner.requirePipelineRegistrationHostAuthority();
         graph = Objects.requireNonNull(plan);
         Objects.requireNonNull(bindings);
         Set<String> required = new HashSet<>();
@@ -74,7 +86,8 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
         Map<ActorRuntime.ActorId, String> reverse = new HashMap<>();
         for (String instance : required) {
             var ref = Objects.requireNonNull(bindings.get(instance));
-            owner.requireSharedPipelineBinding(ref);
+            if (sourceRootRegistration) owner.requireSharedSourcePipelineBinding(ref);
+            else owner.requireSharedPipelineBinding(ref);
             if (reverse.putIfAbsent(ref.id(), instance) != null)
                 throw new IllegalArgumentException("duplicate bound actor identity");
             bound.put(instance, ref);
@@ -107,7 +120,8 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
 
     /** The ONLY entry to a new flow: an authorized supervisor-selected root. */
     void ingress(String root, M message) {
-        owner.requirePipelineRegistrationHostAuthority();
+        if (sourceRootRegistration) owner.requireSourcePipelineRegistrationAuthority();
+        else owner.requirePipelineRegistrationHostAuthority();
         inLiveGeneration(() -> {
             Objects.requireNonNull(message, "pipeline payload");
             // Verify the root before reserving a frame or publishing any mail.
