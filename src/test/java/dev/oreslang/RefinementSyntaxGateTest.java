@@ -39,6 +39,53 @@ final class RefinementSyntaxGateTest {
                 nonEmpty.refinement().bounds());
     }
 
+    @Test void scalarAnnotationsShareCanonicalRefinementRules() {
+        Ast.TypeAliasDecl lengthAnnotations =
+                alias("@MinLength(3) @MaxLength(32) type Username = string;");
+        Ast.TypeAliasDecl lengthWith =
+                alias("type Username = string with length gte 3 and length lte 32;");
+        Ast.TypeAliasDecl lengthSymbols =
+                alias("type Username = string with length >= 3 and length <= 32;");
+        assertEquals(lengthWith.refinement().bounds(), lengthAnnotations.refinement().bounds());
+        assertEquals(lengthSymbols.refinement().bounds(), lengthAnnotations.refinement().bounds());
+
+        Ast.TypeAliasDecl numericAnnotations =
+                alias("@Min(1) @Max(65535) type Port = int;");
+        Ast.TypeAliasDecl numericRange =
+                alias("@Range(min=1,max=65535) type Port = int;");
+        Ast.TypeAliasDecl numericWith =
+                alias("type Port = int with value gte 1 and value lte 65535;");
+        assertEquals(numericWith.refinement().bounds(), numericAnnotations.refinement().bounds());
+        assertEquals(numericRange.refinement().bounds(), numericAnnotations.refinement().bounds());
+
+        Ast.TypeAliasDecl pct = alias("@Range(min=0,max=100) type Percentage = int;");
+        assertEquals(List.of(new Ast.RefinementBound("value", "gte", 0),
+                             new Ast.RefinementBound("value", "lte", 100)),
+                pct.refinement().bounds());
+        assertTrue(alias("@MinLength(1) define newtype Username(string);").refinement().nominal());
+    }
+
+    @Test void invalidScalarAnnotationsRejectInsteadOfWeakening() {
+        String[] invalid = {
+                "@MinLength(1) type Bad = int;",
+                "@MaxLength(2) type Bad = int;",
+                "@Min(1) type Bad = string;",
+                "@Max(2) type Bad = string;",
+                "@Range(min=1,max=4) type Bad = string;",
+                "@MinLength() type Bad = string;",
+                "@MaxLength(1, 2) type Bad = string;",
+                "@Min(foo) type Bad = int;",
+                "@Range(min=1,min=2) type Bad = int;",
+                "@Range(foo=1) type Bad = int;",
+                "@Range() type Bad = int;",
+                "@Min(5) @Max(4) type Bad = int;",
+                "@MinLength(10) @MaxLength(5) type Bad = string;"
+        };
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+    }
+
     @Test void rangeKeywordAndSymbolSpellingsNormalizeIdentically() {
         Ast.TypeAliasDecl keywords = alias(
                 "type Port = int with value gte 1 and value lte 65535;");
@@ -51,7 +98,9 @@ final class RefinementSyntaxGateTest {
         Ast.TypeAliasDecl pctKeywords = alias(
                 "type Percentage = int with value gte 0 and value lte 100;");
         Ast.TypeAliasDecl pctSymbols = alias(
-                "type Percentage = int with value >= 0 and value <= 100;");
+                "type Percentage = int with value >= 0 and value <= 100;",
+                "@MinLength(1) type Name = string;",
+                "@Range(min=1,max=65535) type Number = int;");
         assertEquals(pctKeywords.refinement().bounds(), pctSymbols.refinement().bounds());
         assertEquals(List.of(new Ast.RefinementBound("value", "gte", 0),
                              new Ast.RefinementBound("value", "lte", 100)), pctKeywords.refinement().bounds());
@@ -114,6 +163,8 @@ final class RefinementSyntaxGateTest {
     @Test void unenforcedConstraintAnnotationsFailClosed() {
         String[] invalid = {
                 "@NotEmpty pub fnc main(): void { return; }",
+                "@MinLength(1) pub fnc main(): void { return; }",
+                "@Max(10) pub fnc main(): void { return; }",
                 "define class Person as @NotEmpty name: string; end",
                 "pub fnc main(): void { @NotEmpty val string value = \"x\"; return; }"
         };
