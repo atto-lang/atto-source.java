@@ -39,8 +39,10 @@ record OresCarrierBudget(
     static OresCarrierBudget configured() {
         String raw = System.getProperty(PROPERTY);
         if (raw == null) return null;
-        if (!raw.equals(raw.trim()) || raw.isEmpty())
-            throw new IllegalArgumentException(PROPERTY + " must be an integer 4..256");
+        // Integer.parseInt accepts "+4" and non-ASCII digits. Keep the
+        // runtime topology property in one reproducible, ASCII decimal form.
+        if (!raw.matches("[0-9]+"))
+            throw new IllegalArgumentException(PROPERTY + " must be ASCII decimal 4..256");
         final int maximum;
         try { maximum = Integer.parseInt(raw); }
         catch (NumberFormatException invalid) {
