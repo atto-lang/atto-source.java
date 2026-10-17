@@ -67,7 +67,7 @@ final class ActorPipelineRoutingAdmissionTest {
         String program = """
                 define actor Worker as
                   receive(ActorMail<int> mail): void {
-                    self.forward_all(infer struct {data: mail.value});
+                    self.forward_all([mail.value]);
                     return;
                   }
                 end
