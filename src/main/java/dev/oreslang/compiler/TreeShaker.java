@@ -30,7 +30,12 @@ public final class TreeShaker {
     public static Result shake(Ast.Program checkedProgram, BuildOptions options) {
         Objects.requireNonNull(checkedProgram, "checkedProgram");
         Objects.requireNonNull(options, "options");
-        return new Engine(checkedProgram, options).run();
+        // Public API accepts AST objects: do not assume the caller went through
+        // the parser/type checker. Tree shaking must never hide unsafe actors.
+        ActorThreadAdmission.requireExclusiveBackend(checkedProgram);
+        Result result = new Engine(checkedProgram, options).run();
+        ActorThreadAdmission.requireExclusiveBackend(result.program());
+        return result;
     }
 
     public record Result(
