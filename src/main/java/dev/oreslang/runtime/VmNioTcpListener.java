@@ -240,6 +240,8 @@ public final class VmNioTcpListener implements AutoCloseable {
         }
 
         public OresFuture<List<Long>> readBytesAsync(int maximum) {
+            if (maximum < 1 || maximum > 65536)
+                return OresFuture.failed(new IllegalArgumentException("invalid TCP read bound"));
             Throwable denial = reserveSocketOperation();
             if (denial != null) return OresFuture.failed(denial);
             final OresFuture<byte[]> raw;
