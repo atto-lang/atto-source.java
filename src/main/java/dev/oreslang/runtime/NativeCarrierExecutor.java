@@ -232,18 +232,55 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         }
     }
 
+    /**
+     * Volatile publication fence, not a census of Java Thread identities.
+     *
+     * A pthread may have attached and published carrierThreads[slot] while
+     * nativeStart() is still waiting for the remaining pthreads under
+     * nativeLifecycleLock. Such a partially started pool is NOT eligible
+     * for reactor-originated host notification admission.
+     */
+    boolean readyForNoBootstrapAdmission() {
+        return nativeStarted && !shutdown.get();
+    }
+
+    /**
+     * Bounded host-only enqueue without JNI bootstrap or the native lifecycle
+     * monitor. The reactor caller must handle rejection by retaining its
+     * completion reservation and retrying after a carrier-capacity signal.
+     *
+     * The queue offer uses only ArrayBlockingQueue's short Java monitor. It
+     * must NEVER call ensureNativeStarted(), nativeStart(), or start threads.
+     * This is not a wait-free queue and not a real-time hot-path guarantee.
+     */
+    void executeWithoutBootstrap(Runnable task) {
+        Objects.requireNonNull(task, "task");
+        if (!readyForNoBootstrapAdmission())
+            throw new RejectedExecutionException("native carrier has not finished bootstrap");
+        enqueueIfOpen(task);
+    }
+
+    /** Shutdown can win between an admission check and queue.offer().
+     * Remove the submitted identity after a concurrent shutdown so a task
+     * cannot be stranded behind shutdownNow()'s completed queue drain.
+     * An already running turn remains under the normal cooperative boundary.
+     */
+    private void enqueueIfOpen(Runnable task) {
+        if (shutdown.get())
+            throw new RejectedExecutionException("native carrier executor is shut down");
+        if (!queue.offer(task))
+            throw new RejectedExecutionException("native carrier ready queue is full");
+        if (shutdown.get() && queue.remove(task))
+            throw new RejectedExecutionException("native carrier shut down during admission");
+    }
+
     @Override
     public void execute(Runnable task) {
         Objects.requireNonNull(task, "task");
-        if (shutdown.get()) {
+        if (shutdown.get())
             throw new RejectedExecutionException("native carrier executor is shut down");
-        }
         ensureNativeStarted();
-        if (shutdown.get() || !queue.offer(task)) {
-            throw new RejectedExecutionException(
-                    shutdown.get() ? "native carrier executor is shut down"
-                            : "native carrier ready queue is full");
-        }
+        enqueueIfOpen(task);
     }
 
     public boolean remove(Runnable task) {
