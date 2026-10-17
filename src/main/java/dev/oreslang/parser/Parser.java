@@ -626,6 +626,12 @@ public final class Parser {
         }
 
         consume(LPAREN, "expected '(' after constructor");
+        // A leading bare self is an explicit spelling of the compiler-supplied
+        // construction receiver. It is not a caller-visible value parameter
+        // and therefore never contributes to constructor overload arity.
+        if (match(SELF) && !check(RPAREN)) {
+            consume(COMMA, "constructor self receiver must be followed by ',' or ')'");
+        }
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after constructor parameters");
         if (check(COLON) || check(ARROW) || check(FAT_ARROW)) {

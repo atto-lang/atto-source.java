@@ -418,6 +418,89 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void explicitConstructorSelfMarkerIsNotCallerVisibleArity() throws Exception {
+        String source = """
+                define class Sample as
+                  val int value;
+
+                  constructor(self, int value) {
+                    self.value = value;
+                    return;
+                  }
+
+                  constructor(self, int value, string ignored) {
+                    self.value = value + 2;
+                    return;
+                  }
+
+                  pub get(): int { return self.value; }
+                end
+
+                pub routine main(): void {
+                  val one = new Sample(40);
+                  val two = new Sample(40, "ignored");
+                  stdio.stdout.write(one.get());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(two.get());
+                  return;
+                }
+                """;
+
+        Ast.ClassDecl klass = (Ast.ClassDecl) Parser.parse(source)
+                .modules().getFirst().declarations().getFirst();
+        assertEquals(List.of(1, 2),
+                klass.constructors().stream().map(Ast.ConstructorDecl::arity).toList());
+        assertEquals("40|42", run(source));
+    }
+
+    @Test
+    void explicitConstructorSelfMarkerCollidesWithImplicitReceiverAtSameArity() {
+        IllegalArgumentException one = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define class Sample as
+                          constructor(int value) { return; }
+                          constructor(self, string value) { return; }
+                        end
+                        """));
+        assertTrue(one.getMessage().contains("duplicate constructor arity 1"));
+
+        IllegalArgumentException zero = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define class Sample as
+                          constructor() { return; }
+                          constructor(self) { return; }
+                        end
+                        """));
+        assertTrue(zero.getMessage().contains("duplicate constructor arity 0"));
+    }
+
+    @Test
+    void constructorCallbackCannotEscapePartiallyInitializedSelfThroughClosure() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                define class Sample as
+                  let int dummy_var: 1;
+
+                  constructor(self, int foo, ((AnyCallable cb) => void) cb) {
+                    cb(|| -> {
+                      self.dummy_var = 1 + foo;
+                      return;
+                    });
+                    return;
+                  }
+                end
+
+                pub routine main(): void {
+                  return;
+                }
+                """));
+        String message = String.valueOf(failure)
+                + " " + String.valueOf(failure.getCause());
+        assertTrue(message.contains("self") || message.contains("borrow"));
+    }
+
+    @Test
     void actorsRejectClassConstructors() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,

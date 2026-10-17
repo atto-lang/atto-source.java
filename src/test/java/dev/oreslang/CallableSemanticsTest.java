@@ -478,6 +478,47 @@ final class CallableSemanticsTest {
         assertEquals("8", output);
     }
 
+    @Test
+    void anyAndAnyCallableAreErasedSupertypesButNotInvocable() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc callback(): void { return; }
+
+                fnc acceptAny(Any value): void { return; }
+
+                fnc acceptCallable(AnyCallable value): void { return; }
+
+                fnc use(): void {
+                  acceptAny(42);
+                  acceptAny(callback);
+                  acceptCallable(callback);
+                  acceptCallable(|| -> { return; });
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException anyCall = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(Any value): void {
+                          value();
+                          return;
+                        }
+                        """)));
+        assertTrue(anyCall.getMessage().contains("Any"));
+        assertTrue(anyCall.getMessage().contains("not callable"));
+
+        IllegalArgumentException erasedCallable = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(AnyCallable value): void {
+                          value();
+                          return;
+                        }
+                        """)));
+        assertTrue(erasedCallable.getMessage().contains("AnyCallable"));
+        assertTrue(erasedCallable.getMessage().contains("signature"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "callables.ores")

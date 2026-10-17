@@ -1740,6 +1740,11 @@ public final class OwnershipChecker {
 
         ValueInfo callee = checkExpr(call.callee(), scope, false);
         Ast.TypeRef callableType = callee.type;
+        if (callableType != null && !callableType.isBorrow()
+                && (callableType.name().equals("Any") || callableType.name().equals("AnyCallable"))) {
+            throw error(callableType.name()
+                    + " has no statically known callable signature and cannot be invoked directly");
+        }
         if (callableType != null
                 && !callableType.isBorrow()
                 && (callableType.name().equals("Fnc") || callableType.name().equals("Function"))

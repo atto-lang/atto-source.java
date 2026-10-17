@@ -38,3 +38,21 @@ report native parity until source-identical positive/negative execution proves i
 The AST compatibility accessor `constructor()` exposes only the primary declaration;
 all compiler transforms and semantic passes must use `constructors()` to avoid
 discarding variants. Preserve constructor family signatures in public ABI hashing.
+
+
+## Explicit constructor receiver spelling
+
+Ordinary class constructors may spell the compiler-supplied construction receiver
+as a leading bare `self`:
+
+```oreslang
+constructor(self, int value) { ... }
+constructor(self, int value, string label) { ... }
+```
+
+The marker is syntax only. It is erased before the constructor parameter list is
+formed, is never supplied by the caller, and never contributes to overload arity.
+Therefore `constructor(int)` conflicts with `constructor(self, int)`, and
+`constructor()` conflicts with `constructor(self)`. Constructor `self` remains
+an unpublished partial-object capability with the same no-escape rules as implicit
+constructor `self`. Actor constructors remain prohibited.

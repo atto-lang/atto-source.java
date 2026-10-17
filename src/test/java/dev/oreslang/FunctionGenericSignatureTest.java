@@ -86,6 +86,48 @@ final class FunctionGenericSignatureTest {
     }
 
     @Test
+    void guardedRecursiveCallableAliasCanReferenceItself() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                type cb = (cb next) => void;
+
+                fnc sink(cb next): void {
+                  return;
+                }
+
+                fnc use(): void {
+                  val cb callback = sink;
+                  callback(callback);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void recursiveAliasMustBeCallableGuardedAndDirect() {
+        IllegalArgumentException direct = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type Loop = Loop;
+                        """)));
+        assertTrue(direct.getMessage().contains("type alias cycle"));
+
+        IllegalArgumentException mutual = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type A = (B) => void;
+                        type B = (A) => void;
+                        """)));
+        assertTrue(mutual.getMessage().contains("type alias cycle"));
+
+        IllegalArgumentException typeofSelf = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        type cb = (typeof cb) => void;
+                        """));
+        assertTrue(typeofSelf.getMessage().contains("typeof fnc"));
+    }
+
+    @Test
     void signatureFormStillChecksParameterAndResultTypes() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc badResult(): void {

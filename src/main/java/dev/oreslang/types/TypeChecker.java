@@ -6,6 +6,8 @@ import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
+import dev.oreslang.types.Types.Any;
+import dev.oreslang.types.Types.AnyCallable;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.Generic;
@@ -21,6 +23,7 @@ import dev.oreslang.types.Types.Union;
 import dev.oreslang.types.Types.Type;
 import dev.oreslang.types.Types.Unknown;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -45,7 +48,8 @@ public final class TypeChecker {
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Mutex",
-            "SharedMutex", "Channel", "Future", "Fnc", "Function");
+            "SharedMutex", "Channel", "Future", "Fnc", "Function",
+            "Any", "AnyCallable");
 
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
@@ -54,6 +58,7 @@ public final class TypeChecker {
             Ast.InterfaceFunctionDecl function) { }
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
     private record CallableTarget(Ast.ClassDecl owner, Ast.MethodDecl method) { }
+    private record TypePair(Type actual, Type expected) { }
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
@@ -81,6 +86,10 @@ public final class TypeChecker {
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private final ArrayDeque<Ast.TypeAliasDecl> resolvingAliasStack = new ArrayDeque<>();
+    private final IdentityHashMap<Ast.TypeAliasDecl, String> recursiveAliasIds = new IdentityHashMap<>();
+    private final Map<String, Ast.TypeAliasDecl> recursiveAliasesById = new HashMap<>();
+    private int recursiveCallableAliasDepth;
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
     // Only an actual constructor may initialize an otherwise fixed, initially
@@ -3176,6 +3185,14 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("call-site type arguments require a declared generic function or method");
             }
             Type callee = typeOf(call.callee(), env, generics, self);
+            if (callee == Any.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "Any is an erased value type and is not callable; narrow to a concrete Fnc signature first");
+            }
+            if (callee == AnyCallable.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "AnyCallable proves only that a value is callable; its signature is erased and must be narrowed before invocation");
+            }
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
             List<ExpandedCallArgument> expanded =
                     expandFixedCallArguments(
@@ -3913,7 +3930,7 @@ public final class TypeChecker {
             Set<Ast.ClassDecl> seen,
             Map<String, Type> genericBindings) {
         type = deref(type);
-        if (type instanceof Function) return true;
+        if (type instanceof Function || type == Any.INSTANCE || type == AnyCallable.INSTANCE) return true;
         if (type instanceof SelfType receiverSelf) {
             return containsChannelCallable(receiverSelf.bound(), seen, genericBindings);
         }
@@ -4907,7 +4924,8 @@ public final class TypeChecker {
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
         }
-        if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof SelfType
+        if (type == Unknown.INSTANCE || type == Any.INSTANCE || type == AnyCallable.INSTANCE
+                || type instanceof Generic || type instanceof SelfType
                 || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) {
             throw new IllegalArgumentException(
                     where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
@@ -5000,7 +5018,8 @@ public final class TypeChecker {
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
-        if (type == Unknown.INSTANCE || type instanceof SelfType || type instanceof Borrow
+        if (type == Unknown.INSTANCE || type == Any.INSTANCE || type == AnyCallable.INSTANCE
+                || type instanceof SelfType || type instanceof Borrow
                 || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
         if (type instanceof StringLiteral) return true;
@@ -5857,7 +5876,8 @@ public final class TypeChecker {
         }
         if (ref.isBorrow() || ref.isTupleType() || ref.isRecordType() || ref.isStringLiteral()
                 || ref.name().equals("$infer$") || ref.name().equals("self")
-                || ref.name().equals("Fnc") || ref.name().equals("Function")) {
+                || ref.name().equals("Fnc") || ref.name().equals("Function")
+                || ref.name().equals("Any") || ref.name().equals("AnyCallable")) {
             throw new IllegalArgumentException(
                     operator + " requires a nominal/runtime-reifiable type; use 'matches' for structural patterns");
         }
@@ -7478,7 +7498,7 @@ public final class TypeChecker {
     }
 
     private boolean containsUnknown(Type type) {
-        if (type == Unknown.INSTANCE) return true;
+        if (type == Unknown.INSTANCE || type == Any.INSTANCE || type == AnyCallable.INSTANCE) return true;
         if (type instanceof SelfType receiverSelf) return containsUnknown(receiverSelf.bound());
         if (type instanceof Borrow borrow) return containsUnknown(borrow.target());
         if (type instanceof ListType list) return containsUnknown(list.element());
@@ -7913,7 +7933,20 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("type alias '" + alias.name() + "' expects " + alias.genericParameters().size()
                         + " type argument(s), got " + ref.arguments().size());
             }
-            if (!resolvingAliases.add(alias)) throw new IllegalArgumentException("type alias cycle involving '" + alias.name() + "'");
+            if (!resolvingAliases.add(alias)) {
+                boolean directGuardedSelfReference =
+                        recursiveCallableAliasDepth > 0
+                                && !resolvingAliasStack.isEmpty()
+                                && resolvingAliasStack.peek() == alias
+                                && alias.genericParameters().isEmpty()
+                                && ref.arguments().isEmpty()
+                                && typeAliasOwners.containsKey(alias);
+                if (directGuardedSelfReference) {
+                    return new Named(recursiveAliasId(alias), List.of());
+                }
+                throw new IllegalArgumentException("type alias cycle involving '" + alias.name() + "'");
+            }
+            resolvingAliasStack.push(alias);
             try {
                 Map<String, Ast.TypeRef> substitutions = new HashMap<>();
                 for (int i = 0; i < alias.genericParameters().size(); i++) {
@@ -7921,6 +7954,10 @@ public final class TypeChecker {
                 }
                 return resolve(substituteAliasType(alias.target(), substitutions), generics, self, allowNullMarker);
             } finally {
+                Ast.TypeAliasDecl popped = resolvingAliasStack.pop();
+                if (popped != alias) {
+                    throw new IllegalStateException("type alias resolution stack corruption");
+                }
                 resolvingAliases.remove(alias);
             }
         }
@@ -7948,6 +7985,18 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Any" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Any does not accept type arguments");
+                }
+                yield Any.INSTANCE;
+            }
+            case "AnyCallable" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("AnyCallable does not accept type arguments");
+                }
+                yield AnyCallable.INSTANCE;
+            }
             case "Symbol" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException("Symbol does not accept type arguments");
@@ -8052,11 +8101,18 @@ public final class TypeChecker {
                 yield new Named("SharedMutex", List.of(element));
             }
             case "Fnc", "Function" -> {
-                List<Type> args = ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList();
-                if (args.isEmpty()) {
-                    throw new IllegalArgumentException(ref.name() + " requires at least a result type");
+                recursiveCallableAliasDepth++;
+                try {
+                    List<Type> args = ref.arguments().stream()
+                            .map(arg -> resolve(arg, generics, self))
+                            .toList();
+                    if (args.isEmpty()) {
+                        throw new IllegalArgumentException(ref.name() + " requires at least a result type");
+                    }
+                    yield new Function(args.subList(0, args.size() - 1), args.getLast());
+                } finally {
+                    recursiveCallableAliasDepth--;
                 }
-                yield new Function(args.subList(0, args.size() - 1), args.getLast());
             }
             default -> {
                 Ast.ClassDecl knownClass = findClass(ref.name());
@@ -8078,6 +8134,148 @@ public final class TypeChecker {
                 yield new Named(ref.name(), ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
             }
         };
+    }
+
+    private String recursiveAliasId(Ast.TypeAliasDecl alias) {
+        return recursiveAliasIds.computeIfAbsent(alias, candidate -> {
+            String owner = typeAliasOwners.get(candidate);
+            if (owner == null) {
+                throw new IllegalArgumentException(
+                        "guarded recursive callable aliases must be declared in the current source graph");
+            }
+            String id = "$recursive$" + owner + "$" + candidate.name();
+            Ast.TypeAliasDecl previous = recursiveAliasesById.putIfAbsent(id, candidate);
+            if (previous != null && previous != candidate) {
+                throw new IllegalStateException("recursive type alias identity collision for " + id);
+            }
+            return id;
+        });
+    }
+
+    private boolean isRecursiveAliasRef(Type type) {
+        return type instanceof Named named && recursiveAliasesById.containsKey(named.name());
+    }
+
+    private boolean containsRecursiveAliasRef(Type type) {
+        if (isRecursiveAliasRef(type)) return true;
+        if (type instanceof SelfType receiverSelf) return containsRecursiveAliasRef(receiverSelf.bound());
+        if (type instanceof Borrow borrow) return containsRecursiveAliasRef(borrow.target());
+        if (type instanceof ListType list) return containsRecursiveAliasRef(list.element());
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsRecursiveAliasRef);
+        if (type instanceof Union union) return union.options().stream().anyMatch(this::containsRecursiveAliasRef);
+        if (type instanceof Types.Not not) return containsRecursiveAliasRef(not.excluded());
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(this::containsRecursiveAliasRef);
+        if (type instanceof Function function) {
+            return function.parameters().stream().anyMatch(this::containsRecursiveAliasRef)
+                    || containsRecursiveAliasRef(function.result());
+        }
+        if (type instanceof Record record) {
+            return record.members().values().stream().anyMatch(this::containsRecursiveAliasRef);
+        }
+        return false;
+    }
+
+    private Type expandRecursiveAliasRef(Named ref) {
+        Ast.TypeAliasDecl alias = recursiveAliasesById.get(ref.name());
+        if (alias == null) return ref;
+        if (!resolvingAliases.add(alias)) return ref;
+        resolvingAliasStack.push(alias);
+        String previousModule = currentLexicalModule;
+        String owner = typeAliasOwners.get(alias);
+        if (owner != null) currentLexicalModule = owner;
+        try {
+            return resolve(alias.target(), Set.of(), null);
+        } finally {
+            currentLexicalModule = previousModule;
+            Ast.TypeAliasDecl popped = resolvingAliasStack.pop();
+            if (popped != alias) {
+                throw new IllegalStateException("recursive type alias expansion stack corruption");
+            }
+            resolvingAliases.remove(alias);
+        }
+    }
+
+    private boolean recursiveAliasAssignable(
+            Type actual,
+            Type expected,
+            Set<TypePair> seen) {
+        if (actual.equals(expected)) return true;
+        TypePair pair = new TypePair(actual, expected);
+        if (!seen.add(pair)) return true;
+
+        if (actual instanceof Named named && isRecursiveAliasRef(named)) {
+            return recursiveAliasAssignable(expandRecursiveAliasRef(named), expected, seen);
+        }
+        if (expected instanceof Named named && isRecursiveAliasRef(named)) {
+            return recursiveAliasAssignable(actual, expandRecursiveAliasRef(named), seen);
+        }
+        if (actual instanceof SelfType source) {
+            if (expected instanceof SelfType target) {
+                return recursiveAliasAssignable(source.bound(), target.bound(), seen)
+                        && recursiveAliasAssignable(target.bound(), source.bound(), seen);
+            }
+            return recursiveAliasAssignable(source.bound(), expected, seen);
+        }
+        if (expected instanceof SelfType) return false;
+        if (actual instanceof Borrow source && expected instanceof Borrow target) {
+            if (target.mutable() && !source.mutable()) return false;
+            return recursiveAliasAssignable(source.target(), target.target(), seen)
+                    && recursiveAliasAssignable(target.target(), source.target(), seen);
+        }
+        if (actual instanceof Function source && expected instanceof Function target) {
+            if (source.parameters().size() != target.parameters().size()) return false;
+            if (source.async() != target.async()) return false;
+            if (!source.mutableParameters().equals(target.mutableParameters())) return false;
+            for (int i = 0; i < source.parameters().size(); i++) {
+                if (!recursiveAliasAssignable(
+                        target.parameters().get(i), source.parameters().get(i), seen)) return false;
+            }
+            return recursiveAliasAssignable(source.result(), target.result(), seen);
+        }
+        if (actual instanceof Union source) {
+            return source.options().stream()
+                    .allMatch(option -> recursiveAliasAssignable(option, expected, seen));
+        }
+        if (expected instanceof Union target) {
+            return target.options().stream()
+                    .anyMatch(option -> recursiveAliasAssignable(actual, option, seen));
+        }
+        if (actual instanceof Named source && expected instanceof Named target
+                && source.name().equals(target.name())
+                && source.arguments().size() == target.arguments().size()) {
+            for (int i = 0; i < source.arguments().size(); i++) {
+                Type a = source.arguments().get(i);
+                Type b = target.arguments().get(i);
+                if (!recursiveAliasAssignable(a, b, seen)
+                        || !recursiveAliasAssignable(b, a, seen)) return false;
+            }
+            return true;
+        }
+        if (actual instanceof ListType source && expected instanceof ListType target) {
+            return recursiveAliasAssignable(source.element(), target.element(), seen)
+                    && recursiveAliasAssignable(target.element(), source.element(), seen);
+        }
+        if (actual instanceof Tuple source && expected instanceof Tuple target) {
+            if (source.kind() != target.kind()
+                    || source.elements().size() != target.elements().size()) return false;
+            for (int i = 0; i < source.elements().size(); i++) {
+                if (!recursiveAliasAssignable(
+                        source.elements().get(i), target.elements().get(i), seen)) return false;
+            }
+            return true;
+        }
+        if (actual instanceof Record source && expected instanceof Record target) {
+            for (Map.Entry<String, Type> required : target.members().entrySet()) {
+                Type member = source.members().get(required.getKey());
+                if (member == null
+                        || !recursiveAliasAssignable(member, required.getValue(), seen)) return false;
+            }
+            return true;
+        }
+        if (!containsRecursiveAliasRef(actual) && !containsRecursiveAliasRef(expected)) {
+            return assignable(actual, expected);
+        }
+        return false;
     }
 
     private Ast.TypeRef substituteAliasType(Ast.TypeRef ref, Map<String, Ast.TypeRef> substitutions) {
@@ -8108,6 +8306,15 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        if (expected == Any.INSTANCE) return actual != Primitive.VOID;
+        if (actual == Any.INSTANCE) return expected == Any.INSTANCE;
+        if (expected == AnyCallable.INSTANCE) {
+            return actual instanceof Function || actual == AnyCallable.INSTANCE;
+        }
+        if (actual == AnyCallable.INSTANCE) return expected == Any.INSTANCE;
+        if (containsRecursiveAliasRef(actual) || containsRecursiveAliasRef(expected)) {
+            return recursiveAliasAssignable(actual, expected, new HashSet<>());
+        }
         // A negative constraint requires positive evidence that values are disjoint.
         // The generic/Unknown and dynamic compatibility paths below are not evidence.
         if (expected instanceof Types.Not) return Types.isAssignable(actual, expected);
