@@ -235,6 +235,76 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
     }
 
     @Test
+    void rejectedBackwardAdmissionRestoresOriginalFrameForDirectReply()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var sinkEntered = new CountDownLatch(1);
+            var releaseSink = new CountDownLatch(1);
+            var sourceReplied = new CountDownLatch(1);
+            var rejected = new AtomicReference<Throwable>();
+            var observed = new AtomicReference<String>();
+
+            var sink = runtime.<String>spawnShared(() -> (value, actor) -> {
+                assertEquals("work", value);
+                sinkEntered.countDown();
+                if (!releaseSink.await(8, TimeUnit.SECONDS))
+                    throw new AssertionError("sink release timed out");
+                try {
+                    runtime.routeCurrentPipelineBackward("cannot-deliver");
+                    throw new AssertionError("backward into stopped worker was accepted");
+                } catch (RuntimeException expected) {
+                    // A stopped destination may be surfaced by the runtime as
+                    // an ActorInvalidReference/termination admission failure.
+                    rejected.set(expected);
+                }
+                // A prepublication rejection must NOT consume the original
+                // sealed route frame. Direct reply to source remains legal.
+                runtime.routeCurrentPipelineReply("recovered");
+            });
+            var worker = runtime.<String>spawnShared(() -> (value, actor) -> {
+                assertEquals("request", value);
+                runtime.routeCurrentPipelineForward("work");
+            });
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                if (value.equals("begin")) {
+                    runtime.routeCurrentPipelineForward("request");
+                } else if (value.equals("recovered")) {
+                    observed.set(value);
+                    sourceReplied.countDown();
+                } else {
+                    throw new AssertionError("source received wrong DATA");
+                }
+            });
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, linearGraph(),
+                    Map.of("source", source, "worker", worker, "sink", sink),
+                    87, 12);
+            router.ingress("source", "begin");
+            try {
+                assertTrue(sinkEntered.await(6, TimeUnit.SECONDS));
+                worker.stop();
+                worker.getDone().get(5, TimeUnit.SECONDS);
+            } finally {
+                releaseSink.countDown();
+            }
+            assertTrue(sourceReplied.await(8, TimeUnit.SECONDS),
+                    "failed backward should permit authenticated alternate reply");
+            assertNotNull(rejected.get(),
+                    "backward to stopped worker should have failed admission");
+            assertEquals("recovered", observed.get());
+            source.drain().get(5, TimeUnit.SECONDS);
+            sink.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(0, router.outstanding(),
+                    "failed return + valid origin reply leaked route frames");
+            router.close();
+            source.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void sealedReplyReturnsDirectlyToAuthenticatedOrigin() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var done = new CountDownLatch(1);
