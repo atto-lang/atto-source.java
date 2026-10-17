@@ -81,13 +81,13 @@ public final class NioReadinessGroup implements AutoCloseable {
     // the VM budget, never an extra NIO completion worker. Installed once
     // before first watch; standalone host groups retain the legacy pool.
     private volatile Executor boundCompletionExecutor;
-    // A rejected submission is not proof that an arbitrary host Executor
+    // A failed submission is not proof that an arbitrary host Executor
     // never invoked or scheduled the task. Preserve one claim token across
     // retries so a callback (and its notification reservation) runs once.
     private final class NotificationDelivery implements Runnable {
         private final Runnable notification;
         private final AtomicBoolean claimed = new AtomicBoolean();
-        private final AtomicBoolean mayBeQueuedAfterRejection = new AtomicBoolean();
+        private final AtomicBoolean mayBeQueuedAfterSubmissionFailure = new AtomicBoolean();
 
         NotificationDelivery(Runnable notification) {
             this.notification = notification;
@@ -103,7 +103,7 @@ public final class NioReadinessGroup implements AutoCloseable {
             // A nonconforming executor may schedule and then reject. If that
             // original task wins after being requeued, discard the stale
             // retry without re-delivering or leaking a queued reference.
-            if (mayBeQueuedAfterRejection.get())
+            if (mayBeQueuedAfterSubmissionFailure.get())
                 stagedNotifications.remove(this);
             OresVM.runAsNioWorker(notification);
         }
@@ -271,7 +271,7 @@ public final class NioReadinessGroup implements AutoCloseable {
                             // even when a nonconforming executor schedules
                             // work and then throws an unexpected exception.
                             if (next.claimed.get()) continue;
-                            next.mayBeQueuedAfterRejection.set(true);
+                            next.mayBeQueuedAfterSubmissionFailure.set(true);
                             stagedNotifications.addFirst(next);
                             if (next.claimed.get()) stagedNotifications.remove(next);
                             // Treat unexpected executor runtime failures as
