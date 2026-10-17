@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "source": {
+    "context": "private-ci-policy",
+    "appId": 15368
+  },
+  "carrier": {
+    "context": "carrier-policy",
+    "appId": 15368
+  }
+}

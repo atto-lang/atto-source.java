@@ -9,6 +9,8 @@ on:
       - 'scripts/test-publish-private-ci-source.py'
       - 'scripts/ci_private_mirror_preflight.py'
       - 'tests/test_ci_private_mirror_preflight.py'
+      - '.github/private-ci-required-checks.json'
+      - '.github/workflows/private-ci-policy.yml'
       - 'scripts/verify-review-pinned-private-ci.py'
       - 'tests/test_review_pinned_private_ci.py'
       - 'docs/security/PRIVATE_CI_REVIEW_PINNED_EXTERNAL_ADMISSION.md'
@@ -27,6 +29,8 @@ on:
       - 'scripts/test-publish-private-ci-source.py'
       - 'scripts/ci_private_mirror_preflight.py'
       - 'tests/test_ci_private_mirror_preflight.py'
+      - '.github/private-ci-required-checks.json'
+      - '.github/workflows/private-ci-policy.yml'
       - 'scripts/verify-review-pinned-private-ci.py'
       - 'tests/test_review_pinned_private_ci.py'
       - 'docs/security/PRIVATE_CI_REVIEW_PINNED_EXTERNAL_ADMISSION.md'
@@ -135,7 +139,7 @@ jobs:
           spec.loader.exec_module(module)
           suite = unittest.defaultTestLoader.loadTestsFromModule(module)
           count = suite.countTestCases()
-          if count < 158:
+          if count < 172:
               raise SystemExit(f"Publisher suite unexpectedly shrank to {count} tests")
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if (result.testsRun != count or not result.wasSuccessful()

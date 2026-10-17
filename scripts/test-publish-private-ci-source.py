@@ -33,7 +33,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             b"blob " + str(len(approved_bytes)).encode("ascii")
             + b"\0" + approved_bytes
         ).hexdigest()
-        self.codeowners_text = "\n".join(
+        self.codeowners_text = "/.github/workflows/ @ORESoftware\n" + "\n".join(
             path + " " + pub.REQUIRED_CODEOWNER
             for path in pub.REQUIRED_CODEOWNER_PATHS
         ) + "\n"
@@ -57,6 +57,22 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source_private = [True] * 100
         self.source_visibility = ["private"] * 100
         self.source_protected = [True] * 100
+        self.incident_repository_identity = [pub.SOURCE_INCIDENT_REPOSITORY] * 300
+        self.incident_repository_ids = [pub.SOURCE_INCIDENT_REPOSITORY_ID] * 300
+        self.incident_repository_private = [True] * 300
+        self.incident_repository_visibility = ["private"] * 300
+        self.incident_repository_archived = [False] * 300
+        self.incident_repository_disabled = [False] * 300
+        self.incident_issue_ids = [pub.SOURCE_INCIDENT_ISSUE_ID] * 300
+        self.incident_pull_requests = [None] * 300
+        self.incident_numbers = [22] * 300
+        self.incident_states = ["closed"] * 300
+        self.incident_reasons = ["completed"] * 300
+        self.incident_urls = ["https://api.github.com/" + pub.SOURCE_INCIDENT_ROUTE] * 300
+        self.incident_repository_urls = [
+            "https://api.github.com/repos/" + pub.SOURCE_INCIDENT_REPOSITORY
+        ] * 300
+        self.incident_closed_at = ["2026-10-17T17:00:00Z"] * 300
         self.source_main_shas = [A] * 100
         self.visibility = ["private"] * 100
         self.repository_ids = [123] * 100
@@ -73,10 +89,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.carrier_review_count = [1] * 100
         self.carrier_codeowner = [True] * 100
         self.carrier_codeowners_text = (
-            "/.github/CODEOWNERS @ORESoftware\n"
             "/.github/workflows/ @ORESoftware\n"
+            "/.github/CODEOWNERS @ORESoftware\n"
+            "/.github/private-ci-carrier-policy.json @ORESoftware\n"
         )
         self.carrier_codeowners_sha = None
+        self.carrier_policy_text = (
+            '{"schema":1,"carrier":{"context":"carrier-policy","appId":15368}}\n'
+        )
+        self.carrier_policy_sha = None
         self.carrier_codeowners_errors = []
         self.carrier_security_permission = "write"
         self.carrier_stale_review_dismissal = [True] * 100
@@ -120,10 +141,33 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == pub.PROTECTED_BRANCH_ROUTE:
             return dict(name="main", protected=self.source_protected.pop(0),
                         commit={"sha": self.source_main_shas.pop(0)})
+        if route == pub.SOURCE_INCIDENT_METADATA_ROUTE:
+            return {
+                "full_name": self.incident_repository_identity.pop(0),
+                "id": self.incident_repository_ids.pop(0),
+                "private": self.incident_repository_private.pop(0),
+                "visibility": self.incident_repository_visibility.pop(0),
+                "archived": self.incident_repository_archived.pop(0),
+                "disabled": self.incident_repository_disabled.pop(0),
+            }
+        if route == pub.SOURCE_INCIDENT_ROUTE:
+            return {
+                "id": self.incident_issue_ids.pop(0),
+                "url": self.incident_urls.pop(0),
+                "repository_url": self.incident_repository_urls.pop(0),
+                "pull_request": self.incident_pull_requests.pop(0),
+                "number": self.incident_numbers.pop(0),
+                "state": self.incident_states.pop(0),
+                "state_reason": self.incident_reasons.pop(0),
+                "closed_at": self.incident_closed_at.pop(0),
+            }
         if route == pub.PROTECTED_RULES_ROUTE:
             return {"enforce_admins": {"enabled": True},
                     "required_status_checks": {"strict": True,
-                                               "contexts": ["preflight-regressions"]},
+                                               "contexts": [],
+                                               "checks": [
+                                                   {"context": "preflight-regressions", "app_id": 15368},
+                                                   {"context": "private-ci-policy", "app_id": 15368}]},
                     "required_conversation_resolution": {"enabled": True}}
         if route == pub.PROTECTED_REVIEWS_ROUTE:
             return {"required_approving_review_count": 1,
@@ -180,7 +224,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             valid_checks = self.carrier_status_checks.pop(0)
             return {"enforce_admins": {"enabled": self.carrier_admin_enforced.pop(0)},
                     "required_status_checks": {"strict": valid_checks,
-                                               "contexts": ["verified-carrier-ci"] if valid_checks else []},
+                                               "contexts": [],
+                                               "checks": [
+                                                   {"context": "verified-carrier-ci", "app_id": 15368},
+                                                   {"context": "carrier-policy", "app_id": 15368}] if valid_checks else []},
                     "required_conversation_resolution": {
                         "enabled": self.carrier_conversations.pop(0)}}
         if route == "repos/trusted/ci/branches/main/protection/required_pull_request_reviews":
@@ -196,6 +243,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                 + bytes([0]) + raw).hexdigest()
             return {"type": "file", "encoding": "base64", "size": len(raw),
                     "sha": self.carrier_codeowners_sha or sha,
+                    "content": base64.b64encode(raw).decode("ascii")}
+        if route == "repos/trusted/ci/contents/.github/private-ci-carrier-policy.json?ref=main":
+            raw = self.carrier_policy_text.encode("utf-8")
+            sha = hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
+                                + bytes([0]) + raw).hexdigest()
+            return {"type": "file", "encoding": "base64", "size": len(raw),
+                    "sha": self.carrier_policy_sha or sha,
                     "content": base64.b64encode(raw).decode("ascii")}
         if route == "repos/trusted/ci/codeowners/errors?ref=main":
             return {"errors": self.carrier_codeowners_errors}
@@ -230,6 +284,118 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             branch = "ci/oreslang-" + self.expected_tree
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, self.expected_tree, D)
+
+    def test_open_incident_denies_before_private_source_read(self):
+        self.incident_states = ["open"] * 300
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("source read before containment")):
+            with self.assertRaisesRegex(pub.Denied, "incident #22 remains unresolved"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.assertEqual(self.dispatch_calls, [])
+
+    def test_incident_metadata_must_be_completed_and_exactly_identified(self):
+        substitutions = (
+            ("incident_issue_ids", True),
+            ("incident_issue_ids", pub.SOURCE_INCIDENT_ISSUE_ID + 1),
+            ("incident_pull_requests", {"url": "https://api.github.com/repos/x/y/pulls/22"}),
+            ("incident_numbers", True),
+            ("incident_numbers", 23),
+            ("incident_states", "open"),
+            ("incident_states", "unknown"),
+            ("incident_reasons", "not_planned"),
+            ("incident_reasons", None),
+            ("incident_urls", "https://api.github.com/repos/foreign/issues/22"),
+            ("incident_repository_urls", "https://api.github.com/repos/foreign"),
+            ("incident_closed_at", None),
+            ("incident_closed_at", "2026-10-17T17:00:00+00:00"),
+            ("incident_closed_at", "2026-02-30T17:00:00Z"),
+        )
+        expected = {
+            "incident_issue_ids": pub.SOURCE_INCIDENT_ISSUE_ID,
+            "incident_pull_requests": None,
+            "incident_numbers": 22,
+            "incident_states": "closed",
+            "incident_reasons": "completed",
+            "incident_urls": "https://api.github.com/" + pub.SOURCE_INCIDENT_ROUTE,
+            "incident_repository_urls":
+                "https://api.github.com/repos/" + pub.SOURCE_INCIDENT_REPOSITORY,
+            "incident_closed_at": "2026-10-17T17:00:00Z",
+        }
+        for name, value in substitutions:
+            with self.subTest(field=name, value=value):
+                for key, default in expected.items():
+                    setattr(self, key, [default] * 300)
+                setattr(self, name, [value] * 300)
+                self.route_calls.clear()
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("source read before containment")):
+                    with self.assertRaisesRegex(pub.Denied, "incident #22 remains unresolved"):
+                        self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        for key, default in expected.items():
+            setattr(self, key, [default] * 300)
+
+    def test_incident_repository_identity_must_be_stable_private_and_active(self):
+        expected = {
+            "incident_repository_identity": pub.SOURCE_INCIDENT_REPOSITORY,
+            "incident_repository_ids": pub.SOURCE_INCIDENT_REPOSITORY_ID,
+            "incident_repository_private": True,
+            "incident_repository_visibility": "private",
+            "incident_repository_archived": False,
+            "incident_repository_disabled": False,
+        }
+        substitutions = (
+            ("incident_repository_identity", "foreign/recreated"),
+            ("incident_repository_ids", True),
+            ("incident_repository_ids", pub.SOURCE_INCIDENT_REPOSITORY_ID + 1),
+            ("incident_repository_private", False),
+            ("incident_repository_visibility", "public"),
+            ("incident_repository_archived", True),
+            ("incident_repository_disabled", True),
+        )
+        for name, value in substitutions:
+            with self.subTest(field=name, value=value):
+                for key, default in expected.items():
+                    setattr(self, key, [default] * 300)
+                setattr(self, name, [value] * 300)
+                self.route_calls.clear()
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("source read before incident repository identity")):
+                    with self.assertRaises(pub.Denied):
+                        self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        for key, default in expected.items():
+            setattr(self, key, [default] * 300)
+
+    def test_incident_reopened_between_writes_blocks_next_git_post(self):
+        # Initial policy + first binary-blob write pass. Reopening the
+        # incident before the next Git tree POST must abort the publication.
+        self.incident_states = ["closed", "closed", "open"] + ["open"] * 297
+        with self.assertRaisesRegex(pub.Denied, "incident #22 remains unresolved"):
+            self.publish()
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+        self.assertEqual(self.dispatch_calls, [])
+
+    def test_strict_checks_only_policy_passes_source_and_carrier_before_each_write(self):
+        # This regression catches a deadlock where a precheck demanded
+        # nonempty legacy contexts even though the issuer guard forbids them.
+        # Both main protections must accept checks[] with real app IDs while
+        # the deprecated contexts[] array remains empty.
+        source_rules = self.fake_api(pub.PROTECTED_RULES_ROUTE)
+        carrier_rules = self.fake_api("repos/trusted/ci/branches/main/protection")
+        for rules in (source_rules, carrier_rules):
+            self.assertTrue(rules["required_status_checks"]["strict"])
+            self.assertEqual(rules["required_status_checks"]["contexts"], [])
+            self.assertTrue(rules["required_status_checks"]["checks"])
+        commit, count = self.publish()
+        self.assertEqual((commit, count), (C, 1))
+        routes = [route for _method, route, _payload in self.route_calls]
+        self.assertGreaterEqual(routes.count(pub.PROTECTED_RULES_ROUTE), 2)
+        self.assertGreaterEqual(
+            routes.count("repos/trusted/ci/branches/main/protection"), 2)
+        self.assertEqual(len(self.dispatch_calls), 1)
 
     def test_success_dispatches_protected_main_validation_for_exact_commit(self):
         commit, count = self.publish()
@@ -347,6 +513,44 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                           side_effect=AssertionError("read before carrier review")):
             with self.assertRaisesRegex(pub.Denied, "administrator and CI protections"):
                 self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_protected_carrier_requires_issuer_bound_actions_check(self):
+        original = self.fake_api
+        forged = (
+            None, [],
+            [{"context": "carrier-policy", "app_id": -1}],
+            [{"context": "carrier-policy", "app_id": 15369}],
+            [{"context": "carrier-policy", "app_id": False}],
+            [{"context": "wrong-policy", "app_id": 15368}],
+            [{"context": "carrier-policy", "app_id": 15368},
+             {"context": "carrier-policy", "app_id": 15368}],
+        )
+        for entries in forged:
+            with self.subTest(checks=entries):
+                self.route_calls.clear()
+                def spoofed(route, method="GET", payload=None):
+                    result = original(route, method, payload)
+                    if route == "repos/trusted/ci/branches/main/protection":
+                        result["required_status_checks"]["checks"] = entries
+                    return result
+                with patch.object(pub, "gh_api", side_effect=spoofed):
+                    with self.assertRaises(pub.Denied):
+                        self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_carrier_unbound_extra_required_context_denied_before_source_read(self):
+        original = self.fake_api
+        def unbound_context(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/branches/main/protection":
+                result["required_status_checks"]["contexts"].append("spoofable-other-check")
+            return result
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read before issuer policy")):
+            with patch.object(pub, "gh_api", side_effect=unbound_context):
+                with self.assertRaisesRegex(pub.Denied, "legacy required status-check contexts"):
+                    self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_carrier_main_requires_strict_status_checks_before_source_read(self):
@@ -498,22 +702,26 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         finally:
             self.preflight.start()
 
-    def test_carrier_workflow_codeowners_must_cover_every_workflow(self):
+    def test_carrier_workflow_codeowners_must_cover_every_security_file(self):
+        good = (
+            "/.github/workflows/ @ORESoftware\n"
+            "/.github/CODEOWNERS @ORESoftware\n"
+            "/.github/private-ci-carrier-policy.json @ORESoftware\n"
+        )
         for policy in ("",
                        "/.github/CODEOWNERS @ORESoftware\n",
                        "/.github/workflows/ @ORESoftware\n/.github/CODEOWNERS @ORESoftware\n",
-                       "/.github/CODEOWNERS @ORESoftware\n/.github/workflows/ @ORESoftware\n"
-                       "* @another-reviewer\n"):
+                       "/.github/CODEOWNERS @ORESoftware\n"
+                       "/.github/workflows/ @ORESoftware\n"
+                       "/.github/private-ci-carrier-policy.json @ORESoftware\n",
+                       good + "* @another-reviewer\n"):
             with self.subTest(policy=policy):
                 self.route_calls.clear()
                 self.carrier_codeowners_text = policy
-                with self.assertRaisesRegex(pub.Denied, "terminal security CODEOWNER coverage"):
+                with self.assertRaisesRegex(pub.Denied, "terminal CODEOWNER coverage"):
                     self.publish()
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
-        self.carrier_codeowners_text = (
-            "/.github/CODEOWNERS @ORESoftware\n"
-            "/.github/workflows/ @ORESoftware\n"
-        )
+        self.carrier_codeowners_text = good
 
     def test_carrier_codeowner_digest_validation_and_permission_fail_closed(self):
         self.carrier_codeowners_sha = "f" * 40
@@ -529,6 +737,49 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(pub.Denied, "lacks write permission"):
             self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_issuer_policy_must_exactly_pin_actions_app(self):
+        originals = self.carrier_policy_text
+        invalid = (
+            '{}\n',
+            '{"schema":2,"carrier":{"context":"carrier-policy","appId":15368}}\n',
+            '{"schema":1,"carrier":{"context":"wrong-policy","appId":15368}}\n',
+            '{"schema":1,"carrier":{"context":"carrier-policy","appId":15369}}\n',
+            '{"schema":1,"carrier":{"context":"carrier-policy","appId":true}}\n',
+            '{"schema":1,"carrier":{"context":"carrier-policy","appId":15368},"extra":1}\n',
+        )
+        for policy in invalid:
+            with self.subTest(policy=policy):
+                self.route_calls.clear()
+                self.carrier_policy_text = policy
+                with self.assertRaisesRegex(pub.Denied, "carrier issuer policy"):
+                    self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.carrier_policy_text = originals
+
+    def test_carrier_issuer_policy_blob_integrity_fails_closed(self):
+        self.carrier_policy_sha = "f" * 40
+        with self.assertRaisesRegex(pub.Denied, "issuer policy blob integrity"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.carrier_policy_sha = None
+
+    def test_carrier_issuer_policy_revocation_aborts_before_next_write(self):
+        original = self.fake_api
+        def revoke(route, method="GET", payload=None):
+            response = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs" and method == "POST":
+                self.carrier_policy_text = (
+                    '{"schema":1,"carrier":{"context":"carrier-policy","appId":15369}}\n'
+                )
+            return response
+        with patch.object(pub, "gh_api", side_effect=revoke):
+            with self.assertRaisesRegex(pub.Denied, "carrier issuer policy"):
+                pub.publish("trusted/ci", self.source,
+                            ("ci/oreslang-" + self.expected_tree),
+                            self.root, self.expected_tree, D)
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
 
     def test_carrier_security_owner_revocation_aborts_after_first_blob(self):
         original = self.fake_api
@@ -600,7 +851,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     api.assert_called_once_with("rate_limit")
 
     def test_core_api_budget_denies_before_creating_git_objects(self):
-        for remaining in (0, 100, 183, 184, None, "15000", True, -1):
+        for remaining in (0, 100, 183, 184, 185, 186, None, "15000", True, -1):
             with self.subTest(remaining=remaining):
                 self.route_calls.clear()
                 self.api_core_remaining = remaining
@@ -610,8 +861,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.api_core_remaining = 15000
 
     def test_core_api_budget_at_exact_reserve_allows_synthetic_upload(self):
-        # One source file: 25 * 1 + 160 == 185 API requests reserved.
-        self.api_core_remaining = 185
+        # One source file: 27 * 1 + 160 == 187 API requests reserved.
+        self.api_core_remaining = 187
         self.publish()
         self.assertTrue(any(method == "POST" for method, _, _ in self.route_calls))
 
@@ -876,6 +1127,69 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         self.publish()
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
+    def test_required_check_issuer_set_must_exactly_match_contexts(self):
+        # The bootstrap auditor and publisher both reject legacy contexts.
+        # Multiple checks are allowed only with concrete positive app IDs.
+        for expected in (pub.SOURCE_POLICY_CHECK, pub.CARRIER_POLICY_CHECK):
+            baseline = [
+                {"context": expected, "app_id": pub.GITHUB_ACTIONS_APP_ID},
+                {"context": "other-reviewed-check", "app_id": 15368},
+            ]
+            for empty_contexts in ([], None):
+                self.assertIsNone(pub.require_pinned_actions_check(
+                    {"contexts": empty_contexts, "checks": baseline}, expected))
+            tampered = (
+                {"contexts": [expected], "checks": [baseline[0]]},
+                {"contexts": ["unbound-status"], "checks": baseline},
+                {"contexts": [expected, expected], "checks": baseline},
+                {"contexts": "wrong-type", "checks": baseline},
+                {"contexts": [], "checks": [baseline[1]]},
+                {"contexts": [], "checks": [baseline[0], baseline[0]]},
+                {"contexts": [], "checks": [baseline[0],
+                    {"context": "other-reviewed-check", "app_id": None}]},
+            )
+            for policy in tampered:
+                with self.subTest(expected=expected, policy=policy):
+                    with self.assertRaises(pub.Denied):
+                        pub.require_pinned_actions_check(policy, expected)
+    def test_protected_source_requires_issuer_bound_actions_check(self):
+        original = self.fake_api
+        forged = (
+            None, [],
+            [{"context": "private-ci-policy", "app_id": -1}],
+            [{"context": "private-ci-policy", "app_id": 15369}],
+            [{"context": "private-ci-policy", "app_id": True}],
+            [{"context": "wrong-policy", "app_id": 15368}],
+            [{"context": "private-ci-policy", "app_id": 15368},
+             {"context": "private-ci-policy", "app_id": 15368}],
+        )
+        for entries in forged:
+            with self.subTest(checks=entries):
+                self.route_calls.clear()
+                def spoofed(route, method="GET", payload=None):
+                    result = original(route, method, payload)
+                    if route == pub.PROTECTED_RULES_ROUTE:
+                        result["required_status_checks"]["checks"] = entries
+                    return result
+                with patch.object(pub, "gh_api", side_effect=spoofed):
+                    with self.assertRaises(pub.Denied):
+                        self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_source_unbound_extra_required_context_denied_before_source_read(self):
+        original = self.fake_api
+        def unbound_context(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == pub.PROTECTED_RULES_ROUTE:
+                result["required_status_checks"]["contexts"].append("spoofable-other-check")
+            return result
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read before issuer policy")):
+            with patch.object(pub, "gh_api", side_effect=unbound_context):
+                with self.assertRaisesRegex(pub.Denied, "legacy required status-check contexts"):
+                    self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
     def test_source_branch_protection_must_enforce_admins_and_strict_ci(self):
         failures = (
             {"enforce_admins": {"enabled": False},
@@ -905,6 +1219,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_protected_codeowners_must_cover_export_and_source_snapshot_policy(self):
         baseline = self.codeowners_text
         cases = (
+            baseline.replace("/.github/workflows/ @ORESoftware\n", ""),
+            baseline.replace("/.github/workflows/ @ORESoftware\n", "/.github/workflows/ @Unreviewed\n"),
             baseline.replace(
                 "/.github/private-ci-approved-source-snapshots.txt @ORESoftware\n", ""),
             baseline.replace(
@@ -2467,13 +2783,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         required = [path + " " + pub.REQUIRED_CODEOWNER
                     for path in pub.REQUIRED_CODEOWNER_PATHS]
         self.assertEqual(effective[-len(required):], required)
+        self.assertEqual(effective[-len(required)-1], "/.github/workflows/ @ORESoftware")
         self.assertEqual(len(effective), len(set(effective)))
-        self.assertGreaterEqual(len(required), 20)
+        self.assertGreaterEqual(len(required), 22)
 
     def test_source_local_runner_entrypoints_and_admission_tests_are_owned(self):
         required = set(pub.REQUIRED_CODEOWNER_PATHS)
         runner_paths = {
             "/.github/workflows/private-ci-mirror-preflight.yml",
+            "/.github/workflows/private-ci-policy.yml",
+            "/.github/private-ci-required-checks.json",
             "/.github/workflows/private-exact-main-validation.yml",
             "/.github/workflows/private-exact-candidate-validation.yml",
             "/.github/workflows/private-exact-publisher-validation.yml",
