@@ -2276,6 +2276,13 @@ public final class TypeChecker {
                 return Primitive.BOOL;
             }
             Type right = typeOf(binary.right(), env, generics, self);
+            boolean decimalComplexMix =
+                    (left == Primitive.DECIMAL && right == Primitive.COMPLEX)
+                    || (left == Primitive.COMPLEX && right == Primitive.DECIMAL);
+            if (decimalComplexMix) {
+                throw new IllegalArgumentException(
+                        "explicit conversion required between Decimal and binary64 complex");
+            }
             boolean complexOperand = left == Primitive.COMPLEX || right == Primitive.COMPLEX;
             if (complexOperand && (binary.operator().equals("+")
                     || binary.operator().equals("-")
