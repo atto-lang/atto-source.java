@@ -330,8 +330,9 @@ public final class ZordeSchemaGenerator {
                     throw new IllegalArgumentException("invalid refined type name");
                 }
                 if (!alias.genericParameters().isEmpty()
-                        || !alias.target().arguments().isEmpty()
-                        || alias.target().inferArguments()) {
+                        || (!isInferredSchemaAlias(alias)
+                            && (!alias.target().arguments().isEmpty()
+                                || alias.target().inferArguments()))) {
                     throw new IllegalArgumentException(
                             "generic/parameterized refined schemas need instantiated lowering: "
                                     + alias.name());
