@@ -115,6 +115,10 @@ public final class VmNioTcpListener implements AutoCloseable {
         source.whenCompleteRuntime((socket, failure) -> {
             Connection connection = null;
             try {
+                // Exported cancellation first revokes this source Future.
+                // Its synchronous cancellation notification must not settle
+                // the exported Future before the caller's cancel CAS does.
+                if (source.isCancelled()) return;
                 if (failure != null) {
                     exported.failFromRuntime(failure);
                     return;
@@ -195,6 +199,10 @@ public final class VmNioTcpListener implements AutoCloseable {
             OresFuture<List<Long>> exposed = new OresFuture<>(() -> raw.cancel(false), () -> { });
             raw.whenCompleteRuntime((bytes, failure) -> {
                 try {
+                    // Internal read revocation can synchronously notify this
+                    // waiter during exposed.cancel admission. Leave the
+                    // exported terminal CAS to the cancelling caller.
+                    if (raw.isCancelled()) return;
                     if (failure != null) {
                         exposed.failFromRuntime(failure);
                         return;
