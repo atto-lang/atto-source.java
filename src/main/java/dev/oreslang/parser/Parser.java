@@ -3410,9 +3410,15 @@ public final class Parser {
                 String member = consumeMemberName();
                 expr = new Ast.MemberExpr(expr, member);
             } else if (match(LBRACKET)) {
-                Ast.Expr index = parseExpression();
+                if (check(RBRACKET)) {
+                    throw error(peek(), "indexing requires at least one index");
+                }
+                List<Ast.Expr> indices = new ArrayList<>();
+                do {
+                    indices.add(parseExpression());
+                } while (match(COMMA));
                 consume(RBRACKET, "expected ']' after index");
-                expr = new Ast.IndexExpr(expr, index);
+                expr = new Ast.IndexExpr(expr, indices);
             } else break;
         }
         return expr;
@@ -3949,7 +3955,8 @@ public final class Parser {
             return containsExpressionBodyLambda(member.receiver());
         }
         if (expression instanceof Ast.IndexExpr index) {
-            return containsExpressionBodyLambda(index.receiver()) || containsExpressionBodyLambda(index.index());
+            return containsExpressionBodyLambda(index.receiver())
+                    || index.indices().stream().anyMatch(this::containsExpressionBodyLambda);
         }
         if (expression instanceof Ast.NewExpr created) {
             return created.arguments().stream().anyMatch(this::containsExpressionBodyLambda);
