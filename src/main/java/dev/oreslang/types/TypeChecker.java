@@ -8322,11 +8322,15 @@ public final class TypeChecker {
 
     private boolean assignable(Type actual, Type expected) {
         if (expected == Any.INSTANCE) return actual != Primitive.VOID;
-        if (actual == Any.INSTANCE) return expected == Any.INSTANCE;
+        if (actual == Any.INSTANCE) {
+            return expected == Any.INSTANCE || expected == Unknown.INSTANCE;
+        }
         if (expected == AnyCallable.INSTANCE) {
             return actual instanceof Function || actual == AnyCallable.INSTANCE;
         }
-        if (actual == AnyCallable.INSTANCE) return expected == Any.INSTANCE;
+        if (actual == AnyCallable.INSTANCE) {
+            return expected == Any.INSTANCE || expected == Unknown.INSTANCE;
+        }
         if (containsRecursiveAliasRef(actual) || containsRecursiveAliasRef(expected)) {
             return recursiveAliasAssignable(actual, expected, new HashSet<>());
         }

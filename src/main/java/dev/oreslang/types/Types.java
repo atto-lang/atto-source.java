@@ -197,11 +197,11 @@ public final class Types {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
         if (to == Any.INSTANCE) return from != Primitive.VOID;
-        if (from == Any.INSTANCE) return false;
+        if (from == Any.INSTANCE) return to == Unknown.INSTANCE;
         if (to == AnyCallable.INSTANCE) {
             return from instanceof Function || from == AnyCallable.INSTANCE;
         }
-        if (from == AnyCallable.INSTANCE) return false;
+        if (from == AnyCallable.INSTANCE) return to == Unknown.INSTANCE;
         // Complements must be checked before permissive Unknown/Generic rules.
         // No compiler pass may turn uncertainty into a negative-type proof.
         if (to instanceof Not negative) {
