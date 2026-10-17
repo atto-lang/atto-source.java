@@ -165,11 +165,46 @@ def exact_permission(repo,r,receipt_key):
     if not permission_at_least(permission,"write") or permission!=r[receipt_key]:
         raise Denied("live reviewer permission changed: "+repo)
 
-def content_blob(repo,path,ref):
+def content_file(repo,path,ref,max_size=256*1024):
     d=PUB.gh_api(f"repos/{repo}/contents/{path}?ref={ref}")
-    if d.get("type")!="file" or type(d.get("size")) is not int or d["size"]<1 or d["size"]>256*1024:
+    if (d.get("type")!="file" or d.get("encoding")!="base64" or type(d.get("content")) is not str
+            or type(d.get("size")) is not int or d["size"]<1 or d["size"]>max_size):
         raise Denied("reviewed file unavailable: "+path)
-    return require_sha(d.get("sha"),path+" blob")
+    try: raw=base64.b64decode(d["content"],validate=True)
+    except Exception as exc: raise Denied("reviewed file is not canonical base64: "+path) from exc
+    if len(raw)!=d["size"]: raise Denied("reviewed file size mismatch: "+path)
+    expected=hashlib.sha1(b"blob "+str(len(raw)).encode("ascii")+b"\\0"+raw).hexdigest()
+    if require_sha(d.get("sha"),path+" blob")!=expected: raise Denied("reviewed file blob mismatch: "+path)
+    return raw,expected
+
+def content_blob(repo,path,ref):
+    return content_file(repo,path,ref)[1]
+
+def require_live_reviewer_policy(r):
+    source_raw,source_blob=content_file(SOURCE_REPO,".github/private-ci-independent-reviewer.json",
+                                        r["publisher_policy_head_sha"],64*1024)
+    carrier_raw,carrier_blob=content_file(CARRIER_REPO,".github/private-ci-independent-reviewer.json",
+                                          r["carrier_policy_head_sha"],64*1024)
+    if source_raw!=carrier_raw or source_blob!=carrier_blob or source_blob!=r["independent_reviewer_policy_blob_sha"]:
+        raise Denied("source/carrier reviewer policy mismatch")
+    policy=parse_json_bytes(source_raw,"reviewer policy",dict)
+    if (set(policy)!={"schema","enabled","minimumPermission","disallowedReviewerIds","reviewer"}
+            or policy.get("schema")!=2 or policy.get("enabled") is not True):
+        raise Denied("independent reviewer policy is not enabled")
+    if set(policy.get("disallowedReviewerIds") or [])!=DISALLOWED_REVIEWER_IDS:
+        raise Denied("independent reviewer denylist changed")
+    reviewer=policy.get("reviewer")
+    if (type(reviewer) is not dict or set(reviewer)!={"login","id"}
+            or reviewer.get("login")!=r["independent_reviewer_login"]
+            or reviewer.get("id")!=r["independent_reviewer_id"]):
+        raise Denied("receipt reviewer does not match live reviewer policy")
+    minimum=policy.get("minimumPermission")
+    if minimum not in ("write","maintain","admin"):
+        raise Denied("invalid reviewer minimum permission")
+    for key in ("independent_reviewer_source_permission","independent_reviewer_carrier_permission"):
+        if not permission_at_least(r[key],minimum):
+            raise Denied("receipt permission below live reviewer policy")
+    return minimum
 
 def require_exact_ledger(repo,path,ref,expected):
     d=PUB.gh_api(f"repos/{repo}/contents/{path}?ref={ref}")
@@ -230,14 +265,14 @@ def refresh_authorization(r):
     exact_review(SOURCE_REPO,DESTINATION_PR,r["destination_approval_head_sha"],r,r["destination_review_id"])
     exact_review(SOURCE_REPO,SNAPSHOT_PR,r["snapshot_approval_head_sha"],r,r["snapshot_review_id"])
     exact_review(CARRIER_REPO,CARRIER_PR,r["carrier_policy_head_sha"],r,r["carrier_review_id"])
+    minimum=require_live_reviewer_policy(r)
     exact_permission(SOURCE_REPO,r,"independent_reviewer_source_permission")
     exact_permission(CARRIER_REPO,r,"independent_reviewer_carrier_permission")
+    if (not permission_at_least(r["independent_reviewer_source_permission"],minimum)
+            or not permission_at_least(r["independent_reviewer_carrier_permission"],minimum)):
+        raise Denied("live reviewer permission below policy minimum")
     if content_blob(CARRIER_REPO,".github/workflows/private-oreslang-java-validation.yml",r["carrier_policy_head_sha"])!=r["carrier_workflow_blob_sha"]:
         raise Denied("carrier validation workflow changed")
-    source_policy=content_blob(SOURCE_REPO,".github/private-ci-independent-reviewer.json",r["publisher_policy_head_sha"])
-    carrier_policy=content_blob(CARRIER_REPO,".github/private-ci-independent-reviewer.json",r["carrier_policy_head_sha"])
-    if source_policy!=r["independent_reviewer_policy_blob_sha"] or carrier_policy!=source_policy:
-        raise Denied("reviewer policy blob mismatch")
     require_exact_ledger(SOURCE_REPO,".github/private-ci-approved-repositories.txt",r["publisher_policy_head_sha"],
                          f"{CARRIER_REPO} {CARRIER_REPO_ID}")
     require_exact_ledger(SOURCE_REPO,".github/private-ci-approved-source-snapshots.txt",r["publisher_policy_head_sha"],
