@@ -5114,6 +5114,7 @@ public final class TypeChecker {
         return env.lookup("Integer") == null
                 && !modules.containsKey("Integer")
                 && findClass("Integer") == null
+                && findTypeAlias("Integer") == null
                 && !hasFunctionFamily("Integer")
                 && !importedValues.contains("Integer");
     }
@@ -5126,6 +5127,7 @@ public final class TypeChecker {
         return env.lookup("Double") == null
                 && !modules.containsKey("Double")
                 && findClass("Double") == null
+                && findTypeAlias("Double") == null
                 && !hasFunctionFamily("Double")
                 && !importedValues.contains("Double");
     }
