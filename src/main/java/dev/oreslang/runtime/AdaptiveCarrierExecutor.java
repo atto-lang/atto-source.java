@@ -6,6 +6,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Bounded JVM execution-carrier pool which creates a worker before growing its
@@ -25,7 +26,7 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
     private static final ThreadLocal<Boolean> FORBID_WORKER_START =
             ThreadLocal.withInitial(() -> Boolean.FALSE);
     private final int minimum;
-    private final Object admission = new Object();
+    private final ReentrantLock admission = new ReentrantLock();
     // All submitted runnable turns, including queued and not-yet-active turns.
     // Guarded by admission: getActiveCount() is only an approximation and can
     // lag behind thread creation during a burst.
@@ -79,7 +80,9 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
      */
     void executeWithoutCarrierGrowth(Runnable task) {
         Objects.requireNonNull(task, "task");
-        synchronized (admission) {
+        if (!admission.tryLock())
+            throw new RejectedExecutionException("JVM carrier admission is busy");
+        try {
             if (isShutdown())
                 throw new RejectedExecutionException("carrier pool stopped");
             if (getPoolSize() == 0)
@@ -104,6 +107,8 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
                 if (previous) FORBID_WORKER_START.set(Boolean.TRUE);
                 else FORBID_WORKER_START.remove();
             }
+        } finally {
+            admission.unlock();
         }
     }
 
@@ -117,7 +122,8 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
 
     @Override public void execute(Runnable task) {
         Objects.requireNonNull(task, "task");
-        synchronized (admission) {
+        admission.lock();
+        try {
             if (isShutdown()) throw new RejectedExecutionException("carrier pool stopped");
             // Track actual admitted runnable demand, not snapshots of busy
             // workers. A new worker may not yet appear ACTIVE when a burst
@@ -138,6 +144,8 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
                     setCorePoolSize(priorTarget);
                 throw rejected;
             }
+        } finally {
+            admission.unlock();
         }
     }
 
@@ -145,7 +153,8 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
         try {
             super.afterExecute(task, failure);
         } finally {
-            synchronized (admission) {
+            admission.lock();
+            try {
                 if (admittedTurns <= 0)
                     throw new IllegalStateException("carrier runnable credit underflow");
                 int remaining = --admittedTurns;
@@ -154,6 +163,8 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
                             Math.max(minimum, remaining));
                     if (getCorePoolSize() > target) setCorePoolSize(target);
                 }
+            } finally {
+                admission.unlock();
             }
         }
         // Never invoke this while admission is locked: it can submit the
