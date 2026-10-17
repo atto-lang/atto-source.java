@@ -35,6 +35,7 @@ LOGIN=re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 MAX_JSON=2*1024*1024
 PREFIX="private-oreslang-source"
 PROVENANCE=".private-ci-provenance.json"
+AUTH_REF_PREFIX="ci/authorized-"
 
 class Denied(RuntimeError): pass
 
@@ -276,6 +277,40 @@ def branch_absent(r):
         raise Denied("private CI branch already exists")
     return branch
 
+def authorization_branch(commit_sha):
+    return AUTH_REF_PREFIX + require_sha(commit_sha,"payload commit")
+
+def authorization_ref_absent(commit_sha):
+    branch=authorization_branch(commit_sha)
+    refs=api_list(f"repos/{CARRIER_REPO}/git/matching-refs/heads/{branch}")
+    if any(isinstance(x,dict) and x.get("ref")=="refs/heads/"+branch for x in refs):
+        raise Denied("private CI authorization ref already exists")
+    return branch
+
+def create_authorization_ref(r,commit_sha):
+    """Publish the non-triggering handoff only after the final live recheck.
+
+    The source-bearing ci/oreslang-* ref may already have queued a carrier run,
+    but the carrier must not check out or execute it until this exact
+    ci/authorized-<payload-sha> ref exists and points to the event SHA.
+    """
+    commit_sha=require_sha(commit_sha,"payload commit")
+    payload_branch="ci/oreslang-"+r["source_tree_sha"]
+    payload=PUB.gh_api(f"repos/{CARRIER_REPO}/git/ref/heads/{payload_branch}")
+    obj=payload.get("object") or {}
+    if (payload.get("ref")!="refs/heads/"+payload_branch or obj.get("type")!="commit"
+            or require_sha(obj.get("sha"),"payload ref commit")!=commit_sha):
+        raise Denied("payload ref changed before authorization handoff")
+    refresh_authorization(r)
+    branch=authorization_ref_absent(commit_sha)
+    created=PUB.gh_api(f"repos/{CARRIER_REPO}/git/refs",method="POST",
+                       payload={"ref":"refs/heads/"+branch,"sha":commit_sha})
+    created_obj=created.get("object") or {}
+    if (created.get("ref")!="refs/heads/"+branch or created_obj.get("type")!="commit"
+            or require_sha(created_obj.get("sha"),"authorization ref commit")!=commit_sha):
+        raise Denied("carrier authorization ref creation response mismatch")
+    return branch
+
 def require_reviewed_ledgers(r):
     # Destination and source-snapshot authority are independently reviewed
     # security PRs. Read each ledger from the exact head that received that
@@ -446,7 +481,7 @@ def dispatch(receipt_path,source_dir):
         if (ref.get("ref")!="refs/heads/"+branch or ref_obj.get("type")!="commit"
                 or require_sha(ref_obj.get("sha"),"readback ref commit")!=commit_sha):
             raise Denied("carrier ref readback mismatch")
-        refresh_authorization(r)
+        create_authorization_ref(r,commit_sha)
     except Exception as exc:
         try:
             cleanup_exact_payload_ref(r,commit_sha)
