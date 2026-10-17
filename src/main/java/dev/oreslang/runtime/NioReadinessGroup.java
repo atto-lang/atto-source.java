@@ -78,9 +78,13 @@ public final class NioReadinessGroup implements AutoCloseable {
     private final Executor completionExecutor;
     private final ThreadPoolExecutor ownedCompletionExecutor;
     // Context-owned completion handoff: scheduler/actor carriers already in
-    // the VM budget, never an extra NIO completion worker. Installed once
-    // before first watch; standalone host groups retain the legacy pool.
+    // the VM budget. The first *runnable* bound completion is admitted through
+    // the existing lazy host pool only as a short-lived bootstrap submitter so
+    // native/JVM carrier creation never blocks a selector. The bootstrapper
+    // never executes the completion callback itself.
     private volatile Executor boundCompletionExecutor;
+    private final AtomicBoolean boundCompletionBootstrapInFlight = new AtomicBoolean();
+    private volatile boolean boundCompletionBootstrapped;
     // A failed submission is not proof that an arbitrary host Executor
     // never invoked or scheduled the task. Preserve one claim token across
     // retries so a callback (and its notification reservation) runs once.
@@ -186,8 +190,7 @@ public final class NioReadinessGroup implements AutoCloseable {
         return boundCompletionExecutor != null || ownedCompletionExecutor == null;
     }
     int completionCarrierCount() {
-        return boundCompletionExecutor != null || ownedCompletionExecutor == null
-                ? 0 : ownedCompletionExecutor.getPoolSize();
+        return ownedCompletionExecutor == null ? 0 : ownedCompletionExecutor.getPoolSize();
     }
 
     /** One-time, pre-admission binding for an actual VM actor scheduler.
@@ -232,6 +235,49 @@ public final class NioReadinessGroup implements AutoCloseable {
         }
     }
 
+    /**
+     * Bootstrap a bound actor/scheduler executor off the selector stack.
+     *
+     * The helper is created only after a real terminal notification exists, so
+     * pending I/O alone still creates no actor carrier. It submits a host-only
+     * no-op through the exact bound executor, waits only on that helper thread
+     * for any cold native/JVM worker startup, then retires permanently after
+     * successful admission. The actual NotificationDelivery remains staged and
+     * is never executed by this helper.
+     */
+    private void requestBoundCompletionBootstrap(Executor target) {
+        if (ownedCompletionExecutor == null || boundCompletionBootstrapped
+                || liveReactors.get() == 0
+                || !boundCompletionBootstrapInFlight.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            ownedCompletionExecutor.execute(() -> {
+                boolean admitted = false;
+                try {
+                    target.execute(() -> { });
+                    boundCompletionBootstrapped = true;
+                    admitted = true;
+                } catch (RuntimeException submissionFailure) {
+                    if (!(submissionFailure instanceof RejectedExecutionException))
+                        unexpectedSubmissionFailures.incrementAndGet();
+                } finally {
+                    boundCompletionBootstrapInFlight.set(false);
+                    if (admitted) {
+                        // This pool is a one-shot cold-start submitter on the
+                        // bound VM path, not a completion-callback executor.
+                        ownedCompletionExecutor.shutdown();
+                        retryStagedNotifications();
+                    }
+                }
+            });
+        } catch (RuntimeException submissionFailure) {
+            boundCompletionBootstrapInFlight.set(false);
+            if (!(submissionFailure instanceof RejectedExecutionException))
+                unexpectedSubmissionFailures.incrementAndGet();
+        }
+    }
+
     /** Called after an actor turn or accepted host notification retires,
      * so a temporarily full actor queue cannot strand accepted NIO work.
      * Each dispatch pass offers at most 128 records; inline reentrant
@@ -242,6 +288,16 @@ public final class NioReadinessGroup implements AutoCloseable {
         Executor target = boundCompletionExecutor;
         if (target == null && ownedCompletionExecutor != null) return;
         if (target == null) target = completionExecutor;
+
+        // A cold native actor pool may synchronously wait for pthread/JNI
+        // publication in Executor.execute(). Never do that from a selector.
+        // Once the first runnable completion has bootstrapped the exact bound
+        // executor off-thread, later submissions are bounded queue operations.
+        if (boundCompletionExecutor != null && !boundCompletionBootstrapped
+                && liveReactors.get() > 0 && ownedCompletionExecutor != null) {
+            requestBoundCompletionBootstrap(target);
+            return;
+        }
 
         // Concurrent requests coalesce without parking the reactor behind a
         // host callback. Inline, reentrant callbacks request another pass
