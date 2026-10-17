@@ -1,6 +1,7 @@
 # All source-export, CI-policy, runner, admission-test and review files
 # are under terminal exact CODEOWNER rules. Last matching rule wins.
 # Branch-protection enforcement and independent review are still required.
+/.github/workflows/ @ORESoftware
 /.github/CODEOWNERS @ORESoftware
 /.github/private-ci-approved-repositories.txt @ORESoftware
 /.github/private-ci-approved-source-snapshots.txt @ORESoftware
