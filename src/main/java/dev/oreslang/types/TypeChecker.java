@@ -2385,12 +2385,14 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
-            if (isBuiltinIntegerPredicate(call, env)) {
+            if (isBuiltinIntegerPredicate(call, env) || isBuiltinDoublePredicate(call, env)) {
+                String predicate = isBuiltinIntegerPredicate(call, env)
+                        ? "Integer.is_int" : "Double.is_double";
                 if (call.typeArgumentsPresent()) {
-                    throw new IllegalArgumentException("Integer.is_int does not accept call-site type arguments");
+                    throw new IllegalArgumentException(predicate + " does not accept call-site type arguments");
                 }
                 if (call.arguments().size() != 1 || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
-                    throw new IllegalArgumentException("Integer.is_int expects exactly one value");
+                    throw new IllegalArgumentException(predicate + " expects exactly one value");
                 }
                 typeOf(call.arguments().getFirst(), env, generics, self);
                 return Primitive.BOOL;
@@ -5116,6 +5118,18 @@ public final class TypeChecker {
                 && !importedValues.contains("Integer");
     }
 
+    private boolean isBuiltinDoublePredicate(Ast.CallExpr call, Env env) {
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || !member.member().equals("is_double")
+                || !(member.receiver() instanceof Ast.NameExpr namespace)
+                || !namespace.name().equals("Double")) return false;
+        return env.lookup("Double") == null
+                && !modules.containsKey("Double")
+                && findClass("Double") == null
+                && !hasFunctionFamily("Double")
+                && !importedValues.contains("Double");
+    }
+
     private Type typeOfCondition(Ast.Expr expr, Env env, Set<String> generics, Type self) {
         if (expr instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
             requireAssignable(typeOfCondition(binary.left(), env, generics, self), Primitive.BOOL, "logical operand");
@@ -5129,16 +5143,20 @@ public final class TypeChecker {
 
     private void defineConditionBindings(
             Ast.Expr condition, Env destination, Env sourceEnv, Set<String> generics, Type self) {
-        if (condition instanceof Ast.CallExpr call && isBuiltinIntegerPredicate(call, sourceEnv)
-                && call.arguments().size() == 1
+        if (condition instanceof Ast.CallExpr call
+                && (isBuiltinIntegerPredicate(call, sourceEnv)
+                    || isBuiltinDoublePredicate(call, sourceEnv))
+                && call.arguments().size() == 1 && !call.typeArgumentsPresent()
                 && call.arguments().getFirst() instanceof Ast.NameExpr name) {
             Env.Binding binding = sourceEnv.lookup(name.name());
-            // Only immutable/stable bindings are narrowed. Rebindable locations
-            // retain their declared type so mutation cannot invalidate the proof.
+            Type narrowed = isBuiltinIntegerPredicate(call, sourceEnv)
+                    ? Primitive.INT : Primitive.FLOAT;
+            // Narrow stable lexical values only; aliases and rebindable
+            // locations cannot inherit this proof across mutation.
             if (binding != null && binding.kind() != Ast.BindingKind.LET
                     && !binding.hasUninitializedFields()
-                    && typesMayOverlap(deref(binding.type()), Primitive.INT)) {
-                destination.define(name.name(), Primitive.INT, binding.kind());
+                    && typesMayOverlap(deref(binding.type()), narrowed)) {
+                destination.define(name.name(), narrowed, binding.kind());
             }
             return;
         }
