@@ -2031,6 +2031,21 @@ public final class ActorRuntime implements AutoCloseable {
             return supervisorControl.queued();
         }
 
+        public int reservedSupervisorControlSlots() {
+            requireObserver("inspect supervisor CONTROL reservations");
+            return supervisorControl.reserved();
+        }
+
+        public int availableSupervisorControlSlots() {
+            requireObserver("inspect supervisor CONTROL capacity");
+            return supervisorControl.availableReservations();
+        }
+
+        public List<SupervisorFailureControl.PendingTerminal> pendingSupervisorFailures() {
+            requireObserver("inspect durable supervisor terminal state");
+            return supervisorControl.pendingSnapshot();
+        }
+
         /** Actor-only, non-reentrant delivery of authenticated child terminal CONTROL. */
         public Optional<SupervisorFailureControl.Notice> pollSupervisorNotice() {
             requireCallerRuntimeAffinity("poll actor-owned supervisor CONTROL");
