@@ -75,10 +75,28 @@ public final class PortableCodecRegistry {
     public record ObjectShape(List<Field> fields) implements Shape {
         public ObjectShape {
             Objects.requireNonNull(fields, "fields");
-            if (fields.size() > 256) {
+            // Capture one bounded size and copy only by indexed access. An
+            // external AbstractList can lie in toArray()/iterator() or change
+            // its reported size after validation; List.copyOf(fields) would
+            // traverse that untrusted collection a second time.
+            int admittedCount = fields.size();
+            if (admittedCount < 0 || admittedCount > 256) {
                 throw new IllegalArgumentException("portable record exceeds 256 fields");
             }
-            fields = List.copyOf(fields);
+            List<Field> snapshot = new ArrayList<>(admittedCount);
+            for (int i = 0; i < admittedCount; i++) {
+                Field field;
+                try {
+                    field = fields.get(i);
+                } catch (IndexOutOfBoundsException changed) {
+                    throw new IllegalArgumentException("portable record fields changed during snapshot", changed);
+                }
+                if (field == null) {
+                    throw new IllegalArgumentException("null portable record field");
+                }
+                snapshot.add(field);
+            }
+            fields = List.copyOf(snapshot);
         }
     }
 
