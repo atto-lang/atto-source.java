@@ -442,6 +442,21 @@ def payload_branch(receipt):
     return "ci/oreslang-" + receipt["source_tree_sha"]
 
 
+def delete_payload_ref_if_exact(receipt, commit_sha):
+    """Best-effort exposure cleanup, but only for the exact ref/commit we created."""
+    branch = payload_branch(receipt)
+    ref = pub.gh_api(f"repos/{CARRIER_REPO}/git/ref/heads/{branch}")
+    if (ref.get("ref") != "refs/heads/" + branch
+            or pub.nested_sha(ref, "object") != commit_sha):
+        raise Denied("payload ref cleanup refused because the ref moved")
+    pub.gh_api_no_content(
+        f"repos/{CARRIER_REPO}/git/refs/heads/{branch}", method="DELETE")
+    remaining = matching_payload_refs(receipt["source_tree_sha"])
+    if any(type(item) is dict and item.get("ref") == "refs/heads/" + branch
+           for item in remaining):
+        raise Denied("payload ref cleanup could not be confirmed")
+
+
 def write_payload(files, receipt, authorize=full_authorize):
     """Create one source-bearing commit after a fresh authorization per write."""
     validate_receipt(receipt)
@@ -526,19 +541,7 @@ def write_payload(files, receipt, authorize=full_authorize):
         })
     commit_sha = require_sha(commit.get("sha"), "payload commit")
 
-    authorize(receipt, True)
-    created = pub.gh_api(
-        f"repos/{CARRIER_REPO}/git/refs", method="POST",
-        payload={"ref": "refs/heads/" + branch, "sha": commit_sha})
-    if created.get("ref") != "refs/heads/" + branch:
-        raise Denied("GitHub did not confirm payload ref creation")
-    if pub.nested_sha(created, "object") != commit_sha:
-        raise Denied("created payload ref points to unexpected commit")
-
-    read_ref = pub.gh_api(f"repos/{CARRIER_REPO}/git/ref/heads/{branch}")
-    if (read_ref.get("ref") != "refs/heads/" + branch
-            or pub.nested_sha(read_ref, "object") != commit_sha):
-        raise Denied("payload ref readback mismatch")
+    # Prove all immutable objects before exposing a branch that triggers CI.
     read_commit = pub.gh_api(f"repos/{CARRIER_REPO}/git/commits/{commit_sha}")
     parents = read_commit.get("parents")
     if (read_commit.get("sha") != commit_sha or type(parents) is not list
@@ -564,7 +567,29 @@ def write_payload(files, receipt, authorize=full_authorize):
     if len(source_matches) != 1 or len(provenance_matches) != 1:
         raise Denied("payload tree lacks exact source/provenance entries")
 
-    authorize(receipt, False)
+    authorize(receipt, True)
+    created = pub.gh_api(
+        f"repos/{CARRIER_REPO}/git/refs", method="POST",
+        payload={"ref": "refs/heads/" + branch, "sha": commit_sha})
+    if created.get("ref") != "refs/heads/" + branch:
+        raise Denied("GitHub did not confirm payload ref creation")
+    if pub.nested_sha(created, "object") != commit_sha:
+        raise Denied("created payload ref points to unexpected commit")
+
+    try:
+        read_ref = pub.gh_api(f"repos/{CARRIER_REPO}/git/ref/heads/{branch}")
+        if (read_ref.get("ref") != "refs/heads/" + branch
+                or pub.nested_sha(read_ref, "object") != commit_sha):
+            raise Denied("payload ref readback mismatch")
+        authorize(receipt, False)
+    except Exception as exc:
+        try:
+            delete_payload_ref_if_exact(receipt, commit_sha)
+        except Exception as cleanup:
+            raise Denied(
+                "payload verification failed and exact ref cleanup could not be confirmed"
+            ) from cleanup
+        raise exc
     return commit_sha, len(files)
 
 
