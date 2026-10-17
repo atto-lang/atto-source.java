@@ -778,6 +778,13 @@ public final class ActorRuntime implements AutoCloseable {
         private final Set<ExplicitNativeI64Region> explicitNativeI64Regions =
                 ConcurrentHashMap.newKeySet();
         private final Set<ActorArena> actorArenas = ConcurrentHashMap.newKeySet();
+        /**
+         * Source tasks that may outlive the current mailbox turn. A task lease
+         * dynamically acquires lifetime-only pins for arenas created after the
+         * task itself was admitted, so allocation order cannot bypass quiescence.
+         */
+        private final Set<ExternalTaskLease> activeTaskLeases =
+                ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, ActorKind ownerKind, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
@@ -894,7 +901,37 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 ActorArena arena = ActorArena.open(this, persistentSlots, scratchSlots);
                 actorArenas.add(arena);
-                return arena;
+                List<ExternalTaskLease> attached = new ArrayList<>();
+                try {
+                    for (ExternalTaskLease lease : List.copyOf(activeTaskLeases)) {
+                        if (lease.attachArena(arena)) attached.add(lease);
+                    }
+                    return arena;
+                } catch (RuntimeException | Error failure) {
+                    Throwable cleanupFailure = null;
+                    for (int i = attached.size() - 1; i >= 0; i--) {
+                        try {
+                            attached.get(i).releaseArenaAttachment(arena);
+                        } catch (RuntimeException | Error closing) {
+                            if (cleanupFailure == null) cleanupFailure = closing;
+                            else if (cleanupFailure != closing) {
+                                cleanupFailure.addSuppressed(closing);
+                            }
+                        }
+                    }
+                    try {
+                        arena.close();
+                    } catch (RuntimeException | Error closing) {
+                        if (cleanupFailure == null) cleanupFailure = closing;
+                        else if (cleanupFailure != closing) {
+                            cleanupFailure.addSuppressed(closing);
+                        }
+                    }
+                    if (cleanupFailure != null && cleanupFailure != failure) {
+                        failure.addSuppressed(cleanupFailure);
+                    }
+                    throw failure;
+                }
             }
         }
 
@@ -916,26 +953,63 @@ public final class ActorRuntime implements AutoCloseable {
          * operations and may be closed from an arbitrary completion carrier.
          */
         private final class ExternalTaskLease implements AutoCloseable {
-            private final List<ActorArena.ExternalLease> leases;
+            private record ArenaPin(
+                    ActorArena arena,
+                    ActorArena.ExternalLease lease) { }
+
+            private final List<ArenaPin> pins = new ArrayList<>();
             private boolean released;
 
-            private ExternalTaskLease(List<ActorArena.ExternalLease> leases) {
-                this.leases = List.copyOf(leases);
+            private synchronized boolean attachArena(ActorArena arena) {
+                Objects.requireNonNull(arena, "actor arena");
+                if (released) return false;
+                for (ArenaPin pin : pins) {
+                    if (pin.arena() == arena) return true;
+                }
+                ActorArena.ExternalLease acquired = arena.acquireExternalLease();
+                try {
+                    pins.add(new ArenaPin(arena, acquired));
+                    return true;
+                } catch (RuntimeException | Error failure) {
+                    try {
+                        acquired.close();
+                    } catch (RuntimeException | Error closing) {
+                        if (closing != failure) failure.addSuppressed(closing);
+                    }
+                    throw failure;
+                }
+            }
+
+            /**
+             * Roll back one dynamically attached arena when arena admission
+             * itself fails. A failed physical/accounting close deliberately
+             * leaves the pin registered so later task settlement can retry it.
+             */
+            private synchronized void releaseArenaAttachment(ActorArena arena) {
+                for (int i = pins.size() - 1; i >= 0; i--) {
+                    ArenaPin pin = pins.get(i);
+                    if (pin.arena() != arena) continue;
+                    pin.lease().close();
+                    pins.remove(i);
+                    return;
+                }
             }
 
             @Override public synchronized void close() {
                 if (released) return;
                 Throwable failure = null;
-                for (int i = leases.size() - 1; i >= 0; i--) {
+                for (int i = pins.size() - 1; i >= 0; i--) {
                     try {
-                        leases.get(i).close();
+                        pins.get(i).lease().close();
                     } catch (RuntimeException | Error closing) {
                         if (failure == null) failure = closing;
                         else if (failure != closing) failure.addSuppressed(closing);
                     }
                 }
                 if (failure == null) {
+                    pins.clear();
                     released = true;
+                    activeTaskLeases.remove(this);
                     return;
                 }
                 if (failure instanceof RuntimeException error) throw error;
@@ -946,28 +1020,23 @@ public final class ActorRuntime implements AutoCloseable {
         /**
          * Acquire one lifetime-only lease from every currently registered
          * actor arena before a source task is allowed to escape the turn.
-         * Partial acquisition rolls back exactly once.
+         * The lease remains registered so arenas created later in the same
+         * actor incarnation are attached before newActorArena returns.
          */
         private ExternalTaskLease acquireExternalTaskLease() {
             requireCurrentOwner();
-            List<ActorArena.ExternalLease> acquired = new ArrayList<>();
+            ExternalTaskLease lease = new ExternalTaskLease();
             try {
                 for (ActorArena arena : List.copyOf(actorArenas)) {
-                    acquired.add(arena.acquireExternalLease());
+                    lease.attachArena(arena);
                 }
-                return new ExternalTaskLease(acquired);
+                activeTaskLeases.add(lease);
+                return lease;
             } catch (RuntimeException | Error failure) {
-                Throwable cleanupFailure = null;
-                for (int i = acquired.size() - 1; i >= 0; i--) {
-                    try {
-                        acquired.get(i).close();
-                    } catch (RuntimeException | Error closing) {
-                        if (cleanupFailure == null) cleanupFailure = closing;
-                        else if (cleanupFailure != closing) cleanupFailure.addSuppressed(closing);
-                    }
-                }
-                if (cleanupFailure != null && cleanupFailure != failure) {
-                    failure.addSuppressed(cleanupFailure);
+                try {
+                    lease.close();
+                } catch (RuntimeException | Error closing) {
+                    if (closing != failure) failure.addSuppressed(closing);
                 }
                 throw failure;
             }
