@@ -55,6 +55,7 @@ public final class OresVM implements AutoCloseable {
 
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
 
+    private final OresCarrierBudget carrierBudget;
     private final ThreadPoolExecutor controlExecutor;
     private final OresScheduler rootScheduler;
     /** VM-owned selector domain: reactor #0 starts on first accepted watch. */
@@ -65,6 +66,9 @@ public final class OresVM implements AutoCloseable {
     private OresVM(int controlParallelism, OresScheduler.TurnExecutor turnExecutor, Executor rootAdmission) {
         ActorHeapAdmission.requireSupportedJvmMode(
                 System.getProperty("ores.runtime.gc.mode", "hybrid"));
+        // Resolve before allocating any native/JVM worker: malformed budgets
+        // cannot leave a partially constructed VM with resident threads.
+        this.carrierBudget = OresCarrierBudget.configured();
         AtomicInteger carrierId = new AtomicInteger();
         ThreadFactory factory = runnable -> Thread.ofPlatform()
                 .daemon(true)
@@ -78,8 +82,9 @@ public final class OresVM implements AutoCloseable {
         // CONTROL is demand-driven in the default throughput profile. A
         // configured nonzero minimum is an explicit warm-start policy. Extra
         // carriers are created only when independent runnable CONTROL turns contend.
-        int maximumControlParallelism = Integer.getInteger(
-                "ores.runtime.control.max.parallelism", 20);
+        int maximumControlParallelism = carrierBudget == null
+                ? Integer.getInteger("ores.runtime.control.max.parallelism", 20)
+                : carrierBudget.controlReserve();
         validateControlBounds(controlParallelism, maximumControlParallelism);
         this.controlExecutor = new AdaptiveCarrierExecutor(
                 controlParallelism, maximumControlParallelism,
@@ -184,6 +189,8 @@ public final class OresVM implements AutoCloseable {
     }
 
     int nioReactorCount() { return nioReadiness.reactorCount(); }
+
+    OresCarrierBudget carrierBudget() { return carrierBudget; }
 
     /** Test/host diagnostic for OresVM-owned runtime threads only. JVM GC,
      * JIT/JVMCI and embedder threads are intentionally outside this census.
