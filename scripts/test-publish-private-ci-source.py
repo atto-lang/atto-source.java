@@ -24,10 +24,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source.mkdir()
         (self.root / ".github").mkdir()
         self.approval = self.root / ".github" / "private-ci-approved-repositories.txt"
-        self.approval.write_text("trusted/ci\n")
+        self.approval.write_text("trusted/ci 246810\n")
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
         self.visibility = ["private"] * 100
+        self.destination_ids = [246810] * 100
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
@@ -44,7 +45,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
             return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
-                        private=True, default_branch="main")
+                        private=True, id=self.destination_ids.pop(0), default_branch="main")
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
@@ -112,6 +113,48 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "source commit Git tree"):
                 self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_unapproved_numeric_id_denied_before_first_upload(self):
+        # Reused/renamed GitHub slug may still identify a private repository.
+        self.destination_ids = [246811] * 100
+        with self.assertRaisesRegex(pub.Denied, "numeric repository ID"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_numeric_id_flip_aborts_before_second_upload(self):
+        self.destination_ids = [246810, 246810, 246811] + [246811] * 100
+        with self.assertRaisesRegex(pub.Denied, "numeric repository ID"):
+            self.publish()
+        self.assertEqual([route for method, route, _ in self.route_calls
+                          if method == "POST"], ["repos/trusted/ci/git/blobs"])
+
+    def test_malformed_or_boolean_numeric_api_id_denied(self):
+        for invalid in (None, True, "246810", 0, -1, 246811):
+            with self.subTest(invalid=invalid):
+                self.route_calls.clear()
+                self.visibility = ["private"] * 100
+                self.destination_ids = [invalid] * 100
+                with self.assertRaises(pub.Denied):
+                    self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_policy_requires_exact_reviewed_name_and_numeric_id(self):
+        invalid_policies = (
+            "trusted/ci\n",
+            "trusted/ci 0246810\n",
+            "trusted/ci 246810 # comment\n",
+            "trusted/ci\t246810\n",
+            "trusted/ci 246810\nTRUSTED/CI 246810\n",
+            "trusted/ci 246810\ntrusted/ci 246811\n",
+        )
+        for contents in invalid_policies:
+            with self.subTest(contents=contents):
+                self.approval.write_text(contents)
+                self.route_calls.clear()
+                with self.assertRaises(pub.Denied):
+                    self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+        self.approval.write_text("trusted/ci 246810\n")
 
     def test_public_visibility_aborts_before_any_write(self):
         self.visibility = ["public"]
@@ -268,7 +311,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_policy_symlink_swap_between_check_and_read_rejected(self):
         outside = self.root / "outside-approved-policy"
-        outside.write_text("trusted/ci\n")
+        outside.write_text("trusted/ci 246810\n")
         self.approval.write_text("# no approval\n")
         original_read = Path.read_bytes
         def malicious_read(path):
@@ -289,7 +332,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_policy_parent_directory_swap_rejected(self):
         outside = self.root / "external-approved-dir"
         outside.mkdir()
-        (outside / "private-ci-approved-repositories.txt").write_text("trusted/ci\n")
+        (outside / "private-ci-approved-repositories.txt").write_text("trusted/ci 246810\n")
         self.approval.write_text("# no approval\n")
         original_open = pub.os.open
         replaced = [False]
@@ -378,7 +421,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         import os
         import threading
         outside = self.root / "outside-policy"
-        outside.write_text("trusted/ci\n")
+        outside.write_text("trusted/ci 246810\n")
         self.approval.write_text("# no approval\n")
         stop = threading.Event()
         def attacker():
@@ -471,7 +514,7 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
         (self.root / ".github").mkdir()
         (self.root / "scripts").mkdir()
         (self.root / ".github/private-ci-approved-repositories.txt").write_text(
-            "trusted/ci\n")
+            "trusted/ci 246810\n")
         (self.root / "scripts/publish-private-ci-source.py").write_bytes(
             MODULE.read_bytes())
         (self.root / "scripts/check-private-ci-destination.sh").write_text(
@@ -582,7 +625,7 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
     def test_locally_forged_allowlist_denied(self):
         original = (self.root / ".github/private-ci-approved-repositories.txt").read_bytes()
         (self.root / ".github/private-ci-approved-repositories.txt").write_text(
-            "trusted/ci\nunreviewed/destination\n")
+            "trusted/ci 246810\nunreviewed/destination 246811\n")
         def unchanged_remote(route, method="GET", payload=None):
             if route.endswith("/contents/.github/private-ci-approved-repositories.txt?ref=main"):
                 data = original

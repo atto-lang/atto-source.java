@@ -1,4 +1,5 @@
 # Private CI destinations explicitly approved for source transfers.
 # No repositories are approved by default.
 # Changes must be reviewed by maintainers and security owners on a protected branch.
-# Format: one exact owner/repo per uncommented line, no whitespace or wildcards.
+# Format: exact owner/repo ONE SPACE immutable numeric GitHub repository ID (e.g. trusted/ci 1234567).
+# No IDs, slugs, or entries are preapproved; changed repo IDs require new protected review.

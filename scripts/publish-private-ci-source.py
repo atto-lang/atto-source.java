@@ -16,6 +16,10 @@ import subprocess
 import sys
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+# The numeric repository ID is an independently reviewed part of approval.
+# An approved slug that is later transferred to a different GitHub repository
+# must never inherit authority to receive private source.
+APPROVAL = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]*)$")
 BRANCH = re.compile(r"^ci/oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}$")
 SHA = re.compile(r"^[a-f0-9]{40}$")
 MAX_FILES = 1024
@@ -61,13 +65,15 @@ def gh_api(route, method="GET", payload=None):
     return data
 
 
-def checked_repo(repository):
+def checked_repo(repository, approved_id):
     result = gh_api("repos/" + repository)
     if (not isinstance(result.get("full_name"), str)
             or result["full_name"].casefold() != repository.casefold()
+            or type(result.get("id")) is not int
+            or result["id"] != approved_id
             or result.get("visibility") != "private"
             or result.get("private") is not True):
-        raise Denied("destination identity or private visibility changed")
+        raise Denied("destination numeric repository ID, identity or private visibility changed")
     return result
 
 
@@ -82,7 +88,8 @@ def require_preflight(repository, root):
         raise Denied("destination policy check unavailable") from exc
     if p.returncode != 0:
         raise Denied("destination not approved by checked-in private policy")
-    checked_repo(repository)
+    _, approved_id = checked_policy_fingerprint(root, repository)
+    checked_repo(repository, approved_id)
 
 
 def checked_policy_fingerprint(root, repository):
@@ -125,17 +132,24 @@ def checked_policy_fingerprint(root, repository):
         lines = contents.decode("utf-8").splitlines()
     except UnicodeDecodeError as exc:
         raise Denied("private CI approval policy cannot be decoded") from exc
-    approved = False
+    approved_id = None
+    seen = set()
     for line in lines:
         if not line or line.startswith("#"):
             continue
-        if not NAME.fullmatch(line):
-            raise Denied("private CI approval policy contains an invalid entry")
-        if line.casefold() == repository.casefold():
-            approved = True
-    if not approved:
+        match = APPROVAL.fullmatch(line)
+        if match is None:
+            raise Denied("private CI approval policy requires owner/repo and numeric repository ID")
+        slug, numeric_id = match.groups()
+        key = slug.casefold()
+        if key in seen:
+            raise Denied("private CI approval policy has duplicate repository names")
+        seen.add(key)
+        if key == repository.casefold():
+            approved_id = int(numeric_id)
+    if approved_id is None:
         raise Denied("destination approval was revoked or absent")
-    return hashlib.sha256(contents).digest()
+    return hashlib.sha256(contents).digest(), approved_id
 
 def reviewed_source_main(root, repository):
     """Require the source's LIVE protected-main policy and publisher bytes.
@@ -356,7 +370,7 @@ def publish(repository, source, branch, trusted_root, source_commit=None):
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
     expected_source_tree = require_pinned_snapshot(branch, source_commit, files)
-    base = checked_repo(repository)
+    base = checked_repo(repository, approved_policy[1])
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
         raise Denied("destination default branch is invalid")
@@ -367,7 +381,7 @@ def publish(repository, source, branch, trusted_root, source_commit=None):
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
-        checked_repo(repository)
+        checked_repo(repository, approved_policy[1])
 
     elements = []
     for rel, data, mode in files:
