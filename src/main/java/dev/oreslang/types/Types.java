@@ -130,6 +130,11 @@ public final class Types {
                 throw new IllegalArgumentException(
                         "ordinary Tuple cannot carry fixed-sequence element metadata");
             }
+            if (kind != TupleKind.TUPLE
+                    && homogeneousElement == null
+                    && !elements.isEmpty()) {
+                homogeneousElement = inferHomogeneousElement(elements, kind);
+            }
             if (homogeneousElement != null && !elements.isEmpty()) {
                 for (Type element : elements) {
                     if (!element.equals(homogeneousElement)) {

@@ -96,6 +96,20 @@ final class StructuralContainerSourceParityTest {
                 end
                 """)));
 
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc empty(structural FixedList[0 of string] xs): int { return xs.length; }
+                  fnc ok(FixedList[0 of string] xs): int { return empty(xs); }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc empty(structural FixedList[0 of string] xs): int { return xs.length; }
+                  fnc bad(FixedList[0 of int] xs): int { return empty(xs); }
+                end
+                """)));
+
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module app
                   fnc head(structural FixedArray[2 of int] xs): int { return xs[0]; }
