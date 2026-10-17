@@ -70,7 +70,35 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
                 // by the *same* completion lease after logical release.
                 // Otherwise the retired actor may have no remaining carrier
                 // that can call region.retireFromActor() a second time.
-                if (closed.get() && loanCount == 0 && !physicalClosed.get()) {
+                if (closed.get() && loanCount == 0 && lifetimePinCount == 0
+                        && !physicalClosed.get()) {
+                    finishPhysicalClose();
+                }
+            }
+        }
+    }
+
+    /**
+     * Lifetime-only pin for a continuation/FFI/I/O completion that may outlive
+     * the actor turn. Unlike Loan, it carries no slot and exposes no memory
+     * read/write operation. Release may run on any completion carrier.
+     */
+    public final class LifetimePin implements AutoCloseable {
+        private final AtomicBoolean released = new AtomicBoolean();
+
+        private LifetimePin() { }
+
+        @Override public void close() {
+            synchronized (ExplicitNativeI64Region.this) {
+                if (released.compareAndSet(false, true)) {
+                    if (lifetimePinCount <= 0) {
+                        throw new IllegalStateException(
+                                "actor-native lifetime pin accounting underflow");
+                    }
+                    lifetimePinCount--;
+                }
+                if (closed.get() && loanCount == 0 && lifetimePinCount == 0
+                        && !physicalClosed.get()) {
                     finishPhysicalClose();
                 }
             }
@@ -96,6 +124,7 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean physicalClosed = new AtomicBoolean();
     private int loanCount;
+    private int lifetimePinCount;
     private int occupied;
 
     ExplicitNativeI64Region(
@@ -209,6 +238,16 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         return new Loan(slot);
     }
 
+    public synchronized LifetimePin pinLifetime() {
+        requireActor.run();
+        requireOpen();
+        if (lifetimePinCount == Integer.MAX_VALUE) {
+            throw new IllegalStateException("actor-native lifetime pin limit reached");
+        }
+        lifetimePinCount++;
+        return new LifetimePin();
+    }
+
     public synchronized void drop(Slot slot) {
         requireActor.run();
         int index = requireLive(slot);
@@ -232,6 +271,7 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     public synchronized boolean closed() { return closed.get(); }
     public synchronized boolean physicallyClosed() { return physicalClosed.get(); }
     public synchronized int activeLoans() { return loanCount; }
+    public synchronized int activeLifetimePins() { return lifetimePinCount; }
 
     @Override public void close() {
         requireActor.run();
@@ -245,14 +285,16 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
             // Retry a failed FFM close rather than permanently stranding
             // physically retained bytes behind an already-retired flag.
             // An outstanding loan still pins native storage until released.
-            if (loanCount == 0 && !physicalClosed.get()) finishPhysicalClose();
+            if (loanCount == 0 && lifetimePinCount == 0
+                    && !physicalClosed.get()) finishPhysicalClose();
         }
     }
 
     private boolean nativeScopeClosed;
 
     private void finishPhysicalClose() {
-        if (!closed.get() || loanCount != 0 || physicalClosed.get()) return;
+        if (!closed.get() || loanCount != 0 || lifetimePinCount != 0
+                || physicalClosed.get()) return;
         if (!nativeScopeClosed) {
             // Actor isolation requires explicit scrubbing before returning the
             // native allocation to the process allocator. Arena.close() gives
