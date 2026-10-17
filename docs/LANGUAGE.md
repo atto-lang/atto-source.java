@@ -721,6 +721,13 @@ ordinary method-name matching. A user module, function, class, import, or local
 binding named `Integer` cannot forge the narrowing fact. Mutable bindings are
 not narrowed because reassignment can invalidate the proof.
 
+`Integer.is_int` tests the compiler's current reifiable integer scalar domain
+(`Primitive.INT`), not the exact source spelling that produced the value.
+Fixed-width signed/unsigned integer spellings and the default integer aliases
+currently normalize into that domain. Backends must preserve this domain test
+with an equivalent closed-world tag/representation check; they must not use
+reflection or infer the result from a host-language class name.
+
 `typeof` is not a dynamic runtime test. In the current grammar it belongs to
 type syntax, including callable type queries such as
 `typeof fnc(int) => bool`. Source such as `typeof value == int` is therefore
