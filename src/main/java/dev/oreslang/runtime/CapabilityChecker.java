@@ -547,7 +547,8 @@ public final class CapabilityChecker {
             case "env.get", "env.has" -> permission = RuntimePermissions.Permission.ENV;
             case "fs.read_text", "fs.exists", "fs.list_dir", "fs.is_dir",
                     "fs.is_symlink" -> permission = RuntimePermissions.Permission.READ;
-            case "fs.write_text", "fs.write_text_atomic", "fs.append_text" ->
+            case "fs.write_text", "fs.write_text_atomic", "fs.append_text",
+                    "fs.mkdir_all", "fs.remove" ->
                     permission = RuntimePermissions.Permission.WRITE;
             case "http.get_text", "http.post_text" -> {
                 permission = RuntimePermissions.Permission.NET;
@@ -566,6 +567,15 @@ public final class CapabilityChecker {
                 if (port == -1) port = scheme.equalsIgnoreCase("https") ? 443 : 80;
                 if (port < 1 || port > 65535) return;
                 resource = uri.getHost().toLowerCase(java.util.Locale.ROOT) + ":" + port;
+                // Java's current HttpClient adapter has no checked-DNS
+                // address pinning and deliberately permits only canonical
+                // numeric IPv4 destinations. A hostname grant cannot make
+                // this known-unsupported operation compile-time safe.
+                if (!runtimePermissions.allowsNetworkConnection(resource, resource)) {
+                    throw new SecurityException(
+                            "Oreslang compile-time permission denied: HTTP requires"
+                                    + " an approved numeric IPv4 destination");
+                }
             }
             case "network.connect" -> {
                 permission = RuntimePermissions.Permission.NET;
