@@ -147,30 +147,44 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
 
     int outstanding() { return session.outstanding(); }
 
+    /**
+     * Single-destination routing is one-shot per authenticated inbound frame.
+     * Retire the source only after mailbox publication succeeds, so a failed
+     * selector/admission can be handled without silently consuming the turn,
+     * while a successful first send cannot be replayed to emulate fan-out.
+     */
     void forward(M value) {
         inLiveGeneration(() -> {
-            sendChild(session.forward(current()), value);
+            var source = current();
+            sendChild(session.forward(source), value);
+            ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
     }
 
     void forwardRoundRobin(M value) {
         inLiveGeneration(() -> {
-            sendChild(session.forwardRoundRobin(current()), value);
+            var source = current();
+            sendChild(session.forwardRoundRobin(source), value);
+            ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
     }
 
     void forwardTo(String target, M value) {
         inLiveGeneration(() -> {
-            sendChild(session.forwardTo(current(), target), value);
+            var source = current();
+            sendChild(session.forwardTo(source, target), value);
+            ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
     }
 
     void forwardByKey(String key, M value) {
         inLiveGeneration(() -> {
-            sendChild(session.forwardByKey(current(), key), value);
+            var source = current();
+            sendChild(session.forwardByKey(source, key), value);
+            ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
     }
@@ -257,6 +271,9 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
                     result.add(denied);
                 }
             }
+            // A completed fan-out attempt consumes the authenticated source
+            // frame. Reusing it would permit duplicate/hidden fan-out batches.
+            ActorPipelineRouteSession.retireDelivered(frame);
             return completed;
         } catch (RuntimeException | Error failure) {
             // Previously published branches retain their independent frames.
