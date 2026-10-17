@@ -804,6 +804,28 @@ public final class ActorRuntime implements AutoCloseable {
         }
         return new SharedDomainActorIdentity(cell.ref.id(), cell.ref.generation());
     }
+
+    record SharedDomainTurnIdentity(
+            SharedDomainActorIdentity actor,
+            Object turnToken) {
+        SharedDomainTurnIdentity {
+            Objects.requireNonNull(actor, "actor");
+            Objects.requireNonNull(turnToken, "turnToken");
+        }
+    }
+
+    SharedDomainTurnIdentity requireCurrentSharedDomainTurn() {
+        ActorExecutionContext execution = CURRENT_ACTOR_EXECUTION.get();
+        SharedDomainActorIdentity actor = requireCurrentSharedDomainActor();
+        // ActorExecutionContext is freshly installed for each admitted actor
+        // turn and removed on exit. Its object identity is therefore an
+        // unforgeable host-only lexical turn token, independent of carrier.
+        return new SharedDomainTurnIdentity(actor, execution);
+    }
+
+    void requireSharedDomainControlAuthority(String operation) {
+        requireSupervisorContext(operation);
+    }
     public long actorMemoryBytes() {
         // The three accounting domains are charged/refunded under this monitor.
         // Read one coherent snapshot rather than mixing different instants,
