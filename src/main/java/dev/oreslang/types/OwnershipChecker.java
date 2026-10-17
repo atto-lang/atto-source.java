@@ -106,6 +106,12 @@ public final class OwnershipChecker {
                 throw error("field '" + klass.name() + "." + field.name()
                         + "' cannot store a borrowed reference; class/actor fields must own, copy, share, or proxy their state");
             }
+            if ((fieldType != null && containsPointerCapability(fieldType))
+                    || (field.initializer() instanceof Ast.RuntimeCallExpr runtime
+                        && runtime.operation().equals("ref"))) {
+                throw error("field '" + klass.name() + "." + field.name()
+                        + "' cannot store Pointer<T> until place-aware move-out is implemented");
+            }
         }
 
         if (klass.constructor() != null) {
