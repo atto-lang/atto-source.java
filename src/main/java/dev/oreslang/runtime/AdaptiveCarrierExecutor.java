@@ -26,6 +26,10 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
     // Guarded by admission: getActiveCount() is only an approximation and can
     // lag behind thread creation during a burst.
     private int admittedTurns;
+    private volatile Runnable afterTaskHook;
+
+    /** Host-only bounded completion-drain signal, never a guest callback. */
+    void onTaskCompleted(Runnable hook) { afterTaskHook = hook; }
 
     AdaptiveCarrierExecutor(int minimum, int maximum, int queueCapacity,
                             ThreadFactory factory) {
@@ -95,5 +99,9 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
                 }
             }
         }
+        // Never invoke this while admission is locked: it can submit the
+        // next bounded NIO completion turn via execute().
+        Runnable callback = afterTaskHook;
+        if (callback != null) callback.run();
     }
 }
