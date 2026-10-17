@@ -2791,12 +2791,13 @@ public final class Parser {
         if (name.equals("borrow") && match(MUT)) {
             return new Ast.UnaryExpr("borrow mut", parseUnary());
         }
-        // No exclusive owning-pointer proof or mutable dereference lowering
-        // exists on this compiler head. Reject before operand evaluation rather
-        // than inventing an unchecked mutable alias of a managed target.
-        if ((name.equals("ref") || name.equals("unref") || name.equals("deref")) && match(MUT)) {
-            throw error(previous(), "rt " + name + " mut requires proven exclusive Pointer<T> "
-                    + "loans and writeback; this operation is not supported");
+        // Mutable dereference is a distinct compiler intrinsic. It is
+        // admitted only for deref; ref/unref mut remain ownership transfers,
+        // not mutable-loan operations.
+        if (name.equals("deref") && match(MUT)) {
+            name = "deref mut";
+        } else if ((name.equals("ref") || name.equals("unref")) && match(MUT)) {
+            throw error(previous(), "rt " + name + " mut is not a valid Pointer<T> operation");
         }
         Ast.Expr argument;
         if (match(LPAREN)) {
