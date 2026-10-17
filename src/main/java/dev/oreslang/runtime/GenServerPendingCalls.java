@@ -59,17 +59,34 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
 
     PendingCall<R> register(GenServerReplyLedger.Target target) {
         Objects.requireNonNull(target, "target");
-        synchronized (active) {
-            if (closed) throw new IllegalStateException("pending-call registry is closed");
-
-            GenServerReplyLedger.Ticket ticket = ledger.register(target);
-            OresFuture<R> future = new OresFuture<>(
-                    () -> retireForConsumerCancel(ticket, target),
-                    () -> { });
-            PendingCall<R> call = new PendingCall<>(this, ticket, target, future);
-            active.put(ticket, call);
-            return call;
+        PendingCall<R> call;
+        int depth;
+        try {
+            synchronized (active) {
+                if (closed) {
+                    throw new GenServerReplyLedger.AdmissionException(
+                            GenServerReplyLedger.AdmissionException.Reason.CLOSED,
+                            "pending-call registry is closed");
+                }
+                GenServerReplyLedger.Ticket ticket = ledger.register(target);
+                OresFuture<R> future = new OresFuture<>(
+                        () -> retireForConsumerCancel(ticket, target),
+                        () -> { });
+                call = new PendingCall<>(this, ticket, target, future);
+                active.put(ticket, call);
+                depth = active.size();
+            }
+        } catch (GenServerReplyLedger.AdmissionException rejected) {
+            record(ActorReliabilityKernel.EventKind.OVERLOAD_SHED, target,
+                    rejected.reason() == GenServerReplyLedger.AdmissionException.Reason.CAPACITY
+                            ? ActorReliabilityKernel.FaultClass.OVERLOAD
+                            : ActorReliabilityKernel.FaultClass.SHUTDOWN,
+                    pendingCount());
+            throw rejected;
         }
+        record(ActorReliabilityKernel.EventKind.CALL_REGISTERED, target,
+                ActorReliabilityKernel.FaultClass.NONE, depth);
+        return call;
     }
 
     boolean tryReply(
@@ -77,12 +94,18 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
             GenServerReplyLedger.Target respondingActor,
             R value) {
         if (!owns(call)) return false;
-        if (!ledger.tryReply(call.ticket, respondingActor)) return false;
+        if (!ledger.tryReply(call.ticket, respondingActor)) {
+            record(ActorReliabilityKernel.EventKind.CALL_REPLY_REJECTED, respondingActor,
+                    ActorReliabilityKernel.FaultClass.STALE_OR_DUPLICATE, pendingCount());
+            return false;
+        }
         removeActive(call.ticket);
         if (!call.future.completeFromRuntime(value)) {
             throw new IllegalStateException(
                     "GenServer reply won correlation but Future was already terminal");
         }
+        record(ActorReliabilityKernel.EventKind.CALL_REPLIED, call.target,
+                ActorReliabilityKernel.FaultClass.NONE, pendingCount());
         return true;
     }
 
@@ -95,6 +118,8 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
             throw new IllegalStateException(
                     "GenServer timeout won correlation but Future was already terminal");
         }
+        record(ActorReliabilityKernel.EventKind.CALL_TIMEOUT, call.target,
+                ActorReliabilityKernel.FaultClass.TIMEOUT, pendingCount());
         return true;
     }
 
@@ -125,6 +150,8 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
                 throw new IllegalStateException(
                         "GenServer close won correlation but Future was already terminal");
             }
+            record(ActorReliabilityKernel.EventKind.CALL_CLOSED, call.target,
+                    ActorReliabilityKernel.FaultClass.SHUTDOWN, pendingCount());
         }
         return toFail.size();
     }
