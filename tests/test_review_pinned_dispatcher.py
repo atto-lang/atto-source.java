@@ -248,6 +248,27 @@ class DispatcherTest(unittest.TestCase):
                 for name,val in saved.items(): setattr(MOD,name,val)
                 for name,val in pub_saved.items(): setattr(MOD.PUB,name,val)
 
+    def test_payload_readback_requires_exact_source_and_provenance_modes_and_hash(self):
+        import hashlib
+        r=receipt()
+        provenance=json.dumps(r,sort_keys=True,separators=(",",":"))+"\n"
+        raw=provenance.encode("utf-8")
+        prov_sha=hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\0"+raw).hexdigest()
+        good=[
+          {"path":MOD.PREFIX,"type":"tree","mode":"040000","sha":r["source_tree_sha"]},
+          {"path":MOD.PROVENANCE,"type":"blob","mode":"100644","sha":prov_sha},
+        ]
+        MOD.verify_payload_root_entries(good,r,provenance)
+        for mutate in (
+            lambda rows: rows[0].__setitem__("mode","100644"),
+            lambda rows: rows[0].__setitem__("sha","f"*40),
+            lambda rows: rows[1].__setitem__("mode","100755"),
+            lambda rows: rows[1].__setitem__("sha","e"*40),
+        ):
+            rows=[dict(x) for x in good]; mutate(rows)
+            with self.assertRaisesRegex(MOD.Denied,"exact source/provenance"):
+                MOD.verify_payload_root_entries(rows,r,provenance)
+
     def test_root_payload_scope_is_only_source_and_provenance(self):
         r=receipt()
         with tempfile.TemporaryDirectory() as td:
