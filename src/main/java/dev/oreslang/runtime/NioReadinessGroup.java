@@ -111,7 +111,11 @@ public final class NioReadinessGroup implements AutoCloseable {
 
     private final ConcurrentLinkedDeque<NotificationDelivery> stagedNotifications =
             new ConcurrentLinkedDeque<>();
-    private final Object notificationDispatch = new Object();
+    // Do not hold a monitor while calling a user-supplied Executor: it may
+    // invoke a slow callback inline. A selector must never block behind that
+    // callback merely because another readiness record is published.
+    private final AtomicBoolean notificationDispatching = new AtomicBoolean();
+    private final AtomicBoolean notificationRetryRequested = new AtomicBoolean();
     private final Object notificationDrain = new Object();
     // A transient registration burst must not spin up extra selector threads.
     // Counter is protected by the lifecycle monitor.
@@ -233,30 +237,49 @@ public final class NioReadinessGroup implements AutoCloseable {
         Executor target = boundCompletionExecutor;
         if (target == null && ownedCompletionExecutor != null) return;
         if (target == null) target = completionExecutor;
-        synchronized (notificationDispatch) {
-            for (int i = 0; i < 128; ++i) {
-                // Claim before invoking an arbitrary Executor: an inline
-                // completion may re-enter this method, and replaying an
-                // unclaimed head can release one notification twice.
-                NotificationDelivery next = stagedNotifications.pollFirst();
-                if (next == null) return;
-                if (next.claimed.get()) continue;
-                try {
-                    target.execute(next);
-                } catch (RejectedExecutionException full) {
-                    // An inline callback can itself throw RejectedExecutionException.
-                    // Never replay a delivery that has already claimed execution.
-                    // Keep the same claim token even for an executor that
-                    // improperly accepts a task and then throws rejection.
-                    if (!next.claimed.get()) {
-                        next.mayBeQueuedAfterRejection.set(true);
-                        stagedNotifications.addFirst(next);
-                        // Accepted async work might race this requeue.
-                        if (next.claimed.get()) stagedNotifications.remove(next);
+
+        // Concurrent requests coalesce without parking the reactor behind a
+        // host callback. Inline, reentrant callbacks request another pass
+        // rather than recursively executing a nested 128-record batch.
+        notificationRetryRequested.set(true);
+        if (!notificationDispatching.compareAndSet(false, true)) return;
+        for (;;) {
+            boolean rejected = false;
+            try {
+                int passes = 0;
+                do {
+                    notificationRetryRequested.set(false);
+                    for (int i = 0; i < 128; ++i) {
+                        NotificationDelivery next = stagedNotifications.pollFirst();
+                        if (next == null) break;
+                        if (next.claimed.get()) continue;
+                        try {
+                            target.execute(next);
+                        } catch (RejectedExecutionException full) {
+                            // Some Executors invoke a task inline before
+                            // propagating its rejection. Claimed work cannot
+                            // be requeued or have its permit released twice.
+                            if (next.claimed.get()) continue;
+                            next.mayBeQueuedAfterRejection.set(true);
+                            stagedNotifications.addFirst(next);
+                            if (next.claimed.get()) stagedNotifications.remove(next);
+                            rejected = true;
+                            break;
+                        }
                     }
-                    return;
-                }
+                    // At most 8192 records per draining invocation. A full
+                    // actor pool returns rejection, not an unbounded retry
+                    // loop on the selector; independent retry hooks provide
+                    // subsequent capacity notifications.
+                } while (!rejected && notificationRetryRequested.get()
+                        && ++passes < 64);
+            } finally {
+                notificationDispatching.set(false);
             }
+            if (rejected || !notificationRetryRequested.getAndSet(false)) return;
+            // A request may have arrived after the final pass or just before
+            // the lease was released. Reacquire or leave it to the new owner.
+            if (!notificationDispatching.compareAndSet(false, true)) return;
         }
     }
 
