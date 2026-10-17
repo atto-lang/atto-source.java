@@ -148,6 +148,67 @@ final class UntrustedActorTest {
     }
 
     @Test
+    void capabilityCheckerCannotBeBypassedThroughRefinementExpressions() {
+        List<String> sources = List.of(
+                """
+                pub untrusted actor fnc worker(): void {
+                  val bool hidden = process.context_id is type int;
+                  return;
+                }
+                """,
+                """
+                pub untrusted actor fnc worker(): void {
+                  val bool hidden = process.context_id matches is int;
+                  return;
+                }
+                """,
+                """
+                pub untrusted actor fnc worker(): void {
+                  val int hidden = process.context_id as int;
+                  return;
+                }
+                """,
+                """
+                pub untrusted actor fnc worker(): void {
+                  val hidden = trap process.context_id;
+                  return;
+                }
+                """,
+                """
+                pub untrusted actor fnc worker(): void {
+                  val int hidden = match process.context_id over
+                    on _ -> { return 1; }
+                  end;
+                  return;
+                }
+                """);
+
+        for (String source : sources) {
+            SecurityException denied = assertThrows(
+                    SecurityException.class,
+                    () -> CapabilityChecker.check(
+                            Parser.parse(source),
+                            IsolatePolicy.developer()));
+            assertTrue(denied.getMessage().contains("PROCESS_INFO"), denied::getMessage);
+        }
+    }
+
+    @Test
+    void capabilityCheckerTraversesTypesInsideRuntimePatterns() {
+        Ast.Program program = Parser.parse("""
+                pub untrusted actor fnc worker(): void {
+                  val bool hidden = 1 is type SharedMutex<int>;
+                  return;
+                }
+                """);
+
+        SecurityException denied = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+        assertTrue(denied.getMessage().contains("SHARED_MEMORY"), denied::getMessage);
+    }
+
+    @Test
     void actorModifiersRemainContextualIdentifiers() {
         assertDoesNotThrow(() -> Parser.parse("""
                 fnc ordinary() : int {
