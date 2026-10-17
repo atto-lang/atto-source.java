@@ -111,8 +111,9 @@ final class SupervisorProcessTest {
                 process.accept(notice(supervisor, group, "a"));
                 assertTrue(entered.await(5, TimeUnit.SECONDS));
                 process.accept(notice(supervisor, group, "b"));
-                assertThrows(IllegalStateException.class,
-                        () -> process.accept(notice(supervisor, group, "overflow")));
+                var overflow =
+                        process.accept(notice(supervisor, group, "overflow")).toCompletableFuture();
+                assertTrue(overflow.isCompletedExceptionally());
                 pending.completeExceptionally(new IllegalArgumentException("policy-failed"));
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
                 while (process.failure().isEmpty() && System.nanoTime() < deadline) {
