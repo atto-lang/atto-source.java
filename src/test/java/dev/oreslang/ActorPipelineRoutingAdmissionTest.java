@@ -6,7 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Never silently interpret sealed pipeline operations as ordinary actor methods. */
+/** Sealed pipeline operations are compiler intrinsics, never ordinary actor methods. */
 final class ActorPipelineRoutingAdmissionTest {
     private static final String[] BUILTINS = {
         "forward", "forward_all", "forward_round_robin", "forward_to",
@@ -14,40 +14,101 @@ final class ActorPipelineRoutingAdmissionTest {
     };
 
     @Test
-    void unsupportedSourceRoutesFailWithSpecificCompilerDiagnostic() {
-        for (String method : BUILTINS) {
+    void authenticatedSingleRouteIntrinsicsTypeCheckOnSharedActors() {
+        String[] calls = {
+            "self.forward(mail.value);",
+            "self.forward_round_robin(mail.value);",
+            "self.forward_to(\"worker\", mail.value);",
+            "self.forward_by_key(\"customer-7\", mail.value);",
+            "self.backward(mail.value);"
+        };
+        for (String call : calls) {
             String program = """
                     define actor Worker as
                       receive(ActorMail<int> mail): void {
-                        self.%s(mail.value);
+                        %s
+                        return;
                       }
                     end
-                    """.formatted(method);
-            IllegalArgumentException error = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(program)), method);
-            assertTrue(error.getMessage().contains("self." + method
-                    + " requires compiled typed pipeline actor routing"),
-                    method + ": " + error.getMessage());
+                    """.formatted(call);
+            assertDoesNotThrow(
+                    () -> TypeChecker.check(Parser.parse(program)), call);
         }
     }
 
     @Test
-    void actorSelfAliasesDoNotEnableUnloweredRoutingIntrinsics() {
-        // Direct self.* calls are already denied. Aliased actor references
-        // must not be interpreted as ordinary user-callable methods either.
-        for (String method : BUILTINS) {
+    void fanoutReceiptsAndFullReplyRemainFailClosed() {
+        String[] calls = {
+            "self.forward_all(mail.value);",
+            "self.reply(mail.value);"
+        };
+        for (String call : calls) {
+            String program = """
+                    define actor Worker as
+                      receive(ActorMail<int> mail): void {
+                        %s
+                        return;
+                      }
+                    end
+                    """.formatted(call);
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(program)), call);
+            assertTrue(error.getMessage().contains("source lowering remains fail-closed"),
+                    call + ": " + error.getMessage());
+        }
+    }
+
+    @Test
+    void pipelineSelectorsRequireStringsAndPrivateActorsRemainDenied() {
+        String badSelector = """
+                define actor Worker as
+                  receive(ActorMail<int> mail): void {
+                    self.forward_to(42, mail.value);
+                    return;
+                  }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(badSelector)));
+
+        String privateRoute = """
+                define isoactor Worker as
+                  receive(ActorMail<int> mail): void {
+                    self.forward(mail.value);
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(privateRoute)));
+        assertTrue(denied.getMessage().contains("requires a SHARED actor routed receive"));
+    }
+
+    @Test
+    void actorSelfAliasesNeverBecomeRoutingAuthority() {
+        String[] calls = {
+            "alias.forward(mail.value);",
+            "alias.forward_all(mail.value);",
+            "alias.forward_round_robin(mail.value);",
+            "alias.forward_to(\"worker\", mail.value);",
+            "alias.forward_by_key(\"key\", mail.value);",
+            "alias.backward(mail.value);",
+            "alias.reply(mail.value);"
+        };
+        for (String call : calls) {
             String program = """
                     define actor Worker as
                       receive(ActorMail<int> mail): void {
                         val alias = self;
-                        alias.%s(mail.value);
+                        %s
                         return;
                       }
                     end
-                    """.formatted(method);
+                    """.formatted(call);
             assertThrows(IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(program)), method);
+                    () -> TypeChecker.check(Parser.parse(program)), call);
         }
     }
 
