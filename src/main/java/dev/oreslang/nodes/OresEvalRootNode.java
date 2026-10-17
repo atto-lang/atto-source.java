@@ -8457,6 +8457,13 @@ public final class OresEvalRootNode extends RootNode {
             if (target.isRecordType()) {
                 return structuralRecordMatches(value, target);
             }
+            // Generic arguments on nominal/container carriers are not reified
+            // by the current JVM runtime representation. Admission should have
+            // rejected these targets already; fail closed here as a second
+            // independent safety boundary.
+            if (target.inferArguments() || !target.arguments().isEmpty()) {
+                return false;
+            }
             String name = target.name();
             if (name.equals("int") || name.equals("i8") || name.equals("i16") || name.equals("i32")
                     || name.equals("i64") || name.equals("u8") || name.equals("u16")
