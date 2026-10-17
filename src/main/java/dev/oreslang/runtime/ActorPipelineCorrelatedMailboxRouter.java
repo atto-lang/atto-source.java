@@ -299,6 +299,11 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     }
 
     @Override
+    public boolean authenticates(ActorPipelineRouteSession.MailFrame frame) {
+        return session.ownsLive(frame);
+    }
+
+    @Override
     @SuppressWarnings("unchecked")
     public void routeForward(Object value) {
         forward((M) value);
