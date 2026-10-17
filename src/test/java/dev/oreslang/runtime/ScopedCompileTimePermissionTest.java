@@ -36,6 +36,22 @@ final class ScopedCompileTimePermissionTest {
     }
 
     @Test
+    void literalHttpOriginUsesEffectivePortNotUrlPath() {
+        String source = "pub fnc main(): void { http.get_text(\"https://api.example.com/v1\"); return; }";
+        RuntimePermissions good = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "api.example.com:443");
+        RuntimePermissions onlyHttp = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "api.example.com:80");
+        assertDoesNotThrow(() -> check(source, good, PermissionCheckMode.COMPILE));
+        assertThrows(SecurityException.class,
+                () -> check(source, onlyHttp, PermissionCheckMode.COMPILE));
+        assertThrows(SecurityException.class,
+                () -> check(source, good.withDenied(
+                        RuntimePermissions.Permission.NET, "api.example.com:443"),
+                        PermissionCheckMode.COMPILE));
+    }
+
+    @Test
     void literalFilesystemReadsAndWritesRespectIndependentScopes() {
         String read = "pub fnc main(): void { fs.read_text(\"/safe/data.txt\"); return; }";
         String write = "pub fnc main(): void { fs.write_text(\"/safe/data.txt\", \"x\"); return; }";
