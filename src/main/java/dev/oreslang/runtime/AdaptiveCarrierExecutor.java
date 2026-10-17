@@ -22,6 +22,8 @@ import java.util.concurrent.TimeUnit;
  * when demand subsides.
  */
 final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
+    private static final ThreadLocal<Boolean> FORBID_WORKER_START =
+            ThreadLocal.withInitial(() -> Boolean.FALSE);
     private final int minimum;
     private final Object admission = new Object();
     // All submitted runnable turns, including queued and not-yet-active turns.
@@ -37,7 +39,7 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
                             ThreadFactory factory) {
         super(validateMinimum(minimum), validateMaximum(minimum, maximum),
                 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(validateCapacity(queueCapacity)),
-                Objects.requireNonNull(factory, "factory"), new AbortPolicy());
+                noGrowthGuard(Objects.requireNonNull(factory, "factory")), new AbortPolicy());
         this.minimum = minimum;
         allowCoreThreadTimeOut(false);
     }
@@ -57,6 +59,50 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
     private static int validateCapacity(int capacity) {
         if (capacity < 1) throw new IllegalArgumentException("ready queue capacity must be >= 1");
         return capacity;
+    }
+
+    private static ThreadFactory noGrowthGuard(ThreadFactory delegate) {
+        return task -> {
+            if (Boolean.TRUE.equals(FORBID_WORKER_START.get()))
+                throw new RejectedExecutionException(
+                        "carrier creation forbidden for no-growth admission");
+            return delegate.newThread(task);
+        };
+    }
+
+    /**
+     * Admit runnable host work only when it can reuse an already-created JVM
+     * carrier. This path never raises corePoolSize and synchronously forbids
+     * ThreadFactory worker creation, so reactor-originated completions cannot
+     * call Thread.start(). Saturation or a race to zero workers rejects and the
+     * NIO owner retains the completion for an off-reactor retry.
+     */
+    void executeWithoutCarrierGrowth(Runnable task) {
+        Objects.requireNonNull(task, "task");
+        synchronized (admission) {
+            if (isShutdown())
+                throw new RejectedExecutionException("carrier pool stopped");
+            if (getPoolSize() == 0)
+                throw new RejectedExecutionException("no warm JVM carrier available");
+            if (admittedTurns == Integer.MAX_VALUE)
+                throw new RejectedExecutionException("runnable admission counter exhausted");
+
+            boolean previous = Boolean.TRUE.equals(FORBID_WORKER_START.get());
+            FORBID_WORKER_START.set(Boolean.TRUE);
+            try {
+                super.execute(task);
+                admittedTurns++;
+            } catch (RuntimeException rejected) {
+                // A guarded ThreadFactory failure can happen after queue offer
+                // only if the last worker disappeared concurrently. Remove the
+                // exact submitted identity before returning ownership to NIO.
+                getQueue().remove(task);
+                throw rejected;
+            } finally {
+                if (previous) FORBID_WORKER_START.set(Boolean.TRUE);
+                else FORBID_WORKER_START.remove();
+            }
+        }
     }
 
     int minimumCarriers() { return minimum; }
