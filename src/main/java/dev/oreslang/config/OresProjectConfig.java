@@ -98,10 +98,14 @@ public final class OresProjectConfig {
     }
 
     private static Path manifestInDirectory(Path directory) {
+        // An existing modern marker owns discovery priority even when it is
+        // a dangling symlink, directory or unreadable file. Deferring to
+        // load() lets it reject the malformed marker instead of silently
+        // granting a valid legacy manifest authority over this directory.
         Path modern = directory.resolve(MANIFEST_NAME);
-        if (Files.isRegularFile(modern)) return modern;
+        if (Files.exists(modern, LinkOption.NOFOLLOW_LINKS)) return modern;
         Path legacy = directory.resolve(LEGACY_MANIFEST_NAME);
-        return Files.isRegularFile(legacy) ? legacy : null;
+        return Files.exists(legacy, LinkOption.NOFOLLOW_LINKS) ? legacy : null;
     }
 
     public static OresProjectConfig load(Path manifest, Map<String, String> environment) throws IOException {
