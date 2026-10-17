@@ -915,9 +915,10 @@ def require_private_ci_api_budget(file_count, estimated_writes=None):
     remaining = core.get("remaining") if isinstance(core, dict) else None
     if type(remaining) is not int or remaining < 0:
         raise Denied("GitHub core API budget unavailable")
-    # Each write revalidates both source and carrier CODEOWNERS plus all
-    # immutable approvals. Allow headroom for those extra core API reads.
-    required = 24 * estimated_writes + 160
+    # Each write revalidates both source and carrier CODEOWNERS, the pinned
+    # carrier validation-workflow blob, and all immutable approvals. Reserve
+    # one additional core read per write for that protected workflow pin.
+    required = 25 * estimated_writes + 160
     if remaining < required:
         raise Denied("insufficient GitHub core API budget for safe private CI export")
 
