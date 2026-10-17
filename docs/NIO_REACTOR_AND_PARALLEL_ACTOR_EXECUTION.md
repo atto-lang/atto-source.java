@@ -28,10 +28,11 @@ and connection ownership. The full `OresContext` now binds terminal
 notifications to its already-budgeted PRIVATE actor-dispatcher carrier domain
 before the first readiness watch. Pending I/O alone still starts no actor
 carrier. When the first terminal notification becomes runnable, one short-lived
-lazy NIO bootstrap submitter may start solely to submit a no-op through the cold
-bound executor off the SELECTOR stack; it never runs the completion callback,
-then retires after handoff. Slow synchronous Future subscribers remain off
-SELECTOR and CONTROL and execute on the bound actor carrier. The standalone
+lazy NIO bootstrap submitter may start solely to submit that first delivery
+through the cold bound executor off the SELECTOR stack. In full OresContext the
+delivery itself executes on the bound actor carrier, not the helper, which then
+retires after handoff. Slow synchronous Future subscribers remain off SELECTOR
+and CONTROL and execute on the bound actor carrier. The standalone
 `OresVM`/`NioReadinessGroup` host API still retains its transitional lazy
 0..2 completion pool for compatibility.
 
@@ -67,8 +68,9 @@ selector are superseded by this section.
   actor dispatcher is already part of runtime carrier accounting. A cold
   bound executor is bootstrapped only after a terminal notification is
   runnable, using one short-lived lazy submitter so native/JVM carrier startup
-  cannot block the selector. That helper submits only a no-op, never the real
-  completion callback, and retires after successful handoff. Pending I/O alone
+  cannot block the selector. It submits the first real delivery into
+  ActorRuntime; that delivery executes on the actor carrier, and the helper
+  retires after successful handoff. Pending I/O alone
   does not start it. Notification reservations are bounded. Under a full actor
   ready queue, deliveries remain staged until an actor turn or host completion
   retires.
