@@ -64,6 +64,10 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
+    // Runtime continuations have priority, but an actor with no suspended
+    // receive cannot use a self-replenishing control stream to starve user
+    // mail forever. This is a scheduling fairness bound, not mailbox capacity.
+    private static final int MAX_CONTINUATION_BURST = 32;
     private static final int SUPERVISION_EVENT_CAPACITY = 4_096;
     private static final int MAX_DIAGNOSTIC_MESSAGE_CHARS = 512;
     /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
@@ -7006,6 +7010,8 @@ public final class ActorRuntime implements AutoCloseable {
         private int queuedUserMessages;
         /** Separate control-lane quota; never borrow user mailbox headroom. */
         private int queuedContinuations;
+        /** Consecutive internal continuations since the last user message. */
+        private int continuationBurst;
         private long nextUserMessageSequence;
         private long lastProcessedUserMessageSequence = -1L;
         private record DrainWaiter(long sequence, OresFuture<Void> completion) { }
@@ -7815,15 +7821,31 @@ public final class ActorRuntime implements AutoCloseable {
                         // Stop closes the user mailbox under this same lock.
                         if (stopped.get() || finalized) break;
 
-                        // Continuations always outrank user mail. While a
-                        // source receive is suspended, user mail is not runnable.
-                        envelope = continuationMailbox.tryRead().orElse(null);
-                        if (envelope == null && !sourceReceiveSuspended) {
+                        // A suspended receive owns actor state across await and
+                        // therefore gets strict continuation priority. Outside
+                        // that case, internal continuations retain low-latency
+                        // priority but cannot starve a waiting user message
+                        // beyond MAX_CONTINUATION_BURST dispatches.
+                        if (sourceReceiveSuspended) {
+                            envelope = continuationMailbox.tryRead().orElse(null);
+                        } else if (continuationBurst >= MAX_CONTINUATION_BURST) {
                             envelope = mailbox.tryRead().orElse(null);
+                            if (envelope == null)
+                                envelope = continuationMailbox.tryRead().orElse(null);
+                        } else {
+                            envelope = continuationMailbox.tryRead().orElse(null);
+                            if (envelope == null)
+                                envelope = mailbox.tryRead().orElse(null);
                         }
                     }
                     if (envelope == null) break;
                     releaseMailboxSlot(envelope.isContinuation());
+                    if (envelope.isContinuation()) {
+                        if (continuationBurst < MAX_CONTINUATION_BURST)
+                            continuationBurst++;
+                    } else {
+                        continuationBurst = 0;
+                    }
                     // The local is assigned from both continuation and user-mail
                     // queues above, so it is not effectively final. Bind the
                     // selected envelope to a final resource for deterministic
@@ -7958,6 +7980,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // Drain all committed user-message envelopes, including after close.
             }
             sourceReceiveSuspended = false;
+            continuationBurst = 0;
             activeMail = null;
         }
 
