@@ -3932,6 +3932,10 @@ public final class TypeChecker {
                     where + " cannot transport borrowed payloads, including nested fields: "
                             + "channel storage may outlive their owners");
         }
+        if (element instanceof StructuralContainerView) {
+            throw new IllegalArgumentException(
+                    where + " cannot retain a structural collection loan; readonly structural views are scoped borrows");
+        }
         if (element == Unknown.INSTANCE) {
             throw new IllegalArgumentException(where + " requires a statically resolved channel payload type");
         }
@@ -3952,6 +3956,11 @@ public final class TypeChecker {
         if (type instanceof ListType list) {
             return containsChannelCallable(list.element(), seen, genericBindings);
         }
+        if (type instanceof MapType map) {
+            return containsChannelCallable(map.key(), seen, genericBindings)
+                    || containsChannelCallable(map.value(), seen, genericBindings);
+        }
+        if (type instanceof StructuralContainerView) return true;
         if (type instanceof Tuple tuple) {
             return tuple.elements().stream()
                     .anyMatch(element -> containsChannelCallable(element, seen, genericBindings));
@@ -4024,6 +4033,11 @@ public final class TypeChecker {
         if (type instanceof ListType list) {
             return containsChannelBorrow(list.element(), seen, genericBindings);
         }
+        if (type instanceof MapType map) {
+            return containsChannelBorrow(map.key(), seen, genericBindings)
+                    || containsChannelBorrow(map.value(), seen, genericBindings);
+        }
+        if (type instanceof StructuralContainerView) return true;
         if (type instanceof Tuple tuple) {
             return tuple.elements().stream()
                     .anyMatch(element -> containsChannelBorrow(element, seen, genericBindings));
@@ -4385,6 +4399,13 @@ public final class TypeChecker {
         if (source instanceof ListType sourceList && target instanceof ListType targetList) {
             return readonlyCapabilityErased(sourceList.element(), targetList.element());
         }
+        if (source instanceof MapType sourceMap && target instanceof MapType targetMap) {
+            return readonlyCapabilityErased(sourceMap.key(), targetMap.key())
+                    || readonlyCapabilityErased(sourceMap.value(), targetMap.value());
+        }
+        if (source instanceof StructuralContainerView && !(target instanceof StructuralContainerView)) {
+            return true;
+        }
         if (source instanceof Tuple sourceTuple && target instanceof Tuple targetTuple
                 && sourceTuple.kind() == targetTuple.kind()
                 && sourceTuple.elements().size() == targetTuple.elements().size()) {
@@ -4437,6 +4458,10 @@ public final class TypeChecker {
             String where) {
         if (!mutableReferent) return;
         Type concrete = deref(type);
+        if (concrete instanceof StructuralContainerView) {
+            throw new IllegalArgumentException(
+                    where + " cannot request mutable access to a readonly structural collection loan");
+        }
         if (concrete instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
                     where + " cannot request mutable access to a infer struct value; "
@@ -6103,6 +6128,18 @@ public final class TypeChecker {
                 };
             };
         }
+        if (receiver instanceof MapType map) {
+            return switch (member) {
+                case "size" -> Primitive.INT;
+                case "get" -> new Function(
+                        List.of(map.key()),
+                        new Named("Option", List.of(map.value())));
+                case "put" -> new Function(
+                        List.of(map.key(), map.value()),
+                        Primitive.VOID);
+                default -> null;
+            };
+        }
         if (receiver instanceof ListType list) {
             return switch (member) {
                 case "size" -> Primitive.INT;
@@ -7681,7 +7718,13 @@ public final class TypeChecker {
             return;
         }
         if (pattern instanceof ListType p && actual instanceof ListType a) {
+            if (p.kind() != a.kind()) return;
             inferGenericBindings(p.element(), a.element(), bindings, fixedBindings, label);
+            return;
+        }
+        if (pattern instanceof MapType p && actual instanceof MapType a) {
+            inferGenericBindings(p.key(), a.key(), bindings, fixedBindings, label);
+            inferGenericBindings(p.value(), a.value(), bindings, fixedBindings, label);
             return;
         }
         if (pattern instanceof Tuple p && actual instanceof Tuple a
@@ -7736,6 +7779,13 @@ public final class TypeChecker {
         if (type instanceof SelfType receiverSelf) return containsUnknown(receiverSelf.bound());
         if (type instanceof Borrow borrow) return containsUnknown(borrow.target());
         if (type instanceof ListType list) return containsUnknown(list.element());
+        if (type instanceof MapType map) {
+            return containsUnknown(map.key()) || containsUnknown(map.value());
+        }
+        if (type instanceof StructuralContainerView view) {
+            return (view.key() != null && containsUnknown(view.key()))
+                    || containsUnknown(view.value());
+        }
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsUnknown);
         if (type instanceof Union union) return union.options().stream().anyMatch(this::containsUnknown);
         if (type instanceof Types.Not not) return containsUnknown(not.excluded());

@@ -8,11 +8,13 @@ import dev.oreslang.types.Types.Type;
 /**
  * Conservative compile-time proof of structural collection views.
  *
- * This is NOT parser, ownership-loan, ABI, emitter, or guest support. The
- * caller must separately prove non-escape across await/actors and bind a
- * compiler-declared read-only view. No runtime inspection or casts here.
+ * This class is the conservative type-shape proof primitive used by the Java
+ * source typechecker. Ownership/non-escape checks and runtime lowering remain
+ * separate responsibilities; no runtime inspection or casts happen here.
  *
- * The five backends share contracts/structural/v3/cases.json as TARGET ONLY.
+ * The five backends share contracts/structural/v3/cases.json as the parity
+ * target. Java has partial source-level integration; backend certification
+ * still requires exact-head runner evidence.
  */
 public final class StructuralContainerPolicy {
     private StructuralContainerPolicy() { }

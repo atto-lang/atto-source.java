@@ -139,6 +139,15 @@ final class StructuralContainerSourceParityTest {
                   }
                 end
                 """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc sink(Channel<List<int>> ch, structural List<int> values): void {
+                    writech(ch, values);
+                    return;
+                  }
+                end
+                """)));
     }
 
     @Test
