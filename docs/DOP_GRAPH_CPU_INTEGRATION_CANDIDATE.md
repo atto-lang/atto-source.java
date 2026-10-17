@@ -71,3 +71,48 @@ failed before a runner allocation; no pass may be inferred from zero-step jobs.
 **Merge status:** DRAFT integration candidate. Do not merge ahead of reviewed
 source PR #1122/#1096, or claim `.ores` CPU execution without actual compiled
 frontend and ownership tests.
+
+## 2026-10-16 admission-order hardening
+
+**Verified race:** a trusted executor can start a worker concurrently,
+then throw from `execute(job)` after enqueue. Previously that worker
+could modify the destination before the scheduler rejected submission.
+
+The bridge now guards the whole first side effect using a one-shot
+`CountDownLatch` admission gate and a committed-admission flag. The
+worker must wait until `Executor.execute` returns normally; on rejection
+the gate opens in a denied state without a read/write loan or a CPU graph
+evaluation. Same-thread **inline execution** is detected and fails the
+Future immediately rather than deadlocking on the gate. Actor-carrier
+execution still fails before any waiting or CPU work. Duplicate delivery
+remains atomically claimed once.
+
+**Execution precondition:** this bridge requires an externally budgeted,
+queued executor that returns promptly from submission. A custom executor
+that blocks waiting for its own worker to finish can deadlock while the
+worker waits for admission; this is NOT a general synchronous
+`Executor` adapter. We must enforce/document this executor contract
+before release, or add a bounded admission-wait failure policy. No
+guarantee of transactional rollback of host writes after a worker is
+legitimately admitted; cooperative cancellation suppresses subsequent
+Future publication but cannot undo a completed kernel.
+
+**New committed JUnit regressions:** inline executor rejection and
+64 concurrent worker-before-scheduler-error repetitions, with zero
+destination mutations and bounded worker termination. Total JUnit
+cases now 8; full production tests remain unexecuted.
+
+**Local exact-file evidence:** the new committed Java adapter has
+Git blob `17dcef573edb8db114907771b8288f4af0eb7f0e`;
+the byte-identical local file compiled under JDK 21 against explicitly
+synthetic contract doubles. The existing control-flow harness passed
+1,800 assertions; a new local 1,000-round concurrent admission/rejection/
+acceptance harness passed 7,000 assertions. This supports the adapter
+control-flow logic **only**, not real DOP write-loan safety, JUnit,
+GraalVM, Native Image or guest `.ores` compilation.
+
+**Private CI:** source `main` still reports `protected=false`;
+its approved destination allowlist is empty and the P0 public-carrier
+incident remains open. No further private cross-org Git-tree transfer
+has been performed. Re-run Maven/JUnit and exact-head CI only with
+authorized source-org or independently approved runners.
