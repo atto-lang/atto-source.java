@@ -5013,8 +5013,9 @@ public final class ActorRuntime implements AutoCloseable {
         // Keep registry/group cleanup ahead of terminal observer publication.
         // One corrupt/closing ActorGroup cannot retain an otherwise dead actor
         // forever: per-group cleanup is best-effort and independently counted.
-        Set<ActorGroupId> affected = new java.util.HashSet<>();
+        Set<ActorGroupId> affected;
         try {
+            affected = new java.util.HashSet<>();
             synchronized (groupMembershipLock) {
                 Set<ActorGroupId> memberships = groupMemberships.get(cell.ref.id());
                 if (memberships != null) affected.addAll(memberships);
@@ -5025,6 +5026,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         } catch (Throwable failure) {
             firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+            affected = Set.of();
         }
 
         for (ActorGroupId groupId : affected) {
