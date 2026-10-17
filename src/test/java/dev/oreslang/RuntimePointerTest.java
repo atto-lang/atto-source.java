@@ -307,6 +307,10 @@ final class RuntimePointerTest {
                 "place-aware move-out");
         reject("const p = rt ref new Box(); const wrapped = Some(p);",
                 "place-aware move-out");
+        reject("fnc bad(Array<Pointer<Box>> values): void { return; }",
+                "place-aware move-out");
+        reject("fnc bad(Tuple[Pointer<Box> p]): void { return; }",
+                "place-aware move-out");
         // Without this gate, repeated holder.ptr projections could create two
         // compiler-owned aliases to one OresPointer and defer the failure to the
         // runtime tombstone instead of preserving affine ownership statically.
