@@ -27,6 +27,39 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void opaqueKeywordsParseInEveryOrdinaryTypePositionButNotAsLexicalNames() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub val any moduleValue = 1;
+
+                define class Holder as
+                  pub val unknown payload = 1;
+                end
+
+                fnc transform(any input): unknown {
+                  val List<any> values = [input];
+                  val unknown hidden = input;
+                  for (any cursor = input; false; cursor = input) {
+                    return hidden;
+                  }
+                  return hidden;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(): void {
+                  val int any = 1;
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(): void {
+                  val int unknown = 1;
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void unguardedAnyCannotFlowToConcreteType() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
@@ -468,6 +501,42 @@ final class AnyUnknownTernaryGuardTest {
                 """);
 
         assertEquals("9", output);
+    }
+
+    @Test
+    void chainedAndCarriesProofsOnlyAcrossSuccessfulRhsEdges() throws Exception {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc bounded(any value): bool {
+                  return value is type int n && n > 0 && n < 10;
+                }
+                """)));
+
+        String output = run("""
+                fnc bounded(any value): bool {
+                  return value is type int n && n > 0 && n < 10;
+                }
+
+                pub fnc main(): void {
+                  stdio.stdout.write(bounded(4));
+                  stdio.stdout.write(bounded(14));
+                  stdio.stdout.write(bounded("x"));
+                  return;
+                }
+                """);
+
+        assertEquals("truefalsefalse", output);
+    }
+
+    @Test
+    void duplicateConditionAliasesAreRejectedStatically() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any left, any right): int {
+                          return (left is type int n && right is type int n) ? n : 0;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("duplicate binding"), failure::getMessage);
     }
 
     @Test
