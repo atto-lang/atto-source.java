@@ -205,4 +205,24 @@ final class SupervisorRestartWindowTest {
         assertTrue(first >= 0 && first <= 1_000);
     }
 
+    @Test
+    void exhaustedDecisionSequenceDoesNotAdvanceClockOrExpireAdmissions() throws Exception {
+        var gate = new SupervisorRestartWindow(1, 100);
+        assertTrue(gate.tryAcquire(0).allowed());
+
+        var sequence = SupervisorRestartWindow.class.getDeclaredField("decisionSequence");
+        sequence.setAccessible(true);
+        sequence.setLong(gate, Long.MAX_VALUE);
+        assertThrows(IllegalStateException.class, () -> gate.tryAcquire(1_000));
+        assertEquals(1, gate.currentAdmissions());
+
+        // A failed attempt at a later timestamp must not commit the clock.
+        // Reset the injected exhaustion to verify the original timestamp is valid.
+        sequence.setLong(gate, 1L);
+        assertFalse(gate.tryAcquire(1).allowed());
+        assertEquals(99L, gate.lastRetryAfterNanos());
+        assertEquals(1, gate.currentAdmissions());
+    }
+
+
 }
