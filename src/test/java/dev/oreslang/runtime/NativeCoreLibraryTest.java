@@ -214,6 +214,49 @@ final class NativeCoreLibraryTest {
         }
     }
 
+    @Test
+    void packagedBooleanOverloadsSupportOneListAndRestScalarArity() throws Exception {
+        Path entry = Files.createTempFile("ores-native-core-overload-", ".ores");
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        try {
+            Files.writeString(entry, """
+                    import module core from "std/core";
+
+                    pub routine main(): void {
+                      stdio.println(core.And([]));
+                      stdio.println(core.And(true, true));
+                      stdio.println(core.And(true, true, false, true));
+                      stdio.println(core.Or([]));
+                      stdio.println(core.Or(false, false));
+                      stdio.println(core.Or(false, false, true, false));
+                      stdio.println(core.Xor([true, true, false]));
+                      stdio.println(core.Xor(true, false));
+                      return;
+                    }
+                    """);
+
+            var build = LinkedProgramRunner.run(
+                    entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                    out, err);
+            assertTrue(build.units().containsKey("@std/core.ores"));
+            assertEquals("""
+                    true
+                    true
+                    false
+                    false
+                    false
+                    true
+                    false
+                    true
+                    """, out.toString(StandardCharsets.UTF_8),
+                    () -> "std/core Boolean overload contract failed, stderr="
+                            + err.toString(StandardCharsets.UTF_8));
+        } finally {
+            Files.deleteIfExists(entry);
+        }
+    }
+
 
     @Test
     void everyPackagedStdModuleIsPureOreslangAndHasOnlyStdDependencies() throws Exception {
