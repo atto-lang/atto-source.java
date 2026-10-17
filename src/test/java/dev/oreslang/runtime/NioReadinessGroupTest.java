@@ -1042,6 +1042,34 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void rejectedHeadIsRetriedBeforeLaterStagedNotifications()
+            throws Exception {
+        var publish = NioReadinessGroup.class.getDeclaredMethod(
+                "dispatchNotification", Runnable.class);
+        publish.setAccessible(true);
+        var allow = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var delivered = new java.util.concurrent.CopyOnWriteArrayList<Integer>();
+        java.util.concurrent.Executor bounded = task -> {
+            if (!allow.get())
+                throw new java.util.concurrent.RejectedExecutionException("capacity exhausted");
+            task.run();
+        };
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(bounded);
+            for (int i = 0; i < 300; ++i) {
+                final int index = i;
+                publish.invoke(group, (Runnable) () -> delivered.add(index));
+            }
+            assertEquals(300, group.stagedNotificationCount());
+            allow.set(true);
+            group.retryStagedNotifications();
+            assertEquals(300, delivered.size());
+            for (int i = 0; i < 300; ++i)
+                assertEquals(i, delivered.get(i).intValue());
+            assertEquals(0, group.stagedNotificationCount());
+        }
+    }
+
     @Test void invalidLimitsAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(0, 10, 8));
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(5, 10, 8));
