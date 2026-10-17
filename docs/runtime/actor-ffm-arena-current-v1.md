@@ -38,8 +38,11 @@ objects remain JVM-managed. Therefore this feature supports the near-zero-GC
 goal but is not a claim that the GraalVM process has no garbage collector.
 
 The implementation is compiled with Java 21 source compatibility and resolves
-the Java 25 FFM API reflectively. If FFM is unavailable, deterministic-native
-arena creation fails closed; it never silently falls back to DirectByteBuffer.
+the Java 25+ FFM API reflectively. Java 21 itself exposes preview
+`java.lang.foreign` classes, so class presence is not treated as support:
+runtime feature versions below 25 are rejected explicitly. If the Java 25+
+FFM surface is unavailable, deterministic-native arena creation fails closed;
+it never silently falls back to DirectByteBuffer.
 
 LLVM/native backends should implement the same ownership/lifetime semantics
 without a tracing collector and remain full-AOT.
