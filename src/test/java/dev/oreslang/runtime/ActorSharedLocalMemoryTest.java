@@ -207,6 +207,41 @@ final class ActorSharedLocalMemoryTest {
     }
 
     @Test
+    void alreadyClosingRuntimeStillRefundsActorLocalReservations() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            // Model the shutdown window after runtime.closed is published but
+            // before the last admitted carrier returns its outstanding loan.
+            var closedField = ActorRuntime.class.getDeclaredField("closed");
+            closedField.setAccessible(true);
+            var closing = (java.util.concurrent.atomic.AtomicBoolean) closedField.get(runtime);
+            CountDownLatch checked = new CountDownLatch(1);
+            var owner = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var local = turn.localMemory().orElseThrow();
+                var reservation = local.reserveHeap(8);
+                assertEquals(8L, runtime.sharedActorLocalMemoryBytes());
+                closing.set(true);
+                try {
+                    reservation.close();
+                    assertEquals(0L, local.usedBytes());
+                    assertEquals(0L, runtime.sharedActorLocalMemoryBytes(),
+                            "closing must not suppress aggregate refunds");
+                } finally {
+                    // Restore runtime state before requesting normal termination.
+                    closing.set(false);
+                }
+                checked.countDown();
+                turn.self().stop();
+            });
+            owner.ready().get(5, TimeUnit.SECONDS);
+            owner.send("closing-refund");
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertTrue(owner.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(owner.failure().isEmpty(), () -> owner.failure().toString());
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+        }
+    }
+
+    @Test
     void sharedActorLocalQuotaCanRejectWithoutAggregateAccountingLeak() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch checked = new CountDownLatch(1);
