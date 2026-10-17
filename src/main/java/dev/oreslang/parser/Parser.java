@@ -158,11 +158,16 @@ public final class Parser {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     validateOnlyVisibilityModifiers(modifiers, "type aliases");
                     rejectCallableStructuralAnnotation(annotations, "type aliases");
-                    rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
-                    rootDeclarations.add(parseTypeAlias(modifiers.visibility));
+                    rootDeclarations.add(parseTypeAlias(modifiers.visibility, annotations, false));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
+                if (matchContextualKeyword("newtype")) {
+                    validateOnlyVisibilityModifiers(modifiers, "newtype declarations");
+                    rejectCallableStructuralAnnotation(annotations, "newtype declarations");
+                    rootDeclarations.add(parseTypeAlias(modifiers.visibility, annotations, true));
+                    continue;
+                }
+                throw error(previous(), "expected module, class, interface, trait, type, or newtype after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -336,10 +341,14 @@ public final class Parser {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 validateOnlyVisibilityModifiers(modifiers, "type aliases");
                 rejectCallableStructuralAnnotation(annotations, "type aliases");
-                rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
-                return parseTypeAlias(modifiers.visibility);
+                return parseTypeAlias(modifiers.visibility, annotations, false);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            if (matchContextualKeyword("newtype")) {
+                validateOnlyVisibilityModifiers(modifiers, "newtype declarations");
+                rejectCallableStructuralAnnotation(annotations, "newtype declarations");
+                return parseTypeAlias(modifiers.visibility, annotations, true);
+            }
+            throw error(previous(), "expected class, interface, trait, type, or newtype after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -423,8 +432,12 @@ public final class Parser {
             modifiers = mergeModifiers(modifiers, parseModifiers());
             validateOnlyVisibilityModifiers(modifiers, "type aliases");
             rejectCallableStructuralAnnotation(annotations, "type aliases");
-            rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
-            return parseTypeAlias(modifiers.visibility);
+            return parseTypeAlias(modifiers.visibility, annotations, false);
+        }
+        if (matchContextualKeyword("newtype")) {
+            validateOnlyVisibilityModifiers(modifiers, "newtype declarations");
+            rejectCallableStructuralAnnotation(annotations, "newtype declarations");
+            return parseTypeAlias(modifiers.visibility, annotations, true);
         }
         if (isBindingKind(peek().type())) {
             validateOnlyVisibilityModifiers(modifiers, "module bindings");
@@ -1088,13 +1101,30 @@ public final class Parser {
         return consumeCallableName("expected method name (methods omit 'fnc')");
     }
 
-    private Ast.TypeAliasDecl parseTypeAlias(Ast.Visibility visibility) {
-        String name = consume(IDENT, "expected type alias name").lexeme();
-        List<String> generics = parseGenericParameters();
-        consume(EQUAL, "expected '=' in type alias");
-        Ast.TypeRef target = parseTypeRef();
-        consumeStatementTerminator("type alias should end with ';'");
-        return new Ast.TypeAliasDecl(name, visibility, generics, target);
+    private Ast.TypeAliasDecl parseTypeAlias(
+            Ast.Visibility visibility, List<Ast.Annotation> annotations, boolean nominal) {
+        String name = consume(IDENT, "expected type name").lexeme();
+        List<String> generics = nominal ? List.of() : parseGenericParameters();
+        Ast.TypeRef target;
+        if (nominal) {
+            consume(LPAREN, "newtype requires '(' after its name");
+            target = parseTypeRef();
+            consume(RPAREN, "newtype requires ')' after underlying type");
+        } else {
+            consume(EQUAL, "expected '=' in type alias");
+            target = parseTypeRef();
+        }
+        List<Token> suffix = new ArrayList<>();
+        if (matchContextualKeyword("with") || matchContextualKeyword("where")) {
+            suffix.add(previous());
+            while (!check(SEMICOLON) && !check(EOF) && !check(END)) {
+                if (suffix.size() >= 256) throw error(peek(), "refinement clause token limit exceeded");
+                suffix.add(advance());
+            }
+        }
+        consumeStatementTerminator("type alias/newtype should end with ';'");
+        Ast.RefinementSpec normalized = RefinementSyntax.parse(target, annotations, nominal, suffix);
+        return new Ast.TypeAliasDecl(name, visibility, generics, target, normalized);
     }
 
     private List<Ast.Annotation> parseAnnotations() {
