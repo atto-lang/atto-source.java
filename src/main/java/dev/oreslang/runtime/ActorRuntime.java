@@ -2110,6 +2110,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 if (!id.equals(owningGroup)) {
+                    if (newControlReservation) supervisorControl.releaseReservation(worker.id());
                     throw new IllegalStateException(
                             "actor is already managed by a different ActorGroup");
                 }
