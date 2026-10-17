@@ -47,6 +47,13 @@ public final class OresEvalRootNode extends RootNode {
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
+    /**
+     * Host-owned shutdown preflight. Execute this while the outer Polyglot
+     * Context is still valid; a failed physical drain is not permission for
+     * the embedder to dispose that outer context.
+     */
+    public static final String PREPARE_CONTEXT_DISPOSAL_COMMAND =
+            "__ores_internal_prepare_context_disposal__";
 
     private final Ast.Program program;
     private final String codeUnitId;
@@ -73,6 +80,10 @@ public final class OresEvalRootNode extends RootNode {
     @TruffleBoundary
     private Object executeBoundary(OresContext context, Object[] arguments) {
         CapabilityChecker.check(program, context.isolatePolicy(), context.permissionCheckMode());
+        if (isControl(arguments, PREPARE_CONTEXT_DISPOSAL_COMMAND)) {
+            context.close();
+            return null;
+        }
         if (arguments.length == 3
                 && REGISTER_IMPORT_COMMAND.equals(arguments[0])
                 && arguments[1] instanceof String importPath
