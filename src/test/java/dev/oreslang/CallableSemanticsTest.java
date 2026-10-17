@@ -479,33 +479,18 @@ final class CallableSemanticsTest {
     }
 
     @Test
-    void anyAndAnyCallableAreErasedSupertypesButNotInvocable() {
+    void anyCallableIsErasedCallableSupertypeButNotInvocableOrExtensible() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc callback(): void { return; }
-
-                fnc acceptAny(Any value): void { return; }
 
                 fnc acceptCallable(AnyCallable value): void { return; }
 
                 fnc use(): void {
-                  acceptAny(42);
-                  acceptAny(callback);
                   acceptCallable(callback);
                   acceptCallable(|| -> { return; });
                   return;
                 }
                 """)));
-
-        IllegalArgumentException anyCall = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc bad(Any value): void {
-                          value();
-                          return;
-                        }
-                        """)));
-        assertTrue(anyCall.getMessage().contains("Any"));
-        assertTrue(anyCall.getMessage().contains("not callable"));
 
         IllegalArgumentException erasedCallable = assertThrows(
                 IllegalArgumentException.class,
@@ -528,20 +513,51 @@ final class CallableSemanticsTest {
                         """)));
         assertTrue(erasedMember.getMessage().contains("no statically known members"));
 
+        IllegalArgumentException concreteFunctionMember = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc callback(): void { return; }
+                        fnc bad(): void {
+                          val member = callback.user_property;
+                          return;
+                        }
+                        """)));
+        assertTrue(concreteFunctionMember.getMessage().contains("function member"));
+
+        IllegalArgumentException directOnlyRoutine = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        routine directOnly(): void { return; }
+                        fnc acceptCallable(AnyCallable value): void { return; }
+                        fnc bad(): void {
+                          acceptCallable(directOnly);
+                          return;
+                        }
+                        """)));
+        assertTrue(directOnlyRoutine.getMessage().contains("direct-call-only"));
+
         IllegalArgumentException reservedAlias = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         type AnyCallable = int;
                         """)));
-        assertTrue(reservedAlias.getMessage().contains("compiler-builtin erased type"));
+        assertTrue(reservedAlias.getMessage().contains("compiler-builtin erased callable type"));
 
         IllegalArgumentException reservedClass = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define class Any as
+                        define class AnyCallable as
                         end
                         """)));
-        assertTrue(reservedClass.getMessage().contains("compiler-builtin erased type"));
+        assertTrue(reservedClass.getMessage().contains("compiler-builtin erased callable type"));
+
+        IllegalArgumentException reservedImport = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        import class AnyCallable from "./foreign.ores";
+                        fnc use(): void { return; }
+                        """)));
+        assertTrue(reservedImport.getMessage().contains("builtin name"));
     }
 
     private static String run(String program) throws Exception {
