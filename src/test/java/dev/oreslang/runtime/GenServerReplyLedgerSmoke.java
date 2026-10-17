@@ -14,22 +14,29 @@ public final class GenServerReplyLedgerSmoke {
         var foreign = new GenServerReplyLedger.Target(UUID.randomUUID(), actor.actorId(), 1);
         var ledger = new GenServerReplyLedger(4);
         var a = ledger.register(actor);
+        yes(a.correlationForDiagnostics() == 1L);
         yes(!ledger.tryReply(a, next));
         yes(!ledger.tryReply(a, foreign));
         yes(ledger.tryReply(a, actor));
         yes(!ledger.tryReply(a, actor));
         var b = ledger.register(actor);
+        yes(b.correlationForDiagnostics() == 2L);
         yes(ledger.retire(b));
         yes(!ledger.tryReply(b, actor));
         yes(!ledger.retire(b));
         var another = new GenServerReplyLedger(4);
         var foreignLedgerTicket = ledger.register(actor);
+        yes(foreignLedgerTicket.correlationForDiagnostics() == 3L);
         yes(!another.tryReply(foreignLedgerTicket, actor));
         yes(ledger.retire(foreignLedgerTicket));
         var c = ledger.register(actor);
         var d = ledger.register(actor);
         var e = ledger.register(actor);
         var f = ledger.register(actor);
+        yes(c.correlationForDiagnostics() == 4L);
+        yes(d.correlationForDiagnostics() == 5L);
+        yes(e.correlationForDiagnostics() == 6L);
+        yes(f.correlationForDiagnostics() == 7L);
         try { ledger.register(actor); throw new AssertionError("quota"); }
         catch (IllegalStateException expected) { /* correct */ }
         yes(ledger.pendingCount() == 4);
