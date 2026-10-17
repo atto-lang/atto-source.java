@@ -4349,8 +4349,8 @@ public final class OresEvalRootNode extends RootNode {
 
         private static boolean loweredPipelineRoutingIntrinsic(String member) {
             return switch (member) {
-                case "forward", "forward_round_robin", "forward_to",
-                     "forward_by_key", "backward" -> true;
+                case "forward", "forward_all", "forward_round_robin", "forward_to",
+                     "forward_by_key", "backward", "reply" -> true;
                 default -> false;
             };
         }
@@ -4387,6 +4387,17 @@ public final class OresEvalRootNode extends RootNode {
                         if (args.size() != 1)
                             throw new IllegalArgumentException("self.backward expects exactly one argument");
                         runtime.routeCurrentPipelineBackward(args.getFirst());
+                    }
+                    case "forward_all" -> {
+                        if (args.size() != 1)
+                            throw new IllegalArgumentException(
+                                    "self.forward_all expects exactly one argument");
+                        return runtime.routeCurrentPipelineForwardAll(args.getFirst());
+                    }
+                    case "reply" -> {
+                        if (args.size() != 1)
+                            throw new IllegalArgumentException("self.reply expects exactly one argument");
+                        runtime.routeCurrentPipelineReply(args.getFirst());
                     }
                     default -> throw new IllegalArgumentException(
                             "pipeline routing intrinsic is not lowered: " + member);
