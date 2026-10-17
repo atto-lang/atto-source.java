@@ -917,14 +917,14 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private final class ExternalTaskLease implements AutoCloseable {
             private final List<ActorArena.ExternalLease> leases;
-            private final AtomicBoolean released = new AtomicBoolean();
+            private boolean released;
 
             private ExternalTaskLease(List<ActorArena.ExternalLease> leases) {
                 this.leases = List.copyOf(leases);
             }
 
-            @Override public void close() {
-                if (!released.compareAndSet(false, true)) return;
+            @Override public synchronized void close() {
+                if (released) return;
                 Throwable failure = null;
                 for (int i = leases.size() - 1; i >= 0; i--) {
                     try {
@@ -933,6 +933,10 @@ public final class ActorRuntime implements AutoCloseable {
                         if (failure == null) failure = closing;
                         else if (failure != closing) failure.addSuppressed(closing);
                     }
+                }
+                if (failure == null) {
+                    released = true;
+                    return;
                 }
                 if (failure instanceof RuntimeException error) throw error;
                 if (failure instanceof Error error) throw error;
