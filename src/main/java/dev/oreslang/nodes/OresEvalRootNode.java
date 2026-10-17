@@ -5001,13 +5001,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean hasCause(Throwable failure, Class<? extends Throwable> type) {
+            return causeOf(failure, type) != null;
+        }
+
+        private Throwable causeOf(Throwable failure, Class<? extends Throwable> type) {
             Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
             for (Throwable current = failure;
                     current != null && seen.add(current);
                     current = current.getCause()) {
-                if (type.isInstance(current)) return true;
+                if (type.isInstance(current)) return current;
             }
-            return false;
+            return null;
         }
 
         private String messageForPayload(Object payload) {
@@ -5044,7 +5048,9 @@ public final class OresEvalRootNode extends RootNode {
                         signal.kind(),
                         safeMessage(messageForPayload(signal.payload())));
             }
-            return new RecoverySignalValue("panic", safeMessage(failure.getMessage()));
+            Throwable panic = causeOf(failure, OresPanic.class);
+            String message = panic == null ? failure.getMessage() : panic.getMessage();
+            return new RecoverySignalValue("panic", safeMessage(message));
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
