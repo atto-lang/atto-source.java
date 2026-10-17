@@ -4,13 +4,6 @@ on:
   push:
     branches:
       - feat/dop-region-dependency-v1-20261015
-    paths:
-      - 'src/main/java/dev/oreslang/runtime/DopRegionSchedule.java'
-      - 'src/test/java/dev/oreslang/runtime/DopRegionSchedule*.java'
-      - 'scripts/dop-planner/**'
-      - 'scripts/test-dop-planner-standalone.sh'
-      - '.github/workflows/dop-planner-exact-head.yml'
-      - 'pom.xml'
 
 permissions:
   contents: read
