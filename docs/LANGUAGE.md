@@ -708,6 +708,22 @@ Neither grants unchecked member access, invocation, arithmetic, transport, or
 ownership erasure. Legacy source spellings `Any` and `Unknown` remain
 compatibility aliases while code migrates to the lowercase keywords.
 
+A `matches structural` condition may *validate* the visible data shape of
+an `any` or `unknown` value. The successful edge receives a **readonly**
+structural view, including readonly nested records; it never recovers writable
+authority erased by the opaque boundary:
+
+```ores
+pub fnc read_amount(any value): int {
+  return value matches structural { amount: int } checked
+      ? checked.amount : 0;
+}
+```
+
+An unchecked `value.amount` is still invalid. Structural records are not
+runtime-reifiable `as`/`is type` targets; use `matches structural` for a
+checked shape predicate. A failed structural check yields no bindings.
+
 For runtime integer admission, use the trusted built-in predicate:
 
 ```ores
