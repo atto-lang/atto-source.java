@@ -6319,6 +6319,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.ActorGroupJoinCapability
+                || value instanceof SupervisorTerminalLedger.Reservation
+                || value instanceof SupervisorTerminalLedger.Receipt
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>
@@ -6418,6 +6420,11 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (isScalar(value)) return value;
+        if (value instanceof SupervisorTerminalLedger.Reservation
+                || value instanceof SupervisorTerminalLedger.Receipt) {
+            throw new IllegalArgumentException(
+                    "supervisor CONTROL capabilities cannot cross actor DATA boundaries");
+        }
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
         }
