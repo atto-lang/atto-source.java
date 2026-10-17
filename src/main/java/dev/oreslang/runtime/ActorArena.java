@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.util.ArrayDeque;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Actor-confined native scalar arena, backed by bounded FFM regions.
@@ -19,6 +20,9 @@ public final class ActorArena implements AutoCloseable {
     private final ExplicitNativeI64Region persistent;
     private final ExplicitNativeI64Region scratch;
     private volatile ScratchTurn activeTurn;
+    /** Both native domains must stay physically pinned for a pending
+     * continuation. The count is advanced only after two pin admissions. */
+    private int externalLeases;
 
     private ActorArena(ActorRuntime.ActorMemorySlice owner,
                        ExplicitNativeI64Region persistent,
@@ -68,12 +72,73 @@ public final class ActorArena implements AutoCloseable {
     }
 
     /**
-     * Register lifetime-only authority for work that may complete after this
-     * actor turn. The returned pin cannot dereference arena memory.
+     * Lifetime-only pin spanning BOTH persistent and scratch FFM regions.
+     * Neither region can be physically reclaimed while a completion may
+     * still own actor-arena context. The lease exposes no memory operations.
      */
-    public ExplicitNativeI64Region.LifetimePin pinExternal() {
+    public synchronized ExternalLease pinExternal() {
         requireOwner();
-        return persistent.pinLifetime();
+        if (closed()) throw new IllegalStateException("actor arena retired");
+        if (externalLeases == Integer.MAX_VALUE)
+            throw new IllegalStateException("actor arena external lease limit reached");
+        var persistentPin = persistent.pinLifetime();
+        ExplicitNativeI64Region.LifetimePin scratchPin = null;
+        try {
+            scratchPin = scratch.pinLifetime();
+            var lease = new ExternalLease(persistentPin, scratchPin);
+            externalLeases++;
+            return lease;
+        } catch (RuntimeException | Error failure) {
+            Throwable cleanupFailure = null;
+            if (scratchPin != null) {
+                try { scratchPin.close(); }
+                catch (RuntimeException | Error error) { cleanupFailure = error; }
+            }
+            try { persistentPin.close(); }
+            catch (RuntimeException | Error error) {
+                if (cleanupFailure == null) cleanupFailure = error;
+                else if (cleanupFailure != error) cleanupFailure.addSuppressed(error);
+            }
+            if (cleanupFailure != null && cleanupFailure != failure)
+                failure.addSuppressed(cleanupFailure);
+            throw failure;
+        }
+    }
+
+    public final class ExternalLease implements AutoCloseable {
+        private final ExplicitNativeI64Region.LifetimePin persistentPin;
+        private final ExplicitNativeI64Region.LifetimePin scratchPin;
+        private final AtomicBoolean accounted = new AtomicBoolean();
+
+        private ExternalLease(ExplicitNativeI64Region.LifetimePin persistentPin,
+                              ExplicitNativeI64Region.LifetimePin scratchPin) {
+            this.persistentPin = persistentPin;
+            this.scratchPin = scratchPin;
+        }
+
+        /** Retry native/physical failures instead of declaring false DONE. */
+        @Override public synchronized void close() {
+            Throwable failure = null;
+            try { scratchPin.close(); }
+            catch (RuntimeException | Error error) { failure = error; }
+            try { persistentPin.close(); }
+            catch (RuntimeException | Error error) {
+                if (failure == null) failure = error;
+                else if (failure != error) failure.addSuppressed(error);
+            }
+            if (failure instanceof RuntimeException error) throw error;
+            if (failure instanceof Error error) throw error;
+
+            synchronized (ActorArena.this) {
+                if (!accounted.get()) {
+                    if (externalLeases <= 0)
+                        throw new IllegalStateException(
+                                "actor arena external lease accounting underflow");
+                    externalLeases--;
+                    accounted.set(true);
+                }
+            }
+        }
     }
 
     /**
@@ -163,7 +228,7 @@ public final class ActorArena implements AutoCloseable {
         return persistent.physicallyClosed() && scratch.physicallyClosed();
     }
     public int outstandingLoans() { return persistent.activeLoans(); }
-    public int outstandingExternalPins() { return persistent.activeLifetimePins(); }
+    public synchronized int outstandingExternalPins() { return externalLeases; }
 
     @Override public synchronized void close() {
         requireOwner();
