@@ -131,6 +131,48 @@ bootstrap submitter also needs elimination before claiming no additional
 runtime-owned physical threads under NIO activity. Reactor-selector and
 CONTROL callbacks must never run guest code.
 
+## October 17 hardening: no-bootstrap admission and termination fence
+
+The fully published Java native startup state and the visibility of an
+individual attached pthread are different facts. JNI publishes each
+`carrierThreads[slot]` while `nativeStart()` is still waiting under
+`nativeLifecycleLock` for the entire requested carrier set. Using
+`getStartedCarrierCount() > 0` to select a warm lane could therefore park an
+NIO selector behind native bootstrap.
+
+- `NativeCarrierExecutor.readyForNoBootstrapAdmission()` observes the final
+  volatile `nativeStarted` publication and shutdown state, not a thread census.
+  `executeWithoutBootstrap()` uses a try-lock over bounded queue admission,
+  never acquires the JNI startup lock, and rejects cold, retiring, contended,
+  or full carriers without allocating pthreads.
+- Enqueue and `shutdownNow()` queue drain use the same short admission lock:
+  a runnable cannot slip into a queue after it was drained, and no rollback
+  using user-defined `Runnable.equals()` is needed.
+- `ActorAffinityDispatcher` uses this no-bootstrap method for warm native
+  host notifications; a selector with *no* fully started warm lane fails
+  closed and retains its exact bounded notification in the readiness manager.
+  Its first cold start remains the responsibility of the off-selector helper.
+- JVM `AdaptiveCarrierExecutor.executeWithoutCarrierGrowth()` likewise
+  tries its admission lock rather than parking on another worker's startup.
+  It forbids `ThreadFactory` growth for these notifications and returns a
+  bounded rejection when there is no already-live worker.
+- `NativeCarrierExecutor.isTerminated()/awaitTermination()` now wait for
+  shutdown **and** all outstanding native-start admissions. A temporarily
+  empty `carrierThreads` array while pthread attachment is in flight is
+  not proof of quiescence.
+
+Additional checked-in tests cover cold and partially published JNI bootstrap,
+native/JVM contended admission locks, native queue saturation, distinct
+value-equal Runnable shutdown drains, cold-pool termination observation,
+selector-side cold-lane rejection followed by trusted-host retry, and 48
+host NIO completions reusing one warm native pthread across three lanes.
+
+**Scope:** queue admission still uses ArrayBlockingQueue's short internal
+lock; this is a bounded no-bootstrap/no-monitor-wait submission contract, not
+a wait-free kernel-ready reactor or an RT/WCET guarantee. The transitional
+one-shot bootstrap submitter remains. New JUnit/JNI tests require executable
+source-head CI and are not qualified by older funded component runs.
+
 ## Implementation status on this draft branch (October 16)
 
 - `AdaptiveCarrierExecutor` now supports a zero-resident minimum. Normal `OresVM` throughput startup uses CONTROL min=0/max=20; the first independently runnable CONTROL turn creates a carrier. A host may explicitly configure a nonzero warm minimum, which is prestarted before admission.
