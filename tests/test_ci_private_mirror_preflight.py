@@ -178,6 +178,35 @@ class MirrorGateTest(unittest.TestCase):
         with self.assertRaisesRegex(admission.MirrorPreflightError, "invalid repository metadata"):
             admission.fetch_metadata("private/dst", "test", opener=bad)
 
+    def test_duplicate_json_metadata_fields_are_rejected(self):
+        body = (
+            b'{"private":true,"visibility":"private","full_name":"private/dst",'
+            b'"id":34,"id":99,"archived":false,"disabled":false}'
+        )
+        def duplicate(req, timeout):
+            return FakeResponse(req.full_url, body)
+        with self.assertRaisesRegex(admission.MirrorPreflightError, "duplicate"):
+            admission.fetch_metadata("private/dst", "test", opener=duplicate)
+
+    def test_nonfinite_and_overflow_json_numbers_are_rejected(self):
+        prefix = (
+            b'{"private":true,"visibility":"private","full_name":"private/dst",'
+            b'"id":34,"archived":false,"disabled":false,"extra":'
+        )
+        for value in (b"NaN", b"Infinity", b"-Infinity", b"1e9999"):
+            with self.subTest(value=value):
+                def nonfinite(req, timeout, value=value):
+                    return FakeResponse(req.full_url, prefix + value + b"}")
+                with self.assertRaisesRegex(admission.MirrorPreflightError, "non-finite"):
+                    admission.fetch_metadata("private/dst", "test", opener=nonfinite)
+
+    def test_excessive_json_nesting_is_rejected_without_traceback(self):
+        body = b"[" * 2000 + b"0" + b"]" * 2000
+        def nested(req, timeout):
+            return FakeResponse(req.full_url, body)
+        with self.assertRaisesRegex(admission.MirrorPreflightError, "invalid repository metadata"):
+            admission.fetch_metadata("private/dst", "test", opener=nested)
+
     def test_cli_missing_tokens_fails_closed_without_echoing_values(self):
         args = ["--source", "private/src", "--destination", "private/dst",
                 "--source-id", "21", "--destination-id", "34"]
