@@ -221,6 +221,27 @@ final class LambdaReturnAndTupleSyntaxTest {
     }
 
     @Test
+    void typedClosureDoesNotPrematurelyInitializeCapturedStructFields() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                type Setter = (int) => void;
+                fnc accepted(): void {
+                  let mut row = struct{a: int, b: int}{a: 1};
+                  const Setter deferred = |int n|: void -> { row.b = n; return; };
+                  return;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                type Setter = (int) => void;
+                fnc invalid(): void {
+                  let mut row = struct{a: int, b: int}{a: 1};
+                  const Setter deferred = |int n|: void -> { row.b = n; return; };
+                  stdio.println(row.b);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void ternaryBodyIsNotConsumedByReturnAnnotation() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc f(): void {

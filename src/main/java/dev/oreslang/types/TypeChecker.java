@@ -4602,6 +4602,7 @@ public final class TypeChecker {
         defineImplicitArguments(lambdaEnv, List.of(declared));
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+        Map<Env.Binding, Set<String>> outerInitialization = parent.initializationSnapshot();
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         try {
@@ -4613,6 +4614,7 @@ public final class TypeChecker {
                 checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
             }
         } finally {
+            parent.restoreInitialization(outerInitialization);
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
         }
@@ -4650,6 +4652,7 @@ public final class TypeChecker {
         Type declaredResult = lambda.returnType() == null
                 ? expected.result() : resolve(lambda.returnType(), generics, self);
         requireAssignable(declaredResult, expected.result(), "lambda declared return");
+        Map<Env.Binding, Set<String>> outerInitialization = parent.initializationSnapshot();
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
         if (nonLexical) currentClassOwner = null;
@@ -4667,6 +4670,9 @@ public final class TypeChecker {
                 checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, declaredResult, self);
             }
         } finally {
+            // Closure bodies execute later. Their writes cannot establish
+            // initialization facts for their enclosing lexical environment.
+            parent.restoreInitialization(outerInitialization);
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
         }
