@@ -7530,14 +7530,17 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void cancelQueuedScheduleOnShutdown() {
+            FinalizationPlan finalization = null;
             synchronized (lifecycleLock) {
                 if (scheduled.get() && !carrierActive) {
                     scheduledDispatchToken = null;
                     scheduled.set(false);
-                    if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                    if (stopped.get() && activeTurns == 0)
+                        finalization = prepareFinalizationLocked();
                     lifecycleLock.notifyAll();
                 }
             }
+            publishFinalization(finalization);
         }
 
         private void reserveOutput(long bytes) {
@@ -7751,6 +7754,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
+                FinalizationPlan finalization = null;
                 try {
                     synchronized (lifecycleLock) {
                         if (carrierEntered) {
@@ -7770,11 +7774,13 @@ public final class ActorRuntime implements AutoCloseable {
                                 && (carrierEntered || !carrierActive)) {
                             scheduledDispatchToken = null;
                             scheduled.set(false);
-                            if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                            if (stopped.get() && activeTurns == 0)
+                                finalization = prepareFinalizationLocked();
                             reschedule = !stopped.get()
                                     && !forceKillFenced
                                     && !closed.get()
                                     && !finalized
+                                    && !finalizationPrepared
                                     && hasQueuedWorkLocked();
                         }
                         lifecycleLock.notifyAll();
@@ -7785,6 +7791,7 @@ public final class ActorRuntime implements AutoCloseable {
                         else ACTOR_CARRIER.remove();
                     }
                 }
+                publishFinalization(finalization);
                 if (reschedule) schedule();
             }
         }
@@ -7863,13 +7870,18 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                         behavior = created;
                     }
+                    Throwable readyFailure;
                     synchronized (lifecycleLock) {
-                        if (stopped.get() || forceKillFenced) {
-                            ref.readyFuture.failFromRuntime(terminated(ref));
-                        } else {
-                            ref.readyFuture.completeFromRuntime(null);
-                        }
+                        readyFailure = stopped.get() || forceKillFenced
+                                ? terminated(ref)
+                                : null;
                     }
+                    // OresFuture waiters may run synchronously. Never invoke
+                    // them while the actor lifecycle monitor is held.
+                    if (readyFailure == null)
+                        ref.readyFuture.completeFromRuntime(null);
+                    else
+                        ref.readyFuture.failFromRuntime(readyFailure);
                 }
 
                 int processed = 0;
@@ -8058,8 +8070,9 @@ public final class ActorRuntime implements AutoCloseable {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             List<DrainWaiter> failedDrainWaiters;
+            FinalizationPlan finalization;
             synchronized (lifecycleLock) {
-                if (finalized) return;
+                if (finalized || finalizationPrepared) return;
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
                 }
@@ -8077,7 +8090,7 @@ public final class ActorRuntime implements AutoCloseable {
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
-                finalizeStopLocked();
+                finalization = prepareFinalizationLocked();
                 lifecycleLock.notifyAll();
             }
 
@@ -8097,6 +8110,9 @@ public final class ActorRuntime implements AutoCloseable {
                         child.ref.id(),
                         "parent actor " + ref.id() + " terminated"));
             }
+
+            // Final observer/group publication owns no lifecycle monitor.
+            publishFinalization(finalization);
         }
     }
 }
