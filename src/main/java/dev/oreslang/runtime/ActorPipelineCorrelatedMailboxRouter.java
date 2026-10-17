@@ -81,7 +81,11 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
         targets = Map.copyOf(bound);
         identities = Map.copyOf(reverse);
         edges = Map.copyOf(indexed);
-        session = new ActorPipelineRouteSession(plan, generation, maxActiveFrames);
+        var recipientIds = new HashMap<String, ActorRuntime.ActorId>();
+        for (var binding : targets.entrySet())
+            recipientIds.put(binding.getKey(), binding.getValue().id());
+        session = new ActorPipelineRouteSession(
+                plan, generation, maxActiveFrames, recipientIds);
     }
 
     /**
