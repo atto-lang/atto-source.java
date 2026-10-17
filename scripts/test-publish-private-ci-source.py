@@ -99,6 +99,20 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}])
         self.assertEqual(tree_writes[1]["base_tree"], B)
 
+    def test_unprotected_source_main_denied_before_any_upload(self):
+        with patch.object(pub, "reviewed_source_main",
+                          side_effect=pub.Denied("source main is not protected")):
+            with self.assertRaisesRegex(pub.Denied, "not protected"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_source_tree_mismatch_denied_before_any_upload(self):
+        with patch.object(pub, "require_pinned_snapshot",
+                          side_effect=pub.Denied("source commit Git tree differs")):
+            with self.assertRaisesRegex(pub.Denied, "source commit Git tree"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
     def test_public_visibility_aborts_before_any_write(self):
         self.visibility = ["public"]
         with self.assertRaises(pub.Denied):
