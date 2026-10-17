@@ -384,6 +384,9 @@ public final class Ast {
             List<Stmt> body) {
         public ConstructorDecl {
             parameters = List.copyOf(parameters);
+            if (parameters.stream().anyMatch(Param::rest)) {
+                throw new IllegalArgumentException("constructor rest parameters are not supported yet");
+            }
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
         }
