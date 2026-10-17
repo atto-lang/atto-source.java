@@ -34,6 +34,25 @@ public final class OresMain {
 
     private OresMain() { }
 
+    // Consume non-authority defaults emitted by flags-2-env. Scoped
+    // ORES_ALLOW_* environment values are intentionally NOT interpreted here:
+    // only explicitly supplied --allow-* flags or trusted host APIs can grant
+    // permissions. This is an environment consumer, not a second flag parser.
+    static String envOrDefault(Map<String, String> environment, String key, String fallback) {
+        String value = environment.get(key);
+        return value == null || value.isBlank() ? fallback : value;
+    }
+
+    static boolean envFlagEnabled(Map<String, String> environment, String key) {
+        String value = environment.get(key);
+        if (value == null || value.isBlank()) return false;
+        return switch (value.toLowerCase(Locale.ROOT)) {
+            case "true", "1", "yes" -> true;
+            case "false", "0", "no" -> false;
+            default -> throw new UsageException("invalid boolean environment value for " + key);
+        };
+    }
+
     /**
      * Only the standalone command-line host is permitted to terminate its process.
      * Embedders use LinkedProgramRunner.runWithExitStatus() instead.
@@ -74,18 +93,21 @@ public final class OresMain {
                         ? "interpreter-no-jit" : "runtime-selected") + "\"}");
             return 0;
         }
-        String perfEnv = System.getenv("ORES_CORE_PERF");
-        boolean corePerf = "true".equalsIgnoreCase(perfEnv) || "1".equals(perfEnv);
-        String debugEnv = System.getenv("ORES_CORE_DEBUG");
-        boolean coreDebug = "true".equalsIgnoreCase(debugEnv) || "1".equals(debugEnv);
-        boolean strict = false;
-        boolean checkOnly = false;
-        boolean buildAnalysis = false;
+        Map<String, String> launcherEnvironment = System.getenv();
+        boolean corePerf = envFlagEnabled(launcherEnvironment, "ORES_CORE_PERF");
+        boolean coreDebug = envFlagEnabled(launcherEnvironment, "ORES_CORE_DEBUG");
+        boolean strict = envFlagEnabled(launcherEnvironment, "ORES_STRICT_ISOLATE");
+        boolean checkOnly = envFlagEnabled(launcherEnvironment, "ORES_CHECK");
+        boolean buildAnalysis = envFlagEnabled(launcherEnvironment, "ORES_BUILD_ANALYSIS");
         List<String> buildDefines = new ArrayList<>();
         Set<String> buildEntryPoints = new LinkedHashSet<>();
-        String mode = NativeBuildMode.defaultExecutionMode();
-        String platform = "server";
-        PermissionCheckMode permissionCheckMode = PermissionCheckMode.RUNTIME;
+        String mode = envOrDefault(launcherEnvironment, "ORES_MODE",
+                NativeBuildMode.defaultExecutionMode());
+        String platform = envOrDefault(launcherEnvironment, "ORES_PLATFORM", "server");
+        // flags-2-env only chooses *when* diagnostics run; it never grants
+        // any host I/O capabilities or bypasses operation-time enforcement.
+        PermissionCheckMode permissionCheckMode = PermissionCheckMode.parse(
+                envOrDefault(launcherEnvironment, "ORES_PERMISSION_CHECK", "runtime"));
         RuntimePermissions.Builder permissionBuilder = new RuntimePermissions.Builder();
         EnumSet<RuntimePermissions.Permission> touchedPermissions =
                 EnumSet.noneOf(RuntimePermissions.Permission.class);
@@ -96,12 +118,15 @@ public final class OresMain {
         for (String arg : args) {
             try {
                 if (arg.equals("--strict-isolate")) strict = true;
+                else if (arg.equals("--no-strict-isolate")) strict = false;
                 else if (arg.equals("--check")) checkOnly = true;
+                else if (arg.equals("--no-check")) checkOnly = false;
                 else if (arg.equals("--core-perf")) corePerf = true;
                 else if (arg.equals("--no-core-perf")) corePerf = false;
                 else if (arg.equals("--core-debug")) coreDebug = true;
                 else if (arg.equals("--no-core-debug")) coreDebug = false;
                 else if (arg.equals("--build-analysis")) buildAnalysis = true;
+                else if (arg.equals("--no-build-analysis")) buildAnalysis = false;
                 else if (arg.equals("--no-prompt")) {
                     // Oreslang permissions never prompt. This Deno-compatible
                     // spelling is accepted so automation can state that intent.
