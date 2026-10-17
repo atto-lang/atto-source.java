@@ -9,6 +9,9 @@ on:
       - 'scripts/test-publish-private-ci-source.py'
       - 'scripts/ci_private_mirror_preflight.py'
       - 'tests/test_ci_private_mirror_preflight.py'
+      - 'scripts/verify-review-pinned-private-ci.py'
+      - 'tests/test_review_pinned_private_ci.py'
+      - 'docs/security/PRIVATE_CI_REVIEW_PINNED_EXTERNAL_ADMISSION.md'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/private-ci-approved-source-snapshots.txt'
       - '.github/CODEOWNERS'
@@ -23,6 +26,9 @@ on:
       - 'scripts/test-publish-private-ci-source.py'
       - 'scripts/ci_private_mirror_preflight.py'
       - 'tests/test_ci_private_mirror_preflight.py'
+      - 'scripts/verify-review-pinned-private-ci.py'
+      - 'tests/test_review_pinned_private_ci.py'
+      - 'docs/security/PRIVATE_CI_REVIEW_PINNED_EXTERNAL_ADMISSION.md'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/private-ci-approved-source-snapshots.txt'
       - '.github/CODEOWNERS'
@@ -42,7 +48,13 @@ jobs:
         run: |
           set -euo pipefail
           bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
-          python3 -I -m py_compile             scripts/publish-private-ci-source.py             scripts/test-publish-private-ci-source.py             scripts/ci_private_mirror_preflight.py             tests/test_ci_private_mirror_preflight.py
+          python3 -I -m py_compile \
+            scripts/publish-private-ci-source.py \
+            scripts/test-publish-private-ci-source.py \
+            scripts/ci_private_mirror_preflight.py \
+            tests/test_ci_private_mirror_preflight.py \
+            scripts/verify-review-pinned-private-ci.py \
+            tests/test_review_pinned_private_ci.py
       - name: Execute destination-policy fail-closed Bash suite
         run: |
           set -euo pipefail
@@ -73,6 +85,34 @@ jobs:
                   or result.unexpectedSuccesses):
               raise SystemExit("Mirror preflight tests failed, skipped, or did not fully execute")
           print(f"VERIFIED_PRIVATE_MIRROR_PREFLIGHT_TESTS={result.testsRun}")
+          PY
+          done
+      - name: Execute review-pinned admission verifier suite three complete rounds
+        run: |
+          set -euo pipefail
+          for round in 1 2 3; do
+            echo "PRIVATE_REVIEW_PINNED_ROUND=$round"
+            python3 -I - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import unittest
+
+          path = Path("tests/test_review_pinned_private_ci.py")
+          spec = importlib.util.spec_from_file_location("review_pinned_private_ci_tests", path)
+          if spec is None or spec.loader is None:
+              raise SystemExit("Review-pinned admission unittest module missing")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+          count = suite.countTestCases()
+          if count < 17:
+              raise SystemExit(f"Review-pinned suite unexpectedly shrank below 17: {count} tests")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if (result.testsRun != count or not result.wasSuccessful()
+                  or result.skipped or result.expectedFailures
+                  or result.unexpectedSuccesses):
+              raise SystemExit("Review-pinned tests failed, skipped, or did not fully execute")
+          print(f"VERIFIED_REVIEW_PINNED_TESTS={result.testsRun}")
           PY
           done
       - name: Execute publisher adversarial suite three complete rounds
