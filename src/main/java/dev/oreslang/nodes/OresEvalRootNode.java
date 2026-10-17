@@ -3274,6 +3274,37 @@ public final class OresEvalRootNode extends RootNode {
                         return;
                     }
 
+                    if (binary.operator().equals("^^")) {
+                        // XOR is eager but still sequenced: evaluate each operand
+                        // exactly once, left-to-right, including across suspension.
+                        // Scalar Xor(...) calls lower to this node before execution.
+                        evalSuspendableExpr(
+                                task,
+                                binary.left(),
+                                env,
+                                (t, left, failure) -> {
+                                    if (failure != null) {
+                                        continuation.accept(t, null, failure);
+                                        return;
+                                    }
+                                    evalSuspendableExpr(
+                                            t,
+                                            binary.right(),
+                                            env,
+                                            (t2, right, failure2) -> {
+                                                if (failure2 != null) {
+                                                    continuation.accept(t2, null, failure2);
+                                                } else {
+                                                    continuation.accept(
+                                                            t2,
+                                                            truth(left) ^ truth(right),
+                                                            null);
+                                                }
+                                            });
+                                });
+                        return;
+                    }
+
                     evalSuspendableExpr(
                             task,
                             binary.left(),
