@@ -27,6 +27,11 @@ final class DopRegionTokenWeakProvenanceTest {
         assertInstanceOf(WeakReference.class, weakField.get(token));
         var weak = (WeakReference<?>) weakField.get(token);
         assertSame(state, weak.get(), "live allocation must be the weak-reference referent");
+        Field ownerField = DopKernelIR.HostBuffer.RegionToken.class.getDeclaredField("currentOwner");
+        ownerField.setAccessible(true);
+        assertInstanceOf(WeakReference.class, ownerField.get(token));
+        var weakOwner = (WeakReference<?>) ownerField.get(token);
+        assertSame(owner, weakOwner.get(), "fresh token must weakly reference initial owner");
         for (Field field : DopKernelIR.HostBuffer.RegionToken.class.getDeclaredFields()) {
             assertNotEquals(state.getClass(), field.getType(),
                     "region token must not strongly retain the owner State");
@@ -36,6 +41,8 @@ final class DopRegionTokenWeakProvenanceTest {
         assertTrue(root.isLiveOwned());
         var successor = owner.take();
         assertSame(token, successor.regionToken());
+        assertSame(successor, ((WeakReference<?>) ownerField.get(token)).get(),
+                "ownership transfer must rebind token away from moved-from wrapper");
         assertTrue(root.sameRoot(successor.regionRoot()));
         assertTrue(root.isLiveOwned());
         assertThrows(IllegalStateException.class, owner::regionRoot);
