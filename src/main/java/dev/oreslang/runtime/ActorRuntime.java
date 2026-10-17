@@ -2535,39 +2535,76 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(worker, "worker");
             requireManager("manage an ActorGroup worker");
             if (!worker.ownedBy(ActorRuntime.this)) {
-                throw new IllegalArgumentException("worker belongs to a different ActorRuntime");
+                throw new IllegalArgumentException(
+                        "worker belongs to a different ActorRuntime");
             }
             requireActorLifecycleAuthority(worker, "manage an ActorGroup worker");
-            synchronized (authorityLock) {
-                requireOpen();
-                ActorCell<?> cell = actors.get(worker.id());
-                if (cell == null || cell.stopped.get() || stoppingWorkers.contains(worker.id())) {
-                    throw new IllegalStateException("cannot manage a stopped, stopping or unknown worker");
-                }
-                if (!managedWorkers.containsKey(worker.id()) && managedWorkers.size() >= memberLimit) {
-                    throw new IllegalStateException(
-                            "ActorGroup managed worker limit exceeded: maximum " + memberLimit);
-                }
-                // A worker has exactly one structured ActorGroup owner.
-                // Other cooperation groups may still admit it as a member,
-                // but no second manager may acquire independent stop rights.
-                ActorGroupId owningGroup = cell.managedByGroup.get();
-                if (owningGroup == null) {
-                    if (cell.managedByGroup.compareAndSet(null, id)) {
-                        owningGroup = id;
-                    } else {
-                        owningGroup = cell.managedByGroup.get();
+
+            ActorCell<?> cell = actors.get(worker.id());
+            if (cell == null) {
+                throw new IllegalStateException("cannot manage an unknown worker");
+            }
+
+            boolean attachTerminalObserver = false;
+            synchronized (cell.lifecycleLock) {
+                synchronized (authorityLock) {
+                    requireOpen();
+                    requireTerminalControlHealthyLocked();
+                    if (cell.stopped.get() || cell.finalized
+                            || stoppingWorkers.contains(worker.id())) {
+                        throw new IllegalStateException(
+                                "cannot manage a stopped, stopping or unknown worker");
+                    }
+
+                    ActorRef<?> existing = managedWorkers.get(worker.id());
+                    if (existing != null) {
+                        if (!id.equals(cell.managedByGroup.get())
+                                || !terminalReservations.containsKey(worker.id())) {
+                            throw new IllegalStateException(
+                                    "managed worker lost supervision receipt state");
+                        }
+                        return worker;
+                    }
+                    if (managedWorkers.size() >= memberLimit) {
+                        throw new IllegalStateException(
+                                "ActorGroup managed worker limit exceeded: maximum "
+                                        + memberLimit);
+                    }
+
+                    // Prepay terminal CONTROL before this group acquires
+                    // lifecycle authority. A supervised incarnation is never
+                    // admitted without guaranteed terminal receipt capacity.
+                    SupervisorTerminalLedger.Reservation reservation =
+                            terminalLedger.reserve(worker.id(), worker.generation());
+                    boolean claimedOwnership = false;
+                    try {
+                        ActorGroupId owningGroup = cell.managedByGroup.get();
+                        if (owningGroup == null) {
+                            claimedOwnership =
+                                    cell.managedByGroup.compareAndSet(null, id);
+                            owningGroup = cell.managedByGroup.get();
+                        }
+                        if (!id.equals(owningGroup)) {
+                            throw new IllegalStateException(
+                                    "actor is already managed by a different ActorGroup");
+                        }
+
+                        managedWorkers.put(worker.id(), worker);
+                        terminalReservations.put(worker.id(), reservation);
+                        attachTerminalObserver = true;
+                    } catch (RuntimeException | Error failure) {
+                        if (claimedOwnership) {
+                            cell.managedByGroup.compareAndSet(id, null);
+                        }
+                        terminalLedger.releaseUnstarted(reservation);
+                        throw failure;
                     }
                 }
-                if (!id.equals(owningGroup)) {
-                    throw new IllegalStateException(
-                            "actor is already managed by a different ActorGroup");
-                }
-                managedWorkers.putIfAbsent(worker.id(), worker);
-                if (cell.stopped.get()) {
-                    managedWorkers.remove(worker.id(), worker);
-                    throw new IllegalStateException("worker stopped during group admission");
-                }
+            }
+
+            if (attachTerminalObserver) {
+                worker.done().whenCompleteRuntime(
+                        (ignored, failure) -> managedWorkerTerminated(worker));
             }
             return worker;
         }
