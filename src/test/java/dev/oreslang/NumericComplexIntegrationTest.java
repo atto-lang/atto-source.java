@@ -79,4 +79,27 @@ final class NumericComplexIntegrationTest {
                     && ((1e-300i / 1e-300i) eq 1);
                 """));
     }
+
+    @Test
+    void complexDivisionCompensatesBalancedOneUlpFiniteCase() {
+        assertTrue(evaluatesTrue("""
+                val complex actual =
+                    (-1.9297622926115045e138 + 1.5512392579051227e150i)
+                    / (-1.4976784258940757e292 - 1.8366476025309775e288i);
+                return actual
+                    eq (-1.270186418667072e-146 - 1.0357625560708896e-142i);
+                """));
+    }
+
+    @Test
+    void complexDivisionExactFallbackRoundsSubnormalOutputs() {
+        assertTrue(evaluatesTrue("""
+                val complex actual =
+                    (-4.273780448709542e-254 - 2.0788903192019146e-253i)
+                    / (-1.1323026279913343e49 - 1.2990151610525855e55i);
+                return actual
+                    eq (1.6003590674378104e-308 - 3.29000188445742e-309i);
+                """));
+    }
+
 }
