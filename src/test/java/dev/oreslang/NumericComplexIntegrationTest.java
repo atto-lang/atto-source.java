@@ -173,6 +173,58 @@ final class NumericComplexIntegrationTest {
     }
 
     @Test
+    void declaredComplexBindingsAndParametersEnforceExactPromotion() {
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub fnc identity(complex value): complex {
+                      return value;
+                    }
+                    pub routine main(): bool {
+                      val int raw = 9007199254740992;
+                      val complex local = raw;
+                      return local eq (9007199254740992.0 + 0i)
+                          && identity(raw) eq (9007199254740992.0 + 0i);
+                    }
+                    """).asBoolean());
+        }
+
+        for (String source : new String[] {
+                """
+                pub routine main(): complex {
+                  val complex value = 9007199254740993;
+                  return value;
+                }
+                """,
+                """
+                pub routine main(): complex {
+                  val int raw = 9007199254740993;
+                  val complex value = raw;
+                  return value;
+                }
+                """,
+                """
+                pub fnc identity(complex value): complex {
+                  return value;
+                }
+                pub routine main(): complex {
+                  val int raw = 9007199254740993;
+                  return identity(raw);
+                }
+                """
+        }) {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build()) {
+                PolyglotException failure = assertThrows(
+                        PolyglotException.class,
+                        () -> context.eval(OresLanguage.ID, source));
+                assertTrue(failure.getMessage().contains("exact binary64 range"),
+                        failure::toString);
+            }
+        }
+    }
+
+    @Test
     void complexDivisionRetainsRepresentableSubnormalScaleCrossComponent() {
         // Corresponds to the fixed regression in numeric complex issue #1042.
         // This is a targeted oracle case, NOT proof of correctly rounded
