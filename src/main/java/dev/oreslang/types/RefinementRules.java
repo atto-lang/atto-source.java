@@ -121,14 +121,15 @@ public final class RefinementRules {
             throw new UnsupportedOperationException("where predicates cannot be emitted as scalar schemas");
         String identity = "";
         if (spec.nominal()) {
-            if (qualifiedIdentity == null || qualifiedIdentity.isBlank()
-                    || !qualifiedIdentity.contains("."))
-                throw new IllegalArgumentException("nominal schema requires qualified identity");
+            if (qualifiedIdentity == null || !qualifiedIdentity.matches(
+                    "[A-Za-z_][A-Za-z_0-9]*(\\\\.[A-Za-z_][A-Za-z_0-9]*)+"))
+                throw new IllegalArgumentException("nominal schema requires qualified identifier");
             identity = qualifiedIdentity;
         }
         Interval interval = normalize(base, spec.bounds());
+        String canonicalBase = base.name().equals("String") ? "string" : base.name();
         List<Long> exclusions = List.copyOf(new TreeSet<>(interval.excluded()));
-        String canonical = "oreslang.refinement.v1\\n" + base.name() + "\\n"
+        String canonical = "oreslang.refinement.v1\\n" + canonicalBase + "\\n"
                 + interval.property() + "\\n" + interval.min() + "\\n"
                 + interval.max() + "\\n" + exclusions + "\\n" + identity;
         String hash;
@@ -138,7 +139,7 @@ public final class RefinementRules {
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException("SHA-256 unavailable", impossible);
         }
-        return new Descriptor(1, base.name(), interval.property(), interval.min(),
+        return new Descriptor(1, canonicalBase, interval.property(), interval.min(),
                 interval.max(), exclusions, identity, hash);
     }
 
