@@ -350,7 +350,7 @@ final class PersistentActorMapTest {
 
         Map<String, Object> lying = new java.util.AbstractMap<>() {
             @Override
-            public java.util.Set<Entry<String, Object>> entrySet() {
+            public java.util.Set<Map.Entry<String, Object>> entrySet() {
                 return backing.entrySet();
             }
 
