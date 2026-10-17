@@ -32,6 +32,15 @@ public final class RefinementSyntax {
 
     public static Ast.RefinementSpec parse(
             Ast.TypeRef base, List<Ast.Annotation> annotations, boolean nominal, List<Token> suffix) {
+        // Non-refined aliases (including generic, tuple and structural aliases)
+        // must follow the preexisting compiler path unchanged.
+        if (annotations.isEmpty() && suffix.isEmpty() && !nominal) return null;
+        for (Ast.Annotation annotation : annotations) {
+            if (!Set.of("Size", "Length", "NotEmpty").contains(annotation.name())) {
+                bad("@" + annotation.name()
+                        + " on type alias would be silently discarded; unsupported constraint annotation");
+            }
+        }
         List<Ast.RefinementBound> bounds = new ArrayList<>();
         String expected = property(base);
         for (Ast.Annotation annotation : annotations) {
