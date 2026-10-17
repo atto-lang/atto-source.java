@@ -129,6 +129,12 @@ public final class ReturnCleanupChecker {
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
                     if (!binding.isDiscard()) scope.define(binding.name());
                 }
+            } else if (stmt instanceof Ast.ThrowStmt thrown) {
+                expression(thrown.value(), scope, inDefer, state);
+            } else if (stmt instanceof Ast.RaiseStmt raised) {
+                expression(raised.value(), scope, inDefer, state);
+            } else if (stmt instanceof Ast.PanicStmt panicked) {
+                expression(panicked.value(), scope, inDefer, state);
             } else if (stmt instanceof Ast.ReturnStmt ret) {
                 if (inFinally) {
                     throw new IllegalArgumentException(
@@ -192,6 +198,18 @@ public final class ReturnCleanupChecker {
                 state.loopsInsideFinally = 0;
                 try {
                     statements(attempted.finallyBody(), scope, true, inDefer, trackReturns, state);
+                } finally {
+                    state.loopsInsideFinally = enclosingLoops;
+                }
+            } else if (stmt instanceof Ast.RecoverStmt recovered) {
+                statements(recovered.body(), scope, inFinally, inDefer, trackReturns, state);
+                Scope caught = new Scope(scope);
+                caught.define(recovered.signalName());
+                statements(recovered.catchBody(), caught, inFinally, inDefer, trackReturns, state);
+                int enclosingLoops = state.loopsInsideFinally;
+                state.loopsInsideFinally = 0;
+                try {
+                    statements(recovered.finallyBody(), scope, true, inDefer, trackReturns, state);
                 } finally {
                     state.loopsInsideFinally = enclosingLoops;
                 }
