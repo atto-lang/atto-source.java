@@ -1,0 +1,88 @@
+name: Private CI export policy
+
+# Always produce this check for branch protection; no paths filters.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  private-ci-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Validate issuer contract, ownership and policy grammar
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PY'
+          import ast
+          import json
+          import re
+          from pathlib import Path
+
+          base = Path(".github")
+          declared = json.loads((base / "private-ci-required-checks.json").read_text(encoding="utf-8"))
+          expected = {
+              "schema": 1,
+              "source": {"context": "private-ci-policy", "appId": 15368},
+              "carrier": {"context": "carrier-policy", "appId": 15368},
+          }
+          if declared != expected:
+              raise SystemExit("private CI required checks must be bound to pinned Actions issuer")
+
+          publisher = ast.parse(Path("scripts/publish-private-ci-source.py").read_text(encoding="utf-8"))
+          vars = {}
+          for node in publisher.body:
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target, ast.Name) and target.id in (
+                              "REQUIRED_CODEOWNER_PATHS", "REQUIRED_CODEOWNER",
+                              "SOURCE_POLICY_CHECK", "CARRIER_POLICY_CHECK",
+                              "GITHUB_ACTIONS_APP_ID"):
+                          vars[target.id] = ast.literal_eval(node.value)
+          if (len(vars) != 5 or vars["REQUIRED_CODEOWNER"] != "@ORESoftware"
+                  or vars["SOURCE_POLICY_CHECK"] != declared["source"]["context"]
+                  or vars["CARRIER_POLICY_CHECK"] != declared["carrier"]["context"]
+                  or vars["GITHUB_ACTIONS_APP_ID"] != 15368):
+              raise SystemExit("publisher security issuer constants mismatch")
+          required = vars["REQUIRED_CODEOWNER_PATHS"]
+          if not isinstance(required, tuple) or len(required) < 22 or len(set(required)) != len(required):
+              raise SystemExit("private CI CODEOWNER path inventory invalid")
+          codeowners = (base / "CODEOWNERS").read_text(encoding="utf-8").splitlines()
+          rules = [s.strip() for s in codeowners if s.strip() and not s.lstrip().startswith("#")]
+          if rules[-len(required):] != [f"{p} @ORESoftware" for p in required]:
+              raise SystemExit("terminal CODEOWNERS contract mismatch")
+          for path in required:
+              if not (Path(".") / path.lstrip("/")).is_file():
+                  raise SystemExit("CODEOWNERS mandatory path not present: " + path)
+
+          dest_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]* [1-9][0-9]{0,19}")
+          snap_pattern = re.compile(r"[0-9a-f]{40} [0-9a-f]{40} [1-9][0-9]{0,19}")
+          def load_lines(name, pattern):
+              data = (base / name).read_text(encoding="utf-8").splitlines()
+              active = [line for line in data if line and not line.startswith("#")]
+              if any(not pattern.fullmatch(line) for line in active):
+                  raise SystemExit("unreviewable private CI approval format: " + name)
+              return active
+          dests = load_lines("private-ci-approved-repositories.txt", dest_pattern)
+          names = [line.split()[0].casefold() for line in dests]
+          ids = [line.split()[1] for line in dests]
+          if len(names) != len(set(names)) or len(ids) != len(set(ids)):
+              raise SystemExit("duplicate destination identity")
+          snaps = load_lines("private-ci-approved-source-snapshots.txt", snap_pattern)
+          if len(snaps) != len(set(snaps)):
+              raise SystemExit("duplicate snapshot tuple")
+          commit_tree = {}
+          for row in snaps:
+              commit, tree, _dest = row.split()
+              if commit in commit_tree and commit_tree[commit] != tree:
+                  raise SystemExit("one source commit maps to inconsistent root trees")
+              commit_tree[commit] = tree
+          print("private CI issuer + source policy: PASS")
+          PY
