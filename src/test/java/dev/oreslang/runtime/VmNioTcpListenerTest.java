@@ -101,10 +101,15 @@ final class VmNioTcpListenerTest {
                             failure.getCause());
                     assertTrue(pendingRead.cancel(false));
                     deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
-                    while (listener.pendingOperations() != 0 && System.nanoTime() < deadline)
+                    while ((listener.pendingOperations() != 0
+                            || vm.nioReadiness().pendingCount() != 0
+                            || vm.nioReadiness().activeReadLeases() != 0)
+                            && System.nanoTime() < deadline)
                         Thread.sleep(1);
                     assertEquals(0, listener.pendingOperations(),
                             "cancelled operation must release listener credit");
+                    assertEquals(0, vm.nioReadiness().activeReadLeases(),
+                            "cancelled read must also drain its channel lease");
                     assertEquals(1, connection.writeBytesAsync(List.of(17L))
                             .get(3, TimeUnit.SECONDS));
                     assertEquals(17, peer.getInputStream().read());
