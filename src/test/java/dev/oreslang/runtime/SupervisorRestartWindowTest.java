@@ -225,4 +225,21 @@ final class SupervisorRestartWindowTest {
     }
 
 
+    @Test
+    void elapsedOverflowDoesNotCommitRejectedRawTimestamp() throws Exception {
+        var gate = new SupervisorRestartWindow(1, 100);
+        assertTrue(gate.tryAcquire(10).allowed());
+        var elapsed = SupervisorRestartWindow.class.getDeclaredField("elapsedNanos");
+        elapsed.setAccessible(true);
+        elapsed.setLong(gate, Long.MAX_VALUE - 2);
+
+        assertThrows(IllegalStateException.class, () -> gate.advance(13));
+        // If the rejected sample had advanced lastRawNanos to 13, this
+        // previously valid sample at 11 would be mistaken for a rollback.
+        assertEquals(1, gate.advance(11));
+        assertEquals(Long.MAX_VALUE - 1, elapsed.getLong(gate));
+        assertEquals(1, gate.currentAdmissions());
+    }
+
+
 }
