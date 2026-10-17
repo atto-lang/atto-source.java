@@ -79,19 +79,31 @@ public final class OresContext implements AutoCloseable {
                     port, backlog, maxConnections, maxPending,
                     vm::dispatchHostIoMapping);
         } catch (java.io.IOException failure) {
-            synchronized (nioLifecycle) { --nioOpening; }
+            synchronized (nioLifecycle) {
+                --nioOpening;
+                nioLifecycle.notifyAll();
+            }
             throw new IllegalStateException("nonblocking TCP listen failed", failure);
         } catch (RuntimeException | Error failure) {
-            synchronized (nioLifecycle) { --nioOpening; }
+            synchronized (nioLifecycle) {
+                --nioOpening;
+                nioLifecycle.notifyAll();
+            }
             throw failure;
         }
         synchronized (nioLifecycle) {
             --nioOpening;
+            // If a concurrent host shutdown won, preserve this reactor in
+            // the close snapshot instead of losing its owner after starting
+            // its selector thread.
             if (nioContextClosed) {
                 reactor.close();
+                nioListeners.add(reactor);
+                nioLifecycle.notifyAll();
                 throw new IllegalStateException("TCP context closed during listener admission");
             }
             nioListeners.add(reactor);
+            nioLifecycle.notifyAll();
         }
         return reactor;
     }
@@ -490,15 +502,51 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        // This is the external HOST lifecycle boundary. Do not begin actor,
+        // IO or CONTROL destruction from a guest/physical scheduler carrier.
+        if (OresScheduler.current() != null
+                || ActorRuntime.inActorExecution()
+                || ActorRuntime.inActorGroupMailmanExecution()) {
+            throw new IllegalStateException(
+                    "OresContext shutdown requires an external trusted host thread");
+        }
         java.util.Set<NativeNioFutureReactor> closingNio;
         synchronized (nioLifecycle) {
             nioContextClosed = true;
+            // Reactor constructors reserve nioOpening BEFORE entering OS/JDK
+            // bootstrap. Wait only as an external host so that an unfinished
+            // selector cannot be published after the actor scheduler closes.
+            while (nioOpening > 0) {
+                try { nioLifecycle.wait(); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(
+                            "interrupted while fencing Oreslang TCP listener bootstrap", interrupted);
+                }
+            }
             closingNio = java.util.Set.copyOf(nioListeners);
-            nioListeners.clear();
         }
-        // Nonblocking stop requests; never wait for reactor termination while
-        // the actor or CONTROL scheduler owns a physical guest turn.
         for (NativeNioFutureReactor reactor : closingNio) reactor.close();
+        // No reactor is allowed to complete a Future into a destroyed CONTROL
+        // mapping executor. Joining selector threads is reserved to the host.
+        final long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        for (NativeNioFutureReactor reactor : closingNio) {
+            try {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0 || !reactor.awaitTerminated(
+                        Math.max(1, java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(remaining)))) {
+                    throw new IllegalStateException(
+                            "Oreslang TCP reactor did not quiesce before actor shutdown");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(
+                        "interrupted while quiescing Oreslang TCP reactor", interrupted);
+            }
+        }
+        synchronized (nioLifecycle) {
+            nioListeners.removeIf(NativeNioFutureReactor::isTerminated);
+        }
         nativeIo.close();
         http.close();
         RuntimeException failure = null;
