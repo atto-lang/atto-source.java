@@ -80,6 +80,8 @@ public final class TypeChecker {
     private final Set<String> ambiguousClasses = new HashSet<>();
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
+    /** Every lexical import binding, including type-only namespace aliases. */
+    private final Set<String> importedBindings = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
@@ -210,6 +212,7 @@ public final class TypeChecker {
             ImportRules.validate(imported);
             for (String name : ImportRules.exposedBindings(imported)) {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
+                importedBindings.add(name);
                 if (localNames.contains(name)) {
                     throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
                 }
@@ -5124,7 +5127,7 @@ public final class TypeChecker {
                 && !modules.containsKey("Integer")
                 && findClass("Integer") == null
                 && !hasFunctionFamily("Integer")
-                && !importedValues.contains("Integer");
+                && !importedBindings.contains("Integer");
     }
 
     private Type typeOfCondition(Ast.Expr expr, Env env, Set<String> generics, Type self) {
