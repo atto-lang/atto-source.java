@@ -253,6 +253,7 @@ public final class Parser {
     }
 
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
+        rejectActorThreadAnnotation(annotations, "modules");
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
         List<Ast.TypeRef> contracts = match(CONFORMS) ? parseTypeRefList() : List.of();
@@ -376,8 +377,8 @@ public final class Parser {
                 throw error(actorToken, "actor class declarations accept only visibility and actor-kind modifiers");
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-            rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-            return parseActorClass(actorKind, modifiers.visibility);
+            Ast.ActorThreadPolicy annotationThreads = parseActorThreadAnnotation(annotations);
+            return parseActorClass(actorKind, modifiers.visibility, annotationThreads);
         }
         if (match(FNC)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -455,6 +456,7 @@ public final class Parser {
             Modifiers modifiers,
             Ast.CallableKind kind,
             Ast.ActorKind actorKind) {
+        rejectActorThreadAnnotation(annotations, "functions");
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
         if (modifiers.suspends && modifiers.generator)
             throw error(previous(), "suspends generators need suspension-aware generator frames");
@@ -1009,6 +1011,7 @@ public final class Parser {
     }
 
     private Ast.FieldDecl parseField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectActorThreadAnnotation(annotations, "fields");
         rejectCallableStructuralAnnotation(annotations, "fields");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
@@ -1112,6 +1115,7 @@ public final class Parser {
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods,
                                        boolean enclosingAbstractClass) {
+        rejectActorThreadAnnotation(annotations, "methods");
         CallableStructural structural = normalizeCallableStructural(annotations, mods.structural);
         annotations = structural.annotations();
         String name = parseMethodName();
@@ -3962,6 +3966,14 @@ public final class Parser {
      * Silently dropping metadata can bypass compile-time macro, ABI and safety contracts.
      * Module, function, method and field annotations have AST storage and are unaffected.
      */
+    private void rejectActorThreadAnnotation(List<Ast.Annotation> annotations, String target) {
+        for (Ast.Annotation annotation : annotations) {
+            if (annotation.name().equals("ActorThreads")) {
+                throw error(previous(), "@ActorThreads is only valid on actor class declarations, not " + target);
+            }
+        }
+    }
+
     private void rejectDiscardedDeclarationAnnotations(List<Ast.Annotation> annotations, String target) {
         if (!annotations.isEmpty()) {
             throw error(previous(), "@" + annotations.getFirst().name() + " on " + target
