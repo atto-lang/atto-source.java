@@ -78,6 +78,90 @@ final class ActorPipelineRouteSessionTest {
     }
 
     @Test
+    void actualReplyMailboxRejectionKeepsAuthenticatedSourceFrameLive() throws Exception {
+        var plan = new ActorPipelineRoutePlan(
+                java.util.List.of(
+                        new ActorPipelineRoutePlan.Stage("source", "Source",
+                                ActorPipelineRoutePlan.Role.READABLE, "", "int"),
+                        new ActorPipelineRoutePlan.Stage("sink", "Sink",
+                                ActorPipelineRoutePlan.Role.WRITABLE, "int", "")),
+                java.util.List.of(
+                        new ActorPipelineRoutePlan.Edge("source", "sink", "int")));
+
+        var routerRef = new java.util.concurrent.atomic.AtomicReference<
+                ActorPipelineCorrelatedMailboxRouter<Integer>>();
+        var forwarded = new java.util.concurrent.CountDownLatch(1);
+        var sinkEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseSource = new java.util.concurrent.CountDownLatch(1);
+        var originTerminated = new java.util.concurrent.CountDownLatch(1);
+        var checked = new java.util.concurrent.CountDownLatch(1);
+        var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var source = runtime.<Integer>spawnShared(() -> (message, turn) -> {
+                try {
+                    routerRef.get().forward(message);
+                    forwarded.countDown();
+                    if (!releaseSource.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new AssertionError("source release timed out");
+                    }
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                    forwarded.countDown();
+                }
+            });
+
+            var sink = runtime.<Integer>spawnShared(() -> (message, turn) -> {
+                sinkEntered.countDown();
+                try {
+                    if (!originTerminated.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new AssertionError("origin termination timed out");
+                    }
+                    try {
+                        routerRef.get().reply(message);
+                        throw new AssertionError("reply to terminated origin unexpectedly succeeded");
+                    } catch (RuntimeException expected) {
+                        var correlation = routerRef.get().currentCorrelation();
+                        org.junit.jupiter.api.Assertions.assertEquals("sink", correlation.receiver());
+                        org.junit.jupiter.api.Assertions.assertEquals(1L, correlation.generation());
+                    }
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                } finally {
+                    checked.countDown();
+                    turn.self().stop();
+                }
+            });
+
+            source.ready().get(5, java.util.concurrent.TimeUnit.SECONDS);
+            sink.ready().get(5, java.util.concurrent.TimeUnit.SECONDS);
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, plan, java.util.Map.of("source", source, "sink", sink), 1, 8);
+            routerRef.set(router);
+
+            router.ingress("source", 7);
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    forwarded.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    sinkEntered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+            source.stop();
+            releaseSource.countDown();
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    source.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+            originTerminated.countDown();
+
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    checked.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            org.junit.jupiter.api.Assertions.assertNull(
+                    failure.get(), () -> "actual reverse rejection proof failed: " + failure.get());
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    sink.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+            router.close();
+        }
+    }
+
+    @Test
     void fanoutFaninReplyGenerationAndConcurrentRoundRobin() throws Exception {
         ActorPipelineRouteSessionSmoke.main(new String[0]);
     }
