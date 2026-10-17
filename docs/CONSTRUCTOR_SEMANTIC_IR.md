@@ -170,6 +170,61 @@ cannot be invoked until checked narrowing establishes a concrete
 Erasing to `AnyCallable` never erases capture, borrow, actor-isolation,
 serialization, sharing or construction-region restrictions.
 
+### Borrowed callable parameters
+
+An immutable borrow of a concrete callable type is a non-escaping call-boundary
+contract:
+
+```ores
+fnc invoke_now(borrow (() => void) cb): void {
+    cb();
+    return;
+}
+```
+
+The callable signature is retained through the borrow, so `cb()` remains
+statically typed. The callee may use the callable during the invocation but
+cannot turn the borrow into an owned callable that outlives the call.
+
+A freshly created inline lambda may be lent directly to an immutable borrowed
+callable parameter without first naming it or spelling `rt borrow`:
+
+```ores
+invoke_now(|| -> {
+    work();
+    return;
+});
+```
+
+This is an ephemeral borrow created by call checking, not a general implicit
+borrow conversion. A named callable value remains owned and must use the normal
+explicit borrow discipline when a borrowed callable parameter is required.
+
+This contract is sufficient to admit a constructor closure that captures the
+construction receiver:
+
+```ores
+type Runner = (borrow (() => void) callback) => void;
+
+constructor(self, int value, Runner run) {
+    run(|| -> {
+        self.mutable_value = value;
+        return;
+    });
+}
+```
+
+The closure remains inside the construction region. It may not publish
+`self`, invoke unsafe instance dispatch, or suspend while the construction
+borrow is live. An ordinary callable parameter such as `AnyCallable` or
+`() => void` does not prove non-escape and therefore cannot receive such a
+closure.
+
+Nonescape does **not** imply invocation cardinality. A borrowed callback may be
+called zero, one, or many times. Consequently it cannot establish the
+exactly-once initialization proof for a blank constructor `val`; only directly
+analyzable constructor control flow may do so in the current language.
+
 Ordinary objects do not become callable by declaring a method named `call`.
 Constructors do not become callable values. Instance methods do not silently
 become bound callables; an explicit lambda makes receiver capture visible to
@@ -218,6 +273,21 @@ Direct unguarded alias cycles are rejected.
 
 `typeof` remains an expression type query. Recursive aliases refer to
 themselves by name; `typeof Alias` is not recursive-type syntax.
+
+### Current Java implementation boundary
+
+The Java compiler currently implements the non-generic, directly
+self-referential callable case:
+
+```ores
+type Callback = (Callback next) => void;
+```
+
+and rejects direct alias cycles, mutually recursive aliases, and recursive
+self-reference outside the callable guard. Generic regular recursion such as
+`Callback<T>` is part of the semantic target above but is not yet claimed as
+implemented by this PR. Backends must not infer support from this document
+without a matching conformance fixture.
 
 ## Required diagnostic classes
 
