@@ -72,4 +72,29 @@ final class OresMatrixComplexTest {
                 List.of(new OresComplex(1.0, 0.0))));
         assertThrows(IllegalArgumentException.class, () -> left.matmul(right));
     }
+
+    @Test
+    void oversizedMatricesFailBeforeLargeAllocationOrExactWork() {
+        // 2048^2 doubles already consume the full 32 MiB reference budget
+        // before object/array overhead; reject before allocating that plane.
+        assertThrows(IllegalArgumentException.class, () -> OresMatrix.identity(2048));
+
+        OresMatrix left = OresMatrix.fromRows(
+                java.util.stream.IntStream.range(0, 101)
+                        .mapToObj(r -> java.util.stream.IntStream.range(0, 101)
+                                .mapToObj(c -> 1.0)
+                                .toList())
+                        .toList());
+        OresMatrix right = OresMatrix.fromRows(
+                java.util.stream.IntStream.range(0, 101)
+                        .mapToObj(r -> java.util.stream.IntStream.range(0, 101)
+                                .mapToObj(c -> 1.0)
+                                .toList())
+                        .toList());
+
+        // 101*101*101 = 1,030,301 exact term products: modest input
+        // allocations, but beyond the portable BigInteger reference budget.
+        assertThrows(IllegalArgumentException.class, () -> left.matmul(right));
+    }
+
 }
