@@ -650,6 +650,21 @@ public final class OwnershipChecker {
                     mutableBorrow ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW,
                     ownershipRoot(owner),
                     true);
+        } else if (binding.initializer() instanceof Ast.RuntimeCallExpr runtime
+                && runtime.operation().equals("deref mut")) {
+            if (runtime.arguments().size() != 1) {
+                throw error("rt deref mut expects exactly one argument");
+            }
+            VarState pointer = borrowOwner(runtime.arguments().getFirst(), scope);
+            if (!pointer.type.name().equals("Pointer") || pointer.type.arguments().size() != 1) {
+                throw error("rt deref mut requires a named Pointer<T> owner");
+            }
+            beginPersistentBorrow(pointer, true);
+            value = new ValueInfo(
+                    Ast.TypeRef.borrowed(pointer.type.arguments().getFirst(), true),
+                    ValueKind.MUT_BORROW,
+                    ownershipRoot(pointer),
+                    true);
         } else if (binding.initializer() instanceof Ast.LambdaExpr lambda) {
             value = checkLambda(lambda, scope, binding.name());
         } else {
@@ -779,15 +794,19 @@ public final class OwnershipChecker {
                     }
                     yield new ValueInfo(new Ast.TypeRef("Pointer", List.of(source.type), false), ValueKind.MOVE_ONLY, null);
                 }
-                case "deref" -> {
-                    // A named live pointer anchors the borrowed view.
+                case "deref", "deref mut" -> {
+                    // A named live pointer anchors the borrowed view. Mutable
+                    // dereference reuses the ordinary exclusive-borrow proof.
+                    boolean mutableView = runtime.operation().equals("deref mut");
                     VarState pointer = borrowOwner(argument, scope);
                     if (!pointer.type.name().equals("Pointer") || pointer.type.arguments().size() != 1) {
-                        throw error("rt deref requires a named Pointer<T> owner");
+                        throw error("rt " + runtime.operation() + " requires a named Pointer<T> owner");
                     }
-                    validateBorrow(pointer, false);
-                    yield new ValueInfo(Ast.TypeRef.borrowed(pointer.type.arguments().getFirst(), false),
-                            ValueKind.IMM_BORROW, ownershipRoot(pointer));
+                    validateBorrow(pointer, mutableView);
+                    yield new ValueInfo(
+                            Ast.TypeRef.borrowed(pointer.type.arguments().getFirst(), mutableView),
+                            mutableView ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW,
+                            ownershipRoot(pointer));
                 }
                 case "unref" -> {
                     // Consuming unwrap is a unique-owner move, NOT a borrowed dereference.
@@ -1661,15 +1680,22 @@ public final class OwnershipChecker {
                 throw error(callable + " argument " + position
                         + " cannot borrow consuming rt unref; bind the owned pointee first, then pass rt borrow value");
             }
-            if (arg instanceof Ast.RuntimeCallExpr runtime && runtime.operation().equals("deref")) {
-                if (mutable) throw error("pointer dereference only supplies a read-only borrow");
+            if (arg instanceof Ast.RuntimeCallExpr runtime
+                    && (runtime.operation().equals("deref") || runtime.operation().equals("deref mut"))) {
+                boolean mutableView = runtime.operation().equals("deref mut");
+                if (mutable && !mutableView) {
+                    throw error("mutable borrowed parameter requires rt deref mut");
+                }
                 ValueInfo view = checkExpr(arg, scope, false);
                 VarState owner = view.borrowSource;
                 if (!isBorrowValue(view) || owner == null) {
-                    throw error("rt deref must supply a compiler-tracked borrowed view");
+                    throw error("rt " + runtime.operation()
+                            + " must supply a compiler-tracked borrowed view");
                 }
-                beginPersistentBorrow(owner, false);
-                immutableLoans.add(ownershipRoot(owner));
+                // Preserve the explicitly requested loan strength for the full
+                // call even if borrow mut T is weakened to borrow T.
+                beginPersistentBorrow(owner, mutableView);
+                (mutableView ? mutableLoans : immutableLoans).add(ownershipRoot(owner));
                 return;
             }
             if (arg instanceof Ast.NameExpr name) {
