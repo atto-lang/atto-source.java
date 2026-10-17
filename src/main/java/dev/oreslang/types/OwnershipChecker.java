@@ -1495,6 +1495,9 @@ public final class OwnershipChecker {
                         scope,
                         "function " + namespace.name() + "." + qualified.member());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
+                if (fn.trapped()) {
+                    callResult = new Ast.TypeRef("TrapResult", List.of(callResult), false);
+                }
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
