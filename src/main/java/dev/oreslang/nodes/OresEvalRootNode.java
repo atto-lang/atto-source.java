@@ -5473,10 +5473,13 @@ public final class OresEvalRootNode extends RootNode {
         private Object applyRuntimeOwnership(String operation, Object value) {
             return switch (operation) {
                 case "ref" -> new dev.oreslang.runtime.OresPointer(value);
-                case "deref", "unref" -> {
+                case "deref", "deref mut", "unref" -> {
                     if (!(value instanceof dev.oreslang.runtime.OresPointer pointer)) {
                         throw new IllegalArgumentException("rt " + operation + " requires Pointer<T>");
                     }
+                    // Both dereference forms are zero-copy views of the same
+                    // managed referent. Exclusive mutation authority is a
+                    // compiler loan, not a second JVM wrapper allocation.
                     yield operation.equals("unref") ? pointer.unref() : pointer.target();
                 }
                 // Borrow/take/share alter compiler ownership state, not the JVM handle.
