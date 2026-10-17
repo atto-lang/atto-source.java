@@ -302,6 +302,16 @@ final class RuntimePointerTest {
         reject("val Array<Box> boxes = new Array<Box>(); boxes.add(new Box()); const p = rt ref boxes; const view = rt deref p; val child = view[0]; child.value = 9;", "borrow");
     }
 
+    @Test void pointerHandlesCannotHideInOrdinaryAggregatesBeforePlaceMovesExist() {
+        reject("const p = rt ref new Box(); const holder = struct{ptr: Pointer<Box>}{ptr: p};",
+                "place-aware move-out");
+        reject("const p = rt ref new Box(); const wrapped = Some(p);",
+                "place-aware move-out");
+        // Without this gate, repeated holder.ptr projections could create two
+        // compiler-owned aliases to one OresPointer and defer the failure to the
+        // runtime tombstone instead of preserving affine ownership statically.
+    }
+
     @Test void pointerTypeCannotBeRedefinedOrSharedWithoutProof() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("define class Pointer as end")));
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(BOX + "fnc local(Channel<Pointer<Box>> messages): void { return; }")));
