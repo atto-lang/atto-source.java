@@ -27,7 +27,7 @@ define module Zorde as
   }
 
   pub fnc int_exact(int value, int expected): bool {
-    return value == expected;
+    return value eq expected;
   }
 
 end
