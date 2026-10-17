@@ -87,23 +87,42 @@ public final class NioReadinessGroup implements AutoCloseable {
     private final class NotificationDelivery implements Runnable {
         private final Runnable notification;
         private final AtomicBoolean claimed = new AtomicBoolean();
-        private final AtomicBoolean mayBeQueuedAfterRejection = new AtomicBoolean();
+        // Tracks ownership of one retry slot, including the window where a
+        // nonconforming executor accepted work before reporting rejection.
+        // Initially true because dispatchNotification enqueues this record.
+        private final AtomicBoolean queuedForRetry = new AtomicBoolean(true);
 
         NotificationDelivery(Runnable notification) {
             this.notification = notification;
         }
 
+        /** A rejection is not proof that an executor discarded the task.
+         * Requeue the SAME claim token, never a new notification wrapper.
+         * This also handles asynchronous attempts to run on a reactor.
+         */
+        void stageForRetry() {
+            if (claimed.get() || !queuedForRetry.compareAndSet(false, true)) return;
+            stagedNotifications.addFirst(this);
+            // A previously queued delivery may have claimed execution during
+            // addFirst. Do not retain a stale accepted notification indefinitely.
+            if (claimed.get()) {
+                stagedNotifications.remove(this);
+                queuedForRetry.set(false);
+            }
+        }
+
         @Override public void run() {
-            // A Runnable::run executor is legal, but must not turn the
-            // selector into a subscriber execution lane.
-            if (Boolean.TRUE.equals(ON_REACTOR.get()))
+            // Even if a hostile Executor swallows this exception, the failed
+            // selector invocation must leave its notification retryable.
+            if (Boolean.TRUE.equals(ON_REACTOR.get())) {
+                stageForRetry();
                 throw new RejectedExecutionException(
                         "NIO completion callback cannot execute on reactor thread");
+            }
             if (!claimed.compareAndSet(false, true)) return;
-            // A nonconforming executor may schedule and then reject. If that
-            // original task wins after being requeued, discard the stale
-            // retry without re-delivering or leaking a queued reference.
-            if (mayBeQueuedAfterRejection.get())
+            // Remove a retry copy if the executor originally enqueued and
+            // then rejected, or tried to dispatch on a reactor asynchronously.
+            if (queuedForRetry.getAndSet(false))
                 stagedNotifications.remove(this);
             OresVM.runAsNioWorker(notification);
         }
@@ -112,6 +131,9 @@ public final class NioReadinessGroup implements AutoCloseable {
     private final ConcurrentLinkedDeque<NotificationDelivery> stagedNotifications =
             new ConcurrentLinkedDeque<>();
     private final Object notificationDispatch = new Object();
+    // Guarded by notificationDispatch. The monitor itself is reentrant; an
+    // inline hostile executor must not recursively retry the same staged head.
+    private boolean notificationRetryActive;
     private final Object notificationDrain = new Object();
     // A transient registration burst must not spin up extra selector threads.
     // Counter is protected by the lifecycle monitor.
@@ -234,28 +256,34 @@ public final class NioReadinessGroup implements AutoCloseable {
         if (target == null && ownedCompletionExecutor != null) return;
         if (target == null) target = completionExecutor;
         synchronized (notificationDispatch) {
-            for (int i = 0; i < 128; ++i) {
-                // Claim before invoking an arbitrary Executor: an inline
-                // completion may re-enter this method, and replaying an
-                // unclaimed head can release one notification twice.
-                NotificationDelivery next = stagedNotifications.pollFirst();
-                if (next == null) return;
-                if (next.claimed.get()) continue;
-                try {
-                    target.execute(next);
-                } catch (RejectedExecutionException full) {
-                    // An inline callback can itself throw RejectedExecutionException.
-                    // Never replay a delivery that has already claimed execution.
-                    // Keep the same claim token even for an executor that
-                    // improperly accepts a task and then throws rejection.
-                    if (!next.claimed.get()) {
-                        next.mayBeQueuedAfterRejection.set(true);
-                        stagedNotifications.addFirst(next);
-                        // Accepted async work might race this requeue.
-                        if (next.claimed.get()) stagedNotifications.remove(next);
+            if (notificationRetryActive) return;
+            notificationRetryActive = true;
+            try {
+                for (int i = 0; i < 128; ++i) {
+                    // Claim before invoking an arbitrary Executor: an inline
+                    // completion may re-enter this method, and replaying an
+                    // unclaimed head can release one notification twice.
+                    NotificationDelivery next = stagedNotifications.pollFirst();
+                    if (next == null) return;
+                    next.queuedForRetry.set(false);
+                    if (next.claimed.get()) continue;
+                    try {
+                        target.execute(next);
+                        // A hostile inline executor may swallow the selector guard.
+                        // Do not immediately replay the same invalid head; leave it
+                        // staged for a trusted host/scheduler capacity retry.
+                        if (next.queuedForRetry.get()) return;
+                    } catch (RejectedExecutionException full) {
+                        // An executor may accept and THEN throw. A single claim
+                        // token makes retries harmless even if the original task
+                        // subsequently executes. It cannot lose an async selector
+                        // rejection just because the executor swallowed an error.
+                        next.stageForRetry();
+                        return;
                     }
-                    return;
                 }
+            } finally {
+                notificationRetryActive = false;
             }
         }
     }

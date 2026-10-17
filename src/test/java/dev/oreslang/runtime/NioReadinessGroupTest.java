@@ -886,6 +886,58 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void executorSwallowingSelectorGuardCannotLoseTerminalNotification()
+            throws Exception {
+        // An Executor is permitted to invoke inline, and a buggy adapter can
+        // catch and swallow the selector guard instead of propagating reject.
+        // A successful execute() return must not silently lose the completion.
+        var selectorAttempt = new java.util.concurrent.CountDownLatch(1);
+        var completions = new java.util.concurrent.atomic.AtomicInteger();
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            java.util.concurrent.Executor swallowing = task -> {
+                if (Thread.currentThread().getName().startsWith("ores-nio-reactor-"))
+                    selectorAttempt.countDown();
+                try {
+                    task.run();
+                } catch (java.util.concurrent.RejectedExecutionException ignored) {
+                    // A bad inline Executor can both swallow the rejection
+                    // and reenter retry before its execute() returns.
+                    group.retryStagedNotifications();
+                }
+            };
+            group.bindVmCompletionExecutor(swallowing);
+            var pipe = java.nio.channels.Pipe.open();
+            try {
+                pipe.source().configureBlocking(false);
+                var future = group.watch(pipe.source(), SelectionKey.OP_READ);
+                future.whenCompleteRuntime((events, failure) ->
+                        completions.incrementAndGet());
+                pipe.sink().write(java.nio.ByteBuffer.wrap(new byte[] {7}));
+                assertTrue(selectorAttempt.await(3, TimeUnit.SECONDS));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (group.stagedNotificationCount() == 0
+                        && System.nanoTime() < deadline) Thread.sleep(1);
+                assertEquals(1, group.stagedNotificationCount(),
+                        "swallowed selector rejection must retain a retry record");
+                assertFalse(future.isDone());
+                assertEquals(1, group.pendingNotifications());
+                group.retryStagedNotifications(); // authorized host thread
+                assertEquals(SelectionKey.OP_READ,
+                        future.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ);
+                assertEquals(1, completions.get());
+                assertEquals(0, group.stagedNotificationCount());
+                assertEquals(0, group.pendingNotifications());
+                group.retryStagedNotifications();
+                assertEquals(1, completions.get());
+                group.close();
+                assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            } finally {
+                pipe.source().close();
+                pipe.sink().close();
+            }
+        }
+    }
+
     @Test void invalidLimitsAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(0, 10, 8));
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(5, 10, 8));
