@@ -85,6 +85,47 @@ final class ActorSharedLocalMemoryTest {
     }
 
     @Test
+    void sharedActorLiveTurnDoesNotAuthorizeConcurrentOffCarrierReads() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch inTurn = new CountDownLatch(1);
+            CountDownLatch releaseTurn = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.PrivateMemoryBlock> block = new AtomicReference<>();
+
+            var owner = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var local = turn.localMemory().orElseThrow();
+                var owned = local.allocateActorLocalBytes(Long.BYTES);
+                owned.writeLong(0, 0x1020_3040_5060_7080L);
+                block.set(owned);
+                inTurn.countDown();
+                try {
+                    assertTrue(releaseTurn.await(5, TimeUnit.SECONDS),
+                            "the parent must release the live actor turn");
+                    assertEquals(0x1020_3040_5060_7080L, owned.readLong(0),
+                            "failed foreign reads cannot revoke or mutate owned storage");
+                } finally {
+                    turn.self().stop();
+                }
+            });
+            owner.ready().get(5, TimeUnit.SECONDS);
+            owner.send("live-turn");
+            assertTrue(inTurn.await(5, TimeUnit.SECONDS));
+            try {
+                assertThrows(IllegalStateException.class, () -> block.get().readLong(0),
+                        "an active carrier does not confer authority on another host thread");
+                assertThrows(IllegalStateException.class, block.get()::close,
+                        "a foreign carrier cannot retire live actor-owned bytes");
+                assertEquals(Long.BYTES, runtime.sharedActorLocalMemoryBytes());
+            } finally {
+                releaseTurn.countDown();
+            }
+            assertTrue(owner.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(owner.failure().isEmpty(), () -> owner.failure().toString());
+            assertTrue(block.get().closed());
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+        }
+    }
+
+    @Test
     void sharedActorZeroByteDirectBlocksStillConsumeQuotaAndHaveBoundedHandles() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch checked = new CountDownLatch(1);
