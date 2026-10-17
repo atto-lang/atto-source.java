@@ -127,8 +127,10 @@ def require_pinned_actions_check(required_checks, expected_context):
     checks = required_checks.get("checks")
     contexts = required_checks.get("contexts")
     if (not isinstance(checks, list) or not checks
-            or not isinstance(contexts, list)):
-        raise Denied("required status-check issuer binding missing")
+            or not isinstance(contexts, list) or not contexts
+            or not all(isinstance(context, str) and context for context in contexts)
+            or len(set(contexts)) != len(contexts)):
+        raise Denied("required status-check issuer binding missing or ambiguous")
     seen = set()
     for check in checks:
         if not isinstance(check, dict):
@@ -140,8 +142,11 @@ def require_pinned_actions_check(required_checks, expected_context):
         seen.add(name)
         if name == expected_context and app_id != GITHUB_ACTIONS_APP_ID:
             raise Denied("required security status check has incorrect issuer")
-    if expected_context not in seen or expected_context not in contexts:
-        raise Denied("required issuer-bound security status check missing")
+    # Every required status context must have an identical, app-bound check.
+    # Otherwise an extra legacy/unbound status can be spoofed even if the
+    # security policy check itself was bound to the correct GitHub App.
+    if seen != set(contexts) or expected_context not in seen:
+        raise Denied("required status-check contexts lack exact issuer bindings")
 
 
 def valid_sha(value):

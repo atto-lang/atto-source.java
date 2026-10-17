@@ -141,7 +141,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {"enforce_admins": {"enabled": True},
                     "required_status_checks": {"strict": True,
                                                "contexts": ["preflight-regressions", "private-ci-policy"],
-                                               "checks": [{"context": "private-ci-policy", "app_id": 15368}]},
+                                               "checks": [
+                                                   {"context": "preflight-regressions", "app_id": 15368},
+                                                   {"context": "private-ci-policy", "app_id": 15368}]},
                     "required_conversation_resolution": {"enabled": True}}
         if route == pub.PROTECTED_REVIEWS_ROUTE:
             return {"required_approving_review_count": 1,
@@ -199,7 +201,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {"enforce_admins": {"enabled": self.carrier_admin_enforced.pop(0)},
                     "required_status_checks": {"strict": valid_checks,
                                                "contexts": ["verified-carrier-ci", "carrier-policy"] if valid_checks else [],
-                                               "checks": [{"context": "carrier-policy", "app_id": 15368}] if valid_checks else []},
+                                               "checks": [
+                                                   {"context": "verified-carrier-ci", "app_id": 15368},
+                                                   {"context": "carrier-policy", "app_id": 15368}] if valid_checks else []},
                     "required_conversation_resolution": {
                         "enabled": self.carrier_conversations.pop(0)}}
         if route == "repos/trusted/ci/branches/main/protection/required_pull_request_reviews":
@@ -446,6 +450,20 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     with self.assertRaises(pub.Denied):
                         self.publish()
                 self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_carrier_unbound_extra_required_context_denied_before_source_read(self):
+        original = self.fake_api
+        def unbound_context(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/branches/main/protection":
+                result["required_status_checks"]["contexts"].append("spoofable-other-check")
+            return result
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read before issuer policy")):
+            with patch.object(pub, "gh_api", side_effect=unbound_context):
+                with self.assertRaisesRegex(pub.Denied, "exact issuer bindings"):
+                    self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_carrier_main_requires_strict_status_checks_before_source_read(self):
         self.carrier_status_checks = [False] * 100
@@ -974,6 +992,29 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         self.publish()
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
+    def test_required_check_issuer_set_must_exactly_match_contexts(self):
+        for expected in (pub.SOURCE_POLICY_CHECK, pub.CARRIER_POLICY_CHECK):
+            baseline = [
+                {"context": expected, "app_id": pub.GITHUB_ACTIONS_APP_ID},
+                {"context": "other-reviewed-check", "app_id": 15368},
+            ]
+            self.assertIsNone(pub.require_pinned_actions_check(
+                {"contexts": [expected, "other-reviewed-check"],
+                 "checks": baseline}, expected))
+            tampered = (
+                {"contexts": [expected, "unbound-status"], "checks": [baseline[0]]},
+                {"contexts": [expected, expected], "checks": [baseline[0]]},
+                {"contexts": [expected, "other-reviewed-check"], "checks": [baseline[0]]},
+                {"contexts": [expected], "checks": baseline},
+                {"contexts": [expected, 7], "checks": baseline},
+                {"contexts": [expected, "other-reviewed-check"],
+                 "checks": [baseline[0], {"context": "other-reviewed-check", "app_id": None}]},
+            )
+            for policy in tampered:
+                with self.subTest(expected=expected, policy=policy):
+                    with self.assertRaises(pub.Denied):
+                        pub.require_pinned_actions_check(policy, expected)
+
     def test_protected_source_requires_issuer_bound_actions_check(self):
         original = self.fake_api
         forged = (
@@ -997,6 +1038,20 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     with self.assertRaises(pub.Denied):
                         self.publish()
                 self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_source_unbound_extra_required_context_denied_before_source_read(self):
+        original = self.fake_api
+        def unbound_context(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == pub.PROTECTED_RULES_ROUTE:
+                result["required_status_checks"]["contexts"].append("spoofable-other-check")
+            return result
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read before issuer policy")):
+            with patch.object(pub, "gh_api", side_effect=unbound_context):
+                with self.assertRaisesRegex(pub.Denied, "exact issuer bindings"):
+                    self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_source_branch_protection_must_enforce_admins_and_strict_ci(self):
         failures = (
