@@ -45,6 +45,8 @@ struct ores_carrier_pool {
     int cleanup_started;
     int attach_ready_count;
     int attach_failures;
+    int java_ready_count;
+    unsigned char *java_ready_slots;
     pthread_mutex_t mutex;
     pthread_cond_t condition;
 };
@@ -95,6 +97,16 @@ static void *carrier_main(void *raw) {
     (*env)->CallVoidMethod(env, pool->executor, pool->carrier_loop, (jint)arg->slot);
 
     if ((*env)->ExceptionCheck(env)) {
+        // If Java failed before nativeCarrierReady(), count this slot as a
+        // bootstrap failure so nativeStart() cannot wait forever.
+        pthread_mutex_lock(&pool->mutex);
+        if (!pool->java_ready_slots[arg->slot]) {
+            pool->java_ready_slots[arg->slot] = 1;
+            pool->java_ready_count++;
+            pool->attach_failures++;
+            pthread_cond_broadcast(&pool->condition);
+        }
+        pthread_mutex_unlock(&pool->mutex);
         // Surface an unexpected executor-boundary failure before detaching.
         // Actor turn failures should normally be contained in Java.
         (*env)->ExceptionDescribe(env);
@@ -111,6 +123,7 @@ static void free_pool(JNIEnv *env, ores_carrier_pool *pool) {
     if (pool->args != NULL) {
         for (int i = 0; i < pool->max_threads; i++) free(pool->args[i].name);
     }
+    free(pool->java_ready_slots);
     free(pool->args);
     free(pool->threads);
     pthread_cond_destroy(&pool->condition);
@@ -186,7 +199,8 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
 
     pool->threads = (pthread_t *)calloc((size_t)max_threads, sizeof(pthread_t));
     pool->args = (ores_carrier_arg *)calloc((size_t)max_threads, sizeof(ores_carrier_arg));
-    if (pool->threads == NULL || pool->args == NULL) {
+    pool->java_ready_slots = (unsigned char *)calloc((size_t)max_threads, 1);
+    if (pool->threads == NULL || pool->args == NULL || pool->java_ready_slots == NULL) {
         (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
         free_pool(env, pool);
         throw_illegal_state(env, "failed to allocate native carrier slots");
@@ -268,6 +282,13 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeStart(
     pool->started = 1;
     pthread_cond_broadcast(&pool->condition);
     while (!pool->shutdown && pool->attach_ready_count < pool->created_threads) {
+        pthread_cond_wait(&pool->condition, &pool->mutex);
+    }
+    // Attach success alone is not enough: Java publishes carrierThreads[slot]
+    // only after nativeCarrierLoop enters. Wait for that publication barrier
+    // (or an attach failure) before returning to first runnable admission.
+    while (!pool->shutdown
+            && pool->java_ready_count + pool->attach_failures < pool->created_threads) {
         pthread_cond_wait(&pool->condition, &pool->mutex);
     }
     int failures = pool->attach_failures;
@@ -377,6 +398,22 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeShutdown(
      * Leave this retired pool rooted until process teardown. Actor admission is
      * already closed and every parked/cooperative carrier has been woken.
      */
+}
+
+JNIEXPORT void JNICALL
+Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCarrierReady(
+        JNIEnv *env, jclass cls, jlong handle, jint slot) {
+    (void)env;
+    (void)cls;
+    ores_carrier_pool *pool = (ores_carrier_pool *)(intptr_t)handle;
+    if (pool == NULL || slot < 0 || slot >= pool->max_threads) return;
+    pthread_mutex_lock(&pool->mutex);
+    if (!pool->java_ready_slots[slot]) {
+        pool->java_ready_slots[slot] = 1;
+        pool->java_ready_count++;
+        pthread_cond_broadcast(&pool->condition);
+    }
+    pthread_mutex_unlock(&pool->mutex);
 }
 
 JNIEXPORT jlong JNICALL
