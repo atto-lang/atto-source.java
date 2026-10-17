@@ -28,6 +28,25 @@ final class OresVMNioLifecycleTest {
         }
     }
 
+    @Test void nestedNioWorkerScopeCannotBypassSelfJoinTeardownGuard() {
+        OresVM vm = OresVM.create(Runnable::run);
+        try {
+            assertFalse(OresVM.onNioWorker());
+            OresVM.runAsNioWorker(() -> {
+                assertTrue(OresVM.onNioWorker());
+                OresVM.runAsNioWorker(() -> assertTrue(OresVM.onNioWorker()));
+                assertTrue(OresVM.onNioWorker(),
+                        "nested worker scope must preserve outer teardown guard");
+                assertThrows(IllegalStateException.class, vm::close,
+                        "nested callback must not synchronously join its own worker");
+            });
+            assertFalse(OresVM.onNioWorker(),
+                    "external host must not inherit the worker marker");
+        } finally {
+            vm.close();
+        }
+    }
+
     @Test void fivePendingIoWatchesShareOneVmReactor() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         var pipes = new ArrayList<Pipe>();
