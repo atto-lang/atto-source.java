@@ -4180,6 +4180,70 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            String booleanIntrinsic = booleanIntrinsicName(call, env);
+            if (booleanIntrinsic != null) {
+                if (call.typeArgumentsPresent()) {
+                    continuation.accept(
+                            task,
+                            null,
+                            new IllegalArgumentException(
+                                    booleanIntrinsic
+                                            + " does not accept call-site type arguments"));
+                    return;
+                }
+                if (call.arguments().size() != 1) {
+                    continuation.accept(
+                            task,
+                            null,
+                            new IllegalStateException(
+                                    "scalar " + booleanIntrinsic
+                                            + " must be lowered to logical AST before suspendable evaluation"));
+                    return;
+                }
+                // Aggregate Boolean reducers are compatibility glue until the
+                // packaged core source functions own this call surface. Their
+                // single aggregate expression may itself suspend, so evaluate
+                // it on the SourceTask before folding its already-materialized
+                // bool elements.
+                evalSuspendableExpr(
+                        task,
+                        call.arguments().getFirst(),
+                        env,
+                        (t, aggregate, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                if (aggregate instanceof List<?> list) {
+                                    continuation.accept(
+                                            t,
+                                            foldBooleanValues(booleanIntrinsic, list),
+                                            null);
+                                    return;
+                                }
+                                if (aggregate instanceof Object[] array) {
+                                    continuation.accept(
+                                            t,
+                                            foldBooleanValues(
+                                                    booleanIntrinsic,
+                                                    java.util.Arrays.asList(array)),
+                                            null);
+                                    return;
+                                }
+                                continuation.accept(
+                                        t,
+                                        null,
+                                        new IllegalArgumentException(
+                                                booleanIntrinsic
+                                                        + " arity 1 selects the List<bool> overload"));
+                            } catch (RuntimeException | Error foldFailure) {
+                                continuation.accept(t, null, foldFailure);
+                            }
+                        });
+                return;
+            }
+
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
