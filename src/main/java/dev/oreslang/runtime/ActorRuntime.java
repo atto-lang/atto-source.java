@@ -2499,6 +2499,7 @@ public final class ActorRuntime implements AutoCloseable {
                     Math.min(
                             MAX_EVENT_TOPICS_PER_GROUP,
                             creatorPolicy.maxMailboxMessages()));
+            this.terminalLedger = new SupervisorTerminalLedger(memberLimit);
             this.eventBus = new ActorEventBus(ActorRuntime.this, this);
             if (creator != null) members.add(creator);
         }
