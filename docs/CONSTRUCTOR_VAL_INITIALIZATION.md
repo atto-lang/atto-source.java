@@ -67,11 +67,20 @@ hidden inside expression forms, lambdas, or callbacks cannot establish the
 proof. Constructor `self` remains a construction-scoped, unpublished receiver
 that may not escape into borrowed, retained or asynchronous callbacks.
 
-This first Java slice intentionally fails closed for loops, `try/catch/finally`,
-`match`, `select`, and `defer` while a blank val slot remains incomplete.
-These constructs may appear after initialization but may not write blank val
-slots. Extending the checker to them requires sound normal/exceptional CFG,
-suspension and deferred-effect handling—not a syntactic count of assignments.
+The Java checker now uses the shared assignment-count interval IR. `if/else`,
+`switch`, and statement `match` participate in constructor dataflow. For
+`match`, this local pass proves exhaustiveness only from an explicit unguarded
+catch-all (`_` or a binding pattern); the general match checker may prove
+richer finite-domain exhaustiveness separately.
+
+Repeating loops, `try/catch/finally`, `select`, and `defer` still fail
+closed while a blank val slot remains incomplete. Extending them requires
+explicit backedge, exceptional, suspension and deferred-cleanup edges—not a
+syntactic count of assignments.
+
+Construction suspension is a separate invariant: `await`, asynchronous
+iteration, blocking channel operations and blocking selects are rejected from
+constructors so construction-scoped `self` cannot cross a scheduler boundary.
 
 The interpreter separately rejects a second immutable-field write and refuses
 to return an instance with any uninitialized field, including ordinary mutable
@@ -93,3 +102,12 @@ Wasm and Forge must not claim parity until they run the same positive and
 negative source fixtures and prove exact-once writes, early-return checks,
 ownership isolation, and runtime storage behavior. Source-org Actions failing
 without executable steps do not count as a test result.
+
+
+## Semantic IR
+
+The portable constructor/callable/recursive-type model is specified in
+[`CONSTRUCTOR_SEMANTIC_IR.md`](CONSTRUCTOR_SEMANTIC_IR.md). Backends may use
+different physical receiver or closure representations, but overload identity,
+assignment-count joins, construction-region publication rules and recursive
+type identities must match that contract.
