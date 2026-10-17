@@ -37,7 +37,7 @@ public final class RefinementRules {
             }
         }
         public boolean contains(long value) {
-            return value >= min && value <= max && !excluded.contains(value);
+            return withinBounds(value, min, max, excluded);
         }
         public boolean entails(Interval weaker) {
             if (!property.equals(weaker.property) || min < weaker.min || max > weaker.max)
@@ -47,6 +47,33 @@ public final class RefinementRules {
                     return false;
             }
             return true;
+        }
+    }
+
+    /**
+     * The sole scalar comparison kernel. Both static interval proofs and
+     * checked runtime values call this method; no second evaluator or
+     * implicit numeric coercion is permitted.
+     */
+    private static boolean withinBounds(long value, long min, long max,
+                                        java.util.Collection<Long> exclusions) {
+        return value >= min && value <= max && !exclusions.contains(value);
+    }
+
+    private static Long scalarMetric(String canonicalBase, Object raw) {
+        if (canonicalBase.equals("int")) {
+            // Oreslang int64 values never enter via float/Integer/BigInteger
+            // host coercions, even when the value could be represented exactly.
+            return raw instanceof Long value ? value : null;
+        }
+        if (!canonicalBase.equals("string")) {
+            throw new IllegalArgumentException("unsupported scalar schema base " + canonicalBase);
+        }
+        if (!(raw instanceof String value)) return null;
+        try {
+            return unicodeScalarCount(value);
+        } catch (IllegalArgumentException invalidUnicode) {
+            return null;
         }
     }
 
@@ -141,17 +168,8 @@ public final class RefinementRules {
             }
         }
         public boolean accepts(Object raw) {
-            if (property.equals("value")) {
-                return raw instanceof Long n && n >= min && n <= max
-                        && !excluded.contains(n);
-            }
-            if (!(raw instanceof String s)) return false;
-            try {
-                long n = unicodeScalarCount(s);
-                return n >= min && n <= max && !excluded.contains(n);
-            } catch (IllegalArgumentException invalidUnicode) {
-                return false;
-            }
+            Long metric = scalarMetric(base, raw);
+            return metric != null && withinBounds(metric, min, max, excluded);
         }
     }
 
@@ -246,21 +264,8 @@ public final class RefinementRules {
         if (spec.whereExpression() != null) {
             throw new UnsupportedOperationException("where purity and runtime lowering not implemented");
         }
-        long value;
-        if (base.name().equals("string") || base.name().equals("String")) {
-            if (!(raw instanceof String s)) return false;
-            try {
-                value = unicodeScalarCount(s);
-            } catch (IllegalArgumentException invalidUnicodeScalar) {
-                // Explicit checked construction must report failure, not throw
-                // on untrusted host strings containing unpaired surrogates.
-                return false;
-            }
-        } else if (base.name().equals("int")) {
-            if (!(raw instanceof Long l)) return false;
-            value = l;
-        } else throw new IllegalArgumentException("unsupported checked-conversion base");
-        return normalize(base, spec.bounds()).contains(value);
+        Long metric = scalarMetric(canonicalBaseName(base), raw);
+        return metric != null && normalize(base, spec.bounds()).contains(metric);
     }
 
     /** Non-public constructor: no unchecked nominal wrapper manufacture. */
