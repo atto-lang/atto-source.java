@@ -162,7 +162,7 @@ final class ProjectRootImportTest {
         Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
         Path modern = root.resolve(OresProjectConfig.MANIFEST_NAME);
         Path legacy = root.resolve(OresProjectConfig.LEGACY_MANIFEST_NAME);
-        Files.writeString(legacy, "schema_version = \"1\"\\n");
+        Files.writeString(legacy, "schema_version = \"1\"\n");
 
         Files.delete(modern);
         assertEquals(legacy, OresProjectConfig.discover(importer, Map.of())
