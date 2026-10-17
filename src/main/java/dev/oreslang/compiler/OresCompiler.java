@@ -34,7 +34,9 @@ public final class OresCompiler {
     }
 
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
+        ActorThreadAdmission.requireExclusiveBackend(program);
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
+        ActorThreadAdmission.requireExclusiveBackend(checked.program());
         OwnershipChecker.check(checked.program());
         return new AnalysisResult(checked.program(), checked.warnings());
     }
