@@ -94,7 +94,7 @@ final class ScopedPermissionV1GoldenTest {
     }
 
     @Test
-    void all37ScopedAuthorizationVectorsExerciseRealJavaPolicy() {
+    void all45ScopedAuthorizationVectorsExerciseRealJavaPolicy() {
         for (AuthVector vector : AUTHORIZATION_CASES) {
             RuntimePermissions.Builder builder = new RuntimePermissions.Builder();
             for (String scope : vector.allow()) {
