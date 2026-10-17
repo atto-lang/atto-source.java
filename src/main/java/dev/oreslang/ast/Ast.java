@@ -318,6 +318,16 @@ public final class Ast {
         }
     }
 
+    /** Execution-slot bounds, separate from in-flight messages and connections. */
+    public record ActorThreadPolicy(int min, int max) {
+        public ActorThreadPolicy {
+            if (min < 1 || max < min) {
+                throw new IllegalArgumentException("actor threads require 1 <= min <= max");
+            }
+        }
+        public static ActorThreadPolicy defaults() { return new ActorThreadPolicy(1, 1); }
+    }
+
     public record ClassDecl(
             String name,
             Visibility visibility,
@@ -328,13 +338,27 @@ public final class Ast {
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
-            List<MethodDecl> methods) implements Decl {
+            List<MethodDecl> methods,
+            ActorThreadPolicy actorThreads) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            actorThreads = java.util.Objects.requireNonNull(actorThreads);
+            if (actorKind == ActorKind.NONE && !actorThreads.equals(ActorThreadPolicy.defaults())) {
+                throw new IllegalArgumentException("non-actor classes cannot configure actor threads");
+            }
+        }
+
+        /** Compatibility constructor for existing AST producers. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract, ActorKind actorKind,
+                         List<String> genericParameters, List<TypeRef> parents,
+                         List<TypeRef> interfaces, List<FieldDecl> fields,
+                         ConstructorDecl constructor, List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods, ActorThreadPolicy.defaults());
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
