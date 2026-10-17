@@ -279,13 +279,14 @@ final class ActorPipelineRouteSession {
                 || !rejected.returning
                 || original.flowId != rejected.flowId
                 || !original.actorPath.equals(rejected.actorPath)
-                || active.containsKey(original)
-                || !active.containsKey(rejected)) {
+                || active.containsKey(original)) {
             throw new IllegalStateException(
                     "reverse routing admission cannot restore an unrelated/stale frame");
         }
-        // Insert the original BEFORE dropping its replacement. Both entries
-        // are internal identity keys; no untrusted callback runs in between.
+        // The mailbox's rejection cleanup may already have retired the
+        // attempted child envelope. The parent must still be restorable
+        // after either pre-enqueue rejection or envelope.close() cleanup.
+        // Failed attempts always spend their distinct route ID.
         active.put(original, Boolean.TRUE);
         active.remove(rejected);
     }
