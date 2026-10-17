@@ -17,7 +17,8 @@ final class ActorPipelineRoutingAdmissionTest {
     void authenticatedSingleRouteIntrinsicsTypeCheckOnSharedActors() {
         String[] calls = {
             "self.forward(mail.value);",
-            "self.forward_round_robin(mail.value);",
+            "self.forward_all(mail.value);",
+            "self.forward_round_robin(mail.value);"
             "self.forward_to(\"worker\", mail.value);",
             "self.forward_by_key(\"customer-7\", mail.value);",
             "self.backward(mail.value);",
@@ -38,25 +39,22 @@ final class ActorPipelineRoutingAdmissionTest {
     }
 
     @Test
-    void fanoutReceiptsRemainFailClosed() {
-        String[] calls = {
-            "self.forward_all(mail.value);"
-        };
-        for (String call : calls) {
-            String program = """
-                    define actor Worker as
-                      receive(ActorMail<int> mail): void {
-                        %s
-                        return;
-                      }
-                    end
-                    """.formatted(call);
-            IllegalArgumentException error = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(program)), call);
-            assertTrue(error.getMessage().contains("source lowering remains fail-closed"),
-                    call + ": " + error.getMessage());
-        }
+    void fanoutReturnsTypedImmutableReceiptValues() {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<int> mail): void {
+                    val receipts = self.forward_all(mail.value);
+                    val edge = receipts[0].edge_index;
+                    val target = receipts[0].target;
+                    val flow = receipts[0].flow_id;
+                    val route = receipts[0].route_id;
+                    val admitted = receipts[0].admitted;
+                    val error = receipts[0].error;
+                    return;
+                  }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
     }
 
     @Test
