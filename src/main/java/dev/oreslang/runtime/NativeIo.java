@@ -32,6 +32,21 @@ import java.util.List;
 public final class NativeIo {
     private NativeIo() { }
 
+    // A null ProxySelector.of(...) address is invalid. Always use the direct
+    // Java transport for numeric, policy-approved HTTP destinations; an
+    // ambient proxy must not replace the already authorized remote address.
+    private static final ProxySelector DIRECT_PROXY = new ProxySelector() {
+        @Override public List<java.net.Proxy> select(URI uri) {
+            return List.of(java.net.Proxy.NO_PROXY);
+        }
+        @Override public void connectFailed(
+                URI uri, java.net.SocketAddress address, IOException failure) {
+            // A direct connection has no proxy to mark failed.
+        }
+    };
+
+    static ProxySelector directProxySelector() { return DIRECT_PROXY; }
+
     public static String readText(OresContext context, String rawPath) {
         Path path = canonicalExistingPath(rawPath);
         context.requirePermission(RuntimePermissions.Permission.READ, path.toString(), "fs.read_text");
@@ -278,7 +293,7 @@ public final class NativeIo {
         // to a second host would bypass the permission check above.
         HttpClient client = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NEVER)
-                .proxy(ProxySelector.of(null)) // Do not let ambient proxies reroute a checked IP.
+                .proxy(directProxySelector()) // Do not let ambient proxies reroute a checked IP.
                 .connectTimeout(Duration.ofSeconds(15))
                 .build();
         try (client) {
