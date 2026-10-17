@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -84,6 +85,49 @@ final class ActorFfmArenaCurrentIntegrationTest {
             assertTrue(arenaRef.get().physicallyClosed());
             assertEquals(0L, sliceRef.get().usedBytes(),
                     "last native loan must refund physical bytes exactly once");
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+        }
+    }
+
+    @Test
+    void externalCompletionBridgePinsLifetimeUntilOffCarrierCompletion() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
+
+        var arenaRef = new AtomicReference<ActorArena>();
+        var sliceRef = new AtomicReference<ActorRuntime.ActorMemorySlice>();
+        var trackedRef = new AtomicReference<CompletableFuture<Long>>();
+        var completion = new CompletableFuture<Long>();
+        var registered = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var memory = turn.localMemory().orElseThrow();
+                sliceRef.set(memory);
+                var arena = memory.newActorArena(1, 1);
+                arenaRef.set(arena);
+                trackedRef.set(arena.trackExternalCompletion(completion));
+                registered.countDown();
+                turn.self().stop();
+            });
+
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("register");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty(), () -> "actor failed: " + actor.failure());
+
+            assertTrue(arenaRef.get().closed(), "retirement must revoke arena authority");
+            assertFalse(arenaRef.get().physicallyClosed(),
+                    "pending completion must pin persistent native lifetime");
+            assertEquals(1, arenaRef.get().outstandingExternalPins());
+            assertEquals(8L, sliceRef.get().usedBytes(),
+                    "scratch region should reclaim while persistent lifetime is pinned");
+
+            assertTrue(completion.complete(7L));
+            assertEquals(7L, trackedRef.get().get(5, TimeUnit.SECONDS));
+            assertEquals(0, arenaRef.get().outstandingExternalPins());
+            assertTrue(arenaRef.get().physicallyClosed());
+            assertEquals(0L, sliceRef.get().usedBytes());
             assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
         }
     }
