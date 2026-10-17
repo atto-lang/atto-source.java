@@ -52,17 +52,17 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             var sink = runtime.<String>spawnShared(() -> (value, actor) -> {
                 if (!"fan-in".equals(value)) unexpectedPayload.incrementAndGet();
                 observed.add(binding.get().currentCorrelation());
-                binding.get().backward("ack");
+                runtime.routeCurrentPipelineBackward("ack");
                 delivered.countDown();
             });
             var a = runtime.<String>spawnShared(() -> (value, actor) -> {
-                if (value.equals("fanout")) binding.get().forward("fan-in");
-                else if (value.equals("ack")) binding.get().backward("ack");
+                if (value.equals("fanout")) runtime.routeCurrentPipelineForward("fan-in");
+                else if (value.equals("ack")) runtime.routeCurrentPipelineBackward("ack");
                 else throw new AssertionError("worker-a unexpected payload");
             });
             var b = runtime.<String>spawnShared(() -> (value, actor) -> {
-                if (value.equals("fanout")) binding.get().forward("fan-in");
-                else if (value.equals("ack")) binding.get().backward("ack");
+                if (value.equals("fanout")) runtime.routeCurrentPipelineForward("fan-in");
+                else if (value.equals("ack")) runtime.routeCurrentPipelineBackward("ack");
                 else throw new AssertionError("worker-b unexpected payload");
             });
             var source = runtime.<String>spawnShared(() -> (value, actor) -> {
@@ -78,8 +78,11 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
                     Map.of("source", source, "worker-a", a, "worker-b", b,
                            "sink", sink), 17, 12);
             binding.set(router);
-            // Caller-origin DATA cannot masquerade as a routed receive.
+            // Caller-origin DATA cannot masquerade as a routed receive, and
+            // the public compiler bridge has no ambient host/supervisor fallback.
             assertThrows(SecurityException.class, () -> router.forwardAll("spoof"));
+            assertThrows(SecurityException.class,
+                    () -> runtime.routeCurrentPipelineForward("spoof"));
             router.ingress("source", "begin");
             assertTrue(delivered.await(8, TimeUnit.SECONDS));
             assertTrue(replied.await(8, TimeUnit.SECONDS),
