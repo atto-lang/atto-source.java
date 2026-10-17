@@ -22,6 +22,8 @@ public final class ExecutionRegionGraph {
             Objects.requireNonNull(kind);
             if ((kind == TypeKind.FUTURE) != (inner != null))
                 throw new IllegalArgumentException("Only Future has inner type");
+            if (kind == TypeKind.FUTURE && inner.kind() == TypeKind.FUTURE)
+                throw new IllegalArgumentException("nested Future requires explicit await/composition");
         }
         public static Type future(Type t) { return new Type(TypeKind.FUTURE, t); }
     }
