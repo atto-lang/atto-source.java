@@ -31,6 +31,13 @@ are therefore not re-entered merely to relay a direct origin reply.
 Aliases and method references do not acquire routing authority. For example,
 `val alias = self; alias.forward(v)` remains rejected.
 
+Each authenticated inbound route frame is **one-shot**. A successful
+single-destination publication retires the source frame before guest code can
+route again. A selector/admission failure before publication leaves the frame
+live so code may handle the error or choose another valid route. Repeated
+`self.forward*` calls therefore cannot emulate the still-disabled
+`self.forward_all` surface or hide partial fan-out results.
+
 ## Scheduler-owned authority
 
 A routed mailbox publication carries two VM-only metadata values together:
