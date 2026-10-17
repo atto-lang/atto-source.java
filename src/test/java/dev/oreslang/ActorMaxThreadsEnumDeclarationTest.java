@@ -59,6 +59,24 @@ final class ActorMaxThreadsEnumDeclarationTest {
         }
     }
 
+    @Test void canonicalEnumInsideModuleMaintainsActorType() {
+        Ast.Program program = Parser.parse("""
+                define module work as
+                    define enum MaxActorThreads as
+                        LOW int = 1;
+                        MEDIUM int = 2;
+                        HIGH int = 3;
+                    end
+                    @ActorMaxThreads(MaxActorThreads.LOW)
+                    define actor InModule as end
+                end
+                """);
+        assertEquals("work", program.modules().getFirst().name());
+        assertEquals(1, program.modules().getFirst().declarations().size());
+        var actor = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        assertEquals(Ast.MaxActorThreads.LOW, actor.maxActorThreads());
+    }
+
     @Test void enumSpellingMayBeOmittedBecauseTheTierIsLanguageOwned() {
         Ast.Program program = Parser.parse(
                 "@ActorMaxThreads(MaxActorThreads.LOW) define actor A as end");
