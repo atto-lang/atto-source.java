@@ -7153,10 +7153,20 @@ public final class TypeChecker {
                     rejectStaticClassGenericReferences(arm.body(), classGenerics, klass, method);
                 }
                 rejectStaticClassGenericReferences(switched.defaultBody(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.ThrowStmt thrown) {
+                rejectStaticClassGenericReferences(thrown.value(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.RaiseStmt raised) {
+                rejectStaticClassGenericReferences(raised.value(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.PanicStmt panicked) {
+                rejectStaticClassGenericReferences(panicked.value(), classGenerics, klass, method);
             } else if (statement instanceof Ast.TryStmt attempted) {
                 rejectStaticClassGenericReferences(attempted.body(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(attempted.catchBody(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(attempted.finallyBody(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.RecoverStmt recovered) {
+                rejectStaticClassGenericReferences(recovered.body(), classGenerics, klass, method);
+                rejectStaticClassGenericReferences(recovered.catchBody(), classGenerics, klass, method);
+                rejectStaticClassGenericReferences(recovered.finallyBody(), classGenerics, klass, method);
             } else if (statement instanceof Ast.SelectStmt selected) {
                 for (Ast.SelectArm arm : selected.arms()) {
                     rejectStaticClassGenericReferences(
@@ -8541,6 +8551,10 @@ public final class TypeChecker {
                 if (definitelyReturns(attempted.finallyBody())) return true;
                 if (definitelyReturns(attempted.body()) && definitelyReturns(attempted.catchBody())) return true;
             }
+            if (stmt instanceof Ast.RecoverStmt recovered) {
+                if (definitelyReturns(recovered.finallyBody())) return true;
+                if (definitelyReturns(recovered.body()) && definitelyReturns(recovered.catchBody())) return true;
+            }
         }
         return false;
     }
@@ -8567,6 +8581,10 @@ public final class TypeChecker {
                 if (containsBreakForCurrentLoop(attempted.body())
                         || containsBreakForCurrentLoop(attempted.catchBody())
                         || containsBreakForCurrentLoop(attempted.finallyBody())) return true;
+            } else if (stmt instanceof Ast.RecoverStmt recovered) {
+                if (containsBreakForCurrentLoop(recovered.body())
+                        || containsBreakForCurrentLoop(recovered.catchBody())
+                        || containsBreakForCurrentLoop(recovered.finallyBody())) return true;
             }
         }
         return false;
