@@ -238,5 +238,7 @@ public final class SupervisorProcess implements AutoCloseable {
         for (Pending pending : mailbox) pending.acknowledgement.cancel(false);
         mailbox.clear();
         callbackActive = false;
+        }
+        }
     }
 }
