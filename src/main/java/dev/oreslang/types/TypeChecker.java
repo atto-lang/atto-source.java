@@ -3186,6 +3186,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("call-site type arguments require a declared generic function or method");
             }
             Type callee = typeOf(call.callee(), env, generics, self);
+            if (callee == Types.Any.INSTANCE || callee == Types.UnknownValue.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "any/unknown value is not directly callable; narrow it to a concrete callable signature first");
+            }
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
             List<ExpandedCallArgument> expanded =
                     expandFixedCallArguments(
@@ -3271,6 +3275,10 @@ public final class TypeChecker {
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
+            if (receiver == Types.Any.INSTANCE || receiver == Types.UnknownValue.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "any/unknown value has no statically available members; narrow it to a concrete type first");
+            }
             Type sumReceiver = receiverDispatchType(deref(receiver));
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
