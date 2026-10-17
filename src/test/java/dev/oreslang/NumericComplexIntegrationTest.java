@@ -111,6 +111,63 @@ final class NumericComplexIntegrationTest {
     }
 
     @Test
+    void declaredComplexReturnUsesTheSameExactPromotionBoundary() {
+        assertTrue(evaluatesTrue("""
+                fnc exactPositive(): complex {
+                  return 9007199254740992;
+                }
+                fnc exactNegative(): complex {
+                  return -9007199254740992;
+                }
+                return exactPositive() eq (9007199254740992.0 + 0i)
+                    && exactNegative() eq (-9007199254740992.0 + 0i);
+                """));
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            PolyglotException literalFailure = assertThrows(
+                    PolyglotException.class,
+                    () -> context.eval(OresLanguage.ID, """
+                            pub routine main(): complex {
+                              return 9007199254740993;
+                            }
+                            """));
+            assertTrue(literalFailure.getMessage().contains("exact binary64 range"),
+                    literalFailure::toString);
+        }
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            PolyglotException variableFailure = assertThrows(
+                    PolyglotException.class,
+                    () -> context.eval(OresLanguage.ID, """
+                            pub routine main(): complex {
+                              val int value = 9007199254740993;
+                              return value;
+                            }
+                            """));
+            assertTrue(variableFailure.getMessage().contains("exact binary64 range"),
+                    variableFailure::toString);
+        }
+    }
+
+    @Test
+    void complex64ReturnDoesNotSilentlyReuseBinary64Complex() {
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            PolyglotException failure = assertThrows(
+                    PolyglotException.class,
+                    () -> context.eval(OresLanguage.ID, """
+                            pub routine main(): complex64 {
+                              return 1.0i;
+                            }
+                            """));
+            assertTrue(failure.getMessage().contains("dedicated binary32 complex precision contract"),
+                    failure::toString);
+        }
+    }
+
+    @Test
     void complexDivisionRetainsRepresentableSubnormalScaleCrossComponent() {
         // Corresponds to the fixed regression in numeric complex issue #1042.
         // This is a targeted oracle case, NOT proof of correctly rounded
