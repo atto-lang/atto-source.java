@@ -35,6 +35,96 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
                         new ActorPipelineRoutePlan.Edge("worker-b", "sink", "Event")));
     }
 
+    private static ActorPipelineRoutePlan linearGraph() {
+        return new ActorPipelineRoutePlan(
+                List.of(
+                        new ActorPipelineRoutePlan.Stage("source", "Producer",
+                                ActorPipelineRoutePlan.Role.READABLE, "", "Event"),
+                        new ActorPipelineRoutePlan.Stage("worker", "Worker",
+                                ActorPipelineRoutePlan.Role.TRANSFORM, "Event", "Event"),
+                        new ActorPipelineRoutePlan.Stage("sink", "Sink",
+                                ActorPipelineRoutePlan.Role.WRITABLE, "Event", "")),
+                List.of(
+                        new ActorPipelineRoutePlan.Edge("source", "worker", "Event"),
+                        new ActorPipelineRoutePlan.Edge("worker", "sink", "Event")));
+    }
+
+    @Test
+    void compilerBridgeUsesOnlyEnvelopeBoundTurnAuthority() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var finished = new CountDownLatch(1);
+            var denied = new CountDownLatch(1);
+            var response = new AtomicReference<String>();
+            var ordinaryFailure = new AtomicReference<Throwable>();
+
+            var ordinary = runtime.<String>spawnShared(() -> (value, actor) -> {
+                try {
+                    runtime.routeCurrentPipelineForward("forged");
+                } catch (Throwable failure) {
+                    ordinaryFailure.set(failure);
+                    denied.countDown();
+                }
+            });
+            runtime.send(ordinary, "ordinary-mail");
+            assertTrue(denied.await(5, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, ordinaryFailure.get(),
+                    "ordinary ActorMail must not acquire pipeline authority");
+
+            var sink = runtime.<String>spawnShared(() -> (value, actor) -> {
+                assertEquals("work:sink", value);
+                runtime.routeCurrentPipelineBackward("ack:sink");
+            });
+            var worker = runtime.<String>spawnShared(() -> (value, actor) -> {
+                if (value.equals("work")) {
+                    runtime.routeCurrentPipelineForward(value + ":sink");
+                } else if (value.equals("ack:sink")) {
+                    runtime.routeCurrentPipelineBackward(value + ":worker");
+                } else {
+                    throw new AssertionError("worker unexpected payload " + value);
+                }
+            });
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                if (value.equals("begin")) {
+                    runtime.routeCurrentPipelineForward("work");
+                } else if (value.equals("ack:sink:worker")) {
+                    response.set(value);
+                    finished.countDown();
+                } else {
+                    throw new AssertionError("source unexpected payload " + value);
+                }
+            });
+
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, linearGraph(),
+                    Map.of("source", source, "worker", worker, "sink", sink),
+                    23, 12);
+
+            assertThrows(SecurityException.class,
+                    () -> runtime.routeCurrentPipelineForward("host-spoof"));
+            router.ingress("source", "begin");
+            assertTrue(finished.await(8, TimeUnit.SECONDS),
+                    "authenticated routed source did not complete reverse path");
+            assertEquals("ack:sink:worker", response.get());
+
+            source.drain().get(5, TimeUnit.SECONDS);
+            worker.drain().get(5, TimeUnit.SECONDS);
+            sink.drain().get(5, TimeUnit.SECONDS);
+            ordinary.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(0, router.outstanding(),
+                    "compiler bridge must not leak route frames");
+
+            router.close();
+            source.stop();
+            worker.stop();
+            sink.stop();
+            ordinary.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            worker.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+            ordinary.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
     @Test
     void realMailboxFanoutAndFanInPreserveOneFlowAndIndependentBranchIdentities()
             throws Exception {
