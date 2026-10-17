@@ -44,7 +44,7 @@ public final class TypeChecker {
             "Symbol", "Array", "List", "Vector", "Slice",
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
-            "ActorOutputStream", "Option", "Result", "Mutex",
+            "ActorOutputStream", "ActorStream", "Option", "Result", "Mutex",
             "SharedMutex", "Channel", "Future", "Fnc", "Function");
 
     // Reserved non-overridable actor pipeline operations. Until the typed
@@ -196,7 +196,7 @@ public final class TypeChecker {
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
-                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
+                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorStream", "ActorUtils", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
                 "self", "null"));
@@ -234,8 +234,22 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            if (module.name().equals("ActorUtils") || module.name().equals("ActorStream")) {
+                throw new IllegalArgumentException(
+                        "reserved actor pipeline namespace: " + module.name());
+            }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.ClassDecl klass
+                        && (klass.name().equals("ActorUtils") || klass.name().equals("ActorStream"))) {
+                    throw new IllegalArgumentException(
+                            "reserved actor pipeline type/namespace: " + klass.name());
+                }
+                if (decl instanceof Ast.TypeAliasDecl alias
+                        && (alias.name().equals("ActorUtils") || alias.name().equals("ActorStream"))) {
+                    throw new IllegalArgumentException(
+                            "reserved actor pipeline alias: " + alias.name());
+                }
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
@@ -2151,6 +2165,67 @@ public final class TypeChecker {
         return java.util.Collections.unmodifiableSet(declared);
     }
 
+    private static void collectActorPipeStages(Ast.Expr expr, List<Ast.Expr> stages) {
+        java.util.ArrayDeque<Ast.Expr> pending = new java.util.ArrayDeque<>();
+        pending.push(expr);
+        while (!pending.isEmpty()) {
+            Ast.Expr next = pending.pop();
+            if (next instanceof Ast.BinaryExpr binary && binary.operator().equals("pipe")) {
+                pending.push(binary.right());
+                pending.push(binary.left());
+            } else {
+                if (stages.size() == 16) {
+                    throw new IllegalArgumentException(
+                            "ActorStream pipe requires 2..16 stages");
+                }
+                stages.add(next);
+            }
+        }
+    }
+
+    private Type checkActorStreamStages(
+            List<Ast.Expr> stages, Env env, Set<String> generics, Type self) {
+        if (currentActorKind != Ast.ActorKind.NONE
+                || stages.size() < 2 || stages.size() > 16) {
+            throw new IllegalArgumentException(
+                    "ActorStream pipe requires 2..16 SHARED actor references "
+                            + "from a non-actor supervisor/root turn");
+        }
+
+        Type domain = null;
+        for (Ast.Expr stage : stages) {
+            Type ref = deref(typeOf(stage, env, generics, self));
+            if (!(ref instanceof Named actorRef)
+                    || !actorRef.name().equals("ActorRef")
+                    || actorRef.arguments().size() != 1) {
+                throw new IllegalArgumentException(
+                        "ActorStream pipe stages require statically typed ActorRef<T> values");
+            }
+            Ast.ClassDecl actorClass = actorClassForRef(actorRef);
+            if (actorClass.actorKind() != Ast.ActorKind.SHARED) {
+                throw new IllegalArgumentException(
+                        "ActorStream authenticated routing currently requires SHARED actors; "
+                                + actorClass.name() + " is " + actorClass.actorKind());
+            }
+            Type mailbox = deref(actorMailboxPayloadType(actorRef));
+            validateActorCallableBoundaryType(
+                    mailbox, Ast.ActorKind.SHARED, false,
+                    "ActorStream mailbox domain for " + actorClass.name());
+            if (domain == null) {
+                domain = mailbox;
+            } else if (!assignable(mailbox, domain) || !assignable(domain, mailbox)) {
+                throw new IllegalArgumentException(
+                        "ActorStream pipe stage ActorMail domains must match exactly: "
+                                + domain + " versus " + mailbox);
+            }
+        }
+        if (domain == null || domain == Unknown.INSTANCE || domain == Primitive.VOID) {
+            throw new IllegalArgumentException(
+                    "ActorStream requires one statically resolved non-void mailbox domain");
+        }
+        return new Named("ActorStream", List.of(domain));
+    }
+
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
@@ -2363,6 +2438,11 @@ public final class TypeChecker {
             return operand;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
+            if (binary.operator().equals("pipe")) {
+                List<Ast.Expr> stages = new ArrayList<>();
+                collectActorPipeStages(binary, stages);
+                return checkActorStreamStages(stages, env, generics, self);
+            }
             Type left = typeOf(binary.left(), env, generics, self);
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
@@ -2481,6 +2561,17 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr utility
+                    && utility.receiver() instanceof Ast.NameExpr owner
+                    && owner.name().equals("ActorUtils")
+                    && env.lookup("ActorUtils") == null
+                    && utility.member().equals("pipe")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "ActorUtils.pipe does not accept call-site type arguments");
+                }
+                return checkActorStreamStages(call.arguments(), env, generics, self);
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -2881,6 +2972,46 @@ public final class TypeChecker {
                         }
                     }
                     return Primitive.VOID;
+                }
+
+                if (receiver instanceof Named streamType
+                        && streamType.name().equals("ActorStream")) {
+                    if (streamType.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "ActorStream<T> requires exactly one mailbox domain");
+                    }
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "ActorStream methods do not accept call-site type arguments");
+                    }
+                    return switch (member.member()) {
+                        case "send" -> {
+                            if (call.arguments().size() != 1) {
+                                throw new IllegalArgumentException(
+                                        "ActorStream.send expects exactly one value");
+                            }
+                            Type payload = typeOf(
+                                    call.arguments().getFirst(), env, generics, self);
+                            validateActorCallableBoundaryType(
+                                    payload, Ast.ActorKind.SHARED, false,
+                                    "ActorStream.send value");
+                            requireAssignable(
+                                    payload,
+                                    streamType.arguments().getFirst(),
+                                    "ActorStream.send mailbox value");
+                            yield Primitive.VOID;
+                        }
+                        case "get_done" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorStream.get_done expects no arguments");
+                            }
+                            yield new Named("Future", List.of(Primitive.VOID));
+                        }
+                        default -> throw new IllegalArgumentException(
+                                "unknown ActorStream callable member '"
+                                        + member.member() + "'");
+                    };
                 }
 
                 if (receiver instanceof Named actorRef
@@ -3430,6 +3561,21 @@ public final class TypeChecker {
             if (httpMember != null) return httpMember;
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
+            if (sumReceiver instanceof Named streamType
+                    && streamType.name().equals("ActorStream")) {
+                if (streamType.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "ActorStream<T> requires exactly one mailbox domain");
+                }
+                return switch (member.member()) {
+                    case "send", "get_done" -> throw new IllegalArgumentException(
+                            "ActorStream." + member.member()
+                                    + " is direct-call-only; invoke it with (...)");
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorStream member '" + member.member() + "'");
+                };
+            }
+
             if (sumReceiver instanceof Named actorRef
                     && actorRef.name().equals("ActorRef")) {
                 actorClassForRef(actorRef);
@@ -8242,6 +8388,18 @@ public final class TypeChecker {
                             ref.name() + "<void> is invalid");
                 }
                 yield new Named(ref.name(), List.of(payload));
+            }
+            case "ActorStream" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "ActorStream requires exactly one explicit mailbox type");
+                }
+                Type payload = resolve(ref.arguments().getFirst(), generics, self);
+                if (payload == Primitive.VOID || payload == Unknown.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "ActorStream<void/unknown> is invalid");
+                }
+                yield new Named("ActorStream", List.of(payload));
             }
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
