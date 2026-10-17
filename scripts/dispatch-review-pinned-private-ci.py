@@ -12,6 +12,7 @@ of the approved immutable source commit/tree.
 """
 import argparse
 import base64
+import datetime as dt
 import hashlib
 import importlib.util
 import json
@@ -57,8 +58,29 @@ def strict_json(raw, expected_type):
             result[key] = value
         return result
 
+    def reject_constant(_value):
+        raise Denied("nonstandard GitHub JSON number")
+
+    def parse_int(value):
+        if len(value) > 64:
+            raise Denied("oversized GitHub JSON integer")
+        return int(value)
+
+    def parse_float(value):
+        if len(value) > 128:
+            raise Denied("oversized GitHub JSON float")
+        number = float(value)
+        if not (-float("inf") < number < float("inf")):
+            raise Denied("nonfinite GitHub JSON number")
+        return number
+
     try:
-        value = json.loads(raw, object_pairs_hook=unique)
+        value = json.loads(
+            raw,
+            object_pairs_hook=unique,
+            parse_constant=reject_constant,
+            parse_int=parse_int,
+            parse_float=parse_float)
     except (UnicodeError, ValueError, RecursionError) as exc:
         raise Denied("invalid GitHub JSON response") from exc
     if type(value) is not expected_type:
@@ -129,9 +151,14 @@ def require_incident_closed():
             or issue.get("state_reason") != "completed"):
         raise Denied("private-source exposure incident is not independently closed")
     closed_at = issue.get("closed_at")
-    if (not isinstance(closed_at, str) or not closed_at.endswith("Z")
-            or len(closed_at) < 20):
+    if not isinstance(closed_at, str):
         raise Denied("private-source exposure incident lacks valid closure time")
+    try:
+        stamp = dt.datetime.fromisoformat(closed_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise Denied("private-source exposure incident lacks valid closure time") from exc
+    if stamp.tzinfo is None or stamp.utcoffset() is None:
+        raise Denied("private-source exposure incident closure time is not UTC-aware")
     return closed_at
 
 def write_temp(root, name, raw):
@@ -339,6 +366,27 @@ def canonical_provenance(receipt):
             + "\n").encode("utf-8")
 
 
+
+def require_dispatcher_api_budget(file_count, estimated_writes):
+    if type(file_count) is not int or not 1 <= file_count <= PUB.MAX_FILES:
+        raise Denied("private CI snapshot file count invalid")
+    if (type(estimated_writes) is not int or estimated_writes < 1
+            or estimated_writes > 2 * PUB.MAX_FILES):
+        raise Denied("review-pinned dispatcher write count invalid")
+    budget = PUB.gh_api("rate_limit")
+    resources = budget.get("resources") if isinstance(budget, dict) else None
+    core = resources.get("core") if isinstance(resources, dict) else None
+    remaining = core.get("remaining") if isinstance(core, dict) else None
+    if type(remaining) is not int or remaining < 0:
+        raise Denied("GitHub core API budget unavailable")
+    # authorize_write() deliberately replays all mutable authority, then
+    # rechecks destination privacy, branch absence, carrier parent/workflow
+    # and reviewer-policy bytes. Reserve above the current call count rather
+    # than inheriting the legacy protected-main publisher's smaller multiplier.
+    required = 40 * estimated_writes + 240
+    if remaining < required:
+        raise Denied("insufficient GitHub core API budget for review-pinned export")
+
 def compare_live_receipt(receipt):
     live = canonical_receipt_from_live()
     if live != receipt:
@@ -408,7 +456,7 @@ def publish_review_pinned(receipt, source_checkout, branch):
     # binary blobs + source-tree batches + provenance blob + root tree +
     # commit + ref.  Every one gets a fresh full authorization replay.
     estimated_writes = binary_writes + len(batches) + 4
-    PUB.require_private_ci_api_budget(len(files), estimated_writes)
+    require_dispatcher_api_budget(len(files), estimated_writes)
 
     def authorize_write():
         compare_live_receipt(receipt)
