@@ -63,7 +63,7 @@ public final class RefinementSyntax {
                         bounds.add(new Ast.RefinementBound("length", op, argument.namedParameterValue().intLiteralValue()));
                     }
                 }
-                default -> bad("unsupported type constraint annotation @" + annotation.name());
+                default -> bad("@" + annotation.name() + " on type alias would be silently discarded; unsupported constraint annotation");
             }
         }
 
