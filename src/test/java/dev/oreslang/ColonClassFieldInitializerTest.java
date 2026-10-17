@@ -210,7 +210,7 @@ final class ColonClassFieldInitializerTest {
     }
 
     @Test
-    void constructorRejectsConservativeCrossBranchSecondFixedWrite() {
+    void constructorAllowsMutuallyExclusiveFixedFieldInitialization() {
         String ambiguous = """
                 define class Foo as
                   val int value;
@@ -223,10 +223,8 @@ final class ColonClassFieldInitializerTest {
                   }
                 end
                 """;
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.checkTypes(Parser.parse(ambiguous)));
-        assertThrows(IllegalArgumentException.class,
-                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(ambiguous)));
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(ambiguous)));
+        assertDoesNotThrow(() -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(ambiguous)));
     }
 
     @Test
