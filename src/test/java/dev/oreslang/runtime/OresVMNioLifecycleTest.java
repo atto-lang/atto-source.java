@@ -22,7 +22,7 @@ final class OresVMNioLifecycleTest {
         try {
             assertEquals(1, vm.nioReactorCount(), "one initial process-level readiness thread");
             assertTrue(vm.controlCarrierCount() >= 2);
-            assertFalse(vm.nioReadiness().usesVmCompletionCarriers() == false,
+            assertTrue(vm.nioReadiness().usesVmCompletionCarriers(),
                     "VM NIO completions reuse CONTROL; no two extra prestarted notifier threads");
             var nio = vm.nioReadiness();
             var pending = new ArrayList<OresFuture<Integer>>();
