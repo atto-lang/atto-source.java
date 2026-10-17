@@ -320,3 +320,19 @@ The confidential source transfer hold remains unchanged: source `main` is
 unprotected, protected-main destination/snapshot allowlists are empty,
 independent review is absent, and the P0 prior exposure incident remains open.
 
+
+
+## October 17 follow-up: deterministic GitHub auth token selection
+
+The publisher no longer leaves GitHub CLI authentication dependent on the CLI's
+environment-variable precedence. If both `GH_TOKEN` and `GITHUB_TOKEN` are
+present and differ, authorization fails before any child process or GitHub API
+request. A single token, or two identical token variables, is normalized to
+`GH_TOKEN` and `GITHUB_TOKEN` is removed from the child environment.
+
+This closes a confused-principal edge where a stale or caller-controlled
+`GH_TOKEN` could otherwise override the workflow's intended
+`GITHUB_TOKEN`. Regression coverage exercises conflicting, identical and
+single-token environments without logging token material. This change does not
+authorize source export: protected main, independent review, allowlists and the
+existing confidentiality hold remain mandatory.

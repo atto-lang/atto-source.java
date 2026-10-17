@@ -127,6 +127,12 @@ def verified_child_env():
     Authentication tokens remain available only through GH_TOKEN/GITHUB_TOKEN.
     """
     env = os.environ.copy()
+    gh_token = env.get("GH_TOKEN")
+    actions_token = env.get("GITHUB_TOKEN")
+    if (gh_token and actions_token and gh_token != actions_token):
+        raise Denied("conflicting GitHub authentication token variables")
+    canonical_token = gh_token or actions_token
+
     exact_untrusted = {
         "BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS",
         "CDPATH", "GLOBIGNORE", "PROMPT_COMMAND",
@@ -152,6 +158,13 @@ def verified_child_env():
     env["GH_PROMPT_DISABLED"] = "1"
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    # gh prefers GH_TOKEN over GITHUB_TOKEN. Never leave precedence dependent
+    # on two caller-provided variables: normalize one reviewed credential name.
+    env.pop("GITHUB_TOKEN", None)
+    if canonical_token:
+        env["GH_TOKEN"] = canonical_token
+    else:
+        env.pop("GH_TOKEN", None)
     return env
 
 
