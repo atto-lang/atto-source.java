@@ -67,7 +67,7 @@ final class RefinementRulesTest {
         assertFalse(range.contains(Long.MAX_VALUE - 1));
         assertThrows(IllegalArgumentException.class, () ->
                 RefinementRules.normalize(Ast.TypeRef.simple("int"), java.util.List.of(
-                        new Ast.RefinementBound("value","ge",Long.MAX_VALUE-1),
+                        new Ast.RefinementBound("value","gte",Long.MAX_VALUE-1),
                         new Ast.RefinementBound("value","ne",Long.MAX_VALUE-1),
                         new Ast.RefinementBound("value","ne",Long.MAX_VALUE))));
     }
