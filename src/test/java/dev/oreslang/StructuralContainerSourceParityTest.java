@@ -58,6 +58,13 @@ final class StructuralContainerSourceParityTest {
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module app
+                  fnc take(structural List<float> xs): float { return xs[0]; }
+                  fnc bad(List<int> xs): float { return take(xs); }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
                   fnc bad(structural List<int> xs): int {
                     xs[0] = 7;
                     return xs[0];
@@ -126,6 +133,15 @@ final class StructuralContainerSourceParityTest {
                 define module app
                   fnc bad(structural Map<string,int> values): void {
                     values.put("key", 1);
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad(Map<string,int> values): void {
+                    values.unknown_map_operation();
                     return;
                   }
                 end

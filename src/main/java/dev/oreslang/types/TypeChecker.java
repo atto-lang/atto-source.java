@@ -2861,6 +2861,7 @@ public final class TypeChecker {
                     return builtin.result();
                 }
                 if (receiver instanceof ListType || receiver instanceof Tuple
+                        || receiver instanceof MapType
                         || receiver instanceof StructuralContainerView) {
                     throw new IllegalArgumentException(
                             "unknown collection member '" + member.member() + "'");
@@ -3384,6 +3385,7 @@ public final class TypeChecker {
             }
             if (collectionMember != null) return collectionMember;
             if (sumReceiver instanceof ListType || sumReceiver instanceof Tuple
+                    || sumReceiver instanceof MapType
                     || sumReceiver instanceof StructuralContainerView) {
                 throw new IllegalArgumentException(
                         "unknown collection member '" + member.member() + "'");
