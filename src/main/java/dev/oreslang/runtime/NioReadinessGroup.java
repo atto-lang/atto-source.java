@@ -8,10 +8,12 @@ import java.nio.channels.Selector;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
+import java.util.concurrent.Executor;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -47,7 +49,14 @@ public final class NioReadinessGroup implements AutoCloseable {
     // notification buildup when host subscribers run slowly.
     private final AtomicInteger notificationReservations = new AtomicInteger();
     private final AtomicInteger liveReactors = new AtomicInteger();
-    private final ThreadPoolExecutor completionExecutor;
+    // Standalone groups own dedicated completion workers. VM-owned groups
+    // instead reuse its bounded CONTROL workers (no extra resident threads).
+    private final Executor completionExecutor;
+    private final ThreadPoolExecutor ownedCompletionExecutor;
+    private final ConcurrentLinkedDeque<Runnable> stagedNotifications =
+            new ConcurrentLinkedDeque<>();
+    private final Object notificationDispatch = new Object();
+    private final Object notificationDrain = new Object();
     // A transient registration burst must not spin up extra selector threads.
     // Counter is protected by the lifecycle monitor.
     private int consecutiveCommandPressure;
@@ -58,24 +67,39 @@ public final class NioReadinessGroup implements AutoCloseable {
     }
 
     public NioReadinessGroup(int maxReactors, int maxPending, int commandCapacity) throws IOException {
+        this(maxReactors, maxPending, commandCapacity, null);
+    }
+
+    // VM-only: no extra prestarted NIO completion threads. The caller must
+    // register retryStagedNotifications with its carrier pool's afterExecute
+    // hook. A standalone manager retains its dedicated completion workers.
+    NioReadinessGroup(int maxReactors, int maxPending, int commandCapacity,
+                      Executor vmCompletionExecutor) throws IOException {
         if (maxReactors < 1 || maxReactors > 4 || maxPending < 1 || commandCapacity < 8)
             throw new IllegalArgumentException("invalid NIO reactor bounds");
         this.maxReactors = maxReactors;
         this.maxPending = maxPending;
         this.commandCapacity = commandCapacity;
-        // Dedicated completion workers are not selector or actor carriers.
-        // Thread creation happens at bootstrap, never on an I/O-ready path.
-        completionExecutor = new ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(maxPending), new java.util.concurrent.ThreadFactory() {
-                    private final AtomicInteger ids = new AtomicInteger();
-                    @Override public Thread newThread(Runnable work) {
-                        return Thread.ofPlatform().daemon(true)
-                                .name("ores-nio-completion-" + ids.getAndIncrement())
-                                .unstarted(() -> OresVM.runAsNioWorker(work));
-                    }
-                });
+        // Standalone host tests use two prestarted bounded completion workers.
+        // The production VM supplies its already-prestarted CONTROL pool.
+        if (vmCompletionExecutor == null) {
+            ownedCompletionExecutor = new ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS,
+                    new ArrayBlockingQueue<>(maxPending), new java.util.concurrent.ThreadFactory() {
+                        private final AtomicInteger ids = new AtomicInteger();
+                        @Override public Thread newThread(Runnable work) {
+                            return Thread.ofPlatform().daemon(true)
+                                    .name("ores-nio-completion-" + ids.getAndIncrement())
+                                    .unstarted(() -> OresVM.runAsNioWorker(work));
+                        }
+                    });
+            completionExecutor = ownedCompletionExecutor;
+        } else {
+            ownedCompletionExecutor = null;
+            completionExecutor = vmCompletionExecutor;
+        }
         try {
-            if (completionExecutor.prestartAllCoreThreads() != 2)
+            if (ownedCompletionExecutor != null
+                    && ownedCompletionExecutor.prestartAllCoreThreads() != 2)
                 throw new RejectedExecutionException("NIO completion worker bootstrap failed");
             Reactor first = new Reactor(0);
             synchronized (lifecycle) {
@@ -90,7 +114,7 @@ public final class NioReadinessGroup implements AutoCloseable {
                 }
             }
         } catch (IOException | RuntimeException | Error failure) {
-            completionExecutor.shutdownNow();
+            if (ownedCompletionExecutor != null) ownedCompletionExecutor.shutdownNow();
             throw failure;
         }
     }
@@ -100,6 +124,47 @@ public final class NioReadinessGroup implements AutoCloseable {
     }
     public int pendingCount() { return pending.get(); }
     int pendingNotifications() { return notificationReservations.get(); }
+
+    private void releaseNotificationReservation() {
+        if (notificationReservations.decrementAndGet() == 0) {
+            synchronized (notificationDrain) { notificationDrain.notifyAll(); }
+        }
+    }
+
+    /** Only host CPU callbacks are dispatched; selector threads never execute
+     * the Future subscriber. Admission already reserves at most maxPending
+     * tasks, including slow or queued completions.
+     */
+    private void dispatchNotification(Runnable notification) {
+        if (ownedCompletionExecutor != null) {
+            completionExecutor.execute(notification);
+        } else {
+            stagedNotifications.addLast(notification);
+            retryStagedNotifications();
+        }
+    }
+
+    /** Called when a CONTROL task retires, so a temporary full queue cannot
+     * permanently strand NIO completions. The bounded retry never blocks,
+     * executes a Future subscriber inline, or spins on a full executor.
+     */
+    void retryStagedNotifications() {
+        if (ownedCompletionExecutor != null) return;
+        synchronized (notificationDispatch) {
+            for (int i = 0; i < 128; ++i) {
+                Runnable next = stagedNotifications.peekFirst();
+                if (next == null) return;
+                try {
+                    completionExecutor.execute(() -> OresVM.runAsNioWorker(next));
+                } catch (RejectedExecutionException full) {
+                    // Keep the accepted reservation until a CONTROL task
+                    // completes and its afterExecute hook retries delivery.
+                    return;
+                }
+                stagedNotifications.removeFirst();
+            }
+        }
+    }
 
     /** Register one kernel-readiness notification without blocking a carrier. */
     public OresFuture<Integer> watch(SelectableChannel channel, int interestOps) {
@@ -247,21 +312,21 @@ public final class NioReadinessGroup implements AutoCloseable {
             // terminal callbacks finish, so this bounded queue cannot fill
             // while normal lifecycle invariants are respected.
             try {
-                completionExecutor.execute(() -> {
+                dispatchNotification(() -> {
                     try {
                         if (!watch.future.isCancelled()) {
                             if (error != null) watch.future.failFromRuntime(error);
                             else watch.future.completeFromRuntime(events);
                         }
                     } finally {
-                        notificationReservations.decrementAndGet();
+                        releaseNotificationReservation();
                     }
                 });
             } catch (RejectedExecutionException impossible) {
                 // A selector must NEVER call synchronous Future subscribers
                 // as a saturation fallback. Unexpected executor shutdown is
                 // an invariant failure, not permission to run guest callbacks.
-                notificationReservations.decrementAndGet();
+                releaseNotificationReservation();
                 throw new IllegalStateException(
                         "NIO completion executor terminated before reactor quiescence", impossible);
             }
@@ -329,7 +394,7 @@ public final class NioReadinessGroup implements AutoCloseable {
                 // its subsequent completionExecutor.awaitTermination().
                 if (liveReactors.decrementAndGet() == 0) {
                     synchronized (lifecycle) { closed = true; }
-                    completionExecutor.shutdown();
+                    if (ownedCompletionExecutor != null) ownedCompletionExecutor.shutdown();
                 }
                 stopped.countDown();
             }
@@ -354,6 +419,19 @@ public final class NioReadinessGroup implements AutoCloseable {
             if (left <= 0 || !reactor.stopped.await(left, TimeUnit.NANOSECONDS)) return false;
         }
         long left = deadline - System.nanoTime();
-        return left > 0 && completionExecutor.awaitTermination(left, TimeUnit.NANOSECONDS);
+        if (left <= 0) return false;
+        if (ownedCompletionExecutor != null)
+            return ownedCompletionExecutor.awaitTermination(left, TimeUnit.NANOSECONDS);
+        // The VM owns CONTROL shutdown, which must happen AFTER all of our
+        // notifications finish. Never shut down its shared executor here.
+        retryStagedNotifications();
+        synchronized (notificationDrain) {
+            while (notificationReservations.get() != 0) {
+                left = deadline - System.nanoTime();
+                if (left <= 0) return false;
+                TimeUnit.NANOSECONDS.timedWait(notificationDrain, left);
+            }
+        }
+        return true;
     }
 }
