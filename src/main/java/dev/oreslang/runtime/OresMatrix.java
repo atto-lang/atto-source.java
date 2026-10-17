@@ -228,14 +228,20 @@ public final class OresMatrix implements ImmutableGuestValue {
 
     public Object trace() {
         int count = Math.min(rows, cols);
-        double sumReal = 0.0;
-        double sumImaginary = 0.0;
+        double[] diagonalReal = new double[count];
+        double[] diagonalImaginary = isComplex() ? new double[count] : null;
+        double[] ones = new double[count];
+        Arrays.fill(ones, 1.0);
         for (int i = 0; i < count; i++) {
             int index = i * cols + i;
-            sumReal += real[index];
-            sumImaginary += imag(index);
+            diagonalReal[i] = real[index];
+            if (diagonalImaginary != null) diagonalImaginary[i] = imaginary[index];
         }
-        return isComplex() ? new OresComplex(sumReal, sumImaginary) : sumReal;
+        Complex128Math.Value value =
+                Complex128Math.dotProduct(diagonalReal, diagonalImaginary, ones, null);
+        return isComplex()
+                ? new OresComplex(value.real(), value.imaginary())
+                : value.real();
     }
 
     public double norm() {
