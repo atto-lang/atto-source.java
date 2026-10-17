@@ -236,7 +236,7 @@ final class StructuralContainerSourceParityTest {
                   }
 
                   fnc make(): Map<string,int> {
-                    let mut Map<string,int> values = new Map<string,int>();
+                    let mut Map<String,i64> values = new Map<String,i64>();
                     values.put("a", 7);
                     return values;
                   }
@@ -300,7 +300,7 @@ final class StructuralContainerSourceParityTest {
 
         var mapAlias = assertDoesNotThrow(
                 () -> TypeChecker.check(Parser.parse("""
-                        define type Scores = Map<string,int>
+                        define type Scores = Map<string,int>;
                         fnc make(): Scores {
                           let mut Map<String,i64> values = new Map<String,i64>();
                           values.put("x", 1);

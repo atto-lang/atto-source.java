@@ -8944,6 +8944,9 @@ public final class OresEvalRootNode extends RootNode {
             if (type.isRecordType()) {
                 return structuralRecordMatches(value, type);
             }
+            if (type.name().equals("void")) {
+                return value == null;
+            }
 
             if (type.name().equals("Option") && type.arguments().size() == 1) {
                 if (!(value instanceof OptionValue option)) return false;
