@@ -148,7 +148,14 @@ public final class ActorRuntime implements AutoCloseable {
 
     public static Object currentExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
-        return current == null ? Thread.currentThread() : current.executionDomain();
+        if (current != null) return current.executionDomain();
+
+        // Ordinary OresScheduler tasks have logical identity independent of
+        // their physical carrier. A task may resume after await/cooperate on a
+        // different carrier, so Thread.currentThread() is not a valid pointer
+        // ownership domain while a scheduler task is active.
+        Object taskDomain = OresScheduler.currentTaskDomain();
+        return taskDomain == null ? Thread.currentThread() : taskDomain;
     }
 
     /**
