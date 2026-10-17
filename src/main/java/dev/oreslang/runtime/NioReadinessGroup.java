@@ -67,8 +67,9 @@ public final class NioReadinessGroup implements AutoCloseable {
     // notification buildup when host subscribers run slowly.
     private final AtomicInteger notificationReservations = new AtomicInteger();
     private final AtomicInteger liveReactors = new AtomicInteger();
-    // Standalone groups own dedicated completion workers. VM-owned groups
-    // instead reuse its bounded CONTROL workers (no extra resident threads).
+    // Standalone/VM groups own an isolated completion domain, but its carriers
+    // are lazy: selector bootstrap itself creates no completion worker. An
+    // optional VM executor can still be supplied by narrow embedding tests.
     private final Executor completionExecutor;
     private final ThreadPoolExecutor ownedCompletionExecutor;
     private final ConcurrentLinkedDeque<Runnable> stagedNotifications =
@@ -98,11 +99,12 @@ public final class NioReadinessGroup implements AutoCloseable {
         this.maxReactors = maxReactors;
         this.maxPending = maxPending;
         this.commandCapacity = commandCapacity;
-        // Standalone host tests use two prestarted bounded completion workers.
-        // The production VM supplies its already-prestarted CONTROL pool.
+        // Keep slow/adversarial runtime subscribers off selectors and CONTROL,
+        // but do not pay resident completion threads at cold start. Independent
+        // terminal notifications grow this bounded pool 0 -> 2 on demand.
         if (vmCompletionExecutor == null) {
-            ownedCompletionExecutor = new ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS,
-                    new ArrayBlockingQueue<>(maxPending), new java.util.concurrent.ThreadFactory() {
+            ownedCompletionExecutor = new AdaptiveCarrierExecutor(
+                    0, 2, maxPending, new java.util.concurrent.ThreadFactory() {
                         private final AtomicInteger ids = new AtomicInteger();
                         @Override public Thread newThread(Runnable work) {
                             return Thread.ofPlatform().daemon(true)
@@ -116,9 +118,6 @@ public final class NioReadinessGroup implements AutoCloseable {
             completionExecutor = vmCompletionExecutor;
         }
         try {
-            if (ownedCompletionExecutor != null
-                    && ownedCompletionExecutor.prestartAllCoreThreads() != 2)
-                throw new RejectedExecutionException("NIO completion worker bootstrap failed");
             Reactor first = new Reactor(0);
             synchronized (lifecycle) {
                 reactors.add(first);
@@ -152,6 +151,9 @@ public final class NioReadinessGroup implements AutoCloseable {
         synchronized (lifecycle) { return writeLeases.size(); }
     }
     boolean usesVmCompletionCarriers() { return ownedCompletionExecutor == null; }
+    int completionCarrierCount() {
+        return ownedCompletionExecutor == null ? 0 : ownedCompletionExecutor.getPoolSize();
+    }
 
     private void releaseNotificationReservation() {
         if (notificationReservations.decrementAndGet() == 0) {
