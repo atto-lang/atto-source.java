@@ -129,9 +129,9 @@ public final class RefinementRules {
         Interval interval = normalize(base, spec.bounds());
         String canonicalBase = base.name().equals("String") ? "string" : base.name();
         List<Long> exclusions = List.copyOf(new TreeSet<>(interval.excluded()));
-        String canonical = "oreslang.refinement.v1\\n" + canonicalBase + "\\n"
-                + interval.property() + "\\n" + interval.min() + "\\n"
-                + interval.max() + "\\n" + exclusions + "\\n" + identity;
+        String canonical = "oreslang.refinement.v1\n" + canonicalBase + "\n"
+                + interval.property() + "\n" + interval.min() + "\n"
+                + interval.max() + "\n" + exclusions + "\n" + identity;
         String hash;
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
