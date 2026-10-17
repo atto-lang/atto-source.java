@@ -5911,6 +5911,7 @@ public final class OresEvalRootNode extends RootNode {
                     || !namespace.name().equals("Integer")
                     || !member.member().equals("is_int")) return false;
             return env.lookup("Integer") == Env.MISSING
+                    && !hasLexicalModuleBinding(env, "Integer")
                     && !modules.containsKey("Integer")
                     && findClass("Integer") == null
                     && !hasFunctionFamily("Integer")
@@ -5919,6 +5920,20 @@ public final class OresEvalRootNode extends RootNode {
                     && !hostClasses.containsKey("Integer")
                     && !hostFunctions.containsKey("Integer")
                     && !hostSymbols.containsKey("Integer");
+        }
+
+        private boolean hasLexicalModuleBinding(Env env, String name) {
+            String moduleName = env.lexicalModule();
+            if (moduleName == null) return false;
+            Ast.ModuleDecl module = modules.get(moduleName);
+            if (module == null) return false;
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FieldDecl field
+                        && field.name().equals(name)) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private static boolean isIntegerRuntimeValue(Object value) {
