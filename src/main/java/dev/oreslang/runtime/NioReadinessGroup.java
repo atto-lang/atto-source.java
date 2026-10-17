@@ -81,9 +81,6 @@ public final class NioReadinessGroup implements AutoCloseable {
     // the VM budget, never an extra NIO completion worker. Installed once
     // before first watch; standalone host groups retain the legacy pool.
     private volatile Executor boundCompletionExecutor;
-    private volatile Runnable boundCompletionPreparer;
-    private final Object completionPreparation = new Object();
-    private volatile boolean completionCapacityPrepared;
     // A failed submission is not proof that an arbitrary host Executor
     // never invoked or scheduled the task. Preserve one claim token across
     // retries so a callback (and its notification reservation) runs once.
@@ -199,12 +196,7 @@ public final class NioReadinessGroup implements AutoCloseable {
      * executor domains, so it is explicitly forbidden.
      */
     void bindVmCompletionExecutor(Executor executor) {
-        bindVmCompletionExecutor(executor, () -> { });
-    }
-
-    void bindVmCompletionExecutor(Executor executor, Runnable preparer) {
         Objects.requireNonNull(executor, "executor");
-        Objects.requireNonNull(preparer, "preparer");
         synchronized (lifecycle) {
             if (closed || boundCompletionExecutor != null || !reactors.isEmpty()
                     || pending.get() != 0 || notificationReservations.get() != 0
@@ -213,22 +205,6 @@ public final class NioReadinessGroup implements AutoCloseable {
                 throw new IllegalStateException(
                         "NIO completion scheduler must be bound before first I/O admission");
             boundCompletionExecutor = executor;
-            boundCompletionPreparer = preparer;
-        }
-    }
-
-    private OresFuture<Integer> prepareBoundCompletionCapacity() {
-        Runnable preparer = boundCompletionPreparer;
-        if (preparer == null || completionCapacityPrepared) return null;
-        synchronized (completionPreparation) {
-            if (completionCapacityPrepared) return null;
-            try {
-                preparer.run();
-                completionCapacityPrepared = true;
-                return null;
-            } catch (RuntimeException unavailable) {
-                return OresFuture.failed(unavailable);
-            }
         }
     }
 
@@ -701,13 +677,6 @@ public final class NioReadinessGroup implements AutoCloseable {
         if (channel.isBlocking()) throw new IllegalArgumentException("NIO channels must be nonblocking");
         if (interestOps == 0 || (interestOps & ~channel.validOps()) != 0)
             throw new IllegalArgumentException("unsupported readiness operations");
-
-        // A native actor executor may create pthread carriers on its first
-        // execute(). Do that work on the caller's admission path, never after
-        // the selector has observed readiness and entered dispatchNotification().
-        OresFuture<Integer> preparationFailure = prepareBoundCompletionCapacity();
-        if (preparationFailure != null) return preparationFailure;
-
         synchronized (lifecycle) {
             if (closed || !channel.isOpen()) return OresFuture.failed(
                     new IllegalStateException("NIO manager or channel closed"));
