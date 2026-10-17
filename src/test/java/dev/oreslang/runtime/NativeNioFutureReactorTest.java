@@ -13,6 +13,23 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class NativeNioFutureReactorTest {
+    @Test void tcpCompletionSubscribersCarryNioThreadIdentity() throws Exception {
+        try (var reactor = NativeNioFutureReactor.loopback(0, 8, 2, 8)) {
+            var accepted = reactor.acceptAsync();
+            var checked = new java.util.concurrent.CompletableFuture<Boolean>();
+            accepted.whenCompleteRuntime((connection, failure) -> {
+                if (failure != null) checked.completeExceptionally(failure);
+                else checked.complete(OresVM.onNioWorker());
+            });
+            try (var peer = new Socket(InetAddress.getLoopbackAddress(), reactor.localPort())) {
+                var connection = accepted.get(3, TimeUnit.SECONDS);
+                assertTrue(checked.get(3, TimeUnit.SECONDS),
+                        "selector-side runtime callbacks must carry NIO host identity");
+                connection.closeAsync().get(3, TimeUnit.SECONDS);
+            }
+        }
+    }
+
     @Test void failedAcceptedSocketRegistrationClosesChannelWithoutKillingListener() throws Exception {
         // Force an actual JDK registration failure without exhausting native
         // file descriptors or relying on a timing-sensitive accept race.
