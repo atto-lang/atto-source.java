@@ -7046,6 +7046,7 @@ public final class ActorRuntime implements AutoCloseable {
         private Runnable finalCleanup;
         private boolean finalCleanupStarted;
         private volatile boolean finalCleanupActive;
+        private boolean finalizationPrepared;
         private boolean finalized;
         private volatile ActorTurnWatchdog.Lease watchdogLease;
         private long turnStartedWallNanos;
@@ -7353,7 +7354,32 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private final class FinalizationPlan {
+            private final OresScheduler scheduler;
+            private final int abandonedUserMessages;
+            private final int abandonedContinuations;
+            private final long acceptedUserMessages;
+            private final long processedUserMessages;
+            private final Throwable terminal;
+
+            private FinalizationPlan(
+                    OresScheduler scheduler,
+                    int abandonedUserMessages,
+                    int abandonedContinuations,
+                    long acceptedUserMessages,
+                    long processedUserMessages,
+                    Throwable terminal) {
+                this.scheduler = scheduler;
+                this.abandonedUserMessages = abandonedUserMessages;
+                this.abandonedContinuations = abandonedContinuations;
+                this.acceptedUserMessages = acceptedUserMessages;
+                this.processedUserMessages = processedUserMessages;
+                this.terminal = terminal;
+            }
+        }
+
         private void endTurn() {
+            FinalizationPlan finalization = null;
             synchronized (lifecycleLock) {
                 if (!carrierActive || carrierOwnerThread != Thread.currentThread()) {
                     throw new IllegalStateException(
@@ -7365,21 +7391,26 @@ public final class ActorRuntime implements AutoCloseable {
                                     + ": activeTurns=" + activeTurns);
                 }
                 activeTurns = 0;
-                if (stopped.get()) finalizeStopLocked();
+                if (stopped.get()) finalization = prepareFinalizationLocked();
                 lifecycleLock.notifyAll();
             }
+            publishFinalization(finalization);
         }
 
-        private void finalizeStopLocked() {
-            // External termination is not observable until the dispatcher has
-            // fully crossed back out of the TurnExecutor boundary. For
-            // Truffle-backed runtimes that boundary owns context enter/leave.
+        private FinalizationPlan prepareFinalizationLocked() {
+            if (!Thread.holdsLock(lifecycleLock)) {
+                throw new IllegalStateException(
+                        "actor finalization preparation requires lifecycle ownership");
+            }
+            // No runtime/user observer is called from this phase. It only
+            // freezes actor-owned state and reserves exactly one publication.
             if (finalized
+                    || finalizationPrepared
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
-                    || !children.isEmpty()) return;
-            finalized = true;
+                    || !children.isEmpty()) return null;
+            finalizationPrepared = true;
 
             final int abandonedUserMessages;
             final int abandonedContinuations;
@@ -7391,52 +7422,74 @@ public final class ActorRuntime implements AutoCloseable {
             final long processedUserMessages = lastProcessedUserMessageSequence < 0
                     ? 0L
                     : lastProcessedUserMessageSequence + 1L;
-            final Throwable terminalBeforeDrain = ref.terminationCause.get();
+            final Throwable terminal = ref.terminationCause.get();
 
             OresScheduler scheduler = sourceScheduler;
             sourceScheduler = null;
-            if (scheduler != null) {
+            staticSelectCursors.clear();
+            codeActorState = null;
+            return new FinalizationPlan(
+                    scheduler,
+                    abandonedUserMessages,
+                    abandonedContinuations,
+                    acceptedUserMessages,
+                    processedUserMessages,
+                    terminal);
+        }
+
+        private void publishFinalization(FinalizationPlan plan) {
+            if (plan == null) return;
+
+            // This phase intentionally owns NO actor lifecycle monitor.
+            // OresFuture/channel callbacks, ActorGroup cleanup, parent
+            // bookkeeping and host collector hooks may all re-enter runtime
+            // code or block independently.
+            if (plan.scheduler != null) {
                 try {
-                    scheduler.close();
+                    plan.scheduler.close();
                 } catch (RuntimeException ignored) {
                     // Actor teardown remains authoritative; source scheduler
-                    // cancellation is best-effort after the actor has finalized.
+                    // cancellation is best-effort after guest quiescence.
                 }
             }
             drainMailboxReservations();
-            staticSelectCursors.clear();
-            codeActorState = null;
-            Throwable terminalOutput = ref.terminationCause.get();
-            outputStream.close(terminalOutput);
+            outputStream.close(plan.terminal);
             if (memorySlice != null) memorySlice.close();
 
-            // Publish a bounded immutable record before removing the ActorCell,
-            // but after guest execution and mutable state have quiesced. This
-            // queue is observational only: a full queue drops the record and
-            // increments a counter rather than delaying actor teardown.
             recordTerminationEvent(
                     this,
-                    terminalBeforeDrain,
-                    acceptedUserMessages,
-                    processedUserMessages,
-                    abandonedUserMessages,
-                    abandonedContinuations);
+                    plan.terminal,
+                    plan.acceptedUserMessages,
+                    plan.processedUserMessages,
+                    plan.abandonedUserMessages,
+                    plan.abandonedContinuations);
 
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
                 throw fatal;
             } catch (Throwable ignored) {
-                // Actor termination must still complete. Runtime cleanup hooks
-                // are best-effort and retryable by the process collector.
+                // Collector/observer failure cannot prevent actor retirement.
             }
+
             unregisterActor(this);
+
+            synchronized (lifecycleLock) {
+                if (!finalizationPrepared || finalized) {
+                    throw new IllegalStateException(
+                            "actor finalization publication identity lost for " + ref.id());
+                }
+                finalized = true;
+                finalizationPrepared = false;
+                lifecycleLock.notifyAll();
+            }
+
+            // Structured parent progress is lifecycle-authoritative and must
+            // not wait behind arbitrary ready/done Future subscribers.
             if (parent != null) parent.childFinalized(this);
-            Throwable terminal = ref.terminationCause.get();
+
+            Throwable terminal = plan.terminal;
             if (!ref.readyFuture.isDone()) {
-                // Preserve the initializer failure as the direct cause of
-                // readiness rejection. Only a graceful stop-before-ready has
-                // no underlying failure and needs a synthesized marker.
                 ref.readyFuture.failFromRuntime(
                         terminal == null
                                 ? new ActorTerminatedException(ref.id(), kind, null)
@@ -7445,15 +7498,17 @@ public final class ActorRuntime implements AutoCloseable {
             if (terminal == null) ref.doneFuture.completeFromRuntime(null);
             else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
-            lifecycleLock.notifyAll();
         }
 
         private void childFinalized(ActorCell<?> child) {
+            FinalizationPlan finalization = null;
             synchronized (lifecycleLock) {
                 children.remove(child);
-                if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                if (stopped.get() && activeTurns == 0)
+                    finalization = prepareFinalizationLocked();
                 lifecycleLock.notifyAll();
             }
+            publishFinalization(finalization);
         }
 
         private boolean finalized() {
