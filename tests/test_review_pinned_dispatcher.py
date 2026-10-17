@@ -79,6 +79,46 @@ class DispatcherTests(unittest.TestCase):
             with self.assertRaisesRegex(mod.Denied, "not canonical"):
                 mod.load_receipt(p)
 
+    def test_load_receipt_rejects_multiple_trailing_newlines(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "receipt.json"
+            p.write_bytes(mod.canonical_receipt_bytes(receipt()) + b"\n\n")
+            with self.assertRaisesRegex(mod.Denied, "not canonical"):
+                mod.load_receipt(p)
+
+    def test_nonstandard_json_number_denied(self):
+        with self.assertRaisesRegex(mod.Denied, "nonstandard JSON number"):
+            mod.parse_json_bytes(b'{"value":NaN}', "nan")
+
+    def test_contents_api_line_wrapped_base64_is_accepted_and_digest_checked(self):
+        raw = b"name: reviewed\non:\n  push:\n"
+        encoded = __import__("base64").b64encode(raw).decode("ascii")
+        wrapped = encoded[:12] + "\n" + encoded[12:]
+        response = {
+            "type": "file",
+            "encoding": "base64",
+            "content": wrapped,
+            "size": len(raw),
+            "sha": mod.git_blob_sha(raw),
+        }
+        with patch.object(mod.pub, "gh_api", return_value=response):
+            value, sha = mod.content_bytes(mod.CARRIER_REPO, mod.WORKFLOW_PATH, C)
+        self.assertEqual(value, raw)
+        self.assertEqual(sha, mod.git_blob_sha(raw))
+
+    def test_contents_api_non_base64_whitespace_denied(self):
+        raw = b"x"
+        response = {
+            "type": "file",
+            "encoding": "base64",
+            "content": "eA== ",
+            "size": 1,
+            "sha": mod.git_blob_sha(raw),
+        }
+        with patch.object(mod.pub, "gh_api", return_value=response):
+            with self.assertRaisesRegex(mod.Denied, "strict base64"):
+                mod.content_bytes(mod.CARRIER_REPO, mod.WORKFLOW_PATH, C)
+
     def test_duplicate_json_key_denied(self):
         with self.assertRaisesRegex(mod.Denied, "duplicate JSON key"):
             mod.parse_json_bytes(b'{"schema":2,"schema":2}', "dupe")
