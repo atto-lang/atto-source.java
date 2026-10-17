@@ -236,7 +236,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_unusable_open_flags_deny_trusted_checkout_after_git_proof(self):
         def safe_git(argv, **kwargs):
             output = str(self.root) if "--show-toplevel" in argv else A
-            return subprocess.CompletedProcess(argv, 0, stdout=output + "\\n")
+            return subprocess.CompletedProcess(argv, 0, stdout=output + "\n")
         for flag in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"):
             with self.subTest(flag=flag):
                 with patch.object(pub.os, flag, 0):
