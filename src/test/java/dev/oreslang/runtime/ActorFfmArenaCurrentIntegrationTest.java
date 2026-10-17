@@ -15,6 +15,14 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 @Timeout(20)
 final class ActorFfmArenaCurrentIntegrationTest {
     @Test
+    void previewFfmOnPre25RuntimeIsRejectedFailClosed() {
+        if (Runtime.version().feature() < 25) {
+            assertFalse(ExplicitNativeI64Region.isAvailable(),
+                    "preview java.lang.foreign classes must not satisfy the Java 25 FFM gate");
+        }
+    }
+
+    @Test
     void persistentArenaSurvivesTurnsAndLoanPinsPhysicalRetirement() throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
 
