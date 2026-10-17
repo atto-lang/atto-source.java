@@ -1735,20 +1735,21 @@ public final class OwnershipChecker {
 
         ValueInfo callee = checkExpr(call.callee(), scope, false);
         Ast.TypeRef callableType = callee.type;
-        if (callableType != null && !callableType.isBorrow()
-                && (callableType.name().equals("Any") || callableType.name().equals("AnyCallable"))) {
-            throw error(callableType.name()
+        Ast.TypeRef callableView = callableType != null && callableType.isBorrow()
+                ? callableType.borrowedTarget() : callableType;
+        if (callableView != null
+                && (callableView.name().equals("Any") || callableView.name().equals("AnyCallable"))) {
+            throw error(callableView.name()
                     + " has no statically known callable signature and cannot be invoked directly");
         }
-        if (callableType != null
-                && !callableType.isBorrow()
-                && (callableType.name().equals("Fnc") || callableType.name().equals("Function"))
-                && !callableType.arguments().isEmpty()) {
-            int parameterCount = callableType.arguments().size() - 1;
+        if (callableView != null
+                && (callableView.name().equals("Fnc") || callableView.name().equals("Function"))
+                && !callableView.arguments().isEmpty()) {
+            int parameterCount = callableView.arguments().size() - 1;
             if (parameterCount == call.arguments().size()) {
                 for (int i = 0; i < call.arguments().size(); i++) {
                     Ast.Expr argumentExpr = call.arguments().get(i);
-                    Ast.TypeRef parameterType = callableType.arguments().get(i);
+                    Ast.TypeRef parameterType = callableView.arguments().get(i);
                     ValueInfo argument;
                     if (argumentExpr instanceof Ast.LambdaExpr lambda
                             && isBorrowedCallable(parameterType)
@@ -1767,7 +1768,7 @@ public final class OwnershipChecker {
                         throw error("ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
                     }
                 }
-                Ast.TypeRef result = callableType.arguments().getLast();
+                Ast.TypeRef result = callableView.arguments().getLast();
                 return new ValueInfo(result, kindOfType(result), null);
             }
         }
