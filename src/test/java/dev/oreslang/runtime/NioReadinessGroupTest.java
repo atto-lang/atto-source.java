@@ -1383,6 +1383,61 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void unexpectedNonfatalErrorBeforeAcceptancePreservesCompletion()
+            throws Exception {
+        var publish = NioReadinessGroup.class.getDeclaredMethod(
+                "dispatchNotification", Runnable.class);
+        publish.setAccessible(true);
+        var submissions = new java.util.concurrent.atomic.AtomicInteger();
+        var callbacks = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.Executor unstable = task -> {
+            if (submissions.getAndIncrement() == 0)
+                throw new AssertionError("unexpected host Error before acceptance");
+            task.run();
+        };
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(unstable);
+            publish.invoke(group, (Runnable) callbacks::incrementAndGet);
+            assertEquals(0, callbacks.get());
+            assertEquals(1, group.stagedNotificationCount());
+            assertEquals(1, group.unexpectedSubmissionFailures());
+            group.retryStagedNotifications();
+            assertEquals(1, callbacks.get());
+            assertEquals(0, group.stagedNotificationCount());
+        }
+    }
+
+    @Test void unexpectedNonfatalErrorAfterAcceptanceStillDeliversExactlyOnce()
+            throws Exception {
+        var publish = NioReadinessGroup.class.getDeclaredMethod(
+                "dispatchNotification", Runnable.class);
+        publish.setAccessible(true);
+        var queued = new java.util.concurrent.ConcurrentLinkedQueue<Runnable>();
+        var accepted = new java.util.concurrent.atomic.AtomicBoolean();
+        var callbacks = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.Executor unstable = task -> {
+            queued.add(task);
+            if (accepted.compareAndSet(false, true))
+                throw new AssertionError("accepted then raised Error");
+        };
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(unstable);
+            publish.invoke(group, (Runnable) callbacks::incrementAndGet);
+            assertEquals(1, group.stagedNotificationCount());
+            assertEquals(1, group.unexpectedSubmissionFailures());
+            group.retryStagedNotifications();
+            assertEquals(2, queued.size());
+            Runnable first = queued.poll();
+            Runnable duplicate = queued.poll();
+            assertNotNull(first);
+            assertNotNull(duplicate);
+            duplicate.run();
+            first.run();
+            assertEquals(1, callbacks.get());
+            assertEquals(0, group.stagedNotificationCount());
+        }
+    }
+
     @Test void unexpectedExceptionAfterTaskAcceptedStillDeliversExactlyOnce()
             throws Exception {
         var publish = NioReadinessGroup.class.getDeclaredMethod(
