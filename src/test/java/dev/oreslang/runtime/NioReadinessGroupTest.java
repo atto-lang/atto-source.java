@@ -88,12 +88,18 @@ final class NioReadinessGroupTest {
                     var denied = assertThrows(ExecutionException.class,
                             () -> overlappingWrite.get(2, TimeUnit.SECONDS));
                     assertInstanceOf(IllegalStateException.class, denied.getCause());
+                    var zeroWhileBusy = group.writeAsync(incoming, new byte[0]);
+                    var zeroDenied = assertThrows(ExecutionException.class,
+                            () -> zeroWhileBusy.get(2, TimeUnit.SECONDS));
+                    assertInstanceOf(IllegalStateException.class, zeroDenied.getCause());
                     assertTrue(pendingRead.cancel(false));
                     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
                     while ((group.activeReadLeases() != 0 || group.pendingCount() != 0)
                             && System.nanoTime() < deadline)
                         Thread.sleep(1);
                     assertEquals(0, group.activeReadLeases());
+                    assertEquals(0, group.writeAsync(incoming, new byte[0])
+                            .get(2, TimeUnit.SECONDS));
 
                     byte[] mutable = new byte[]{4, 5, 6};
                     var write = group.writeAsync(incoming, mutable);
