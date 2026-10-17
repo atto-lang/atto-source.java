@@ -29,16 +29,18 @@ public final class ConstructorValInitialization {
         if (klass.actorKind() != Ast.ActorKind.NONE || klass.constructors().isEmpty()) return;
 
         LinkedHashSet<String> required = new LinkedHashSet<>();
+        LinkedHashSet<String> fixed = new LinkedHashSet<>();
         for (Ast.FieldDecl field : klass.fields()) {
-            if (field.bindingKind() == Ast.BindingKind.VAL && field.initializer() == null) {
+            if (field.initializer() == null) {
                 required.add(field.name());
+                if (field.bindingKind() != Ast.BindingKind.LET) fixed.add(field.name());
             }
         }
         // Even classes with no blank val slots must not publish constructing
         // self. Ownership checks must not be the only protection: run the
         // constructor expression walker independently for every constructor.
         for (Ast.ConstructorDecl constructor : klass.constructors()) {
-            State normalExit = block(constructor.body(), new State(), required, klass.name());
+            State normalExit = block(constructor.body(), new State(fixed), required, klass.name());
             if (normalExit != null) requireComplete(normalExit, required, klass.name());
         }
     }
@@ -46,19 +48,22 @@ public final class ConstructorValInitialization {
     private static final class State {
         final LinkedHashSet<String> must;
         final LinkedHashSet<String> may;
+        final Set<String> fixed;
 
-        State() {
+        State(Set<String> fixed) {
             this.must = new LinkedHashSet<>();
             this.may = new LinkedHashSet<>();
+            this.fixed = Set.copyOf(fixed);
         }
 
-        State(Set<String> must, Set<String> may) {
+        State(Set<String> must, Set<String> may, Set<String> fixed) {
             this.must = new LinkedHashSet<>(must);
             this.may = new LinkedHashSet<>(may);
+            this.fixed = fixed;
         }
 
         State copy() {
-            return new State(must, may);
+            return new State(must, may, fixed);
         }
     }
 
@@ -78,9 +83,10 @@ public final class ConstructorValInitialization {
                 String field = blankValTarget(assignment.target(), required);
                 // RHS executes before the slot is written: reject reads of a missing slot.
                 scan(assignment.value(), state, required, klass);
-                if (!state.may.add(field)) {
+                if (state.fixed.contains(field) && state.may.contains(field)) {
                     throw error(klass, field, "is immutable; may be initialized more than once");
                 }
+                state.may.add(field);
                 state.must.add(field);
             } else {
                 scan(expression.expression(), state, required, klass);
@@ -175,7 +181,8 @@ public final class ConstructorValInitialization {
         if (node == null) return;
         if (node instanceof Ast.AssignExpr assignment) {
             String field = blankValTarget(assignment.target(), required);
-            if (field != null) {
+            if (field != null
+                    && (state.fixed.contains(field) || !state.must.contains(field))) {
                 throw error(klass, field,
                         "must be assigned directly in a constructor statement, not through a nested expression or callback");
             }
