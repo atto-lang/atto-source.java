@@ -27,6 +27,10 @@ import java.util.Set;
  */
 public final class IncrementalCompiler {
     private final Map<String, CompiledUnit> cache = new LinkedHashMap<>();
+    // Import resolution is linker input, not source text. Cache its exact
+    // per-unit mapping separately from the dependency set: two import paths
+    // may swap targets while the set of dependencies remains unchanged.
+    private final Map<String, String> cachedImportResolutionDigests = new LinkedHashMap<>();
 
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
@@ -62,6 +66,12 @@ public final class IncrementalCompiler {
 
         Map<String, Map<String, String>> normalizedImportResolutions =
                 normalizeImportResolutions(importResolutions);
+        Map<String, String> importResolutionDigests = new LinkedHashMap<>();
+        for (String id : normalized.keySet()) {
+            importResolutionDigests.put(
+                    id,
+                    importResolutionDigest(normalizedImportResolutions.getOrDefault(id, Map.of())));
+        }
         ImportGraph.validateLinkedImports(parsed, normalizedImportResolutions);
         Map<String, Set<String>> dependencies =
                 ImportGraph.resolveDependencies(parsed, normalized.keySet(), normalizedImportResolutions);
@@ -73,7 +83,11 @@ public final class IncrementalCompiler {
             CompiledUnit previous = cache.get(id);
             boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id));
             boolean depsChanged = previous == null || !previous.dependencies().equals(dependencies.get(id));
-            if (sourceChanged || depsChanged) dirty.add(id);
+            boolean resolutionsChanged = previous == null
+                    || !java.util.Objects.equals(
+                            cachedImportResolutionDigests.get(id),
+                            importResolutionDigests.get(id));
+            if (sourceChanged || depsChanged || resolutionsChanged) dirty.add(id);
             if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))) abiChanged.add(id);
         }
 
@@ -123,6 +137,8 @@ public final class IncrementalCompiler {
 
         cache.keySet().retainAll(normalized.keySet());
         cache.putAll(next);
+        cachedImportResolutionDigests.keySet().retainAll(normalized.keySet());
+        cachedImportResolutionDigests.putAll(importResolutionDigests);
         return new BuildResult(
                 Map.copyOf(next),
                 Set.copyOf(rebuilt),
@@ -132,6 +148,22 @@ public final class IncrementalCompiler {
 
     public synchronized void clear() {
         cache.clear();
+        cachedImportResolutionDigests.clear();
+    }
+
+    private static String importResolutionDigest(Map<String, String> resolutions) {
+        StringBuilder canonical = new StringBuilder("ores-import-resolution-v1\\n");
+        resolutions.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> {
+                    appendLengthPrefixed(canonical, entry.getKey());
+                    appendLengthPrefixed(canonical, entry.getValue());
+                });
+        return digest(canonical.toString());
+    }
+
+    private static void appendLengthPrefixed(StringBuilder target, String value) {
+        target.append(value.length()).append(':').append(value).append('\\n');
     }
 
     /**
