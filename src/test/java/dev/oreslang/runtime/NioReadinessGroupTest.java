@@ -14,6 +14,57 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class NioReadinessGroupTest {
+    @Test void concurrentAcceptCannotOvertakeBlockedTerminalSubscriber() throws Exception {
+        // The selector retires a watch before the Future's subscribers finish.
+        // A second accept must NOT steal the listener during that interval.
+        try (var group = new NioReadinessGroup(1, 32, 64);
+             var listener = ServerSocketChannel.open()) {
+            listener.configureBlocking(false);
+            listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+            int port = ((InetSocketAddress) listener.getLocalAddress()).getPort();
+            var callbackEntered = new java.util.concurrent.CountDownLatch(1);
+            var releaseCallback = new java.util.concurrent.CountDownLatch(1);
+            var original = group.acceptAsync(listener);
+            original.whenCompleteRuntime((socket, failure) -> {
+                callbackEntered.countDown();
+                try { releaseCallback.await(3, TimeUnit.SECONDS); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            });
+            try {
+                try (var peer = new Socket(InetAddress.getLoopbackAddress(), port)) {
+                    assertTrue(callbackEntered.await(2, TimeUnit.SECONDS));
+                    assertEquals(0, group.pendingCount(),
+                            "readiness watch already retired while subscriber is blocked");
+                    assertEquals(1, group.activeAcceptLeases(),
+                            "listener still belongs to first operation");
+                    var duplicate = group.acceptAsync(listener);
+                    var denied = assertThrows(ExecutionException.class,
+                            () -> duplicate.get(2, TimeUnit.SECONDS));
+                    assertInstanceOf(IllegalStateException.class, denied.getCause());
+                    assertEquals(1, group.activeAcceptLeases());
+                    try (var socket = original.get(2, TimeUnit.SECONDS)) {
+                        assertFalse(socket.isBlocking());
+                    }
+                }
+            } finally {
+                releaseCallback.countDown();
+            }
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (group.activeAcceptLeases() != 0 && System.nanoTime() < deadline)
+                Thread.sleep(1); // JUnit driver only
+            assertEquals(0, group.activeAcceptLeases(),
+                    "terminal callback drain must release listener lease");
+            var next = group.acceptAsync(listener);
+            try (var peer = new Socket(InetAddress.getLoopbackAddress(), port);
+                 var socket = next.get(3, TimeUnit.SECONDS)) {
+                assertTrue(socket.isOpen(), "listener can accept again after drain");
+            }
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            assertEquals(0, group.activeAcceptLeases());
+        }
+    }
+
     @Test void cancelledTcpAcceptReleasesWatchAndAllowsRearm() throws Exception {
         // The VM-owned selector accepts one-shot readiness without creating a
         // listener-specific I/O thread. Cancellation must reclaim the watch
