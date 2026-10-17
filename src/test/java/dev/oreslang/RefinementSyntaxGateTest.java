@@ -39,9 +39,23 @@ final class RefinementSyntaxGateTest {
                 nonEmpty.refinement().bounds());
     }
 
+    @Test void rangeKeywordAndSymbolSpellingsNormalizeIdentically() {
+        Ast.TypeAliasDecl keywords = alias(
+                "type Port = int with value gte 1 and value lte 65535;");
+        Ast.TypeAliasDecl symbols = alias(
+                "type Port = int with value >= 1 and value <= 65535;");
+        assertEquals(keywords.refinement().bounds(), symbols.refinement().bounds());
+
+        Ast.TypeAliasDecl pctKeywords = alias(
+                "type Percentage = int with value gte 0 and value lte 100;");
+        Ast.TypeAliasDecl pctSymbols = alias(
+                "type Percentage = int with value >= 0 and value <= 100;");
+        assertEquals(pctKeywords.refinement().bounds(), pctSymbols.refinement().bounds());
+    }
+
     @Test void newtypeRetainsNominalMarker() {
         Ast.TypeAliasDecl nominal = alias(
-                "define newtype Username(string) with length ge 1 and length le 32;");
+                "define newtype Username(string) with length gte 1 and length lte 32;");
         assertTrue(nominal.refinement().nominal());
         assertEquals(2, nominal.refinement().bounds().size());
         assertEquals("string", nominal.target().name());
@@ -58,6 +72,9 @@ final class RefinementSyntaxGateTest {
 
     @Test void rejectBadComparisonAndContradictions() {
         String[] invalid = {
+                "type A = int with value ge 1;",
+                "type A = int with value le 10;",
+                "type A = int with value neq 10;",
                 "type A = string with length gt 10 and length lt 5;",
                 "type A = string with length eq -1;",
                 "type A = int with length gt 0;",
@@ -75,7 +92,7 @@ final class RefinementSyntaxGateTest {
         String[] source = {
                 "@Size(min=1,max=32) type A = string;",
                 "type B = string with length gt 0;",
-                "define newtype C(string) with length ge 1;",
+                "define newtype C(string) with length gte 1;",
                 "type D = string where it.length > 0;"
         };
         for (String s : source) {
