@@ -17,7 +17,9 @@ public final class OresCompiler {
 
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
+        ActorThreadAdmission.requireExclusiveBackend(program);
         program = TypeChecker.checkTypes(program);
+        ActorThreadAdmission.requireExclusiveBackend(program);
         OwnershipChecker.check(program);
         return program;
     }
