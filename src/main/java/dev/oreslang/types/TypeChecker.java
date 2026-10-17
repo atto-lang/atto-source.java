@@ -5305,6 +5305,9 @@ public final class TypeChecker {
             Type resolvedTarget = deref(resolve(structural.target(), generics, self));
             Record targetShape = structuralPatternShape(
                     structural.target(), resolvedTarget, generics);
+            requireRuntimeStructuralShapeReifiable(
+                    targetShape,
+                    "structural pattern " + structural.target());
             if (!structuralPatternMayMatch(subject, targetShape)) {
                 throw new IllegalArgumentException(
                         "unreachable structural pattern: " + subject
@@ -5432,6 +5435,74 @@ public final class TypeChecker {
             throw new IllegalStateException("structural interface shape did not remain a record");
         }
         return record;
+    }
+
+    private void requireRuntimeStructuralShapeReifiable(Type type, String where) {
+        type = deref(type);
+        if (type == Unknown.INSTANCE
+                || type == Types.Any.INSTANCE
+                || type == Types.UnknownValue.INSTANCE
+                || type instanceof Generic
+                || type instanceof Function
+                || type instanceof SelfType) {
+            throw new IllegalArgumentException(
+                    where + " contains a field/member type without a concrete runtime predicate: " + type);
+        }
+        if (type instanceof Primitive primitive) {
+            if (primitive == Primitive.VOID || primitive == Primitive.NULL) {
+                throw new IllegalArgumentException(
+                        where + " contains non-value runtime field type " + primitive);
+            }
+            return;
+        }
+        if (type instanceof StringLiteral) {
+            throw new IllegalArgumentException(
+                    where + " contains a literal-only field type without a dedicated runtime predicate");
+        }
+        if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                requireRuntimeStructuralShapeReifiable(option, where);
+            }
+            return;
+        }
+        if (type instanceof Types.Not not) {
+            requireRuntimeStructuralShapeReifiable(not.excluded(), where);
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) {
+                requireRuntimeStructuralShapeReifiable(element, where);
+            }
+            return;
+        }
+        if (type instanceof Record record) {
+            for (Type member : record.members().values()) {
+                requireRuntimeStructuralShapeReifiable(member, where);
+            }
+            return;
+        }
+        if (type instanceof ListType) {
+            throw new IllegalArgumentException(
+                    where + " contains List/Array element type arguments that are erased at runtime; "
+                            + "use a nominal wrapper or a constructor/explicit validation path");
+        }
+        if (type instanceof Named named) {
+            if (!named.arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        where + " contains parameterized runtime type '" + named
+                                + "' whose generic arguments are not reified");
+            }
+            if (named.name().equals("$builtin$Symbol")
+                    || findClass(named.name()) != null
+                    || findInterface(named.name()) != null) {
+                return;
+            }
+            throw new IllegalArgumentException(
+                    where + " contains nominal type '" + named.name()
+                            + "' without a known runtime identity");
+        }
+        throw new IllegalArgumentException(
+                where + " contains unsupported runtime field predicate " + type);
     }
 
     private boolean structuralPatternMayMatch(Type subject, Record targetShape) {
@@ -5828,11 +5899,14 @@ public final class TypeChecker {
             }
             return true;
         }
-        // Runtime List/Array and Option/Result tests currently erase element
-        // parameters. Reified generic payload predicates are not assumed.
-        if (source instanceof ListType && target instanceof ListType) return true;
+        // Runtime List/Array and generic nominal carriers erase type arguments.
+        // They can overlap, but erased payload arguments can never prove full
+        // runtime coverage/subsumption without an attached descriptor.
+        if (source instanceof ListType && target instanceof ListType) return false;
         if (source instanceof Named left && target instanceof Named right) {
-            if (left.name().equals(right.name())) return true;
+            if (left.name().equals(right.name())) {
+                return left.arguments().isEmpty() && right.arguments().isEmpty();
+            }
             // A proven nominal subtype is also a runtime subtype; unrelated
             // nominal values cannot be certified from structural assignability.
             if (findClass(left.name()) != null && (findClass(right.name()) != null
