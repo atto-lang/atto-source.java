@@ -247,6 +247,65 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
+    void cleanupFailuresFollowPanicRaiseThrowPrecedence() throws Exception {
+        String source = """
+                fnc cleanupThrow(): void { throw new Error("cleanup throw"); }
+                fnc cleanupRaise(): void { raise new Error("cleanup raise"); }
+                fnc cleanupPanic(): void { panic new Error("cleanup panic"); }
+
+                trap fnc raising(): int {
+                  defer cleanupThrow();
+                  raise new Error("primary raise");
+                  return 1;
+                }
+
+                trap fnc throwing(): int {
+                  defer cleanupRaise();
+                  throw new Error("primary throw");
+                  return 2;
+                }
+
+                trap fnc raisingThenPanicking(): int {
+                  defer cleanupPanic();
+                  raise new Error("primary raise");
+                  return 3;
+                }
+
+                pub fnc main(): void {
+                  recover {
+                    [const [ignored], const ignored_error] = raising();
+                  } catch (signal) {
+                    stdio.stdout.write(signal.kind);
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(signal.message);
+                  }
+                  stdio.stdout.write("|");
+                  recover {
+                    [const [ignored], const ignored_error] = throwing();
+                  } catch (signal) {
+                    stdio.stdout.write(signal.kind);
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(signal.message);
+                  }
+                  stdio.stdout.write("|");
+                  recover {
+                    [const [ignored], const ignored_error] = raisingThenPanicking();
+                  } catch (signal) {
+                    stdio.stdout.write(signal.kind);
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(signal.message);
+                  }
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals(
+                "raise:primary raise|raise:cleanup raise|panic:cleanup panic",
+                run(source));
+    }
+
+    @Test
     void internalOptionUnwrapPanicStillBypassesTrapButCanBeRecovered() throws Exception {
         String source = """
                 trap fnc panics(): int {
