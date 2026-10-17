@@ -4075,7 +4075,7 @@ public final class TypeChecker {
         if (call.callee() instanceof Ast.NameExpr name
                 && isBooleanIntrinsicName(name.name())
                 && env.lookup(name.name()) == null
-                && !hasFunctionFamily(name.name())) {
+                && findFunction(name.name(), call.arguments().size()) == null) {
             return name.name();
         }
         if (call.callee() instanceof Ast.MemberExpr member
