@@ -34,6 +34,39 @@ final class ZordeSchemaGeneratorTest {
         assertThrows(IllegalArgumentException.class, () -> ann.schema("other.Port"));
     }
 
+    @Test void privateCheckedConstructionRejectsInvalidOrMutableValues() {
+        var plan = ZordeSchemaGenerator.planSource(
+                "namespace app; @Range(min=1,max=65535) type Port = int;");
+        var valid = plan.tryFrom("app.Port", 443L);
+        assertTrue(valid.ok());
+        assertEquals(443L, valid.value().intoInner());
+        assertEquals("app.Port", valid.value().qualifiedTypeName());
+        assertEquals(plan.schema("app.Port").fingerprint(),
+                valid.value().schemaFingerprint());
+        assertThrows(IllegalStateException.class, valid::error);
+
+        var invalid = plan.tryFrom("app.Port", 65536L);
+        assertFalse(invalid.ok());
+        assertEquals("constraint_violation", invalid.error().code());
+        assertThrows(IllegalStateException.class, invalid::value);
+        assertFalse(plan.tryFrom("app.Port", 443).ok());
+        assertFalse(plan.tryFrom("app.Port", 443.0).ok());
+        assertFalse(plan.tryFrom("app.Port", new StringBuilder("443")).ok());
+        assertFalse(plan.tryFrom("app.Port", null).ok());
+        assertThrows(IllegalArgumentException.class,
+                () -> plan.tryFrom("app.NotFound", 443L));
+
+        var user = ZordeSchemaGenerator.planSource(
+                "namespace app; @MinLength(1) define newtype Username(string);");
+        assertTrue(user.tryFrom("app.Username", "a").ok());
+        assertFalse(user.tryFrom("app.Username", "").ok());
+        assertFalse(user.tryFrom("app.Username", String.valueOf((char)0xD800)).ok());
+        assertTrue(java.util.Arrays.stream(ZordeSchemaGenerator.Plan.class.getDeclaredConstructors())
+                .allMatch(ctor -> java.lang.reflect.Modifier.isPrivate(ctor.getModifiers())));
+        assertTrue(java.util.Arrays.stream(ZordeSchemaGenerator.CheckedScalar.class.getDeclaredConstructors())
+                .allMatch(ctor -> java.lang.reflect.Modifier.isPrivate(ctor.getModifiers())));
+    }
+
     @Test void unicodeLengthAnnotationParityAndStrictHostValues() {
         var ann = ZordeSchemaGenerator.planSource(
                 "namespace app; @MinLength(1) @MaxLength(2) type Name = string;");
