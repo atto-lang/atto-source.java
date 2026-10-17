@@ -8120,7 +8120,7 @@ public final class OresEvalRootNode extends RootNode {
                                         }
                                         continuation.accept(
                                                 t2,
-                                                new ConditionResult(true, Map.copyOf(merged)),
+                                                new ConditionResult(true, frozenConditionBindings(merged)),
                                                 null);
                                     });
                         });
@@ -8146,7 +8146,7 @@ public final class OresEvalRootNode extends RootNode {
                                             ? ConditionResult.match()
                                             : new ConditionResult(
                                                     true,
-                                                    Map.of(test.binding(), value)),
+                                                    java.util.Collections.singletonMap(test.binding(), value)),
                                     null);
                         });
                 return;
@@ -8165,7 +8165,7 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(
                                     t,
                                     patternMatches(test.pattern(), value, bindings)
-                                            ? new ConditionResult(true, Map.copyOf(bindings))
+                                            ? new ConditionResult(true, frozenConditionBindings(bindings))
                                             : ConditionResult.noMatch(),
                                     null);
                         });
@@ -8186,6 +8186,15 @@ public final class OresEvalRootNode extends RootNode {
                                     failure));
         }
 
+        /**
+         * Runtime patterns may legitimately bind null. Map.of/Map.copyOf reject
+         * null entries and must not turn a successful type/pattern test into an
+         * accidental host NullPointerException.
+         */
+        private Map<String, Object> frozenConditionBindings(Map<String, Object> values) {
+            return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(values));
+        }
+
         private ConditionResult evalCondition(Ast.Expr condition, Env env) {
             if (condition instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
                 ConditionResult left = evalCondition(binary.left(), env);
@@ -8203,19 +8212,19 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     merged.put(entry.getKey(), entry.getValue());
                 }
-                return new ConditionResult(true, Map.copyOf(merged));
+                return new ConditionResult(true, frozenConditionBindings(merged));
             }
             if (condition instanceof Ast.TypeTestExpr test) {
                 Object value = eval(test.value(), env);
                 if (!oresTypeMatches(value, test.targetType())) return ConditionResult.noMatch();
                 if (test.binding() == null) return ConditionResult.match();
-                return new ConditionResult(true, Map.of(test.binding(), value));
+                return new ConditionResult(true, java.util.Collections.singletonMap(test.binding(), value));
             }
             if (condition instanceof Ast.PatternTestExpr test) {
                 Object value = eval(test.value(), env);
                 LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
                 return patternMatches(test.pattern(), value, bindings)
-                        ? new ConditionResult(true, Map.copyOf(bindings))
+                        ? new ConditionResult(true, frozenConditionBindings(bindings))
                         : ConditionResult.noMatch();
             }
             return truth(eval(condition, env)) ? ConditionResult.match() : ConditionResult.noMatch();
