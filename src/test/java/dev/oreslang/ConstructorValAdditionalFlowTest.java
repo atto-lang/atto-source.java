@@ -59,4 +59,143 @@ final class ConstructorValAdditionalFlowTest {
             end
             """);
     }
+    @Test void multiFieldOppositeInitializationOrder() {
+        ok("""
+            define class Pair as
+              val int x;
+              val int y;
+              constructor(bool flag) {
+                if flag then
+                  self.x = 1;
+                  self.y = 2;
+                else
+                  self.y = 3;
+                  self.x = 4;
+                fi
+              }
+            end
+            """);
+    }
+
+    @Test void rejectsOneMissingFieldAcrossJoin() {
+        bad("""
+            define class Pair as
+              val int x;
+              val int y;
+              constructor(bool flag) {
+                if flag then
+                  self.x = 1;
+                  self.y = 2;
+                else
+                  self.x = 3;
+                fi
+              }
+            end
+            """);
+    }
+
+    @Test void returnsInsideOneInitializedBranchDoNotPolluteTheOther() {
+        ok("""
+            define class Pair as
+              val int x;
+              val int y;
+              constructor(int n) {
+                if n > 0 then
+                  self.x = n;
+                  self.y = n + 1;
+                  return;
+                fi
+                self.y = 0;
+                self.x = 0;
+              }
+            end
+            """);
+    }
+
+    @Test void selfReferenceOnOwnRightHandSideIsRejected() {
+        bad("""
+            define class C as
+              val int x;
+              constructor() {
+                self.x = self.x + 1;
+              }
+            end
+            """);
+    }
+
+    @Test void constructorSelfCannotBeHiddenInArrayLiteral() {
+        bad("""
+            define class C as
+              val int x;
+              constructor() {
+                val items = [self];
+                self.x = 1;
+              }
+            end
+            """);
+    }
+
+    @Test void selfCannotBePublishedEvenAfterValWasInitialized() {
+        bad("""
+            define class C as
+              val int x;
+              constructor() {
+                self.x = 1;
+                val items = [self];
+              }
+            end
+            """);
+    }
+
+    @Test void lambdaCannotWriteInitializedVal() {
+        bad("""
+            define class C as
+              val int x;
+              constructor() {
+                self.x = 1;
+                val callback = || -> {
+                  self.x = 2;
+                  return;
+                };
+              }
+            end
+            """);
+    }
+
+    @Test void nestedBranchMissingInitializationStillRejects() {
+        bad("""
+            define class C as
+              val int x;
+              constructor(bool a, bool b) {
+                if a then
+                  if b then
+                    self.x = 1;
+                  fi
+                else
+                  self.x = 2;
+                fi
+              }
+            end
+            """);
+    }
+
+    @Test void nestedBranchAllPathsInitializeExactlyOnce() {
+        ok("""
+            define class C as
+              val int x;
+              constructor(bool a, bool b) {
+                if a then
+                  if b then
+                    self.x = 1;
+                  else
+                    self.x = 2;
+                  fi
+                else
+                  self.x = 3;
+                fi
+              }
+            end
+            """);
+    }
+
 }
