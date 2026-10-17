@@ -788,6 +788,104 @@ final class NioReadinessGroupTest {
         assertEquals(0, group.completionCarrierCount());
     }
 
+    @Test void inlineExecutorRejectingAfterDeliveryDoesNotReplayNotification()
+            throws Exception {
+        var selectorAttempt = new java.util.concurrent.CountDownLatch(1);
+        var completions = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.Executor hostile = task -> {
+            boolean selector = Thread.currentThread().getName()
+                    .startsWith("ores-nio-reactor-");
+            if (selector) selectorAttempt.countDown();
+            task.run(); // rejected before a claim if this is the selector
+            // An executor can propagate a callback's rejection or reject
+            // after running it; neither may trigger a second settlement.
+            throw new java.util.concurrent.RejectedExecutionException(
+                    "executor rejected after invoking the task");
+        };
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(hostile);
+            var pipe = java.nio.channels.Pipe.open();
+            try {
+                pipe.source().configureBlocking(false);
+                var future = group.watch(pipe.source(), SelectionKey.OP_READ);
+                future.whenCompleteRuntime((events, failure) ->
+                        completions.incrementAndGet());
+                pipe.sink().write(java.nio.ByteBuffer.wrap(new byte[] {1}));
+                assertTrue(selectorAttempt.await(3, TimeUnit.SECONDS));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (group.stagedNotificationCount() == 0
+                        && System.nanoTime() < deadline) Thread.sleep(1);
+                assertEquals(1, group.stagedNotificationCount());
+                group.retryStagedNotifications(); // trusted caller, inline
+                assertTrue(future.isDone());
+                assertEquals(1, completions.get());
+                assertEquals(0, group.stagedNotificationCount());
+                assertEquals(0, group.pendingNotifications());
+                group.retryStagedNotifications();
+                assertEquals(1, completions.get());
+                group.close();
+                assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            } finally {
+                pipe.source().close();
+                pipe.sink().close();
+            }
+        }
+    }
+
+    @Test void executorAcceptThenRejectCannotDuplicateOrStrandNotification()
+            throws Exception {
+        // This executor violates the conventional rejection contract by
+        // queueing a task before throwing. The scheduler must still preserve
+        // at-most-once delivery and release the reservation exactly once.
+        var queued = new java.util.concurrent.ConcurrentLinkedQueue<Runnable>();
+        var firstRejected = new java.util.concurrent.CountDownLatch(1);
+        var submissions = new java.util.concurrent.atomic.AtomicInteger();
+        var completions = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.Executor hostile = task -> {
+            queued.add(task);
+            if (submissions.getAndIncrement() == 0) {
+                firstRejected.countDown();
+                throw new java.util.concurrent.RejectedExecutionException(
+                        "already scheduled, then rejected");
+            }
+        };
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(hostile);
+            var pipe = java.nio.channels.Pipe.open();
+            try {
+                pipe.source().configureBlocking(false);
+                var future = group.watch(pipe.source(), SelectionKey.OP_READ);
+                future.whenCompleteRuntime((events, failure) ->
+                        completions.incrementAndGet());
+                pipe.sink().write(java.nio.ByteBuffer.wrap(new byte[] {2}));
+                assertTrue(firstRejected.await(3, TimeUnit.SECONDS));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (group.stagedNotificationCount() == 0
+                        && System.nanoTime() < deadline) Thread.sleep(1);
+                assertEquals(1, group.stagedNotificationCount());
+                // Replay the same delivery token while its first accepted
+                // copy has not yet run, then execute both copies.
+                group.retryStagedNotifications();
+                assertEquals(2, queued.size());
+                Runnable first = queued.poll();
+                Runnable duplicate = queued.poll();
+                assertNotNull(first);
+                assertNotNull(duplicate);
+                first.run();
+                duplicate.run();
+                assertTrue(future.isDone());
+                assertEquals(1, completions.get());
+                assertEquals(0, group.pendingNotifications());
+                assertEquals(0, group.stagedNotificationCount());
+                group.close();
+                assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            } finally {
+                pipe.source().close();
+                pipe.sink().close();
+            }
+        }
+    }
+
     @Test void invalidLimitsAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(0, 10, 8));
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(5, 10, 8));
