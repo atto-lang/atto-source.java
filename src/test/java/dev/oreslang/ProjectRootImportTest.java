@@ -286,6 +286,60 @@ final class ProjectRootImportTest {
     }
 
     @Test
+    void bareAndRelativeImportsCannotCrossNestedPackageBoundary() throws Exception {
+        Path root = makeProject("nested-bare-relative");
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        Path nestedBare = root.resolve("src/child");
+        Path nestedRelative = importer.getParent().resolve("child");
+        Files.createDirectories(nestedBare);
+        Files.createDirectories(nestedRelative);
+        Files.writeString(nestedBare.resolve("secret.ores"),
+                "pub fnc secret(): int { return 42; }\n");
+        Files.writeString(nestedRelative.resolve("secret.ores"),
+                "pub fnc secret(): int { return 42; }\n");
+        Files.writeString(nestedBare.resolve(OresProjectConfig.MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Files.writeString(nestedRelative.resolve(OresProjectConfig.LEGACY_MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        OresProjectConfig project = OresProjectConfig.discover(importer, Map.of());
+        for (String specifier : new String[] {"child/secret", "./child/secret"}) {
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> project.resolveImport(importer, specifier), specifier);
+            assertTrue(denied.getMessage().contains("nested package"), denied.getMessage());
+        }
+
+        Path alias = root.resolve("src/alias.ores");
+        try {
+            Files.createSymbolicLink(alias, nestedBare.resolve("secret.ores"));
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "symlinks unavailable: " + unsupported);
+        }
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> project.resolveImport(importer, "alias"));
+        assertTrue(denied.getMessage().contains("nested package"), denied.getMessage());
+    }
+
+    @Test
+    void bareImportCannotEscapeProjectRootThroughSymlinkedSource() throws Exception {
+        Path root = makeProject("bare-symlink-escape");
+        Path outside = temp.resolve("unrelated-private-source.ores");
+        Files.writeString(outside, "pub fnc secret(): int { return 123; }\n");
+        Path alias = root.resolve("src/secret.ores");
+        try {
+            Files.createSymbolicLink(alias, outside);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "symlinks unavailable: " + unsupported);
+        }
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        OresProjectConfig project = OresProjectConfig.discover(importer, Map.of());
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> project.resolveImport(importer, "secret"));
+        assertTrue(denied.getMessage().contains("escapes project"), denied.getMessage());
+    }
+
+    @Test
     void projectManifestSymlinkCannotMoveRootAuthority() throws Exception {
         Path root = makeProject("symlink-manifest");
         Path outside = temp.resolve("outside-package.toml");
