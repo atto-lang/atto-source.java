@@ -22,6 +22,32 @@ The legacy `Xor(array)` reducer computes odd parity for any array length, includ
 
 Calls have no generic call-site type parameters. Scalar parameters must type-check as `bool`; array/list contents must type-check as `bool`. Namespace qualification does not change built-in semantics. User-defined callables with the same name or a user-defined `BooleanOps` module retain normal shadowing/overloading rules, rather than being rewritten as intrinsics.
 
+### Scalar lowering model
+
+Scalar builtin calls are not ordinary eager Oreslang function calls after type checking. The type checker records the **exact AST call identities** that resolved to the builtin family, including shadowing decisions, and the front end then rewrites them before ownership checking/execution:
+
+```text
+And(a, b, c) -> (a && b) && c
+Or(a, b, c)  -> (a || b) || c
+Xor(a, b)    -> a ^^ b
+```
+
+This is required for semantic correctness. A source implementation such as
+`fnc Or(bool a, bool b, ...rest)` would receive already-evaluated arguments in
+an ordinary eager call, so it could not preserve the established rule that
+later scalar operands are skipped after a decisive value. General user-defined
+variadic parameters are also not part of the current callable grammar.
+
+Lowering occurs **after type/name resolution** so a source-defined `And`, `Or`,
+or `Xor`, and a real source module named `BooleanOps`, are never accidentally
+rewritten. The evaluator is no longer permitted to execute scalar builtin calls
+directly; an unlowered scalar call is an internal compiler error.
+
+The one-argument aggregate reducers remain calls for now. They can move to
+Oreslang-owned core source once packaged core-module resolution and backend
+linking can make the same implementation available to JIT, Native Image and
+LLVM without introducing a second semantic owner.
+
 ## Example
 
 ```ores
@@ -38,8 +64,8 @@ pub fnc main(): void {
 
 1. Lexer distinguishes `and` and `or` from identifiers and from `And`/`Or`.
 2. Parse both spellings to identical short-circuit AST operations. Check ternary, nested calls, operators without whitespace, type errors, precedence, and side-effect ordering.
-3. Enforce scalar XOR exact arity in both the compiler/type checker and evaluator runtime; test zero, one, two, three and more arguments.
-4. Preserve existing aggregate reducer behavior while the compatibility API is present.
+3. Enforce scalar XOR exact arity in the type checker, then prove scalar `And`/`Or`/`Xor` calls lower to ordinary logical AST before ownership checking/execution; test zero, one, two, three and more arguments.
+4. Fail closed if an unlowered scalar Boolean intrinsic reaches the evaluator. Preserve existing aggregate reducer behavior while the compatibility API is present.
 5. Run the same fixtures on Java/Graal JIT, JVM AOT/native-image and LLVM when LLVM has Boolean expression and builtin-call lowering. **LLVM's current restricted signed-i64 frontend does not implement this Boolean surface**: it must fail closed until typed Boolean IR, short-circuit CFG lowering, and parity dispatch are implemented.
 6. Match test evidence to the exact Git tree/SHA, not to an earlier green run. A no-runner/no-steps Actions failure is not evidence of compiler failure.
 
