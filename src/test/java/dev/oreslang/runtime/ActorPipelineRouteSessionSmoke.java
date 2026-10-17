@@ -130,6 +130,10 @@ public final class ActorPipelineRouteSessionSmoke {
         check(ledger.generation() == 9 && ledger.outstanding() == 0,
                 "quiescent generation change failed");
         var epochNine = ledger.ingress("source");
+        var cleanEpochCursor = ledger.forwardRoundRobin(epochNine);
+        check(cleanEpochCursor.receiver().equals("worker-a"),
+                "clean generation fence did not reseed RR cursor");
+        ledger.complete(cleanEpochCursor);
         reject(() -> ledger.abortAndAdvanceGeneration(9),
                 "abort accepted a non-increasing generation");
         check(ledger.generation() == 9 && ledger.outstanding() == 1,
@@ -138,6 +142,12 @@ public final class ActorPipelineRouteSessionSmoke {
                 "abort did not retire the single outstanding route");
         reject(() -> ledger.complete(epochNine),
                 "aborted message remained valid after epoch change");
+        var afterAbort = ledger.ingress("source");
+        var abortedEpochCursor = ledger.forwardRoundRobin(afterAbort);
+        check(abortedEpochCursor.receiver().equals("worker-a"),
+                "aborted generation fence did not reseed RR cursor");
+        ledger.complete(abortedEpochCursor);
+        ledger.complete(afterAbort);
         ledger.close();
         reject(() -> ledger.ingress("source"), "STOP accepted data");
 
