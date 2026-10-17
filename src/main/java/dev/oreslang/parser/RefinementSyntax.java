@@ -145,28 +145,8 @@ public final class RefinementSyntax {
     }
 
     private static void verifyBounds(Ast.TypeRef base, List<Ast.RefinementBound> bounds) {
-        long min = property(base).equals("length") ? 0 : Long.MIN_VALUE;
-        long max = Long.MAX_VALUE;
-        Set<Long> excluded = new HashSet<>();
-        for (Ast.RefinementBound bound : bounds) {
-            long n = bound.constant();
-            switch (bound.comparator()) {
-                case "eq" -> { min = Math.max(min, n); max = Math.min(max, n); }
-                case "ne" -> excluded.add(n);
-                case "ge" -> min = Math.max(min, n);
-                case "le" -> max = Math.min(max, n);
-                case "gt" -> {
-                    if (n == Long.MAX_VALUE) bad("unsatisfiable gt bound");
-                    min = Math.max(min, n + 1);
-                }
-                case "lt" -> {
-                    if (n == Long.MIN_VALUE) bad("unsatisfiable lt bound");
-                    max = Math.min(max, n - 1);
-                }
-                default -> bad("invalid constraint comparator");
-            }
-        }
-        if (min > max || min == max && excluded.contains(min)) bad("unsatisfiable refinement bounds");
+        // One normalizer for static parser diagnostics, implication and checked values.
+        dev.oreslang.types.RefinementRules.normalize(base, bounds);
     }
 
     private static void bad(String message) { throw new IllegalArgumentException("refinement: " + message); }
