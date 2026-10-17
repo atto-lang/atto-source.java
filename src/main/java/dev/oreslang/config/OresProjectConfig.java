@@ -264,7 +264,7 @@ public final class OresProjectConfig {
                 unix.startsWith("./") || unix.startsWith("../")) {
             Path parent = importer.toAbsolutePath().normalize().getParent();
             if (parent == null) parent = Path.of("").toAbsolutePath().normalize();
-            return existingSource(parent.resolve(raw).normalize());
+            return projectOwnedSource(existingSource(parent.resolve(raw).normalize()), importPath);
         }
 
         for (Path root : searchRoots()) {
@@ -274,10 +274,37 @@ public final class OresProjectConfig {
                 throw new IllegalArgumentException(
                         "bare import '" + importPath + "' escapes configured search root '" + normalizedRoot + "'");
             }
-            Optional<Path> resolved = existingSource(candidate);
+            Optional<Path> resolved = projectOwnedSource(existingSource(candidate), importPath);
             if (resolved.isPresent()) return resolved;
         }
         return Optional.empty();
+    }
+
+    /**
+     * Relative and bare imports must not use a different path to bypass the
+     * same nested-package isolation enforced for +/. External search roots
+     * remain independently owned; only sources spelled through this project
+     * root are checked against its namespace.
+     */
+    private Optional<Path> projectOwnedSource(Optional<Path> found, String specifier) {
+        if (found.isEmpty()) return found;
+        Path spelled = found.get().toAbsolutePath().normalize();
+        Path root = projectRoot.toAbsolutePath().normalize();
+        if (!spelled.startsWith(root)) return found;
+        try {
+            Path physicalRoot = root.toRealPath();
+            Path physical = spelled.toRealPath();
+            if (!physical.startsWith(physicalRoot)) {
+                throw new IllegalArgumentException(
+                        "source import escapes project through symlink: " + specifier);
+            }
+            requireNoNestedPackage(root, spelled, specifier);
+            requireNoNestedPackage(physicalRoot, physical, specifier);
+            return Optional.of(physical);
+        } catch (IOException error) {
+            throw new IllegalArgumentException(
+                    "cannot verify source import package identity: " + specifier, error);
+        }
     }
 
     private static void requireNoNestedPackage(Path root, Path source, String specifier) {
