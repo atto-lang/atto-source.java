@@ -112,6 +112,25 @@ final class BooleanIntrinsicsTest {
     }
 
     @Test
+    void aggregateReducersAndLoweredXorWorkAfterRealSourceTaskHandoff() throws Exception {
+        assertEquals("true\ntrue\ntrue\ntrue\n", run("""
+                async fnc probe(): void {
+                  rt cooperate;
+                  stdio.println(And([true, true, true]));
+                  stdio.println(BooleanOps.Or([false, true, false]));
+                  stdio.println(Xor([true, false, false]));
+                  stdio.println(Xor(true, false));
+                  return;
+                }
+
+                pub fnc main(): void {
+                  await probe();
+                  return;
+                }
+                """, "boolean-suspendable-reducers.ores"));
+    }
+
+    @Test
     void everyIntrinsicRejectsEmptyCallsScalarSingletonsAndNonBooleanOperands() {
         for (String prefix : new String[]{"", "BooleanOps."}) {
             for (String name : new String[]{"And", "Or", "Xor"}) {
