@@ -30,4 +30,30 @@ define module OtpEventManager as
     fi
     return Ok(subscriptions < capacity);
   }
+
+  // Delivery capacity is independent of the *number of subscriptions*.
+  // The caller supplies queued, executing and already reserved deliveries.
+  // Real admission MUST reserve atomically in the actor/mailbox provider.
+  pub fnc delivery_capacity_allows(
+    int queued,
+    int in_flight,
+    int reserved,
+    int capacity
+  ): Result<bool, String> {
+    if queued < 0 || in_flight < 0 || reserved < 0; do
+      return Err("negative event delivery accounting");
+    fi
+    if capacity < 1 || capacity > 4096; do
+      return Err("delivery capacity must be 1..4096");
+    fi
+    if queued > capacity || in_flight > capacity - queued; do
+      return Err("event deliveries exceed configured capacity");
+    fi
+    if reserved > capacity - queued - in_flight; do
+      return Err("event reservations exceed configured capacity");
+    fi
+    return Ok(reserved < capacity - queued - in_flight);
+  }
+
+
 end

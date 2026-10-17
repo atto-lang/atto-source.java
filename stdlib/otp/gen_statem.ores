@@ -61,4 +61,24 @@ define module OtpGenStatem as
     fi
     return Ok(timer_index < timer_capacity);
   }
+
+  // Deterministic timer-deadline policy only; this NEVER reads a clock or
+  // schedules a timer. The caller must supply one monotonic tick domain.
+  // Equal-to-deadline expires; rollback or negative tick values fail closed.
+  // Epoch rollover/wrapping clocks must be handled by the clock provider.
+  pub fnc timer_due(
+    int previous_tick,
+    int current_tick,
+    int deadline_tick
+  ): Result<bool, String> {
+    if previous_tick < 0 || current_tick < 0 || deadline_tick < 0; do
+      return Err("timer ticks must be nonnegative");
+    fi
+    if current_tick < previous_tick; do
+      return Err("monotonic clock moved backwards");
+    fi
+    return Ok(current_tick >= deadline_tick);
+  }
+
+
 end
