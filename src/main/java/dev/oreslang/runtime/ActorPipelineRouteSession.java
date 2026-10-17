@@ -200,6 +200,25 @@ final class ActorPipelineRouteSession {
         return child;
     }
 
+    /**
+     * VM-only direct reply to the authenticated flow origin. The destination
+     * is index zero of the immutable path; no actor-controlled target string
+     * participates in selection. The current one-shot frame is consumed only
+     * after the replacement frame is installed in the same session.
+     */
+    synchronized MailFrame returnToOrigin(MailFrame current) {
+        requireActive(current);
+        if (current.receiverIndex == 0)
+            throw new IllegalStateException("pipeline origin cannot reply to itself");
+        reserveRouteIds(1);
+        MailFrame child = new MailFrame(this, generation, current.flowId,
+                nextRouteId, current.actorPath, 0, true);
+        active.put(child, Boolean.TRUE);
+        active.remove(current);
+        nextRouteId++;
+        return child;
+    }
+
     /** Send to the immediate authenticated sender of the current message. */
     public synchronized ReturnPath backward(MailFrame current) {
         requireForward(current);
