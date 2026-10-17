@@ -1,8 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.util.HashMap;
-import java.util.Map;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -15,6 +15,18 @@ import java.util.UUID;
  * No callbacks or guest code are invoked while holding the short ledger lock.
  */
 final class GenServerReplyLedger {
+    static final class AdmissionException extends IllegalStateException {
+        enum Reason { CLOSED, CAPACITY }
+        private final Reason reason;
+
+        AdmissionException(Reason reason, String message) {
+            super(message);
+            this.reason = Objects.requireNonNull(reason, "reason");
+        }
+
+        Reason reason() { return reason; }
+    }
+
     record Target(UUID runtimeId, UUID actorId, long incarnation) {
         Target {
             Objects.requireNonNull(runtimeId, "runtimeId");
@@ -48,8 +60,14 @@ final class GenServerReplyLedger {
     Ticket register(Target target) {
         Objects.requireNonNull(target, "target");
         synchronized (pending) {
-            if (closed) throw new IllegalStateException("ledger is closed");
-            if (pending.size() >= capacity) throw new IllegalStateException("bounded call quota exceeded");
+            if (closed)
+                throw new AdmissionException(
+                        AdmissionException.Reason.CLOSED,
+                        "GenServer reply ledger is closed");
+            if (pending.size() >= capacity)
+                throw new AdmissionException(
+                        AdmissionException.Reason.CAPACITY,
+                        "bounded GenServer call quota exceeded");
             UUID correlation;
             do { correlation = UUID.randomUUID(); } while (pending.containsKey(correlation));
             Ticket ticket = new Ticket(this, target, correlation);
