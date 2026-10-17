@@ -153,6 +153,25 @@ final class DopGraphCpuIntegrationV1Test {
     }
 
     @Test
+    void inlineThenThrowReportsSchedulerRejectionNotInlineError() {
+        try (var input = new DopKernelIR.HostBuffer(LAYOUT);
+             var output = new DopKernelIR.HostBuffer(LAYOUT)) {
+            input.write(0, 0, 3.0f);
+            var failed = DopGraphCpuIntegrationV1.submit(kernel(), input, output,
+                    region(input, DopRegionSchedule.Mode.READ),
+                    region(output, DopRegionSchedule.Mode.WRITE),
+                    scalar(), worker -> {
+                        worker.run();
+                        throw new RejectedExecutionException("inline then rejected");
+                    });
+            var cause = assertThrows(CompletionException.class, failed::join).getCause();
+            assertInstanceOf(RejectedExecutionException.class, cause);
+            assertEquals("inline then rejected", cause.getMessage());
+            assertEquals(0.0f, output.read(0, 0));
+        }
+    }
+
+    @Test
     void startedWorkerCannotWriteIfSchedulerRejectsAfterEnqueue() throws Exception {
         // Executor can start another carrier before its admission returns.
         // The queued worker must wait until the scheduler commits admission,
