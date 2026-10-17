@@ -340,6 +340,9 @@ public final class ActorRuntime implements AutoCloseable {
             boolean initialized,
             int queuedUserMessages,
             int queuedContinuations,
+            long acceptedUserMessages,
+            long processedUserMessages,
+            int pendingDrainWaiters,
             int activeTurns,
             boolean carrierActive,
             boolean sourceReceiveSuspended,
@@ -362,6 +365,10 @@ public final class ActorRuntime implements AutoCloseable {
             if (generation <= 0
                     || queuedUserMessages < 0
                     || queuedContinuations < 0
+                    || acceptedUserMessages < 0
+                    || processedUserMessages < 0
+                    || processedUserMessages > acceptedUserMessages
+                    || pendingDrainWaiters < 0
                     || activeTurns < 0
                     || sharedMailboxBytes < 0
                     || outputBytes < 0
@@ -384,6 +391,10 @@ public final class ActorRuntime implements AutoCloseable {
         public boolean failed() {
             return terminalClass == ActorTerminalClass.FAILURE
                     || terminalClass == ActorTerminalClass.QUOTA_EXCEEDED;
+        }
+
+        public long outstandingAcceptedMessages() {
+            return acceptedUserMessages - processedUserMessages;
         }
     }
 
@@ -699,6 +710,9 @@ public final class ActorRuntime implements AutoCloseable {
                 cell.behavior != null || cell.codeActorState != null,
                 queuedUser,
                 queuedControl,
+                cell.nextUserMessageSequence,
+                cell.lastProcessedUserMessageSequence + 1L,
+                cell.pendingDrains.size(),
                 cell.activeTurns,
                 cell.carrierActive,
                 cell.sourceReceiveSuspended,
@@ -7058,7 +7072,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void markMessageProcessed(long sequence) {
-            List<OresFuture<Void>> completed = new ArrayList<>();
+            ArrayList<OresFuture<Void>> completed = null;
             synchronized (lifecycleLock) {
                 if (sequence != lastProcessedUserMessageSequence + 1L) {
                     throw new IllegalStateException(
@@ -7069,13 +7083,19 @@ public final class ActorRuntime implements AutoCloseable {
                     DrainWaiter waiter = pendingDrains.get(i);
                     if (waiter.sequence() <= sequence) {
                         pendingDrains.remove(i);
+                        if (completed == null) completed = new ArrayList<>();
                         completed.add(waiter.completion());
                     }
                 }
             }
+            // No allocation occurs in the common path with no drain observers.
             // Complete outside the lifecycle monitor: Future callbacks may
             // synchronously request actor stop or another lifecycle operation.
-            for (OresFuture<Void> waiter : completed) waiter.completeFromRuntime(null);
+            if (completed != null) {
+                for (OresFuture<Void> waiter : completed) {
+                    waiter.completeFromRuntime(null);
+                }
+            }
         }
 
         private boolean hasQueuedWork() {
