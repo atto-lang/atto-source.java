@@ -151,6 +151,26 @@ class DispatcherTest(unittest.TestCase):
                 MOD.require_live_reviewer_policy(receipt())
         finally: MOD.content_file=old
 
+    def test_destination_and_snapshot_ledgers_use_their_own_reviewed_heads(self):
+        r=receipt()
+        calls=[]
+        old=MOD.require_exact_ledger
+        try:
+            MOD.require_exact_ledger=lambda repo,path,ref,expected: calls.append(
+                (repo,path,ref,expected))
+            MOD.require_reviewed_ledgers(r)
+        finally:
+            MOD.require_exact_ledger=old
+        self.assertEqual(len(calls),2)
+        self.assertEqual(calls[0][2],r["destination_approval_head_sha"])
+        self.assertEqual(calls[1][2],r["snapshot_approval_head_sha"])
+        self.assertNotEqual(calls[0][2],r["publisher_policy_head_sha"])
+        self.assertNotEqual(calls[1][2],r["publisher_policy_head_sha"])
+        self.assertEqual(calls[0][3],f"{MOD.CARRIER_REPO} {MOD.CARRIER_REPO_ID}")
+        self.assertEqual(
+            calls[1][3],
+            f"{r['source_commit_sha']} {r['source_tree_sha']} {MOD.CARRIER_REPO_ID}")
+
     def test_dispatch_attests_reviewed_executable_before_source_admission(self):
         r=receipt()
         with tempfile.TemporaryDirectory() as td:
