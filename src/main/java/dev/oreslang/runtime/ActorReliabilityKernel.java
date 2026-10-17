@@ -110,9 +110,11 @@ final class ActorReliabilityKernel {
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(actor, "actor");
         Objects.requireNonNull(fault, "fault");
-        long now = monotonicNanos.getAsLong();
-        if (now < 0) throw new IllegalStateException("monotonic clock returned a negative value");
         synchronized (lock) {
+            // Sample while holding the serialization lock. Sampling before the
+            // lock lets two correct monotonic reads be committed out of order.
+            long now = monotonicNanos.getAsLong();
+            if (now < 0) throw new IllegalStateException("monotonic clock returned a negative value");
             if (lastTimestamp >= 0 && now < lastTimestamp)
                 throw new IllegalStateException("monotonic clock regressed");
             lastTimestamp = now;
