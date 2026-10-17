@@ -177,6 +177,8 @@ def inspect(reports, provenance, source_root=None, require_ci=False):
 
 
 def self_test():
+    expected_synthetic_tests = sum(
+        max(1, len(REQUIRED_CASES.get(name, ()))) for name in SUITES)
     with tempfile.TemporaryDirectory() as temp:
         p = Path(temp)
         reports = p / "reports"
@@ -196,7 +198,7 @@ def self_test():
                 '<testsuite name="' + classname + '" tests="' + str(len(methods))
                 + '" errors="0" failures="0" skipped="0">' + cases + '</testsuite>',
                 encoding="utf-8")
-        require(inspect(reports, provenance)["tests_total"] == len(SUITES),
+        require(inspect(reports, provenance)["tests_total"] == expected_synthetic_tests,
                 "synthetic control unexpectedly rejected")
         first = reports / ("TEST-dev.oreslang." + SUITES[0] + ".xml")
         good = first.read_text(encoding="utf-8")
@@ -266,7 +268,7 @@ def self_test():
                   "source_tree": git_sha("HEAD^{tree}"),
                   "scope": "java-structural-exact-head-guest"}
         provenance.write_text(json.dumps(actual), encoding="utf-8")
-        require(inspect(reports, provenance, checkout)["tests_total"] == len(SUITES),
+        require(inspect(reports, provenance, checkout)["tests_total"] == expected_synthetic_tests,
                 "exact synthetic HEAD/tree was not accepted")
         # Exercise the exact-head workflow/verifier blob checks with a
         # synthetic Git repository and simulated Actions environment only.
@@ -278,7 +280,7 @@ def self_test():
         }
         with patch.dict(os.environ, mock_ci):
             verified = inspect(reports, provenance, checkout, require_ci=True)
-            require(verified["tests_total"] == len(SUITES)
+            require(verified["tests_total"] == expected_synthetic_tests
                     and len(verified["pinned_source_blobs"]) == 2,
                     "synthetic workflow/verifier Git blob attestation failed")
         # A real Git HEAD/tree match is not sufficient if compiler scripts
@@ -305,7 +307,7 @@ def self_test():
             subprocess.run(["git", "-C", str(checkout), "reset", "-q", "HEAD", "--", "README.md"],
                            capture_output=True, check=True, timeout=5)
             tracked.write_text(original, encoding="utf-8")
-        require(inspect(reports, provenance, checkout)["tests_total"] == len(SUITES),
+        require(inspect(reports, provenance, checkout)["tests_total"] == expected_synthetic_tests,
                 "clean checkout was not restored after tamper tests")
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}):
             try:
