@@ -20,6 +20,7 @@ SOURCE_COMMIT = "5" * 40
 SOURCE_TREE = "6" * 40
 REVIEWER_LOGIN = "external-security-reviewer"
 REVIEWER_ID = 9000001
+OPERATOR_IDS = [11139560, 2148448]
 
 class ReviewPinnedPrivateCiTest(unittest.TestCase):
     def setUp(self):
@@ -39,6 +40,23 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             p.write_text(value, encoding="utf-8")
         return str(p)
 
+    def policy(self, reviewer_id=REVIEWER_ID, login=REVIEWER_LOGIN, enabled=True,
+               minimum="write", blocked=None):
+        return {
+            "schema": 2,
+            "enabled": enabled,
+            "minimumPermission": minimum,
+            "disallowedReviewerIds": list(OPERATOR_IDS if blocked is None else blocked),
+            "reviewer": {"login": login, "id": reviewer_id} if enabled else None,
+        }
+
+    def permission(self, permission="write", login=REVIEWER_LOGIN,
+                   reviewer_id=REVIEWER_ID, user_type="User"):
+        return {
+            "permission": permission,
+            "user": {"login": login, "id": reviewer_id, "type": user_type},
+        }
+
     def pr(self, repo, number, head, author_id=None):
         if author_id is None:
             author_id = 8000000 + number
@@ -53,21 +71,40 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         }
 
     def reviews(self, head, reviewer=REVIEWER_LOGIN, reviewer_id=REVIEWER_ID,
-                state="APPROVED", rid=1, association="COLLABORATOR",
-                submitted="2026-10-17T20:00:00Z"):
-        return [{"id": rid, "state": state, "commit_id": head,
-                 "submitted_at": submitted,
-                 "author_association": association,
-                 "user": {"login": reviewer, "id": reviewer_id, "type": "User"}}]
+                state="APPROVED", rid=1, submitted="2026-10-17T20:00:00Z",
+                user_type="User"):
+        return [{
+            "id": rid,
+            "state": state,
+            "commit_id": head,
+            "submitted_at": submitted,
+            "user": {"login": reviewer, "id": reviewer_id, "type": user_type},
+        }]
+
+    def resume_comment(self, cid=99, login=REVIEWER_LOGIN, reviewer_id=REVIEWER_ID,
+                       publisher=PUBLISHER_HEAD, user_type="User"):
+        return {
+            "id": cid,
+            "body": (
+                MOD.RESUME_MARKER
+                + " publisher=" + publisher
+                + " destination=" + DEST_HEAD
+                + " snapshot=" + SNAP_HEAD
+                + " carrier=" + CARRIER_HEAD
+                + " source_commit=" + SOURCE_COMMIT
+                + " source_tree=" + SOURCE_TREE
+                + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)
+            ),
+            "user": {"login": login, "id": reviewer_id, "type": user_type},
+        }
 
     def fixture(self):
-        args = {
-            "reviewer_policy": self.write("reviewer-policy.json", {
-                "schema": 1,
-                "enabled": True,
-                "requiredAuthorAssociation": "COLLABORATOR",
-                "reviewer": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID},
-            }),
+        return {
+            "reviewer_policy": self.write("reviewer-policy.json", self.policy()),
+            "source_reviewer_permission": self.write(
+                "source-reviewer-permission.json", self.permission("write")),
+            "carrier_reviewer_permission": self.write(
+                "carrier-reviewer-permission.json", self.permission("maintain")),
             "publisher_pr": self.write("publisher-pr.json",
                 self.pr(MOD.SOURCE_REPO, 1123, PUBLISHER_HEAD)),
             "publisher_reviews": self.write("publisher-reviews.json",
@@ -77,28 +114,14 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             "destination_reviews": self.write("destination-reviews.json",
                 self.reviews(DEST_HEAD, rid=12)),
             "snapshot_pr": self.write("snapshot-pr.json",
-                self.pr(MOD.SOURCE_REPO, 1189, SNAP_HEAD)),
+                self.pr(MOD.SOURCE_REPO, 1173, SNAP_HEAD)),
             "snapshot_reviews": self.write("snapshot-reviews.json",
                 self.reviews(SNAP_HEAD, rid=13)),
             "carrier_pr": self.write("carrier-pr.json",
                 self.pr(MOD.CARRIER_REPO, 7, CARRIER_HEAD)),
             "carrier_reviews": self.write("carrier-reviews.json",
                 self.reviews(CARRIER_HEAD, rid=14)),
-            "incident_comments": self.write("incident.json", [{
-                "id": 99,
-                "body": (
-                    MOD.RESUME_MARKER
-                    + " publisher=" + PUBLISHER_HEAD
-                    + " destination=" + DEST_HEAD
-                    + " snapshot=" + SNAP_HEAD
-                    + " carrier=" + CARRIER_HEAD
-                    + " source_commit=" + SOURCE_COMMIT
-                    + " source_tree=" + SOURCE_TREE
-                    + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)
-                ),
-                "author_association": "COLLABORATOR",
-                "user": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID, "type": "User"},
-            }]),
+            "incident_comments": self.write("incident.json", [self.resume_comment()]),
             "source_commit": self.write("source-commit.json", {
                 "sha": SOURCE_COMMIT,
                 "commit": {"tree": {"sha": SOURCE_TREE}},
@@ -117,7 +140,6 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             "snapshot_ledger": self.write("ledger.txt",
                 f"{SOURCE_COMMIT} {SOURCE_TREE} {MOD.CARRIER_REPO_ID}\n"),
         }
-        return args
 
     def run_fixture(self, values):
         argv = []
@@ -135,233 +157,227 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         finally:
             MOD.argparse.ArgumentParser.parse_args = old
 
-    def test_valid_exact_head_authority_emits_receipt(self):
-        receipt = self.run_fixture(self.fixture())
-        self.assertEqual(receipt["source_commit_sha"], SOURCE_COMMIT)
-        self.assertEqual(receipt["source_tree_sha"], SOURCE_TREE)
-        self.assertEqual(receipt["carrier_base_sha"], CARRIER_HEAD)
-        self.assertEqual(receipt["incident_resume_comment_id"], 99)
-        self.assertEqual(receipt["publisher_review_id"], 11)
-        self.assertEqual(receipt["carrier_review_id"], 14)
-
     def assertDenied(self, mutate):
         fx = self.fixture()
         mutate(fx)
         with self.assertRaises(MOD.Denied):
             self.run_fixture(fx)
 
+    def test_valid_exact_head_authority_emits_schema2_receipt(self):
+        receipt = self.run_fixture(self.fixture())
+        self.assertEqual(receipt["schema"], 2)
+        self.assertEqual(receipt["source_commit_sha"], SOURCE_COMMIT)
+        self.assertEqual(receipt["source_tree_sha"], SOURCE_TREE)
+        self.assertEqual(receipt["carrier_base_sha"], CARRIER_HEAD)
+        self.assertEqual(receipt["incident_resume_comment_id"], 99)
+        self.assertEqual(receipt["publisher_review_id"], 11)
+        self.assertEqual(receipt["carrier_review_id"], 14)
+        self.assertEqual(receipt["independent_reviewer_login"], REVIEWER_LOGIN)
+        self.assertEqual(receipt["independent_reviewer_id"], REVIEWER_ID)
+        self.assertEqual(receipt["independent_reviewer_source_permission"], "write")
+        self.assertEqual(receipt["independent_reviewer_carrier_permission"], "maintain")
+
     def test_disabled_reviewer_policy_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "reviewer_policy", self.write("disabled.json", self.policy(enabled=False))))
+
+    def test_schema1_reviewer_policy_denied(self):
         def mutate(fx):
-            fx["reviewer_policy"] = self.write("reviewer-policy-disabled.json", {
-                "schema": 1,
-                "enabled": False,
-                "requiredAuthorAssociation": "COLLABORATOR",
-                "reviewer": None,
-            })
+            p = self.policy()
+            p["schema"] = 1
+            fx["reviewer_policy"] = self.write("schema1.json", p)
         self.assertDenied(mutate)
 
-    def test_operator_accounts_cannot_be_configured_as_independent(self):
-        for operator_id in MOD.DISALLOWED_REVIEWER_IDS:
-            with self.subTest(operator_id=operator_id):
-                def mutate(fx, operator_id=operator_id):
-                    fx["reviewer_policy"] = self.write(
-                        "reviewer-policy-operator.json", {
-                            "schema": 1,
-                            "enabled": True,
-                            "requiredAuthorAssociation": "COLLABORATOR",
-                            "reviewer": {"login": "operator-alias", "id": operator_id},
-                        })
-                self.assertDenied(mutate)
+    def test_invalid_minimum_permission_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "reviewer_policy", self.write("bad-min.json", self.policy(minimum="read"))))
 
-    def test_member_association_cannot_count_as_independent(self):
-        def mutate(fx):
-            fx["publisher_reviews"] = self.write(
-                "publisher-reviews-member.json",
-                self.reviews(PUBLISHER_HEAD, association="MEMBER"))
-        self.assertDenied(mutate)
+    def test_duplicate_blocked_ids_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "reviewer_policy", self.write("dupe-block.json",
+                self.policy(blocked=[11139560, 11139560]))))
+
+    def test_operator_account_oresoftware_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "reviewer_policy", self.write("operator1.json",
+                self.policy(reviewer_id=11139560, login="ORESoftware"))))
+
+    def test_operator_account_the1mills_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "reviewer_policy", self.write("operator2.json",
+                self.policy(reviewer_id=2148448, login="the1mills"))))
 
     def test_reviewer_cannot_be_pr_author(self):
         def mutate(fx):
-            fx["publisher_pr"] = self.write(
-                "publisher-pr-self-review.json",
-                self.pr(MOD.SOURCE_REPO, 1123, PUBLISHER_HEAD,
-                        author_id=REVIEWER_ID))
+            fx["publisher_pr"] = self.write("self-author.json",
+                self.pr(MOD.SOURCE_REPO, 1123, PUBLISHER_HEAD, author_id=REVIEWER_ID))
         self.assertDenied(mutate)
 
-    def test_malformed_reviewer_policy_denied(self):
-        for value in (
-            {},
-            {"schema": 2, "enabled": True,
-             "requiredAuthorAssociation": "COLLABORATOR",
-             "reviewer": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID}},
-            {"schema": 1, "enabled": True,
-             "requiredAuthorAssociation": "MEMBER",
-             "reviewer": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID}},
-            {"schema": 1, "enabled": True,
-             "requiredAuthorAssociation": "COLLABORATOR",
-             "reviewer": {"login": "bad name", "id": REVIEWER_ID}},
-            {"schema": 1, "enabled": True,
-             "requiredAuthorAssociation": "COLLABORATOR",
-             "reviewer": {"login": REVIEWER_LOGIN, "id": 0}},
-        ):
-            with self.subTest(value=value):
-                def mutate(fx, value=value):
-                    fx["reviewer_policy"] = self.write(
-                        "reviewer-policy-bad.json", value)
-                self.assertDenied(mutate)
+    def test_source_live_permission_read_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "source_reviewer_permission", self.write("source-read.json",
+                self.permission("read"))))
+
+    def test_carrier_live_permission_triage_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "carrier_reviewer_permission", self.write("carrier-triage.json",
+                self.permission("triage"))))
+
+    def test_live_permission_none_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "source_reviewer_permission", self.write("source-none.json",
+                self.permission("none"))))
+
+    def test_live_permission_wrong_id_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "source_reviewer_permission", self.write("source-wrong-id.json",
+                self.permission("admin", reviewer_id=1))))
+
+    def test_live_permission_renamed_login_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "carrier_reviewer_permission", self.write("carrier-renamed.json",
+                self.permission("admin", login="renamed-reviewer"))))
+
+    def test_live_permission_bot_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "carrier_reviewer_permission", self.write("carrier-bot.json",
+                self.permission("admin", user_type="Bot"))))
 
     def test_stale_review_commit_denied(self):
-        def mutate(fx):
-            fx["publisher_reviews"] = self.write("publisher-reviews-stale.json",
-                self.reviews("a" * 40))
-        self.assertDenied(mutate)
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "publisher_reviews", self.write("stale.json", self.reviews("a" * 40))))
 
     def test_reviewer_id_mismatch_denied(self):
-        def mutate(fx):
-            fx["carrier_reviews"] = self.write(
-                "carrier-reviews-wrong-id.json",
-                self.reviews(CARRIER_HEAD, reviewer_id=1))
-        self.assertDenied(mutate)
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "carrier_reviews", self.write("wrong-id.json",
+                self.reviews(CARRIER_HEAD, reviewer_id=1))))
 
-    def test_wrong_reviewer_denied(self):
-        def mutate(fx):
-            fx["carrier_reviews"] = self.write("carrier-reviews-wrong.json",
-                self.reviews(CARRIER_HEAD, reviewer="wrong-reviewer"))
-        self.assertDenied(mutate)
+    def test_wrong_reviewer_login_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "carrier_reviews", self.write("wrong-login.json",
+                self.reviews(CARRIER_HEAD, reviewer="wrong-reviewer"))))
 
-    def test_newest_exact_head_review_wins(self):
-        fx = self.fixture()
-        fx["snapshot_reviews"] = self.write(
-            "snapshot-reviews-two-approved.json",
-            self.reviews(SNAP_HEAD, rid=1, submitted="2026-10-17T20:00:00Z")
-            + self.reviews(SNAP_HEAD, rid=2, submitted="2026-10-17T20:01:00Z"))
-        receipt = self.run_fixture(fx)
-        self.assertEqual(receipt["snapshot_review_id"], 2)
+    def test_review_bot_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "carrier_reviews", self.write("bot-review.json",
+                self.reviews(CARRIER_HEAD, user_type="Bot"))))
 
     def test_nonapproved_review_denied(self):
-        def mutate(fx):
-            fx["destination_reviews"] = self.write("destination-reviews-changes.json",
-                self.reviews(DEST_HEAD, state="CHANGES_REQUESTED"))
-        self.assertDenied(mutate)
-
-    def test_closed_security_pr_denied(self):
-        def mutate(fx):
-            p = self.pr(MOD.SOURCE_REPO, 1123, PUBLISHER_HEAD)
-            p["state"] = "closed"
-            fx["publisher_pr"] = self.write("publisher-pr-closed.json", p)
-        self.assertDenied(mutate)
-
-    def test_non_main_security_pr_denied(self):
-        def mutate(fx):
-            p = self.pr(MOD.SOURCE_REPO, 1092, DEST_HEAD)
-            p["base"]["ref"] = "release"
-            fx["destination_pr"] = self.write("destination-pr-wrong-base.json", p)
-        self.assertDenied(mutate)
-
-    def test_draft_security_pr_denied(self):
-        def mutate(fx):
-            p = self.pr(MOD.SOURCE_REPO, 1092, DEST_HEAD)
-            p["draft"] = True
-            fx["destination_pr"] = self.write("destination-pr-draft.json", p)
-        self.assertDenied(mutate)
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "destination_reviews", self.write("changes.json",
+                self.reviews(DEST_HEAD, state="CHANGES_REQUESTED"))))
 
     def test_later_changes_requested_revokes_exact_head_approval(self):
         def mutate(fx):
-            fx["publisher_reviews"] = self.write(
-                "publisher-reviews-revoked.json",
+            fx["publisher_reviews"] = self.write("revoked.json",
                 self.reviews(PUBLISHER_HEAD, state="APPROVED", rid=10,
                              submitted="2026-10-17T20:00:00Z")
                 + self.reviews(PUBLISHER_HEAD, state="CHANGES_REQUESTED", rid=11,
                                submitted="2026-10-17T20:01:00Z"))
         self.assertDenied(mutate)
 
-    def test_wrong_pr_repository_denied(self):
+    def test_newer_approval_restores_exact_head_authority(self):
+        fx = self.fixture()
+        fx["publisher_reviews"] = self.write("restored.json",
+            self.reviews(PUBLISHER_HEAD, state="CHANGES_REQUESTED", rid=10,
+                         submitted="2026-10-17T20:00:00Z")
+            + self.reviews(PUBLISHER_HEAD, state="APPROVED", rid=11,
+                           submitted="2026-10-17T20:01:00Z"))
+        receipt = self.run_fixture(fx)
+        self.assertEqual(receipt["publisher_review_id"], 11)
+
+    def test_equal_timestamp_uses_higher_review_id(self):
+        fx = self.fixture()
+        fx["publisher_reviews"] = self.write("same-time.json",
+            self.reviews(PUBLISHER_HEAD, state="CHANGES_REQUESTED", rid=10,
+                         submitted="2026-10-17T20:00:00Z")
+            + self.reviews(PUBLISHER_HEAD, state="APPROVED", rid=11,
+                           submitted="2026-10-17T20:00:00Z"))
+        receipt = self.run_fixture(fx)
+        self.assertEqual(receipt["publisher_review_id"], 11)
+
+    def test_missing_submitted_at_denied(self):
         def mutate(fx):
-            fx["carrier_pr"] = self.write("carrier-pr-wrong.json",
-                self.pr("other/repo", 7, CARRIER_HEAD))
+            r = self.reviews(PUBLISHER_HEAD)
+            del r[0]["submitted_at"]
+            fx["publisher_reviews"] = self.write("no-time.json", r)
         self.assertDenied(mutate)
 
-    def test_resume_marker_must_be_independent(self):
+    def test_closed_security_pr_denied(self):
         def mutate(fx):
-            fx["incident_comments"] = self.write("incident-self.json", [{
-                "id": 99, "body": MOD.RESUME_MARKER + " unbound",
-                "author_association": "MEMBER",
-                "user": {"login": "wrong-reviewer", "id": 42, "type": "User"},
-            }])
+            p = self.pr(MOD.SOURCE_REPO, 1123, PUBLISHER_HEAD)
+            p["state"] = "closed"
+            fx["publisher_pr"] = self.write("closed.json", p)
         self.assertDenied(mutate)
+
+    def test_non_main_security_pr_denied(self):
+        def mutate(fx):
+            p = self.pr(MOD.SOURCE_REPO, 1092, DEST_HEAD)
+            p["base"]["ref"] = "release"
+            fx["destination_pr"] = self.write("wrong-base.json", p)
+        self.assertDenied(mutate)
+
+    def test_draft_security_pr_denied(self):
+        def mutate(fx):
+            p = self.pr(MOD.SOURCE_REPO, 1092, DEST_HEAD)
+            p["draft"] = True
+            fx["destination_pr"] = self.write("draft.json", p)
+        self.assertDenied(mutate)
+
+    def test_wrong_pr_repository_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "carrier_pr", self.write("wrong-repo.json",
+                self.pr("other/repo", 7, CARRIER_HEAD))))
+
+    def test_resume_marker_wrong_reviewer_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "incident_comments", self.write("incident-wrong.json", [
+                self.resume_comment(login="wrong-reviewer", reviewer_id=42)])))
+
+    def test_resume_marker_wrong_id_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "incident_comments", self.write("incident-wrong-id.json", [
+                self.resume_comment(reviewer_id=42)])))
 
     def test_duplicate_resume_approvals_denied(self):
-        def mutate(fx):
-            fx["incident_comments"] = self.write("incident-dupe.json", [
-                {"id": 99, "body": (
-                    MOD.RESUME_MARKER + " publisher=" + PUBLISHER_HEAD
-                    + " destination=" + DEST_HEAD + " snapshot=" + SNAP_HEAD
-                    + " carrier=" + CARRIER_HEAD + " source_commit=" + SOURCE_COMMIT
-                    + " source_tree=" + SOURCE_TREE
-                    + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)),
-                 "author_association": "COLLABORATOR", "user": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID, "type": "User"}},
-                {"id": 100, "body": (
-                    MOD.RESUME_MARKER + " publisher=" + PUBLISHER_HEAD
-                    + " destination=" + DEST_HEAD + " snapshot=" + SNAP_HEAD
-                    + " carrier=" + CARRIER_HEAD + " source_commit=" + SOURCE_COMMIT
-                    + " source_tree=" + SOURCE_TREE
-                    + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)),
-                 "author_association": "COLLABORATOR", "user": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID, "type": "User"}},
-            ])
-        self.assertDenied(mutate)
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "incident_comments", self.write("incident-dupe.json", [
+                self.resume_comment(cid=99), self.resume_comment(cid=100)])))
 
     def test_unbound_resume_marker_denied(self):
         def mutate(fx):
-            fx["incident_comments"] = self.write("incident-unbound.json", [{
-                "id": 99, "body": MOD.RESUME_MARKER + " generic",
-                "author_association": "COLLABORATOR",
-                "user": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID, "type": "User"},
-            }])
+            c = self.resume_comment()
+            c["body"] = MOD.RESUME_MARKER + " generic"
+            fx["incident_comments"] = self.write("incident-unbound.json", [c])
         self.assertDenied(mutate)
 
     def test_resume_bound_to_old_head_denied(self):
-        def mutate(fx):
-            fx["incident_comments"] = self.write("incident-old-head.json", [{
-                "id": 99,
-                "body": (
-                    MOD.RESUME_MARKER + " publisher=" + ("a" * 40)
-                    + " destination=" + DEST_HEAD + " snapshot=" + SNAP_HEAD
-                    + " carrier=" + CARRIER_HEAD + " source_commit=" + SOURCE_COMMIT
-                    + " source_tree=" + SOURCE_TREE
-                    + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)
-                ),
-                "author_association": "COLLABORATOR",
-                "user": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID, "type": "User"},
-            }])
-        self.assertDenied(mutate)
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "incident_comments", self.write("incident-old-head.json", [
+                self.resume_comment(publisher="a" * 40)])))
 
     def test_source_tree_mismatch_denied(self):
-        def mutate(fx):
-            fx["source_commit"] = self.write("source-tree-wrong.json", {
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "source_commit", self.write("source-tree-wrong.json", {
                 "sha": SOURCE_COMMIT, "commit": {"tree": {"sha": "7" * 40}},
-            })
-        self.assertDenied(mutate)
+            })))
 
     def test_multiple_active_snapshot_rows_denied(self):
-        def mutate(fx):
-            fx["snapshot_ledger"] = self.write("ledger-multiple.txt",
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "snapshot_ledger", self.write("ledger-multiple.txt",
                 f"{SOURCE_COMMIT} {SOURCE_TREE} {MOD.CARRIER_REPO_ID}\n"
-                f"{'8'*40} {'9'*40} {MOD.CARRIER_REPO_ID}\n")
-        self.assertDenied(mutate)
+                f"{'8'*40} {'9'*40} {MOD.CARRIER_REPO_ID}\n")))
 
     def test_wrong_destination_ledger_denied(self):
-        def mutate(fx):
-            fx["destination_ledger"] = self.write(
-                "destination-ledger-wrong.txt", "other/repo 1357615104\n")
-        self.assertDenied(mutate)
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "destination_ledger", self.write("destination-wrong.txt",
+                "other/repo 1357615104\n")))
 
     def test_multiple_destination_entries_denied(self):
-        def mutate(fx):
-            fx["destination_ledger"] = self.write(
-                "destination-ledger-multiple.txt",
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "destination_ledger", self.write("destination-multiple.txt",
                 f"{MOD.CARRIER_REPO} {MOD.CARRIER_REPO_ID}\n"
-                f"other/repo {MOD.CARRIER_REPO_ID}\n")
-        self.assertDenied(mutate)
+                f"other/repo {MOD.CARRIER_REPO_ID}\n")))
 
     def test_wrong_destination_id_denied(self):
         def mutate(fx):
