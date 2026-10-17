@@ -2261,5 +2261,34 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
 
 
+
+    def test_checked_in_codeowners_matches_terminal_source_security_contract(self):
+        # Exercise the actual on-disk policy, not just a synthetic mock.
+        text = (MODULE.parent.parent / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
+        effective = [line.strip() for line in text.splitlines()
+                     if line.strip() and not line.lstrip().startswith("#")]
+        required = [path + " " + pub.REQUIRED_CODEOWNER
+                    for path in pub.REQUIRED_CODEOWNER_PATHS]
+        self.assertEqual(effective[-len(required):], required)
+        self.assertEqual(len(effective), len(set(effective)))
+        self.assertGreaterEqual(len(required), 18)
+
+    def test_source_local_runner_entrypoints_and_admission_tests_are_owned(self):
+        required = set(pub.REQUIRED_CODEOWNER_PATHS)
+        runner_paths = {
+            "/.github/workflows/private-exact-main-validation.yml",
+            "/.github/workflows/private-exact-candidate-validation.yml",
+            "/.github/workflows/private-exact-publisher-validation.yml",
+            "/docs/security/PRIVATE_EXACT_MAIN_VALIDATION.md",
+            "/docs/security/PRIVATE_CI_POLICY_INTEGRATION_REVIEW_2026-10-16.md",
+            "/src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java",
+            "/src/test/java/dev/oreslang/PrivateExactPublisherAdmissionMutationTest.java",
+            "/src/test/java/dev/oreslang/PrivateExactPublisherValidationWorkflowSecurityTest.java",
+        }
+        self.assertTrue(runner_paths.issubset(required))
+        for path in runner_paths:
+            self.assertTrue((MODULE.parent.parent / path.lstrip("/")).is_file())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
