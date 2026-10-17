@@ -8337,7 +8337,11 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
-        if (expected == Any.INSTANCE) return actual != Primitive.VOID;
+        if (expected == Any.INSTANCE) {
+            return actual != Primitive.VOID
+                    && !(actual instanceof Borrow)
+                    && !(actual instanceof ClassNamespace);
+        }
         if (actual == Any.INSTANCE) return expected == Any.INSTANCE;
         if (expected == AnyCallable.INSTANCE) {
             return actual instanceof Function || actual == AnyCallable.INSTANCE;
