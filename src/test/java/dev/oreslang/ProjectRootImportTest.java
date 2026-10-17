@@ -233,6 +233,30 @@ final class ProjectRootImportTest {
     }
 
     @Test
+    void modernManifestRejectsOversizeAndMalformedUtf8BeforeTomlParsing() throws Exception {
+        Path project = makeProject("manifest-bounded-snapshot");
+        Path manifest = project.resolve(OresProjectConfig.MANIFEST_NAME);
+        Path importer = project.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+
+        Files.write(manifest, new byte[65_537]);
+        IllegalArgumentException tooLarge = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(importer, Map.of()));
+        assertTrue(tooLarge.getMessage().contains("exceeds 64 KiB"),
+                tooLarge.getMessage());
+
+        Files.write(manifest, new byte[] {(byte) 0xc0, (byte) 0xaf});
+        IllegalArgumentException badUtf8 = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(importer, Map.of()));
+        assertTrue(badUtf8.getMessage().contains("valid UTF-8"),
+                badUtf8.getMessage());
+
+        Files.writeString(manifest, "schema_version = \"1\"\r\n");
+        assertEquals(project, OresProjectConfig.discover(importer, Map.of()).projectRoot());
+    }
+
+    @Test
     void modernManifestRequiresLfOrCrLfAndRejectsHiddenCrRoot() throws Exception {
         Path project = makeProject("manifest-line-endings");
         Path importer = project.resolve("src/routes/rest/foo/bar/baz/delete.ores");
