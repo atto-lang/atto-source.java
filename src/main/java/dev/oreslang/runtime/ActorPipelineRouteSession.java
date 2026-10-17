@@ -265,6 +265,31 @@ final class ActorPipelineRouteSession {
         return child;
     }
 
+    /** Roll back a reverse/reply selection whose mailbox admission failed
+     * before publication. This is a VM-owned one-shot transition, not a guest
+     * API. Route IDs remain spent; they are NEVER reused after rejection.
+     * A retired generation cannot resurrect a previously consumed frame. */
+    synchronized void restoreRejectedReturn(MailFrame original, MailFrame rejected) {
+        Objects.requireNonNull(original, "original");
+        Objects.requireNonNull(rejected, "rejected");
+        ensureOpen();
+        if (original.session != this || rejected.session != this
+                || original.generation != generation
+                || rejected.generation != generation
+                || !rejected.returning
+                || original.flowId != rejected.flowId
+                || !original.actorPath.equals(rejected.actorPath)
+                || active.containsKey(original)
+                || !active.containsKey(rejected)) {
+            throw new IllegalStateException(
+                    "reverse routing admission cannot restore an unrelated/stale frame");
+        }
+        // Insert the original BEFORE dropping its replacement. Both entries
+        // are internal identity keys; no untrusted callback runs in between.
+        active.put(original, Boolean.TRUE);
+        active.remove(rejected);
+    }
+
     /** Send to the immediate authenticated sender of the current message. */
     public synchronized ReturnPath backward(MailFrame current) {
         requireForward(current);
