@@ -235,6 +235,33 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                 pub.collect_source(self.source, self.root)
                             opened.assert_not_called()
 
+    def test_overlapping_secure_open_flag_masks_reject_before_file_io(self):
+        # A positive O_NOFOLLOW value is not proof of no-follow security if
+        # it aliases O_DIRECTORY or O_NONBLOCK. Treat partial overlaps as
+        # unsafe too, before touching the approval or private source.
+        originals = {name: getattr(pub.os, name)
+                     for name in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")}
+        masks = (
+            {"O_NOFOLLOW": originals["O_DIRECTORY"]},
+            {"O_NONBLOCK": originals["O_NOFOLLOW"]},
+            {"O_DIRECTORY": originals["O_NONBLOCK"]},
+            {"O_NOFOLLOW": originals["O_DIRECTORY"] | originals["O_NOFOLLOW"]},
+        )
+        for mask in masks:
+            with self.subTest(mask=mask):
+                with patch.multiple(pub.os, **mask):
+                    self.assertFalse(pub.safe_descriptor_flags_available())
+                    with patch.object(
+                            pub.os, "open",
+                            side_effect=AssertionError("unsafe file open")) as opened:
+                        with self.assertRaisesRegex(
+                                pub.Denied, "OS cannot safely read"):
+                            pub.checked_policy_fingerprint(self.root, "trusted/ci")
+                        with self.assertRaisesRegex(
+                                pub.Denied, "OS cannot enforce"):
+                            pub.collect_source(self.source, self.root)
+                        opened.assert_not_called()
+
     def test_unusable_open_flags_deny_trusted_checkout_after_git_proof(self):
         def safe_git(argv, **kwargs):
             output = str(self.root) if "--show-toplevel" in argv else A
