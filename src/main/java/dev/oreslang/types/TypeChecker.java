@@ -193,7 +193,7 @@ public final class TypeChecker {
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
-                "self", "null"));
+                "any", "unknown", "Any", "Unknown", "self", "null"));
 
         for (Ast.ModuleDecl module : program.modules()) {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
@@ -233,16 +233,27 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    rejectOpaqueTopRedeclaration(klass.name(), "class");
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    rejectOpaqueTopRedeclaration(iface.name(), "interface/trait");
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    rejectOpaqueTopRedeclaration(alias.name(), "type alias");
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
                 }
             }
+        }
+    }
+
+    private static void rejectOpaqueTopRedeclaration(String name, String kind) {
+        if (name.equals("any") || name.equals("unknown")
+                || name.equals("Any") || name.equals("Unknown")) {
+            throw new IllegalArgumentException(
+                    "reserved type name '" + name + "' cannot be redeclared as a " + kind);
         }
     }
 
@@ -5908,6 +5919,8 @@ public final class TypeChecker {
         }
         if (ref.isBorrow() || ref.isTupleType() || ref.isRecordType() || ref.isStringLiteral()
                 || ref.name().equals("$infer$") || ref.name().equals("self")
+                || ref.name().equals("any") || ref.name().equals("unknown")
+                || ref.name().equals("Any") || ref.name().equals("Unknown")
                 || ref.name().equals("Fnc") || ref.name().equals("Function")) {
             throw new IllegalArgumentException(
                     operator + " requires a nominal/runtime-reifiable type; use 'matches' for structural patterns");
@@ -8422,7 +8435,16 @@ public final class TypeChecker {
 
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
-        for (String name : names) if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        for (String name : names) {
+            if (name.equals("any") || name.equals("unknown")
+                    || name.equals("Any") || name.equals("Unknown")) {
+                throw new IllegalArgumentException(
+                        "reserved type name '" + name + "' cannot be used as a generic parameter in " + owner);
+            }
+            if (!result.add(name)) {
+                throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+            }
+        }
         return result;
     }
 
