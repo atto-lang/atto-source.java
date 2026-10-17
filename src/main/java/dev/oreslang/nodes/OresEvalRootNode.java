@@ -5256,9 +5256,10 @@ public final class OresEvalRootNode extends RootNode {
                 } catch (RuntimeException | Error failure) {
                     pendingFailure = mergeControlFailure(pendingFailure, failure);
                 }
-                // If only the body failed, Java will rethrow it naturally.
-                // If cleanup failed, the most recent failure takes precedence
-                // and retains earlier failures as suppressed exceptions.
+                // If only the body failed, Java rethrows it naturally.
+                // If cleanup also failed, mergeControlFailure applies the
+                // fatal > panic > raise > throw > return precedence and retains
+                // the secondary failure as suppressed metadata.
                 if (pendingFailure != null && pendingFailure != originalFailure) {
                     if (pendingFailure instanceof RuntimeException runtimeFailure) {
                         throw runtimeFailure;
