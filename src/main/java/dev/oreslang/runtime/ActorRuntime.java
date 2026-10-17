@@ -584,10 +584,14 @@ public final class ActorRuntime implements AutoCloseable {
     void executeHostIoCompletion(Runnable notification) {
         Objects.requireNonNull(notification, "notification");
         if (closed.get()) throw new RejectedExecutionException("actor runtime closed");
-        privateDispatcher.execute(() -> {
+        Runnable hostOnly = () -> {
             try { notification.run(); }
             finally { nioCompletionCapacityHook.run(); }
-        });
+        };
+        if (privateDispatcher instanceof ActorAffinityDispatcher lanes)
+            lanes.executeHostOnWarmLane(hostOnly);
+        else
+            privateDispatcher.execute(hostOnly);
     }
 
     /** Total overrun detections, including notices dropped from the bounded queue. */
