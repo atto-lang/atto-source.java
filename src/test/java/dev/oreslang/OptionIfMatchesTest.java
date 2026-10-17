@@ -105,6 +105,49 @@ final class OptionIfMatchesTest {
     }
 
     @Test
+    void disjunctionNeverSpeculativelyExposesSomePayload() {
+        // The left edge can be false (None), so foo is not a valid name
+        // in either the right operand or the body of a disjunction.
+        String rightSide = FOO + """
+                fnc bad(Option<Foo> m2): bool {
+                  if m2 matches Some(foo) || foo.run() == 42 then
+                    return true;
+                  fi
+                  return false;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(rightSide)));
+
+        String body = FOO + """
+                fnc bad(Option<Foo> m2): int {
+                  if m2 matches Some(foo) || true then
+                    return foo.run();
+                  fi
+                  return -1;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(body)));
+    }
+
+    @Test
+    void payloadAliasDoesNotLeakIntoElif() {
+        String program = FOO + """
+                fnc bad(Option<Foo> m2): int {
+                  if m2 matches Some(foo) then
+                    return foo.run();
+                  elif true then
+                    return foo.run();
+                  fi
+                  return -1;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+    }
+
+    @Test
     void ordinaryFooIsNotAutomaticallyOptional() {
         String program = FOO + """
                 fnc bad(Foo m2): int {
