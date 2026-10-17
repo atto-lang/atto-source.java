@@ -110,7 +110,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             return nativeLane.getActiveCount() + nativeLane.getQueueSize();
         }
         if (lane instanceof AdaptiveCarrierExecutor javaLane) {
-            if (javaLane.getPoolSize() == 0) return -1;
+            if (!javaLane.readyForNoGrowthAdmission()) return -1;
             return javaLane.getActiveCount() + javaLane.getQueue().size();
         }
         if (lane instanceof java.util.concurrent.ThreadPoolExecutor pool) {
