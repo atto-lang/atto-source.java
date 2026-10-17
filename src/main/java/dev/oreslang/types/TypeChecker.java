@@ -4105,9 +4105,11 @@ public final class TypeChecker {
             }
             return Primitive.BOOL;
         }
-        if (arguments.size() < 2) {
+        if (arguments.size() < 2 || (name.equals("Xor") && arguments.size() != 2)) {
             throw new IllegalArgumentException(
-                    name + " expects either one List<bool> argument or at least two bool arguments");
+                    name.equals("Xor")
+                            ? "Xor expects exactly two bool arguments (or one List<bool> parity-reduction argument)"
+                            : name + " expects either one List<bool> argument or at least two bool arguments");
         }
         for (int i = 0; i < arguments.size(); i++) {
             requireAssignable(
