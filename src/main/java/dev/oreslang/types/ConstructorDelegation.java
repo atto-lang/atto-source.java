@@ -69,25 +69,25 @@ public final class ConstructorDelegation {
             }
             edges.put(ctor.arity(), targetArity);
         }
-        // Three-color DFS detects self- and mutual-delegation cycles.
-        Set<Integer> visiting = new HashSet<>();
+        // Iterative DFS, so long constructor chains cannot overflow the Java
+        // resolver stack. 'done' also avoids quadratic repeated traversals.
         Set<Integer> done = new HashSet<>();
         for (Ast.ConstructorDecl ctor : klass.constructors()) {
-            visit(ctor.arity(), edges, visiting, done, klass.name());
+            if (done.contains(ctor.arity())) continue;
+            Set<Integer> visiting = new HashSet<>();
+            int current = ctor.arity();
+            while (!done.contains(current)) {
+                if (!visiting.add(current)) {
+                    throw new IllegalArgumentException(
+                            "constructor delegation cycle in " + klass.name()
+                                    + " at arity " + current);
+                }
+                Integer next = edges.get(current);
+                if (next == null) break;
+                current = next;
+            }
+            done.addAll(visiting);
         }
-    }
-
-    private static void visit(int arity, Map<Integer, Integer> edges,
-                              Set<Integer> visiting, Set<Integer> done, String owner) {
-        if (done.contains(arity)) return;
-        if (!visiting.add(arity)) {
-            throw new IllegalArgumentException(
-                    "constructor delegation cycle in " + owner + " at arity " + arity);
-        }
-        Integer next = edges.get(arity);
-        if (next != null) visit(next, edges, visiting, done, owner);
-        visiting.remove(arity);
-        done.add(arity);
     }
 
     private static boolean safeScalarArgument(Ast.Expr expr, List<Ast.Param> parameters) {
