@@ -364,13 +364,20 @@ public final class NativeNioFutureReactor implements AutoCloseable {
                 break;
             }
             accepts.removeFirst();
-            channel.configureBlocking(false);
             Connection connection = new Connection(channel);
             try {
+                channel.configureBlocking(false);
                 channel.register(selector, 0, connection);
             } catch (IOException | RuntimeException failure) {
-                channel.close();
-                throw failure;
+                // An accepted socket can fail local configuration/registration
+                // independently of the listening socket. Close its descriptor
+                // and fail only this accept, not the entire listener and every
+                // outstanding connection. Configure is inside the same cleanup
+                // boundary: it too may throw after accept() succeeded.
+                try { channel.close(); }
+                catch (IOException closeFailure) { failure.addSuppressed(closeFailure); }
+                fail(operation.future, failure);
+                continue;
             }
             connections.add(connection);
             succeed(operation.future, connection);
