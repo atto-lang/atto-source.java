@@ -196,6 +196,10 @@ public final class TypeChecker {
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             for (String name : ImportRules.exposedBindings(imported)) {
+                if (name.equals("Integer")) {
+                    throw new IllegalArgumentException(
+                            "Integer is a sealed core type-guard namespace; imports may not shadow it");
+                }
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 if (localNames.contains(name)) {
                     throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
@@ -215,11 +219,21 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            if (module.name().equals("Integer")) {
+                throw new IllegalArgumentException(
+                        "Integer is a sealed core type-guard namespace and cannot be redeclared");
+            }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
+                    if (fn.name().equals("Integer")) {
+                        throw new IllegalArgumentException("Integer is a sealed core namespace");
+                    }
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    if (klass.name().equals("Integer")) {
+                        throw new IllegalArgumentException("Integer is a sealed core namespace");
+                    }
                     if (klass.name().equals("Any") || klass.name().equals("Unknown")) {
                         throw new IllegalArgumentException(
                                 "reserved type name '" + klass.name() + "' cannot be redeclared as a class");
@@ -227,6 +241,9 @@ public final class TypeChecker {
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    if (iface.name().equals("Integer")) {
+                        throw new IllegalArgumentException("Integer is a sealed core namespace");
+                    }
                     if (iface.name().equals("Any") || iface.name().equals("Unknown")) {
                         throw new IllegalArgumentException(
                                 "reserved type name '" + iface.name() + "' cannot be redeclared as an interface/trait");
@@ -234,6 +251,9 @@ public final class TypeChecker {
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    if (alias.name().equals("Integer")) {
+                        throw new IllegalArgumentException("Integer is a sealed core namespace");
+                    }
                     if (alias.name().equals("Any") || alias.name().equals("Unknown")) {
                         throw new IllegalArgumentException(
                                 "reserved type name '" + alias.name() + "' cannot be redeclared as a type alias");
@@ -8302,6 +8322,10 @@ public final class TypeChecker {
                 Type type,
                 Ast.BindingKind kind,
                 Set<String> uninitializedFields) {
+            if (name.equals("Integer")) {
+                throw new IllegalArgumentException(
+                        "Integer is a sealed core type-guard namespace, not a local binding");
+            }
             if (bindings.putIfAbsent(name, new Binding(type, kind, uninitializedFields)) != null) {
                 throw new IllegalArgumentException("duplicate binding '" + name + "'");
             }
