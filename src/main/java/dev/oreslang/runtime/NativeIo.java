@@ -58,20 +58,24 @@ public final class NativeIo {
     }
 
     /**
-     * Open by already-authorized canonical path without following a final
-     * symlink planted between permission admission and the actual file open.
-     * Package-private for direct symlink-race regression; no guest Java API.
+     * Open the already-authorized canonical path using descriptor-relative
+     * SecureDirectoryStream traversal from its filesystem root. Every
+     * intermediate component and the final open use NOFOLLOW_LINKS, so a
+     * swapped parent symlink cannot redirect a checked path to another tree.
+     * Fail closed when a filesystem provider lacks SecureDirectoryStream.
      *
-     * This narrows a leaf-component TOCTOU window. Parent-directory swaps
-     * still require descriptor-relative SecureDirectoryStream/openat handling
-     * on providers that support it; do not treat this as full path isolation.
+     * This is path-bound mediation, not a complete OS sandbox: rename of an
+     * already opened directory, mount changes, hardlinks, and hostile filesystems
+     * still require a distinct host isolation/handle ownership threat model.
      */
     static String readUtf8NoFollow(Path path) throws IOException {
         // Guest-controlled files previously streamed into an unbounded
         // StringBuilder. One large file per admitted I/O worker could exhaust
         // the host heap. Share the bounded source-reader byte limit, but keep
         // the final-component NOFOLLOW admission used for guest files.
-        try (var stream = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS)) {
+        try (var channel = openCheckedFile(path, java.util.Set.of(
+                    StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS));
+             var stream = java.nio.channels.Channels.newInputStream(channel)) {
             byte[] bytes = stream.readNBytes(BoundedSourceReader.MAX_BYTES + 1);
             if (bytes.length > BoundedSourceReader.MAX_BYTES) {
                 throw new IOException("Oreslang fs.read_text exceeds 16 MiB limit");
@@ -84,14 +88,49 @@ public final class NativeIo {
     }
 
     static void writeUtf8NoFollow(Path path, String value, boolean append) throws IOException {
-        try (var stream = Files.newOutputStream(
-                    path,
-                    StandardOpenOption.CREATE,
+        try (var channel = openCheckedFile(path, java.util.Set.of(
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE,
                     append ? StandardOpenOption.APPEND : StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE,
-                    LinkOption.NOFOLLOW_LINKS);
+                    LinkOption.NOFOLLOW_LINKS));
+             var stream = java.nio.channels.Channels.newOutputStream(channel);
              var writer = new OutputStreamWriter(stream, StandardCharsets.UTF_8.newEncoder())) {
             writer.write(value);
+        }
+    }
+
+    /**
+     * Open under a stable directory descriptor, never by a full pathname
+     * reconstructed after scope authorization. The root directory is trusted
+     * as the starting anchor; no ancestor is reopened by name after stepping
+     * into its secure child stream.
+     */
+    private static java.nio.channels.SeekableByteChannel openCheckedFile(
+            Path path, java.util.Set<? extends java.nio.file.OpenOption> options)
+            throws IOException {
+        Path absolute = path.toAbsolutePath().normalize();
+        if (absolute.getFileName() == null || absolute.getRoot() == null)
+            throw new IOException("cannot open filesystem root as a guest file");
+        java.nio.file.DirectoryStream<Path> root =
+                Files.newDirectoryStream(absolute.getRoot());
+        if (!(root instanceof java.nio.file.SecureDirectoryStream<?>)) {
+            root.close();
+            throw new IOException("secure descriptor-relative file I/O unsupported on provider");
+        }
+        @SuppressWarnings("unchecked")
+        java.nio.file.SecureDirectoryStream<Path> current =
+                (java.nio.file.SecureDirectoryStream<Path>) root;
+        try {
+            int index = 0;
+            for (Path segment : absolute) {
+                if (++index == absolute.getNameCount()) break;
+                java.nio.file.SecureDirectoryStream<Path> next =
+                        current.newDirectoryStream(segment, LinkOption.NOFOLLOW_LINKS);
+                current.close();
+                current = next;
+            }
+            return current.newByteChannel(absolute.getFileName(), options);
+        } finally {
+            current.close();
         }
     }
 
