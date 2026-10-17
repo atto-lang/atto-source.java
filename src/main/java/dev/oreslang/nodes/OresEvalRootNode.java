@@ -4149,11 +4149,13 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
-            if (isIntegerIntrinsicCall(call, env)) {
+            if (isIntegerIntrinsicCall(call, env) || isDoubleIntrinsicCall(call, env)) {
+                String predicate = isIntegerIntrinsicCall(call, env)
+                        ? "Integer.is_int" : "Double.is_double";
                 if (call.typeArgumentsPresent() || call.arguments().size() != 1
                         || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
                     continuation.accept(task, null,
-                            new IllegalArgumentException("Integer.is_int expects exactly one value and no type arguments"));
+                            new IllegalArgumentException(predicate + " expects exactly one value and no type arguments"));
                     return;
                 }
                 evalSuspendableArguments(
@@ -4164,7 +4166,11 @@ public final class OresEvalRootNode extends RootNode {
                             if (failure != null) {
                                 continuation.accept(t, null, failure);
                             } else {
-                                continuation.accept(t, isIntegerRuntimeValue(values.getFirst()), null);
+                                continuation.accept(t,
+                                        predicate.equals("Integer.is_int")
+                                            ? isIntegerRuntimeValue(values.getFirst())
+                                            : isDoubleRuntimeValue(values.getFirst()),
+                                        null);
                             }
                         });
                 return;
@@ -5713,8 +5719,8 @@ public final class OresEvalRootNode extends RootNode {
 
             if (!tailBarrier) {
                 if (value instanceof Ast.CallExpr call) {
-                    if (isIntegerIntrinsicCall(call, env)) {
-                        throw new ReturnSignal(evalIntegerIntrinsic(call, env));
+                    if (isIntegerIntrinsicCall(call, env) || isDoubleIntrinsicCall(call, env)) {
+                        throw new ReturnSignal(evalScalarTypeIntrinsic(call, env));
                     }
                     if (isBooleanIntrinsicCall(call, env)) {
                         throw new ReturnSignal(evalBooleanIntrinsic(call, env));
@@ -5985,21 +5991,42 @@ public final class OresEvalRootNode extends RootNode {
                     && !hostClasses.containsKey("Integer");
         }
 
+        private boolean isDoubleIntrinsicCall(Ast.CallExpr call, Env env) {
+            if (!(call.callee() instanceof Ast.MemberExpr member)
+                    || !(member.receiver() instanceof Ast.NameExpr namespace)
+                    || !namespace.name().equals("Double")
+                    || !member.member().equals("is_double")) return false;
+            return env.lookup("Double") == Env.MISSING
+                    && !modules.containsKey("Double")
+                    && findClass("Double") == null
+                    && !hasFunctionFamily("Double")
+                    && !namedImports.containsKey("Double")
+                    && !namespaceImports.containsKey("Double")
+                    && !hostClasses.containsKey("Double");
+        }
+
+        private static boolean isDoubleRuntimeValue(Object value) {
+            return value instanceof Double;
+        }
+
         private static boolean isIntegerRuntimeValue(Object value) {
             return value instanceof Byte || value instanceof Short
                     || value instanceof Integer || value instanceof Long;
         }
 
-        private boolean evalIntegerIntrinsic(Ast.CallExpr call, Env env) {
-            if (!isIntegerIntrinsicCall(call, env)) {
-                throw new IllegalStateException("not an Integer.is_int intrinsic call");
+        private boolean evalScalarTypeIntrinsic(Ast.CallExpr call, Env env) {
+            boolean integer = isIntegerIntrinsicCall(call, env);
+            if (!integer && !isDoubleIntrinsicCall(call, env)) {
+                throw new IllegalStateException("not a trusted scalar type intrinsic call");
             }
+            String predicate = integer ? "Integer.is_int" : "Double.is_double";
             if (call.typeArgumentsPresent() || call.arguments().size() != 1
                     || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
                 throw new IllegalArgumentException(
-                        "Integer.is_int expects exactly one value and no type arguments");
+                        predicate + " expects exactly one value and no type arguments");
             }
-            return isIntegerRuntimeValue(eval(call.arguments().getFirst(), env));
+            Object value = eval(call.arguments().getFirst(), env);
+            return integer ? isIntegerRuntimeValue(value) : isDoubleRuntimeValue(value);
         }
 
         private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Env env) {
@@ -6418,7 +6445,8 @@ public final class OresEvalRootNode extends RootNode {
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {
-                if (isIntegerIntrinsicCall(call, env)) return evalIntegerIntrinsic(call, env);
+                if (isIntegerIntrinsicCall(call, env) || isDoubleIntrinsicCall(call, env))
+                    return evalScalarTypeIntrinsic(call, env);
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
