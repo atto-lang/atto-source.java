@@ -27,6 +27,12 @@ final class TrapFailurePolicyTest {
                 new RuntimeException("unclassified host failure"), GuestPanic.class));
         assertFalse(TrapFailurePolicy.isGuestCatchable(
                 new RuntimeException("unclassified host failure"), GuestPanic.class));
+
+        IllegalArgumentException foreign = new IllegalArgumentException("foreign failure");
+        foreign.setStackTrace(new StackTraceElement[]{
+                new StackTraceElement("vendor.client.HttpClient", "request", "HttpClient.java", 42)
+        });
+        assertFalse(TrapFailurePolicy.isTrappable(foreign, GuestPanic.class));
     }
 
     @Test void directTerminalFailuresCannotBecomeNone() {
