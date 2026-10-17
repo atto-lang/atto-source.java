@@ -36,17 +36,21 @@ final class ExecutionRegionGraphTest {
     }
 
     @Test void gpuCpuGpuNestingPlansHostFenceAndDeviceAdmission() {
-        var input = new Parameter("device", GPU_F32);
+        var first = new Parameter("firstDevice", GPU_F32);
+        var download = new Parameter("downloadDevice", GPU_F32);
+        var second = new Parameter("secondDevice", GPU_F32);
         var nested = new GpuRegion(
                 new Sequence(List.of(
-                        new DeviceKernel("first", input),
+                        new DeviceKernel("first", first),
                         new CpuRegion(
                                 new Sequence(List.of(
-                                        new Download(input),
-                                        new GpuRegion(new DeviceKernel("second", input), false)
+                                        new Download(download),
+                                        new GpuRegion(new DeviceKernel("second", second), false)
                                 )), false)
                 )), false);
-        var plan = ExecutionRegionGraph.lower(nested, Map.of("device", GPU_F32));
+        var plan = ExecutionRegionGraph.lower(nested,
+                Map.of("firstDevice", GPU_F32, "downloadDevice", GPU_F32,
+                       "secondDevice", GPU_F32));
         assertEquals(GPU_F32, plan.resultType());
         assertEquals(2, plan.deviceKernels());
         assertTrue(plan.effects().contains(Effect.DEVICE));
@@ -77,6 +81,14 @@ final class ExecutionRegionGraphTest {
         assertThrows(IllegalArgumentException.class,
                 () -> ExecutionRegionGraph.lower(
                         new GpuRegion(new Sequence(List.of()), false), Map.of()));
+        // Owned device buffers are consumed by-value by default.
+        var same = new Parameter("device", GPU_F32);
+        assertThrows(IllegalArgumentException.class,
+                () -> ExecutionRegionGraph.lower(new GpuRegion(new Sequence(List.of(
+                        new DeviceKernel("once", same),
+                        new DeviceKernel("twice", same))), false),
+                        Map.of("device", GPU_F32)));
+
         var transfer = ExecutionRegionGraph.lower(
                 new CpuRegion(new Upload(input), false), Map.of("host", HOST_F32));
         assertEquals(GPU_F32, transfer.resultType());
