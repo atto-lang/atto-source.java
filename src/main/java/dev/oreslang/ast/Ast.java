@@ -202,9 +202,18 @@ public final class Ast {
         }
     }
 
-    public record Param(TypeRef type, String name, boolean structural, boolean mutable) {
-        public Param(TypeRef type, String name) { this(type, name, false, false); }
-        public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
+    public record Param(TypeRef type, String name, boolean structural, boolean mutable, boolean rest) {
+        public Param(TypeRef type, String name, boolean structural, boolean mutable) {
+            this(type, name, structural, mutable, false);
+        }
+        public Param(TypeRef type, String name) { this(type, name, false, false, false); }
+        public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false, false); }
+
+        public Param {
+            if (rest && (structural || mutable)) {
+                throw new IllegalArgumentException("rest parameters are owned, immutable and non-structural");
+            }
+        }
     }
 
     /** A source generic name and its optional compile-time default type. */
@@ -266,6 +275,14 @@ public final class Ast {
                 throw new IllegalArgumentException("duplicate generic parameter names");
             }
             parameters = List.copyOf(parameters);
+            int restAt = -1;
+            for (int i = 0; i < parameters.size(); i++) {
+                if (!parameters.get(i).rest()) continue;
+                if (restAt >= 0 || i != parameters.size() - 1) {
+                    throw new IllegalArgumentException("rest parameter must appear exactly once and last");
+                }
+                restAt = i;
+            }
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
         }
