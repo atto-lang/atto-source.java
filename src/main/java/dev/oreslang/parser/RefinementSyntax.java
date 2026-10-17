@@ -109,6 +109,15 @@ public final class RefinementSyntax {
             bad("expected with/where after type expression");
         }
 
+        bounds.sort(java.util.Comparator.comparing(Ast.RefinementBound::property)
+                .thenComparingInt(b -> switch (b.comparator()) {
+                    case "eq" -> 0;
+                    case "ge" -> 1;
+                    case "gt" -> 2;
+                    case "le" -> 3;
+                    case "lt" -> 4;
+                    default -> 5;
+                }).thenComparingLong(Ast.RefinementBound::constant));
         verifyBounds(base, bounds);
         if (bounds.isEmpty() && where == null && !nominal) return null;
         return new Ast.RefinementSpec(bounds, where, nominal);
