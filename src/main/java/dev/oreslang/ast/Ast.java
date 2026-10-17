@@ -526,7 +526,7 @@ public final class Ast {
     public record RefinementBound(String property, String comparator, long constant) {
         public RefinementBound {
             if (property == null || property.isBlank()) throw new IllegalArgumentException("missing refinement property");
-            if (!java.util.Set.of("eq", "ne", "gt", "ge", "lt", "le").contains(comparator)) {
+            if (!java.util.Set.of("eq", "ne", "gt", "gte", "lt", "lte").contains(comparator)) {
                 throw new IllegalArgumentException("unsupported refinement comparator " + comparator);
             }
         }
