@@ -320,8 +320,40 @@ final class StructuralContainerSourceParityTest {
                           return;
                         }
                         """)));
-        assertTrue(unstableKey.getMessage().contains("stable hash/equality"),
+        assertTrue(unstableKey.getMessage().contains("canonical string/int/bool")
+                        || unstableKey.getMessage().contains("stable hash/equality"),
                 unstableKey::getMessage);
+
+        IllegalArgumentException integerAliasKey = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(): void {
+                          val Map<i64,int> values = new Map<i64,int>();
+                          return;
+                        }
+                        """)));
+        assertTrue(integerAliasKey.getMessage().contains("integer-width/sign runtime identity"),
+                integerAliasKey::getMessage);
+
+        IllegalArgumentException hiddenIntegerAliasKey = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define type WideKey = i64;
+                        fnc bad(): void {
+                          val Map<WideKey,int> values = new Map<WideKey,int>();
+                          return;
+                        }
+                        """)));
+        assertTrue(hiddenIntegerAliasKey.getMessage().contains("integer-width/sign runtime identity"),
+                hiddenIntegerAliasKey::getMessage);
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define type CanonicalKey = int;
+                fnc ok(): void {
+                  val Map<CanonicalKey,int> values = new Map<CanonicalKey,int>();
+                  return;
+                }
+                """)));
 
         IllegalArgumentException constructorArgs = assertThrows(
                 IllegalArgumentException.class,

@@ -8472,6 +8472,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "Map requires exactly two explicit type arguments: Map<K,V>");
                 }
+                requireCanonicalMapKeySource(ref.arguments().get(0));
                 Type key = resolve(ref.arguments().get(0), generics, self);
                 Type value = resolve(ref.arguments().get(1), generics, self);
                 if (!StructuralContainerPolicy.stableKey(key)) {
@@ -8595,6 +8596,51 @@ public final class TypeChecker {
                 yield new Named(ref.name(), ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
             }
         };
+    }
+
+    private void requireCanonicalMapKeySource(Ast.TypeRef source) {
+        Ast.TypeRef key = expandMapKeyAlias(source, new LinkedHashSet<>());
+        if (key.isStringLiteral() || key.isBoolLiteral()) return;
+        if (!key.inferArguments() && key.arguments().isEmpty()
+                && java.util.Set.of(
+                        "string", "String", "int", "bool", "Bool", "boolean")
+                        .contains(key.name())) {
+            return;
+        }
+        throw new IllegalArgumentException(
+                "Map<K,V> key type must be canonical string/int/bool until "
+                        + "integer-width/sign runtime identity is reified; got " + key);
+    }
+
+    private Ast.TypeRef expandMapKeyAlias(
+            Ast.TypeRef ref,
+            Set<Ast.TypeAliasDecl> resolving) {
+        Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
+        if (alias == null) return ref;
+        if (alias.genericParameters().size() != ref.arguments().size()) {
+            throw new IllegalArgumentException(
+                    "type alias '" + alias.name() + "' expects "
+                            + alias.genericParameters().size()
+                            + " type argument(s), got "
+                            + ref.arguments().size());
+        }
+        if (!resolving.add(alias)) {
+            throw new IllegalArgumentException(
+                    "type alias cycle involving '" + alias.name() + "'");
+        }
+        try {
+            Map<String, Ast.TypeRef> substitutions = new HashMap<>();
+            for (int i = 0; i < alias.genericParameters().size(); i++) {
+                substitutions.put(
+                        alias.genericParameters().get(i),
+                        ref.arguments().get(i));
+            }
+            return expandMapKeyAlias(
+                    substituteAliasType(alias.target(), substitutions),
+                    resolving);
+        } finally {
+            resolving.remove(alias);
+        }
     }
 
     private Ast.TypeRef substituteAliasType(Ast.TypeRef ref, Map<String, Ast.TypeRef> substitutions) {
