@@ -12,8 +12,10 @@ import java.util.Map;
  * decisions: user-defined And/Or/Xor functions and real BooleanOps modules are
  * left untouched.</p>
  *
- * <p>Aggregate one-argument overloads are intentionally retained as calls until
- * packaged core-library source can own their reducer loops on every backend.</p>
+ * <p>Aggregate one-argument overloads intentionally remain calls. At runtime
+ * the Java backend materializes their aggregate argument first and then routes
+ * reduction through the compiler-owned packaged std/core Oreslang source.
+ * Keeping them as calls preserves eager aggregate construction semantics.</p>
  */
 public final class BooleanIntrinsicLowering {
     private BooleanIntrinsicLowering() { }
