@@ -47,6 +47,35 @@ function types and interface callable signatures.
 - `match first x` is the explicit ordered/priority escape hatch.
 - `switch x` is constant/equality dispatch and never performs destructuring.
 
+## Optional values and branch-local payloads
+
+An uninitialized `Foo` binding is not implicitly an `Option<Foo>`. The
+optional state must be explicit, with `None` standing for absence rather
+than a null object:
+
+```ores
+let Option<Foo> m2 = None;
+
+// A failed test does not expose foo.
+if m2 matches Some(foo) then
+  foo.run();
+fi
+
+m2 = Some(new Foo());
+if m2 matches Some(foo) then
+  foo.run();
+fi
+```
+
+The `foo` name is bound only on the true edge of the matching condition.
+It is unavailable in `else`, after `fi`, or when the scrutinee is
+`None`. Calling `m2.run()` is not valid on `Option<Foo>`, and
+`Foo` is never automatically promoted to `Option<Foo>`.
+A `&&` condition may use `foo` on its right-hand side after the
+successful left match; failed matches short-circuit. These are ordinary
+lexical refinement bindings, not a mechanism for escaping mutable locals
+into deferred closures.
+
 A refinement binding is not a copy. If `dog` is introduced by
 `animal is type Dog dog`, both names identify the same ownership place. Moving
 through either name consumes the same move-only value.
