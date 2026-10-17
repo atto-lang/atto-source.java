@@ -58,7 +58,6 @@ public final class SupervisorTerminalLedger {
         private final ActorRuntime.ActorId actorId;
         private final long incarnation;
         private final Kind kind;
-        private final long sequence;
 
         private Receipt(
                 SupervisorTerminalLedger owner,
@@ -66,28 +65,24 @@ public final class SupervisorTerminalLedger {
                 long epoch,
                 ActorRuntime.ActorId actorId,
                 long incarnation,
-                Kind kind,
-                long sequence) {
+                Kind kind) {
             this.owner = owner;
             this.slot = slot;
             this.epoch = epoch;
             this.actorId = actorId;
             this.incarnation = incarnation;
             this.kind = kind;
-            this.sequence = sequence;
         }
 
         public ActorRuntime.ActorId actorId() { return actorId; }
         public long incarnation() { return incarnation; }
         public Kind kind() { return kind; }
-        public long sequence() { return sequence; }
 
         @Override
         public String toString() {
             return "SupervisorTerminalReceipt[actor=" + actorId.value()
                     + ",incarnation=" + incarnation
-                    + ",kind=" + kind
-                    + ",sequence=" + sequence + "]";
+                    + ",kind=" + kind + "]";
         }
     }
 
@@ -97,7 +92,8 @@ public final class SupervisorTerminalLedger {
             int ready,
             long published,
             long acknowledged,
-            long releasedBeforeTerminal) {
+            long releasedBeforeTerminal,
+            long reservationRejections) {
         public Stats {
             if (capacity < 1
                     || inUse < 0
@@ -106,7 +102,8 @@ public final class SupervisorTerminalLedger {
                     || ready > inUse
                     || published < 0
                     || acknowledged < 0
-                    || releasedBeforeTerminal < 0) {
+                    || releasedBeforeTerminal < 0
+                    || reservationRejections < 0) {
                 throw new IllegalArgumentException("invalid supervisor terminal ledger stats");
             }
         }
@@ -130,10 +127,10 @@ public final class SupervisorTerminalLedger {
     private int freeCount;
     private int readyHead;
     private int readyCount;
-    private long nextReceiptSequence;
     private long published;
     private long acknowledged;
     private long releasedBeforeTerminal;
+    private long reservationRejections;
 
     public SupervisorTerminalLedger(int capacity) {
         if (capacity < 1 || capacity > 65_536) {
@@ -161,6 +158,7 @@ public final class SupervisorTerminalLedger {
             throw new IllegalArgumentException("incarnation must be positive");
         }
         if (freeCount == 0) {
+            reservationRejections = saturatingIncrement(reservationRejections);
             throw new IllegalStateException(
                     "supervisor terminal CONTROL capacity exhausted");
         }
@@ -198,19 +196,17 @@ public final class SupervisorTerminalLedger {
             throw new IllegalStateException(
                     "terminal ledger invariant violated: prepaid ready queue overflow");
         }
-        if (nextReceiptSequence == Long.MAX_VALUE) {
-            throw new IllegalStateException("terminal receipt sequence exhausted");
-        }
-
-        long sequence = ++nextReceiptSequence;
+        // Publication has no global sequence-exhaustion dependency.
+        // The ready ring establishes order and slot epoch + actor incarnation
+        // fence stale capabilities. Once reserve() succeeds, capacity itself
+        // can no longer prevent this terminal publication.
         Receipt receipt = new Receipt(
                 this,
                 reservation.slot,
                 reservation.epoch,
                 reservation.actorId,
                 reservation.incarnation,
-                kind,
-                sequence);
+                kind);
         slot.receipt = receipt;
         slot.state = READY;
         ready[(readyHead + readyCount) % ready.length] = reservation.slot;
@@ -282,7 +278,8 @@ public final class SupervisorTerminalLedger {
                 readyCount,
                 published,
                 acknowledged,
-                releasedBeforeTerminal);
+                releasedBeforeTerminal,
+                reservationRejections);
     }
 
     private Slot validateReservation(Reservation reservation) {
