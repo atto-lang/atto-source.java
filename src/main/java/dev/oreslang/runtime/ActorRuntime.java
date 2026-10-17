@@ -6029,6 +6029,40 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        // A timed-out actor might have crossed its final physical exit while
+        // another dispatcher was being awaited. Re-sample *all* actors and
+        // executors at the final barrier, rather than using stale intermediate
+        // observations to report a spurious shutdown failure.
+        stillRunning.clear();
+        List<String> pendingActorStates = new ArrayList<>();
+        for (ActorCell<?> cell : snapshot) {
+            if (!cell.finalized()) {
+                stillRunning.add(cell.ref.id());
+                pendingActorStates.add(cell.closeDiagnostic());
+            }
+        }
+        dispatchersTerminated = privateDispatcher.isTerminated()
+                && sharedDispatcher.isTerminated()
+                && untrustedDispatcher.isTerminated();
+        if (interrupted) Thread.currentThread().interrupt();
+        if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
+            // Do NOT invalidate shared cells/outputs or reset memory accounting
+            // while a carrier may still be executing against those resources.
+            // The caller can release or otherwise stop the carrier, then
+            // retry close() to cross the physical exit barrier.
+            throw new IllegalStateException(
+                    "ActorRuntime close did not observe full actor termination/carrier exit: "
+                            + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
+                            + dispatchersTerminated
+                            + ", privateDispatcherTerminated=" + privateDispatcher.isTerminated()
+                            + ", sharedDispatcherTerminated=" + sharedDispatcher.isTerminated()
+                            + ", untrustedDispatcherTerminated=" + untrustedDispatcher.isTerminated()
+                            + ", interrupted=" + interrupted
+                            + ", pendingActorStates=" + pendingActorStates);
+        }
+
+        // All physical guest carriers have exited. It is now safe to revoke
+        // host-visible resources and release aggregate shared memory.
         for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
         actorGroups.clear();
         for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
@@ -6040,21 +6074,6 @@ public final class ActorRuntime implements AutoCloseable {
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
         sharedMemoryBytes.set(0L);
-
-        if (interrupted) Thread.currentThread().interrupt();
-        if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
-            if (interrupted) {
-                for (ActorCell<?> cell : snapshot) {
-                    if (!cell.finalized() && !stillRunning.contains(cell.ref.id())) {
-                        stillRunning.add(cell.ref.id());
-                    }
-                }
-            }
-            throw new IllegalStateException(
-                    "ActorRuntime close did not observe full actor termination/carrier exit: "
-                            + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
-                            + dispatchersTerminated);
-        }
         actors.clear();
         actorCount.set(0);
     }
@@ -6605,6 +6624,28 @@ public final class ActorRuntime implements AutoCloseable {
                     long millis = Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remaining));
                     lifecycleLock.wait(millis);
                 }
+            }
+        }
+
+        /**
+         * Immutable, metadata-only snapshot for failed physical-shutdown
+         * diagnostics. Never format user messages or actor-owned heap values.
+         */
+        private String closeDiagnostic() {
+            synchronized (lifecycleLock) {
+                return "{actor=" + ref.id()
+                        + ", kind=" + kind
+                        + ", stopped=" + stopped.get()
+                        + ", finalized=" + finalized
+                        + ", scheduled=" + scheduled.get()
+                        + ", carrierActive=" + carrierActive
+                        + ", activeTurns=" + activeTurns
+                        + ", children=" + children.size()
+                        + ", sourceCleanupTasks=" + sourceCleanupTasks.size()
+                        + ", sourceCancellationPending=" + sourceCancellationPending
+                        + ", forceKillFenced=" + forceKillFenced
+                        + ", forceRevoked=" + forceRevoked
+                        + "}";
             }
         }
 
