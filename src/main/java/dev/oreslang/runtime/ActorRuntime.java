@@ -658,13 +658,62 @@ public final class ActorRuntime implements AutoCloseable {
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
-    /** Host-only nonblocking root supervisor drain. Polling acknowledges the slot. */
-    public Optional<ActorFailureNotice> pollRootSupervisionControl() {
+    /**
+     * Host-owned root CONTROL lease. Polling never acknowledges implicitly:
+     * the supervisor must durably handle then ack, or retry. Closing an
+     * unsettled lease retries by default so try-with-resources is lossless.
+     */
+    public final class RootControlLease implements AutoCloseable {
+        private final ActorFailureNotice notice;
+        private final AtomicBoolean settled = new AtomicBoolean();
+
+        private RootControlLease(ActorFailureNotice notice) {
+            this.notice = Objects.requireNonNull(notice, "notice");
+        }
+
+        public ActorFailureNotice notice() {
+            return notice;
+        }
+
+        public void ack() {
+            requireSupervisorContext("ack root supervisor CONTROL");
+            if (!settled.compareAndSet(false, true)) {
+                throw new IllegalStateException("root CONTROL lease already settled");
+            }
+            try {
+                rootSupervisionControl.ack(
+                        notice.actor(), notice.generation());
+            } catch (RuntimeException failure) {
+                settled.set(false);
+                throw failure;
+            }
+        }
+
+        public void retry() {
+            requireSupervisorContext("retry root supervisor CONTROL");
+            if (!settled.compareAndSet(false, true)) {
+                throw new IllegalStateException("root CONTROL lease already settled");
+            }
+            try {
+                rootSupervisionControl.retry(
+                        notice.actor(), notice.generation());
+            } catch (RuntimeException failure) {
+                settled.set(false);
+                throw failure;
+            }
+        }
+
+        @Override
+        public void close() {
+            if (settled.get()) return;
+            retry();
+        }
+    }
+
+    /** Host-only nonblocking root supervisor admission with explicit settlement. */
+    public Optional<RootControlLease> pollRootSupervisionControl() {
         requireSupervisorContext("poll root supervisor CONTROL events");
-        Optional<ActorFailureNotice> notice = rootSupervisionControl.poll();
-        notice.ifPresent(n ->
-                rootSupervisionControl.ack(n.actor(), n.generation()));
-        return notice;
+        return rootSupervisionControl.poll().map(RootControlLease::new);
     }
 
     public ActorControlStats rootSupervisionStats() {
