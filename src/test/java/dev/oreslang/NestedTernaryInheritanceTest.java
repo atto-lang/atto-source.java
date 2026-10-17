@@ -191,6 +191,30 @@ final class NestedTernaryInheritanceTest {
     }
 
     @Test
+    void inheritedFallbackTypechecksBothPaths() {
+        reject("""
+                pub fnc bad(any v): int {
+                    return Integer.is_int(v) ? (v % 7 == 0 ? 3) : v;
+                }
+                """);
+    }
+
+    @Test
+    void nestedFallbackChoosesNearestEnclosingElse() throws Exception {
+        assertEquals("310", run("""
+                fnc choose(bool a, bool b, bool c): int {
+                    return a ? (b ? (c ? 3) : 1) : 0;
+                }
+                pub fnc main(): void {
+                    stdio.stdout.write(choose(true, true, true));
+                    stdio.stdout.write(choose(true, true, false));
+                    stdio.stdout.write(choose(false, true, true));
+                    return;
+                }
+                """));
+    }
+
+    @Test
     void noMissingTopLevelElseOrInvalidInheritancePosition() {
         reject("pub fnc bad(): int { return true ? 1; }");
         reject("pub fnc bad(): int { return true ? 1 : (false ? 2); }");
