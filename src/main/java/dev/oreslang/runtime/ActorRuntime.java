@@ -2464,6 +2464,11 @@ public final class ActorRuntime implements AutoCloseable {
         // Explicitly lifecycle-managed workers, distinct from cooperating
         // members: membership never grants cancellation authority.
         private final Map<ActorId, ActorRef<?>> managedWorkers = new ConcurrentHashMap<>();
+        private final Map<ActorId, SupervisorTerminalLedger.Reservation>
+                terminalReservations = new LinkedHashMap<>();
+        private final SupervisorTerminalLedger terminalLedger;
+        private final AtomicReference<Throwable> terminalControlFailure =
+                new AtomicReference<>();
         // Guarded by authorityLock: a stop-admitted actor cannot be released
         // into a different supervisor before stop actually dispatches.
         private final Set<ActorId> stoppingWorkers = new java.util.HashSet<>();
