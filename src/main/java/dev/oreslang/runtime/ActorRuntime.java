@@ -2210,6 +2210,9 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "cannot transfer worker with live structured descendants");
                 }
+                if (cell.supervision.get() != supervisorControl) {
+                    throw new IllegalStateException("worker supervisor CONTROL owner changed unexpectedly");
+                }
                 if (!cell.managedByGroup.compareAndSet(id, null)) {
                     throw new IllegalStateException("worker lifecycle owner changed unexpectedly");
                 }
