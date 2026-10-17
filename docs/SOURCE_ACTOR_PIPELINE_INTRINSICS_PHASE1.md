@@ -17,9 +17,16 @@ actors:
 - `self.forward_to(target, value)`
 - `self.forward_by_key(key, value)`
 - `self.backward(value)`
+- `self.reply(value)`
 
 The compiler checks selector arity/type and applies the existing actor
-callable-boundary data/ownership validation to the outbound payload.
+callable-boundary data/ownership validation to each outbound payload.
+
+`backward` creates one authenticated reverse hop to the immediate predecessor.
+`reply` creates a new one-shot return frame whose destination is index zero of
+the immutable authenticated route path. It preserves the flow ID, receives a
+new route ID, and accepts no actor-selected destination. Intermediate actors
+are therefore not re-entered merely to relay a direct origin reply.
 
 Aliases and method references do not acquire routing authority. For example,
 `val alias = self; alias.forward(v)` remains rejected.
@@ -54,14 +61,14 @@ foreign actor, alias or fabricated target cannot manufacture this authority.
 must expose an Oreslang-level typed per-edge admission receipt vector rather
 than hide partial success behind `void`.
 
-`self.reply(value)` is not enabled. The current host bridge implements one
-authenticated `backward` hop at a time; full origin reply needs
-compiler-owned reverse-path semantics and backward message typing.
-
 Source-declared `transform pipe actor` / typed pipeline graph lowering also
 remains unavailable. Phase 1 therefore proves the intrinsic/runtime authority
 boundary for a supervisor-installed graph; it is not yet a complete
 source-only pipeline feature.
+
+The Java host reference still uses one generic payload type across forward and
+reverse directions. Full source pipeline lowering must type forward and
+backward ports separately and preserve Sendable/ownership rules.
 
 ## Evidence required before promotion
 
@@ -69,14 +76,14 @@ source-only pipeline feature.
    `ActorPipelineRoutingAdmissionTest` and
    `ActorPipelineCorrelatedMailboxRouterTest`.
 2. A positive compiled Oreslang guest test in which a host/supervisor-installed
-   typed graph delivers a routed mail turn and guest `self.forward` plus
-   `self.backward` traverse real mailboxes.
+   typed graph delivers a routed mail turn and guest `self.forward`,
+   `self.backward` and `self.reply` traverse real mailboxes.
 3. A negative compiled guest test proving ordinary `ActorRef.send` mail
    cannot call any routing intrinsic.
 4. GraalVM Native Image coverage and cancellation/STOP tests.
 5. LLVM parity before claiming cross-backend guest routing.
-6. Typed source graph/port lowering, per-edge fan-out receipts and full
-   `reply` before declaring the routing surface complete.
+6. Typed source graph/port lowering and a per-edge `forward_all` receipt ABI
+   before declaring the routing surface complete.
 
 A zero-step GitHub Actions result is infrastructure evidence only and is not a
 compiler or runtime test result.
