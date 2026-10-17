@@ -327,7 +327,33 @@ def refresh_authorization(r, require_new_ref=False):
 def verify_payload_root_entries(entries,r,provenance):
     if not isinstance(entries,list):
         raise Denied("payload root tree readback invalid")
-    verify_payload_root_entries(entries,r,provenance)
+    provenance_bytes=provenance.encode("utf-8")
+    provenance_sha=hashlib.sha1(
+        b"blob "+str(len(provenance_bytes)).encode("ascii")+b"\0"+provenance_bytes
+    ).hexdigest()
+    source=[x for x in entries if isinstance(x,dict) and x.get("path")==PREFIX]
+    prov=[x for x in entries if isinstance(x,dict) and x.get("path")==PROVENANCE]
+    if (len(source)!=1 or len(prov)!=1
+            or source[0].get("sha")!=r["source_tree_sha"]
+            or source[0].get("type")!="tree"
+            or source[0].get("mode") not in ("040000","40000")
+            or prov[0].get("sha")!=provenance_sha
+            or prov[0].get("type")!="blob"
+            or prov[0].get("mode")!="100644"):
+        raise Denied("payload root tree does not contain exact source/provenance")
+
+def cleanup_exact_payload_ref(r,commit_sha):
+    branch="ci/oreslang-"+r["source_tree_sha"]
+    ref=PUB.gh_api(f"repos/{CARRIER_REPO}/git/ref/heads/{branch}")
+    obj=ref.get("object") or {}
+    if (ref.get("ref")!="refs/heads/"+branch or obj.get("type")!="commit"
+            or require_sha(obj.get("sha"),"cleanup ref commit")!=commit_sha):
+        raise Denied("payload ref cleanup refused because ref moved")
+    PUB.gh_api_no_content(
+        f"repos/{CARRIER_REPO}/git/refs/heads/{branch}",method="DELETE")
+    refs=api_list(f"repos/{CARRIER_REPO}/git/matching-refs/heads/{branch}")
+    if any(isinstance(x,dict) and x.get("ref")=="refs/heads/"+branch for x in refs):
+        raise Denied("payload ref cleanup could not be confirmed")
 
 def require_staged_source(source_dir):
     source=Path(source_dir).resolve(strict=True)
