@@ -1178,6 +1178,30 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.IndexExpr indexed) {
+            Ast.TypeRef concreteReceiver = receiverType(indexed.receiver(), scope);
+            if (concreteReceiver != null && concreteReceiver.isBorrow()) {
+                concreteReceiver = concreteReceiver.borrowedTarget();
+            }
+            Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
+            ResolvedMethod protocol = klass == null ? null
+                    : findMethodTarget(
+                            klass,
+                            concreteReceiver,
+                            "Symbol.index",
+                            indexed.arity(),
+                            new LinkedHashSet<>());
+            if (protocol != null) {
+                return checkExpr(
+                        new Ast.CallExpr(
+                                new Ast.MemberExpr(indexed.receiver(), "Symbol.index"),
+                                indexed.indices()),
+                        scope,
+                        consuming);
+            }
+
+            if (indexed.arity() != 1) {
+                throw error("built-in indexing requires exactly one index");
+            }
             ValueInfo receiver = checkExpr(indexed.receiver(), scope, false);
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = collectionElementType(receiver.type);
@@ -2082,6 +2106,27 @@ public final class OwnershipChecker {
         }
         if (target instanceof Ast.IndexExpr indexed) {
             ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
+            Ast.TypeRef concreteReceiver = receiverType(indexed.receiver(), scope);
+            if (concreteReceiver != null && concreteReceiver.isBorrow()) {
+                concreteReceiver = concreteReceiver.borrowedTarget();
+            }
+            Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
+            ResolvedMethod protocol = klass == null ? null
+                    : findMethodTarget(
+                            klass,
+                            concreteReceiver,
+                            "Symbol.indexSet",
+                            indexed.arity() + 1,
+                            new LinkedHashSet<>());
+            if (protocol != null) {
+                for (Ast.Expr index : indexed.indices()) {
+                    checkExpr(index, scope, true);
+                }
+                return;
+            }
+            if (indexed.arity() != 1) {
+                throw error("built-in indexed assignment requires exactly one index");
+            }
             checkExpr(indexed.index(), scope, false);
             return;
         }
@@ -2127,7 +2172,25 @@ public final class OwnershipChecker {
             return;
         }
         if (receiver instanceof Ast.IndexExpr indexed) {
+            Ast.TypeRef concreteReceiver = receiverType(indexed.receiver(), scope);
+            if (concreteReceiver != null && concreteReceiver.isBorrow()) {
+                concreteReceiver = concreteReceiver.borrowedTarget();
+            }
+            Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
+            if (klass != null && findMethodTarget(
+                    klass,
+                    concreteReceiver,
+                    "Symbol.index",
+                    indexed.arity(),
+                    new LinkedHashSet<>()) != null) {
+                throw error(
+                        "mutation through a custom index projection is not yet supported; "
+                                + "use the owner's [Symbol.indexSet] operation directly");
+            }
             ensureMutableReceiver(indexed.receiver(), scope, what);
+            if (indexed.arity() != 1) {
+                throw error("built-in mutable index projection requires exactly one index");
+            }
             checkExpr(indexed.index(), scope, false);
             return;
         }
@@ -2176,6 +2239,23 @@ public final class OwnershipChecker {
             return new BorrowPlace(receiver.owner(), fieldType);
         }
         if (operand instanceof Ast.IndexExpr indexed) {
+            if (indexed.arity() != 1) {
+                throw error("projected borrows through multidimensional indexing are not supported yet");
+            }
+            Ast.TypeRef concreteReceiver = receiverType(indexed.receiver(), scope);
+            if (concreteReceiver != null && concreteReceiver.isBorrow()) {
+                concreteReceiver = concreteReceiver.borrowedTarget();
+            }
+            Ast.ClassDecl indexedClass =
+                    concreteReceiver == null ? null : findClass(concreteReceiver.name());
+            if (indexedClass != null && findMethodTarget(
+                    indexedClass,
+                    concreteReceiver,
+                    "Symbol.index",
+                    1,
+                    new LinkedHashSet<>()) != null) {
+                throw error("projected borrows through [Symbol.index] are not supported yet");
+            }
             BorrowPlace receiver = borrowPlace(indexed.receiver(), scope);
             // A computed index may call a mutation/side-effect before a loan is
             // issued. Only lexical integer bindings/literals are admissible.
@@ -2532,7 +2612,9 @@ public final class OwnershipChecker {
         } else if (expr instanceof Ast.MemberExpr e) scanExpr(e.receiver(), locals, outer, recursiveBinding, captures, write);
         else if (expr instanceof Ast.IndexExpr e) {
             scanExpr(e.receiver(), locals, outer, recursiveBinding, captures, write);
-            scanExpr(e.index(), locals, outer, recursiveBinding, captures, false);
+            for (Ast.Expr index : e.indices()) {
+                scanExpr(index, locals, outer, recursiveBinding, captures, false);
+            }
         } else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.AwaitExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ChannelOpExpr e) {
