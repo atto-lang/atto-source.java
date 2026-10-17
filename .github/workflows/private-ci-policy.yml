@@ -58,6 +58,9 @@ jobs:
           rules = [s.strip() for s in codeowners if s.strip() and not s.lstrip().startswith("#")]
           if rules[-len(required):] != [f"{p} @ORESoftware" for p in required]:
               raise SystemExit("terminal CODEOWNERS contract mismatch")
+          if (len(rules) <= len(required)
+                  or rules[-len(required)-1] != "/.github/workflows/ @ORESoftware"):
+              raise SystemExit("unreviewed workflows could spoof protected check name")
           for path in required:
               if not (Path(".") / path.lstrip("/")).is_file():
                   raise SystemExit("CODEOWNERS mandatory path not present: " + path)
