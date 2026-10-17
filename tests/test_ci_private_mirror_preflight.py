@@ -147,6 +147,37 @@ class MirrorGateTest(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(admission.MirrorPreflightError):
                 admission.validate_repository_name(name)
 
+    def test_default_transport_ignores_proxy_and_custom_ca_environment(self):
+        fake_context = unittest.mock.Mock()
+        fake_opener = unittest.mock.Mock()
+        sentinel_open = object()
+        fake_opener.open = sentinel_open
+        hostile = {
+            "HTTPS_PROXY": "https://attacker.invalid:8443",
+            "https_proxy": "https://attacker.invalid:8443",
+            "ALL_PROXY": "socks5://attacker.invalid:1080",
+            "NO_PROXY": "api.github.com",
+            "SSL_CERT_FILE": "/tmp/attacker-ca.pem",
+            "SSL_CERT_DIR": "/tmp/attacker-certs",
+            "REQUESTS_CA_BUNDLE": "/tmp/attacker-ca.pem",
+            "CURL_CA_BUNDLE": "/tmp/attacker-ca.pem",
+        }
+        with patch.dict("os.environ", hostile, clear=False), \
+                patch.object(admission.ssl, "create_default_context",
+                             return_value=fake_context) as create_context, \
+                patch.object(admission.urllib.request, "build_opener",
+                             return_value=fake_opener) as build:
+            self.assertIs(admission.hardened_https_open(), sentinel_open)
+        create_context.assert_called_once_with(cafile=admission.SYSTEM_CA_BUNDLE)
+        self.assertEqual(fake_context.minimum_version, admission.ssl.TLSVersion.TLSv1_2)
+        handlers = build.call_args.args
+        self.assertEqual(len(handlers), 3)
+        self.assertIsInstance(handlers[0], urllib.request.ProxyHandler)
+        self.assertEqual(handlers[0].proxies, {})
+        self.assertIsInstance(handlers[1], urllib.request.HTTPSHandler)
+        self.assertIs(handlers[1]._context, fake_context)
+        self.assertIsInstance(handlers[2], admission.NoRedirect)
+
     def test_redirect_handler_refuses_to_forward_authenticated_request(self):
         request = urllib.request.Request(
             "https://api.github.com/repos/private/src",
