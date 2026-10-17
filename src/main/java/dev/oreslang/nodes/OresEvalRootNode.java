@@ -6003,7 +6003,9 @@ public final class OresEvalRootNode extends RootNode {
                     && !hasFunctionFamily("Integer")
                     && !namedImports.containsKey("Integer")
                     && !namespaceImports.containsKey("Integer")
-                    && !hostClasses.containsKey("Integer");
+                    && !hostClasses.containsKey("Integer")
+                    && !hostFunctions.containsKey("Integer")
+                    && !hostSymbols.containsKey("Integer");
         }
 
         private boolean isDoubleIntrinsicCall(Ast.CallExpr call, Env env) {
@@ -6018,7 +6020,9 @@ public final class OresEvalRootNode extends RootNode {
                     && !hasFunctionFamily("Double")
                     && !namedImports.containsKey("Double")
                     && !namespaceImports.containsKey("Double")
-                    && !hostClasses.containsKey("Double");
+                    && !hostClasses.containsKey("Double")
+                    && !hostFunctions.containsKey("Double")
+                    && !hostSymbols.containsKey("Double");
         }
 
         private static boolean isDoubleRuntimeValue(Object value) {
