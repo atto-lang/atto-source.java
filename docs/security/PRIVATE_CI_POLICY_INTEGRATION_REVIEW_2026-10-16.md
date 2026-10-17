@@ -110,6 +110,24 @@ GraalVM, or publisher test evidence.
   or mark this PR merge-ready without independent incident containment and
   CODEOWNER/admin review.
 
+## Distinct descriptor-mask hardening (2026-10-16)
+
+- Positive integer flags alone are insufficient to establish secure
+  `open()` admission. A platform shim which aliases `O_NOFOLLOW`,
+  `O_DIRECTORY`, or `O_NONBLOCK` to another flag may pass presence
+  checks without enforcing the expected independent restrictions.
+- `safe_descriptor_flags_available()` now rejects **overlapping** masks
+  as well as absent/zero/negative/noninteger flags. One additional
+  checked-in regression covers three aliases and a combined mask, and
+  asserts both protected-policy and source-snapshot admission stop before
+  opening any file.
+- Publisher test module now declares **154** adversarial cases. The
+  protected source-local publisher workflow requires at least **154**
+  in each of three fully executed, no-skip replays. Full original-source
+  execution remains blocked by the unprotected source main, empty approval
+  files and unavailable source-org Actions capacity; isolated bitmask tests
+  must not be labeled end-to-end publisher certification.
+
 ## Exact-tree carrier branch hardening (2026-10-16)
 
 - Publisher `publish()` now rejects any destination branch not named exactly
