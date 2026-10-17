@@ -4921,7 +4921,7 @@ public final class TypeChecker {
             return result;
         }
         if (receiver instanceof Named named) {
-            if (named.name().equals("Error")) {
+            if (named.name().equals("Error") && findClass("Error") == null) {
                 if (writing) throw new IllegalArgumentException("Error.message is immutable");
                 if (member.member().equals("message")) return Primitive.STRING;
                 throw new IllegalArgumentException("unknown Error member '" + member.member() + "'");
