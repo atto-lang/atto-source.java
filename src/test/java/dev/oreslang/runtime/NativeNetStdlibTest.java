@@ -146,7 +146,7 @@ final class NativeNetStdlibTest {
             }
             int port = Integer.parseInt(portText.trim());
             assertTrue(port > 0);
-            try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), port)) {
+            try (Socket socket = new Socket(InetAddress.getByName("127.0.0.1"), port)) {
                 socket.setSoTimeout(2000);
                 socket.getOutputStream().write("PING".getBytes(StandardCharsets.US_ASCII));
                 assertEquals("PING", new String(socket.getInputStream().readNBytes(4),
