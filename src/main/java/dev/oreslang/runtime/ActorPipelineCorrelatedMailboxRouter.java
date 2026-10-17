@@ -196,7 +196,9 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
      * not enabled until compiler-owned backward message handlers exist. */
     void backward(M value) {
         inLiveGeneration(() -> {
-            sendChild(session.returnOneHop(current()), value);
+            var source = current();
+            sendChild(session.returnOneHop(source), value);
+            ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
     }
@@ -205,7 +207,9 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
      * derived from the sealed route path and is never caller-selected. */
     void reply(M value) {
         inLiveGeneration(() -> {
-            sendChild(session.returnToOrigin(current()), value);
+            var source = current();
+            sendChild(session.returnToOrigin(source), value);
+            ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
     }

@@ -195,17 +195,21 @@ final class ActorPipelineRouteSession {
     /** VM-only actual reverse DATA hop. The original trusted path is carried
      * intact across the return, with a decreasing receiver index. The branch
      * keeps its flow ID while each hop receives a distinct one-shot route ID.
-     * The previous frame is consumed only when its child frame is published.
+     * The sending bridge consumes the source only AFTER mailbox publication.
+     * Rejected publication retires the candidate child, not the source.
      * This is NOT an actor-controlled named destination or reverse broadcast. */
     synchronized MailFrame returnOneHop(MailFrame current) {
         requireActive(current);
         if (current.receiverIndex == 0)
             throw new IllegalStateException("pipeline origin has no upstream return hop");
+        // Both source and candidate destination must remain live until the
+        // mailbox actually accepts the child. A failed send cannot consume
+        // the source turn or silently free its original route authority.
+        reserve(1);
         reserveRouteIds(1);
         MailFrame child = new MailFrame(this, generation, current.flowId,
                 nextRouteId, current.actorPath, current.receiverIndex - 1, true);
         active.put(child, Boolean.TRUE);
-        active.remove(current);
         nextRouteId++;
         return child;
     }
@@ -214,17 +218,17 @@ final class ActorPipelineRouteSession {
      * VM-only direct reply to the authenticated flow origin. The destination
      * is index zero of the immutable path; no actor-controlled target string
      * participates in selection. The current one-shot frame is consumed only
-     * after the replacement frame is installed in the same session.
+     * after the replacement frame is admitted into the destination mailbox.
      */
     synchronized MailFrame returnToOrigin(MailFrame current) {
         requireActive(current);
         if (current.receiverIndex == 0)
             throw new IllegalStateException("pipeline origin cannot reply to itself");
+        reserve(1);
         reserveRouteIds(1);
         MailFrame child = new MailFrame(this, generation, current.flowId,
                 nextRouteId, current.actorPath, 0, true);
         active.put(child, Boolean.TRUE);
-        active.remove(current);
         nextRouteId++;
         return child;
     }
