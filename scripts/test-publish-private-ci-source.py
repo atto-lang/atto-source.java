@@ -577,7 +577,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     api.assert_called_once_with("rate_limit")
 
     def test_core_api_budget_denies_before_creating_git_objects(self):
-        for remaining in (0, 100, 183, None, "15000", True, -1):
+        for remaining in (0, 100, 183, 184, None, "15000", True, -1):
             with self.subTest(remaining=remaining):
                 self.route_calls.clear()
                 self.api_core_remaining = remaining
@@ -1364,12 +1364,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(sum(len(batch) for batch in batches), len(files))
         self.assertEqual(sum(text is None for batch in batches
                              for _, _, _, text in batch), 1)
-        self.api_core_remaining = 183
+        self.api_core_remaining = 184
         with self.assertRaisesRegex(pub.Denied, "insufficient GitHub core API budget"):
             self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
         self.route_calls.clear()
-        self.api_core_remaining = 184
+        self.api_core_remaining = 185
         sha, count = self.publish()
         self.assertEqual((sha, count), (C, len(files)))
         uploads = [payload for method, route, payload in self.route_calls
@@ -1385,7 +1385,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         files = pub.collect_source(self.source, self.root)
         planned = pub.prepare_source_tree_batches(files)
         self.assertGreater(len(planned), 1)
-        self.api_core_remaining = 24 * max(1, len(planned) - 1) + 160
+        self.api_core_remaining = 25 * max(1, len(planned) - 1) + 160
         partial = []
         original = self.fake_api
 
