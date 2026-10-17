@@ -3896,7 +3896,7 @@ public final class TypeChecker {
         if (containsChannelCallable(element, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
                     where + " payload types are data-only; "
-                            + "Fnc/function values and values containing callable state stay in their owning execution domain");
+                            + "functions and runtime capabilities (including nested channel/future/synchronization/select state) stay in their owning execution domain");
         }
         if (containsChannelBorrow(element, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
@@ -3942,6 +3942,18 @@ public final class TypeChecker {
                     && containsChannelCallable(bound, seen, genericBindings);
         }
         if (!(type instanceof Named named)) return false;
+
+        // Channel payloads are pure data. These values carry scheduler,
+        // synchronization, I/O, cursor, or selection authority even when
+        // wrapped in Option/Result/containers or hidden in nominal fields.
+        if (Set.of(
+                "Channel", "Future", "Mutex", "MutexGuard", "SharedMutex",
+                "Iterator", "AsyncIterator", "SelectCase", "SelectSet",
+                "SelectResult", "TcpConnection", "HttpExchange",
+                "HttpServer", "HttpHandler", "ActorMail", "ActorOutput",
+                "ActorOutputStream").contains(named.name())) {
+            return true;
+        }
 
         for (Type argument : named.arguments()) {
             if (containsChannelCallable(argument, seen, genericBindings)) return true;
