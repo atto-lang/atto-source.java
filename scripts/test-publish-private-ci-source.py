@@ -587,8 +587,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.api_core_remaining = 15000
 
     def test_core_api_budget_at_exact_reserve_allows_synthetic_upload(self):
-        # One source file: 24 * 1 + 160 == 184 API requests reserved.
-        self.api_core_remaining = 184
+        # One source file: 25 * 1 + 160 == 185 API requests reserved.
+        self.api_core_remaining = 185
         self.publish()
         self.assertTrue(any(method == "POST" for method, _, _ in self.route_calls))
 
