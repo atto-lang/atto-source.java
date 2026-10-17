@@ -165,11 +165,13 @@ def reviewed_source_main(root, repository):
     branch = gh_api("repos/" + SOURCE_REPO + "/branches/main")
     if branch.get("protected") is not True:
         raise Denied("source main is not protected; no private export authorized")
+    pinned_main_sha = valid_sha(branch.get("commit", {}).get("sha"))
     for rel in (".github/private-ci-approved-repositories.txt",
                 "scripts/publish-private-ci-source.py",
                 "scripts/check-private-ci-destination.sh",
                 "scripts/run-in-private-ci-destination.sh"):
-        remote = gh_api("repos/" + SOURCE_REPO + "/contents/" + rel + "?ref=main")
+        remote = gh_api("repos/" + SOURCE_REPO + "/contents/" + rel
+                        + "?ref=" + pinned_main_sha)
         if remote.get("type") != "file" or remote.get("encoding") != "base64":
             raise Denied("protected source policy or transfer code is unavailable")
         try:
@@ -185,7 +187,13 @@ def reviewed_source_main(root, repository):
                 b"blob " + str(len(content)).encode("ascii") + b"\0"
                 + content).hexdigest():
             raise Denied("protected source blob identity mismatch")
+    # Only one immutable protected-main commit may authorize all files.
+    branch_again = gh_api("repos/" + SOURCE_REPO + "/branches/main")
+    if (branch_again.get("protected") is not True
+            or branch_again.get("commit", {}).get("sha") != pinned_main_sha):
+        raise Denied("protected source main changed during policy verification")
     checked_policy_fingerprint(root, repository)
+    return pinned_main_sha
 
 
 def checked_git_tree(entries):
