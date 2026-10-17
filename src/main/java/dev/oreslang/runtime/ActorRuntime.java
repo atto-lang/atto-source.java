@@ -7591,8 +7591,6 @@ public final class ActorRuntime implements AutoCloseable {
                     || scheduled.get()
                     || carrierActive
                     || !children.isEmpty()) return null;
-            finalizationPrepared = true;
-
             final int abandonedUserMessages;
             final int abandonedContinuations;
             synchronized (mailboxAccountingLock) {
@@ -7604,18 +7602,24 @@ public final class ActorRuntime implements AutoCloseable {
                     ? 0L
                     : lastProcessedUserMessageSequence + 1L;
             final Throwable terminal = ref.terminationCause.get();
-
             OresScheduler scheduler = sourceScheduler;
-            sourceScheduler = null;
-            staticSelectCursors.clear();
-            codeActorState = null;
-            return new FinalizationPlan(
+
+            // Construct the immutable publication plan before exposing the
+            // finalizationPrepared reservation. If allocation itself fails,
+            // no false "publisher exists" fence is left behind.
+            FinalizationPlan plan = new FinalizationPlan(
                     scheduler,
                     abandonedUserMessages,
                     abandonedContinuations,
                     acceptedUserMessages,
                     processedUserMessages,
                     terminal);
+
+            finalizationPrepared = true;
+            sourceScheduler = null;
+            staticSelectCursors.clear();
+            codeActorState = null;
+            return plan;
         }
 
         private void publishFinalization(FinalizationPlan plan) {
