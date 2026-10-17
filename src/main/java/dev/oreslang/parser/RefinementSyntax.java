@@ -61,8 +61,8 @@ public final class RefinementSyntax {
                         String key = argument.namedParameterName();
                         if (!seen.add(key)) bad("duplicate annotation bound " + key);
                         String op = switch (key) {
-                            case "min" -> "ge";
-                            case "max" -> "le";
+                            case "min" -> "gte";
+                            case "max" -> "lte";
                             case "eq" -> {
                                 if (!annotation.name().equals("Length")) bad("@Size does not support eq");
                                 yield "eq";
@@ -112,9 +112,9 @@ public final class RefinementSyntax {
         bounds.sort(java.util.Comparator.comparing(Ast.RefinementBound::property)
                 .thenComparingInt(b -> switch (b.comparator()) {
                     case "eq" -> 0;
-                    case "ge" -> 1;
+                    case "gte" -> 1;
                     case "gt" -> 2;
-                    case "le" -> 3;
+                    case "lte" -> 3;
                     case "lt" -> 4;
                     default -> 5;
                 }).thenComparingLong(Ast.RefinementBound::constant));
@@ -137,9 +137,9 @@ public final class RefinementSyntax {
             case "eq", "==" -> "eq";
             case "ne", "!=" -> "ne";
             case "gt", ">" -> "gt";
-            case "gte", ">=" -> "ge";
+            case "gte", ">=" -> "gte";
             case "lt", "<" -> "lt";
-            case "lte", "<=" -> "le";
+            case "lte", "<=" -> "lte";
             default -> throw new IllegalArgumentException("unknown refinement comparator " + token);
         };
     }
