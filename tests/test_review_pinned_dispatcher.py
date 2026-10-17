@@ -151,14 +151,59 @@ class DispatcherTest(unittest.TestCase):
                 MOD.require_live_reviewer_policy(receipt())
         finally: MOD.content_file=old
 
+    def test_dispatch_attests_reviewed_executable_before_source_admission(self):
+        r=receipt()
+        with tempfile.TemporaryDirectory() as td:
+            rp=Path(td)/"receipt.json"; rp.write_text(json.dumps(r))
+            calls=[]
+            saved={name:getattr(MOD,name) for name in
+                   ("branch_absent","refresh_authorization","require_staged_source")}
+            pub_saved=MOD.PUB.require_trusted_publisher_checkout
+            try:
+                def attest(root,head):
+                    calls.append(("attest",root,head))
+                    raise MOD.Denied("unreviewed executable")
+                MOD.PUB.require_trusted_publisher_checkout=attest
+                MOD.branch_absent=lambda *_:calls.append(("branch",))
+                MOD.refresh_authorization=lambda *_:calls.append(("refresh",))
+                MOD.require_staged_source=lambda *_:calls.append(("source",))
+                with self.assertRaisesRegex(MOD.Denied,"unreviewed executable"):
+                    MOD.dispatch(str(rp),str(Path(td)/"src"))
+                self.assertEqual(calls[0][0],"attest")
+                self.assertFalse(any(x[0] in ("branch","refresh","source") for x in calls[1:]))
+            finally:
+                MOD.PUB.require_trusted_publisher_checkout=pub_saved
+                for name,val in saved.items(): setattr(MOD,name,val)
+
+    def test_staged_source_must_be_below_dispatcher_root_not_root_or_git_metadata(self):
+        original_root=MOD.ROOT
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)/"trusted"; root.mkdir()
+            staged=root/"snapshot"; staged.mkdir()
+            metadata=root/".git"; metadata.mkdir()
+            MOD.ROOT=root
+            try:
+                self.assertEqual(MOD.require_staged_source(staged),staged.resolve())
+                with self.assertRaisesRegex(MOD.Denied,"staged separately"):
+                    MOD.require_staged_source(root)
+                with self.assertRaisesRegex(MOD.Denied,"Git metadata"):
+                    MOD.require_staged_source(metadata)
+                outside=Path(td)/"outside"; outside.mkdir()
+                with self.assertRaisesRegex(MOD.Denied,"escapes reviewed"):
+                    MOD.require_staged_source(outside)
+            finally:
+                MOD.ROOT=original_root
+
     def test_mid_write_authorization_revocation_causes_zero_writes(self):
         r=receipt()
         with tempfile.TemporaryDirectory() as td:
             rp=Path(td)/"receipt.json"; rp.write_text(json.dumps(r))
             source=Path(td)/"src"; source.mkdir()
-            saved={name:getattr(MOD,name) for name in ("branch_absent","refresh_authorization","git_identity")}
+            saved={name:getattr(MOD,name) for name in
+                   ("branch_absent","refresh_authorization","require_staged_source")}
             pub_saved={name:getattr(MOD.PUB,name) for name in
-                       ("collect_source","source_tree_sha","prepare_source_tree_batches","require_private_ci_api_budget","gh_api")}
+                       ("require_trusted_publisher_checkout","collect_source","source_tree_sha",
+                        "prepare_source_tree_batches","require_private_ci_api_budget","gh_api")}
             refreshes=[0]; writes=[]
             try:
                 MOD.branch_absent=lambda x:"ci/oreslang-"+x["source_tree_sha"]
@@ -166,7 +211,9 @@ class DispatcherTest(unittest.TestCase):
                     refreshes[0]+=1
                     if refreshes[0]>=2: raise MOD.Denied("revoked")
                     return "a"*40
-                MOD.refresh_authorization=refresh; MOD.git_identity=lambda *args:None
+                MOD.refresh_authorization=refresh
+                MOD.require_staged_source=lambda path:Path(path)
+                MOD.PUB.require_trusted_publisher_checkout=lambda *args:None
                 MOD.PUB.collect_source=lambda *args:[("secret.bin",b"\x00","100644")]
                 MOD.PUB.source_tree_sha=lambda files:r["source_tree_sha"]
                 MOD.PUB.prepare_source_tree_batches=lambda files:[[("secret.bin",b"\x00","100644",None)]]
@@ -186,9 +233,11 @@ class DispatcherTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             rp=Path(td)/"receipt.json"; rp.write_text(json.dumps(r))
             source=Path(td)/"src"; source.mkdir()
-            saved={name:getattr(MOD,name) for name in ("branch_absent","refresh_authorization","git_identity")}
+            saved={name:getattr(MOD,name) for name in
+                   ("branch_absent","refresh_authorization","require_staged_source")}
             pub_saved={name:getattr(MOD.PUB,name) for name in
-                       ("collect_source","source_tree_sha","prepare_source_tree_batches","require_private_ci_api_budget","gh_api","valid_sha")}
+                       ("require_trusted_publisher_checkout","collect_source","source_tree_sha",
+                        "prepare_source_tree_batches","require_private_ci_api_budget","gh_api","valid_sha")}
             refreshes=[0]; root_payload=[]
             try:
                 MOD.branch_absent=lambda x:"ci/oreslang-"+x["source_tree_sha"]
@@ -196,7 +245,9 @@ class DispatcherTest(unittest.TestCase):
                     refreshes[0]+=1
                     if refreshes[0]>=4: raise MOD.Denied("stop-before-commit")
                     return "a"*40
-                MOD.refresh_authorization=refresh; MOD.git_identity=lambda *args:None
+                MOD.refresh_authorization=refresh
+                MOD.require_staged_source=lambda path:Path(path)
+                MOD.PUB.require_trusted_publisher_checkout=lambda *args:None
                 MOD.PUB.collect_source=lambda *args:[("a.txt",b"x","100644")]
                 MOD.PUB.source_tree_sha=lambda files:r["source_tree_sha"]
                 MOD.PUB.prepare_source_tree_batches=lambda files:[[("a.txt",b"x","100644","x")]]
