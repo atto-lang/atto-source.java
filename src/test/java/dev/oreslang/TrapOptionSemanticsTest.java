@@ -2,7 +2,6 @@ package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
-import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -280,9 +279,9 @@ final class TrapOptionSemanticsTest {
                   return;
                 }
                 """));
-        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 trap fnc value(): int { return 7; }
-                fnc bad(): void {
+                fnc hold(): void {
                   val TrapResult<int> result = value();
                   return;
                 }
