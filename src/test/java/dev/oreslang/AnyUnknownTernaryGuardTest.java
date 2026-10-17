@@ -73,18 +73,17 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
-    void opaqueTypesCannotCrossChannelBoundaryWithoutNarrowing() {
+    void opaqueTypesCannotCrossAsyncBoundaryWithoutNarrowing() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        pub fnc main(): void {
-                          val Channel<any> ch = Channel.new<int>();
+                        pub async fnc bad(any v): void {
                           return;
                         }
                         """)));
-        assertTrue(failure.getMessage().contains("channel payload")
-                || failure.getMessage().contains("assign")
-                || failure.getMessage().contains("opaque"));
+        assertTrue(failure.getMessage().contains("async task boundary")
+                || failure.getMessage().contains("task-safe")
+                || failure.getMessage().contains("any/unknown"));
     }
 
     @Test
