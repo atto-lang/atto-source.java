@@ -448,6 +448,8 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
             MODULE.read_bytes())
         (self.root / "scripts/check-private-ci-destination.sh").write_text(
             "#!/bin/bash\n")
+        (self.root / "scripts/run-in-private-ci-destination.sh").write_text(
+            "#!/bin/bash\n")
         (self.source / "hello.ores").write_text("safe\n")
         self.entries = pub.collect_source(self.source, self.root)
         self.tree = pub.checked_git_tree(self.entries)
