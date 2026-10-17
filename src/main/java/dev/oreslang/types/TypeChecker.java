@@ -250,7 +250,7 @@ public final class TypeChecker {
     }
 
     private void rejectCompilerOwnedTypeName(String name) {
-        if (Set.of("TrapResult", "TrapError", "RecoverySignal").contains(name)) {
+        if (Set.of("TrapResult", "TrapError", "RecoverySignal", "Error").contains(name)) {
             throw new IllegalArgumentException(
                     "'" + name + "' is a compiler-owned type name and cannot be declared by user code");
         }
