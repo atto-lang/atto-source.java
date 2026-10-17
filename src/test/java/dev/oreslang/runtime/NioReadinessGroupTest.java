@@ -14,6 +14,60 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class NioReadinessGroupTest {
+    @Test void slowFutureSubscribersNeverRunOnSelectorAndBackpressureIsBounded() throws Exception {
+        // A runtime completion subscriber is allowed to be adversarial host
+        // code; it must not pin the selector or grow the completion queue.
+        try (var group = new NioReadinessGroup(1, 2, 8);
+             var one = java.nio.channels.Pipe.open();
+             var two = java.nio.channels.Pipe.open();
+             var three = java.nio.channels.Pipe.open()) {
+            one.source().configureBlocking(false);
+            two.source().configureBlocking(false);
+            three.source().configureBlocking(false);
+            var callbacksEntered = new java.util.concurrent.CountDownLatch(2);
+            var release = new java.util.concurrent.CountDownLatch(1);
+            var callbackThreads = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            java.util.function.BiConsumer<Integer, Throwable> slow = (value, failure) -> {
+                callbackThreads.add(Thread.currentThread().getName());
+                callbacksEntered.countDown();
+                try { release.await(3, TimeUnit.SECONDS); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            };
+            var first = group.watch(one.source(), SelectionKey.OP_READ);
+            var second = group.watch(two.source(), SelectionKey.OP_READ);
+            first.whenCompleteRuntime(slow);
+            second.whenCompleteRuntime(slow);
+            try {
+                assertEquals(1, one.sink().write(java.nio.ByteBuffer.wrap(new byte[]{1})));
+                assertEquals(1, two.sink().write(java.nio.ByteBuffer.wrap(new byte[]{2})));
+                assertTrue(callbacksEntered.await(2, TimeUnit.SECONDS),
+                        "both slow subscribers should occupy only completion workers");
+                assertTrue(callbackThreads.stream().allMatch(t -> t.startsWith("ores-nio-completion-")),
+                        "selector must never call arbitrary runtime subscribers");
+                assertEquals(0, group.pendingCount(),
+                        "selector must retire both watches even while subscribers wait");
+                assertEquals(2, group.pendingNotifications());
+                var denied = group.watch(three.source(), SelectionKey.OP_READ);
+                var exhausted = assertThrows(ExecutionException.class,
+                        () -> denied.get(2, TimeUnit.SECONDS));
+                assertInstanceOf(java.util.concurrent.RejectedExecutionException.class,
+                        exhausted.getCause(), "notification backlog must reject admission");
+            } finally {
+                release.countDown();
+            }
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (group.pendingNotifications() != 0 && System.nanoTime() < deadline)
+                Thread.sleep(1); // JUnit driver only, never an Ores actor
+            assertEquals(0, group.pendingNotifications(), "callback completion must release quota");
+            var third = group.watch(three.source(), SelectionKey.OP_READ);
+            assertEquals(1, three.sink().write(java.nio.ByteBuffer.wrap(new byte[]{3})));
+            assertTrue((third.get(2, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            assertEquals(0, group.pendingNotifications());
+        }
+    }
+
     @Test void fivePendingReadsUseOneReactorNotFiveIoThreads() throws Exception {
         try (var group = new NioReadinessGroup(4, 32, 64);
              var listener = ServerSocketChannel.open()) {
