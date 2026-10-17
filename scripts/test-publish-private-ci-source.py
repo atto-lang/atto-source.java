@@ -472,6 +472,9 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
 
     def remote(self, route, method="GET", payload=None):
         self.routes.append((method, route))
+        if route == "repos/" + pub.SOURCE_REPO:
+            return {"id": 1400792274, "full_name": pub.SOURCE_REPO,
+                    "private": True}
         if route == "repos/" + pub.SOURCE_REPO + "/branches/main":
             return {"protected": True}
         if route.startswith("repos/" + pub.SOURCE_REPO + "/contents/"):
@@ -536,11 +539,31 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
             pub.reviewed_source_main(self.root, "trusted/ci")
 
     def test_unprotected_source_main_denied_before_source_reads(self):
-        with patch.object(pub, "gh_api",
-                          return_value={"protected": False}) as request:
+        def unprotected(route, method="GET", payload=None):
+            if route == "repos/" + pub.SOURCE_REPO:
+                return {"id": 1400792274, "full_name": pub.SOURCE_REPO,
+                        "private": True}
+            if route == "repos/" + pub.SOURCE_REPO + "/branches/main":
+                return {"protected": False}
+            raise AssertionError("unexpected API call")
+        with patch.object(pub, "gh_api", side_effect=unprotected) as request:
             with self.assertRaisesRegex(pub.Denied, "not protected"):
                 pub.reviewed_source_main(self.root, "trusted/ci")
-            self.assertEqual(request.call_count, 1)
+            self.assertEqual(request.call_count, 2)
+
+    def test_source_repo_name_collision_or_visibility_denied(self):
+        for forged in (
+                {"id": 1400792275, "full_name": pub.SOURCE_REPO,
+                 "private": True},
+                {"id": 1400792274, "full_name": "impostor/source",
+                 "private": True},
+                {"id": 1400792274, "full_name": pub.SOURCE_REPO,
+                 "private": False}):
+            with self.subTest(forged=forged):
+                with patch.object(pub, "gh_api", return_value=forged) as api:
+                    with self.assertRaisesRegex(pub.Denied, "identity"):
+                        pub.reviewed_source_main(self.root, "trusted/ci")
+                    self.assertEqual(api.call_count, 1)
 
     def test_locally_forged_allowlist_denied(self):
         original = (self.root / ".github/private-ci-approved-repositories.txt").read_bytes()
