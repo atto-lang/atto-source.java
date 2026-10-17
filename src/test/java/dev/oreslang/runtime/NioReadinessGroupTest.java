@@ -14,6 +14,63 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class NioReadinessGroupTest {
+    @Test void cancelledSelectionKeyNeedsSelectorSweepBeforeReregistration() throws Exception {
+        // JDK selector contract behind the reactor command-batch fence:
+        // cancel() is lazy; same-channel register() before selectNow() fails.
+        var pipe = java.nio.channels.Pipe.open();
+        try (var selector = java.nio.channels.Selector.open();
+             var source = pipe.source();
+             var sink = pipe.sink()) {
+            source.configureBlocking(false);
+            var old = source.register(selector, SelectionKey.OP_READ);
+            old.cancel();
+            assertThrows(java.nio.channels.CancelledKeyException.class,
+                    () -> source.register(selector, SelectionKey.OP_READ));
+            selector.selectNow();
+            assertTrue(source.register(selector, SelectionKey.OP_READ).isValid());
+        }
+    }
+
+    @Test void repeatedSameSocketReadRearmsAfterCancelledKeyPurge() throws Exception {
+        // A producer can enqueue the next watch as soon as a Future settles.
+        // Every next command must register AFTER the old cancelled key is
+        // swept, including under rapid readable/not-readable transitions.
+        try (var group = new NioReadinessGroup(1, 64, 64);
+             var listener = ServerSocketChannel.open()) {
+            listener.configureBlocking(false);
+            listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+            int port = ((InetSocketAddress) listener.getLocalAddress()).getPort();
+            try (var peer = new Socket(InetAddress.getLoopbackAddress(), port)) {
+                SocketChannel accepted = null;
+                for (int attempt = 0; attempt < 1000 && accepted == null; attempt++) {
+                    accepted = listener.accept();
+                    if (accepted == null) Thread.sleep(1); // trusted test driver only
+                }
+                assertNotNull(accepted);
+                try (var socket = accepted) {
+                    socket.configureBlocking(false);
+                    for (int round = 0; round < 64; round++) {
+                        var future = group.readAsync(socket, 1);
+                        peer.getOutputStream().write(round);
+                        assertArrayEquals(new byte[]{(byte) round},
+                                future.get(3, TimeUnit.SECONDS),
+                                "same socket must re-register after previous key cancellation");
+                        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                        while ((group.activeReadLeases() != 0 || group.pendingCount() != 0)
+                                && System.nanoTime() < deadline)
+                            Thread.sleep(1);
+                        assertEquals(0, group.activeReadLeases());
+                        assertEquals(0, group.pendingCount());
+                    }
+                }
+            }
+            assertEquals(1, group.reactorCount(),
+                    "64 re-armed TCP reads must use one selector, not 64 workers");
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void vmSelectorTcpReadEnforcesLeaseAndRearmsAfterCancellation() throws Exception {
         try (var group = new NioReadinessGroup(1, 32, 64);
              var listener = ServerSocketChannel.open()) {
