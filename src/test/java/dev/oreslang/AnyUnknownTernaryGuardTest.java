@@ -751,15 +751,22 @@ final class AnyUnknownTernaryGuardTest {
                         }
                         """)));
 
+        // Validation is allowed: it grants a readonly shape, never unchecked
+        // access or the right to mutate data hidden behind unknown.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc safe(unknown value): int {
+                  match value over
+                    on structural { amount: int } record -> {
+                      return record.amount;
+                    }
+                    on _ -> { return 0; }
+                  end
+                }
+                """)));
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         pub fnc bad(unknown value): int {
-                          match value over
-                            on structural { amount: int } record -> {
-                              return record.amount;
-                            }
-                            on _ -> { return 0; }
-                          end
+                          return value.amount;
                         }
                         """)));
     }
