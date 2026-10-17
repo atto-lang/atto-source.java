@@ -120,6 +120,62 @@ final class NativeCoreLibraryTest {
 
 
     @Test
+    void packagedBooleanReducersMatchPublicAggregateBuiltins() throws Exception {
+        Path entry = Files.createTempFile("ores-native-core-bool-parity-", ".ores");
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        try {
+            Files.writeString(entry, """
+                    import module core from "std/core";
+
+                    pub routine main(): void {
+                      val Array<bool> empty = [];
+                      val Array<bool> mixed = [true, false, true];
+                      val Array<bool> all_true = [true, true, true];
+                      val Array<bool> odd = [true, false, false];
+
+                      stdio.println(And(empty) eq core.all_bool(empty));
+                      stdio.println(And(all_true) eq core.all_bool(all_true));
+                      stdio.println(And(mixed) eq core.all_bool(mixed));
+
+                      stdio.println(Or(empty) eq core.any_bool(empty));
+                      stdio.println(Or(mixed) eq core.any_bool(mixed));
+                      stdio.println(Or(all_true) eq core.any_bool(all_true));
+
+                      stdio.println(Xor(empty) eq core.xor_parity_bool(empty));
+                      stdio.println(Xor(mixed) eq core.xor_parity_bool(mixed));
+                      stdio.println(Xor(odd) eq core.xor_parity_bool(odd));
+                      return;
+                    }
+                    """);
+
+            LinkedProgramRunner.run(
+                    entry,
+                    IsolatePolicy.developer(),
+                    ExecutionProfile.serverJit(),
+                    out,
+                    err);
+
+            assertEquals("""
+                    true
+                    true
+                    true
+                    true
+                    true
+                    true
+                    true
+                    true
+                    true
+                    """, out.toString(StandardCharsets.UTF_8),
+                    () -> "builtin/source Boolean reducer parity failed, stderr="
+                            + err.toString(StandardCharsets.UTF_8));
+        } finally {
+            Files.deleteIfExists(entry);
+        }
+    }
+
+
+    @Test
     void everyPackagedStdModuleIsPureOreslangAndHasOnlyStdDependencies() throws Exception {
         Path root = Path.of("stdlib");
         assertTrue(Files.isDirectory(root), "packaged stdlib source root must exist");
