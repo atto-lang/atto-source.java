@@ -28,6 +28,7 @@ public final class ConstructorValInitialization {
     private ConstructorValInitialization() { }
 
     public static void check(Ast.ClassDecl klass) {
+        ConstructorDelegation.validate(klass);
         if (klass.actorKind() != Ast.ActorKind.NONE || klass.constructors().isEmpty()) return;
 
         LinkedHashSet<String> required = new LinkedHashSet<>();
@@ -37,15 +38,36 @@ public final class ConstructorValInitialization {
             }
         }
 
-        // Even classes without blank val fields are scanned so constructors
-        // cannot silently introduce suspension through await/select/channel
-        // forms while a construction receiver exists.
         for (Ast.ConstructorDecl constructor : klass.constructors()) {
-            ConstructorFlowState entry = ConstructorFlowState.blank(required);
-            ConstructorFlowState normalExit = block(
-                    constructor.body(), entry, required, klass.name());
-            if (normalExit != null) requireComplete(normalExit, required, klass.name());
+            checkConstructor(klass, constructor, required);
         }
+    }
+
+    /**
+     * Delegating frames share the same initializing object. The terminal
+     * constructor proves the blank-val obligations; on successful return to
+     * a delegating frame its tail begins with all required fields initialized.
+     * ConstructorDelegation.validate has already rejected cycles.
+     */
+    private static ConstructorFlowState checkConstructor(
+            Ast.ClassDecl klass,
+            Ast.ConstructorDecl constructor,
+            Set<String> required) {
+        Ast.ConstructorDelegateStmt delegation = ConstructorDelegation.first(constructor);
+        ConstructorFlowState entry = ConstructorFlowState.blank(required);
+        if (delegation != null) {
+            Ast.ConstructorDecl target =
+                    klass.constructorForArity(delegation.effectiveArity());
+            checkConstructor(klass, target, required);
+            // Successful target completion (including an explicit bare return)
+            // established exactly-once initialization. An abnormal completion
+            // cannot reach this delegator's tail.
+            for (String field : required) entry = entry.write(field);
+        }
+        ConstructorFlowState normalExit = block(
+                ConstructorDelegation.tail(constructor), entry, required, klass.name());
+        if (normalExit != null) requireComplete(normalExit, required, klass.name());
+        return normalExit;
     }
 
     /** A null state has no normal continuation (every path returned). */
