@@ -870,7 +870,10 @@ public final class OresEvalRootNode extends RootNode {
             ArrayList<Object> tuple = new ArrayList<>(args.size());
             for (int i = 0; i < parameters.size(); i++) {
                 Ast.Param param = parameters.get(i);
-                Object value = args.get(i);
+                Object value = coerceDeclaredComplexValue(
+                        param.type(),
+                        args.get(i),
+                        label + " parameter " + param.name());
                 tuple.add(value);
                 env.define(
                         param.name(),
@@ -1954,7 +1957,13 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure));
                                     return;
                                 }
-                                env.define(binding.name(), value, binding.kind());
+                                env.define(
+                                        binding.name(),
+                                        coerceDeclaredComplexValue(
+                                                binding.declaredType(),
+                                                value,
+                                                "binding " + binding.name()),
+                                        binding.kind());
                                 continuation.accept(t, SourceFlow.normal());
                             });
                     return;
@@ -5076,9 +5085,20 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
-                    env.initialize(binding.name(), eval(binding.initializer(), env));
+                    env.initialize(
+                            binding.name(),
+                            coerceDeclaredComplexValue(
+                                    binding.declaredType(),
+                                    eval(binding.initializer(), env),
+                                    "binding " + binding.name()));
                 } else {
-                    env.define(binding.name(), eval(binding.initializer(), env), binding.kind());
+                    env.define(
+                            binding.name(),
+                            coerceDeclaredComplexValue(
+                                    binding.declaredType(),
+                                    eval(binding.initializer(), env),
+                                    "binding " + binding.name()),
+                            binding.kind());
                 }
                 return;
             }
@@ -8695,6 +8715,27 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
+        private Object coerceDeclaredComplexValue(
+                Ast.TypeRef declared,
+                Object value,
+                String where) {
+            if (declared == null || declared.isBorrow()) return value;
+            if (declared.name().equals("complex")
+                    || declared.name().equals("complex128")) {
+                try {
+                    return asComplex(value);
+                } catch (IllegalArgumentException failure) {
+                    throw new IllegalArgumentException(
+                            where + ": " + failure.getMessage(), failure);
+                }
+            }
+            if (declared.name().equals("complex64")) {
+                throw new IllegalArgumentException(
+                        where + ": complex64 requires a dedicated binary32 complex precision contract");
+            }
+            return value;
+        }
+
         private Complex asComplex(Object value) {
             if (value instanceof Complex c) return c;
             // Exact numeric carriers may require more than 53 bits; never
