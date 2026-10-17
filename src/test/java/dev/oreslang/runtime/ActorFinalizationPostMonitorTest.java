@@ -87,6 +87,35 @@ final class ActorFinalizationPostMonitorTest {
     }
 
     @Test
+    void exitHookMayRetireAnotherActorWithoutCrossActorLockInversion() throws Exception {
+        var first = new AtomicReference<ActorRuntime.ActorRef<Integer>>();
+        var second = new AtomicReference<ActorRuntime.ActorRef<Integer>>();
+        var hooks = new AtomicInteger();
+
+        try (var runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(ignored -> {
+                int invocation = hooks.incrementAndGet();
+                if (invocation == 1) {
+                    var other = second.get();
+                    assertNotNull(other);
+                    other.stop();
+                }
+            });
+
+            first.set(runtime.<Integer>spawnShared(() -> (message, context) -> { }));
+            second.set(runtime.<Integer>spawnShared(() -> (message, context) -> { }));
+            first.get().ready().get(5, TimeUnit.SECONDS);
+            second.get().ready().get(5, TimeUnit.SECONDS);
+
+            first.get().stop();
+
+            assertTrue(first.get().awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(second.get().awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(2, hooks.get(), "both retirement hooks must execute exactly once");
+        }
+    }
+
+    @Test
     void doneCallbacksNeverRunUnderActorLifecycleMonitor() throws Exception {
         try (var runtime = new ActorRuntime()) {
             var actor = runtime.<Integer>spawnShared(() -> (message, context) -> { });
