@@ -65,6 +65,14 @@ final class Complex128ExceptionalTest {
     }
 
     @Test
+    void subnormalDivisorIsScaledBeforeExceptionalClassification() {
+        Complex128Math.Value value = Complex128Math.divide(
+                Double.NaN, Double.MIN_VALUE, Double.MIN_VALUE, 0.0);
+        assertTrue(Double.isNaN(value.real()));
+        assertTrue(Double.isNaN(value.imaginary()));
+    }
+
+    @Test
     void infiniteOverInfiniteRemainsUnordered() {
         Complex128Math.Value value = Complex128Math.divide(
                 Double.POSITIVE_INFINITY,
