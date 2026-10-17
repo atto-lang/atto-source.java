@@ -275,7 +275,12 @@ loop_body       = block | "do" { statement } "done" ;
 expression      = assignment ;
 assignment      = conditional [ "=" assignment ] ;
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
-logic_or        = equality { "|" equality } ;
+logic_or        = logic_xor { ( "or" | "||" ) logic_xor } ;
+logic_xor       = logic_and { "^^" logic_and } ;
+logic_and       = bitwise_or { ( "and" | "&&" ) bitwise_or } ;
+bitwise_or      = bitwise_xor { "|" bitwise_xor } ;
+bitwise_xor     = bitwise_and { "^" bitwise_and } ;
+bitwise_and     = equality { "&" equality } ;
 equality        = comparison { ( "eq" | "neq" | "!eq" | "==" | "!=" | "is" ) comparison } ;
 comparison      = additive
                   { ( "<" | "<=" | ">" | ">=" ) additive
@@ -300,7 +305,7 @@ call_argument_list = call_argument { "," call_argument } ;
 call_argument   = [ "..." ] expression ;
 member_suffix   = "." member_name ;
 member_name     = IDENT | "stop" | "do" | "done"
-                | "match" | "matches" | "eq" | "neq" | "is" | "when"
+                | "match" | "matches" | "eq" | "neq" | "and" | "or" | "is" | "when"
                 | "case" | "default" | "first" | "switch"
                 | "nb" | "select" | "readch" | "writech" ;
 index_suffix    = "[" expression "]" ;
@@ -578,7 +583,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      Nominal expression type tests are explicit as value is type T or
      value is type T binding. Prefix is T [binding] remains the compact
      type-pattern form inside match arms.
-   - eq, neq, and is are reserved operator keywords. They are not ordinary
+   - eq, neq, is, and, and or are reserved operator keywords. The word operators
+     and/or are short-circuit aliases for &&/|| with identical precedence and
+     left associativity. Logical ^^ has precedence between and and or. They are not ordinary
      binding or callable names, though keyword spellings remain legal after
      '.' in the member-name namespace.
    - "matches" evaluates a full pattern predicate; "as" is a checked cast and
