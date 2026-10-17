@@ -115,7 +115,7 @@ public final class MessagePackWireV2 {
             ByteBuffer buf = StandardCharsets.UTF_8.newEncoder()
                     .onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)
                     .encode(CharBuffer.wrap(s));
-            byte[] bytes = new byte[buf.remaining()]; buf.get(bytes); return bytes;
+            byte[] encoded = new byte[buf.remaining()]; buf.get(encoded); return encoded;
         } catch (CharacterCodingException e) { throw bad("invalid Unicode scalar"); }
     }
     private static String utf8(byte[] bytes, int offset, int length) {
