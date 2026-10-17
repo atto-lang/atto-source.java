@@ -139,6 +139,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             }
         if route == pub.PROTECTED_RULES_ROUTE:
             return {"enforce_admins": {"enabled": True},
+                    "allow_force_pushes": {"enabled": False},
+                    "allow_deletions": {"enabled": False},
                     "required_status_checks": {"strict": True,
                                                "contexts": ["preflight-regressions", "private-ci-policy"],
                                                "checks": [{"context": "private-ci-policy", "app_id": 15368}]},
@@ -197,6 +199,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == "repos/trusted/ci/branches/main/protection":
             valid_checks = self.carrier_status_checks.pop(0)
             return {"enforce_admins": {"enabled": self.carrier_admin_enforced.pop(0)},
+                    "allow_force_pushes": {"enabled": False},
+                    "allow_deletions": {"enabled": False},
                     "required_status_checks": {"strict": valid_checks,
                                                "contexts": ["verified-carrier-ci", "carrier-policy"] if valid_checks else [],
                                                "checks": [{"context": "carrier-policy", "app_id": 15368}] if valid_checks else []},
@@ -997,6 +1001,72 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     with self.assertRaises(pub.Denied):
                         self.publish()
                 self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+
+    def test_source_protection_rejects_force_push_and_deletion(self):
+        original = self.fake_api
+        for field in ("allow_force_pushes", "allow_deletions"):
+            for value in (None, {}, {"enabled": True},
+                          {"enabled": 0}, {"enabled": "false"}):
+                with self.subTest(field=field, value=value):
+                    self.route_calls.clear()
+                    def unsafe(route, method="GET", payload=None):
+                        response = original(route, method, payload)
+                        if route == pub.PROTECTED_RULES_ROUTE:
+                            if value is None:
+                                response.pop(field, None)
+                            else:
+                                response[field] = value
+                        return response
+                    with patch.object(pub, "gh_api", side_effect=unsafe):
+                        with self.assertRaisesRegex(
+                                pub.Denied, "permits force pushes or deletion"):
+                            self.publish()
+                    self.assertFalse(any(method == "POST"
+                                         for method, _, _ in self.route_calls))
+
+    def test_issuer_bound_checks_work_without_legacy_contexts(self):
+        # GitHub's app-pinned checks are authoritative. The name-only
+        # contexts list is deprecated and may be empty or omitted.
+        checks = [{"context": "private-ci-policy", "app_id": 15368}]
+        for legacy in (None, [], ["private-ci-policy"]):
+            with self.subTest(contexts=legacy):
+                policy = {"checks": checks}
+                if legacy is not None:
+                    policy["contexts"] = legacy
+                pub.require_pinned_actions_check(policy, "private-ci-policy")
+        for bad in (7, "private-ci-policy", [None],
+                    ["private-ci-policy", "private-ci-policy"]):
+            with self.subTest(malformed=bad):
+                with self.assertRaises(pub.Denied):
+                    pub.require_pinned_actions_check(
+                        {"checks": checks, "contexts": bad}, "private-ci-policy")
+        with self.assertRaises(pub.Denied):
+            pub.require_pinned_actions_check(
+                {"checks": [], "contexts": ["private-ci-policy"]},
+                "private-ci-policy")
+
+    def test_carrier_protection_rejects_force_push_and_deletion(self):
+        original = self.fake_api
+        for field in ("allow_force_pushes", "allow_deletions"):
+            for value in (None, {}, {"enabled": True},
+                          {"enabled": 0}, {"enabled": "false"}):
+                with self.subTest(field=field, value=value):
+                    self.route_calls.clear()
+                    def unsafe(route, method="GET", payload=None):
+                        response = original(route, method, payload)
+                        if route == "repos/trusted/ci/branches/main/protection":
+                            if value is None:
+                                response.pop(field, None)
+                            else:
+                                response[field] = value
+                        return response
+                    with patch.object(pub, "gh_api", side_effect=unsafe):
+                        with self.assertRaisesRegex(
+                                pub.Denied, "permits force pushes or deletion"):
+                            self.publish()
+                    self.assertFalse(any(method == "POST"
+                                         for method, _, _ in self.route_calls))
 
     def test_source_branch_protection_must_enforce_admins_and_strict_ci(self):
         failures = (
