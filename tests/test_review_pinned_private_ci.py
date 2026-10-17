@@ -54,6 +54,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                    reviewer_id=REVIEWER_ID, user_type="User"):
         return {
             "permission": permission,
+            "created_at": created,
             "user": {"login": login, "id": reviewer_id, "type": user_type},
         }
 
