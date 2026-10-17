@@ -45,12 +45,16 @@ final class RefinementSyntaxGateTest {
         Ast.TypeAliasDecl symbols = alias(
                 "type Port = int with value >= 1 and value <= 65535;");
         assertEquals(keywords.refinement().bounds(), symbols.refinement().bounds());
+        assertEquals(List.of(new Ast.RefinementBound("value", "ge", 1),
+                             new Ast.RefinementBound("value", "le", 65535)), keywords.refinement().bounds());
 
         Ast.TypeAliasDecl pctKeywords = alias(
                 "type Percentage = int with value gte 0 and value lte 100;");
         Ast.TypeAliasDecl pctSymbols = alias(
                 "type Percentage = int with value >= 0 and value <= 100;");
         assertEquals(pctKeywords.refinement().bounds(), pctSymbols.refinement().bounds());
+        assertEquals(List.of(new Ast.RefinementBound("value", "ge", 0),
+                             new Ast.RefinementBound("value", "le", 100)), pctKeywords.refinement().bounds());
     }
 
     @Test void newtypeRetainsNominalMarker() {
@@ -93,7 +97,11 @@ final class RefinementSyntaxGateTest {
                 "@Size(min=1,max=32) type A = string;",
                 "type B = string with length gt 0;",
                 "define newtype C(string) with length gte 1;",
-                "type D = string where it.length > 0;"
+                "type D = string where it.length > 0;",
+                "type Port = int with value gte 1 and value lte 65535;",
+                "type Port = int with value >= 1 and value <= 65535;",
+                "type Percentage = int with value gte 0 and value lte 100;",
+                "type Percentage = int with value >= 0 and value <= 100;"
         };
         for (String s : source) {
             IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
