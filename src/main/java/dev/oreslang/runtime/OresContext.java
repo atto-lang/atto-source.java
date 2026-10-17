@@ -35,6 +35,8 @@ public final class OresContext implements AutoCloseable {
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
     private final java.util.Set<NativeNioFutureReactor> nioListeners = new java.util.HashSet<>();
+    // Source-level std/net listeners share this context's VM selector group.
+    private final java.util.Set<VmNioTcpListener> vmNioListeners = new java.util.HashSet<>();
     private final Object nioLifecycle = new Object();
     private boolean nioContextClosed;
     private int nioOpening;
@@ -54,8 +56,20 @@ public final class OresContext implements AutoCloseable {
         requireNioOwner(connection.ownerReactor(), operation);
     }
 
-    /** Kernel-only, loopback/supervisor-owned listener; source orchestration is std/net. */
-    public NativeNioFutureReactor listenNioLoopback(
+    public void requireNioOwner(VmNioTcpListener listener, String operation) {
+        synchronized (nioLifecycle) {
+            if (nioContextClosed || !vmNioListeners.contains(listener))
+                throw new SecurityException("foreign or closed nonblocking TCP listener: " + operation);
+        }
+        requireCapability(IsolatePolicy.Capability.NETWORK, operation);
+    }
+
+    public void requireNioOwner(VmNioTcpListener.Connection connection, String operation) {
+        requireNioOwner(connection.ownerListener(), operation);
+    }
+
+    /** VM-owned, supervisor-only TCP listener, not a per-listener selector. */
+    public VmNioTcpListener listenNioLoopback(
             String host, int port, int backlog, int maxConnections, int maxPending) {
         if (ActorRuntime.inActorExecution())
             throw new SecurityException("nonblocking TCP listeners are supervisor-only");
@@ -69,15 +83,15 @@ public final class OresContext implements AutoCloseable {
             // Passive cleanup: reactor threads never execute arbitrary host
             // termination subscribers and closed listeners do not retain quota.
             nioListeners.removeIf(NativeNioFutureReactor::isTerminated);
-            if (nioListeners.size() + nioOpening >= MAX_NIO_LISTENERS_PER_CONTEXT)
+            vmNioListeners.removeIf(VmNioTcpListener::isTerminated);
+            if (nioListeners.size() + vmNioListeners.size() + nioOpening >= MAX_NIO_LISTENERS_PER_CONTEXT)
                 throw new RejectedExecutionException("TCP listener capacity exhausted");
             ++nioOpening;
         }
-        NativeNioFutureReactor reactor;
+        VmNioTcpListener reactor;
         try {
-            reactor = NativeNioFutureReactor.loopback(
-                    port, backlog, maxConnections, maxPending,
-                    vm::dispatchHostIoMapping);
+            reactor = VmNioTcpListener.loopback(
+                    vm.nioReadiness(), port, backlog, maxConnections, maxPending);
         } catch (java.io.IOException failure) {
             synchronized (nioLifecycle) {
                 --nioOpening;
@@ -98,11 +112,11 @@ public final class OresContext implements AutoCloseable {
             // its selector thread.
             if (nioContextClosed) {
                 reactor.close();
-                nioListeners.add(reactor);
+                vmNioListeners.add(reactor);
                 nioLifecycle.notifyAll();
                 throw new IllegalStateException("TCP context closed during listener admission");
             }
-            nioListeners.add(reactor);
+            vmNioListeners.add(reactor);
             nioLifecycle.notifyAll();
         }
         return reactor;
@@ -513,6 +527,7 @@ public final class OresContext implements AutoCloseable {
                     "OresContext shutdown requires an external trusted host thread");
         }
         java.util.Set<NativeNioFutureReactor> closingNio;
+        java.util.Set<VmNioTcpListener> closingVmNio;
         final long deadline = System.nanoTime()
                 + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
         synchronized (nioLifecycle) {
@@ -533,7 +548,11 @@ public final class OresContext implements AutoCloseable {
                 }
             }
             closingNio = java.util.Set.copyOf(nioListeners);
+            closingVmNio = java.util.Set.copyOf(vmNioListeners);
         }
+        // The VM selector remains alive until vm.close(), so close all
+        // source listener descriptors before it begins terminal NIO draining.
+        for (VmNioTcpListener listener : closingVmNio) listener.close();
         for (NativeNioFutureReactor reactor : closingNio) reactor.close();
         // No reactor is allowed to complete a Future into a destroyed CONTROL
         // mapping executor. Joining selector threads is reserved to the host.
@@ -553,6 +572,7 @@ public final class OresContext implements AutoCloseable {
         }
         synchronized (nioLifecycle) {
             nioListeners.removeIf(NativeNioFutureReactor::isTerminated);
+            vmNioListeners.removeIf(VmNioTcpListener::isTerminated);
         }
         nativeIo.close();
         http.close();
