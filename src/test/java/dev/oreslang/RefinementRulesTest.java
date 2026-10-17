@@ -72,6 +72,32 @@ final class RefinementRulesTest {
                         new Ast.RefinementBound("value","ne",Long.MAX_VALUE))));
     }
 
+    @Test void minimumSignedInt64BoundAndImpossibleNeighbors() {
+        Ast.TypeAliasDecl min = alias("type Min = int with value eq -9223372036854775808;");
+        var interval = RefinementRules.normalize(min.target(), min.refinement().bounds());
+        assertEquals(Long.MIN_VALUE, interval.min());
+        assertEquals(Long.MIN_VALUE, interval.max());
+        assertTrue(interval.contains(Long.MIN_VALUE));
+        assertFalse(interval.contains(Long.MIN_VALUE + 1));
+        assertTrue(RefinementRules.accepts(min.target(), min.refinement(), Long.MIN_VALUE));
+
+        Ast.TypeAliasDecl minSymbol = alias("type Min = int with value >= -9223372036854775808 and value <= -9223372036854775808;");
+        assertEquals(interval, RefinementRules.normalize(minSymbol.target(), minSymbol.refinement().bounds()));
+        assertThrows(IllegalArgumentException.class, () ->
+                alias("type Bad = int with value lt -9223372036854775808;"));
+        assertThrows(IllegalArgumentException.class, () ->
+                alias("type Bad = int with value eq -9223372036854775809;"));
+        assertThrows(IllegalArgumentException.class, () ->
+                alias("type Bad = int with value eq 9223372036854775808;"));
+    }
+
+    @Test void excludedIntegerIntervalsCannotBeEmpty() {
+        assertThrows(IllegalArgumentException.class, () ->
+                alias("type Empty = int with value gte 3 and value lte 4 and value ne 3 and value ne 4;"));
+        assertThrows(IllegalArgumentException.class, () ->
+                alias("type Empty = int with value gte -9223372036854775808 and value lte -9223372036854775807 and value ne -9223372036854775808 and value ne -9223372036854775807;"));
+    }
+
     @Test void unverifiedWhereIsNotExecutable() {
         Ast.TypeAliasDecl where = alias("type NonBlank = string where it.trim().length > 0;");
         assertThrows(UnsupportedOperationException.class,
