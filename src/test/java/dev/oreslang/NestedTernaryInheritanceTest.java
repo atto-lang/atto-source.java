@@ -257,6 +257,17 @@ final class NestedTernaryInheritanceTest {
     }
 
     @Test
+    void inheritedMoveOnlyFallbackIsCheckedAsMutuallyExclusiveBranches() {
+        var program = Parser.parse("""
+                pub fnc choose(bool outer, bool inner, any fallback): any {
+                    return outer ? (inner ? 3) : fallback;
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+        assertDoesNotThrow(() -> dev.oreslang.types.OwnershipChecker.check(program));
+    }
+
+    @Test
     void noMissingTopLevelElseOrInvalidInheritancePosition() {
         reject("pub fnc bad(): int { return true ? 1; }");
         reject("pub fnc bad(): int { return true ? 1 : (false ? 2); }");
