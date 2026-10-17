@@ -25,6 +25,10 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact source head before policy-gate tests
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Validate shared vector schema only (not runtime proof)
         run: python3 contracts/v1/verify_scoped_permissions.py --validate-only
       - name: Negative report-gate unit tests only (not guest execution)
@@ -40,10 +44,15 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact source head before Java policy tests
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Configure GraalVM JDK 25 for actual Java policy tests
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
           java-version: '25'
           distribution: 'graalvm'
-      - name: Execute all 44 reviewed cases against RuntimePermissions and IsolatePolicy
+      - name: Execute all 52 reviewed cases against RuntimePermissions and IsolatePolicy
         run: mvn -B -ntp -Dtest=ScopedPermissionV1GoldenTest test
