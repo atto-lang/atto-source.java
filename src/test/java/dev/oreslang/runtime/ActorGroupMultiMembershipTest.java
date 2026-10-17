@@ -271,4 +271,37 @@ final class ActorGroupMultiMembershipTest {
             assertEquals(0, a.memberCount() + b.memberCount() + c.memberCount());
         }
     }
+
+    @Test
+    void rawJoinCapabilityCannotCrossOrdinaryDataMailboxes() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability capability = group.joinCapability();
+
+            ActorRuntime.ActorRef<Object> shared = runtime.spawnSharedTrusted(
+                    IsolatePolicy.developer(),
+                    ignored -> (message, context) -> { });
+            ActorRuntime.ActorRef<Object> privateActor = runtime.spawnPrivateTrusted(
+                    ignored -> (message, context) -> { });
+
+            for (Object payload : java.util.List.of(
+                    capability,
+                    java.util.List.of(capability),
+                    java.util.Map.of("invite", capability))) {
+                IllegalArgumentException sharedFailure = assertThrows(
+                        IllegalArgumentException.class, () -> shared.send(payload));
+                assertTrue(sharedFailure.getMessage().contains("CONTROL invitation"),
+                        sharedFailure::getMessage);
+
+                IllegalArgumentException privateFailure = assertThrows(
+                        IllegalArgumentException.class, () -> privateActor.send(payload));
+                assertTrue(privateFailure.getMessage().contains("CONTROL invitation"),
+                        privateFailure::getMessage);
+            }
+
+            shared.stop();
+            privateActor.stop();
+        }
+    }
+
 }
