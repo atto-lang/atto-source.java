@@ -5,21 +5,21 @@
 // the actual table and ActorRef lifecycle; entries remain incarnation fenced.
 define module OtpRegistry as
 
-  pub define class Entry<Name, Ref> as
+  pub define class Entry<Name, TargetRef> as
     pub val Name name;
-    pub val Ref ref;
+    pub val TargetRef actor_ref;
     pub val int incarnation;
   end
 
-  pub fnc entry<Name, Ref>(
+  pub fnc entry<Name, TargetRef>(
     Name name,
-    Ref ref,
+    TargetRef actor_ref,
     int incarnation
-  ): Result<Entry<Name, Ref>, String> {
+  ): Result<Entry<Name, TargetRef>, String> {
     if incarnation <= 0; do
       return Err("registry incarnation must be positive");
     fi
-    return Ok(new Entry<Name, Ref>(name, ref, incarnation));
+    return Ok(new Entry<Name, TargetRef>(name, ref, incarnation));
   }
 
   pub fnc same_incarnation(
