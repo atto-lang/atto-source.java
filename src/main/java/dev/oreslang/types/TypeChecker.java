@@ -711,12 +711,42 @@ public final class TypeChecker {
         Set<Ast.MethodArity> instanceMethodOverloads = new HashSet<>();
         Set<Ast.MethodArity> staticFunctionOverloads = new HashSet<>();
         for (Ast.MethodDecl method : klass.methods()) {
+            validateIndexProtocolDeclaration(klass, method);
             Set<Ast.MethodArity> overloads = method.isStatic() ? staticFunctionOverloads : instanceMethodOverloads;
             if (!overloads.add(method.overloadIdentity())) {
                 String label = method.isStatic() ? "static function" : "method";
                 throw new IllegalArgumentException(label + " '" + klass.name() + "." + method.name() + "' already has arity " + method.arity()
                         + "; overload identity is name + arity only; parameter types and return types do not participate");
             }
+        }
+    }
+
+    private void validateIndexProtocolDeclaration(Ast.ClassDecl klass, Ast.MethodDecl method) {
+        if (!method.name().equals("Symbol.index") && !method.name().equals("Symbol.indexSet")) return;
+        if (method.isStatic()) {
+            throw new IllegalArgumentException(
+                    "index protocol method '" + klass.name() + "." + method.name() + "' must be an instance method");
+        }
+        if (method.async() || method.suspends() || method.generator()) {
+            throw new IllegalArgumentException(
+                    "index protocol method '" + klass.name() + "." + method.name()
+                            + "' must be synchronous and non-generator");
+        }
+        if (method.name().equals("Symbol.index")) {
+            if (method.parameters().isEmpty()) {
+                throw new IllegalArgumentException("[Symbol.index] requires at least one index parameter");
+            }
+            if (method.returnType().name().equals("void")) {
+                throw new IllegalArgumentException("[Symbol.index] must return a value");
+            }
+            return;
+        }
+        if (method.parameters().size() < 2) {
+            throw new IllegalArgumentException(
+                    "[Symbol.indexSet] requires at least one index parameter plus the assigned value");
+        }
+        if (!method.returnType().name().equals("void")) {
+            throw new IllegalArgumentException("[Symbol.indexSet] must return void");
         }
     }
 
