@@ -31,6 +31,74 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void coldBoundExecutorBootstrapCannotBlockSelectorProgress() throws Exception {
+        var bootstrapEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseBootstrap = new java.util.concurrent.CountDownLatch(1);
+        var callbackPool = java.util.concurrent.Executors.newSingleThreadExecutor(task ->
+                Thread.ofPlatform().daemon(true).name("nio-bound-callback-test").unstarted(task));
+        var first = java.nio.channels.Pipe.open();
+        var second = java.nio.channels.Pipe.open();
+        try (var group = new NioReadinessGroup(1, 16, 16);
+             var firstSource = first.source();
+             var firstSink = first.sink();
+             var secondSource = second.source();
+             var secondSink = second.sink()) {
+            firstSource.configureBlocking(false);
+            secondSource.configureBlocking(false);
+
+            var coldTargetCalls = new java.util.concurrent.atomic.AtomicInteger();
+            group.bindVmCompletionExecutor(command -> {
+                if (coldTargetCalls.getAndIncrement() == 0) {
+                    bootstrapEntered.countDown();
+                    try {
+                        if (!releaseBootstrap.await(3, TimeUnit.SECONDS))
+                            throw new RejectedExecutionException("test bootstrap timed out");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new RejectedExecutionException("test bootstrap interrupted", interrupted);
+                    }
+                }
+                callbackPool.execute(command);
+            });
+
+            var firstReady = group.watch(firstSource, SelectionKey.OP_READ);
+            var secondReady = group.watch(secondSource, SelectionKey.OP_READ);
+            assertEquals(0, group.completionCarrierCount(),
+                    "pending I/O alone must not start the bootstrap helper");
+            assertEquals(1, group.reactorCount());
+
+            firstSink.write(java.nio.ByteBuffer.wrap(new byte[] {1}));
+            secondSink.write(java.nio.ByteBuffer.wrap(new byte[] {2}));
+            assertTrue(bootstrapEntered.await(2, TimeUnit.SECONDS),
+                    "first runnable completion must bootstrap the cold bound executor off-selector");
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (group.pendingCount() != 0 && System.nanoTime() < deadline)
+                Thread.sleep(1);
+            assertEquals(0, group.pendingCount(),
+                    "selector must continue retiring ready watches while bound bootstrap is blocked");
+            assertFalse(firstReady.isDone(),
+                    "actual completion remains staged until the bound executor is bootstrapped");
+            assertFalse(secondReady.isDone(),
+                    "all actual completions remain staged; helper executes only a no-op");
+            assertTrue(group.completionCarrierCount() >= 1,
+                    "the transient helper exists only after runnable completion demand");
+
+            releaseBootstrap.countDown();
+            assertTrue((firstReady.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
+            assertTrue((secondReady.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
+            assertEquals(1, group.reactorCount());
+            assertEquals(0, group.pendingNotifications());
+
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+        } finally {
+            releaseBootstrap.countDown();
+            callbackPool.shutdownNow();
+            assertTrue(callbackPool.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void repeatedSameSocketReadRearmsAfterCancelledKeyPurge() throws Exception {
         // A producer can enqueue the next watch as soon as a Future settles.
         // Every next command must register AFTER the old cancelled key is
