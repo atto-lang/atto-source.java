@@ -3317,22 +3317,32 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.ConditionalExpr conditional) {
-                    evalSuspendableExpr(
+                    evalSuspendableCondition(
                             task,
                             conditional.condition(),
                             env,
                             (t, value, failure) -> {
                                 if (failure != null) {
                                     continuation.accept(t, null, failure);
-                                } else {
+                                    return;
+                                }
+                                ConditionResult condition = (ConditionResult) value;
+                                if (!condition.matched()) {
                                     evalSuspendableExpr(
                                             t,
-                                            truth(value)
-                                                    ? conditional.whenTrue()
-                                                    : conditional.whenFalse(),
+                                            conditional.whenFalse(),
                                             env,
                                             continuation);
+                                    return;
                                 }
+                                Env branchEnv = new Env(env);
+                                condition.bindings().forEach((name, bound) ->
+                                        branchEnv.define(name, bound, Ast.BindingKind.VAL));
+                                evalSuspendableExpr(
+                                        t,
+                                        conditional.whenTrue(),
+                                        branchEnv,
+                                        continuation);
                             });
                     return;
                 }
@@ -5739,10 +5749,15 @@ public final class OresEvalRootNode extends RootNode {
                     throw new ReturnSignal(invoke(invocation));
                 }
                 if (value instanceof Ast.ConditionalExpr conditional) {
-                    Ast.Expr selected = truth(eval(conditional.condition(), env))
-                            ? conditional.whenTrue()
-                            : conditional.whenFalse();
-                    returnFrom(selected, env, false);
+                    ConditionResult condition = evalCondition(conditional.condition(), env);
+                    if (!condition.matched()) {
+                        returnFrom(conditional.whenFalse(), env, false);
+                        return;
+                    }
+                    Env branchEnv = new Env(env);
+                    condition.bindings().forEach((name, bound) ->
+                            branchEnv.define(name, bound, Ast.BindingKind.VAL));
+                    returnFrom(conditional.whenTrue(), branchEnv, false);
                     return;
                 }
             }
@@ -5985,7 +6000,6 @@ public final class OresEvalRootNode extends RootNode {
             return env.lookup("Integer") == Env.MISSING
                     && !modules.containsKey("Integer")
                     && findClass("Integer") == null
-                    && findTypeAlias("Integer") == null
                     && !hasFunctionFamily("Integer")
                     && !namedImports.containsKey("Integer")
                     && !namespaceImports.containsKey("Integer")
@@ -6324,9 +6338,12 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("unsupported assignment target");
             }
             if (expr instanceof Ast.ConditionalExpr conditional) {
-                return truth(eval(conditional.condition(), env))
-                        ? eval(conditional.whenTrue(), env)
-                        : eval(conditional.whenFalse(), env);
+                ConditionResult condition = evalCondition(conditional.condition(), env);
+                if (!condition.matched()) return eval(conditional.whenFalse(), env);
+                Env branchEnv = new Env(env);
+                condition.bindings().forEach((name, bound) ->
+                        branchEnv.define(name, bound, Ast.BindingKind.VAL));
+                return eval(conditional.whenTrue(), branchEnv);
             }
             if (expr instanceof Ast.TrapExpr trapped) {
                 try {
@@ -8149,6 +8166,127 @@ public final class OresEvalRootNode extends RootNode {
             } catch (Exception failure) {
                 throw new IllegalStateException("failed to close generator activation", failure);
             }
+        }
+
+        private void evalSuspendableCondition(
+                SourceTask task,
+                Ast.Expr condition,
+                Env env,
+                SourceValueCont continuation) {
+            if (condition instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
+                evalSuspendableCondition(
+                        task,
+                        binary.left(),
+                        env,
+                        (t, leftValue, leftFailure) -> {
+                            if (leftFailure != null) {
+                                continuation.accept(t, null, leftFailure);
+                                return;
+                            }
+                            ConditionResult left = (ConditionResult) leftValue;
+                            if (!left.matched()) {
+                                continuation.accept(t, ConditionResult.noMatch(), null);
+                                return;
+                            }
+                            Env rightEnv = new Env(env);
+                            left.bindings().forEach((name, bound) ->
+                                    rightEnv.define(name, bound, Ast.BindingKind.VAL));
+                            evalSuspendableCondition(
+                                    t,
+                                    binary.right(),
+                                    rightEnv,
+                                    (t2, rightValue, rightFailure) -> {
+                                        if (rightFailure != null) {
+                                            continuation.accept(t2, null, rightFailure);
+                                            return;
+                                        }
+                                        ConditionResult right = (ConditionResult) rightValue;
+                                        if (!right.matched()) {
+                                            continuation.accept(t2, ConditionResult.noMatch(), null);
+                                            return;
+                                        }
+                                        LinkedHashMap<String, Object> merged =
+                                                new LinkedHashMap<>(left.bindings());
+                                        for (Map.Entry<String, Object> entry : right.bindings().entrySet()) {
+                                            Object previous = merged.putIfAbsent(
+                                                    entry.getKey(), entry.getValue());
+                                            if (previous != null && previous != entry.getValue()) {
+                                                continuation.accept(
+                                                        t2,
+                                                        null,
+                                                        new IllegalStateException(
+                                                                "condition pattern binds '"
+                                                                        + entry.getKey()
+                                                                        + "' more than once"));
+                                                return;
+                                            }
+                                        }
+                                        continuation.accept(
+                                                t2,
+                                                new ConditionResult(true, Map.copyOf(merged)),
+                                                null);
+                                    });
+                        });
+                return;
+            }
+            if (condition instanceof Ast.TypeTestExpr test) {
+                evalSuspendableExpr(
+                        task,
+                        test.value(),
+                        env,
+                        (t, value, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            if (!oresTypeMatches(value, test.targetType())) {
+                                continuation.accept(t, ConditionResult.noMatch(), null);
+                                return;
+                            }
+                            continuation.accept(
+                                    t,
+                                    test.binding() == null
+                                            ? ConditionResult.match()
+                                            : new ConditionResult(
+                                                    true,
+                                                    Map.of(test.binding(), value)),
+                                    null);
+                        });
+                return;
+            }
+            if (condition instanceof Ast.PatternTestExpr test) {
+                evalSuspendableExpr(
+                        task,
+                        test.value(),
+                        env,
+                        (t, value, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+                            continuation.accept(
+                                    t,
+                                    patternMatches(test.pattern(), value, bindings)
+                                            ? new ConditionResult(true, Map.copyOf(bindings))
+                                            : ConditionResult.noMatch(),
+                                    null);
+                        });
+                return;
+            }
+            evalSuspendableExpr(
+                    task,
+                    condition,
+                    env,
+                    (t, value, failure) ->
+                            continuation.accept(
+                                    t,
+                                    failure == null
+                                            ? (truth(value)
+                                                ? ConditionResult.match()
+                                                : ConditionResult.noMatch())
+                                            : null,
+                                    failure));
         }
 
         private ConditionResult evalCondition(Ast.Expr condition, Env env) {
