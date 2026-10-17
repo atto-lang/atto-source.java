@@ -85,8 +85,25 @@ final class NativeIoSymlinkBoundaryTest {
                 NativeIo.writeUtf8NoFollow(checked, "corrupted", false));
         assertThrows(IOException.class, () ->
                 NativeIo.writeUtf8NoFollow(checked, "corrupted", true));
+        assertThrows(IOException.class, () -> NativeIo.secureAtomicWrite(checked, "corrupted"));
+        assertThrows(IOException.class, () -> NativeIo.secureRemove(checked));
+        assertThrows(IOException.class, () -> NativeIo.secureListDirectory(parent));
+        assertThrows(IOException.class, () -> NativeIo.secureFileAttributes(checked));
         assertEquals("secret", Files.readString(confidential));
         assertEquals("public", Files.readString(moved.resolve("entry")));
+    }
+
+    @Test
+    void atomicReplaceListingMetadataAndRemovalUseOpenedParent() throws Exception {
+        Path target = directory.resolve("atomic-content");
+        NativeIo.secureAtomicWrite(target, "first");
+        assertEquals("first", NativeIo.readUtf8NoFollow(target));
+        NativeIo.secureAtomicWrite(target, "second");
+        assertEquals("second", NativeIo.readUtf8NoFollow(target));
+        assertTrue(NativeIo.secureFileAttributes(target).isRegularFile());
+        assertTrue(NativeIo.secureListDirectory(directory).contains("atomic-content"));
+        NativeIo.secureRemove(target);
+        assertFalse(Files.exists(target));
     }
 
     @Test
