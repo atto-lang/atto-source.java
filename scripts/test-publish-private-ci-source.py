@@ -31,6 +31,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
+        # Existing transport/TOCTOU tests isolate destination API semantics.
+        # The new independently tested source provenance gate is mocked here,
+        # never in production.
+        for method, kwargs in (("reviewed_source_main", {}),
+                               ("require_pinned_snapshot", {"return_value": D})):
+            guard = patch.object(pub, method, **kwargs)
+            guard.start()
+            self.addCleanup(guard.stop)
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
@@ -421,6 +429,142 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+
+class ProtectedSourceSnapshotGateTests(unittest.TestCase):
+    """No private blob API POST is reachable without protected provenance."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.source = self.root / "source"
+        self.source.mkdir()
+        (self.root / ".github").mkdir()
+        (self.root / "scripts").mkdir()
+        (self.root / ".github/private-ci-approved-repositories.txt").write_text(
+            "trusted/ci\n")
+        (self.root / "scripts/publish-private-ci-source.py").write_bytes(
+            MODULE.read_bytes())
+        (self.root / "scripts/check-private-ci-destination.sh").write_text(
+            "#!/bin/bash\n")
+        (self.source / "hello.ores").write_text("safe\n")
+        self.entries = pub.collect_source(self.source, self.root)
+        self.tree = pub.checked_git_tree(self.entries)
+        self.commit = "a" * 40
+        self.routes = []
+
+    def remote(self, route, method="GET", payload=None):
+        self.routes.append((method, route))
+        if route == "repos/" + pub.SOURCE_REPO + "/branches/main":
+            return {"protected": True}
+        if route.startswith("repos/" + pub.SOURCE_REPO + "/contents/"):
+            path = route.split("/contents/", 1)[1].split("?ref=", 1)[0]
+            data = (self.root / path).read_bytes()
+            digest = hashlib.sha1(
+                b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+            return {"type": "file", "encoding": "base64",
+                    "content": base64.b64encode(data).decode(), "sha": digest}
+        if route == "repos/" + pub.SOURCE_REPO + "/git/commits/" + self.commit:
+            return {"sha": self.commit, "tree": {"sha": self.tree}}
+        raise AssertionError("unexpected source policy route " + route)
+
+    def test_single_file_git_tree_object_matches_exact_known_encoding(self):
+        mode, data = self.entries[0][2], self.entries[0][1]
+        blob = hashlib.sha1(
+            b"blob " + str(len(data)).encode() + b"\0" + data).digest()
+        body = mode.encode() + b" hello.ores\0" + blob
+        expected = hashlib.sha1(
+            b"tree " + str(len(body)).encode() + b"\0" + body).hexdigest()
+        self.assertEqual(self.tree, expected)
+
+    def test_tree_changes_with_content_and_executable_bit(self):
+        alt = [("hello.ores", b"changed\n", "100644")]
+        executable = [("hello.ores", self.entries[0][1], "100755")]
+        self.assertNotEqual(self.tree, pub.checked_git_tree(alt))
+        self.assertNotEqual(self.tree, pub.checked_git_tree(executable))
+
+    def test_nested_paths_have_distinct_git_tree_hash(self):
+        self.assertNotEqual(pub.checked_git_tree(
+            [("hello.ores", b"x", "100644"),
+             ("sub/other.ores", b"y", "100644")]),
+            pub.checked_git_tree(
+            [("hello.ores", b"x", "100644"),
+             ("other.ores", b"y", "100644")]))
+
+    def test_source_commit_and_branch_must_match_exact_tree(self):
+        with patch.object(pub, "gh_api", side_effect=self.remote):
+            self.assertEqual(self.tree, pub.require_pinned_snapshot(
+                "ci/oreslang-" + self.tree, self.commit, self.entries))
+        with patch.object(pub, "gh_api", side_effect=self.remote):
+            with self.assertRaisesRegex(pub.Denied, "source bytes/modes"):
+                pub.require_pinned_snapshot(
+                    "ci/oreslang-" + "f" * 40, self.commit, self.entries)
+        for invalid in ("ci/oreslang-test", "ci/oreslang-" + self.tree.upper(),
+                        "ci/oreslang-" + self.tree[:-1]):
+            with self.assertRaises(pub.Denied):
+                pub.require_pinned_snapshot(invalid, self.commit, self.entries)
+
+    def test_wrong_remote_source_commit_tree_fails_before_any_write(self):
+        def false_tree(route, method="GET", payload=None):
+            if "/git/commits/" in route:
+                return {"sha": self.commit, "tree": {"sha": "0" * 40}}
+            return self.remote(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=false_tree):
+            with self.assertRaisesRegex(pub.Denied, "source commit Git tree"):
+                pub.require_pinned_snapshot(
+                    "ci/oreslang-" + self.tree, self.commit, self.entries)
+
+    def test_protected_source_policy_matches_reviewed_main(self):
+        with patch.object(pub, "gh_api", side_effect=self.remote):
+            pub.reviewed_source_main(self.root, "trusted/ci")
+
+    def test_unprotected_source_main_denied_before_source_reads(self):
+        with patch.object(pub, "gh_api",
+                          return_value={"protected": False}) as request:
+            with self.assertRaisesRegex(pub.Denied, "not protected"):
+                pub.reviewed_source_main(self.root, "trusted/ci")
+            self.assertEqual(request.call_count, 1)
+
+    def test_locally_forged_allowlist_denied(self):
+        original = (self.root / ".github/private-ci-approved-repositories.txt").read_bytes()
+        (self.root / ".github/private-ci-approved-repositories.txt").write_text(
+            "trusted/ci\nunreviewed/destination\n")
+        def unchanged_remote(route, method="GET", payload=None):
+            if route.endswith("/contents/.github/private-ci-approved-repositories.txt?ref=main"):
+                data = original
+                return {"type": "file", "encoding": "base64",
+                        "content": base64.b64encode(data).decode(),
+                        "sha": hashlib.sha1(
+                            b"blob " + str(len(data)).encode() + b"\0" + data
+                        ).hexdigest()}
+            return self.remote(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=unchanged_remote):
+            with self.assertRaisesRegex(pub.Denied, "differs from protected main"):
+                pub.reviewed_source_main(self.root, "trusted/ci")
+
+    def test_modified_local_publisher_denied(self):
+        clean = (self.root / "scripts/publish-private-ci-source.py").read_bytes()
+        def unchanged_remote(route, method="GET", payload=None):
+            if route.endswith("/contents/scripts/publish-private-ci-source.py?ref=main"):
+                return {"type": "file", "encoding": "base64",
+                        "content": base64.b64encode(clean).decode(),
+                        "sha": hashlib.sha1(
+                            b"blob " + str(len(clean)).encode() + b"\0" + clean
+                        ).hexdigest()}
+            return self.remote(route, method, payload)
+        (self.root / "scripts/publish-private-ci-source.py").write_bytes(clean+b"\n# modified")
+        with patch.object(pub, "gh_api", side_effect=unchanged_remote):
+            with self.assertRaisesRegex(pub.Denied, "differs from protected main"):
+                pub.reviewed_source_main(self.root, "trusted/ci")
+
+    def test_invalid_git_path_and_duplicate_collisions_denied(self):
+        for entries in ([("../secret", b"x", "100644")],
+                        [("same", b"x", "100644"), ("same", b"y", "100644")],
+                        [("a", b"x", "100644"), ("a/x", b"y", "100644")],
+                        [("wrong", b"x", "120000")]):
+            with self.subTest(entries=entries), self.assertRaises(pub.Denied):
+                pub.checked_git_tree(entries)
 
 
 if __name__ == "__main__":
