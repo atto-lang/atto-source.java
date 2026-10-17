@@ -264,7 +264,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
      * monitor. The reactor caller must handle rejection by retaining its
      * completion reservation and retrying after a carrier-capacity signal.
      *
-     * The queue offer uses only ArrayBlockingQueue's short Java monitor. It
+     * The queue offer still uses ArrayBlockingQueue's short internal lock. It
      * must NEVER call ensureNativeStarted(), nativeStart(), or start threads.
      * This is not a wait-free queue and not a real-time hot-path guarantee.
      */
