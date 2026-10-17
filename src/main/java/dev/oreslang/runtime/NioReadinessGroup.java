@@ -81,7 +81,35 @@ public final class NioReadinessGroup implements AutoCloseable {
     // the VM budget, never an extra NIO completion worker. Installed once
     // before first watch; standalone host groups retain the legacy pool.
     private volatile Executor boundCompletionExecutor;
-    private final ConcurrentLinkedDeque<Runnable> stagedNotifications =
+    // A rejected submission is not proof that an arbitrary host Executor
+    // never invoked or scheduled the task. Preserve one claim token across
+    // retries so a callback (and its notification reservation) runs once.
+    private final class NotificationDelivery implements Runnable {
+        private final Runnable notification;
+        private final AtomicBoolean claimed = new AtomicBoolean();
+        private final AtomicBoolean mayBeQueuedAfterRejection = new AtomicBoolean();
+
+        NotificationDelivery(Runnable notification) {
+            this.notification = notification;
+        }
+
+        @Override public void run() {
+            // A Runnable::run executor is legal, but must not turn the
+            // selector into a subscriber execution lane.
+            if (Boolean.TRUE.equals(ON_REACTOR.get()))
+                throw new RejectedExecutionException(
+                        "NIO completion callback cannot execute on reactor thread");
+            if (!claimed.compareAndSet(false, true)) return;
+            // A nonconforming executor may schedule and then reject. If that
+            // original task wins after being requeued, discard the stale
+            // retry without re-delivering or leaking a queued reference.
+            if (mayBeQueuedAfterRejection.get())
+                stagedNotifications.remove(this);
+            OresVM.runAsNioWorker(notification);
+        }
+    }
+
+    private final ConcurrentLinkedDeque<NotificationDelivery> stagedNotifications =
             new ConcurrentLinkedDeque<>();
     private final Object notificationDispatch = new Object();
     private final Object notificationDrain = new Object();
@@ -191,7 +219,7 @@ public final class NioReadinessGroup implements AutoCloseable {
         if (boundCompletionExecutor == null && ownedCompletionExecutor != null) {
             completionExecutor.execute(notification);
         } else {
-            stagedNotifications.addLast(notification);
+            stagedNotifications.addLast(new NotificationDelivery(notification));
             retryStagedNotifications();
         }
     }
@@ -210,21 +238,22 @@ public final class NioReadinessGroup implements AutoCloseable {
                 // Claim before invoking an arbitrary Executor: an inline
                 // completion may re-enter this method, and replaying an
                 // unclaimed head can release one notification twice.
-                Runnable next = stagedNotifications.pollFirst();
+                NotificationDelivery next = stagedNotifications.pollFirst();
                 if (next == null) return;
+                if (next.claimed.get()) continue;
                 try {
-                    target.execute(() -> {
-                        if (Boolean.TRUE.equals(ON_REACTOR.get()))
-                            throw new RejectedExecutionException(
-                                    "NIO completion callback cannot execute on reactor thread");
-                        OresVM.runAsNioWorker(next);
-                    });
+                    target.execute(next);
                 } catch (RejectedExecutionException full) {
-                    // Rejections do not transfer ownership. Requeue at the
-                    // front and retry after an actor carrier frees capacity.
-                    // An inline executor is rejected on SELECTOR, not allowed
-                    // to run terminal subscribers in reactor context.
-                    stagedNotifications.addFirst(next);
+                    // An inline callback can itself throw RejectedExecutionException.
+                    // Never replay a delivery that has already claimed execution.
+                    // Keep the same claim token even for an executor that
+                    // improperly accepts a task and then throws rejection.
+                    if (!next.claimed.get()) {
+                        next.mayBeQueuedAfterRejection.set(true);
+                        stagedNotifications.addFirst(next);
+                        // Accepted async work might race this requeue.
+                        if (next.claimed.get()) stagedNotifications.remove(next);
+                    }
                     return;
                 }
             }
