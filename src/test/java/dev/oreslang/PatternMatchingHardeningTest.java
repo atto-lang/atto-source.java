@@ -433,6 +433,73 @@ final class PatternMatchingHardeningTest {
     }
 
     @Test
+    void structuralRuntimeViewsRejectErasedGenericDataPredicates() {
+        for (String field : new String[]{
+                "List<int> items",
+                "Option<int> item"
+        }) {
+            String declaration = field.startsWith("List")
+                    ? "pub val List<string> items = [\"x\"];"
+                    : "pub val Option<string> item = Some(\"x\");";
+            String target = field.startsWith("List")
+                    ? "{ items: List<int> }"
+                    : "{ item: Option<int> }";
+
+            String source = """
+                    define class Base as
+                    end
+
+                    define class Candidate extends Base as
+                      %s
+                    end
+
+                    fnc bad(Base value): int {
+                      match value over
+                        on structural %s narrowed -> {
+                          return 1;
+                        }
+                        on _ -> { return 0; }
+                      end
+                    }
+                    """.formatted(declaration, target);
+
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(
+                    failure.getMessage().contains("erased at runtime")
+                            || failure.getMessage().contains("not reified"),
+                    failure::getMessage);
+        }
+
+        IllegalArgumentException aliased = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type IntList = List<int>;
+
+                        define class Base as
+                        end
+
+                        define class Candidate extends Base as
+                          pub val List<string> items = ["x"];
+                        end
+
+                        fnc bad(Base value): int {
+                          match value over
+                            on structural { items: IntList } narrowed -> {
+                              return 1;
+                            }
+                            on _ -> { return 0; }
+                          end
+                        }
+                        """)));
+        assertTrue(
+                aliased.getMessage().contains("erased at runtime")
+                        || aliased.getMessage().contains("not reified"),
+                aliased::getMessage);
+    }
+
+    @Test
     void structuralRecordCoverageCannotUseNumericWidening() {
         IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
