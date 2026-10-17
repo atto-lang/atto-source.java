@@ -43,6 +43,13 @@ public final class SupervisorFailureControl {
         }
     }
 
+    public record PendingTerminal(long sequence, Notice notice) {
+        public PendingTerminal {
+            if (sequence <= 0) throw new IllegalArgumentException("sequence must be positive");
+            Objects.requireNonNull(notice);
+        }
+    }
+
     private static String bounded(String text) {
         // A Java-char limit is not a UTF-8 wire budget: 1024 supplementary
         // characters can encode to 4096 bytes. Also reject log-line/control
@@ -179,8 +186,10 @@ public final class SupervisorFailureControl {
     public long undelivered() { return undelivered.get(); }
     public long lastPublishedSequence() { return ledger.lastSequence(); }
 
-    public synchronized List<SupervisorTerminalLedger.Record> pendingSnapshot() {
-        return ledger.snapshot();
+    public synchronized List<PendingTerminal> pendingSnapshot() {
+        return ledger.snapshot().stream()
+                .map(record -> new PendingTerminal(record.sequence(), record.notice()))
+                .toList();
     }
 
     public synchronized Optional<String> failure() {
