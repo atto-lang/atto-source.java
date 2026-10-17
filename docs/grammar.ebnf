@@ -37,7 +37,7 @@ module_member   = contract_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
-callable_modifier = "abstract" | "async" | "suspend" | "suspends" | "nlex" | "structural" ;
+callable_modifier = "abstract" | "async" | "suspend" | "suspends" | "nlex" | "structural" | "pure" | "trap" ;
 method_modifier   = "abstract" | "async" | "suspend" | "suspends" | "structural" ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind callable_name [ generic_params ]
@@ -162,7 +162,9 @@ object_pattern  = "{" ( object_rest_item
                                     { "," object_destructure_item }
                                     [ "," object_rest_item ] ) "}" ;
 sequence_destructure_item
-                = [ binding_kind ] IDENT | "_" ;
+                = [ binding_kind ] ( IDENT | "_" | sequence_pattern ) ;
+(* Nested sequence patterns are currently enabled for the Option-aware single-value
+   projection of a TrapResult; other nested destructuring is rejected by type checking. *)
 sequence_rest_item
                 = [ binding_kind ] "..." IDENT ;
 object_destructure_item
@@ -173,6 +175,10 @@ block           = "{" { statement } "}" ;
 statement       = binding_decl
                 | destructure_stmt
                 | return_stmt
+                | throw_stmt
+                | raise_stmt
+                | panic_stmt
+                | recover_stmt
                 | block_stmt
                 | break_stmt
                 | continue_stmt
@@ -188,6 +194,10 @@ statement       = binding_decl
                 | expression stmt_terminator ;
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
+throw_stmt      = "throw" expression stmt_terminator ;
+raise_stmt      = "raise" expression stmt_terminator ;
+panic_stmt      = "panic" expression stmt_terminator ;
+recover_stmt    = "recover" block "catch" "(" IDENT ")" block [ "finally" block ] ;
 defer_stmt      = "defer" expression stmt_terminator ;
 block_stmt      = "block" block ;
 break_stmt      = "break" stmt_terminator ;
