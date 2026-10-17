@@ -185,4 +185,24 @@ final class SupervisorRestartWindowTest {
         assertThrows(IllegalArgumentException.class,
                 () -> SupervisorRestartWindow.saturatingAdd(-1, 0));
     }
+    @Test
+    void signedNanoTimeOriginWrapAndMaxFailureOrdinalAreDeterministic() {
+        var negative = new SupervisorRestartWindow(2, 100);
+        assertTrue(negative.tryAcquire(-100).allowed());
+        assertTrue(negative.tryAcquire(-50).allowed());
+        assertThrows(IllegalArgumentException.class, () -> negative.tryAcquire(-51));
+
+        var crossing = new SupervisorRestartWindow(2, 100);
+        assertTrue(crossing.tryAcquire(Long.MAX_VALUE - 5).allowed());
+        assertTrue(crossing.tryAcquire(Long.MIN_VALUE + 4).allowed());
+        assertEquals(2, crossing.currentAdmissions());
+
+        long first = SupervisorRestartWindow.deterministicJitterNanos(
+                77, Integer.MAX_VALUE, 1_000);
+        long replay = SupervisorRestartWindow.deterministicJitterNanos(
+                77, Integer.MAX_VALUE, 1_000);
+        assertEquals(first, replay);
+        assertTrue(first >= 0 && first <= 1_000);
+    }
+
 }
