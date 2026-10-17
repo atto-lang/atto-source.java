@@ -75,6 +75,19 @@ public final class TypeChecker {
     private final IdentityHashMap<Ast.TypeAliasDecl, String> typeAliasOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
 
+    // Generic parameters that flow into ordinary Channel<T> payload positions
+    // acquire an implicit recursively-data-only obligation. Stage one infers
+    // these obligations from actual source usage; a future surface syntax
+    // (for example T: data) can expose the same contract explicitly.
+    private final IdentityHashMap<Ast.ClassDecl, Set<String>> classChannelDataGenerics =
+            new IdentityHashMap<>();
+    private final IdentityHashMap<Ast.FunctionDecl, Set<String>> functionChannelDataGenerics =
+            new IdentityHashMap<>();
+    private final IdentityHashMap<Ast.MethodDecl, Set<String>> methodChannelDataGenerics =
+            new IdentityHashMap<>();
+    private final Map<String, Set<String>> callableChannelDataGenerics = new HashMap<>();
+    private Set<String> currentChannelDataGenericRequirements;
+
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private final Set<String> ambiguousInterfaces = new HashSet<>();
@@ -294,6 +307,8 @@ public final class TypeChecker {
         for (Ast.ClassDecl klass : classOwners.keySet()) classShape(klass, new LinkedHashSet<>());
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
 
+        discoverChannelDataGenericRequirements(program);
+
         for (Ast.ModuleDecl module : program.modules()) {
             String previousModule = currentLexicalModule;
             currentLexicalModule = module.name();
@@ -313,6 +328,45 @@ public final class TypeChecker {
             } finally {
                 currentLexicalModule = previousModule;
             }
+        }
+    }
+
+    private int channelDataRequirementCount() {
+        int total = callableChannelDataGenerics.values().stream().mapToInt(Set::size).sum();
+        total += classChannelDataGenerics.values().stream().mapToInt(Set::size).sum();
+        total += functionChannelDataGenerics.values().stream().mapToInt(Set::size).sum();
+        total += methodChannelDataGenerics.values().stream().mapToInt(Set::size).sum();
+        return total;
+    }
+
+    private void discoverChannelDataGenericRequirements(Ast.Program program) {
+        Set<String> inferredSnapshot = new HashSet<>(inferredTypeNames);
+        int warningSize = warnings.size();
+        String previousModule = currentLexicalModule;
+        try {
+            while (true) {
+                int before = channelDataRequirementCount();
+                for (Ast.ModuleDecl module : program.modules()) {
+                    currentLexicalModule = module.name();
+                    for (Ast.Decl decl : module.declarations()) {
+                        if (decl instanceof Ast.FunctionDecl fn) {
+                            checkFunction(module.name(), fn);
+                        } else if (decl instanceof Ast.ClassDecl klass) {
+                            checkClass(module.name(), klass);
+                        }
+                    }
+                }
+                int after = channelDataRequirementCount();
+                if (after == before) return;
+            }
+        } finally {
+            currentLexicalModule = previousModule;
+            inferredTypeNames.clear();
+            inferredTypeNames.addAll(inferredSnapshot);
+            if (warnings.size() > warningSize) {
+                warnings.subList(warningSize, warnings.size()).clear();
+            }
+            currentChannelDataGenericRequirements = null;
         }
     }
 
@@ -597,11 +651,17 @@ public final class TypeChecker {
         Set<String> generics = uniqueGenerics(
                 fn.genericParameters(),
                 (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
+        Set<String> previousChannelRequirements = currentChannelDataGenericRequirements;
+        Set<String> inferredChannelRequirements = new LinkedHashSet<>();
+        currentChannelDataGenericRequirements = inferredChannelRequirements;
         validateFunctionGenericDefaults(fn);
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
         List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
+            validateInstantiatedChannelRequirements(
+                    parameterType,
+                    "parameter '" + param.name() + "' of function " + fn.name());
             argumentTypes.add(parameterType);
             if (param.structural() && fn.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
@@ -638,6 +698,8 @@ public final class TypeChecker {
         // : AsyncIterator<int>). The body always checks yields against the
         // element type and calls expose exactly one iterator wrapper.
         Type declaredReturn = resolve(fn.returnType(), generics, null);
+        validateInstantiatedChannelRequirements(
+                declaredReturn, "return type of function " + fn.name());
         Type returns = fn.generator()
                 ? generatorYieldType(fn.async(), declaredReturn)
                 : declaredReturn;
@@ -686,6 +748,19 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
         }
+
+        Set<String> relevantRequirements = new LinkedHashSet<>(inferredChannelRequirements);
+        relevantRequirements.retainAll(generics);
+        mergeChannelDataRequirements(functionChannelDataGenerics, fn, relevantRequirements);
+        mergeChannelDataRequirements(
+                callableChannelDataGenerics,
+                "function " + fn.name() + "/" + fn.parameters().size(),
+                relevantRequirements);
+        mergeChannelDataRequirements(
+                callableChannelDataGenerics,
+                "function " + module + "." + fn.name() + "/" + fn.parameters().size(),
+                relevantRequirements);
+        currentChannelDataGenericRequirements = previousChannelRequirements;
     }
 
     private void validateLocalClassOverloads(Ast.ClassDecl klass) {
@@ -1096,6 +1171,9 @@ public final class TypeChecker {
     }
 
     private void checkClassBody(String module, Ast.ClassDecl klass) {
+        Set<String> previousChannelRequirements = currentChannelDataGenericRequirements;
+        Set<String> inferredClassChannelRequirements = new LinkedHashSet<>();
+        currentChannelDataGenericRequirements = inferredClassChannelRequirements;
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
 
@@ -1196,6 +1274,8 @@ public final class TypeChecker {
                         + "' cannot be public; expose state through mailbox-dispatched methods");
             }
             Type fieldType = classFieldType(klass, field);
+            validateInstantiatedChannelRequirements(
+                    fieldType, "field " + klass.name() + "." + field.name());
             if (field.initializer() != null && field.type() != null) {
                 Ast.ClassDecl previousClassOwner = currentClassOwner;
                 Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
@@ -1236,6 +1316,9 @@ public final class TypeChecker {
             List<Type> constructorArgumentTypes = new ArrayList<>(constructor.parameters().size());
             for (Ast.Param param : constructor.parameters()) {
                 Type parameterType = resolveParam(param, classGenerics, self);
+                validateInstantiatedChannelRequirements(
+                        parameterType,
+                        "constructor parameter '" + param.name() + "' of " + klass.name());
                 constructorArgumentTypes.add(parameterType);
                 constructorEnv.define(
                         param.name(),
@@ -1352,6 +1435,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "generic async static functions require an explicit task-safe/sendable generic bound");
             }
+            Set<String> classRequirementSink = currentChannelDataGenericRequirements;
+            Set<String> inferredMethodChannelRequirements = new LinkedHashSet<>();
+            currentChannelDataGenericRequirements = inferredMethodChannelRequirements;
+
             Set<String> generics = new HashSet<>();
             if (!method.isStatic()) generics.addAll(classGenerics);
             for (String generic : method.genericParameters()) {
@@ -1401,6 +1488,10 @@ public final class TypeChecker {
             List<Type> methodArgumentTypes = new ArrayList<>(method.parameters().size());
             for (Ast.Param param : method.parameters()) {
                 Type parameterType = resolveParam(param, generics, callableSelf);
+                validateInstantiatedChannelRequirements(
+                        parameterType,
+                        "parameter '" + param.name() + "' of "
+                                + klass.name() + "." + method.name());
                 methodArgumentTypes.add(parameterType);
                 if (param.structural() && klass.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
@@ -1436,6 +1527,8 @@ public final class TypeChecker {
             }
             defineImplicitArguments(env, methodArgumentTypes);
             Type returns = resolve(method.returnType(), generics, callableSelf);
+            validateInstantiatedChannelRequirements(
+                    returns, "return type of " + klass.name() + "." + method.name());
             if (actorStartupHook && returns != Primitive.VOID) {
                 throw new IllegalArgumentException(
                         "actor lifecycle hook '" + klass.name() + ".on_start' must return void");
@@ -1470,6 +1563,19 @@ public final class TypeChecker {
                 String label = method.isStatic() ? "static function" : "method";
                 throw new IllegalArgumentException("non-void " + label + " '" + module + "." + klass.name() + "." + method.name() + "' must explicitly return on every path");
             }
+
+            Set<String> relevantMethodRequirements =
+                    new LinkedHashSet<>(inferredMethodChannelRequirements);
+            relevantMethodRequirements.retainAll(generics);
+            mergeChannelDataRequirements(
+                    methodChannelDataGenerics, method, relevantMethodRequirements);
+            String methodLabel =
+                    (method.isStatic() ? "static function " : "method ")
+                            + klass.name() + "." + method.name()
+                            + "/" + method.parameters().size();
+            mergeChannelDataRequirements(
+                    callableChannelDataGenerics, methodLabel, relevantMethodRequirements);
+            currentChannelDataGenericRequirements = classRequirementSink;
         }
 
         Set<String> implemented = new HashSet<>();
@@ -1488,6 +1594,13 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
             }
         }
+
+        Set<String> relevantClassRequirements =
+                new LinkedHashSet<>(inferredClassChannelRequirements);
+        relevantClassRequirements.retainAll(classGenerics);
+        mergeChannelDataRequirements(
+                classChannelDataGenerics, klass, relevantClassRequirements);
+        currentChannelDataGenericRequirements = previousChannelRequirements;
     }
 
     /**
@@ -2958,6 +3071,8 @@ public final class TypeChecker {
                         }
                         for (int i = 0; i < structuralArguments.size(); i++) {
                             Type expected = substituteGenerics(fn.parameters().get(i), bindings);
+                            validateInstantiatedChannelRequirements(
+                                    expected, label + " structural parameter " + (i + 1));
                             if (containsGenericNamed(expected, unbound)) {
                                 throw new IllegalArgumentException(
                                         "cannot infer all generic parameters for "
@@ -2983,6 +3098,8 @@ public final class TypeChecker {
                         }
 
                         Type result = substituteGenerics(fn.result(), bindings);
+                        validateInstantiatedChannelRequirements(
+                                result, label + " structural return");
                         if (containsGenericNamed(result, unbound)) {
                             throw new IllegalArgumentException(
                                     "cannot infer generic return type for " + label
@@ -3560,6 +3677,9 @@ public final class TypeChecker {
                 nominal = named;
             }
 
+            validateInstantiatedChannelRequirements(
+                    nominal, "constructor target " + klass.name());
+
             Ast.ConstructorDecl constructor = klass.constructor();
             if (constructor != null) {
                 if (created.arguments().size() != constructor.arity()) {
@@ -3885,6 +4005,9 @@ public final class TypeChecker {
     }
 
     private void validateChannelPayloadType(Type element, String where) {
+        if (currentChannelDataGenericRequirements != null) {
+            collectGenericNames(element, currentChannelDataGenericRequirements);
+        }
         if (element == Primitive.VOID) {
             throw new IllegalArgumentException(
                     "Channel<void> cannot carry a value; use an explicit signal/unit type");
@@ -3905,6 +4028,147 @@ public final class TypeChecker {
         }
         if (element == Unknown.INSTANCE) {
             throw new IllegalArgumentException(where + " requires a statically resolved channel payload type");
+        }
+    }
+
+    private void collectGenericNames(Type type, Set<String> sink) {
+        if (type == null) return;
+        if (type instanceof Generic generic) {
+            sink.add(generic.name());
+            return;
+        }
+        if (type instanceof SelfType receiverSelf) {
+            collectGenericNames(receiverSelf.bound(), sink);
+            return;
+        }
+        if (type instanceof Borrow borrow) {
+            collectGenericNames(borrow.target(), sink);
+            return;
+        }
+        if (type instanceof ListType list) {
+            collectGenericNames(list.element(), sink);
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            tuple.elements().forEach(element -> collectGenericNames(element, sink));
+            return;
+        }
+        if (type instanceof Union union) {
+            union.options().forEach(option -> collectGenericNames(option, sink));
+            return;
+        }
+        if (type instanceof Types.Not not) {
+            collectGenericNames(not.excluded(), sink);
+            return;
+        }
+        if (type instanceof Named named) {
+            named.arguments().forEach(argument -> collectGenericNames(argument, sink));
+            return;
+        }
+        if (type instanceof Function fn) {
+            fn.parameters().forEach(parameter -> collectGenericNames(parameter, sink));
+            collectGenericNames(fn.result(), sink);
+            return;
+        }
+        if (type instanceof Record record) {
+            record.members().values().forEach(member -> collectGenericNames(member, sink));
+        }
+    }
+
+    private void mergeChannelDataRequirements(
+            Map<String, Set<String>> target, String key, Set<String> requirements) {
+        if (requirements.isEmpty()) return;
+        Set<String> merged = new LinkedHashSet<>(target.getOrDefault(key, Set.of()));
+        merged.addAll(requirements);
+        target.put(key, Set.copyOf(merged));
+    }
+
+    private <T> void mergeChannelDataRequirements(
+            IdentityHashMap<T, Set<String>> target, T key, Set<String> requirements) {
+        if (requirements.isEmpty()) return;
+        Set<String> merged = new LinkedHashSet<>(target.getOrDefault(key, Set.of()));
+        merged.addAll(requirements);
+        target.put(key, Set.copyOf(merged));
+    }
+
+    private void requireChannelDataBindings(
+            Set<String> required, Map<String, Type> bindings, String where) {
+        for (String generic : required) {
+            Type concrete = bindings.get(generic);
+            if (concrete == null) continue;
+            validateChannelPayloadType(
+                    concrete,
+                    where + " generic '" + generic + "'");
+        }
+    }
+
+    private void validateInstantiatedChannelRequirements(Type type, String where) {
+        validateInstantiatedChannelRequirements(type, where, new LinkedHashSet<>());
+    }
+
+    private void validateInstantiatedChannelRequirements(
+            Type type, String where, Set<String> seenNominals) {
+        if (type == null || type == Unknown.INSTANCE || type instanceof Generic) return;
+        if (type instanceof SelfType receiverSelf) {
+            validateInstantiatedChannelRequirements(receiverSelf.bound(), where, seenNominals);
+            return;
+        }
+        if (type instanceof Borrow borrow) {
+            validateInstantiatedChannelRequirements(borrow.target(), where, seenNominals);
+            return;
+        }
+        if (type instanceof ListType list) {
+            validateInstantiatedChannelRequirements(list.element(), where, seenNominals);
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            tuple.elements().forEach(element ->
+                    validateInstantiatedChannelRequirements(element, where, seenNominals));
+            return;
+        }
+        if (type instanceof Union union) {
+            union.options().forEach(option ->
+                    validateInstantiatedChannelRequirements(option, where, seenNominals));
+            return;
+        }
+        if (type instanceof Types.Not not) {
+            validateInstantiatedChannelRequirements(not.excluded(), where, seenNominals);
+            return;
+        }
+        if (type instanceof Function fn) {
+            fn.parameters().forEach(parameter ->
+                    validateInstantiatedChannelRequirements(parameter, where, seenNominals));
+            validateInstantiatedChannelRequirements(fn.result(), where, seenNominals);
+            return;
+        }
+        if (type instanceof Record record) {
+            record.members().values().forEach(member ->
+                    validateInstantiatedChannelRequirements(member, where, seenNominals));
+            return;
+        }
+        if (!(type instanceof Named named)) return;
+
+        if (named.name().equals("Channel") && named.arguments().size() == 1) {
+            validateChannelPayloadType(named.arguments().getFirst(), where + " Channel<T>");
+            return;
+        }
+        for (Type argument : named.arguments()) {
+            validateInstantiatedChannelRequirements(argument, where, seenNominals);
+        }
+
+        Ast.ClassDecl klass = findClass(named.name());
+        if (klass == null || named.arguments().size() != klass.genericParameters().size()) return;
+        String key = qualifiedClassName(klass) + named.arguments();
+        if (!seenNominals.add(key)) return;
+        try {
+            Map<String, Type> bindings =
+                    genericBindings(klass.genericParameters(), named.arguments(), "class " + klass.name());
+            requireChannelDataBindings(
+                    classChannelDataGenerics.getOrDefault(klass, Set.of()),
+                    bindings,
+                    where + " class " + klass.name());
+        } finally {
+            seenNominals.remove(key);
         }
     }
 
@@ -7386,12 +7650,19 @@ public final class TypeChecker {
                 type -> containsGenericNamed(type, unique),
                 label);
         GenericCallArguments.requireBound(genericNames, bindings, label);
+        requireChannelDataBindings(
+                callableChannelDataGenerics.getOrDefault(
+                        label + "/" + params.size(), Set.of()),
+                bindings,
+                label);
         Set<String> unbound = new HashSet<>(unique);
         unbound.removeAll(bindings.keySet());
 
 
         for (int i = 0; i < expanded.size(); i++) {
             Type expected = substituteGenerics(patterns.get(i), bindings);
+            validateInstantiatedChannelRequirements(
+                    expected, label + " parameter " + (i + 1));
             if (containsGenericNamed(expected, unbound)) {
                 throw new IllegalArgumentException("cannot infer all generic parameters for " + label + " from argument " + (i + 1));
             }
@@ -7417,6 +7688,7 @@ public final class TypeChecker {
         }
 
         Type result = substituteGenerics(resolve(returnRef, unique, callableSelf), bindings);
+        validateInstantiatedChannelRequirements(result, label + " return");
         if (containsGenericNamed(result, unbound)) {
             throw new IllegalArgumentException("cannot infer generic return type for " + label + "; add an inferable value parameter");
         }
