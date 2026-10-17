@@ -76,7 +76,8 @@ public final class OresContext implements AutoCloseable {
         NativeNioFutureReactor reactor;
         try {
             reactor = NativeNioFutureReactor.loopback(
-                    port, backlog, maxConnections, maxPending);
+                    port, backlog, maxConnections, maxPending,
+                    vm::dispatchHostIoMapping);
         } catch (java.io.IOException failure) {
             synchronized (nioLifecycle) { --nioOpening; }
             throw new IllegalStateException("nonblocking TCP listen failed", failure);
