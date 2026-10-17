@@ -1,8 +1,10 @@
 package dev.oreslang;
 
 import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -39,6 +41,187 @@ final class NumericComplexIntegrationTest {
                     && ((1e-300 + 1e-300i) / (1e-300 + 1e-300i)) eq 1
                     && (5e-324i / 5e-324i) eq 1;
                 """));
+    }
+
+    @Test
+    void complexIntegralPromotionRequiresExactBinary64Range() {
+        assertTrue(evaluatesTrue("""
+                return (9007199254740992 + 1i)
+                        eq (9007199254740992.0 + 1i)
+                    && (-9007199254740992 + 1i)
+                        eq (-9007199254740992.0 + 1i);
+                """));
+
+        for (String literal : new String[] {
+                "9007199254740993",
+                "-9007199254740993"
+        }) {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build()) {
+                PolyglotException failure = assertThrows(
+                        PolyglotException.class,
+                        () -> context.eval(OresLanguage.ID, """
+                                pub routine main(): complex {
+                                  return %s + 1i;
+                                }
+                                """.formatted(literal)));
+                assertTrue(failure.getMessage().contains("exact binary64 range"),
+                        failure::toString);
+            }
+        }
+    }
+
+    @Test
+    void complexIntegralVariablePromotionAlsoRequiresExactBinary64RangeAtRuntime() {
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            PolyglotException failure = assertThrows(
+                    PolyglotException.class,
+                    () -> context.eval(OresLanguage.ID, """
+                            pub routine main(): complex {
+                              val int value = 9007199254740993;
+                              return value + 1i;
+                            }
+                            """));
+            assertTrue(failure.getMessage().contains("exact binary64 range"),
+                    failure::toString);
+        }
+    }
+
+    @Test
+    void complexOrderingAndRemainderAreRejectedStatically() {
+        for (String body : new String[] {
+                "return (1.0 + 2.0i) < (3.0 + 4.0i);",
+                "return (1.0 + 2.0i) % (3.0 + 4.0i);"
+        }) {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build()) {
+                PolyglotException failure = assertThrows(
+                        PolyglotException.class,
+                        () -> context.eval(OresLanguage.ID, """
+                                pub routine main(): bool {
+                                  %s
+                                }
+                                """.formatted(body)));
+                assertTrue(failure.getMessage().contains("complex ordering")
+                                || failure.getMessage().contains("complex remainder"),
+                        failure::toString);
+            }
+        }
+    }
+
+    @Test
+    void declaredComplexReturnUsesTheSameExactPromotionBoundary() {
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub fnc exactPositive(): complex {
+                      return 9007199254740992;
+                    }
+                    pub fnc exactNegative(): complex {
+                      return -9007199254740992;
+                    }
+                    pub routine main(): bool {
+                      return exactPositive() eq (9007199254740992.0 + 0i)
+                          && exactNegative() eq (-9007199254740992.0 + 0i);
+                    }
+                    """).asBoolean());
+        }
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            PolyglotException literalFailure = assertThrows(
+                    PolyglotException.class,
+                    () -> context.eval(OresLanguage.ID, """
+                            pub routine main(): complex {
+                              return 9007199254740993;
+                            }
+                            """));
+            assertTrue(literalFailure.getMessage().contains("exact binary64 range"),
+                    literalFailure::toString);
+        }
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            PolyglotException variableFailure = assertThrows(
+                    PolyglotException.class,
+                    () -> context.eval(OresLanguage.ID, """
+                            pub routine main(): complex {
+                              val int value = 9007199254740993;
+                              return value;
+                            }
+                            """));
+            assertTrue(variableFailure.getMessage().contains("exact binary64 range"),
+                    variableFailure::toString);
+        }
+    }
+
+    @Test
+    void complex64ReturnDoesNotSilentlyReuseBinary64Complex() {
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            PolyglotException failure = assertThrows(
+                    PolyglotException.class,
+                    () -> context.eval(OresLanguage.ID, """
+                            pub routine main(): complex64 {
+                              return 1.0i;
+                            }
+                            """));
+            assertTrue(failure.getMessage().contains("dedicated binary32 complex precision contract"),
+                    failure::toString);
+        }
+    }
+
+    @Test
+    void declaredComplexBindingsAndParametersEnforceExactPromotion() {
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub fnc identity(complex value): complex {
+                      return value;
+                    }
+                    pub routine main(): bool {
+                      val int raw = 9007199254740992;
+                      val complex local = raw;
+                      return local eq (9007199254740992.0 + 0i)
+                          && identity(raw) eq (9007199254740992.0 + 0i);
+                    }
+                    """).asBoolean());
+        }
+
+        for (String source : new String[] {
+                """
+                pub routine main(): complex {
+                  val complex value = 9007199254740993;
+                  return value;
+                }
+                """,
+                """
+                pub routine main(): complex {
+                  val int raw = 9007199254740993;
+                  val complex value = raw;
+                  return value;
+                }
+                """,
+                """
+                pub fnc identity(complex value): complex {
+                  return value;
+                }
+                pub routine main(): complex {
+                  val int raw = 9007199254740993;
+                  return identity(raw);
+                }
+                """
+        }) {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build()) {
+                PolyglotException failure = assertThrows(
+                        PolyglotException.class,
+                        () -> context.eval(OresLanguage.ID, source));
+                assertTrue(failure.getMessage().contains("exact binary64 range"),
+                        failure::toString);
+            }
+        }
     }
 
     @Test
