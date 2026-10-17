@@ -9,6 +9,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/ActorReliabilityKernelTest.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorRestartWindowTest.java'
       - 'docs/ACTOR_RELIABILITY_KERNEL_V1.md'
+      - 'scripts/verify_actor_reliability_kernel.py'
       - '.github/workflows/actor-reliability-kernel.yml'
   workflow_dispatch:
 
@@ -29,6 +30,8 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
           cache: maven
+      - name: Run finite reliability admission model
+        run: python3 scripts/verify_actor_reliability_kernel.py
       - name: Run reliability, watchdog, root-fault and send-contract tests
         run: >
           mvn -B -ntp
