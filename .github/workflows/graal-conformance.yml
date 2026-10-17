@@ -68,7 +68,7 @@ jobs:
             --backend java \
             --compiler "$(command -v python3)" \
             --java-probe "$(realpath contracts/v1/java_probe.py)" \
-            --source-sha "${{ github.sha }}" \
+            --source-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
             --report target/ai-conformance-graal.json
       - name: Validate Java borrow and semantic diagnostic cases
         run: python3 contracts/v1/semantics/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --run-command 'python3 contracts/v1/java_probe.py {source} --execute' --revision "${{ github.event.pull_request.head.sha || github.sha }}" --report target/semantics-graal.json
