@@ -335,6 +335,76 @@ jobs:
                                ", ".join(sorted(names - witnessed)))
           print("VERIFIED_OPTION_PATTERN_JUNIT_METHODS=13")
           PY
+      - name: Execute pinned nine-case Option admission and real guest exits
+        if: ${{ inputs.verify_option_pattern == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Independently pin the shared v1 checker and fixture blobs. Candidate
+          # code must not silently replace the oracle before evidence is read.
+          test "$(git hash-object contracts/v1/option-pattern-v1.json)" = \
+            'bb2302e138f4b36d68afd6ffa9280b24fa270d04'
+          test "$(git hash-object scripts/check_option_pattern_contract.py)" = \
+            '77a30027582d2496d5e7087a9a51a75c075496cd'
+          mvn -B -ntp -q dependency:build-classpath \
+            -Dmdep.outputFile=target/conformance-classpath.txt
+          python3 scripts/check_option_pattern_contract.py --backend graal \
+            --revision "$APPROVED_CANDIDATE_SHA" \
+            --report "$RUNNER_TEMP/option-pattern-private-candidate.json" \
+            --run-command 'python3 contracts/v1/java_probe.py {source} --execute' \
+            -- python3 contracts/v1/java_probe.py '{source}'
+      - name: Attest pinned Option guest exit matrix without candidate-supplied verifier
+        if: ${{ inputs.verify_option_pattern == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"]) / "option-pattern-private-candidate.json"
+          if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size < 128 * 1024:
+              raise SystemExit("Option admission proof missing or untrusted")
+          report = json.loads(path.read_text(encoding="utf-8"))
+          if (report.get("suite") != "oreslang.option-if-matches.v1"
+                  or report.get("backend") != "graal"
+                  or report.get("revision") != os.environ["APPROVED_CANDIDATE_SHA"]
+                  or report.get("status") != "reference_admission_and_runtime_verified"):
+              raise SystemExit("Option admission proof identity or result mismatch")
+          expected = {
+              "some.foo": ("accept", 42),
+              "none.fallback": ("accept", 7),
+              "and.refinement": ("accept", 43),
+              "scope.after-fi": ("reject", None),
+              "scope.else": ("reject", None),
+              "scope.or": ("reject", None),
+              "no-implicit-option": ("reject", None),
+              "ownership.projected-double-move": ("reject", None),
+              "ownership.projected-copy": ("accept", 0),
+          }
+          cases = report.get("cases")
+          if not isinstance(cases, list) or len(cases) != len(expected):
+              raise SystemExit("Incomplete Option-pattern source admission report")
+          seen = set()
+          for case in cases:
+              if not isinstance(case, dict):
+                  raise SystemExit("Malformed Option-pattern case report")
+              name = case.get("id")
+              if name in seen or name not in expected:
+                  raise SystemExit("Duplicate/unknown Option-pattern case")
+              seen.add(name)
+              mode, exit_code = expected[name]
+              if (case.get("expected_reference") != mode
+                      or case.get("verified") is not True
+                      or case.get("compiler_exit") != (0 if mode == "accept" else 1)
+                      or case.get("runtime_exit") != exit_code):
+                  raise SystemExit("Option compiler/guest exit mismatch: " + name)
+          if seen != set(expected):
+              raise SystemExit("Missing Option guest test: " +
+                               ", ".join(sorted(set(expected) - seen)))
+          print("VERIFIED_OPTION_PATTERN_GUEST_CASES=9")
+          PY
       - name: Full Java 25 Maven candidate verification
         # Clean again so focused security/actor reports cannot masquerade as a
         # complete full-suite verification run.
