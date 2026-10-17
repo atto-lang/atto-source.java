@@ -171,6 +171,34 @@ public final class RefinementRules {
             Long metric = scalarMetric(base, raw);
             return metric != null && withinBounds(metric, min, max, excluded);
         }
+
+        /**
+         * The descriptor—not source annotation order—is authoritative for
+         * the inferred output type. Equivalent schemas produce IDENTICAL
+         * normalized Ast.RefinementSpec values as well as matching runtime
+         * acceptance sets and ABI fingerprints.
+         *
+         * An unbounded structural schema retains the original primitive
+         * type (null refinement). An unbounded nominal schema remains a
+         * distinct identity-bearing newtype.
+         */
+        public Ast.RefinementSpec inferredRefinement() {
+            String metricName = base.equals("int") ? "value" : "length";
+            long baseMinimum = base.equals("int") ? Long.MIN_VALUE : 0L;
+            List<Ast.RefinementBound> canonical = new java.util.ArrayList<>();
+            if (min == max) {
+                canonical.add(new Ast.RefinementBound(metricName, "eq", min));
+            } else {
+                if (min != baseMinimum)
+                    canonical.add(new Ast.RefinementBound(metricName, "gte", min));
+                if (max != Long.MAX_VALUE)
+                    canonical.add(new Ast.RefinementBound(metricName, "lte", max));
+            }
+            for (long hole : excluded)
+                canonical.add(new Ast.RefinementBound(metricName, "ne", hole));
+            if (canonical.isEmpty() && nominalIdentity.isEmpty()) return null;
+            return new Ast.RefinementSpec(canonical, null, !nominalIdentity.isEmpty());
+        }
     }
 
     private static String fingerprintFor(String base, String property,
