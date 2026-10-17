@@ -135,11 +135,11 @@ public final class RefinementSyntax {
     private static String operator(String token) {
         return switch (token) {
             case "eq", "==" -> "eq";
-            case "ne", "neq", "!=" -> "ne";
+            case "ne", "!=" -> "ne";
             case "gt", ">" -> "gt";
-            case "ge", ">=" -> "ge";
+            case "gte", ">=" -> "ge";
             case "lt", "<" -> "lt";
-            case "le", "<=" -> "le";
+            case "lte", "<=" -> "le";
             default -> throw new IllegalArgumentException("unknown refinement comparator " + token);
         };
     }
