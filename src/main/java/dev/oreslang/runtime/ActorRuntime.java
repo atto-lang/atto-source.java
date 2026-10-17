@@ -440,6 +440,7 @@ public final class ActorRuntime implements AutoCloseable {
             ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
+    private final OresCarrierBudget carrierBudget;
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
@@ -507,6 +508,15 @@ public final class ActorRuntime implements AutoCloseable {
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher) {
+        this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher, null);
+    }
+
+    ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher,
+            OresCarrierBudget carrierBudget) {
         // Standalone ActorRuntime callers must not bypass OresVM's strict-GC
         // admission gate: the underlying JVM and direct-buffer cleaner still GC.
         ActorHeapAdmission.requireSupportedJvmMode(
@@ -514,6 +524,14 @@ public final class ActorRuntime implements AutoCloseable {
         long poolsPerf = CorePerf.start();
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
+        this.carrierBudget = carrierBudget;
+        if (carrierBudget != null
+                && (dispatcherConfig.privateParallelism() != carrierBudget.privateMaximum()
+                        || dispatcherConfig.sharedParallelism() != carrierBudget.sharedMaximum()
+                        || carrierBudget.privateMaximum() != carrierBudget.untrustedMaximum())) {
+            throw new IllegalArgumentException(
+                    "actor dispatcher configuration does not match VM carrier budget");
+        }
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
         ExecutorService privatePool = null;
@@ -521,11 +539,11 @@ public final class ActorRuntime implements AutoCloseable {
         ExecutorService untrustedPool;
         try {
             privatePool = newActorDispatcher(dispatcherConfig.privateParallelism(),
-                    dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-");
+                    dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-", carrierBudget);
             sharedPool = newActorDispatcher(dispatcherConfig.sharedParallelism(),
-                    dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-");
+                    dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-", carrierBudget);
             untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
-                    dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-");
+                    dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-", carrierBudget);
         } catch (RuntimeException | Error failure) {
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ACTOR_DISPATCHER_FAILED, 1L);
             if (privatePool != null) privatePool.shutdownNow();
@@ -6565,13 +6583,16 @@ public final class ActorRuntime implements AutoCloseable {
                 || executor instanceof ActorAffinityDispatcher lanes && lanes.nativeCarriers();
     }
 
-    private static ExecutorService newActorDispatcher(int parallelism, int capacity, String prefix) {
+    private static ExecutorService newActorDispatcher(
+            int parallelism, int capacity, String prefix, OresCarrierBudget carrierBudget) {
         String mode = System.getProperty("ores.actor.affinity", "lane").trim();
         if (mode.equals("none")) {
             // Non-affine actor domains can admit independent runnable actor
             // turns on demand. Physical single-flight per actor is unchanged.
-            int max = Integer.getInteger("ores.actor.dispatch.max.parallelism",
-                    Math.max(20, parallelism));
+            int max = carrierBudget == null
+                    ? Integer.getInteger("ores.actor.dispatch.max.parallelism",
+                            Math.max(20, parallelism))
+                    : parallelism;
             if (max < parallelism || max > 256) {
                 throw new IllegalArgumentException(
                         "ores.actor.dispatch.max.parallelism must be between domain minimum and 256");
