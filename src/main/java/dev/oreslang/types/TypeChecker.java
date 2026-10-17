@@ -8064,7 +8064,9 @@ public final class TypeChecker {
             case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint" -> Primitive.INT;
             case "f32", "f64", "float" -> Primitive.FLOAT;
             case "decimal" -> Primitive.DECIMAL;
-            case "complex64", "complex128", "complex" -> Primitive.COMPLEX;
+            case "complex64" -> throw new IllegalArgumentException(
+                    "complex64 requires a dedicated binary32 complex precision contract");
+            case "complex128", "complex" -> Primitive.COMPLEX;
             case "bool", "Bool" -> {
                 if (!ref.arguments().isEmpty() || ref.inferArguments()) {
                     throw new IllegalArgumentException("bool/boolean does not accept type arguments or sequence shapes");
