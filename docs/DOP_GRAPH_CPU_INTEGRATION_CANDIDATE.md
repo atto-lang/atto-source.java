@@ -89,10 +89,10 @@ remains atomically claimed once.
 
 **Execution precondition:** this bridge requires an externally budgeted,
 queued executor that returns promptly from submission. A custom executor
-that blocks waiting for its own worker to finish can deadlock while the
-worker waits for admission; this is NOT a general synchronous
-`Executor` adapter. We must enforce/document this executor contract
-before release, or add a bounded admission-wait failure policy. No
+that blocks waiting for its worker now hits a 30-second bounded admission
+wait and the Future fails without destination writes; the stalled
+scheduler itself cannot be forcibly stopped by this bridge. It is NOT
+a general synchronous `Executor` adapter. No
 guarantee of transactional rollback of host writes after a worker is
 legitimately admitted; cooperative cancellation suppresses subsequent
 Future publication but cannot undo a completed kernel.
@@ -102,8 +102,8 @@ Future publication but cannot undo a completed kernel.
 destination mutations and bounded worker termination. Total JUnit
 cases now 8; full production tests remain unexecuted.
 
-**Local exact-file evidence:** the new committed Java adapter has
-Git blob `17dcef573edb8db114907771b8288f4af0eb7f0e`;
+**Local exact-file evidence:** the hardened Java adapter has
+Git blob `5929a80a3007ba47f4b2814ea37b4fd0533df6c1`;
 the byte-identical local file compiled under JDK 21 against explicitly
 synthetic contract doubles. The existing control-flow harness passed
 1,800 assertions; a new local 1,000-round concurrent admission/rejection/
