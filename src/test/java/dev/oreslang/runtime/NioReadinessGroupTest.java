@@ -67,6 +67,59 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void vmSelectorTcpWriteSnapshotsBytesAndProtectsDuplexLease() throws Exception {
+        try (var group = new NioReadinessGroup(1, 32, 64);
+             var listener = ServerSocketChannel.open()) {
+            listener.configureBlocking(false);
+            listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+            int port = ((InetSocketAddress) listener.getLocalAddress()).getPort();
+            try (var peer = new Socket(InetAddress.getLoopbackAddress(), port)) {
+                peer.setSoTimeout(3000);
+                SocketChannel accepted = null;
+                for (int n = 0; n < 1000 && accepted == null; ++n) {
+                    accepted = listener.accept();
+                    if (accepted == null) Thread.sleep(1);
+                }
+                assertNotNull(accepted);
+                try (var incoming = accepted) {
+                    incoming.configureBlocking(false);
+                    var pendingRead = group.readAsync(incoming, 1);
+                    var overlappingWrite = group.writeAsync(incoming, new byte[]{99});
+                    var denied = assertThrows(ExecutionException.class,
+                            () -> overlappingWrite.get(2, TimeUnit.SECONDS));
+                    assertInstanceOf(IllegalStateException.class, denied.getCause());
+                    assertTrue(pendingRead.cancel(false));
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while ((group.activeReadLeases() != 0 || group.pendingCount() != 0)
+                            && System.nanoTime() < deadline)
+                        Thread.sleep(1);
+                    assertEquals(0, group.activeReadLeases());
+
+                    byte[] mutable = new byte[]{4, 5, 6};
+                    var write = group.writeAsync(incoming, mutable);
+                    mutable[0] = 99; // mutable host input cannot cross admission
+                    assertEquals(3, write.get(3, TimeUnit.SECONDS));
+                    assertEquals(4, peer.getInputStream().read());
+                    assertEquals(5, peer.getInputStream().read());
+                    assertEquals(6, peer.getInputStream().read());
+
+                    while (group.activeWriteLeases() != 0 && System.nanoTime() < deadline)
+                        Thread.sleep(1);
+                    assertEquals(0, group.activeWriteLeases());
+                    var response = group.readAsync(incoming, 2);
+                    peer.getOutputStream().write(new byte[]{7, 8});
+                    assertArrayEquals(new byte[]{7, 8}, response.get(3, TimeUnit.SECONDS));
+                    assertEquals(1, group.reactorCount(),
+                            "host TCP read and write share a single selector");
+                }
+            }
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            assertEquals(0, group.activeWriteLeases());
+            assertEquals(0, group.activeReadLeases());
+        }
+    }
+
     @Test void vmSelectorTcpReadReportsEofWithoutBlockingCarrier() throws Exception {
         try (var group = new NioReadinessGroup(1, 8, 8);
              var listener = ServerSocketChannel.open()) {
