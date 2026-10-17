@@ -3188,15 +3188,16 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("call-site type arguments require a declared generic function or method");
             }
             Type callee = typeOf(call.callee(), env, generics, self);
-            if (callee == Any.INSTANCE) {
+            Type callableView = callee instanceof Borrow borrow ? borrow.target() : callee;
+            if (callableView == Any.INSTANCE) {
                 throw new IllegalArgumentException(
                         "Any is an erased value type and is not callable; narrow to a concrete Fnc signature first");
             }
-            if (callee == AnyCallable.INSTANCE) {
+            if (callableView == AnyCallable.INSTANCE) {
                 throw new IllegalArgumentException(
                         "AnyCallable proves only that a value is callable; its signature is erased and must be narrowed before invocation");
             }
-            if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
+            if (!(callableView instanceof Function fn)) return Unknown.INSTANCE;
             List<ExpandedCallArgument> expanded =
                     expandFixedCallArguments(
                             call.arguments(), env, generics, self,
