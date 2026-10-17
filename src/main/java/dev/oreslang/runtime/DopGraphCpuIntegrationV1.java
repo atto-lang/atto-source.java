@@ -69,6 +69,16 @@ public final class DopGraphCpuIntegrationV1 {
 
         AtomicBoolean cancelled = new AtomicBoolean();
         AtomicBoolean started = new AtomicBoolean();
+        // The scheduler is an external admission boundary: it can enqueue a
+        // job, start a worker concurrently, and still throw. A worker may NOT
+        // acquire any host-buffer loan before execute(...) returns normally.
+        // The gate also gives cancellation/rejection a total order against
+        // initial side-effect admission.
+        java.util.concurrent.CountDownLatch schedulerAdmitted =
+                new java.util.concurrent.CountDownLatch(1);
+        AtomicBoolean schedulerAccepted = new AtomicBoolean();
+        AtomicBoolean scheduling = new AtomicBoolean(true);
+        Thread submittingThread = Thread.currentThread();
         OresFuture<Long> future = new OresFuture<>(() -> cancelled.set(true));
         try {
             workerExecutor.execute(() -> {
@@ -81,6 +91,20 @@ public final class DopGraphCpuIntegrationV1 {
                         throw new IllegalStateException(
                                 "owned CPU graph cannot execute on an actor carrier");
                     }
+                    // An inline executor would deadlock if this callback
+                    // waited for its own execute(...) caller to return.
+                    if (scheduling.get() && Thread.currentThread() == submittingThread) {
+                        throw new IllegalStateException(
+                                "owned CPU graph requires a queued worker executor, not inline dispatch");
+                    }
+                    try {
+                        schedulerAdmitted.await();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        future.failFromRuntime(interrupted);
+                        return;
+                    }
+                    if (!schedulerAccepted.get() || cancelled.get() || future.isDone()) return;
                     DopKernelIR.executeCpuRegion(kernel, input, output, source, destination);
                     if (cancelled.get() || future.isDone()) return;
                     Long value = scalar.executeCpu();
@@ -89,11 +113,16 @@ public final class DopGraphCpuIntegrationV1 {
                     future.failFromRuntime(failure);
                 }
             });
+            schedulerAccepted.set(true);
         } catch (RuntimeException failure) {
-            // A buggy scheduler may retain the closure and then throw.
-            // The retained task must not mutate the destination later.
+            // A buggy scheduler may have retained or already started the
+            // worker and then thrown. Open the gate only in its rejected
+            // state: no buffer mutation or graph publication is permitted.
             cancelled.set(true);
             future.failFromRuntime(failure);
+        } finally {
+            scheduling.set(false);
+            schedulerAdmitted.countDown();
         }
         return future;
     }
