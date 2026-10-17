@@ -54,6 +54,7 @@ def inspect(reports, provenance, source_root=None, require_ci=False):
         require(os.environ.get("GITHUB_EVENT_NAME") in
                 ("pull_request", "workflow_dispatch"),
                 "unexpected GitHub event for exact-head JUnit evidence")
+    pinned_source_blobs = {}
     if source_root is not None:
         require(source_root.is_dir() and not source_root.is_symlink(),
                 "source checkout is absent or symlinked")
@@ -75,6 +76,22 @@ def inspect(reports, provenance, source_root=None, require_ci=False):
                 capture_output=True, text=True, check=False, timeout=5)
             require(clean.returncode == 0,
                     "tracked source changed after checkout; exact-head evidence denied")
+        if require_ci:
+            # A report cannot attest only its source SHA while hiding which
+            # workflow and verifier bytes actually established the result.
+            for relpath in (".github/workflows/structural-exact-head-guest.yml",
+                            "scripts/verify_structural_exact_head_evidence.py"):
+                tracked = subprocess.run(
+                    ["git", "-C", str(source_root), "rev-parse", "HEAD:" + relpath],
+                    capture_output=True, text=True, check=False, timeout=5)
+                working = subprocess.run(
+                    ["git", "-C", str(source_root), "hash-object", "--", relpath],
+                    capture_output=True, text=True, check=False, timeout=5)
+                require(tracked.returncode == 0 and working.returncode == 0
+                        and bool(HEX40.fullmatch(tracked.stdout.strip()))
+                        and tracked.stdout.strip() == working.stdout.strip(),
+                        "workflow/verifier blob was missing or modified: " + relpath)
+                pinned_source_blobs[relpath] = tracked.stdout.strip()
     evidence = []
     for name in SUITES:
         path = reports / ("TEST-dev.oreslang." + name + ".xml")
@@ -117,6 +134,7 @@ def inspect(reports, provenance, source_root=None, require_ci=False):
         "github_run_id": os.environ.get("GITHUB_RUN_ID") or None,
         "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT") or None,
         "suites": evidence,
+        "pinned_source_blobs": pinned_source_blobs,
         "tests_total": sum(x["tests"] for x in evidence),
         "runtime_evidence": "actual-runner-junit",
     }
