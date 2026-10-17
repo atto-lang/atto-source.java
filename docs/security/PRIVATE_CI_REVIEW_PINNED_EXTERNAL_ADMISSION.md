@@ -45,7 +45,7 @@ the verifier fails closed and private-source export remains impossible.
 A private-source payload may be created only when an external trusted
 dispatcher proves all of the following from live GitHub API responses:
 
-1. publisher policy PR `oreslang-source.java#1198` is open and the latest
+1. publisher policy PR `oreslang-source.java#1217` is open and the latest
    review on its exact current head by the explicitly configured independent
    reviewer is `APPROVED`; reviewer login and numeric GitHub user ID must
    match policy;
@@ -182,3 +182,28 @@ This fallback becomes usable only after:
 - the remaining historical exposure cleanup is accepted by the incident owner.
 
 Until then, export remains denied.
+
+
+## Source-writing dispatcher
+
+The canonical source-writing fallback is `scripts/dispatch-review-pinned-private-ci.py`,
+reviewed on publisher/dispatcher PR #1217. It consumes only a schema-2 receipt from
+the read-only verifier and is intentionally unusable while the independent reviewer
+policy is disabled, any security PR is draft/unapproved, incident #22 is not
+independently resumed, or the destination/snapshot ledgers are empty.
+
+Before reading source it requires the exact `ci/oreslang-<source-tree>` ref to be
+absent and rechecks live repository identity, all exact-head reviews, both reviewer
+permissions, byte-identical enabled reviewer policy, carrier workflow blob, approved
+destination/snapshot ledgers, source commit/tree, and incident state. The same live
+authorization is repeated immediately before every Git blob/tree/commit/ref write.
+
+The payload commit has exactly one parent: the independently reviewed carrier PR #7
+head. Its only intended delta is `private-oreslang-source/**` plus
+`.private-ci-provenance.json`. The dispatcher creates a new ref only; it never
+updates/reuses a branch and never invokes workflow_dispatch. The carrier push
+workflow must execute the exact payload commit.
+
+A source-bearing run remains forbidden until a genuinely distinct reviewer is
+configured and all incident/approval gates are satisfied. A funded carrier or a
+private repository by itself is not authorization.
