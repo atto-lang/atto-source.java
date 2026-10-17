@@ -131,6 +131,15 @@ final class StructuralContainerPolicyTest {
                               List.of(Primitive.STRING, Primitive.INT)), true));
         assertThrows(IllegalArgumentException.class,
                      () -> list(new Types.Function(List.of(), Primitive.INT), true));
+        assertThrows(IllegalArgumentException.class,
+                     () -> map(Primitive.STRING,
+                              new Types.Function(List.of(), Primitive.INT), true));
+        assertThrows(IllegalArgumentException.class,
+                     () -> map(Primitive.STRING,
+                              new Types.Borrow(Primitive.INT, false), true));
+        assertThrows(IllegalArgumentException.class,
+                     () -> map(Primitive.STRING,
+                              new Types.ListType(Primitive.INT), true));
     }
 
     @Test void readonlyRecordMembersPermitOnlyClosedCovariantWidth() {

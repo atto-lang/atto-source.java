@@ -363,6 +363,20 @@ final class StructuralContainerSourceParityTest {
         assertTrue(sharedMap.getMessage().contains("shared-safe"),
                 sharedMap::getMessage);
 
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        actor fnc bad(Option<Map<string,int>> values): void {
+                          return;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(SharedMutex<Option<Map<string,int>>> values): void {
+                          return;
+                        }
+                        """)));
+
         var immutableBorrowProgram = assertDoesNotThrow(
                 () -> TypeChecker.check(Parser.parse("""
                         fnc bad(&Map<string,int> values): void {
