@@ -80,6 +80,43 @@ final class VmNioTcpListenerTest {
         }
     }
 
+    @Test void listenerWideMaxPendingDeniesExtraSocketOperationsAndRecovers() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        try (var listener = VmNioTcpListener.loopback(vm.nioReadiness(), 0, 16, 1, 1)) {
+            var accepting = listener.acceptAsync();
+            try (var peer = new Socket(InetAddress.getByName("127.0.0.1"), listener.localPort())) {
+                peer.setSoTimeout(3000);
+                var connection = accepting.get(3, TimeUnit.SECONDS);
+                try {
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                    while (listener.pendingOperations() != 0 && System.nanoTime() < deadline)
+                        Thread.sleep(1); // host test driver only
+                    assertEquals(0, listener.pendingOperations());
+                    var pendingRead = connection.readBytesAsync(1);
+                    assertEquals(1, listener.pendingOperations());
+                    var deniedWrite = connection.writeBytesAsync(List.of(17L));
+                    var failure = assertThrows(ExecutionException.class,
+                            () -> deniedWrite.get(3, TimeUnit.SECONDS));
+                    assertInstanceOf(java.util.concurrent.RejectedExecutionException.class,
+                            failure.getCause());
+                    assertTrue(pendingRead.cancel(false));
+                    deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                    while (listener.pendingOperations() != 0 && System.nanoTime() < deadline)
+                        Thread.sleep(1);
+                    assertEquals(0, listener.pendingOperations(),
+                            "cancelled operation must release listener credit");
+                    assertEquals(1, connection.writeBytesAsync(List.of(17L))
+                            .get(3, TimeUnit.SECONDS));
+                    assertEquals(17, peer.getInputStream().read());
+                } finally {
+                    connection.close();
+                }
+            }
+        } finally {
+            vm.close();
+        }
+    }
+
     @Test void completedAndClosedConnectionFailClosedForSubsequentOperations() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try (var listener = VmNioTcpListener.loopback(vm.nioReadiness(), 0, 16, 1, 16)) {
