@@ -1121,7 +1121,7 @@ public final class TypeChecker {
                         + klass.name() + " is " + klass.actorKind() + " but parent "
                         + resolvedParent.name() + " is " + resolvedParent.actorKind());
             }
-            if (resolvedParent != null && resolvedParent.constructor() != null) {
+            if (resolvedParent != null && !resolvedParent.constructors().isEmpty()) {
                 throw new IllegalArgumentException(
                         "class '" + klass.name() + "' cannot extend '" + resolvedParent.name()
                                 + "' while the parent declares an explicit constructor; "
@@ -1157,7 +1157,9 @@ public final class TypeChecker {
         // initialized final slot becomes immutable before any body executes.
         // This scope is local to klass; inherited initializers are validated
         // against their own declaring class and cannot capture child params.
-        Ast.ConstructorDecl constructor = klass.constructor();
+        List<Ast.ConstructorDecl> initializerVariants = new ArrayList<>(klass.constructors());
+        if (initializerVariants.isEmpty()) initializerVariants.add(null);
+        for (Ast.ConstructorDecl constructor : initializerVariants) {
         Env fieldInitializerEnv = new Env(null);
         if (constructor != null) {
             // The field-initializer ownership checker does not yet prove
@@ -1218,8 +1220,9 @@ public final class TypeChecker {
                 }
             }
         }
+        }
 
-        if (constructor != null) {
+        for (Ast.ConstructorDecl constructor : klass.constructors()) {
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
                         "actor '" + klass.name() + "' cannot declare a class constructor");
@@ -3560,13 +3563,13 @@ public final class TypeChecker {
                 nominal = named;
             }
 
-            Ast.ConstructorDecl constructor = klass.constructor();
-            if (constructor != null) {
-                if (created.arguments().size() != constructor.arity()) {
-                    throw new IllegalArgumentException(
-                            "constructor for " + klass.name() + " expects "
-                                    + constructor.arity() + " argument(s), got "
-                                    + created.arguments().size());
+            if (!klass.constructors().isEmpty()) {
+                Ast.ConstructorDecl constructor = klass.constructorForArity(created.arguments().size());
+                if (constructor == null) {
+                    throw new IllegalArgumentException("no constructor for " + klass.name()
+                            + " with arity " + created.arguments().size()
+                            + "; available arities: "
+                            + klass.constructors().stream().map(Ast.ConstructorDecl::arity).toList());
                 }
                 Map<String, Type> classBindings = classGenericBindings(klass, nominal);
                 Set<String> classGenerics = Set.copyOf(klass.genericParameters());

@@ -511,6 +511,7 @@ public final class Parser {
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
         Ast.ConstructorDecl constructor = null;
+        List<Ast.ConstructorDecl> constructorOverloads = new ArrayList<>();
 
         while (!check(classTerminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
@@ -523,11 +524,16 @@ public final class Parser {
             }
 
             if (isContextualIdentifier("constructor")) {
-                if (constructor != null) {
-                    throw error(peek(), "class '" + name + "' may declare only one constructor");
-                }
-                constructor = parseConstructor(
+                Token declarationSite = peek();
+                Ast.ConstructorDecl parsed = parseConstructor(
                         annotations, mods, name, visibility, filePrivateScope);
+                if ((constructor != null && constructor.arity() == parsed.arity())
+                        || constructorOverloads.stream().anyMatch(candidate -> candidate.arity() == parsed.arity())) {
+                    throw error(declarationSite, "duplicate constructor arity "
+                            + parsed.arity() + " in class '" + name + "'");
+                }
+                if (constructor == null) constructor = parsed;
+                else constructorOverloads.add(parsed);
                 continue;
             }
 
@@ -598,7 +604,7 @@ public final class Parser {
                         : "expected 'end' to close class " + name);
         return new Ast.ClassDecl(
                 name, visibility, isAbstract, Ast.ActorKind.NONE, generics,
-                parents, interfaces, fields, constructor, methods);
+                parents, interfaces, fields, constructor, methods, constructorOverloads);
     }
 
     private Ast.ConstructorDecl parseConstructor(

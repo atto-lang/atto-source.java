@@ -7637,8 +7637,8 @@ public final class OresEvalRootNode extends RootNode {
                         "class '" + klass.name() + "' is private and cannot be constructed outside its file/module");
             }
 
-            Ast.ConstructorDecl constructor = klass.constructor();
-            if (constructor == null) {
+            Ast.ConstructorDecl constructor = klass.constructorForArity(args.size());
+            if (klass.constructors().isEmpty()) {
                 // Compatibility path for classes authored before explicit
                 // constructor syntax: positional fields form a synthesized
                 // constructor whose visibility follows the class.
@@ -7681,6 +7681,10 @@ public final class OresEvalRootNode extends RootNode {
                 return object;
             }
 
+            if (constructor == null) {
+                throw new IllegalArgumentException("no constructor for " + klass.name()
+                        + " with arity " + args.size());
+            }
             if (externalConstruction && constructor.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException(
                         "constructor for class '" + klass.name()

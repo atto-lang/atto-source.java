@@ -176,8 +176,10 @@ public final class OwnershipChecker {
         // Actor state uses a distinct initialization/capability protocol and
         // is not included in this ordinary-class migration.
         if (klass.actorKind() == Ast.ActorKind.NONE) {
+            List<Ast.ConstructorDecl> initializerVariants = new ArrayList<>(klass.constructors());
+            if (initializerVariants.isEmpty()) initializerVariants.add(null);
+            for (Ast.ConstructorDecl declaringConstructor : initializerVariants) {
             Scope initializerScope = new Scope(null);
-            Ast.ConstructorDecl declaringConstructor = klass.constructor();
             if (declaringConstructor != null) {
                 for (Ast.Param param : declaringConstructor.parameters()) {
                     Ast.TypeRef type = param.type();
@@ -206,10 +208,10 @@ public final class OwnershipChecker {
             } finally {
                 initializerScope.close();
             }
+            }
         }
 
-        if (klass.constructor() != null) {
-            Ast.ConstructorDecl constructor = klass.constructor();
+        for (Ast.ConstructorDecl constructor : klass.constructors()) {
             Scope scope = new Scope(null);
             scope.define("self", new VarState(
                     Ast.TypeRef.borrowed(Ast.TypeRef.simple(klass.name()), true),

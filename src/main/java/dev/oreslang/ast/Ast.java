@@ -328,13 +328,53 @@ public final class Ast {
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
-            List<MethodDecl> methods) implements Decl {
+            List<MethodDecl> methods,
+            List<ConstructorDecl> constructorOverloads) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            constructorOverloads = List.copyOf(constructorOverloads);
+            HashSet<Integer> seen = new HashSet<>();
+            if (constructor != null) seen.add(constructor.arity());
+            for (ConstructorDecl candidate : constructorOverloads) {
+                if (!seen.add(candidate.arity())) {
+                    throw new IllegalArgumentException("duplicate constructor arity " + candidate.arity()
+                            + " in class " + name);
+                }
+            }
+            if (constructor == null && !constructorOverloads.isEmpty()) {
+                throw new IllegalArgumentException("constructor overloads require a primary constructor");
+            }
+        }
+
+        /** Preserve the old AST creation contract for single-constructor classes. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract, ActorKind actorKind,
+                         List<String> genericParameters, List<TypeRef> parents,
+                         List<TypeRef> interfaces, List<FieldDecl> fields,
+                         ConstructorDecl constructor, List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods, List.of());
+        }
+
+        /** Explicit constructor family. No runtime type-based selection. */
+        public List<ConstructorDecl> constructors() {
+            if (constructor == null) return List.of();
+            if (constructorOverloads.isEmpty()) return List.of(constructor);
+            java.util.ArrayList<ConstructorDecl> result = new java.util.ArrayList<>();
+            result.add(constructor);
+            result.addAll(constructorOverloads);
+            return List.copyOf(result);
+        }
+
+        public ConstructorDecl constructorForArity(int arity) {
+            if (constructor != null && constructor.arity() == arity) return constructor;
+            for (ConstructorDecl candidate : constructorOverloads) {
+                if (candidate.arity() == arity) return candidate;
+            }
+            return null;
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
