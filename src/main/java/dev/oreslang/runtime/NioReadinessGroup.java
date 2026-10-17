@@ -256,14 +256,22 @@ public final class NioReadinessGroup implements AutoCloseable {
                         if (next.claimed.get()) continue;
                         try {
                             target.execute(next);
-                        } catch (RejectedExecutionException full) {
-                            // Some Executors invoke a task inline before
-                            // propagating its rejection. Claimed work cannot
-                            // be requeued or have its permit released twice.
+                        } catch (RuntimeException submissionFailure) {
+                            // Executor.execute() can throw an arbitrary runtime
+                            // failure *before* accepting a task, or even after
+                            // accepting/running it. Losing a dequeued record
+                            // here would strand its reserved Future forever.
+                            // The same claim token makes a later retry safe
+                            // even when a nonconforming executor schedules
+                            // work and then throws an unexpected exception.
                             if (next.claimed.get()) continue;
                             next.mayBeQueuedAfterRejection.set(true);
                             stagedNotifications.addFirst(next);
                             if (next.claimed.get()) stagedNotifications.remove(next);
+                            // Treat unexpected executor runtime failures as
+                            // temporarily unavailable. Retry only on another
+                            // explicit capacity signal, never spin on a
+                            // permanently broken executor on the reactor.
                             rejected = true;
                             break;
                         }
