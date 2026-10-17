@@ -4,7 +4,7 @@
 Decision: 2026-10-13. Applies to module `fnc`, `routine`, instance methods, and
 `static fnc` (subject to their existing namespace and actor/effect rules).
 
-This contract supersedes the *proposed future* same-arity portion of
+> **Separate proposal (not enabled):** [enum case parameter specialization](ENUM_CASE_OVERLOAD_SPECIALIZATION.md) explores allowing `Foo.A` versus `Foo.B` as static refinement types. The present contract remains normative until that proposal is explicitly adopted and implemented across checkers, runtime and backends. The current prohibition below is intentional.\n\nThis contract supersedes the *proposed future* same-arity portion of
 `METHOD_OVERLOAD_ARITY_CONTRACT.md`. The **currently implemented** arity-only
 admission and dispatch remain in force until both the nominal enum runtime
 representation and overload tables implement this extension together.
