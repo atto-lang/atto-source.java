@@ -1981,7 +1981,7 @@ public final class ActorRuntime implements AutoCloseable {
                     cell.sourceReceiveSuspended = false;
                     ActorPipelineRouteSession.retireDelivered(cell.activePipelineFrame);
                     cell.activePipelineFrame = null;
-                    activePipelineAuthority = null;
+                    cell.activePipelineAuthority = null;
                     cell.activeMail = null;
                     cell.lifecycleLock.notifyAll();
                 }
@@ -2006,7 +2006,7 @@ public final class ActorRuntime implements AutoCloseable {
                         cell.sourceReceiveSuspended = false;
                         ActorPipelineRouteSession.retireDelivered(cell.activePipelineFrame);
                         cell.activePipelineFrame = null;
-                    activePipelineAuthority = null;
+                    cell.activePipelineAuthority = null;
                         cell.activeMail = null;
                         failActor = true;
                     }
@@ -7947,7 +7947,7 @@ public final class ActorRuntime implements AutoCloseable {
             // here as well as the unclaimed queued envelopes drained above.
             ActorPipelineRouteSession.retireDelivered(activePipelineFrame);
             activePipelineFrame = null;
-                    activePipelineAuthority = null;
+            activePipelineAuthority = null;
             activeMail = null;
         }
 
