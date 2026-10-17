@@ -23,6 +23,7 @@ public final class Lexer {
         KEYWORDS.put("nb", NB); KEYWORDS.put("select", SELECT); KEYWORDS.put("readch", READCH); KEYWORDS.put("writech", WRITECH);
         KEYWORDS.put("cb", CB); KEYWORDS.put("shared", SHARED); KEYWORDS.put("untrusted", UNTRUSTED);
         KEYWORDS.put("type", TYPE); KEYWORDS.put("types", TYPES); KEYWORDS.put("typeof", TYPEOF); KEYWORDS.put("interface", INTERFACE); KEYWORDS.put("trait", TRAIT); KEYWORDS.put("struct", STRUCT); KEYWORDS.put("impl", IMPL); KEYWORDS.put("abstract", ABSTRACT);
+        KEYWORDS.put("any", ANY); KEYWORDS.put("unknown", UNKNOWN);
         KEYWORDS.put("void", VOID); KEYWORDS.put("static", STATIC); KEYWORDS.put("pub", PUB); KEYWORDS.put("private", PRIVATE);
         KEYWORDS.put("return", RETURN); KEYWORDS.put("defer", DEFER);
         // Reserved until compiler-checked typed effects and source lowering exist.
