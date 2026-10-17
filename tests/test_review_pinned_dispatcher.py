@@ -50,6 +50,19 @@ class DispatcherTest(unittest.TestCase):
         r=receipt(); r["independent_reviewer_source_permission"]="read"
         with self.assertRaises(MOD.Denied): MOD.validate_receipt(r)
 
+    def test_open_incident_denied_even_before_resume_comment(self):
+        old_repo=MOD.repo_identity; old_api=MOD.PUB.gh_api
+        try:
+            MOD.repo_identity=lambda *args:None
+            MOD.PUB.gh_api=lambda route:{
+              "id":MOD.INCIDENT_ISSUE_ID,"number":MOD.INCIDENT_NUMBER,
+              "state":"open","state_reason":None
+            }
+            with self.assertRaisesRegex(MOD.Denied,"incident remains unresolved"):
+                MOD.require_incident_closed()
+        finally:
+            MOD.repo_identity=old_repo; MOD.PUB.gh_api=old_api
+
     def test_existing_exact_branch_denied(self):
         old=MOD.api_list
         try:
