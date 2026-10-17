@@ -52,6 +52,17 @@ public final class MessagePackWireV2Harness {
     eq("demo.ArrayStrings.v1",Shape.array(Shape.string()),List.of("a","b"),"9402b464656d6f2e4172726179537472696e67732e7631c420139722a10b9ef4d4af0cea1bfbc50ff92a0459aabf837f63a6fec052fe5dc5c992a161a162");
     eq("demo.ListStrings.v1",Shape.list(Shape.string()),List.of("a","b"),"9402b364656d6f2e4c697374537472696e67732e7631c4204efbea59591d5c31d9f13ee93ef5c1d954e653144d380bb2d064ea4fa6d56b8c92a161a162");
     eq("demo.String.v1",Shape.string(),"foo","9402ae64656d6f2e537472696e672e7631c42021c2efdbff08dd4e1320d8abe1ba0cc6aea8e4cf104b984be7b7079968fad3cda3666f6f");
+    // Independently generated canonical v2 reference vectors shared with
+    // LLVM's native backend and the other three static policy backends.
+    eq("demo.I64Edges.v1",Shape.list(Shape.i64()),
+        List.of(Long.MIN_VALUE,-32769L,-33L,-32L,127L,128L,Long.MAX_VALUE),
+        "9402b064656d6f2e49363445646765732e7631c42085b57ebbe14c39027c6ca72efd13dfd06deebf65584284080d1844cde4aa323997d38000000000000000d2ffff7fffd0dfe07fcc80cf7fffffffffffffff");
+    eq("demo.Unicode.v1",Shape.string(),"A\u00e9\ud83d\udc4b\u4e2d",
+        "9402af64656d6f2e556e69636f64652e7631c42021c2efdbff08dd4e1320d8abe1ba0cc6aea8e4cf104b984be7b7079968fad3cdaa41c3a9f09f918be4b8ad");
+    eq("demo.F64SignedZero.v1",Shape.f64(),-0.0d,
+        "9402b564656d6f2e4636345369676e65645a65726f2e7631c42085e27ecf506d7dfa7e3db8c1449d9f3cdf7639765689c429f693b6cbf5d68f91cb8000000000000000");
+    eq("demo.EmptyTuple.v1",Shape.tuple(),List.of(),
+        "9402b264656d6f2e456d7074795475706c652e7631c4200b02be190a296835b9a2db3112c9509d4b6d305e3c76de6c1f44691181c930c790");
     byte[] b=MessagePackWireV2.encode("demo.String.v1",Shape.string(),"foo");
     byte[] corrupted=b.clone();corrupted[0]=0;byte[] final0=corrupted;reject(()->MessagePackWireV2.decode("demo.String.v1",Shape.string(),final0));
     corrupted=b.clone();corrupted[1]=1;byte[] final1=corrupted;reject(()->MessagePackWireV2.decode("demo.String.v1",Shape.string(),final1));
