@@ -1387,12 +1387,12 @@ public final class TypeChecker {
                     : overlayReadonlyCapabilities(actual, declaredAhead);
             // A plain annotation on a dereferenced local must retain the borrow
             // capability in the environment, rather than laundering it into ownership.
-            if (actual instanceof Borrow borrowed && !borrowed.mutable()
+            if (actual instanceof Borrow borrowed
                     && binding.initializer() instanceof Ast.RuntimeCallExpr runtime
-                    && runtime.operation().equals("deref")
+                    && (runtime.operation().equals("deref") || runtime.operation().equals("deref mut"))
                     && !(declared instanceof Borrow)) {
                 requireAssignable(borrowed.target(), declared, "pointee for " + binding.name());
-                declared = new Borrow(declared, false);
+                declared = new Borrow(declared, borrowed.mutable());
             }
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
@@ -1943,14 +1943,15 @@ public final class TypeChecker {
                     requirePointerTarget(operand);
                     yield new Named("Pointer", List.of(operand));
                 }
-                case "deref", "unref" -> {
+                case "deref", "deref mut", "unref" -> {
                     if (!(operand instanceof Named pointer) || !pointer.name().equals("Pointer")
                             || pointer.arguments().size() != 1) {
                         throw new IllegalArgumentException("rt " + runtime.operation() + " requires Pointer<T>");
                     }
                     Type pointee = pointer.arguments().getFirst();
                     // Deref lends a view; unref consumes the handle and transfers T.
-                    yield runtime.operation().equals("unref") ? pointee : new Borrow(pointee, false);
+                    if (runtime.operation().equals("unref")) yield pointee;
+                    yield new Borrow(pointee, runtime.operation().equals("deref mut"));
                 }
                 case "borrow" -> new Borrow(operand, false);
                 case "copy", "take", "share" -> operand;
@@ -3542,7 +3543,7 @@ public final class TypeChecker {
             if (runtime.operation().equals("deref") && ((Borrow) expected).mutable()) {
                 // A read-only dereference cannot satisfy an exclusive mutable loan.
                 throw new IllegalArgumentException(
-                        "rt deref supplies a read-only borrow; mutable pointer dereference is not admitted");
+                        "rt deref supplies a read-only borrow; use rt deref mut for an exclusive view");
             }
         }
         if (expr instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
