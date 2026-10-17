@@ -198,6 +198,51 @@ final class MultiIndexProtocolTest {
     }
 
     @Test
+    void mutableIndexGetterRequiresMutableReceiverAuthority() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                define class Counter as
+                  let int reads = 0;
+
+                  pub [Symbol.index](mut self)(int key): int {
+                    self.reads = self.reads + 1;
+                    return self.reads + key;
+                  }
+                end
+
+                pub routine main(): void {
+                  val counter = new Counter();
+                  stdio.stdout.write(counter[0]);
+                  return;
+                }
+                """));
+        assertTrue(failure.getMessage().contains("read-only binding")
+                || failure.getCause() != null
+                    && String.valueOf(failure.getCause().getMessage()).contains("read-only binding"),
+                failure::getMessage);
+    }
+
+    @Test
+    void genericIndexMethodSpecializesAfterAritySelection() throws Exception {
+        String output = run("""
+                define class IdentityIndex as
+                  pub [Symbol.index]<T>(T value): T {
+                    return value;
+                  }
+                end
+
+                pub routine main(): void {
+                  val index = new IdentityIndex();
+                  stdio.stdout.write(index[42]);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(index["ok"]);
+                  return;
+                }
+                """);
+
+        assertEquals("42|ok", output);
+    }
+
+    @Test
     void malformedIndexProtocolDeclarationsFailClosed() {
         IllegalArgumentException zeroArity = assertThrows(
                 IllegalArgumentException.class,
