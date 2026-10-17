@@ -35,8 +35,11 @@ final class RefinementSyntaxGateTest {
                              new Ast.RefinementBound("length", "lte", 32)),
                 named.refinement().bounds());
         Ast.TypeAliasDecl nonEmpty = alias("@NotEmpty type NonEmpty = string;");
+        Ast.TypeAliasDecl nonEmptySymbolic =
+                alias("type NonEmpty = string with length > 0;");
         assertEquals(List.of(new Ast.RefinementBound("length", "gt", 0)),
                 nonEmpty.refinement().bounds());
+        assertEquals(nonEmpty.refinement().bounds(), nonEmptySymbolic.refinement().bounds());
     }
 
     @Test void scalarAnnotationsShareCanonicalRefinementRules() {
