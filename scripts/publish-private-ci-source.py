@@ -126,9 +126,16 @@ def require_pinned_actions_check(required_checks, expected_context):
         raise Denied("required status-check policy missing")
     checks = required_checks.get("checks")
     contexts = required_checks.get("contexts")
-    if (not isinstance(checks, list) or not checks
-            or not isinstance(contexts, list)):
+    # GitHub deprecates the name-only contexts list in favor of app-bound
+    # checks. An empty/omitted contexts list is valid when checks carries
+    # the complete independently pinned context + GitHub App ID contract.
+    if not isinstance(checks, list) or not checks:
         raise Denied("required status-check issuer binding missing")
+    if (contexts is not None
+            and (not isinstance(contexts, list)
+                 or any(not isinstance(name, str) or not name for name in contexts)
+                 or len(contexts) != len(set(contexts)))):
+        raise Denied("malformed legacy status check contexts")
     seen = set()
     for check in checks:
         if not isinstance(check, dict):
@@ -140,8 +147,23 @@ def require_pinned_actions_check(required_checks, expected_context):
         seen.add(name)
         if name == expected_context and app_id != GITHUB_ACTIONS_APP_ID:
             raise Denied("required security status check has incorrect issuer")
-    if expected_context not in seen or expected_context not in contexts:
+    if expected_context not in seen:
         raise Denied("required issuer-bound security status check missing")
+
+
+def require_nonrewritable_protected_main(rules, label):
+    """Reject a protected branch that still permits rewriting or deletion.
+
+    A protected=True flag and independent review do not provide an immutable
+    security policy if force pushes or branch deletion remain enabled.
+    The GitHub protection response contains explicit {enabled: bool} objects.
+    Missing/ambiguous metadata is never treated as disabled.
+    """
+    for field in ("allow_force_pushes", "allow_deletions"):
+        policy = rules.get(field)
+        if (not isinstance(policy, dict)
+                or policy.get("enabled") is not False):
+            raise Denied(label + " protected main permits force pushes or deletion")
 
 
 def valid_sha(value):
@@ -547,12 +569,10 @@ def require_protected_main_policy(approved_policy):
     if (not isinstance(rules.get("enforce_admins"), dict)
             or rules["enforce_admins"].get("enabled") is not True):
         raise Denied("protected main must enforce rules for administrators")
+    require_nonrewritable_protected_main(rules, "source")
     required_checks = rules.get("required_status_checks")
     if (not isinstance(required_checks, dict)
-            or required_checks.get("strict") is not True
-            or not isinstance(required_checks.get("contexts"), list)
-            or not required_checks["contexts"]
-            or not all(isinstance(c, str) and c for c in required_checks["contexts"])):
+            or required_checks.get("strict") is not True):
         raise Denied("protected main must require strict source CI checks")
     require_pinned_actions_check(required_checks, SOURCE_POLICY_CHECK)
     # An unresolved security review thread must be able to block the policy
@@ -1085,11 +1105,9 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         if (not isinstance(carrier_rules.get("enforce_admins"), dict)
                 or carrier_rules["enforce_admins"].get("enabled") is not True
                 or not isinstance(checks, dict)
-                or checks.get("strict") is not True
-                or not isinstance(checks.get("contexts"), list)
-                or not checks["contexts"]
-                or not all(isinstance(c, str) and c for c in checks["contexts"])):
+                or checks.get("strict") is not True):
             raise Denied("private carrier main lacks enforced administrator and CI protections")
+        require_nonrewritable_protected_main(carrier_rules, "carrier")
         require_pinned_actions_check(checks, CARRIER_POLICY_CHECK)
         conversations = carrier_rules.get("required_conversation_resolution")
         if (not isinstance(conversations, dict)
