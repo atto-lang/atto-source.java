@@ -6254,9 +6254,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                int count = list.size();
-                requireGraphNodeCapacity(nodes[0], count);
-                List<Object> frozen = new ArrayList<>(count);
+                // Collection.size() is caller-controlled for arbitrary host
+                // implementations. Never use it as an allocation capacity:
+                // the recursive walk below enforces the real node bound.
+                List<Object> frozen = new ArrayList<>();
                 for (Object item : list) frozen.add(freeze(item, visiting, depth + 1, nodes));
                 return Collections.unmodifiableList(frozen);
             }
@@ -6323,9 +6324,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                int count = list.size();
-                requireGraphNodeCapacity(nodes[0], count);
-                List<Object> copy = new ArrayList<>(count);
+                // Do not let a hostile List.size() force a large allocation
+                // before the destination quota is reserved.
+                List<Object> copy = new ArrayList<>();
                 for (Object item : list) copy.add(isolateCopy(item, visiting, depth + 1, nodes));
                 return Collections.unmodifiableList(copy);
             }
@@ -6381,8 +6382,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                long total = requireWithinLimit(containerBase(24L, 8L, list.size()), limit);
+                long total = requireWithinLimit(24L, limit);
                 for (Object item : list) {
+                    // Charge observed entries, not caller-reported size().
+                    total = addWithinLimit(total, 8L, limit);
                     total = addWithinLimit(total,
                             estimateSharedTransportBytes(item, visiting, depth + 1, limit - total),
                             limit);
@@ -6390,8 +6393,10 @@ public final class ActorRuntime implements AutoCloseable {
                 return total;
             }
             if (value instanceof Set<?> set) {
-                long total = requireWithinLimit(containerBase(24L, 16L, set.size()), limit);
+                long total = requireWithinLimit(24L, limit);
                 for (Object item : set) {
+                    // Charge observed entries, not caller-reported size().
+                    total = addWithinLimit(total, 16L, limit);
                     total = addWithinLimit(total,
                             estimateSharedTransportBytes(item, visiting, depth + 1, limit - total),
                             limit);
@@ -6399,8 +6404,11 @@ public final class ActorRuntime implements AutoCloseable {
                 return total;
             }
             if (value instanceof Map<?, ?> map) {
-                long total = requireWithinLimit(containerBase(24L, 32L, map.size()), limit);
+                long total = requireWithinLimit(24L, limit);
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    // Map.size() can lie or race; each actual entry pays its
+                    // structural quota before either key or value is walked.
+                    total = addWithinLimit(total, 32L, limit);
                     total = addWithinLimit(total,
                             estimateSharedTransportBytes(entry.getKey(), visiting, depth + 1, limit - total),
                             limit);
@@ -6447,22 +6455,22 @@ public final class ActorRuntime implements AutoCloseable {
 
         long bytes = 24L;
         if (value instanceof List<?> list) {
-            bytes = Math.addExact(bytes, 8L * list.size());
             for (Object item : list) {
+                bytes = Math.addExact(bytes, 8L);
                 bytes = Math.addExact(bytes, estimateSharedMailboxBytes(item, seen, depth + 1));
             }
             return bytes;
         }
         if (value instanceof Set<?> set) {
-            bytes = Math.addExact(bytes, 16L * set.size());
             for (Object item : set) {
+                bytes = Math.addExact(bytes, 16L);
                 bytes = Math.addExact(bytes, estimateSharedMailboxBytes(item, seen, depth + 1));
             }
             return bytes;
         }
         if (value instanceof Map<?, ?> map) {
-            bytes = Math.addExact(bytes, 32L * map.size());
             for (Map.Entry<?, ?> entry : map.entrySet()) {
+                bytes = Math.addExact(bytes, 32L);
                 bytes = Math.addExact(bytes, estimateSharedMailboxBytes(entry.getKey(), seen, depth + 1));
                 bytes = Math.addExact(bytes, estimateSharedMailboxBytes(entry.getValue(), seen, depth + 1));
             }
@@ -6501,8 +6509,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                long total = requireWithinLimit(containerBase(24L, 8L, list.size()), limit);
+                long total = requireWithinLimit(24L, limit);
                 for (Object item : list) {
+                    total = addWithinLimit(total, 8L, limit);
                     total = addWithinLimit(total,
                             estimatePrivateTransportBytes(item, visiting, depth + 1, limit - total),
                             limit);
@@ -6510,8 +6519,9 @@ public final class ActorRuntime implements AutoCloseable {
                 return total;
             }
             if (value instanceof Set<?> set) {
-                long total = requireWithinLimit(containerBase(24L, 16L, set.size()), limit);
+                long total = requireWithinLimit(24L, limit);
                 for (Object item : set) {
+                    total = addWithinLimit(total, 16L, limit);
                     total = addWithinLimit(total,
                             estimatePrivateTransportBytes(item, visiting, depth + 1, limit - total),
                             limit);
@@ -6519,8 +6529,9 @@ public final class ActorRuntime implements AutoCloseable {
                 return total;
             }
             if (value instanceof Map<?, ?> map) {
-                long total = requireWithinLimit(containerBase(24L, 32L, map.size()), limit);
+                long total = requireWithinLimit(24L, limit);
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    total = addWithinLimit(total, 32L, limit);
                     total = addWithinLimit(total,
                             estimatePrivateTransportBytes(entry.getKey(), visiting, depth + 1, limit - total),
                             limit);
@@ -6624,18 +6635,22 @@ public final class ActorRuntime implements AutoCloseable {
 
         long bytes = 24L;
         if (value instanceof List<?> list) {
-            bytes = Math.addExact(bytes, 8L * list.size());
-            for (Object item : list) bytes = Math.addExact(bytes, estimateFrozenBytes(item, seen, depth + 1));
+            for (Object item : list) {
+                bytes = Math.addExact(bytes, 8L);
+                bytes = Math.addExact(bytes, estimateFrozenBytes(item, seen, depth + 1));
+            }
             return bytes;
         }
         if (value instanceof Set<?> set) {
-            bytes = Math.addExact(bytes, 16L * set.size());
-            for (Object item : set) bytes = Math.addExact(bytes, estimateFrozenBytes(item, seen, depth + 1));
+            for (Object item : set) {
+                bytes = Math.addExact(bytes, 16L);
+                bytes = Math.addExact(bytes, estimateFrozenBytes(item, seen, depth + 1));
+            }
             return bytes;
         }
         if (value instanceof Map<?, ?> map) {
-            bytes = Math.addExact(bytes, 32L * map.size());
             for (Map.Entry<?, ?> entry : map.entrySet()) {
+                bytes = Math.addExact(bytes, 32L);
                 bytes = Math.addExact(bytes, estimateFrozenBytes(entry.getKey(), seen, depth + 1));
                 bytes = Math.addExact(bytes, estimateFrozenBytes(entry.getValue(), seen, depth + 1));
             }
