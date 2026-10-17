@@ -23,7 +23,10 @@ jobs:
       - name: Exact JDK-only smoke
         run: |
           rm -rf /tmp/actor-kernel && mkdir -p /tmp/actor-kernel
-          javac -d /tmp/actor-kernel             src/main/java/dev/oreslang/runtime/ActorReliabilityKernel.java             src/test/java/dev/oreslang/runtime/ActorReliabilityKernelSmoke.java
+          javac -d /tmp/actor-kernel             src/main/java/dev/oreslang/runtime/ActorReliabilityKernel.java             src/test/java/dev/oreslang/runtime/ActorReliabilityKernelSmoke.java \
+            src/main/java/dev/oreslang/runtime/GenServerReplyLedger.java \
+            src/test/java/dev/oreslang/runtime/GenServerReplyLedgerHardeningSmoke.java
           java -cp /tmp/actor-kernel dev.oreslang.runtime.ActorReliabilityKernelSmoke
+          java -cp /tmp/actor-kernel dev.oreslang.runtime.GenServerReplyLedgerHardeningSmoke
       - name: Focused Maven tests
         run: mvn -q -Dtest=ActorReliabilityKernelTest,GenServerReplyLedgerHardeningTest,GenServerPendingCallsTest test
