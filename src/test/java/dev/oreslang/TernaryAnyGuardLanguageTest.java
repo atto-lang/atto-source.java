@@ -72,6 +72,14 @@ final class TernaryAnyGuardLanguageTest {
     }
 
     @Test
+    void ternaryRemainsRightAssociativeAndBooleanOnly() {
+        accept("fnc nested(bool first, bool second): int { return first ? 1 : second ? 2 : 3; }");
+        accept("fnc verified(unknown value): int { return Integer.is_int(value) ? value : 0; }");
+        reject("fnc bad(): int { return 3 ? 1 : 0; }");
+        reject("fnc bad(any value): int { return value ? 1 : 0; }");
+    }
+
+    @Test
     void runtimeEvaluatesOnlyTheChosenBranch() throws Exception {
         String program = """
                 pub fnc foo(any v): int {
