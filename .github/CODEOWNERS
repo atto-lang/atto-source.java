@@ -20,6 +20,7 @@
 /docs/security/PRIVATE_CI_REVIEW_PINNED_EXTERNAL_ADMISSION.md @ORESoftware
 /scripts/check-private-ci-destination.sh @ORESoftware
 /scripts/publish-private-ci-source.py @ORESoftware
+/scripts/dispatch-review-pinned-private-ci.py @ORESoftware
 /scripts/run-in-private-ci-destination.sh @ORESoftware
 /scripts/test-private-ci-destination.sh @ORESoftware
 /scripts/test-publish-private-ci-source.py @ORESoftware
@@ -27,6 +28,7 @@
 /scripts/verify-review-pinned-private-ci.py @ORESoftware
 /tests/test_ci_private_mirror_preflight.py @ORESoftware
 /tests/test_review_pinned_private_ci.py @ORESoftware
+/tests/test_review_pinned_dispatcher.py @ORESoftware
 /src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java @ORESoftware
 /src/test/java/dev/oreslang/PrivateExactPublisherAdmissionMutationTest.java @ORESoftware
 /src/test/java/dev/oreslang/PrivateExactPublisherValidationWorkflowSecurityTest.java @ORESoftware
