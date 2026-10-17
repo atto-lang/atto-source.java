@@ -110,6 +110,23 @@ final class RefinementSyntaxGateTest {
         }
     }
 
+
+    @Test void unenforcedConstraintAnnotationsFailClosed() {
+        String[] invalid = {
+                "@NotEmpty pub fnc main(): void { return; }",
+                "define class Person as @NotEmpty name: string; end",
+                "pub fnc main(): void { @NotEmpty val string value = \"x\"; return; }"
+        };
+        for (String source : invalid) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(source), source);
+            assertTrue(error.getMessage().contains("not yet executable"),
+                    () -> "constraint annotation silently ignored or failed for wrong reason: " + error.getMessage());
+        }
+        assertNotNull(alias("@NotEmpty type N = string;").refinement());
+        assertNotNull(alias("@Size(min=1) define newtype N(string);").refinement());
+    }
+
     @Test void existingAliasesRemainUnchanged() {
         Ast.TypeAliasDecl ordinary = alias("type Normal = string;");
         assertNull(ordinary.refinement());
