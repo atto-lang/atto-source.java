@@ -305,8 +305,10 @@ public final class ZordeSchemaGenerator {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FieldDecl field) {
                     if (field.name().equals("Zorde")) shadowsZorde = true;
-                    if (field.initializer() != null && field.bindingKind() == Ast.BindingKind.CONST
-                            && schemaBindings.putIfAbsent(field.name(), field) != null)
+                    // Every same-named binding participates in resolution.
+                    // A later mutable/blank declaration must not be ignored
+                    // while the planner trusts an earlier const schema.
+                    if (schemaBindings.putIfAbsent(field.name(), field) != null)
                         throw new IllegalArgumentException("duplicate Zorde source binding " + field.name());
                 } else if (declaration instanceof Ast.TypeAliasDecl alias
                         && alias.name().equals("Zorde")) {
