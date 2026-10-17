@@ -124,6 +124,48 @@ The Bash test uses a temporary policy checkout; Python tests mock all GitHub
 API operations. The real policy remains empty and **no destination is
 authorized** unless separately reviewed.
 
+## Administrative activation order and independent sign-off
+
+The following gates are **sequential**, not interchangeable. This document,
+a draft PR, a CI canary, and an approved destination name in an unprotected
+checkout **cannot** authorize source export.
+
+1. An administrator must configure effective protection for the private source
+   repository's exact `main` branch, using an organization plan that supports
+   private-repository protection. Require PRs, independent CODEOWNER approval
+   from `@ORESoftware`, dismissal of stale reviews, enforced admin coverage,
+   strict/nonempty actual CI checks and prohibition of force pushes/deletions
+   and review bypass. The publisher's authenticated `gh` credential must be
+   able to **read** the complete branch-protection API result; the browser
+   reporting a protected branch is insufficient.
+2. Prove enforcement with a benign test PR: missing code-owner approval,
+   stale review after a commit, absent required CI, and zero-step CI must all
+   block a merge. A successful step-executed test is needed for positive proof.
+   Record source/head/status identities. See
+   [main-protection tracker](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/994).
+3. Independently review and run the offline Bash/Python security suite for
+   publisher-hardening PR #1118. Merge this hardening **first** after the
+   branch-protection gate is real; the previously deployed publisher must not
+   gain an approved destination by merging the allowlist earlier.
+4. Separately obtain independent CODEOWNER review of destination allowlist PR
+   #1085 and merge it into **protected main** only after the hardened publisher
+   is merged. Approval must pin the immutable numeric ID as well as the slug,
+   e.g. `owner/repo 1234567`. The currently proposed destination has GitHub
+   repository ID `1411109719`, subject to **fresh** private-visibility and
+   ID verification before publication.
+5. Only then may the reviewed protected-main publisher prepare the exact
+   immutable source tree, check authorization before each private Git write,
+   and use the approved private runner. Compare the source and destination
+   subtree SHA, inspect actual job steps and artifacts, and handle retained
+   Git objects as confidential even if a destination branch is deleted.
+
+The GitHub App connector may have source-repository content rights without
+repository-administration rights. A `403 Resource not accessible by integration`
+from the protection endpoint **blocks publishing**; it must not trigger a
+fallback to a less-protected policy. Private-repository plan limitations
+must be addressed by an appropriate eligible plan, never by making the source
+public.
+
 ## Active disclosure incident
 
 Private issue #832 tracks source-bearing commits in a public CI repository.
