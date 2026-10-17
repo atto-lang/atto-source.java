@@ -18,7 +18,8 @@ import urllib.request
 
 MAX_RESPONSE_BYTES = 131072
 MAX_TOKEN_LENGTH = 4096
-SYSTEM_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"\nMAX_JSON_DEPTH = 64
+SYSTEM_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
+MAX_JSON_DEPTH = 64
 MAX_JSON_NODES = 4096
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z", re.ASCII)
 BEARER_TOKEN = re.compile(r"[A-Za-z0-9._~+/-]+={0,16}\Z", re.ASCII)
