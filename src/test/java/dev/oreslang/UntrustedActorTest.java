@@ -210,6 +210,45 @@ final class UntrustedActorTest {
     }
 
     @Test
+    void capabilityCheckerTraversesExpressionLocalTypeMetadata() {
+        List<String> sources = List.of(
+                """
+                pub untrusted actor fnc worker(): void {
+                  const mut holder = struct{lock: SharedMutex<int>}{};
+                  return;
+                }
+                """,
+                """
+                pub untrusted actor fnc worker(): void {
+                  val callback = |SharedMutex<int> lock| -> {
+                    return;
+                  };
+                  return;
+                }
+                """,
+                """
+                pub untrusted actor fnc worker(): void {
+                  val Channel<int> input = Channel.new<int>(1);
+                  do select first {
+                    when readch input: SharedMutex<int> disguised -> {
+                      return;
+                    }
+                  }
+                  return;
+                }
+                """);
+
+        for (String source : sources) {
+            SecurityException denied = assertThrows(
+                    SecurityException.class,
+                    () -> CapabilityChecker.check(
+                            Parser.parse(source),
+                            IsolatePolicy.developer()));
+            assertTrue(denied.getMessage().contains("SHARED_MEMORY"), denied::getMessage);
+        }
+    }
+
+    @Test
     void actorModifiersRemainContextualIdentifiers() {
         assertDoesNotThrow(() -> Parser.parse("""
                 fnc ordinary() : int {
