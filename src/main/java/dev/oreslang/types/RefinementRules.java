@@ -64,8 +64,8 @@ public final class RefinementRules {
             switch (b.comparator()) {
                 case "eq" -> { min = Math.max(min, n); max = Math.min(max, n); }
                 case "ne" -> excluded.add(n);
-                case "ge" -> min = Math.max(min, n);
-                case "le" -> max = Math.min(max, n);
+                case "gte" -> min = Math.max(min, n);
+                case "lte" -> max = Math.min(max, n);
                 case "gt" -> {
                     if (n == Long.MAX_VALUE)
                         throw new IllegalArgumentException("unsatisfiable gt max");
