@@ -85,6 +85,102 @@ final class ActorSharedLocalMemoryTest {
     }
 
     @Test
+    void sharedActorLiveTurnDoesNotAuthorizeConcurrentOffCarrierReads() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch inTurn = new CountDownLatch(1);
+            CountDownLatch releaseTurn = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.PrivateMemoryBlock> block = new AtomicReference<>();
+
+            var owner = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var local = turn.localMemory().orElseThrow();
+                var owned = local.allocateActorLocalBytes(Long.BYTES);
+                owned.writeLong(0, 0x1020_3040_5060_7080L);
+                block.set(owned);
+                inTurn.countDown();
+                try {
+                    assertTrue(releaseTurn.await(5, TimeUnit.SECONDS),
+                            "the parent must release the live actor turn");
+                    assertEquals(0x1020_3040_5060_7080L, owned.readLong(0),
+                            "failed foreign reads cannot revoke or mutate owned storage");
+                } finally {
+                    turn.self().stop();
+                }
+            });
+            owner.ready().get(5, TimeUnit.SECONDS);
+            owner.send("live-turn");
+            assertTrue(inTurn.await(5, TimeUnit.SECONDS));
+            try {
+                assertThrows(IllegalStateException.class, () -> block.get().readLong(0),
+                        "an active carrier does not confer authority on another host thread");
+                assertThrows(IllegalStateException.class, block.get()::close,
+                        "a foreign carrier cannot retire live actor-owned bytes");
+                assertEquals(Long.BYTES, runtime.sharedActorLocalMemoryBytes());
+            } finally {
+                releaseTurn.countDown();
+            }
+            assertTrue(owner.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(owner.failure().isEmpty(), () -> owner.failure().toString());
+            assertTrue(block.get().closed());
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+        }
+    }
+
+    @Test
+    void sharedActorHeapReservationReleaseRejectsOffCarrierAndSiblingActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch reserved = new CountDownLatch(1);
+            CountDownLatch refunded = new CountDownLatch(1);
+            CountDownLatch siblingDenied = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.MemoryReservation> held = new AtomicReference<>();
+
+            // Do not monopolize a shared carrier while waiting for a sibling.
+            // Distinct mailbox turns prove that reservation ownership survives
+            // turn boundaries without granting the next carrier authority.
+            var owner = runtime.<String>spawnShared(() -> (message, turn) -> {
+                if ("reserve".equals(message)) {
+                    var memory = turn.localMemory().orElseThrow();
+                    held.set(memory.reserveHeap(64));
+                    reserved.countDown();
+                } else if ("release".equals(message)) {
+                    var memory = turn.localMemory().orElseThrow();
+                    assertEquals(64L, memory.usedBytes());
+                    held.get().close();
+                    assertEquals(0L, memory.usedBytes());
+                    assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+                    refunded.countDown();
+                    turn.self().stop();
+                }
+            });
+            owner.ready().get(5, TimeUnit.SECONDS);
+            owner.send("reserve");
+            assertTrue(reserved.await(5, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class, held.get()::close,
+                    "an off-carrier host cannot refund an actor-owned heap reservation");
+            assertEquals(64L, runtime.sharedActorLocalMemoryBytes());
+
+            var sibling = runtime.<String>spawnShared(() -> (message, turn) -> {
+                assertThrows(IllegalStateException.class, held.get()::close,
+                        "a sibling SHARED actor cannot refund the owner's heap");
+                siblingDenied.countDown();
+                turn.self().stop();
+            });
+            sibling.ready().get(5, TimeUnit.SECONDS);
+            sibling.send("foreign-refund");
+            assertTrue(siblingDenied.await(5, TimeUnit.SECONDS));
+            assertTrue(sibling.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(sibling.failure().isEmpty(), () -> sibling.failure().toString());
+            assertEquals(64L, runtime.sharedActorLocalMemoryBytes(),
+                    "rejected foreign refunds must leave accounting unchanged");
+
+            owner.send("release");
+            assertTrue(refunded.await(5, TimeUnit.SECONDS));
+            assertTrue(owner.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(owner.failure().isEmpty(), () -> owner.failure().toString());
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+        }
+    }
+
+    @Test
     void sharedActorZeroByteDirectBlocksStillConsumeQuotaAndHaveBoundedHandles() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch checked = new CountDownLatch(1);
