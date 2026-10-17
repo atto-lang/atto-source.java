@@ -413,6 +413,22 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final UUID runtimeInstanceId = UUID.randomUUID();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
+    // Actor generations are capability authority, not a wrapping ticket ID.
+    // Long.MAX_VALUE is the permanent exhaustion sentinel. Do not allow the
+    // AtomicLong to overflow and potentially recycle previously issued IDs.
+    // Package-local injectable counter permits deterministic exhaustion tests
+    // without modifying any live ActorRuntime's generation sequence.
+    static long claimActorGeneration(AtomicLong counter) {
+        Objects.requireNonNull(counter, "counter");
+        long candidate = counter.get();
+        while (candidate > 0 && candidate < Long.MAX_VALUE) {
+            if (counter.compareAndSet(candidate, candidate + 1)) {
+                return candidate;
+            }
+            candidate = counter.get();
+        }
+        throw new IllegalStateException("actor generation sequence exhausted");
+    }
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     /**
@@ -4363,10 +4379,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // inside the same rollback boundary as actor registration.
                 // Otherwise generation exhaustion leaks the reserved actor slot.
                 ActorId id = ActorId.create();
-                long generation = nextActorGeneration.getAndIncrement();
-                if (generation <= 0) {
-                    throw new IllegalStateException("actor generation sequence exhausted");
-                }
+                long generation = claimActorGeneration(nextActorGeneration);
                 ActorRef<M> ref = new ActorRef<>(id, kind, generation);
                 cell = new ActorCell<>(
                         ref,
