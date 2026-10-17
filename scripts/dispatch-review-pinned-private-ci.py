@@ -120,6 +120,20 @@ def exact_file(repo, path, ref, limit=MAX_CONTENT):
     return raw, blob
 
 
+
+def require_incident_closed():
+    issue = PUB.gh_api(PUB.SOURCE_INCIDENT_ROUTE)
+    if (issue.get("id") != PUB.SOURCE_INCIDENT_ISSUE_ID
+            or issue.get("number") != PUB.SOURCE_INCIDENT_NUMBER
+            or issue.get("state") != "closed"
+            or issue.get("state_reason") != "completed"):
+        raise Denied("private-source exposure incident is not independently closed")
+    closed_at = issue.get("closed_at")
+    if (not isinstance(closed_at, str) or not closed_at.endswith("Z")
+            or len(closed_at) < 20):
+        raise Denied("private-source exposure incident lacks valid closure time")
+    return closed_at
+
 def write_temp(root, name, raw):
     path = root / name
     path.write_bytes(raw)
@@ -193,6 +207,7 @@ def canonical_receipt_from_live():
         VERIFY.parse_destination_entry(destination_path)
         source_commit, source_tree = VERIFY.parse_snapshot_entry(snapshot_path)
 
+        require_incident_closed()
         incident = bounded_list(
             "repos/ores-truffle-oreslang/oreslang-platform-conformance/issues/22/comments",
             "incident authorization history")
@@ -217,6 +232,16 @@ def canonical_receipt_from_live():
             ".github/workflows/private-oreslang-java-validation.yml",
             heads["carrier"],
             limit=256 * 1024)
+
+
+        # Re-read every PR after all authorization inputs have been gathered.
+        # A concurrent head move invalidates this whole recomputation rather
+        # than producing a receipt assembled from different moments in time.
+        for key, (repo, number) in VERIFY.EXPECTED_PRS.items():
+            latest = PUB.gh_api(f"repos/{repo}/pulls/{number}")
+            latest_head, _ = VERIFY.pr_head(latest, repo, number)
+            if latest_head != heads[key]:
+                raise Denied("authorization PR head changed during receipt recomputation")
 
         return {
             "schema": 2,
