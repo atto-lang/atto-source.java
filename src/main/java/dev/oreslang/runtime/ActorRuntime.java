@@ -600,6 +600,23 @@ public final class ActorRuntime implements AutoCloseable {
                 : CarrierBackend.JVM_THREAD_POOL;
     }
 
+    /** Host/test census: physical actor carriers currently attached/alive. */
+    int startedActorCarrierCount() {
+        return startedCarrierCount(privateDispatcher)
+                + startedCarrierCount(sharedDispatcher)
+                + startedCarrierCount(untrustedDispatcher);
+    }
+
+    private static int startedCarrierCount(ExecutorService executor) {
+        if (executor instanceof NativeCarrierExecutor nativePool)
+            return nativePool.getStartedCarrierCount();
+        if (executor instanceof ActorAffinityDispatcher lanes)
+            return lanes.startedCarrierCount();
+        if (executor instanceof java.util.concurrent.ThreadPoolExecutor pool)
+            return pool.getPoolSize();
+        return 0;
+    }
+
     /** Placement is not a separate-heap guarantee. CPU -1 means no hard binding. */
     public record ActorPlacement(int lane, int cpu, String affinity) { }
 
@@ -6573,9 +6590,10 @@ public final class ActorRuntime implements AutoCloseable {
                         "native Oreslang carriers currently require Linux or macOS");
             }
             try {
-                // NativeCarrierExecutor preallocates its pthread capacity.
-                // Distinct lazy growth and demand admission for native carriers
-                // is a separate JNI rework; do NOT claim dynamic native growth.
+                // NativeCarrierExecutor allocates bounded pool metadata here,
+                // but defers pthread creation until first runnable work. Once a
+                // native pool starts it still creates its bounded capacity
+                // together; per-carrier adaptive native growth remains future work.
                 return new NativeCarrierExecutor(
                         parallelism,
                         parallelism,
