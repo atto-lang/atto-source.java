@@ -85,4 +85,37 @@ define module core as
     return xor_parity_bool(values);
   }
 
+  // The standard-library scalar overloads are genuine Oreslang functions.
+  // Ordinary function arguments are eager; unqualified trusted builtins use
+  // compiler lowering to preserve lazy/short-circuit scalar And and Or.
+  pub fnc And(bool a, bool b, rest ...bool): bool {
+    if !a or !b then
+      return false;
+    fi
+    for const value of rest do
+      if !value then
+        return false;
+      fi
+    done
+    return true;
+  }
+
+  pub fnc Or(bool a, bool b, rest ...bool): bool {
+    if a or b then
+      return true;
+    fi
+    for const value of rest do
+      if value then
+        return true;
+      fi
+    done
+    return false;
+  }
+
+  // XOR is binary as an operator and scalar function; collection parity uses
+  // the distinct one-argument List<bool> overload.
+  pub fnc Xor(bool a, bool b): bool {
+    return a xor b;
+  }
+
 end
