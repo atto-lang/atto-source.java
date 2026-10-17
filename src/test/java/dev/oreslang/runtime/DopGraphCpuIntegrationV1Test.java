@@ -138,6 +138,61 @@ final class DopGraphCpuIntegrationV1Test {
     }
 
     @Test
+    void inlineExecutorFailsBeforeTouchingOwnedStorage() {
+        try (var input = new DopKernelIR.HostBuffer(LAYOUT);
+             var output = new DopKernelIR.HostBuffer(LAYOUT)) {
+            input.write(0, 0, 3.0f);
+            var result = DopGraphCpuIntegrationV1.submit(kernel(), input, output,
+                    region(input, DopRegionSchedule.Mode.READ),
+                    region(output, DopRegionSchedule.Mode.WRITE),
+                    scalar(), Runnable::run);
+            assertInstanceOf(IllegalStateException.class,
+                    assertThrows(CompletionException.class, result::join).getCause());
+            assertEquals(0.0f, output.read(0, 0));
+        }
+    }
+
+    @Test
+    void startedWorkerCannotWriteIfSchedulerRejectsAfterEnqueue() throws Exception {
+        // Executor can start another carrier before its admission returns.
+        // The queued worker must wait until the scheduler commits admission,
+        // never modifying the output when execute() subsequently throws.
+        for (int round = 0; round < 64; round++) {
+            try (var input = new DopKernelIR.HostBuffer(LAYOUT);
+                 var output = new DopKernelIR.HostBuffer(LAYOUT)) {
+                input.write(0, 0, 3.0f);
+                var launched = new java.util.concurrent.CountDownLatch(1);
+                var running = new java.util.concurrent.atomic.AtomicReference<Thread>();
+                var result = DopGraphCpuIntegrationV1.submit(kernel(), input, output,
+                        region(input, DopRegionSchedule.Mode.READ),
+                        region(output, DopRegionSchedule.Mode.WRITE),
+                        scalar(), job -> {
+                            var worker = new Thread(() -> {
+                                launched.countDown();
+                                job.run();
+                            });
+                            running.set(worker);
+                            worker.start();
+                            try {
+                                assertTrue(launched.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                            } catch (InterruptedException ex) {
+                                Thread.currentThread().interrupt();
+                                throw new RejectedExecutionException(ex);
+                            }
+                            throw new RejectedExecutionException("threw after starting worker");
+                        });
+                var worker = running.get();
+                assertNotNull(worker);
+                worker.join(5000);
+                assertFalse(worker.isAlive(), "scheduler rejection stranded CPU worker");
+                assertInstanceOf(RejectedExecutionException.class,
+                        assertThrows(CompletionException.class, result::join).getCause());
+                assertEquals(0.0f, output.read(0, 0));
+            }
+        }
+    }
+
+    @Test
     void executorThatEnqueuesThenThrowsCannotMutateOutput() {
         try (var input = new DopKernelIR.HostBuffer(LAYOUT);
              var output = new DopKernelIR.HostBuffer(LAYOUT)) {
