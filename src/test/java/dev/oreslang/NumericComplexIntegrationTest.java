@@ -65,6 +65,19 @@ final class NumericComplexIntegrationTest {
     }
 
     @Test
+    void complexMultiplyRoundsOnceAcrossSeparatedCrossTerms() {
+        // Independent exact-rational audit found the former two-product plus
+        // rounded-sum path one ULP high in the real component for this tuple.
+        assertTrue(evaluatesTrue("""
+                val complex actual =
+                    (-2.876527695159415e173 + 1.1062282252099771e52i)
+                    * (37053981341.46522 + 3.503535910293817e134i);
+                return actual
+                    eq (-3.8863689923582155e186 - 1.0078018076945717e308i);
+                """));
+    }
+
+    @Test
     void complexNaNIsNotEqualToItselfEvenAtSameReferenceIdentity() {
         assertTrue(evaluatesTrue("""
                 val complex invalid = 0.0i / 0.0i;
