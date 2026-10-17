@@ -200,7 +200,10 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
      * not enabled until compiler-owned backward message handlers exist. */
     void backward(M value) {
         inLiveGeneration(() -> {
-            sendChild(session.returnOneHop(current()), value);
+            Objects.requireNonNull(value, "pipeline payload");
+            var source = current();
+            var child = session.returnOneHop(source);
+            sendReturnChild(source, child, value);
             return null;
         });
     }
@@ -209,7 +212,10 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
      * derived from the sealed route path and is never caller-selected. */
     void reply(M value) {
         inLiveGeneration(() -> {
-            sendChild(session.returnToOrigin(current()), value);
+            Objects.requireNonNull(value, "pipeline reply payload");
+            var source = current();
+            var child = session.returnToOrigin(source);
+            sendReturnChild(source, child, value);
             return null;
         });
     }
@@ -299,6 +305,28 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
         } catch (RuntimeException | Error failed) {
             ActorPipelineRouteSession.retireDelivered(child);
             throw failed;
+        }
+    }
+
+    /** An actual mailbox rejection never consumes the source reply right.
+     * A published message is never retried automatically. In particular,
+     * ActorRuntime handles post-publication scheduler rejection as an
+     * admitted envelope (with eventual STOP cleanup), so that exception
+     * cannot be mistaken for a failed admission here. */
+    private void sendReturnChild(
+            ActorPipelineRouteSession.MailFrame source,
+            ActorPipelineRouteSession.MailFrame child, M value) {
+        try {
+            owner.sendWithPipelineFrame(
+                    targets.get(child.receiver()), value, child, this);
+        } catch (RuntimeException rejected) {
+            session.restoreRejectedReturn(source, child);
+            throw rejected;
+        } catch (Error fatal) {
+            // Fatal VM faults are not retryable. Do not resurrect a route
+            // after unclassified failure or pretend no publication happened.
+            ActorPipelineRouteSession.retireDelivered(child);
+            throw fatal;
         }
     }
 
