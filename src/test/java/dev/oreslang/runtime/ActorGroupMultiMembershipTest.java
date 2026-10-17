@@ -308,6 +308,11 @@ final class ActorGroupMultiMembershipTest {
                     () -> ActorRuntime.freeze(java.util.Map.of("cap", capability)));
             assertThrows(IllegalArgumentException.class,
                     () -> runtime.syncCell(java.util.List.of(capability)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.shareReadonly(java.util.Map.of("cap", capability)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.freezeActorGroupEventPayload(
+                            java.util.List.of("event", capability)));
 
             shared.stop();
             privateActor.stop();
