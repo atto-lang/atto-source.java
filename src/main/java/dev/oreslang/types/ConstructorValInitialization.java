@@ -181,10 +181,19 @@ public final class ConstructorValInitialization {
         }
         if (node instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr receiver
-                && receiver.name().equals("self")
-                && required.contains(member.member())
-                && !state.must.contains(member.member())) {
-            throw error(klass, member.member(), "is read before constructor initialization");
+                && receiver.name().equals("self")) {
+            // A direct field projection is not publication of the receiver itself.
+            if (required.contains(member.member()) && !state.must.contains(member.member())) {
+                throw error(klass, member.member(), "is read before constructor initialization");
+            }
+            return;
+        }
+        if (node instanceof Ast.NameExpr name && name.name().equals("self")) {
+            // Only direct self.field projections / writes may use construction self.
+            // In particular, self hidden inside a tuple, list or struct must not
+            // bypass the no-publication rule.
+            throw new IllegalArgumentException(
+                    "constructor for '" + klass + "': partially initialized self cannot escape");
         }
         if (node instanceof Iterable<?> values) {
             for (Object value : values) scan(value, state, required, klass);
