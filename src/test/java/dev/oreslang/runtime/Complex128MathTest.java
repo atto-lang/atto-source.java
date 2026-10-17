@@ -86,6 +86,27 @@ final class Complex128MathTest {
     }
 
     @Test
+    void divisionPinsCancellationScaleAndZeroNumeratorRegressions() {
+        Complex128Math.Value cancellation = Complex128Math.divide(
+                0.9999999947592926,
+                1.0000000008845844,
+                0.9999999973991033,
+                1.0000000035243972);
+        assertRawBits(0x3feffffffe952fe2L, cancellation.real());
+        assertRawBits(0xbcd2dab72384c7b8L, cancellation.imaginary());
+
+        Complex128Math.Value separatedScale = Complex128Math.divide(
+                1e300, 1e-20, 0.0, 1.0);
+        assertRawBits(0x3bc79ca10c924223L, separatedScale.real());
+        assertRawBits(0xfe37e43c8800759cL, separatedScale.imaginary());
+
+        Complex128Math.Value zeroNumerator = Complex128Math.divide(
+                0.0, 0.0, 0.0, 5e-324);
+        assertRawBits(0x0000000000000000L, zeroNumerator.real());
+        assertRawBits(0x0000000000000000L, zeroNumerator.imaginary());
+    }
+
+    @Test
     void multiplicationPreservesMinimumSubnormalAndSignedZeroHint() {
         Complex128Math.Value tiny = Complex128Math.multiply(
                 1.3e-162, 1.3e-162, 1.3e-162, 1.3e-162);
