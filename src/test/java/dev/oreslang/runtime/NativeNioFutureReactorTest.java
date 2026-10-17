@@ -258,6 +258,30 @@ final class NativeNioFutureReactorTest {
         }
     }
 
+    @Test void accidentalInlineCpuExecutorIsRejectedWithoutRunningGuestMapping() throws Exception {
+        // A host accidentally supplies Runnable::run. The reactor must reject
+        // guest byte-array conversion instead of running it on the I/O loop.
+        try (var reactor = NativeNioFutureReactor.loopback(
+                0, 8, 1, 8, Runnable::run)) {
+            var accepted = reactor.acceptAsync();
+            try (var peer = new Socket(InetAddress.getLoopbackAddress(), reactor.localPort())) {
+                var connection = accepted.get(3, TimeUnit.SECONDS);
+                var mapped = connection.readBytesAsync(1);
+                peer.getOutputStream().write(33);
+                var error = assertThrows(ExecutionException.class,
+                        () -> mapped.get(3, TimeUnit.SECONDS));
+                assertInstanceOf(IllegalStateException.class, error.getCause());
+                assertTrue(error.getCause().getMessage().contains("inline"));
+                // Fail closed for unsafe conversion dispatch, but keep socket
+                // ownership and the underlying reactor usable.
+                var next = connection.readAsync(1);
+                peer.getOutputStream().write(34);
+                assertArrayEquals(new byte[] {34}, next.get(3, TimeUnit.SECONDS));
+                connection.closeAsync().get(3, TimeUnit.SECONDS);
+            }
+        }
+    }
+
     @Test void guestByteArrayFutureCancellationRevokesUnderlyingRead() throws Exception {
         try (var reactor = NativeNioFutureReactor.loopback(0, 8, 1, 8)) {
             var accepted = reactor.acceptAsync();
