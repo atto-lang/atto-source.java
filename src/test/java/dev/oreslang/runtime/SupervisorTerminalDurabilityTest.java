@@ -83,4 +83,49 @@ final class SupervisorTerminalDurabilityTest {
         }
     }
 
+
+    @Test
+    void closingSupervisorBeforeResumeRetainsParentTerminalState() throws Exception {
+        try (var control = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var supervisor = ActorRuntime.SupervisorId.create();
+            var group = ActorRuntime.ActorGroupId.create();
+            var actor = ActorRuntime.ActorId.create();
+            var lane = new SupervisorFailureControl(supervisor, group, control, 1);
+            var awaited =
+                    new java.util.concurrent.CompletableFuture<SupervisorProcess.Directive>();
+            var entered = new java.util.concurrent.CountDownLatch(1);
+            var decisions = new java.util.concurrent.atomic.AtomicInteger();
+            var process = new SupervisorProcess(
+                    supervisor, group, control, 1,
+                    ignored -> {
+                        entered.countDown();
+                        return awaited;
+                    },
+                    ignored -> decisions.incrementAndGet());
+
+            lane.reserve(actor);
+            lane.installAsync(process::accept);
+            lane.publish(new SupervisorFailureControl.Notice(
+                    supervisor, group, actor, Optional.empty(),
+                    SupervisorFailureControl.Kind.TERMINAL_FAILURE,
+                    "Failure", "close-race"));
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+            process.close();
+            awaited.complete(SupervisorProcess.Directive.RESTART);
+
+            long deadline = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (lane.failure().isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertEquals(0, decisions.get());
+            assertEquals(0, process.resolved());
+            assertTrue(lane.failure().isPresent());
+            assertEquals(1, lane.queued());
+            assertEquals(1, lane.reserved());
+            assertEquals(actor, lane.pendingSnapshot().getFirst().notice().actorId());
+        }
+    }
+
 }
