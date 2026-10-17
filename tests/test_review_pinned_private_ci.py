@@ -44,12 +44,15 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             "merged": False,
             "draft": False,
             "head": {"sha": head, "repo": {"full_name": repo}},
-            "base": {"repo": {"full_name": repo}},
+            "base": {"ref": "main", "repo": {"full_name": repo}},
         }
 
-    def reviews(self, head, reviewer="ORESoftware", state="APPROVED", rid=1):
+    def reviews(self, head, reviewer="ORESoftware", reviewer_id=None,
+                state="APPROVED", rid=1):
+        if reviewer_id is None:
+            reviewer_id = MOD.REVIEWER_ID
         return [{"id": rid, "state": state, "commit_id": head,
-                 "user": {"login": reviewer}}]
+                 "user": {"login": reviewer, "id": reviewer_id}}]
 
     def fixture(self):
         args = {
@@ -81,7 +84,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                     + " source_tree=" + SOURCE_TREE
                     + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)
                 ),
-                "user": {"login": "ORESoftware"},
+                "user": {"login": "ORESoftware", "id": MOD.REVIEWER_ID},
             }]),
             "source_commit": self.write("source-commit.json", {
                 "sha": SOURCE_COMMIT,
@@ -140,6 +143,13 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                 self.reviews("a" * 40))
         self.assertDenied(mutate)
 
+    def test_reviewer_id_mismatch_denied(self):
+        def mutate(fx):
+            fx["carrier_reviews"] = self.write(
+                "carrier-reviews-wrong-id.json",
+                self.reviews(CARRIER_HEAD, reviewer_id=1))
+        self.assertDenied(mutate)
+
     def test_wrong_reviewer_denied(self):
         def mutate(fx):
             fx["carrier_reviews"] = self.write("carrier-reviews-wrong.json",
@@ -163,6 +173,13 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             p = self.pr(MOD.SOURCE_REPO, 1123, PUBLISHER_HEAD)
             p["state"] = "closed"
             fx["publisher_pr"] = self.write("publisher-pr-closed.json", p)
+        self.assertDenied(mutate)
+
+    def test_non_main_security_pr_denied(self):
+        def mutate(fx):
+            p = self.pr(MOD.SOURCE_REPO, 1092, DEST_HEAD)
+            p["base"]["ref"] = "release"
+            fx["destination_pr"] = self.write("destination-pr-wrong-base.json", p)
         self.assertDenied(mutate)
 
     def test_draft_security_pr_denied(self):
@@ -203,14 +220,14 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                     + " carrier=" + CARRIER_HEAD + " source_commit=" + SOURCE_COMMIT
                     + " source_tree=" + SOURCE_TREE
                     + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)),
-                 "user": {"login": "ORESoftware"}},
+                 "user": {"login": "ORESoftware", "id": MOD.REVIEWER_ID}},
                 {"id": 100, "body": (
                     MOD.RESUME_MARKER + " publisher=" + PUBLISHER_HEAD
                     + " destination=" + DEST_HEAD + " snapshot=" + SNAP_HEAD
                     + " carrier=" + CARRIER_HEAD + " source_commit=" + SOURCE_COMMIT
                     + " source_tree=" + SOURCE_TREE
                     + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)),
-                 "user": {"login": "ORESoftware"}},
+                 "user": {"login": "ORESoftware", "id": MOD.REVIEWER_ID}},
             ])
         self.assertDenied(mutate)
 
