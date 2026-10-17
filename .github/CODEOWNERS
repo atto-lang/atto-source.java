@@ -1,11 +1,19 @@
-# Security review for all changes that can authorize private-source exports.
-# Enforcement requires branch protection to require code-owner reviews.
+# Source export, private runner and policy changes require independent CODEOWNER review.
+# WARNING: enforcement is absent until main is protected and code-owner reviews are mandatory.
 /.github/CODEOWNERS @ORESoftware
 /.github/private-ci-approved-repositories.txt @ORESoftware
+/.github/private-ci-approved-source-snapshots.txt @ORESoftware
+/.github/workflows/private-ci-mirror-preflight.yml @ORESoftware
+/.github/workflows/private-exact-candidate-validation.yml @ORESoftware
+/.github/workflows/private-exact-main-validation.yml @ORESoftware
+/.github/workflows/private-exact-publisher-validation.yml @ORESoftware
+/docs/security/CI_PRIVATE_SOURCE_MIRRORING.md @ORESoftware
+/docs/security/PRIVATE_EXACT_MAIN_VALIDATION.md @ORESoftware
 /scripts/check-private-ci-destination.sh @ORESoftware
+/scripts/publish-private-ci-source.py @ORESoftware
 /scripts/run-in-private-ci-destination.sh @ORESoftware
 /scripts/test-private-ci-destination.sh @ORESoftware
-/.github/workflows/private-ci-mirror-preflight.yml @ORESoftware
-/docs/security/CI_PRIVATE_SOURCE_MIRRORING.md @ORESoftware
-/scripts/publish-private-ci-source.py @ORESoftware
 /scripts/test-publish-private-ci-source.py @ORESoftware
+/src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java @ORESoftware
+/src/test/java/dev/oreslang/PrivateExactPublisherAdmissionMutationTest.java @ORESoftware
+/src/test/java/dev/oreslang/PrivateExactPublisherValidationWorkflowSecurityTest.java @ORESoftware
