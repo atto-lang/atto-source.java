@@ -2641,6 +2641,15 @@ public final class OwnershipChecker {
             Ast.TypeRef narrowed = isIntegerIntrinsicCall(call, source)
                     ? Ast.TypeRef.simple("int")
                     : Ast.TypeRef.simple("float");
+            // Match TypeChecker's proof boundary exactly. A scalar runtime
+            // predicate validates a plain top/scalar value; it does not erase
+            // borrow, union, generic, nominal or constructed type metadata.
+            Ast.TypeRef declared = original.type;
+            if (declared == null || declared.isBorrow() || declared.isUnion()
+                    || declared.inferArguments() || !declared.arguments().isEmpty()) return;
+            if (!(declared.name().equals("any") || declared.name().equals("unknown")
+                    || declared.name().equals("Any") || declared.name().equals("Unknown")
+                    || declared.name().equals(narrowed.name()))) return;
             defineRefinementAlias(
                     name.name(),
                     narrowed,
