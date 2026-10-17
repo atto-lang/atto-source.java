@@ -170,7 +170,12 @@ public final class NioReadinessGroup implements AutoCloseable {
     }
 
     private void releaseNotificationReservation() {
-        if (notificationReservations.decrementAndGet() == 0) {
+        int remaining = notificationReservations.decrementAndGet();
+        if (remaining < 0) {
+            notificationReservations.incrementAndGet();
+            throw new IllegalStateException("NIO notification reservation released more than once");
+        }
+        if (remaining == 0) {
             synchronized (notificationDrain) { notificationDrain.notifyAll(); }
         }
     }
@@ -188,9 +193,10 @@ public final class NioReadinessGroup implements AutoCloseable {
         }
     }
 
-    /** Called when a CONTROL task retires, so a temporary full queue cannot
-     * permanently strand NIO completions. The bounded retry never blocks,
-     * executes a Future subscriber inline, or spins on a full executor.
+    /** Called after an actor turn or accepted host notification retires,
+     * so a temporarily full actor queue cannot strand accepted NIO work.
+     * At most 128 staged records are offered per retry. A supplied executor
+     * may be synchronous, so direct delivery is forbidden on the selector.
      */
     void retryStagedNotifications() {
         Executor target = boundCompletionExecutor;
