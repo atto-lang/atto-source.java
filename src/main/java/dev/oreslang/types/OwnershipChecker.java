@@ -2430,6 +2430,23 @@ public final class OwnershipChecker {
         return new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
     }
 
+    private VarState constructionSelfCaptureRoot(Ast.Expr expression, Scope scope) {
+        if (initializingClass == null || !(expression instanceof Ast.LambdaExpr lambda)
+                || lambda.nonLexical()) {
+            return null;
+        }
+        Capture capture = collectCaptures(lambda, scope, null).values.get("self");
+        if (capture == null) return null;
+        VarState source = capture.source();
+        if (source.kind != ValueKind.MUT_BORROW
+                || source.type == null
+                || !source.type.isBorrow()
+                || !source.type.mutableBorrow()) {
+            return null;
+        }
+        return ownershipRoot(source);
+    }
+
     private CaptureSet collectCaptures(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
         CaptureSet captures = new CaptureSet();
         Set<String> locals = new HashSet<>();
