@@ -254,6 +254,72 @@ final class ProjectRootImportTest {
     }
 
     @Test
+    void modernManifestConfiguredRootCannotEscapeOrCrossNestedPackage() throws Exception {
+        Path packageDir = makeProject("modern-configured-root-denial");
+        Path importer = packageDir.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        Path modern = packageDir.resolve(OresProjectConfig.MANIFEST_NAME);
+        Files.createDirectories(packageDir.resolve("app/child"));
+        Files.createDirectories(temp.resolve("unrelated-root"));
+        for (String value : new String[] {
+                "../unrelated-root", temp.resolve("unrelated-root").toString(),
+                "app//child", "app/.", "app/..", "app\\\\child",
+                "app:child", "app/", "missing-root"
+        }) {
+            Files.writeString(modern, "schema_version = \"1\"\n[project]\nroot = \"" +
+                    value.replace("\\", "\\\\") + "\"\n");
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresProjectConfig.discover(importer, Map.of()), value);
+        }
+        Files.writeString(packageDir.resolve("app/child/.ores.pkg.toml"),
+                "schema_version = \"1\"\n");
+        Files.writeString(modern, "schema_version = \"1\"\n[project]\nroot = \"app/child\"\n");
+        IllegalArgumentException nested = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(importer, Map.of()));
+        assertTrue(nested.getMessage().contains("nested package"), nested.getMessage());
+
+        Files.delete(packageDir.resolve("app/child/.ores.pkg.toml"));
+        Files.writeString(packageDir.resolve("app/child/.oreslangc.cfg.toml"),
+                "schema_version = \"1\"\n");
+        assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(importer, Map.of()));
+    }
+
+    @Test
+    void modernManifestRejectsWrongKnownFieldTypesInsteadOfUsingDefaults() throws Exception {
+        Path root = makeProject("modern-wrong-field-types");
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        Path modern = root.resolve(OresProjectConfig.MANIFEST_NAME);
+        for (String body : new String[] {
+                "[project]\nroot = 7\n",
+                "[source]\nroots = true\n",
+                "[source]\nimport_paths = \"vendor\"\n",
+                "[entrypoints]\nmain = true\n"
+        }) {
+            Files.writeString(modern, "schema_version = \"1\"\n" + body);
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresProjectConfig.discover(importer, Map.of()), body);
+        }
+    }
+
+    @Test
+    void modernManifestCannotRedirectRootThroughSymlink() throws Exception {
+        Path root = makeProject("modern-symlink-root");
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        Path alias = root.resolve("app-link");
+        try {
+            Files.createSymbolicLink(alias, temp);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "symlinks unavailable: " + unsupported);
+        }
+        Files.writeString(root.resolve(OresProjectConfig.MANIFEST_NAME),
+                "schema_version = \"1\"\n[project]\nroot = \"app-link\"\n");
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(importer, Map.of()));
+        assertTrue(denied.getMessage().contains("escapes physical"), denied.getMessage());
+    }
+
+    @Test
     void nestedPackageCannotInheritParentRootAuthority() throws Exception {
         Path root = makeProject("nested-boundary");
         Path child = root.resolve("lib/child");
