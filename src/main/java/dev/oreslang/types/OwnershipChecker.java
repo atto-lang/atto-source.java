@@ -1915,6 +1915,11 @@ public final class OwnershipChecker {
                 VarState loanOwner = param.type().isBorrow()
                         ? invocationLoanRoot(argument, scope) : null;
                 boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
+                if (constructionLoanOwner != null
+                        && invocationLoans.containsKey(ownershipRoot(constructionLoanOwner))) {
+                    throw error(callable + " has overlapping construction self callback borrows at position "
+                            + (parameterIndex + 1));
+                }
                 if (loanOwner != null) {
                     Boolean previous = invocationLoans.get(loanOwner);
                     if (previous != null && (previous || mutable)) {
