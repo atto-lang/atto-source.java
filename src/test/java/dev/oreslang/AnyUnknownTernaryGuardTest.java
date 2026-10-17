@@ -183,6 +183,44 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void opaqueUnionNormalizationDoesNotEraseBorrowOrCapabilityEvidence() {
+        var any = dev.oreslang.types.Types.Any.INSTANCE;
+        var opaque = dev.oreslang.types.Types.UnknownValue.INSTANCE;
+        var integer = dev.oreslang.types.Types.Primitive.INT;
+        var borrowed = new dev.oreslang.types.Types.Borrow(integer, false);
+        var channel = new dev.oreslang.types.Types.Named(
+                "Channel", java.util.List.of(integer));
+
+        assertSame(any, dev.oreslang.types.Types.unionOf(any, integer));
+        assertSame(opaque, dev.oreslang.types.Types.unionOf(opaque, any));
+        assertInstanceOf(dev.oreslang.types.Types.Union.class,
+                dev.oreslang.types.Types.unionOf(any, borrowed));
+        assertInstanceOf(dev.oreslang.types.Types.Union.class,
+                dev.oreslang.types.Types.unionOf(opaque, borrowed));
+        assertInstanceOf(dev.oreslang.types.Types.Union.class,
+                dev.oreslang.types.Types.unionOf(any, channel));
+    }
+
+    @Test
+    void writableStructuralRecordMembersRemainInvariant() {
+        var integer = dev.oreslang.types.Types.Primitive.INT;
+        var any = dev.oreslang.types.Types.Any.INSTANCE;
+        var writableInt = new dev.oreslang.types.Types.Record(
+                java.util.Map.of("value", integer));
+        var writableAny = new dev.oreslang.types.Types.Record(
+                java.util.Map.of("value", any));
+        var readonlyInt = new dev.oreslang.types.Types.Record(
+                java.util.Map.of("value", integer), true);
+        var readonlyAny = new dev.oreslang.types.Types.Record(
+                java.util.Map.of("value", any), true);
+
+        assertFalse(dev.oreslang.types.Types.isAssignable(writableInt, writableAny));
+        assertTrue(dev.oreslang.types.Types.isAssignable(writableInt, readonlyAny));
+        assertFalse(dev.oreslang.types.Types.isAssignable(readonlyInt, writableInt));
+        assertTrue(dev.oreslang.types.Types.isAssignable(readonlyInt, readonlyAny));
+    }
+
+    @Test
     void ternaryEvaluatesOnlyTheSelectedBranch() throws Exception {
         String output = run("""
                 fnc left(): int {
