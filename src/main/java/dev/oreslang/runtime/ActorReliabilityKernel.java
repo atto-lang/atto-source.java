@@ -78,7 +78,9 @@ final class ActorReliabilityKernel {
             long nextSequence,
             long overwrittenEvents,
             List<Event> recentEvents,
-            Map<EventKind, Long> counters) {
+            Map<EventKind, Long> counters,
+            long clockRegressions,
+            long saturatedSequenceDrops) {
         Snapshot {
             recentEvents = List.copyOf(recentEvents);
             counters = Map.copyOf(counters);
@@ -92,7 +94,11 @@ final class ActorReliabilityKernel {
     private final long[] counters = new long[EventKind.values().length];
     private long nextSequence;
     private long overwritten;
-    private long lastTimestamp = -1L;
+    private long clockRegressions;
+    private long saturatedSequenceDrops;
+    private boolean clockInitialized;
+    private long lastClockSample;
+    private long monotonicElapsed;
 
     ActorReliabilityKernel(int capacity, LongSupplier monotonicNanos) {
         if (capacity < 1 || capacity > 65_536)
@@ -110,20 +116,41 @@ final class ActorReliabilityKernel {
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(actor, "actor");
         Objects.requireNonNull(fault, "fault");
-        long now = monotonicNanos.getAsLong();
-        if (now < 0) throw new IllegalStateException("monotonic clock returned a negative value");
         synchronized (lock) {
-            if (lastTimestamp >= 0 && now < lastTimestamp)
-                throw new IllegalStateException("monotonic clock regressed");
-            lastTimestamp = now;
-            long sequence = nextSequence;
-            nextSequence = Math.addExact(nextSequence, 1L);
-            counters[kind.ordinal()] = Math.addExact(counters[kind.ordinal()], 1L);
+            // Sample inside the publication lock. A clock read before the
+            // lock can be overtaken by a second carrier, producing a fake
+            // "regression" and dropping otherwise valid fault telemetry.
+            // nanoTime is signed and may start negative; all event timestamps
+            // are relative to this kernel's first successful sample.
+            long sample = monotonicNanos.getAsLong();
+            if (!clockInitialized) {
+                clockInitialized = true;
+                lastClockSample = sample;
+            } else {
+                long delta = sample - lastClockSample;
+                if (delta < 0) {
+                    // Unlike scheduling and restart admission, diagnostic
+                    // telemetry MUST NOT bring an actor down when its clock
+                    // source regresses. Freeze time and count the anomaly.
+                    clockRegressions = saturatingIncrement(clockRegressions);
+                } else {
+                    lastClockSample = sample;
+                    monotonicElapsed = saturatingAdd(monotonicElapsed, delta);
+                }
+            }
+            counters[kind.ordinal()] = saturatingIncrement(counters[kind.ordinal()]);
+            if (nextSequence == Long.MAX_VALUE) {
+                // Never publish duplicate sequence IDs after exhaustion.
+                // Keep counters alive and explicitly report dropped history.
+                saturatedSequenceDrops = saturatingIncrement(saturatedSequenceDrops);
+                return;
+            }
+            long sequence = nextSequence++;
             if (recent.size() == capacity) {
                 recent.removeFirst();
-                overwritten = Math.addExact(overwritten, 1L);
+                overwritten = saturatingIncrement(overwritten);
             }
-            recent.addLast(new Event(sequence, now, kind, actor, fault, value));
+            recent.addLast(new Event(sequence, monotonicElapsed, kind, actor, fault, value));
         }
     }
 
@@ -136,8 +163,19 @@ final class ActorReliabilityKernel {
                     nextSequence,
                     overwritten,
                     new ArrayList<>(recent),
-                    counts);
+                    counts,
+                    clockRegressions,
+                    saturatedSequenceDrops);
         }
+    }
+
+    private static long saturatingIncrement(long value) {
+        return value == Long.MAX_VALUE ? Long.MAX_VALUE : value + 1L;
+    }
+
+    private static long saturatingAdd(long left, long right) {
+        if (right < 0) throw new IllegalArgumentException("negative elapsed time");
+        return Long.MAX_VALUE - left < right ? Long.MAX_VALUE : left + right;
     }
 
     /**
@@ -160,7 +198,9 @@ final class ActorReliabilityKernel {
         private int start;
         private int size;
         private long blockedUntil;
-        private long lastNow = -1L;
+        private boolean clockInitialized;
+        private long lastRawClock;
+        private long elapsedNanos;
 
         RestartBudget(
                 int maxRestarts,
@@ -193,19 +233,36 @@ final class ActorReliabilityKernel {
         }
 
         synchronized void resetAfterHealthyPeriod() {
-            checkedNow();
+            long now = checkedNow();
+            evictExpired(now);
+            // A premature external "healthy" callback must not bypass the
+            // crash-loop breaker. Full window without an admitted restart
+            // AND a completed quarantine are required.
+            if (now < blockedUntil || size != 0) {
+                throw new IllegalStateException(
+                        "restart budget cannot reset before a healthy window and quarantine");
+            }
             start = 0;
-            size = 0;
             blockedUntil = 0L;
         }
 
         private long checkedNow() {
-            long now = clock.getAsLong();
-            if (now < 0) throw new IllegalStateException("monotonic clock returned a negative value");
-            if (lastNow >= 0 && now < lastNow)
-                throw new IllegalStateException("monotonic clock regressed");
-            lastNow = now;
-            return now;
+            long sample = clock.getAsLong();
+            if (!clockInitialized) {
+                clockInitialized = true;
+                lastRawClock = sample;
+                return 0L;
+            }
+            long delta = sample - lastRawClock;
+            if (delta < 0) {
+                // Unlike observability this controls actor execution.
+                // Fail closed instead of allowing restart storms or
+                // manufacturing a negative retry delay.
+                throw new IllegalStateException("restart monotonic clock regressed");
+            }
+            lastRawClock = sample;
+            elapsedNanos = Math.addExact(elapsedNanos, delta);
+            return elapsedNanos;
         }
 
         private void evictExpired(long now) {
