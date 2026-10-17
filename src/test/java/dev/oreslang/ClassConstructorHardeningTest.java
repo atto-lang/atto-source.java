@@ -117,6 +117,33 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void constructorValBranchInitializationExecutesWithBothOutcomes() throws Exception {
+        String output = run("""
+                define class Counter as
+                    val int count;
+                    constructor(int n) {
+                        if n > 0 then
+                            self.count = n;
+                        else
+                            self.count = 0;
+                        fi
+                        return;
+                    }
+                    pub get(): int { return self.count; }
+                end
+                pub routine main(): void {
+                    val first = new Counter(-1);
+                    val second = new Counter(42);
+                    stdio.stdout.write(first.get());
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(second.get());
+                    return;
+                }
+                """);
+        assertEquals("0|42", output);
+    }
+
+    @Test
     void inferredGenericConstructorUsesSelectedArity() throws Exception {
         String source = """
                 define class Holder<T> as
