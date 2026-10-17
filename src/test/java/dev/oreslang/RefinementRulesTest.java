@@ -36,6 +36,33 @@ final class RefinementRulesTest {
         assertFalse(one.accepts(String.valueOf((char) 0xD800)));
     }
 
+    @Test void publicDescriptorRejectsForgedMetadataAndNoncanonicalHoles() {
+        var aliased = alias("type Port = int with value gte 1 and value lte 65535;");
+        var trusted = RefinementRules.descriptor(null, aliased.target(), aliased.refinement());
+        assertThrows(IllegalArgumentException.class,
+                () -> new RefinementRules.Descriptor(1, "int", "value", 1L,
+                        65535L, java.util.List.of(), "", "0".repeat(64)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new RefinementRules.Descriptor(1, "int", "length", 1L,
+                        65535L, java.util.List.of(), "", trusted.fingerprint()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new RefinementRules.Descriptor(2, trusted.base(), trusted.property(),
+                        trusted.min(), trusted.max(), trusted.excluded(),
+                        trusted.nominalIdentity(), trusted.fingerprint()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new RefinementRules.Descriptor(1, "int", "value", 1L,
+                        65535L, java.util.List.of(3L, 2L), "", trusted.fingerprint()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new RefinementRules.Descriptor(1, "int", "value", 1L,
+                        65535L, java.util.List.of(0L), "", trusted.fingerprint()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new RefinementRules.Descriptor(1, "string", "length", -1L,
+                        2L, java.util.List.of(), "", trusted.fingerprint()));
+        assertDoesNotThrow(() -> new RefinementRules.Descriptor(trusted.version(),
+                trusted.base(), trusted.property(), trusted.min(), trusted.max(),
+                trusted.excluded(), trusted.nominalIdentity(), trusted.fingerprint()));
+    }
+
     @Test void offDomainExclusionsDoNotAlterGeneratedSchema() {
         var plain = alias("type Port = int with value gte 1 and value lte 65535;");
         var redundant = alias(
