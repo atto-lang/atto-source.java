@@ -194,11 +194,24 @@ public final class OresContext implements AutoCloseable {
         AsyncRuntime async = null;
         RuntimeGarbageCollector gc = null;
         try {
+            // Explicit global budget gives CONTROL one guaranteed slot and
+            // statically partitions the remainder across isolated actor
+            // domains. Unlike the legacy non-affine fallback, no domain may
+            // independently expand to 20 and overshoot the VM-wide ceiling.
+            ActorRuntime.DispatcherConfig actorSettings =
+                    ActorRuntime.DispatcherConfig.defaults();
+            OresCarrierBudget budget = vm.carrierBudget();
+            if (budget != null) {
+                actorSettings = new ActorRuntime.DispatcherConfig(
+                        budget.privateMaximum(), budget.sharedMaximum(),
+                        actorSettings.throughput(), actorSettings.maxActors());
+            }
             actors = new ActorRuntime(
                     isolatePolicy,
-                    ActorRuntime.DispatcherConfig.defaults(),
+                    actorSettings,
                     this::executeActorTurn,
-                    vm::executeControl);
+                    vm::executeControl,
+                    budget);
             // NIO completions share the existing actor-carrier admission
             // domain. A full queue stages bounded records and retries after
             // actor turns; no dedicated per-VM NIO completion threads start.
