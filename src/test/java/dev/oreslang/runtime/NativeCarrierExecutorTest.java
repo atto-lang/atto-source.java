@@ -18,6 +18,8 @@ final class NativeCarrierExecutorTest {
         assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
         try (NativeCarrierExecutor executor =
                      new NativeCarrierExecutor(1, 1, 64, "ores-native-test-")) {
+            assertEquals(0, executor.getStartedCarrierCount(),
+                    "throughput constructor must not create a pthread before runnable work");
             CountDownLatch done = new CountDownLatch(32);
             Set<Long> pthreadIds = ConcurrentHashMap.newKeySet();
 
@@ -34,6 +36,8 @@ final class NativeCarrierExecutorTest {
             }
 
             assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertEquals(1, executor.getStartedCarrierCount(),
+                    "first runnable work should start the bounded native carrier");
             assertEquals(1, pthreadIds.size(),
                     "logical Ores turns must multiplex over the configured pthread carrier");
 
