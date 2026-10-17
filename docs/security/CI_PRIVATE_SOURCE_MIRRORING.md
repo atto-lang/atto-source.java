@@ -33,8 +33,12 @@ scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
 The checked-in policy file must explicitly list the destination as `owner/repo <numeric-id>` (one ASCII space; positive decimal ID without leading zeros). The Bash preflight and Python publisher independently fetch the live GitHub numeric repository ID and require an exact match with the independently reviewed protected-main policy before the first blob upload and before every subsequent GitHub API write. A renamed or recreated repository cannot inherit approval by reusing its slug.
 The publisher must also fetch the **origin source repository's protected main**
 from GitHub, verify that the local approval and publisher/guard scripts are
-byte-for-byte identical to protected main, and reject if branch protection is
-not active. This is in addition to the separate required independent review;
+byte-for-byte identical to **one immutable protected-main commit SHA**, and
+reject if branch protection is not active or `main` moves during verification.
+The exporter rechecks protected-source authority immediately before the
+isolated destination branch is created and rejects any approval-commit drift,
+even if individual policy files were unchanged. This is in addition to the
+separate required independent review;
 a developer cannot approve the destination by editing their PR checkout.
 
 The caller must pin an immutable origin source **commit**; the publisher
