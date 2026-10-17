@@ -53,7 +53,7 @@ final class ActorUrgentMailboxTest {
                 actor.send("normal-1");
                 actor.send("normal-2");
                 var normalOverflow = assertThrows(
-                        ActorMailboxFullException.class,
+                        ActorRuntime.ActorMailboxFullException.class,
                         () -> actor.send("normal-overflow"));
                 assertEquals(ActorRuntime.MailboxTrafficClass.NORMAL, normalOverflow.trafficClass());
                 assertEquals(2, normalOverflow.queued());
@@ -62,7 +62,7 @@ final class ActorUrgentMailboxTest {
 
                 for (int i = 0; i < 16; i++) actor.sendUrgent("urgent-" + i);
                 var urgentOverflow = assertThrows(
-                        ActorMailboxFullException.class,
+                        ActorRuntime.ActorMailboxFullException.class,
                         () -> actor.sendUrgent("urgent-overflow"));
                 assertEquals(ActorRuntime.MailboxTrafficClass.URGENT, urgentOverflow.trafficClass());
                 assertEquals(16, urgentOverflow.queued());
