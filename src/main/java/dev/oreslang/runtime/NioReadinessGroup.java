@@ -280,7 +280,7 @@ public final class NioReadinessGroup implements AutoCloseable {
                     try {
                         target.execute(next);
                         admitted = true;
-                    } catch (RuntimeException submissionFailure) {
+                    } catch (RuntimeException | Error submissionFailure) {
                         if (!(submissionFailure instanceof RejectedExecutionException))
                             unexpectedSubmissionFailures.incrementAndGet();
                         if (!next.claimed.get()) {
@@ -290,6 +290,8 @@ public final class NioReadinessGroup implements AutoCloseable {
                         } else {
                             admitted = true;
                         }
+                        if (submissionFailure instanceof VirtualMachineError fatal) throw fatal;
+                        if (submissionFailure instanceof ThreadDeath fatal) throw fatal;
                     }
                 } finally {
                     if (admitted) boundCompletionBootstrapped = true;
@@ -305,10 +307,12 @@ public final class NioReadinessGroup implements AutoCloseable {
                     }
                 }
             });
-        } catch (RuntimeException submissionFailure) {
+        } catch (RuntimeException | Error submissionFailure) {
             boundCompletionBootstrapInFlight.set(false);
             if (!(submissionFailure instanceof RejectedExecutionException))
                 unexpectedSubmissionFailures.incrementAndGet();
+            if (submissionFailure instanceof VirtualMachineError fatal) throw fatal;
+            if (submissionFailure instanceof ThreadDeath fatal) throw fatal;
         }
     }
 
@@ -351,7 +355,7 @@ public final class NioReadinessGroup implements AutoCloseable {
                         if (next.claimed.get()) continue;
                         try {
                             target.execute(next);
-                        } catch (RuntimeException submissionFailure) {
+                        } catch (RuntimeException | Error submissionFailure) {
                             if (!(submissionFailure instanceof RejectedExecutionException))
                                 unexpectedSubmissionFailures.incrementAndGet();
                             // Executor.execute() can throw an arbitrary runtime
@@ -370,6 +374,8 @@ public final class NioReadinessGroup implements AutoCloseable {
                             // explicit capacity signal, never spin on a
                             // permanently broken executor on the reactor.
                             rejected = true;
+                            if (submissionFailure instanceof VirtualMachineError fatal) throw fatal;
+                            if (submissionFailure instanceof ThreadDeath fatal) throw fatal;
                             break;
                         }
                     }
