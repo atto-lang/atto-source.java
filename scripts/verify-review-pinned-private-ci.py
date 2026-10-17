@@ -15,6 +15,7 @@ from pathlib import Path
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
 REVIEWER = "ORESoftware"
+REVIEWER_ID = 11139560
 SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPO_ID = 1400792274
 CARRIER_REPO = "sagitta-stack/sagitta-infra"
@@ -58,10 +59,14 @@ def pr_head(pr, repo, number):
         raise Denied("malformed PR metadata")
     if pr.get("number") != number:
         raise Denied("unexpected PR number")
-    base_repo = ((pr.get("base") or {}).get("repo") or {}).get("full_name")
-    head_repo = ((pr.get("head") or {}).get("repo") or {}).get("full_name")
+    base = pr.get("base") or {}
+    head = pr.get("head") or {}
+    base_repo = (base.get("repo") or {}).get("full_name")
+    head_repo = (head.get("repo") or {}).get("full_name")
     if base_repo != repo or head_repo != repo:
         raise Denied("unexpected PR repository")
+    if base.get("ref") != "main":
+        raise Denied("security PR must target main")
     if pr.get("state") != "open":
         raise Denied("security PR is not open")
     if pr.get("merged") is True:
@@ -77,9 +82,11 @@ def exact_approval(reviews, head):
     for review in reviews:
         if type(review) is not dict:
             continue
-        user = (review.get("user") or {}).get("login")
+        user = review.get("user") or {}
+        login = user.get("login")
+        user_id = user.get("id")
         commit = review.get("commit_id")
-        if user != REVIEWER or commit != head:
+        if login != REVIEWER or user_id != REVIEWER_ID or commit != head:
             continue
         review_id = review.get("id")
         if type(review_id) is not int or review_id <= 0:
@@ -109,9 +116,11 @@ def exact_resume_comment(incident, heads, source_commit, source_tree):
     for comment in incident:
         if type(comment) is not dict:
             continue
-        user = (comment.get("user") or {}).get("login")
+        user = comment.get("user") or {}
+        login = user.get("login")
+        user_id = user.get("id")
         body = comment.get("body")
-        if user != REVIEWER or type(body) is not str:
+        if login != REVIEWER or user_id != REVIEWER_ID or type(body) is not str:
             continue
         lines = [line.strip() for line in body.splitlines() if line.strip()]
         if expected in lines:
