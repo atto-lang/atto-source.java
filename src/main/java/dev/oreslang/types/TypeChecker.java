@@ -2284,6 +2284,11 @@ public final class TypeChecker {
             requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
             Type source = deref(typeOf(cast.value(), env, generics, self));
             Type target = deref(resolve(cast.targetType(), generics, self));
+            if (target instanceof Named named
+                    && Set.of("TrapResult", "TrapError", "RecoverySignal").contains(named.name())) {
+                throw new IllegalArgumentException(
+                        named.name() + " is compiler-managed and cannot be forged with a cast");
+            }
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible cast: " + source + " cannot be cast to " + target);
             }
