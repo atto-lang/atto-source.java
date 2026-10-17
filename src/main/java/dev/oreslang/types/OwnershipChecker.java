@@ -789,8 +789,11 @@ public final class OwnershipChecker {
                     }
                     ValueInfo source = checkExpr(argument, scope, true);
                     if (source.kind != ValueKind.MOVE_ONLY || isBorrowValue(source)
-                            || containsMutexGuardType(source.type)) {
-                        throw error("rt ref requires owned reference-backed data; a borrow cannot become an owning pointer");
+                            || containsMutexGuardType(source.type)
+                            || containsPointerPointeeCapability(source.type, new LinkedHashSet<>())) {
+                        throw error("rt ref requires ordinary Ores-owned reference data; "
+                                + "borrows, foreign/unresolved objects, and nested runtime/resource "
+                                + "capabilities cannot become owning Pointer<T> targets");
                     }
                     yield new ValueInfo(new Ast.TypeRef("Pointer", List.of(source.type), false), ValueKind.MOVE_ONLY, null);
                 }
@@ -1895,6 +1898,71 @@ public final class OwnershipChecker {
             if (containsPointerCapability(argument)) return true;
         }
         return false;
+    }
+
+    /**
+     * Pointer<T> owns ordinary guest data, not runtime authority hidden inside
+     * an outer object. Recursively inspect Ores class fields/records/generic
+     * arguments and fail closed for unresolved foreign nominal types.
+     */
+    private boolean containsPointerPointeeCapability(
+            Ast.TypeRef type,
+            Set<Ast.ClassDecl> seenClasses) {
+        if (type == null || type.isBorrow()) return true;
+
+        String name = type.name();
+        if (Set.of(
+                "Pointer", "Channel", "SelectCase", "SelectSet", "SelectPlan",
+                "Mutex", "SharedMutex", "MutexGuard",
+                "Future", "ActorRef", "ActorHandle", "ActorGroup",
+                "ActorControlHandle", "ControlHandle", "Fnc").contains(name)) {
+            return true;
+        }
+
+        if (type.isRecordType()) {
+            for (Ast.TypeRef member : type.recordMembers().values()) {
+                if (containsPointerPointeeCapability(member, seenClasses)) return true;
+            }
+            return false;
+        }
+
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsPointerPointeeCapability(argument, seenClasses)) return true;
+        }
+
+        // Scalars/copy values are harmless as fields inside an owned object.
+        if (isCopyType(type)) return false;
+
+        // These are compiler-owned aggregate shells; their arguments were
+        // recursively checked above.
+        if (name.equals("Array") || name.equals("List") || name.equals("Map")
+                || name.equals("Option") || name.equals("Result")
+                || type.isTupleType()) {
+            return false;
+        }
+
+        Ast.ClassDecl klass = findClass(name);
+        if (klass == null) {
+            // Unknown/inferred/foreign Java or host nominal types have no
+            // recursively proven ownership graph. Do not wrap them in Pointer<T>.
+            return true;
+        }
+        if (!seenClasses.add(klass)) return false;
+        try {
+            Map<String, Ast.TypeRef> bindings =
+                    genericBindings(klass.genericParameters(), type.arguments());
+            for (Ast.FieldDecl field : klass.fields()) {
+                Ast.TypeRef fieldType = substituteType(ownershipFieldType(field), bindings);
+                if (containsPointerPointeeCapability(fieldType, seenClasses)) return true;
+            }
+            for (Ast.TypeRef parent : klass.parents()) {
+                Ast.TypeRef parentType = substituteType(parent, bindings);
+                if (containsPointerPointeeCapability(parentType, seenClasses)) return true;
+            }
+            return false;
+        } finally {
+            seenClasses.remove(klass);
+        }
     }
 
     private boolean isIncomingBorrow(VarState state) {
