@@ -2762,6 +2762,12 @@ public final class Parser {
         }
 
         String name = operation.lexeme();
+        if (name.equals("raw")) {
+            throw error(operation,
+                    "rt raw requires a trusted unsafe.memory effect plus native stable-address "
+                            + "provenance; raw pointers are not supported by the managed Java backend");
+        }
+
         if (operation.type() == YIELD || name.equals("yield") || name.equals("cooperate")) {
             if (match(LPAREN)) {
                 if (!check(RPAREN)) {
