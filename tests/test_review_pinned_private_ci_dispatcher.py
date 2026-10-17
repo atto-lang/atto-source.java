@@ -295,5 +295,37 @@ class DispatcherWriterTest(unittest.TestCase):
                 MOD.publish_review_pinned(receipt(),Path("/source"),BRANCH)
 
 
+
+class IncidentClosureTest(unittest.TestCase):
+    def issue(self,state="closed",reason="completed",closed_at="2026-10-17T22:30:00Z"):
+        return {
+            "id":MOD.PUB.SOURCE_INCIDENT_ISSUE_ID,
+            "number":MOD.PUB.SOURCE_INCIDENT_NUMBER,
+            "state":state,
+            "state_reason":reason,
+            "closed_at":closed_at,
+        }
+
+    def test_closed_completed_incident_allowed(self):
+        with mock.patch.object(MOD.PUB,"gh_api",return_value=self.issue()):
+            self.assertEqual(
+                MOD.require_incident_closed(),
+                "2026-10-17T22:30:00Z")
+
+    def test_open_incident_denied(self):
+        with mock.patch.object(MOD.PUB,"gh_api",
+                               return_value=self.issue(state="open",
+                                                       reason=None,
+                                                       closed_at=None)):
+            with self.assertRaises(MOD.Denied):
+                MOD.require_incident_closed()
+
+    def test_closed_incident_without_valid_time_denied(self):
+        with mock.patch.object(MOD.PUB,"gh_api",
+                               return_value=self.issue(closed_at="yesterday")):
+            with self.assertRaises(MOD.Denied):
+                MOD.require_incident_closed()
+
+
 if __name__=="__main__":
     unittest.main()
