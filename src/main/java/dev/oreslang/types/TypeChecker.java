@@ -2783,15 +2783,9 @@ public final class TypeChecker {
                                 "self.forward_all requires the typed per-edge admission receipt ABI; "
                                         + "source lowering remains fail-closed");
                     }
-                    if (operation.equals("reply")) {
-                        throw new IllegalArgumentException(
-                                "self.reply requires compiler-owned full origin return-path lowering; "
-                                        + "source lowering remains fail-closed");
-                    }
-
                     int payloadIndex;
                     switch (operation) {
-                        case "forward", "forward_round_robin", "backward" -> {
+                        case "forward", "forward_round_robin", "backward", "reply" -> {
                             if (call.arguments().size() != 1) {
                                 throw new IllegalArgumentException(
                                         "self." + operation + " expects exactly one value");
