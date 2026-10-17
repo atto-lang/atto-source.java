@@ -505,6 +505,7 @@ public final class OresContext implements AutoCloseable {
         // This is the external HOST lifecycle boundary. Do not begin actor,
         // IO or CONTROL destruction from a guest/physical scheduler carrier.
         if (OresScheduler.current() != null
+                || OresVM.onControlCarrier()
                 || ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
             throw new IllegalStateException(
