@@ -77,10 +77,19 @@ PROTECTED_RULES_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection"
 
 
 def safe_descriptor_flags_available():
-    """A defined-but-zero flag silently disables required open() protections."""
-    return all(type(getattr(os, flag, None)) is int
-               and getattr(os, flag) > 0
-               for flag in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"))
+    """Fail closed if secure open flags are absent, unusable, or overlapping.
+
+    Checking for a nonzero value alone is insufficient: a shim that aliases
+    O_NOFOLLOW to O_DIRECTORY would silently omit a distinct no-follow
+    restriction even though every flag has a positive integer value.
+    """
+    flags = tuple(getattr(os, name, None)
+                  for name in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"))
+    if not all(type(value) is int and value > 0 for value in flags):
+        return False
+    return all((left & right) == 0
+               for index, left in enumerate(flags)
+               for right in flags[index + 1:])
 
 
 
