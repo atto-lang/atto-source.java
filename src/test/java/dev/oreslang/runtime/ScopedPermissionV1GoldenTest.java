@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Policy-layer evaluation of the canonical 44-case scoped-permissions v1
+ * Policy-layer evaluation of the canonical 52-case scoped-permissions v1
  * corpus, pinned in contracts/v1/scoped-permissions-v1.json.
  *
  * These checks exercise production RuntimePermissions/IsolatePolicy Java code,
@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class ScopedPermissionV1GoldenTest {
     private static final String CORPUS_SHA256 =
-            "b481b72d9e5fdb2c1a4d4de7745a02f7ec3af8a937b0f067885d184efc3cb308";
+            "de3594482d10623241a94cf531fd9e4fe71c49769dd68b2098f4ed5363870ac5";
 
     private record AuthVector(String id, RuntimePermissions.Permission permission,
                               String resource, boolean coarse,
@@ -62,7 +62,15 @@ final class ScopedPermissionV1GoldenTest {
             new AuthVector("run-prefix-no-match", RuntimePermissions.Permission.RUN, "curl", true, new String[] {"git*"}, new String[] {}, false),
             new AuthVector("path-child-allowed", RuntimePermissions.Permission.READ, "/workspace/data/file.txt", true, new String[] {"/workspace/data"}, new String[] {}, true),
             new AuthVector("path-prefix-no-match", RuntimePermissions.Permission.READ, "/workspace/database/file.txt", true, new String[] {"/workspace/data"}, new String[] {}, false),
-            new AuthVector("path-whitespace-exact", RuntimePermissions.Permission.READ, "/workspace/data ", true, new String[] {"/workspace/data"}, new String[] {}, false)
+            new AuthVector("path-whitespace-exact", RuntimePermissions.Permission.READ, "/workspace/data ", true, new String[] {"/workspace/data"}, new String[] {}, false),
+            new AuthVector("env-padded-grant-literal", RuntimePermissions.Permission.ENV, "API_KEY ", true, new String[] {"API_KEY "}, new String[] {}, true),
+            new AuthVector("env-padded-grant-not-trimmed", RuntimePermissions.Permission.ENV, "API_KEY", true, new String[] {"API_KEY "}, new String[] {}, false),
+            new AuthVector("env-padded-deny-literal", RuntimePermissions.Permission.ENV, "API_KEY ", true, new String[] {"*"}, new String[] {"API_KEY "}, false),
+            new AuthVector("env-padded-deny-not-trimmed", RuntimePermissions.Permission.ENV, "API_KEY", true, new String[] {"*"}, new String[] {"API_KEY "}, true),
+            new AuthVector("run-padded-grant-not-trimmed", RuntimePermissions.Permission.RUN, "git", true, new String[] {"git "}, new String[] {}, false),
+            new AuthVector("run-padded-deny-not-trimmed", RuntimePermissions.Permission.RUN, "git", true, new String[] {"*"}, new String[] {"git "}, true),
+            new AuthVector("sys-padded-grant-not-trimmed", RuntimePermissions.Permission.SYS, "os", true, new String[] {"os "}, new String[] {}, false),
+            new AuthVector("sys-padded-deny-not-trimmed", RuntimePermissions.Permission.SYS, "os", true, new String[] {"*"}, new String[] {"os "}, true)
     };
     private static final DeserializeVector[] DESERIALIZATION_CASES = {
             new DeserializeVector("serialized-empty-policy", new String[] {"--ores-capabilities=", "--ores-permission-explicit=true"}, true),
@@ -81,7 +89,7 @@ final class ScopedPermissionV1GoldenTest {
                 MessageDigest.getInstance("SHA-256").digest(raw));
         assertEquals(CORPUS_SHA256, observed,
                 "reviewed corpus changed: regenerate cases only after security review");
-        assertEquals(37, AUTHORIZATION_CASES.length);
+        assertEquals(45, AUTHORIZATION_CASES.length);
         assertEquals(7, DESERIALIZATION_CASES.length);
     }
 
