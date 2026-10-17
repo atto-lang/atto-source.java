@@ -327,11 +327,39 @@ public final class ActorRuntime implements AutoCloseable {
         Reason reason();
     }
 
+    public enum MailboxTrafficClass {
+        NORMAL, URGENT
+    }
+
     public static final class ActorMailboxFullException
             extends IllegalStateException implements SendError {
+        private final ActorId actorId;
+        private final MailboxTrafficClass trafficClass;
+        private final int queued;
+        private final int capacity;
+
         public ActorMailboxFullException(ActorId id) {
-            super("actor mailbox limit exceeded for " + id);
+            this(id, MailboxTrafficClass.NORMAL, -1, -1);
         }
+
+        public ActorMailboxFullException(
+                ActorId id,
+                MailboxTrafficClass trafficClass,
+                int queued,
+                int capacity) {
+            super("actor " + trafficClass.name().toLowerCase(java.util.Locale.ROOT)
+                    + " mailbox limit exceeded for " + id
+                    + (capacity >= 0 ? ": queued=" + queued + " capacity=" + capacity : ""));
+            this.actorId = Objects.requireNonNull(id, "id");
+            this.trafficClass = Objects.requireNonNull(trafficClass, "trafficClass");
+            this.queued = queued;
+            this.capacity = capacity;
+        }
+
+        public ActorId actorId() { return actorId; }
+        public MailboxTrafficClass trafficClass() { return trafficClass; }
+        public int queued() { return queued; }
+        public int capacity() { return capacity; }
         @Override public Reason reason() { return Reason.MAILBOX_FULL; }
     }
 
@@ -5025,7 +5053,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
             if (cell.sealing) throw new ActorSealedException(ref.id());
             if (!(urgent ? cell.reserveUrgentMailboxSlot() : cell.reserveMailboxSlot())) {
-                throw new ActorMailboxFullException(ref.id());
+                throw cell.mailboxFull(urgent);
             }
         }
         boolean mailboxSlotTransferred = false;
@@ -5123,7 +5151,7 @@ public final class ActorRuntime implements AutoCloseable {
                     ChannelRuntime.Channel<MessageEnvelope> destination =
                             urgent ? cell.urgentMailbox : cell.mailbox;
                     if (!destination.tryWrite(envelope)) {
-                        throw new ActorMailboxFullException(ref.id());
+                        throw cell.mailboxFull(urgent);
                     }
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
@@ -6868,6 +6896,16 @@ public final class ActorRuntime implements AutoCloseable {
                 queuedMessages++;
                 maxQueuedUrgentMessages = Math.max(maxQueuedUrgentMessages, queuedUrgentMessages);
                 return true;
+            }
+        }
+
+        private ActorMailboxFullException mailboxFull(boolean urgent) {
+            synchronized (mailboxAccountingLock) {
+                return new ActorMailboxFullException(
+                        ref.id(),
+                        urgent ? MailboxTrafficClass.URGENT : MailboxTrafficClass.NORMAL,
+                        urgent ? queuedUrgentMessages : queuedUserMessages,
+                        urgent ? URGENT_USER_MESSAGE_SLOTS : policy.maxMailboxMessages());
             }
         }
 
