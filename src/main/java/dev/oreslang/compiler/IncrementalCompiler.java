@@ -373,7 +373,12 @@ public final class IncrementalCompiler {
     private static String typeRef(Ast.TypeRef ref) {
         if (ref == null) return "<inferred>";
         if (ref.isStringLiteral()) return "'" + ref.stringLiteralValue() + "'";
-        StringBuilder out = new StringBuilder(ref.name());
+        String canonicalName = switch (ref.name()) {
+            case "Any" -> "any";
+            case "Unknown" -> "unknown";
+            default -> ref.name();
+        };
+        StringBuilder out = new StringBuilder(canonicalName);
         if (ref.inferArguments()) return out.append("<>").toString();
         if (!ref.arguments().isEmpty()) {
             out.append('<');
