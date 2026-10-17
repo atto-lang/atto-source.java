@@ -104,8 +104,12 @@ public final class NativeIo {
      * as the starting anchor; no ancestor is reopened by name after stepping
      * into its secure child stream.
      */
-    private static java.nio.channels.SeekableByteChannel openCheckedFile(
-            Path path, java.util.Set<? extends java.nio.file.OpenOption> options)
+    @FunctionalInterface
+    private interface SecureParentAction<T> {
+        T apply(java.nio.file.SecureDirectoryStream<Path> parent, Path leaf) throws IOException;
+    }
+
+    private static <T> T withSecureParent(Path path, SecureParentAction<T> action)
             throws IOException {
         Path absolute = path.toAbsolutePath().normalize();
         if (absolute.getFileName() == null || absolute.getRoot() == null)
@@ -128,10 +132,83 @@ public final class NativeIo {
                 current.close();
                 current = next;
             }
-            return current.newByteChannel(absolute.getFileName(), options);
+            return action.apply(current, absolute.getFileName());
         } finally {
             current.close();
         }
+    }
+
+    private static java.nio.channels.SeekableByteChannel openCheckedFile(
+            Path path, java.util.Set<? extends java.nio.file.OpenOption> options)
+            throws IOException {
+        return withSecureParent(path, (parent, leaf) ->
+                parent.newByteChannel(leaf, options));
+    }
+
+    static java.nio.file.attribute.BasicFileAttributes secureFileAttributes(Path path)
+            throws IOException {
+        return withSecureParent(path, (parent, leaf) -> {
+            var attributes = parent.getFileAttributeView(
+                    leaf, java.nio.file.attribute.BasicFileAttributeView.class,
+                    LinkOption.NOFOLLOW_LINKS);
+            if (attributes == null)
+                throw new IOException("secure filesystem metadata unavailable");
+            return attributes.readAttributes();
+        });
+    }
+
+    static void secureAtomicWrite(Path target, String value) throws IOException {
+        withSecureParent(target, (parent, leaf) -> {
+            // CREATE_NEW and NOFOLLOW close temp-file name reuse and symlink
+            // attacks. The rename is relative to the same opened directory.
+            Path temporary = Path.of(".oreslang-atomic-" + java.util.UUID.randomUUID() + ".tmp");
+            try {
+                try (var channel = parent.newByteChannel(temporary,
+                            java.util.Set.of(StandardOpenOption.CREATE_NEW,
+                                    StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS));
+                     var stream = java.nio.channels.Channels.newOutputStream(channel);
+                     var writer = new OutputStreamWriter(
+                             stream, StandardCharsets.UTF_8.newEncoder())) {
+                    writer.write(value);
+                }
+                // Unix SecureDirectoryStream uses descriptor-relative rename;
+                // replacing the leaf entry never follows a swapped symlink.
+                parent.move(temporary, parent, leaf);
+            } finally {
+                try { parent.deleteFile(temporary); }
+                catch (java.nio.file.NoSuchFileException ignored) { }
+            }
+            return null;
+        });
+    }
+
+    static List<String> secureListDirectory(Path path) throws IOException {
+        return withSecureParent(path, (parent, leaf) -> {
+            try (var entries = parent.newDirectoryStream(leaf, LinkOption.NOFOLLOW_LINKS)) {
+                java.util.ArrayList<String> names = new java.util.ArrayList<>();
+                for (Path item : entries) {
+                    if (names.size() == 20000)
+                        throw new IOException("fs.list_dir exceeds 20000 entries");
+                    names.add(item.getFileName().toString());
+                }
+                names.sort(String::compareTo);
+                return names;
+            }
+        });
+    }
+
+    static void secureRemove(Path path) throws IOException {
+        withSecureParent(path, (parent, leaf) -> {
+            var view = parent.getFileAttributeView(
+                    leaf, java.nio.file.attribute.BasicFileAttributeView.class,
+                    LinkOption.NOFOLLOW_LINKS);
+            if (view == null)
+                throw new IOException("secure filesystem metadata unavailable");
+            var attributes = view.readAttributes();
+            if (attributes.isDirectory()) parent.deleteDirectory(leaf);
+            else parent.deleteFile(leaf);
+            return null;
+        });
     }
 
     public static boolean exists(OresContext context, String rawPath) {
