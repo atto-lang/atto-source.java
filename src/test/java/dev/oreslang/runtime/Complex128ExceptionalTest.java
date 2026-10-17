@@ -16,7 +16,7 @@ final class Complex128ExceptionalTest {
         Complex128Math.Value negative = Complex128Math.divide(
                 1.0, 0.0, Double.NEGATIVE_INFINITY, 0.0);
         assertRawBits(0x8000000000000000L, negative.real());
-        assertRawBits(0x0000000000000000L, negative.imaginary());
+        assertRawBits(0x8000000000000000L, negative.imaginary());
     }
 
     @Test
