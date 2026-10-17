@@ -197,6 +197,47 @@ final class DenoCliDefaultPermissionsTest {
         }
     }
 
+    @Test
+    void compileCheckRejectsLiteralEnvironmentOutsideScopedGrant() throws Exception {
+        Path source = sourceReadingEnvironment();
+        assertEquals(1, OresMain.exitStatusForArgs(new String[]{
+                "--check", "--permission-check=compile", source.toString()
+        }), "compile mode must reject a definitely ungranted ENV literal");
+        assertEquals(0, OresMain.exitStatusForArgs(new String[]{
+                "--check", "--permission-check=compile", "--allow-env=PATH", source.toString()
+        }), "compile mode must accept an authorized ENV literal");
+        assertEquals(1, OresMain.exitStatusForArgs(new String[]{
+                "--check", "--permission-check=compile", "--allow-env=PATH",
+                "--deny-env=PATH", source.toString()
+        }), "explicit deny must override a grant at compile time");
+    }
+
+    @Test
+    void runtimeCheckDefersResourceDecisionButExecutionStillDenies() throws Exception {
+        Path source = sourceReadingEnvironment();
+        String[] checked = {"--check", "--permission-check=runtime",
+                "--allow-env=HOME", source.toString()};
+        assertEquals(0, OresMain.exitStatusForArgs(checked),
+                "runtime mode must not reject a program solely for its literal resource");
+        assertEquals(1, OresMain.exitStatusForArgs(new String[]{
+                "--permission-check=runtime", "--allow-env=HOME", source.toString()
+        }), "actual ENV host boundary must reject PATH at execution");
+        assertEquals(1, OresMain.exitStatusForArgs(new String[]{
+                "--permission-check=compile", "--allow-env=HOME", source.toString()
+        }), "compile mode must reject before program execution");
+    }
+
+    @Test
+    void invalidCompileModeFlagNeverSilentlyDefers() throws Exception {
+        Path source = sourceReadingEnvironment();
+        assertEquals(2, OresMain.exitStatusForArgs(new String[]{
+                "--permission-check=", source.toString()
+        }));
+        assertEquals(2, OresMain.exitStatusForArgs(new String[]{
+                "--permission-check=unknown", source.toString()
+        }));
+    }
+
     private Path sourceReadingEnvironment() throws Exception {
         Path source = temp.resolve("permission-env.ores");
         Files.writeString(source, """
