@@ -204,7 +204,7 @@ final class ActorLifecycleObserverIsolationTest {
                 new java.util.concurrent.atomic.AtomicReference<>();
 
         ActorRuntime runtime = new ActorRuntime(
-                ActorRuntime.IsolatePolicy.developer(),
+                IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(1, 1, 1, 16));
         try {
             var parent = runtime.<String>spawnShared(
@@ -275,7 +275,7 @@ final class ActorLifecycleObserverIsolationTest {
         CountDownLatch releaseObserver = new CountDownLatch(1);
 
         try (ActorRuntime runtime = new ActorRuntime(
-                ActorRuntime.IsolatePolicy.developer(),
+                IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(1, 1, 1, 1))) {
             var actor = runtime.<String>spawnShared(
                     () -> (message, context) -> { });
