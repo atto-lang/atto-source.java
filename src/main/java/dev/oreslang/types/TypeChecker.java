@@ -5978,6 +5978,10 @@ public final class TypeChecker {
                 || a instanceof Generic || b instanceof Generic) return true;
         if (a instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(option, b));
         if (b instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(a, option));
+        // A value can match !T unless every possible runtime representation
+        // is covered by T. Never infer disjointness from assignment widening.
+        if (a instanceof Not excluded) return !runtimeValueTypeCovered(b, excluded.excluded(), 0);
+        if (b instanceof Not excluded) return !runtimeValueTypeCovered(a, excluded.excluded(), 0);
 
         if (a instanceof StringLiteral && (b instanceof StringLiteral || b == Primitive.STRING)) return true;
         if (b instanceof StringLiteral && (a instanceof StringLiteral || a == Primitive.STRING)) return true;
