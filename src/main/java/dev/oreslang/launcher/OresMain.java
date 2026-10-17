@@ -12,6 +12,7 @@ import dev.oreslang.runtime.CoreDebug;
 import dev.oreslang.runtime.CoreLog;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
+import dev.oreslang.runtime.LambdaInvocationHost;
 import dev.oreslang.runtime.PermissionCheckMode;
 import dev.oreslang.runtime.RuntimePermissions;
 import java.io.IOException;
@@ -82,6 +83,7 @@ public final class OresMain {
         boolean strict = false;
         boolean checkOnly = false;
         boolean buildAnalysis = false;
+        String lambdaInvoke = null;
         List<String> buildDefines = new ArrayList<>();
         Set<String> buildEntryPoints = new LinkedHashSet<>();
         String mode = NativeBuildMode.defaultExecutionMode();
@@ -106,6 +108,12 @@ public final class OresMain {
                 else if (arg.equals("--core-debug")) coreDebug = true;
                 else if (arg.equals("--no-core-debug")) coreDebug = false;
                 else if (arg.equals("--build-analysis")) buildAnalysis = true;
+                else if (arg.startsWith("--lambda-invoke=")) {
+                    String raw = arg.substring("--lambda-invoke=".length()).trim();
+                    if (raw.isEmpty()) throw new IllegalArgumentException("--lambda-invoke requires a public function name");
+                    if (lambdaInvoke != null) throw new IllegalArgumentException("--lambda-invoke may be supplied only once");
+                    lambdaInvoke = raw;
+                }
                 else if (arg.equals("--no-prompt")) {
                     // Oreslang permissions never prompt. This Deno-compatible
                     // spelling is accepted so automation can state that intent.
@@ -160,6 +168,16 @@ public final class OresMain {
         // An invalid invocation is status 2 even when the source path is absent.
         if (checkOnly && buildAnalysis) {
             throw new UsageException("--check and --build-analysis are mutually exclusive");
+        }
+        if (lambdaInvoke != null && (checkOnly || buildAnalysis
+                || !buildDefines.isEmpty() || !buildEntryPoints.isEmpty())) {
+            throw new UsageException(
+                    "--lambda-invoke cannot be combined with --check, --build-analysis, --define, or --entry");
+        }
+        if (lambdaInvoke != null && (!additionalCapabilities.isEmpty()
+                || !allowedHostClasses.isEmpty() || !touchedPermissions.isEmpty())) {
+            throw new UsageException(
+                    "--lambda-invoke uses the fixed strict FaaS policy and cannot accept host capability grants");
         }
 
         final CoreLog.Level admittedLogLevel;
@@ -225,6 +243,20 @@ public final class OresMain {
                 policy = policy.withCapabilities(
                         scopedCapabilities.toArray(IsolatePolicy.Capability[]::new));
             }
+        }
+
+        if (lambdaInvoke != null) {
+            String event = readLambdaEvent();
+            LambdaInvocationHost.InvocationResult result = LambdaInvocationHost.invoke(
+                    path,
+                    lambdaInvoke,
+                    event,
+                    ExecutionProfile.parse(mode, platform),
+                    System.getenv());
+            if (!result.stdout().isEmpty()) System.err.print(result.stdout());
+            if (!result.stderr().isEmpty()) System.err.print(result.stderr());
+            System.out.print(result.response());
+            return 0;
         }
 
         if (buildAnalysis) {
@@ -345,11 +377,29 @@ public final class OresMain {
                         + "[--allow-ffi[=PATH,...]] [--deny-ffi[=PATH,...]] "
                         + "[--allow-import[=PATH,...]] [--deny-import[=PATH,...]] "
                         + "[--no-prompt] [--define=name=value ...] [--entry=symbol ...] "
+                        + "[--lambda-invoke=module.function] "
                         + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] "
                         + "[--core-log-level=off|error|warn|info|debug|trace] [--no-core-log] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
                         + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
                         + "[file.ores|file.java]");
+    }
+
+    private static String readLambdaEvent() throws IOException {
+        byte[] bytes = System.in.readNBytes(LambdaInvocationHost.MAX_PAYLOAD_BYTES + 1);
+        if (bytes.length > LambdaInvocationHost.MAX_PAYLOAD_BYTES) {
+            throw new IllegalArgumentException(
+                    "lambda event exceeds " + LambdaInvocationHost.MAX_PAYLOAD_BYTES + " bytes");
+        }
+        try {
+            return java.nio.charset.StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(bytes))
+                    .toString();
+        } catch (java.nio.charset.CharacterCodingException invalidUtf8) {
+            throw new IllegalArgumentException("lambda event must be valid UTF-8", invalidUtf8);
+        }
     }
 
     static List<String> formatSyntaxWarnings(Path path, String source) {
