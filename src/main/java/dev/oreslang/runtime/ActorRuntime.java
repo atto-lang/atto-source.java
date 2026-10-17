@@ -3950,6 +3950,9 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (RuntimeException | Error failure) {
                 // Roll back every registry when spawn admission fails. In
                 // particular, never strand an inherited group ownership ref.
+                if (cell != null && cell.supervision.get() != null) {
+                    cell.supervision.get().releaseReservation(id);
+                }
                 if (cell != null) actors.remove(id, cell);
                 if (linkedToParent && cell != null) parent.children.remove(cell);
                 if (cell != null) {
