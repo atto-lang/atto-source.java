@@ -315,24 +315,34 @@ final class NioReadinessGroupTest {
     }
 
     @Test void selectorStopLatchFollowsCompletionDrainFence() throws Exception {
-        // Inspect the internal publication order directly. A stopped reactor
-        // must not expose selector quiescence before it fences further
-        // completion task admission and requests executor shutdown.
+        // Inspect the internal publication order directly after first demand.
+        // Construction itself must remain thread-free.
         try (var group = new NioReadinessGroup(1, 8, 8)) {
-            var reactors = NioReadinessGroup.class.getDeclaredField("reactors");
-            reactors.setAccessible(true);
-            Object reactor = ((java.util.List<?>) reactors.get(group)).getFirst();
-            var stop = reactor.getClass().getDeclaredField("stopped");
-            stop.setAccessible(true);
-            var stopped = (java.util.concurrent.CountDownLatch) stop.get(reactor);
-            var completion = NioReadinessGroup.class.getDeclaredField("completionExecutor");
-            completion.setAccessible(true);
-            var executor = (java.util.concurrent.ThreadPoolExecutor) completion.get(group);
-            group.close();
-            assertTrue(stopped.await(3, TimeUnit.SECONDS));
-            assertTrue(executor.isShutdown(),
-                    "completion executor shutdown must precede reactor stop-latch publication");
-            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            assertEquals(0, group.reactorCount());
+            var pipe = java.nio.channels.Pipe.open();
+            try {
+                pipe.source().configureBlocking(false);
+                var pending = group.watch(pipe.source(), SelectionKey.OP_READ);
+                assertEquals(1, group.reactorCount());
+                var reactors = NioReadinessGroup.class.getDeclaredField("reactors");
+                reactors.setAccessible(true);
+                Object reactor = ((java.util.List<?>) reactors.get(group)).getFirst();
+                var stop = reactor.getClass().getDeclaredField("stopped");
+                stop.setAccessible(true);
+                var stopped = (java.util.concurrent.CountDownLatch) stop.get(reactor);
+                var completion = NioReadinessGroup.class.getDeclaredField("completionExecutor");
+                completion.setAccessible(true);
+                var executor = (java.util.concurrent.ThreadPoolExecutor) completion.get(group);
+                group.close();
+                assertTrue(stopped.await(3, TimeUnit.SECONDS));
+                assertTrue(executor.isShutdown(),
+                        "completion executor shutdown must precede reactor stop-latch publication");
+                assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+                assertTrue(pending.isDone());
+            } finally {
+                pipe.source().close();
+                pipe.sink().close();
+            }
         }
     }
 
@@ -624,6 +634,16 @@ final class NioReadinessGroupTest {
             group.close();
             assertTrue(group.awaitStopped(2, TimeUnit.SECONDS));
         }
+    }
+
+    @Test void neverUsedGroupStartsAndStopsWithZeroReactorThreads() throws Exception {
+        var group = new NioReadinessGroup(4, 16, 16);
+        assertEquals(0, group.reactorCount());
+        assertEquals(0, group.completionCarrierCount());
+        group.close();
+        assertTrue(group.awaitStopped(2, TimeUnit.SECONDS));
+        assertEquals(0, group.reactorCount());
+        assertEquals(0, group.completionCarrierCount());
     }
 
     @Test void invalidLimitsAreRejected() {
