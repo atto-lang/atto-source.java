@@ -20,10 +20,13 @@ define module Zorde as
   }
 
   pub fnc int_between(int value, int minimum, int maximum): bool {
-    if minimum > maximum; do
+    if minimum > maximum; then
       return false;
     fi
-    return value >= minimum && value <= maximum;
+    if value < minimum; then
+      return false;
+    fi
+    return value <= maximum;
   }
 
   pub fnc int_exact(int value, int expected): bool {
