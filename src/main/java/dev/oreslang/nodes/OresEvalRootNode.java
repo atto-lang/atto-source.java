@@ -4981,12 +4981,33 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private TrapErrorValue toTrapError(Throwable failure) {
-            if (failure instanceof GuestControlSignal.Throw thrown) {
+            GuestControlSignal signal = guestControlSignalCause(failure);
+            if (signal instanceof GuestControlSignal.Throw thrown) {
                 return new TrapErrorValue("Thrown", safeMessage(messageForPayload(thrown.payload())));
             }
             String message = failure.getMessage();
             if (message == null || message.isBlank()) message = failure.getClass().getSimpleName();
             return new TrapErrorValue("Runtime", safeMessage(message));
+        }
+
+        private GuestControlSignal guestControlSignalCause(Throwable failure) {
+            Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+            for (Throwable current = failure;
+                    current != null && seen.add(current);
+                    current = current.getCause()) {
+                if (current instanceof GuestControlSignal signal) return signal;
+            }
+            return null;
+        }
+
+        private boolean hasCause(Throwable failure, Class<? extends Throwable> type) {
+            Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+            for (Throwable current = failure;
+                    current != null && seen.add(current);
+                    current = current.getCause()) {
+                if (type.isInstance(current)) return true;
+            }
+            return false;
         }
 
         private String messageForPayload(Object payload) {
@@ -5002,19 +5023,23 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object guestCatchValue(Throwable failure) {
-            return failure instanceof GuestControlSignal.Throw thrown
+            GuestControlSignal signal = guestControlSignalCause(failure);
+            return signal instanceof GuestControlSignal.Throw thrown
                     ? thrown.payload()
                     : failure;
         }
 
         private boolean isRecoverSignal(Throwable failure) {
-            return failure instanceof GuestControlSignal.Raise
-                    || failure instanceof GuestControlSignal.Panic
-                    || failure instanceof OresPanic;
+            GuestControlSignal signal = guestControlSignalCause(failure);
+            return signal instanceof GuestControlSignal.Raise
+                    || signal instanceof GuestControlSignal.Panic
+                    || hasCause(failure, OresPanic.class);
         }
 
         private RecoverySignalValue recoverySignal(Throwable failure) {
-            if (failure instanceof GuestControlSignal signal) {
+            GuestControlSignal signal = guestControlSignalCause(failure);
+            if (signal instanceof GuestControlSignal.Raise
+                    || signal instanceof GuestControlSignal.Panic) {
                 return new RecoverySignalValue(
                         signal.kind(),
                         safeMessage(messageForPayload(signal.payload())));
@@ -5035,10 +5060,11 @@ public final class OresEvalRootNode extends RootNode {
                     || failure instanceof BreakSignal
                     || failure instanceof ContinueSignal
                     || failure instanceof TailCallSignal) return 1;
-            if (failure instanceof ProcessExitSignal || failure instanceof Error) return 5;
-            if (failure instanceof OresPanic || failure instanceof GuestControlSignal.Panic) return 4;
-            if (failure instanceof GuestControlSignal.Raise) return 3;
-            if (failure instanceof GuestControlSignal.Throw) return 2;
+            GuestControlSignal signal = guestControlSignalCause(failure);
+            if (signal instanceof GuestControlSignal.Panic) return 4;
+            if (signal instanceof GuestControlSignal.Raise) return 3;
+            if (signal instanceof GuestControlSignal.Throw) return 2;
+            if (hasCause(failure, OresPanic.class)) return 4;
             if (failure instanceof RuntimeException runtime && isTrappableFailure(runtime)) return 2;
             return 5; // unknown host/control failures fail closed
         }
