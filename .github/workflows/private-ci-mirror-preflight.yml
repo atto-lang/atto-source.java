@@ -36,9 +36,9 @@ jobs:
         run: |
           set -euo pipefail
           bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
-          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py
+          python3 -I -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py
           bash scripts/test-private-ci-destination.sh
           for attempt in 1 2 3; do
             echo "Private publisher adversarial pass ${attempt}/3"
-            python3 scripts/test-publish-private-ci-source.py
+            python3 -I scripts/test-publish-private-ci-source.py
           done
