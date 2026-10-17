@@ -224,6 +224,44 @@ final class ActorAffinityDispatcherTest {
     }
 
     @Test
+    void shutdownReclaimsQueuedNoGrowthHostCompletionWithoutWrapperLeak()
+            throws Exception {
+        var executors = new java.util.ArrayList<AdaptiveCarrierExecutor>();
+        var dispatcher = new ActorAffinityDispatcher(1, 8, new int[0], index -> {
+            var pool = new AdaptiveCarrierExecutor(
+                    1, 1, 8,
+                    task -> Thread.ofPlatform().daemon(true)
+                            .name("test-shutdown-host-lane-" + index).unstarted(task));
+            executors.add(pool);
+            return pool;
+        });
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        Runnable pendingHost = () -> { };
+        try {
+            assertEquals(1, executors.get(0).prestartAllCoreThreads());
+            dispatcher.executeOnLane(0, () -> {
+                entered.countDown();
+                try { release.await(5, TimeUnit.SECONDS); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            dispatcher.executeHostOnWarmLane(pendingHost);
+
+            List<Runnable> abandoned = dispatcher.shutdownNow();
+            assertEquals(List.of(pendingHost), abandoned,
+                    "dispatcher shutdown must unwrap internal no-growth carrier records");
+            release.countDown();
+            assertTrue(dispatcher.awaitTermination(3, TimeUnit.SECONDS));
+        } finally {
+            release.countDown();
+            dispatcher.shutdownNow();
+        }
+    }
+
+    @Test
     void firstColdNioNotificationDeterministicallyStartsLaneZero() throws Exception {
         var executors = new java.util.ArrayList<java.util.concurrent.ThreadPoolExecutor>();
         var dispatcher = new ActorAffinityDispatcher(3, 16, new int[0], index -> {
