@@ -47,6 +47,24 @@ REQUIRED_SECURITY_CODEOWNERS = (
     "/scripts/test-publish-private-ci-source.py @ORESoftware",
 )
 
+def safe_descriptor_flags_available():
+    """Fail closed if secure open flags are absent, unusable, or overlapping.
+
+    A flag name existing is not evidence that the platform can enforce the
+    intended descriptor constraint: a shim may expose zero, a non-integer, or
+    an aliased bitmask. Reject before touching the approval policy or private
+    source whenever O_DIRECTORY, O_NOFOLLOW, and O_NONBLOCK are not distinct
+    positive integer capabilities.
+    """
+    flags = tuple(getattr(os, name, None)
+                  for name in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"))
+    if not all(type(value) is int and value > 0 for value in flags):
+        return False
+    return all((left & right) == 0
+               for index, left in enumerate(flags)
+               for right in flags[index + 1:])
+
+
 class Denied(RuntimeError):
     pass
 
@@ -113,8 +131,7 @@ def checked_policy_fingerprint(root, repository):
     A pathname symlink check followed by read_bytes() can be raced: the
     unapproved file can briefly be replaced with an approved symlink.
     """
-    if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")
-            or not hasattr(os, "O_NONBLOCK")):
+    if not safe_descriptor_flags_available():
         raise Denied("OS cannot safely read the destination approval policy")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     policy_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
@@ -360,8 +377,7 @@ def collect_source(root, trusted_root):
     descendants are opened relative to directory descriptors anchored at
     the trusted checkout, so a rename cannot redirect them outside it.
     """
-    if (not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY")
-            or not hasattr(os, "O_NONBLOCK")):
+    if not safe_descriptor_flags_available():
         raise Denied("OS cannot enforce descriptor-relative no-follow reads")
     if root.is_symlink() or not root.is_dir():
         raise Denied("source path must be a real directory")
