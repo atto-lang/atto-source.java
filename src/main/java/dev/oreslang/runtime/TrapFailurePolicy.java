@@ -10,10 +10,10 @@ import java.util.concurrent.TimeoutException;
 /**
  * Distinct guest failure boundaries:
  * <ul>
- *   <li>{@code trap} converts only ordinary failures to None. Authority denial
- *       and timeout remain terminal at that boundary.</li>
- *   <li>Explicit guest {@code catch} may recover denied operations and timeouts,
- *       without consuming panic, scheduler cancellation or host failures.</li>
+ *   <li>{@code trap} converts ordinary guest failures into a structured
+ *       {@code TrapResult}. Authority denial and runtime timeout remain terminal.</li>
+ *   <li>Explicit guest {@code catch} may recover a denied operation, but cannot
+ *       consume runtime timeout, panic, scheduler cancellation or host failures.</li>
  * </ul>
  *
  * <p>Wrapped and suppressed failures are inspected with bounded, identity-based
@@ -53,12 +53,11 @@ public final class TrapFailurePolicy {
                     || current instanceof Error
                     || current instanceof CancellationException
                     || current instanceof InterruptedException
-                    || current instanceof RejectedExecutionException) {
+                    || current instanceof RejectedExecutionException
+                    || current instanceof TimeoutException) {
                 return false;
             }
-            if (!explicitGuestCatch
-                    && (current instanceof SecurityException
-                            || current instanceof TimeoutException)) {
+            if (!explicitGuestCatch && current instanceof SecurityException) {
                 return false;
             }
             Throwable cause = current.getCause();
