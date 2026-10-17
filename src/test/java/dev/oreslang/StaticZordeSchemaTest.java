@@ -119,6 +119,23 @@ final class StaticZordeSchemaTest {
                         new Ast.RefinementSpec(List.of(), "it.trim().length > 0", false)));
     }
 
+    @Test void parameterizedOrInferredScalarBasesFailClosed() {
+        var parameterizedInt = new Ast.TypeRef(
+                "int", List.of(Ast.TypeRef.simple("string")), false);
+        var inferredString = new Ast.TypeRef("string", List.of(), true);
+        var lengthSpec = new Ast.RefinementSpec(List.of(
+                new Ast.RefinementBound("length", "gte", 0)), null, false);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> RefinementRules.normalize(parameterizedInt, List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> StaticZordeSchema.fromRefinement(parameterizedInt, null));
+        assertThrows(IllegalArgumentException.class,
+                () -> RefinementRules.descriptor(null, inferredString, lengthSpec));
+        assertThrows(IllegalArgumentException.class,
+                () -> StaticZordeSchema.fromRefinement(inferredString, null));
+    }
+
     @Test void plainAndBrandedStaticSchemasInferDifferentTypes() {
         var primitive = ZordeSchemaGenerator.planStaticSchemas(
                 "app", Map.of("Plain", StaticZordeSchema.int64()), Set.of());
