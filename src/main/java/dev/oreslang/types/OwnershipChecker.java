@@ -2742,8 +2742,54 @@ public final class OwnershipChecker {
      * record members) into a mutable record shape. This mirrors the TypeChecker
      * overlay so standalone ownership analysis fails closed as well.
      */
+    /**
+     * Without a reified capability descriptor, an opaque top value can be
+     * validated for its data shape but cannot regain mutable record authority.
+     * This must mirror TypeChecker's readonlyRecoveredShape rule even when
+     * ownership is run independently of the full semantic checker.
+     */
+    private boolean hasOpaqueCapabilityProvenance(Ast.TypeRef source) {
+        if (source == null) return false;
+        if (source.isBorrow()) return hasOpaqueCapabilityProvenance(source.borrowedTarget());
+        if (source.name().equals("any") || source.name().equals("Any")
+                || source.name().equals("unknown") || source.name().equals("Unknown")
+                || source.name().equals("$infer$")) return true;
+        return source.isUnion()
+                && source.arguments().stream().anyMatch(this::hasOpaqueCapabilityProvenance);
+    }
+
+    private Ast.TypeRef readonlyRecoveredShape(Ast.TypeRef target) {
+        if (target.isRecordType()) {
+            Map<String, Ast.TypeRef> members = new LinkedHashMap<>();
+            for (Map.Entry<String, Ast.TypeRef> member : target.recordMembers().entrySet()) {
+                members.put(member.getKey(), readonlyRecoveredShape(member.getValue()));
+            }
+            return Ast.TypeRef.readonlyRecordType(members);
+        }
+        if (target.isTupleType()) {
+            return Ast.TypeRef.tupleType(
+                    target.arguments().stream().map(this::readonlyRecoveredShape).toList());
+        }
+        if (target.isUnion()) {
+            return Ast.TypeRef.union(
+                    target.arguments().stream().map(this::readonlyRecoveredShape).toList());
+        }
+        if (target.isBorrow()) {
+            return Ast.TypeRef.borrowed(
+                    readonlyRecoveredShape(target.borrowedTarget()), target.mutableBorrow());
+        }
+        if (!target.arguments().isEmpty()) {
+            return new Ast.TypeRef(target.name(),
+                    target.arguments().stream().map(this::readonlyRecoveredShape).toList(),
+                    target.inferArguments());
+        }
+        return target;
+    }
+
     private Ast.TypeRef overlayReadonlyCapabilities(Ast.TypeRef source, Ast.TypeRef target) {
         if (source == null || target == null) return target;
+
+        if (hasOpaqueCapabilityProvenance(source)) return readonlyRecoveredShape(target);
 
         if (target.isBorrow()) {
             Ast.TypeRef sourceTarget = source.isBorrow() ? source.borrowedTarget() : source;
