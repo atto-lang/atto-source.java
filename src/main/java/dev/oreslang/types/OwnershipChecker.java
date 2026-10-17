@@ -395,6 +395,18 @@ public final class OwnershipChecker {
             if (loopDepth == 0) throw error("'continue' may only appear inside loop or for");
             return;
         }
+        if (stmt instanceof Ast.ThrowStmt thrown) {
+            checkExpr(thrown.value(), scope, true);
+            return;
+        }
+        if (stmt instanceof Ast.RaiseStmt raised) {
+            checkExpr(raised.value(), scope, true);
+            return;
+        }
+        if (stmt instanceof Ast.PanicStmt panicked) {
+            checkExpr(panicked.value(), scope, true);
+            return;
+        }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (discardingSelectReturn) {
                 // The returned expression is evaluated as a side effect only.
@@ -545,6 +557,31 @@ public final class OwnershipChecker {
             // Finally sees both the ordinary and exceptional predecessor.
             mergeBranchState(entry, List.of(normal, exceptional));
             checkBlock(attempted.finallyBody(), scope, returnType);
+            return;
+        }
+        if (stmt instanceof Ast.RecoverStmt recovered) {
+            Map<VarState, StateSnapshot> entry = stateSnapshot(scope);
+            Set<VarState> movedDuringRecover = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+            tryMoveObservers.add(movedDuringRecover);
+            try {
+                checkBlock(recovered.body(), scope, returnType);
+            } finally {
+                tryMoveObservers.removeLast();
+            }
+            Map<VarState, StateSnapshot> normal = stateSnapshot(scope);
+            restoreState(entry);
+            for (VarState moved : movedDuringRecover) {
+                if (entry.containsKey(moved)) moved.moved = true;
+            }
+            Scope caught = new Scope(scope);
+            caught.define(
+                    recovered.signalName(),
+                    new VarState(Ast.TypeRef.simple("RecoverySignal"), false, ValueKind.MOVE_ONLY, Origin.LOCAL));
+            checkBlock(recovered.catchBody(), caught, returnType);
+            caught.close();
+            Map<VarState, StateSnapshot> recoveredExit = stateSnapshot(scope);
+            mergeBranchState(entry, List.of(normal, recoveredExit));
+            checkBlock(recovered.finallyBody(), scope, returnType);
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
@@ -1435,6 +1472,9 @@ public final class OwnershipChecker {
                 if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
+                if (fn.trapped()) {
+                    callResult = new Ast.TypeRef("TrapResult", List.of(callResult), false);
+                }
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
@@ -3428,6 +3468,25 @@ public final class OwnershipChecker {
     private Ast.TypeRef destructureBindingType(Ast.DestructureStmt destructure, Ast.TypeRef source, int index, String name) {
         if (source == null) return Ast.TypeRef.inferred();
         Ast.DestructureBinding binding = destructure.bindings().get(index);
+        if (source.name().equals("TrapResult") && source.arguments().size() == 1
+                && destructure.kind() == Ast.DestructureKind.SEQUENCE
+                && destructure.pattern() instanceof Ast.NestedDestructurePattern root
+                && root.children().size() == 2) {
+            Ast.TypeRef successType = source.arguments().getFirst();
+            if (index == 1) {
+                return new Ast.TypeRef(
+                        "Option", List.of(Ast.TypeRef.simple("TrapError")), false);
+            }
+            if (index == 0) {
+                Ast.DestructurePattern successPattern = root.children().getFirst();
+                Ast.TypeRef payload = successPattern instanceof Ast.NestedDestructurePattern
+                        ? successType
+                        : Ast.TypeRef.tupleType(successType.name().equals("void")
+                                ? List.of()
+                                : List.of(successType));
+                return new Ast.TypeRef("Option", List.of(payload), false);
+            }
+        }
         if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
             return sequenceDestructureBindingType(source, index, binding.rest());
         } else {
