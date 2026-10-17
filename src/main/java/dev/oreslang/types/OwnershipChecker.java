@@ -1465,10 +1465,13 @@ public final class OwnershipChecker {
 
             // Native collection mutations are effects on the receiver, not
             // harmless reads. TypeChecker validates method availability/arity.
-            // A const/let read-only view must not gain mutation via .add/.set.
+            // A read-only binding/borrow must not regain write authority through
+            // Array/List.add/set or Map.put, including nested projections.
             Ast.TypeRef memberReceiverType = receiverType(member.receiver(), scope);
             if (memberReceiverType == null
-                    && (member.member().equals("add") || member.member().equals("set"))
+                    && (member.member().equals("add")
+                        || member.member().equals("set")
+                        || member.member().equals("put"))
                     && (member.receiver() instanceof Ast.MemberExpr
                         || member.receiver() instanceof Ast.IndexExpr)) {
                 // Nested collection receivers are mutable *places*, not opaque
@@ -1479,6 +1482,44 @@ public final class OwnershipChecker {
             if (memberReceiverType != null) {
                 Ast.TypeRef concreteCollection = memberReceiverType.isBorrow()
                         ? memberReceiverType.borrowedTarget() : memberReceiverType;
+                if (concreteCollection.name().equals("Map")
+                        && concreteCollection.arguments().size() == 2) {
+                    Ast.TypeRef valueType = concreteCollection.arguments().get(1);
+                    if (member.member().equals("put") && call.arguments().size() == 2) {
+                        ensureMutableReceiver(
+                                member.receiver(),
+                                scope,
+                                "collection method 'put'");
+                        checkExpr(call.arguments().get(0), scope, false);
+                        ValueInfo stored = checkExpr(call.arguments().get(1), scope, true);
+                        if (isBorrowValue(stored)
+                                || containsBorrowType(stored.type)
+                                || stored.borrowSource != null) {
+                            throw error("Map.put cannot store a borrowed value; "
+                                    + "map entries must own their payload until borrowed-entry lifetimes are modeled");
+                        }
+                        return new ValueInfo(
+                                Ast.TypeRef.simple("void"),
+                                ValueKind.COPY,
+                                null);
+                    }
+                    if (member.member().equals("get") && call.arguments().size() == 1) {
+                        checkExpr(call.arguments().getFirst(), scope, false);
+                        if (!isCopyType(valueType)) {
+                            throw error("Map.get cannot copy move-only value type " + valueType
+                                    + "; use copy-safe values until borrowed/take map access is implemented");
+                        }
+                        Ast.TypeRef option =
+                                new Ast.TypeRef("Option", List.of(valueType), false);
+                        return new ValueInfo(option, kindOfType(option), null);
+                    }
+                    if (member.member().equals("size") && call.arguments().isEmpty()) {
+                        return new ValueInfo(
+                                Ast.TypeRef.simple("int"),
+                                ValueKind.COPY,
+                                null);
+                    }
+                }
                 if ((concreteCollection.name().equals("Array")
                         || concreteCollection.name().equals("List"))
                         && (member.member().equals("add") || member.member().equals("set"))) {
@@ -3530,6 +3571,15 @@ public final class OwnershipChecker {
                 && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
         }
+        if (concrete.name().equals("Map") && concrete.arguments().size() == 2) {
+            Ast.TypeRef value = concrete.arguments().get(1);
+            if (!isCopyType(value)) {
+                throw error("Map iteration cannot copy move-only value type " + value
+                        + "; use copy-safe values until borrowed-entry iteration is implemented");
+            }
+            return Ast.TypeRef.tupleType(List.of(
+                    concrete.arguments().get(0), value));
+        }
         if (concrete.isTupleType() && !concrete.arguments().isEmpty()) {
             Ast.TypeRef first = concrete.arguments().getFirst();
             return concrete.arguments().stream().allMatch(first::equals)
@@ -3580,6 +3630,15 @@ public final class OwnershipChecker {
 
     private static boolean isMutexGuardType(Ast.TypeRef type) {
         return type != null && !type.isBorrow() && type.name().equals("MutexGuard") && type.arguments().size() == 1;
+    }
+
+    private static boolean containsBorrowType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsBorrowType(argument)) return true;
+        }
+        return false;
     }
 
     private static boolean containsMutexGuardType(Ast.TypeRef type) {

@@ -236,7 +236,7 @@ final class StructuralContainerSourceParityTest {
                   }
 
                   pub routine main(): void {
-                    val Map<string,int> values = new Map<string,int>();
+                    let mut Map<string,int> values = new Map<string,int>();
                     values.put("a", 7);
                     values.put("b", 9);
                     stdio.stdout.write(values.size);
@@ -335,6 +335,62 @@ final class StructuralContainerSourceParityTest {
                         """)));
         assertTrue(sharedMap.getMessage().contains("shared-safe"),
                 sharedMap::getMessage);
+
+        var immutableBorrowProgram = assertDoesNotThrow(
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(&Map<string,int> values): void {
+                          values.put("x", 1);
+                          return;
+                        }
+                        """)));
+        IllegalArgumentException immutableBorrowMutation = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(immutableBorrowProgram));
+        assertTrue(immutableBorrowMutation.getMessage().contains("cannot mutate"),
+                immutableBorrowMutation::getMessage);
+
+        var moveIntoMapProgram = assertDoesNotThrow(
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(): void {
+                          let mut Map<string,List<int>> values = new Map<string,List<int>>();
+                          let mut List<int> payload = new List<int>();
+                          values.put("x", payload);
+                          payload.add(1);
+                          return;
+                        }
+                        """)));
+        IllegalArgumentException movedPayload = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(moveIntoMapProgram));
+        assertTrue(movedPayload.getMessage().contains("moved"),
+                movedPayload::getMessage);
+
+        var moveOnlyLookupProgram = assertDoesNotThrow(
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(Map<string,List<int>> values): void {
+                          values.get("x");
+                          return;
+                        }
+                        """)));
+        IllegalArgumentException moveOnlyLookup = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(moveOnlyLookupProgram));
+        assertTrue(moveOnlyLookup.getMessage().contains("Map.get cannot copy move-only"),
+                moveOnlyLookup::getMessage);
+
+        var borrowedPayloadProgram = assertDoesNotThrow(
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(&int source): void {
+                          let mut Map<string,&int> values = new Map<string,&int>();
+                          values.put("x", source);
+                          return;
+                        }
+                        """)));
+        IllegalArgumentException borrowedPayload = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(borrowedPayloadProgram));
+        assertTrue(borrowedPayload.getMessage().contains("cannot store a borrowed value"),
+                borrowedPayload::getMessage);
     }
 
     @Test
