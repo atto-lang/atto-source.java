@@ -152,7 +152,7 @@ public final class IncrementalCompiler {
     }
 
     private static String importResolutionDigest(Map<String, String> resolutions) {
-        StringBuilder canonical = new StringBuilder("ores-import-resolution-v1\\n");
+        StringBuilder canonical = new StringBuilder("ores-import-resolution-v1\n");
         resolutions.entrySet().stream()
                 .sorted(Map.Entry.comparingByKey())
                 .forEach(entry -> {
@@ -163,7 +163,7 @@ public final class IncrementalCompiler {
     }
 
     private static void appendLengthPrefixed(StringBuilder target, String value) {
-        target.append(value.length()).append(':').append(value).append('\\n');
+        target.append(value.length()).append(':').append(value).append('\n');
     }
 
     /**
