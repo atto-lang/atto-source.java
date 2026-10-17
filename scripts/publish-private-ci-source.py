@@ -117,15 +117,34 @@ SAFE_EXEC_PATH = "/usr/bin:/bin:/usr/local/bin"
 
 
 def verified_child_env():
-    """Exclude shell startup hooks, Git overrides, and dynamic loader injection."""
+    """Build a deterministic child environment for local Git and authenticated gh.
+
+    Authorization must not depend on caller-controlled shell hooks, Git/GitHub
+    configuration, network proxies, TLS trust roots, or dynamic loader state.
+    Authentication tokens remain available only through GH_TOKEN/GITHUB_TOKEN.
+    """
     env = os.environ.copy()
+    exact_untrusted = {
+        "BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS",
+        "CDPATH", "GLOBIGNORE", "PROMPT_COMMAND",
+        "PYTHONPATH", "PYTHONHOME",
+        "GH_CONFIG_DIR", "XDG_CONFIG_HOME",
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+        "SSL_CERT_FILE", "SSL_CERT_DIR", "SSLKEYLOGFILE",
+        "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
+        "GODEBUG", "GITHUB_API_URL", "GITHUB_GRAPHQL_URL", "GITHUB_SERVER_URL",
+    }
     for name in tuple(env):
-        if (name in ("BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS",
-                     "CDPATH", "GLOBIGNORE", "PROMPT_COMMAND",
-                     "PYTHONPATH", "PYTHONHOME")
+        if (name in exact_untrusted
+                or (name.startswith("GH_") and name != "GH_TOKEN")
                 or name.startswith(("BASH_FUNC_", "GIT_", "LD_", "DYLD_"))):
             env.pop(name, None)
     env["PATH"] = SAFE_EXEC_PATH
+    # Never consult a caller-selected home/config tree. gh api authenticates
+    # from GH_TOKEN/GITHUB_TOKEN; local Git has its global/system config disabled.
+    env["HOME"] = "/nonexistent"
+    env["XDG_CONFIG_HOME"] = "/nonexistent"
     env["GH_HOST"] = "github.com"
     env["GH_PROMPT_DISABLED"] = "1"
     env["GIT_CONFIG_NOSYSTEM"] = "1"
