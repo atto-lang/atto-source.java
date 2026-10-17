@@ -315,6 +315,20 @@ final class RuntimePointerTest {
         // runtime tombstone instead of preserving affine ownership statically.
     }
 
+    @Test void pointerHandlesCannotEscapeIntoFieldsOrModuleGlobals() {
+        var global = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(BOX + "const p = rt ref new Box();")));
+        assertTrue(global.getMessage().contains("module/global storage"), global.getMessage());
+
+        var field = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(BOX + """
+                        define class Holder as
+                          let Pointer<Box> ptr = rt ref new Box();
+                        end
+                        """)));
+        assertTrue(field.getMessage().contains("place-aware move-out"), field.getMessage());
+    }
+
     @Test void pointerTypeCannotBeRedefinedOrSharedWithoutProof() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("define class Pointer as end")));
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(BOX + "fnc local(Channel<Pointer<Box>> messages): void { return; }")));
