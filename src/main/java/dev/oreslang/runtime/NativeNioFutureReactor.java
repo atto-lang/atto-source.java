@@ -110,7 +110,8 @@ public final class NativeNioFutureReactor implements AutoCloseable {
         this.maxConnections = maxConnections;
         this.maxPending = maxPending;
         this.completionCpuExecutor = completionCpuExecutor;
-        this.thread = Thread.ofPlatform().daemon(true).name("ores-nio-reactor").unstarted(this::run);
+        this.thread = Thread.ofPlatform().daemon(true).name("ores-nio-reactor")
+                .unstarted(() -> OresVM.runAsNioWorker(this::run));
         thread.start();
     }
 
