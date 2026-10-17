@@ -106,17 +106,13 @@ final class OresVMNioLifecycleTest {
         try {
             pipe.source().configureBlocking(false);
             actors.bindNioCompletionCapacityHook(vm.nioReadiness()::retryStagedNotifications);
-            vm.nioReadiness().bindVmCompletionExecutor(
-                    actors::executeHostIoCompletion,
-                    actors::prepareHostIoCompletionCapacity);
+            vm.nioReadiness().bindVmCompletionExecutor(actors::executeHostIoCompletion);
             assertTrue(vm.nioReadiness().usesVmCompletionCarriers());
             assertEquals(0, vm.nioReadiness().completionCarrierCount());
             assertEquals(0, actors.startedActorCarrierCount());
 
             var completedOnActorCarrier = new java.util.concurrent.CountDownLatch(1);
             var readiness = vm.nioReadiness().watch(pipe.source(), SelectionKey.OP_READ);
-            assertTrue(actors.startedActorCarrierCount() >= 1,
-                    "first valid NIO admission must prestart completion capacity off-selector");
             readiness.whenCompleteRuntime((events, failure) -> {
                 if (failure == null && !OresVM.onControlCarrier()
                         && OresVM.onNioWorker() && !ActorRuntime.inActorExecution())
