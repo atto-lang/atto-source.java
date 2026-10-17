@@ -310,9 +310,15 @@ public final class Types {
         }
 
         if (from instanceof Record source && to instanceof Record target) {
+            // Readonly views may widen readable members, but a writable
+            // destination cannot broaden a member type and thereby regain
+            // mutation authority through an alias.
+            if (source.readOnly() && !target.readOnly()) return false;
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
                 Type actual = source.members().get(required.getKey());
                 if (actual == null || !isAssignable(actual, required.getValue())) return false;
+                if (!target.readOnly()
+                        && !isAssignable(required.getValue(), actual)) return false;
             }
             return true;
         }
@@ -368,13 +374,22 @@ public final class Types {
         java.util.ArrayList<Type> flattened = new java.util.ArrayList<>();
         for (Type type : types) {
             if (type == Unknown.INSTANCE) return Unknown.INSTANCE;
-            if (type == UnknownValue.INSTANCE) return UnknownValue.INSTANCE;
-            if (type == Any.INSTANCE) return Any.INSTANCE;
             if (type instanceof Union union) {
                 for (Type option : union.options()) if (!flattened.contains(option)) flattened.add(option);
             } else if (!flattened.contains(type)) flattened.add(type);
         }
         if (flattened.isEmpty()) return Unknown.INSTANCE;
+        // Top-type collapse is legal only if every alternative can itself
+        // widen to that top. This prevents Any | borrow/capability from
+        // silently discarding ownership or execution authority evidence.
+        if (flattened.contains(UnknownValue.INSTANCE)
+                && flattened.stream().allMatch(type -> isAssignable(type, UnknownValue.INSTANCE))) {
+            return UnknownValue.INSTANCE;
+        }
+        if (flattened.contains(Any.INSTANCE)
+                && flattened.stream().allMatch(type -> isAssignable(type, Any.INSTANCE))) {
+            return Any.INSTANCE;
+        }
         if (flattened.size() == 1) return flattened.getFirst();
         flattened.sort(java.util.Comparator.comparing(Object::toString));
         return new Union(flattened);
