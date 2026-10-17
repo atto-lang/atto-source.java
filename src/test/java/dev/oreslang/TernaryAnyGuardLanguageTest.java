@@ -65,6 +65,12 @@ final class TernaryAnyGuardLanguageTest {
                     return 0;
                   fi
                 }
+                fnc explicitBinding(any v): int {
+                  return v is type int narrowed ? narrowed + 1 : 0;
+                }
+                fnc repeated(any v): int {
+                  return (Integer.is_int(v) && Integer.is_int(v)) ? v : 0;
+                }
                 """);
         reject("fnc bad(any v): int { return v; }");
         reject("fnc bad(any v): int { return Integer.is_int(v) ? 0 : v; }");
@@ -85,6 +91,9 @@ final class TernaryAnyGuardLanguageTest {
                 pub fnc foo(any v): int {
                   return Integer.is_int(v) ? v : 0;
                 }
+                fnc explicitBinding(any v): int {
+                  return v is type int narrowed ? narrowed + 1 : 0;
+                }
                 fnc boxString(string v): any { return v; }
                 pub fnc main(): void {
                   stdio.println(foo(7));
@@ -92,6 +101,8 @@ final class TernaryAnyGuardLanguageTest {
                   stdio.println(foo(true));
                   stdio.println(Integer.is_int(3) ? 11 : 22);
                   stdio.println(Integer.is_int(boxString("no")) ? 11 : 22);
+                  stdio.println(explicitBinding(4));
+                  stdio.println(explicitBinding(boxString("no")));
                   return;
                 }
                 """;
@@ -105,7 +116,7 @@ final class TernaryAnyGuardLanguageTest {
                 .build()) {
             context.eval(source);
         }
-        assertEquals("7\n0\n0\n11\n22",
+        assertEquals("7\n0\n0\n11\n22\n5\n0",
                 output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
 
