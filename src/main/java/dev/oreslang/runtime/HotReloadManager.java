@@ -999,7 +999,23 @@ public final class HotReloadManager implements AutoCloseable {
         public long id() { return id; }
         public String codeUnitId() { return codeUnitId; }
         public String sha256() { return sha256; }
-        public Context context() { return context; }
+        /**
+         * Legacy raw-context access remains available to generic code units.
+         * Contract-gated module generations must execute only through manager
+         * initialization and the generation-scoped public-call surface; leaking
+         * their Context would allow callers to parse/evaluate arbitrary source
+         * in the same context and bypass the module admission gate.
+         */
+        public Context context() {
+            if (initializeModuleOnly) {
+                throw new IllegalStateException(
+                        "raw Context access is disabled for contract-gated module generations");
+            }
+            if (retiring.get() || closed.get()) {
+                throw new IllegalStateException("generation is retiring/closed");
+            }
+            return context;
+        }
         public Source source() { return source; }
         public ExecutionProfile executionProfile() { return executionProfile; }
         public boolean sharedCodeImage() { return sharedCodeImage; }
