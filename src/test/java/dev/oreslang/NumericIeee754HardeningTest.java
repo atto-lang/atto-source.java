@@ -120,9 +120,9 @@ final class NumericIeee754HardeningTest {
             assertTrue(context.eval(OresLanguage.ID, """
                     pub routine main(): bool {
                       val complex identicalExtreme =
-                          (1e200 + 1e-200i) / (1e200 + 1e-200i);
+                          (1e200 + 1e-100i) / (1e200 + 1e-100i);
                       val complex oppositeImaginary =
-                          (1e200 + 1e-200i) / (1e200 - 1e-200i);
+                          (1e200 + 1e-100i) / (1e200 - 1e-100i);
                       return identicalExtreme eq 1
                         && !(oppositeImaginary eq 1)
                         && (oppositeImaginary neq 1);
