@@ -90,6 +90,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                                return_value=A)
         self.publisher_checkout.start()
         self.addCleanup(self.publisher_checkout.stop)
+        self.real_gh_api_no_content = pub.gh_api_no_content
         self.dispatcher = patch.object(
             pub, "gh_api_no_content", side_effect=self.fake_dispatch)
         self.dispatcher.start()
@@ -2385,6 +2386,38 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 pub.checked_repo("trusted/ci", expected_id=123)
 
 
+
+    def test_workflow_dispatch_helper_requires_empty_success_response(self):
+        success = type("Response", (), {
+            "returncode": 0, "stdout": "", "stderr": "ignored",
+        })()
+        route = "repos/trusted/ci/actions/workflows/private.yml/dispatches"
+        payload = {"ref": "main", "inputs": {"commit": C}}
+        with patch.object(pub.subprocess, "run", return_value=success) as run:
+            self.real_gh_api_no_content(route, payload=payload)
+        argv = run.call_args.args[0]
+        kwargs = run.call_args.kwargs
+        self.assertEqual(argv[:4], ["gh", "api", "--method", "POST"])
+        self.assertIn(route, argv)
+        self.assertEqual(json.loads(kwargs["input"]), payload)
+        self.assertEqual(kwargs["env"]["PATH"], pub.SAFE_EXEC_PATH)
+        self.assertEqual(kwargs["env"]["GH_HOST"], "github.com")
+        self.assertEqual(kwargs["env"]["GH_PROMPT_DISABLED"], "1")
+
+    def test_workflow_dispatch_helper_fails_closed_on_body_or_http_error(self):
+        for returncode, stdout in ((1, ""), (0, "{}"), (0, "unexpected\n")):
+            with self.subTest(returncode=returncode, stdout=stdout):
+                response = type("Response", (), {
+                    "returncode": returncode,
+                    "stdout": stdout,
+                    "stderr": "must never be echoed",
+                })()
+                with patch.object(pub.subprocess, "run", return_value=response):
+                    with self.assertRaisesRegex(
+                            pub.Denied, "authenticated GitHub API action failed"):
+                        self.real_gh_api_no_content(
+                            "repos/trusted/ci/actions/workflows/private.yml/dispatches",
+                            payload={"ref": "main"})
 
     def test_api_json_rejects_integer_conversion_exhaustion(self):
         with self.assertRaisesRegex(pub.Denied, "invalid GitHub API JSON"):
