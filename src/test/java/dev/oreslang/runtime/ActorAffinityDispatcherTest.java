@@ -168,6 +168,62 @@ final class ActorAffinityDispatcherTest {
     }
 
     @Test
+    void transientWarmLaneAdmissionContentionFallsBackToAnotherWarmLane()
+            throws Exception {
+        var executors = new java.util.ArrayList<AdaptiveCarrierExecutor>();
+        var dispatcher = new ActorAffinityDispatcher(2, 16, new int[0], index -> {
+            var pool = new AdaptiveCarrierExecutor(
+                    1, 1, 16,
+                    task -> Thread.ofPlatform().daemon(true)
+                            .name("test-fallback-lane-" + index).unstarted(task));
+            executors.add(pool);
+            return pool;
+        });
+        var releaseLock = new CountDownLatch(1);
+        Thread lockHolder = null;
+        try {
+            assertEquals(1, executors.get(0).prestartAllCoreThreads());
+            assertEquals(1, executors.get(1).prestartAllCoreThreads());
+
+            var field = AdaptiveCarrierExecutor.class.getDeclaredField("admission");
+            field.setAccessible(true);
+            var admission =
+                    (java.util.concurrent.locks.ReentrantLock) field.get(executors.get(0));
+            var lockHeld = new CountDownLatch(1);
+            lockHolder = Thread.ofPlatform().daemon(true).start(() -> {
+                admission.lock();
+                try {
+                    lockHeld.countDown();
+                    try { releaseLock.await(3, TimeUnit.SECONDS); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                } finally {
+                    admission.unlock();
+                }
+            });
+            assertTrue(lockHeld.await(2, TimeUnit.SECONDS));
+
+            var delivered = new CountDownLatch(1);
+            var chosen = new java.util.concurrent.atomic.AtomicReference<String>();
+            dispatcher.executeHostOnWarmLane(() -> {
+                chosen.set(Thread.currentThread().getName());
+                delivered.countDown();
+            });
+            assertTrue(delivered.await(2, TimeUnit.SECONDS),
+                    "a contended best lane must not hide another warm lane");
+            assertEquals("test-fallback-lane-1", chosen.get());
+            assertEquals(1, executors.get(0).getPoolSize());
+            assertEquals(1, executors.get(1).getPoolSize());
+        } finally {
+            releaseLock.countDown();
+            if (lockHolder != null) lockHolder.join(3000);
+            dispatcher.shutdownNow();
+            assertTrue(dispatcher.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void firstColdNioNotificationDeterministicallyStartsLaneZero() throws Exception {
         var executors = new java.util.ArrayList<java.util.concurrent.ThreadPoolExecutor>();
         var dispatcher = new ActorAffinityDispatcher(3, 16, new int[0], index -> {
