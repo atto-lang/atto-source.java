@@ -148,7 +148,8 @@ def reviewed_source_main(root, repository):
         raise Denied("source main is not protected; no private export authorized")
     for rel in (".github/private-ci-approved-repositories.txt",
                 "scripts/publish-private-ci-source.py",
-                "scripts/check-private-ci-destination.sh"):
+                "scripts/check-private-ci-destination.sh",
+                "scripts/run-in-private-ci-destination.sh"):
         remote = gh_api("repos/" + SOURCE_REPO + "/contents/" + rel + "?ref=main")
         if remote.get("type") != "file" or remote.get("encoding") != "base64":
             raise Denied("protected source policy or transfer code is unavailable")
