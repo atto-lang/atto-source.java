@@ -751,7 +751,7 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = actors.get(ref.id());
         if (cell == null) {
             throw new ActorTerminatedException(
-                    ref.id(), ref.kind(), ref.terminationCause.get());
+                    ref.id(), ref.kind(), null);
         }
         return controlStats(
                 cell.childControl.snapshot(),
