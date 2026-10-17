@@ -18,6 +18,21 @@ final class TrapFailurePolicyTest {
         assertTrue(TrapFailurePolicy.isTrappable(
                 new CompletionException(new IllegalArgumentException("ordinary guest error")),
                 GuestPanic.class));
+        assertTrue(TrapFailurePolicy.isTrappable(
+                new GuestControlSignal.Throw("ordinary guest throw"), GuestPanic.class));
+    }
+
+    @Test void unclassifiedHostRuntimeFailuresFailClosed() {
+        assertFalse(TrapFailurePolicy.isTrappable(
+                new RuntimeException("unclassified host failure"), GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(
+                new RuntimeException("unclassified host failure"), GuestPanic.class));
+
+        IllegalArgumentException foreign = new IllegalArgumentException("foreign failure");
+        foreign.setStackTrace(new StackTraceElement[]{
+                new StackTraceElement("vendor.client.HttpClient", "request", "HttpClient.java", 42)
+        });
+        assertFalse(TrapFailurePolicy.isTrappable(foreign, GuestPanic.class));
     }
 
     @Test void directTerminalFailuresCannotBecomeNone() {
@@ -25,7 +40,9 @@ final class TrapFailurePolicyTest {
                 new SecurityException("denied"),
                 new CancellationException("cancelled"),
                 new RejectedExecutionException("scheduler closed"),
-                new GuestPanic()
+                new GuestPanic(),
+                new GuestControlSignal.Raise("escape"),
+                new GuestControlSignal.Panic("invariant")
         }) {
             assertFalse(TrapFailurePolicy.isTrappable(terminal, GuestPanic.class),
                     terminal::toString);
@@ -70,14 +87,14 @@ final class TrapFailurePolicyTest {
         assertFalse(TrapFailurePolicy.isTrappable(chain, GuestPanic.class));
     }
 
-    @Test void explicitGuestCatchCanRecoverDenialAndTimeout() {
+    @Test void explicitGuestCatchCanRecoverDenialButNotRuntimeTimeout() {
         assertTrue(TrapFailurePolicy.isGuestCatchable(
                 new SecurityException("denied"), GuestPanic.class));
         assertTrue(TrapFailurePolicy.isGuestCatchable(
                 new CompletionException(new SecurityException("wrapped denial")),
                 GuestPanic.class));
-        assertTrue(TrapFailurePolicy.isGuestCatchable(
-                new CompletionException(new TimeoutException("request timed out")),
+        assertFalse(TrapFailurePolicy.isGuestCatchable(
+                new CompletionException(new TimeoutException("runtime deadline")),
                 GuestPanic.class));
         assertFalse(TrapFailurePolicy.isTrappable(
                 new CompletionException(new SecurityException("wrapped denial")),
@@ -89,8 +106,11 @@ final class TrapFailurePolicyTest {
                 new CancellationException("cancelled"),
                 new RejectedExecutionException("scheduler closed"),
                 new InterruptedException("interrupted"),
+                new TimeoutException("runtime deadline"),
                 new AssertionError("host failure"),
-                new GuestPanic()
+                new GuestPanic(),
+                new GuestControlSignal.Raise("escape"),
+                new GuestControlSignal.Panic("invariant")
         }) {
             assertFalse(TrapFailurePolicy.isGuestCatchable(
                     new CompletionException(control), GuestPanic.class),
