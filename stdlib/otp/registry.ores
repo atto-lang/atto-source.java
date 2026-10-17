@@ -1,0 +1,44 @@
+// Oreslang-native bounded registry protocol.
+//
+// FIRST EXECUTABLE SOURCE SLICE ONLY. This module does not provide global
+// mutable storage or distributed naming. Runtime/library integration must own
+// the actual table and ActorRef lifecycle; entries remain incarnation fenced.
+define module OtpRegistry as
+
+  pub define class Entry<Name, Ref> as
+    pub val Name name;
+    pub val Ref ref;
+    pub val int incarnation;
+  end
+
+  pub fnc entry<Name, Ref>(
+    Name name,
+    Ref ref,
+    int incarnation
+  ): Result<Entry<Name, Ref>, String> {
+    if incarnation <= 0; do
+      return Err("registry incarnation must be positive");
+    fi
+    return Ok(new Entry<Name, Ref>(name, ref, incarnation));
+  }
+
+  pub fnc same_incarnation(
+    int expected,
+    int actual
+  ): bool {
+    return expected > 0 && expected == actual;
+  }
+
+  pub fnc capacity_allows(
+    int registered,
+    int capacity
+  ): Result<bool, String> {
+    if registered < 0; do
+      return Err("registered count cannot be negative");
+    fi
+    if capacity < 1 || capacity > 65536; do
+      return Err("registry capacity must be 1..65536");
+    fi
+    return Ok(registered < capacity);
+  }
+end
