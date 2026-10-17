@@ -121,6 +121,24 @@ final class StructuralContainerSourceParityTest {
                   }
                 end
                 """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad(structural Map<string,int> values): void {
+                    values.put("key", 1);
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad(structural List<int> values): void {
+                    values.add(1);
+                    return;
+                  }
+                end
+                """)));
     }
 
     @Test

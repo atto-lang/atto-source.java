@@ -20,6 +20,7 @@ SUITES = (
     "StructuralCrossSurfaceParityTest",
     "StructuralTuplePatternMatchTest",
     "StructuralContainerPolicyTest",
+    "StructuralContainerSourceParityTest",
 )
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 

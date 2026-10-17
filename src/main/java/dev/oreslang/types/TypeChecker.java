@@ -2860,7 +2860,8 @@ public final class TypeChecker {
                     }
                     return builtin.result();
                 }
-                if (receiver instanceof ListType || receiver instanceof Tuple) {
+                if (receiver instanceof ListType || receiver instanceof Tuple
+                        || receiver instanceof StructuralContainerView) {
                     throw new IllegalArgumentException(
                             "unknown collection member '" + member.member() + "'");
                 }
@@ -3360,6 +3361,11 @@ public final class TypeChecker {
                     && member.member().equals("length")) {
                 return Primitive.INT;
             }
+            if (sumReceiver instanceof StructuralContainerView structuralView
+                    && structuralView.kind() != StructuralContainerPolicy.Kind.MAP
+                    && member.member().equals("length")) {
+                return Primitive.INT;
+            }
             if (sumReceiver instanceof Function) {
                 throw new IllegalArgumentException("unknown function member '" + member.member()
                         + "'; invoke directly or spread a statically known tuple with f(...args)");
@@ -3377,7 +3383,8 @@ public final class TypeChecker {
                 };
             }
             if (collectionMember != null) return collectionMember;
-            if (sumReceiver instanceof ListType || sumReceiver instanceof Tuple) {
+            if (sumReceiver instanceof ListType || sumReceiver instanceof Tuple
+                    || sumReceiver instanceof StructuralContainerView) {
                 throw new IllegalArgumentException(
                         "unknown collection member '" + member.member() + "'");
             }
@@ -6080,6 +6087,22 @@ public final class TypeChecker {
 
     private Type builtinCollectionMember(Type receiver, String member) {
         receiver = deref(receiver);
+        if (receiver instanceof StructuralContainerView view) {
+            return switch (view.kind()) {
+                case ARRAY, LIST, FIXED_ARRAY, FIXED_LIST -> switch (member) {
+                    case "size" -> Primitive.INT;
+                    case "get" -> new Function(List.of(Primitive.INT), view.value());
+                    default -> null;
+                };
+                case MAP -> switch (member) {
+                    case "size" -> Primitive.INT;
+                    case "get" -> new Function(
+                            List.of(view.key()),
+                            new Named("Option", List.of(view.value())));
+                    default -> null;
+                };
+            };
+        }
         if (receiver instanceof ListType list) {
             return switch (member) {
                 case "size" -> Primitive.INT;

@@ -49,7 +49,7 @@ jobs:
         run: python3 scripts/verify_structural_exact_head_evidence.py --self-test
       - name: Execute real parser, readonly, ownership and guest regressions
         run: |
-          mvn -B -ntp -Dtest=StructuralTuplePolicyTest,PositionalTupleSyntaxTest,StructuralCallableParityTest,FixedProductCallPlanTest,RecordWriteVarianceTest,StructuralCrossSurfaceParityTest,StructuralTuplePatternMatchTest,StructuralContainerPolicyTest test
+          mvn -B -ntp -Dtest=StructuralTuplePolicyTest,PositionalTupleSyntaxTest,StructuralCallableParityTest,FixedProductCallPlanTest,RecordWriteVarianceTest,StructuralCrossSurfaceParityTest,StructuralTuplePatternMatchTest,StructuralContainerPolicyTest,StructuralContainerSourceParityTest test
       - name: Recheck immutable Git HEAD and clean tracked tree after Maven
         shell: bash
         env:
