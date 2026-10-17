@@ -57,7 +57,7 @@ final class OreslangSyntaxMatrixTest {
         new Sample("binding/infer-tuple", "fnc f():void{const T row=infer<T> tuple (\"x\",1);return;}"),
         new Sample("value/inferred-struct", "fnc f():void{const row=infer struct {id:\"x\"};return;}"),
         new Sample("value/tuple", "fnc f():void{const pair=tuple (\"x\",1);return;}"),
-        new Sample("value/tuple-parens", "fnc f():void{const pair=(\"x\",1);return;}"),
+        new Sample("value/single-tuple", "fnc f():void{const single=tuple(1);return;}"),
         new Sample("value/array", "fnc f():void{const a=arr[1,2];return;}"),
         new Sample("value/legacy-list", "fnc f():void{const a=[1,2];return;}"),
         new Sample("value/lambda", "fnc f():void{const callback=|x| -> x+1;return;}"),
@@ -72,15 +72,17 @@ final class OreslangSyntaxMatrixTest {
         new Sample("control/for-c", "fnc f():void{for(let i=0;i<2;i++){ }return;}"),
         new Sample("control/for-of", "fnc f():void{for const item of arr[1,2] { }return;}"),
         new Sample("control/match", "fnc f(int x):int{match x over on 1 -> {return 1;} on _ -> {return 0;} end}"),
-        new Sample("control/match-tuple", "fnc f():int{match (1,2) over on (1,2) -> {return 1;} on (_,_) -> {return 0;} end}"),
+        new Sample("control/match-tuple", "fnc f():int{match tuple(1,2) over on (1,2) -> {return 1;} on (_,_) -> {return 0;} end}"),
         new Sample("control/switch", "fnc f(int n):int{switch n case 1 -> {return 1;} default -> {return 0;} end}"),
         new Sample("control/try-catch", "fnc f():void{try {val x=1;} catch(e) {return;} finally {val y=2;}return;}"),
         new Sample("control/defer", "fnc f():void{defer stdio.println(\"done\");return;}"),
         new Sample("channels/read-write", "fnc f():void{val Channel<int> c=Channel.new<int>(1);writech c,1;val n=readch c;return;}"),
         new Sample("channels/select-default", "fnc f():void{do select {default: {return;}}return;}"),
-        new Sample("destructure/tuple", "fnc f():void{[const a,_,let b]=(1,2,3);return;}")
+        new Sample("destructure/tuple", "fnc f():void{[const a,_,let b]=tuple(1,2,3);return;}")
     );
     private static final List<Sample> PARSE_BAD = List.of(
+        new Sample("value/implicit-tuple", "fnc f():void{const pair=(1,2);return;}"),
+        new Sample("value/empty-tuple", "fnc f():void{const empty=tuple();return;}"),
         new Sample("declaration/runtime-module", "fnc f():void{define module M end return;}"),
         new Sample("declaration/runtime-class", "fnc f():void{define class M as end return;}"),
         new Sample("declaration/runtime-namespace", "fnc f():void{namespace nested;return;}"),
@@ -102,7 +104,7 @@ final class OreslangSyntaxMatrixTest {
         new Sample("math", "fnc f():int{return (2+3)*4;}"),
         new Sample("ternary", "fnc f(bool cond):int{return cond?1:2;}"),
         new Sample("let reassignment", "fnc f():int{let n=1;n=n+1;return n;}"),
-        new Sample("underscore destructure", "fnc f():int{[_,const v]=(1,2);return v;}"),
+        new Sample("underscore destructure", "fnc f():int{[_,const v]=tuple(1,2);return v;}"),
         new Sample("shared actor", "shared actor Counter {let balance=1; pub fnc value():int{return self.balance;}}")
     );
     private static final List<Sample> TYPE_BAD = List.of(

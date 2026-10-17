@@ -377,9 +377,9 @@ const {foo, bar} = named();
 A bare `_` is a sequence discard pattern: it consumes that array/tuple position without declaring a variable, so it can be repeated in the same sequence pattern or reused by later destructures. Object patterns do not accept bare `_` because object destructuring is key-based rather than positional.
 
 ```ores
-[const code, _, let body] = (200, "ignored", "ok");
-[const next, _, let tail] = (201, "ignored again", "done");
-[_, _, const final] = (1, 2, 3);
+[const code, _, let body] = tuple(200, "ignored", "ok");
+[const next, _, let tail] = tuple(201, "ignored again", "done");
+[_, _, const final] = tuple(1, 2, 3);
 ```
 
 `_` is not readable after the destructure because no lexical binding is created for it. A destructured `const` is an immutable runtime binding; unlike a standalone `const x = ...` declaration, the aggregate being destructured does not need to be a compile-time constant.
@@ -575,7 +575,7 @@ positional types. Bare finite tuple syntax remains the compact form; the named
 `Tuple<...>[...]` form is used when storage metadata is needed.
 
 ```ores
-val pair = (1, "one");
+val pair = tuple(1, "one");
 [const number, let label] = pair;
 
 fnc result(): [int, bool, string] {
@@ -584,10 +584,10 @@ fnc result(): [int, bool, string] {
 
 const [num, ok, answer] = result();
 
-val aligned: Tuple<align=64, size=2>[int, string] = (1, "one");
+val aligned: Tuple<align=64, size=2>[int, string] = tuple(1, "one");
 
 @NamedParams<align=64, size=2>
-val sameShape: [int, string] = (1, "one");
+val sameShape: [int, string] = tuple(1, "one");
 ```
 
 A tuple is a product value, not a growable array. Its `size` metadata is
@@ -1882,7 +1882,8 @@ a checked type cast on its expression, never a return-type declaration. For
 example, `(n * 3) as int` is a scalar `int`, not a tuple.
 
 Tuple values require an explicit `tuple(...)` constructor (one element is a
-one-element tuple; a trailing comma is not needed). The canonical static type
+one-element tuple; a trailing comma is not needed). Empty `tuple()` is rejected
+until a separate unit/zero-arity product design is explicitly adopted. The canonical static type
 spelling remains `Tuple[T1, T2, ...]`; lower-case `tuple[T1, T2, ...]` is
 also accepted as a synonym in type position:
 
@@ -1897,3 +1898,34 @@ Legacy comma-based bare tuple literals such as `(3, "hi")` are rejected in
 expression position. Tuple patterns and destructuring syntax remain distinct
 constructs and are not affected. The explicit syntax avoids confusing
 parenthesis grouping, function argument lists, and tuple construction.
+
+
+## Tuples versus structural records
+
+Tuple values are **positional**, with fixed arity and position-sensitive types;
+use `tuple(x, y)` and `Tuple[T1, T2]` (also `tuple[T1, T2]`).
+Parentheses group one expression; `(x, y)` is not a tuple literal.
+Tuple match patterns may still use `on (x, y)`: they are patterns, not values.
+
+Structural records/structs are **field-named**. `infer struct{x: 1}`
+produces a permanently readonly inferred record. `struct{x: int}{x: 1}`
+produces an explicitly shaped mutable-capable record. Record types use
+`{x: int}`, and record field order does not define type identity.
+A record may project to a narrower record shape when type and readonly
+capabilities permit it, but a tuple cannot convert into a record by matching
+the number or type of elements.
+
+```ores
+const pair = tuple(1, 2);                    // Tuple[int, int]
+const grouped = (1);                         // int
+const point = struct{x: int, y: int}{x: 1, y: 2};
+const xOnly = point as {x: int};             // static record shape projection
+const one = pair as Tuple[int, int];         // statically proven tuple shape
+```
+
+Checked `as` structural shape projections require statically known source
+and target aggregates, compatible fields/elements, and ownership/read-only
+capability preservation. Dynamic narrowing from `any` / unknown and
+tuple↔record reinterpretation remain forbidden. `as?` structural projections
+are not supported. Runtime checks must not turn list-backed tuples into
+record values or vice versa.

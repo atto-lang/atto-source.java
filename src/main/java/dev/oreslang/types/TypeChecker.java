@@ -2218,9 +2218,19 @@ public final class TypeChecker {
         if (expr instanceof Ast.CastExpr cast) {
             Type source = deref(typeOf(cast.value(), env, generics, self));
             Type target = deref(resolve(cast.targetType(), generics, self));
-            // A tuple-shape cast is allowed only when both sides are fully
-            // statically known and shape compatible. It is not a dynamic
-            // generic downcast, so no erased type argument is being guessed.
+            // Tuple/record shape casts are admitted only if the source is
+            // statically known. They do not perform erased generic casts,
+            // reconstitute ownership, or reinterpret positional and named data.
+            if (target instanceof Record) {
+                if (cast.mode() == Ast.CastMode.OPTIONAL
+                        || !(source instanceof Record)) {
+                    throw new IllegalArgumentException(
+                            "record casts require a statically known record source and checked 'as' shape");
+                }
+                requireReadonlyCapabilityPreserved(source, target, "record cast");
+                requireAssignable(source, target, "record cast");
+                return overlayReadonlyCapabilities(source, target);
+            }
             if (target instanceof Tuple) {
                 if (cast.mode() == Ast.CastMode.OPTIONAL
                         || !(source instanceof Tuple)) {

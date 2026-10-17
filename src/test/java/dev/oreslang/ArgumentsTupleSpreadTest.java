@@ -80,7 +80,7 @@ final class ArgumentsTupleSpreadTest {
                 }
 
                 pub routine main(): void {
-                  stdio.stdout.write(add(...(19, 23)));
+                  stdio.stdout.write(add(...tuple(19, 23)));
                   return;
                 }
                 """;

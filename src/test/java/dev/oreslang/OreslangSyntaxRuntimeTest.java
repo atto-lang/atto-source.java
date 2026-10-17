@@ -81,7 +81,7 @@ final class OreslangSyntaxRuntimeTest {
                     """, "11"),
             new Example("destructuring and mutable binding", """
                     pub fnc main(): void {
-                      [const first, _, let last] = (3, 8, 12);
+                      [const first, _, let last] = tuple(3, 8, 12);
                       last = last + first;
                       stdio.stdout.write(last);
                       return;

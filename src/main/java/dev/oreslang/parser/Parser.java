@@ -3582,6 +3582,9 @@ public final class Parser {
             consume(LPAREN, "expected '(' after tuple");
             List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after explicit tuple");
+            if (items.isEmpty()) {
+                throw error(previous(), "tuple(...) requires at least one element");
+            }
             return new Ast.TupleExpr(items);
         }
         if (match(IDENT, SHARED, UNTRUSTED)) {

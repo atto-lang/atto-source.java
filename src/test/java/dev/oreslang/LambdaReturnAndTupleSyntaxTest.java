@@ -88,6 +88,43 @@ final class LambdaReturnAndTupleSyntaxTest {
     }
 
     @Test
+    void structuralRecordsRemainDistinctFromTuples() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc f(): void {
+                  val point = struct{x: int, y: int}{x: 3, y: 4};
+                  val reduced = point as {x: int};
+                  val positional = tuple(3, 4) as Tuple[int, int];
+                  return;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc f(): void {
+                  val mistaken = tuple(3) as {x: int};
+                  return;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc f(): void {
+                  val mistaken = struct{x: int}{x: 3} as Tuple[int];
+                  return;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc f(): void {
+                  val readonly = infer struct{x: 3};
+                  val upgraded = readonly as {x: int};
+                  return;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc f(): void {
+                  val missingField = struct{x: int}{x: 3} as {y: int};
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void unrelatedOrErasedTupleCastsFailClosed() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc f(): void {

@@ -70,7 +70,7 @@ final class StructuralTuplePatternMatchTest {
                   end
 
                   fnc classify(Base value, Dog dog): int {
-                    match (value, dog) over
+                    match tuple(value, dog) over
                       on (structural { bar: string } shaped, Dog g) -> {
                         return 7;
                       }
@@ -215,7 +215,7 @@ final class StructuralTuplePatternMatchTest {
                   }
 
                   fnc tupled(Base value, Dog dog): int {
-                    match (value, dog) over
+                    match tuple(value, dog) over
                       on (structural { bar: string } v, Dog g) -> { return 7; }
                       on (_, _) -> { return 0; }
                     end
