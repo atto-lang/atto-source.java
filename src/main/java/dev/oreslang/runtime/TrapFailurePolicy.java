@@ -1,8 +1,11 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayDeque;
+import java.util.Collections;
+import java.util.Deque;
 import java.util.IdentityHashMap;
-import java.util.Objects;
+import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeoutException;
@@ -48,6 +51,7 @@ public final class TrapFailurePolicy {
         while (!pending.isEmpty()) {
             Throwable current = pending.removeFirst();
             if (!seen.add(current)) continue;
+            if (seen.size() > MAX_FAILURE_NODES) return false;
             if ((panicType != null && panicType.isInstance(current))
                     || current instanceof GuestControlSignal.Raise
                     || current instanceof GuestControlSignal.Panic
