@@ -406,6 +406,10 @@ def publish(repository, source, branch, trusted_root, source_commit=None):
     })
     commit_sha = valid_sha(commit.get("sha"))
     authorize_write()
+    # The independently reviewed source permission may have been revoked while
+    # bounded Git objects were uploaded. Recheck protected source authority
+    # immediately before making a reachable destination branch.
+    reviewed_source_main(trusted_root, repository)
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
