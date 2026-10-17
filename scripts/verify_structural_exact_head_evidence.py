@@ -48,6 +48,8 @@ REQUIRED_CASES = {
         "arrayListInterchangeAndReadonlyMutationFailClosed",
         "fixedArrayAndFixedListRequireExactKindAndExtent",
         "structuralMapUsesInvariantStableKeysAndOptionalLookup",
+        "ownedMapRuntimeSupportsOptionalLookupMutationAndEntryIteration",
+        "mapConstructionKeysAndTransportRemainFailClosed",
         "contractRejectsShapeOnlyOverloadAndDynamicSpread",
         "zeroWidthFixedMetadataCannotHideUnsafePayloadTypes",
         "structuralCollectionLoanCannotCrossSuspendBoundary",

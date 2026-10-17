@@ -4567,6 +4567,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return new ArrayList<>();
             }
+            if (created.type().name().equals("Map")) {
+                if (!args.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Map<K,V> constructor takes no positional arguments; use put(key, value)");
+                }
+                return new OresMap();
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
                         "DynamicStruct has been removed; use infer struct{...} or an explicit closed struct");
@@ -6381,6 +6388,13 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return new ArrayList<>();
                 }
+                if (created.type().name().equals("Map")) {
+                    if (!created.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "Map<K,V> constructor takes no positional arguments; use put(key, value)");
+                    }
+                    return new OresMap();
+                }
                 if (created.type().name().equals("DynamicStruct")) {
                     throw new IllegalArgumentException(
                             "DynamicStruct has been removed; use infer struct{...} or an explicit closed struct");
@@ -7121,6 +7135,22 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
             }
+            if (receiver instanceof OresMap map) {
+                return switch (name) {
+                    case "size" -> (long) map.size();
+                    case "get" -> (Invokable) args -> {
+                        requireOne(args, "Map.get");
+                        return map.get(args.getFirst());
+                    };
+                    case "put" -> (Invokable) args -> {
+                        requireTwo(args, "Map.put");
+                        map.put(args.get(0), args.get(1));
+                        return null;
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Map member " + name);
+                };
+            }
             if (receiver instanceof List<?> rawList) {
                 return switch (name) {
                     case "size" -> (long) rawList.size();
@@ -7231,6 +7261,9 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object unwrapHostArgument(Object value) {
             if (value instanceof HostObjectFacade host) return host.value();
+            if (value instanceof OresMap map) {
+                return context.asGuestHostValue(map.immutableSnapshot());
+            }
             if (value instanceof Map<?, ?> map) {
                 // Never hand Java a mutable alias to anonymous struct storage.
                 // A host call may observe the snapshot, but cannot add/remove
@@ -7967,6 +8000,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Iterable<?> iterableValues(Object value, Env env) {
+            if (value instanceof OresMap map) return map;
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof GeneratorRuntime.Generator<?> generator) return generator;
@@ -9219,6 +9253,74 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
 
+    private static final class OresMap implements Iterable<List<Object>> {
+        private final LinkedHashMap<StableKey, Object> entries = new LinkedHashMap<>();
+
+        private int size() { return entries.size(); }
+
+        private OptionValue get(Object rawKey) {
+            StableKey key = StableKey.of(rawKey);
+            return entries.containsKey(key)
+                    ? new OptionValue(true, entries.get(key))
+                    : new OptionValue(false, null);
+        }
+
+        private void put(Object rawKey, Object value) {
+            entries.put(StableKey.of(rawKey), value);
+        }
+
+        private Map<Object, Object> immutableSnapshot() {
+            LinkedHashMap<Object, Object> snapshot = new LinkedHashMap<>();
+            for (Map.Entry<StableKey, Object> entry : entries.entrySet()) {
+                snapshot.put(entry.getKey().guestValue, entry.getValue());
+            }
+            return java.util.Collections.unmodifiableMap(snapshot);
+        }
+
+        @Override
+        public java.util.Iterator<List<Object>> iterator() {
+            ArrayList<List<Object>> snapshot = new ArrayList<>(entries.size());
+            for (Map.Entry<StableKey, Object> entry : entries.entrySet()) {
+                snapshot.add(List.of(entry.getKey().guestValue, entry.getValue()));
+            }
+            return List.copyOf(snapshot).iterator();
+        }
+
+        @Override public String toString() { return CycleSafeDisplay.render(this); }
+
+        private static final class StableKey {
+            private final Object canonical;
+            private final Object guestValue;
+
+            private StableKey(Object canonical, Object guestValue) {
+                this.canonical = canonical;
+                this.guestValue = guestValue;
+            }
+
+            private static StableKey of(Object value) {
+                if (value instanceof String || value instanceof Boolean) {
+                    return new StableKey(value, value);
+                }
+                if (value instanceof Byte || value instanceof Short
+                        || value instanceof Integer || value instanceof Long) {
+                    return new StableKey(
+                            java.math.BigInteger.valueOf(((Number) value).longValue()),
+                            value);
+                }
+                if (value instanceof java.math.BigInteger integer) {
+                    return new StableKey(integer, value);
+                }
+                throw new IllegalArgumentException(
+                        "Map key must be a string, int, or bool with stable hash/equality semantics");
+            }
+
+            @Override public boolean equals(Object other) {
+                return other instanceof StableKey key && canonical.equals(key.canonical);
+            }
+            @Override public int hashCode() { return canonical.hashCode(); }
+        }
+    }
+
     private static final class OresObject implements OresMutex.SharedState {
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
@@ -9270,6 +9372,7 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
                 if (!(value instanceof OresObject
+                        || value instanceof OresMap
                         || value instanceof ReadonlyRecordValue
                         || value instanceof OptionValue
                         || value instanceof ResultValue
@@ -9296,6 +9399,18 @@ public final class OresEvalRootNode extends RootNode {
                             write("=");
                             append(entry.getValue() == Evaluator.UNINITIALIZED_FIELD
                                     ? "<uninitialized>" : entry.getValue(), depth + 1);
+                            if (output.length() >= MAX_CHARS) break;
+                        }
+                        write("}");
+                    } else if (value instanceof OresMap map) {
+                        write("Map{");
+                        boolean first = true;
+                        for (Map.Entry<Object, Object> entry : map.immutableSnapshot().entrySet()) {
+                            if (!first) write(", ");
+                            first = false;
+                            append(entry.getKey(), depth + 1);
+                            write("=");
+                            append(entry.getValue(), depth + 1);
                             if (output.length() >= MAX_CHARS) break;
                         }
                         write("}");

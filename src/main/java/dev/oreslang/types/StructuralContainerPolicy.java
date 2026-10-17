@@ -74,7 +74,7 @@ public final class StructuralContainerPolicy {
     }
 
     /** Map keys are always invariant; no numeric widening or object hash guesses. */
-    private static boolean stableKey(Type type) {
+    public static boolean stableKey(Type type) {
         return type == Types.Primitive.STRING || type == Types.Primitive.INT
                 || type == Types.Primitive.BOOL
                 || type instanceof Types.StringLiteral

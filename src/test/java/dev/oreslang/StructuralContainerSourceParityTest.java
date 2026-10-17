@@ -228,6 +228,116 @@ final class StructuralContainerSourceParityTest {
     }
 
     @Test
+    void ownedMapRuntimeSupportsOptionalLookupMutationAndEntryIteration() throws Exception {
+        String sourceText = """
+                define module app
+                  fnc lookup(structural Map<string,int> values, string key): Option<int> {
+                    return values.get(key);
+                  }
+
+                  pub routine main(): void {
+                    val Map<string,int> values = new Map<string,int>();
+                    values.put("a", 7);
+                    values.put("b", 9);
+                    stdio.stdout.write(values.size);
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(lookup(values, "a").unwrap());
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(lookup(values, "missing").is_none());
+                    for const [key, value] of values do
+                      stdio.stdout.write("|");
+                      stdio.stdout.write(key);
+                      stdio.stdout.write("=");
+                      stdio.stdout.write(value);
+                    done
+                    return;
+                  }
+                end
+                """;
+        var typed = assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(sourceText)));
+        assertDoesNotThrow(() -> OwnershipChecker.check(typed));
+
+        var out = new ByteArrayOutputStream();
+        var source = org.graalvm.polyglot.Source.newBuilder(
+                OresLanguage.ID, sourceText, "structural-map-v3.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (var context = org.graalvm.polyglot.Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(out)
+                .build()) {
+            context.eval(source);
+        }
+        assertEquals("2:7:true|a=7|b=9",
+                out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
+
+    @Test
+    void mapConstructionKeysAndTransportRemainFailClosed() {
+        IllegalArgumentException unstableKey = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(): void {
+                          val Map<float,int> values = new Map<float,int>();
+                          return;
+                        }
+                        """)));
+        assertTrue(unstableKey.getMessage().contains("stable hash/equality"),
+                unstableKey::getMessage);
+
+        IllegalArgumentException constructorArgs = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(): void {
+                          val Map<string,int> values = new Map<string,int>(1);
+                          return;
+                        }
+                        """)));
+        assertTrue(constructorArgs.getMessage().contains("takes no positional arguments"),
+                constructorArgs::getMessage);
+
+        IllegalArgumentException channelMap = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(Channel<Map<string,int>> values): void { return; }
+                        """)));
+        assertTrue(channelMap.getMessage().contains("cannot transport Map<K,V>"),
+                channelMap::getMessage);
+
+        IllegalArgumentException nestedChannelMap = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(Channel<Option<Map<string,int>>> values): void { return; }
+                        """)));
+        assertTrue(nestedChannelMap.getMessage().contains("cannot transport Map<K,V>"),
+                nestedChannelMap::getMessage);
+
+        IllegalArgumentException actorMap = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        actor fnc bad(Map<string,int> values): void { return; }
+                        """)));
+        assertTrue(actorMap.getMessage().contains("actor-boundary"),
+                actorMap::getMessage);
+
+        IllegalArgumentException asyncMap = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        async fnc bad(Map<string,int> values): void { return; }
+                        """)));
+        assertTrue(asyncMap.getMessage().contains("task-safe"),
+                asyncMap::getMessage);
+
+        IllegalArgumentException sharedMap = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(SharedMutex<Map<string,int>> values): void { return; }
+                        """)));
+        assertTrue(sharedMap.getMessage().contains("shared-safe"),
+                sharedMap::getMessage);
+    }
+
+    @Test
     void contractRejectsShapeOnlyOverloadAndDynamicSpread() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module app

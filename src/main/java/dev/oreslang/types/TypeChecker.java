@@ -3569,6 +3569,13 @@ public final class TypeChecker {
                         "DynamicStruct has been removed; use infer struct{...}, "
                                 + "struct{field: Type,...}{...}, or an explicit Map<K,V> collection");
             }
+            if (created.type().name().equals("Map")) {
+                if (!created.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Map<K,V> constructor takes no positional arguments; use put(key, value)");
+                }
+                return resolve(created.type(), generics, self);
+            }
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return resolve(created.type(), generics, self);
             rejectUnimportedClassNamespace(klass);
@@ -3929,6 +3936,11 @@ public final class TypeChecker {
         // validateActorCallableBoundaryType/isSharedSafe instead and remain
         // strictly non-callable. Borrows cannot inhabit buffered channels
         // until channel-bound lifetimes are expressible and checked.
+        if (containsTransportMap(element)) {
+            throw new IllegalArgumentException(
+                    where + " cannot transport Map<K,V> values yet; "
+                            + "map ownership/serialization across deferred storage is intentionally fail-closed");
+        }
         if (containsChannelBorrow(element, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
                     where + " cannot transport borrowed payloads, including nested fields: "
@@ -3941,6 +3953,34 @@ public final class TypeChecker {
         if (element == Unknown.INSTANCE) {
             throw new IllegalArgumentException(where + " requires a statically resolved channel payload type");
         }
+    }
+
+    private boolean containsTransportMap(Type type) {
+        if (type instanceof MapType) return true;
+        if (type instanceof StructuralContainerView view) {
+            return view.kind() == StructuralContainerPolicy.Kind.MAP
+                    || (view.key() != null && containsTransportMap(view.key()))
+                    || containsTransportMap(view.value());
+        }
+        if (type instanceof SelfType receiverSelf) return containsTransportMap(receiverSelf.bound());
+        if (type instanceof Borrow borrow) return containsTransportMap(borrow.target());
+        if (type instanceof ListType list) return containsTransportMap(list.element());
+        if (type instanceof Tuple tuple) {
+            if (tuple.elements().stream().anyMatch(this::containsTransportMap)) return true;
+            return tuple.elements().isEmpty()
+                    && tuple.homogeneousElement() != null
+                    && containsTransportMap(tuple.homogeneousElement());
+        }
+        if (type instanceof Union union) {
+            return union.options().stream().anyMatch(this::containsTransportMap);
+        }
+        if (type instanceof Record record) {
+            return record.members().values().stream().anyMatch(this::containsTransportMap);
+        }
+        if (type instanceof Named named) {
+            return named.arguments().stream().anyMatch(this::containsTransportMap);
+        }
+        return false;
     }
 
     private boolean containsChannelCallable(
@@ -6291,6 +6331,13 @@ public final class TypeChecker {
     private Type iterableElementType(Type iterable) {
         iterable = receiverDispatchType(iterable);
         if (iterable instanceof ListType list) return list.element();
+        if (iterable instanceof MapType map) {
+            return new Tuple(List.of(map.key(), map.value()), TupleKind.TUPLE);
+        }
+        if (iterable instanceof StructuralContainerView view
+                && view.kind() == StructuralContainerPolicy.Kind.MAP) {
+            return new Tuple(List.of(view.key(), view.value()), TupleKind.TUPLE);
+        }
         if (iterable instanceof Tuple tuple) {
             if (tuple.elements().isEmpty()
                     && tuple.homogeneousElement() != null) {
@@ -6340,7 +6387,7 @@ public final class TypeChecker {
             }
         }
         throw new IllegalArgumentException(
-                "for-of requires an array/list, tuple, Generator<T>, or a class with [Symbol.iterator]()");
+                "for-of requires an array/list, map, tuple, Generator<T>, or a class with [Symbol.iterator]()");
     }
 
     private Type asyncIterableElementType(Type iterable) {
@@ -8420,9 +8467,16 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "Map requires exactly two explicit type arguments: Map<K,V>");
                 }
-                yield new MapType(
-                        resolve(ref.arguments().get(0), generics, self),
-                        resolve(ref.arguments().get(1), generics, self));
+                Type key = resolve(ref.arguments().get(0), generics, self);
+                Type value = resolve(ref.arguments().get(1), generics, self);
+                if (!StructuralContainerPolicy.stableKey(key)) {
+                    throw new IllegalArgumentException(
+                            "Map<K,V> requires a canonical string/int/bool key with stable hash/equality semantics");
+                }
+                if (value == Primitive.VOID || value == Primitive.NULL) {
+                    throw new IllegalArgumentException("Map<K,V> value type cannot be void/null");
+                }
+                yield new MapType(key, value);
             }
             case "DynamicStruct" -> throw new IllegalArgumentException(
                     "DynamicStruct has been removed for AOT-safe static shape semantics; "
