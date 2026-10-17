@@ -4358,6 +4358,15 @@ public final class OresEvalRootNode extends RootNode {
                         return null;
                     }, List.of());
                 }
+                case "forward_all" -> {
+                    if (args.size() != 1) {
+                        throw new IllegalArgumentException(
+                                "self.forward_all expects exactly one value");
+                    }
+                    yield object.owner.invokableInvocation(ignored ->
+                            runtime.routeCurrentPipelineForwardAll(args.getFirst()),
+                            List.of());
+                }
                 case "forward_round_robin" -> {
                     if (args.size() != 1) {
                         throw new IllegalArgumentException(
@@ -4410,8 +4419,6 @@ public final class OresEvalRootNode extends RootNode {
                         return null;
                     }, List.of());
                 }
-                // Partial fan-out cannot hide per-edge admission results.
-                case "forward_all" -> null;
                 default -> null;
             };
         }
@@ -7027,6 +7034,20 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof MutexFactory factory) {
                 if (!name.equals("new")) throw new IllegalArgumentException("unknown mutex factory member " + name);
                 return (Invokable) factory::create;
+            }
+            if (receiver instanceof ActorRuntime.ActorRouteReceipt receipt) {
+                return switch (name) {
+                    case "edge_index" -> receipt.edgeIndex();
+                    case "target" -> receipt.target();
+                    case "flow_id" -> receipt.flowId();
+                    case "route_id" -> receipt.routeId();
+                    case "admitted" -> receipt.admitted();
+                    case "error" -> receipt.error().isEmpty()
+                            ? new OptionValue(false, null)
+                            : new OptionValue(true, receipt.error());
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorRouteReceipt member " + name);
+                };
             }
             if (receiver instanceof ActorRuntime.ActorRef<?> actorRef) {
                 @SuppressWarnings("unchecked")
