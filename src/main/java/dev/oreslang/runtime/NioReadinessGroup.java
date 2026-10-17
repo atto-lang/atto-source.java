@@ -124,9 +124,8 @@ public final class NioReadinessGroup implements AutoCloseable {
         // separate native profile; this Java manager starts on first watch.
     }
 
-    public int reactorCount() {
-        synchronized (lifecycle) { return reactors.size(); }
-    }
+    /** Number of currently live reactor threads, not historical shards. */
+    public int reactorCount() { return liveReactors.get(); }
     public int pendingCount() { return pending.get(); }
     int pendingNotifications() { return notificationReservations.get(); }
     int activeAcceptLeases() {
