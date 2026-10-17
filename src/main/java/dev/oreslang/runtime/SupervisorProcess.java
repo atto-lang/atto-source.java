@@ -179,7 +179,7 @@ public final class SupervisorProcess implements AutoCloseable {
         synchronized (this) {
             if (state != State.RUNNING) return;
             // The lease is never released while a callback is unfinished.
-            if (!callbackActive || mailbox.peekFirst() != notice) {
+            if (!callbackActive || mailbox.peekFirst() != current) {
                 failLocked(new IllegalStateException(
                         "supervisor continuation lost its exclusive lease"));
                 return;
