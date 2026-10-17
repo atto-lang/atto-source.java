@@ -263,6 +263,42 @@ final class ActorExecutionGrantGateTest {
     }
 
     @Test
+    void guestFailureCannotLeakASchedulerOwnedGrantWhenFinallyUnwinds() {
+        var gate = new ActorExecutionGrantGate(4, 1);
+        assertThrows(AssertionError.class, () -> {
+            try (var grant = gate.tryAcquire()) {
+                assertNotNull(grant);
+                throw new AssertionError("simulated guest panic");
+            }
+        });
+        assertEquals(0, gate.activeSlots());
+        assertDoesNotThrow(() -> {
+            try (var grant = gate.tryAcquire()) {
+                assertNotNull(grant);
+            }
+        });
+        gate.seal();
+        assertTrue(gate.tryRetirePhysicalGate());
+    }
+
+    @Test
+    void sealedActorCannotReopenWhileOtherActorOwnsCarrier() {
+        var a = new ActorExecutionGrantGate(1, 1);
+        var b = new ActorExecutionGrantGate(2, 1);
+        var ticket = a.tryAcquire();
+        a.seal();
+        assertNull(a.tryAcquire());
+        assertFalse(a.tryRetirePhysicalGate());
+        assertThrows(IllegalStateException.class, b::tryAcquire);
+        ticket.close();
+        assertTrue(a.tryRetirePhysicalGate());
+        try (var bTicket = b.tryAcquire()) {
+            assertNotNull(bTicket);
+            assertEquals(1, b.activeSlots());
+        }
+    }
+
+    @Test
     void rejectsInvalidCapacityAndIncarnation() {
         assertThrows(IllegalArgumentException.class, () -> new ActorExecutionGrantGate(0, 1));
         assertThrows(IllegalArgumentException.class, () -> new ActorExecutionGrantGate(-1, 1));
