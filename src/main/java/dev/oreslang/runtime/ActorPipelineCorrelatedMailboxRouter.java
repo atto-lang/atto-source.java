@@ -235,7 +235,6 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
         try {
             for (; next < children.size(); next++) {
                 var child = children.get(next);
-                var edge = out.get(next);
                 try {
                     owner.sendWithPipelineFrame(targets.get(child.receiver()), value, child);
                     // No allocation: ArrayList was pre-sized and the success
