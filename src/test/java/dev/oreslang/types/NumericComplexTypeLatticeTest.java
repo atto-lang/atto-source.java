@@ -2,8 +2,8 @@ package dev.oreslang.types;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class NumericComplexTypeLatticeTest {
@@ -11,10 +11,12 @@ final class NumericComplexTypeLatticeTest {
     void decimalNeverImplicitlyNarrowsIntoBinary64Complex() {
         assertFalse(Types.isAssignable(
                 Types.Primitive.DECIMAL, Types.Primitive.COMPLEX));
-        assertSame(Types.Unknown.INSTANCE,
+        assertEquals(Types.unionOf(
+                        Types.Primitive.DECIMAL, Types.Primitive.COMPLEX),
                 Types.numericJoin(
                         Types.Primitive.DECIMAL, Types.Primitive.COMPLEX));
-        assertSame(Types.Unknown.INSTANCE,
+        assertEquals(Types.unionOf(
+                        Types.Primitive.DECIMAL, Types.Primitive.COMPLEX),
                 Types.numericJoin(
                         Types.Primitive.COMPLEX, Types.Primitive.DECIMAL));
     }
