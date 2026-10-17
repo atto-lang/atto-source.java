@@ -53,17 +53,32 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         Objects.requireNonNull(notification, "notification");
         int count = lanes.size();
         int start = Math.floorMod(nextHostLane.getAndIncrement(), count);
+        int best = -1;
+        int bestLoad = Integer.MAX_VALUE;
         for (int offset = 0; offset < count; ++offset) {
             int index = (start + offset) % count;
             ExecutorService lane = lanes.get(index);
-            boolean nativeReady = lane instanceof NativeCarrierExecutor nativeLane
-                    && nativeLane.getStartedCarrierCount() > 0;
-            boolean javaReady = lane instanceof java.util.concurrent.ThreadPoolExecutor pool
-                    && pool.getPoolSize() > 0;
-            if (nativeReady || javaReady) {
-                executeOnLane(index, notification);
-                return;
+            // Query host-only counters. Do not invoke user code or JNI
+            // startup while choosing an execution lane.
+            int load;
+            if (lane instanceof NativeCarrierExecutor nativeLane) {
+                if (nativeLane.getStartedCarrierCount() == 0) continue;
+                load = nativeLane.getActiveCount() + nativeLane.getQueueSize();
+            } else if (lane instanceof java.util.concurrent.ThreadPoolExecutor pool) {
+                if (pool.getPoolSize() == 0) continue;
+                load = pool.getActiveCount() + pool.getQueue().size();
+            } else {
+                continue;
             }
+            if (load < bestLoad) {
+                best = index;
+                bestLoad = load;
+                if (load == 0) break;
+            }
+        }
+        if (best >= 0) {
+            executeOnLane(best, notification);
+            return;
         }
         // Deterministic cold lane avoids bootstrapping a different native
         // pthread on each queued completion during the first admission burst.
