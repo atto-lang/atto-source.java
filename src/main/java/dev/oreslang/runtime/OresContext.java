@@ -78,8 +78,11 @@ public final class OresContext implements AutoCloseable {
         this.input = new BufferedReader(new InputStreamReader(env.in()));
         this.output = new PrintWriter(env.out(), true);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
-        this.runtimePermissions = RuntimePermissions.fromApplicationArguments(
+        RuntimePermissions runtimeGrant = RuntimePermissions.fromApplicationArguments(
                 env.getApplicationArguments(), isolatePolicy);
+        RuntimePermissions buildCeiling = RuntimePermissions.buildCeilingFromApplicationArguments(
+                env.getApplicationArguments(), isolatePolicy);
+        this.runtimePermissions = runtimeGrant.boundedBy(buildCeiling);
         this.permissionCheckMode = PermissionCheckMode.fromApplicationArguments(
                 env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
