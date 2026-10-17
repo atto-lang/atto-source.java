@@ -703,8 +703,8 @@ public final class Parser {
                     "actor class declarations accept only visibility and actor-kind modifiers");
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-        rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-        return parseActorClass(kind, modifiers.visibility);
+        Ast.ActorThreadPolicy annotationThreads = parseActorThreadAnnotation(annotations);
+        return parseActorClass(kind, modifiers.visibility, annotationThreads);
     }
 
     private boolean matchContextualIdentifier(String lexeme) {
@@ -729,11 +729,58 @@ public final class Parser {
         return match(WHEN) || matchContextualIdentifier("when");
     }
 
-    private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
+    private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility,
+                                          Ast.ActorThreadPolicy annotationThreads) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
+        if (match(FROM)) {
+            Ast.ActorKind sourceKind;
+            if (match(PRIVATE)) sourceKind = Ast.ActorKind.PRIVATE;
+            else if (match(SHARED)) sourceKind = Ast.ActorKind.SHARED;
+            else if (match(UNTRUSTED)) sourceKind = Ast.ActorKind.UNTRUSTED;
+            else throw error(peek(), "expected private, shared or untrusted after actor 'from'");
+            consume(ACTOR, "expected 'actor' after actor base kind");
+            if (actorKind != Ast.ActorKind.PRIVATE && actorKind != sourceKind) {
+                throw error(previous(), "actor base kind conflicts with declaration modifier");
+            }
+            actorKind = sourceKind;
+        }
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+
+        Ast.ActorThreadPolicy nativeThreads = null;
+        if (matchContextualIdentifier("with")) {
+            consumeContextualIdentifier("threads", "expected 'threads' after actor 'with'");
+            consume(LPAREN, "expected '(' after threads");
+            int min = 1, max = 1;
+            java.util.HashSet<String> seen = new java.util.HashSet<>();
+            if (!check(RPAREN)) {
+                do {
+                    String key = consume(IDENT, "expected min/max thread setting").lexeme();
+                    if (!key.equals("min") && !key.equals("max")) {
+                        throw error(previous(), "unknown actor thread setting '" + key + "'");
+                    }
+                    if (!seen.add(key)) throw error(previous(), "duplicate actor thread setting '" + key + "'");
+                    consume(COLON, "native actor thread settings use ':'");
+                    int value = parsePositiveActorThreadInteger();
+                    if (key.equals("min")) min = value;
+                    else max = value;
+                } while (match(COMMA));
+            }
+            consume(RPAREN, "expected ')' after actor thread settings");
+            nativeThreads = newActorThreadPolicy(min, max);
+        }
+        if (annotationThreads != null && nativeThreads != null) {
+            throw error(previous(), "@ActorThreads and 'with threads' are duplicate actor thread policies");
+        }
+        Ast.ActorThreadPolicy threads = nativeThreads != null ? nativeThreads
+                : annotationThreads != null ? annotationThreads : Ast.ActorThreadPolicy.defaults();
+        // Current scheduler leases one physical worker per actor incarnation.
+        // Fail closed: parsing a parallel policy must not silently run it serially.
+        if (threads.max() > 1) {
+            throw error(previous(), "parallel actor threads require scheduler admission, "
+                    + "state effects and backend lowering; max > 1 is not yet supported");
+        }
 
         boolean braceStyle = match(LBRACE);
         if (!braceStyle) match(AS);
@@ -802,7 +849,63 @@ public final class Parser {
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(
-                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods);
+                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods, threads);
+    }
+
+    /** Normalize Java-style source annotations into the same actor policy as native syntax. */
+    private Ast.ActorThreadPolicy parseActorThreadAnnotation(List<Ast.Annotation> annotations) {
+        Ast.ActorThreadPolicy result = null;
+        for (Ast.Annotation annotation : annotations) {
+            if (!annotation.name().equals("ActorThreads")) {
+                throw error(previous(), "@" + annotation.name()
+                        + " on actor declarations is not a supported actor annotation");
+            }
+            if (result != null) throw error(previous(), "duplicate @ActorThreads annotation");
+            int min = 1, max = 1;
+            for (Ast.TypeRef arg : annotation.arguments()) {
+                if (!arg.isNamedParameter()) {
+                    throw error(previous(), "@ActorThreads requires named min/max integer parameters");
+                }
+                String key = arg.namedParameterName();
+                if (!key.equals("min") && !key.equals("max")) {
+                    throw error(previous(), "unknown @ActorThreads parameter '" + key + "'");
+                }
+                Ast.TypeRef value = arg.arguments().getFirst();
+                if (!value.isIntLiteral()) {
+                    throw error(previous(), "@ActorThreads " + key + " must be a constant positive integer");
+                }
+                long number;
+                try { number = value.intLiteralValue(); }
+                catch (NumberFormatException invalid) {
+                    throw error(previous(), "@ActorThreads integer literal out of range");
+                }
+                if (number < 1 || number > Integer.MAX_VALUE) {
+                    throw error(previous(), "@ActorThreads " + key + " out of range");
+                }
+                if (key.equals("min")) min = (int) number;
+                else max = (int) number;
+            }
+            result = newActorThreadPolicy(min, max);
+        }
+        return result;
+    }
+
+    private int parsePositiveActorThreadInteger() {
+        Token literal = consume(INT, "actor threads require positive integer literals");
+        try {
+            int value = Integer.parseInt(literal.lexeme().replace("_", ""));
+            if (value < 1) throw error(literal, "actor thread limits must be positive");
+            return value;
+        } catch (NumberFormatException invalid) {
+            throw error(literal, "actor thread integer is out of range");
+        }
+    }
+
+    private Ast.ActorThreadPolicy newActorThreadPolicy(int min, int max) {
+        if (min < 1 || max < min) {
+            throw error(previous(), "actor threads require 1 <= min <= max");
+        }
+        return new Ast.ActorThreadPolicy(min, max);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
