@@ -1905,7 +1905,10 @@ parenthesis grouping, function argument lists, and tuple construction.
 Tuple values are **positional**, with fixed arity and position-sensitive types;
 use `tuple(x, y)` and `Tuple[T1, T2]` (also `tuple[T1, T2]`).
 Parentheses group one expression; `(x, y)` is not a tuple literal.
-Tuple match patterns may still use `on (x, y)`: they are patterns, not values.
+Tuple match patterns canonically use `on tuple(x, y)`. The legacy
+`on (x, y)` pattern remains accepted for compatibility (it is a
+**pattern**, not a value literal). Explicit `on tuple(x)` supports singleton
+tuple matches. Bare `on (x)` is not a singleton-tuple pattern.
 
 Structural records/structs are **field-named**. `infer struct{x: 1}`
 produces a permanently readonly inferred record. `struct{x: int}{x: 1}`

@@ -125,6 +125,44 @@ final class LambdaReturnAndTupleSyntaxTest {
     }
 
     @Test
+    void explicitTuplePatternsSupportSingletonAndMultiElementTuples() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc classify(): int {
+                  match tuple(7) over
+                    on tuple(7) -> { return 1; }
+                    on _ -> { return 0; }
+                  end
+                }
+                fnc classifyPair(): int {
+                  match tuple(7, 9) over
+                    on tuple(7, 9) -> { return 1; }
+                    on _ -> { return 0; }
+                  end
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc invalid(): int {
+                  match tuple(7) over
+                    on tuple() -> { return 1; }
+                    on _ -> { return 0; }
+                  end
+                }
+                """));
+    }
+
+    @Test
+    void exactUserFacingColonBindingSyntaxHasScalarResult() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                type Mapper = (int) => int;
+                fnc f(): void {
+                  const mapper: Mapper = |int n| -> (n * 3) as int;
+                  const row = tuple(3) as tuple[int];
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void unrelatedOrErasedTupleCastsFailClosed() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc f(): void {

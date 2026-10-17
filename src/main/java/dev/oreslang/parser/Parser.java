@@ -2939,6 +2939,19 @@ public final class Parser {
             return new Ast.TypePattern(target, binding);
         }
 
+        if (isContextualIdentifier("tuple") && checkNext(LPAREN)) {
+            advance();
+            consume(LPAREN, "expected '(' after tuple pattern keyword");
+            List<Ast.Pattern> elements = new ArrayList<>();
+            if (!check(RPAREN)) {
+                do elements.add(parsePattern()); while (match(COMMA));
+            }
+            consume(RPAREN, "expected ')' after explicit tuple pattern");
+            if (elements.isEmpty()) {
+                throw error(previous(), "tuple patterns require at least one element");
+            }
+            return new Ast.TuplePattern(elements);
+        }
         if (match(LPAREN)) {
             List<Ast.Pattern> elements = new ArrayList<>();
             elements.add(parsePattern());

@@ -661,8 +661,8 @@ public final class Ast {
     public record TuplePattern(List<Pattern> elements) implements Pattern {
         public TuplePattern {
             elements = List.copyOf(elements);
-            if (elements.size() < 2) {
-                throw new IllegalArgumentException("tuple patterns require at least two elements");
+            if (elements.isEmpty()) {
+                throw new IllegalArgumentException("tuple patterns require at least one element");
             }
         }
     }
