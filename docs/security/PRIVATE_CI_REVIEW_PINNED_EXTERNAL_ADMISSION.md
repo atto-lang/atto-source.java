@@ -1,14 +1,27 @@
 # Review-pinned external admission for private CI
 
-Status: **authorization-only candidate fallback; no export is implemented or authorized.**
+Status: **review-pinned dispatcher candidate implemented; no export is authorized.**
 
-The read-only verifier is implemented and hardened. The source-writing
-dispatcher described below is **not yet implemented or wired to
-`scripts/publish-private-ci-source.py`**. That existing publisher enforces the
-older protected-main model and must not be treated as the review-pinned
-dispatcher. A valid review-pinned receipt therefore remains non-executable
-authorization evidence until a separately reviewed dispatcher integrates the
-receipt with the existing fail-closed Git-object writer.
+The read-only verifier and a separate write-side dispatcher are now implemented.
+`scripts/dispatch-review-pinned-private-ci.py` consumes a schema-v2 receipt only
+as an untrusted cache: it recomputes the full live receipt from current PRs,
+exact-head reviews, reviewer permissions, incident state/comments, exact policy
+files, source commit/tree metadata, destination identity, carrier workflow and
+carrier reviewer-policy bytes before every Git-object write. It then reuses the
+existing bounded source collector/tree helpers without invoking the legacy
+protected-main `publish()` authorization path.
+
+The dispatcher itself must execute from the exact reviewed publisher PR head,
+the source checkout must be clean at the exact approved source commit/tree, the
+destination branch must be absent, and the payload commit has exactly one parent:
+the reviewed carrier head. The payload root changes only
+`private-oreslang-source/**` and `.private-ci-provenance.json`. There is no
+`workflow_dispatch`; creating the new immutable branch is the only trigger.
+
+This implementation is still **candidate code only**. The checked-in dispatcher
+suite has not executed on a source-repository runner yet, the independent
+reviewer policy is disabled, all four authorization PRs are draft, and incident
+#22 remains open. Therefore no private-source export is authorized.
 
 This mode exists because the current GitHub plan does not provide branch
 protection or repository rulesets for these private repositories. It does not
@@ -170,9 +183,9 @@ without weakening any exact-head checks.
 
 This fallback becomes usable only after:
 
-- a reviewed dispatcher is implemented that consumes the canonical receipt
-  and invokes the bounded Git-object writer without falling back to mutable or
-  protected-branch assumptions;
+- the implemented review-pinned dispatcher and its adversarial suite execute
+  successfully on a trusted source-repository runner and receive independent
+  exact-head review;
 - all four exact-head independent approvals exist;
 - incident #22 has the explicit independent resume comment;
 - the carrier workflow/security changes themselves have been independently
