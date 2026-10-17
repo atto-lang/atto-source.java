@@ -103,7 +103,7 @@ destination mutations and bounded worker termination. Total JUnit
 cases now 8; full production tests remain unexecuted.
 
 **Local exact-file evidence:** the hardened Java adapter has
-Git blob `5929a80a3007ba47f4b2814ea37b4fd0533df6c1`;
+Git blob `7a99f969b9d4f823c21e6a11961c3e3d83adca70`;
 the byte-identical local file compiled under JDK 21 against explicitly
 synthetic contract doubles. The existing control-flow harness passed
 1,800 assertions; a new local 1,000-round concurrent admission/rejection/
@@ -116,3 +116,24 @@ its approved destination allowlist is empty and the P0 public-carrier
 incident remains open. No further private cross-org Git-tree transfer
 has been performed. Re-run Maven/JUnit and exact-head CI only with
 authorized source-org or independently approved runners.
+
+## Follow-up: executor inline-then-throw error precedence
+
+The bridge now defers **inline executor refusal** until `execute()`
+returns: a hostile executor that calls `worker.run()` synchronously
+and then throws `RejectedExecutionException` must expose that original
+scheduler exception, not a misleading inline dispatch error. This
+never permits DOP loan acquisition or buffer writes. Inline dispatch
+with normal return still fails closed. Added a ninth production
+JUnit regression.
+
+**Local reproducible evidence:** the exact Java adapter blob
+`7a99f969b9d4f823c21e6a11961c3e3d83adca70` compiled with JDK 21
+against *synthetic* OresFuture/HostBuffer/graph contracts and passed
+1,800 baseline checks plus 10,000 concurrency/inline-then-throw
+checks over 1,000 seeded iterations. The test-double harness does not
+certify real HostBuffer loans, JUnit/Maven or GraalVM.
+
+Current source-org Actions remain failed before runner assignment,
+with zero executed tests or retained artifacts. No external private
+source mirror is authorized or created.
