@@ -2306,10 +2306,29 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
+            long timeoutNanos = unit.toNanos(timeout);
+            long deadline = System.nanoTime() + Math.max(0L, timeoutNanos);
+
             ActorCell<?> cell = actors.get(id);
-            if (cell == null) return true;
-            cell.awaitFinalized(unit.toNanos(timeout));
-            return cell.finalized();
+            if (cell != null) {
+                cell.awaitFinalized(timeoutNanos);
+                if (cell.finalized()) return true;
+            }
+
+            // Registry removal is not itself a finalization barrier: out-of-lock
+            // teardown may intentionally unregister the cell before terminal
+            // observer publication. Fall back to the non-cancellable done
+            // observer rather than fabricating successful termination.
+            long remaining = deadline - System.nanoTime();
+            if (remaining < 0L) remaining = 0L;
+            try {
+                doneFuture.get(remaining, TimeUnit.NANOSECONDS);
+                return true;
+            } catch (ExecutionException | CancellationException terminalFailure) {
+                return true; // exceptional/cancelled DONE is still termination
+            } catch (TimeoutException notYetPublished) {
+                return false;
+            }
         }
 
         public void send(M message) {
