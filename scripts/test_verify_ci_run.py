@@ -256,12 +256,19 @@ class RunContract(unittest.TestCase):
         self.assertEqual({key: module.REPOS[key] for key in expected}, expected)
         self.assertEqual(len(set(expected.values())), 3)
 
-    def test_rx_repository_cannot_claim_java_proof(self):
+    def test_rx_repository_denies_foreign_numeric_identity(self):
         for backend in ("rx_pull", "rx_callbacks", "rx_channels"):
             with self.subTest(backend=backend):
                 self.setUp()
+                rx_repo, _ = module.REPOS[backend]
+                next_prefix = "repos/" + rx_repo
+                self.values = {key.replace(self.prefix, next_prefix): copy.deepcopy(value)
+                               for key, value in self.values.items()}
                 self.backend = backend
-                self.rejected()
+                self.prefix = next_prefix
+                # Old Java ID deliberately remains in the RX metadata.
+                with self.assertRaisesRegex(module.Denied, "identity/visibility"):
+                    self.validate()
 
     def test_wrong_repo_id(self):
         self.values[self.prefix]["id"] += 1
