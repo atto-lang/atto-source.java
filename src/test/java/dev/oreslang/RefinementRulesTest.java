@@ -66,6 +66,8 @@ final class RefinementRulesTest {
                 a.name(), a.target(), a.refinement(), b.name(), b.target(), b.refinement()));
         assertFalse(RefinementRules.entails(
                 a.name(), a.target(), a.refinement(), plain.name(), plain.target(), plain.refinement()));
+        assertFalse(RefinementRules.entails(
+                a.name(), a.target(), a.refinement(), a.name(), a.target(), a.refinement()));
         assertTrue(RefinementRules.entails(
                 "app.A", a.target(), a.refinement(), "app.A", a.target(), a.refinement()));
         assertThrows(IllegalArgumentException.class,
