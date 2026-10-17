@@ -6258,6 +6258,13 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
             if (expr instanceof Ast.AssignExpr assignment) {
+                if (assignment.target() instanceof Ast.IndexExpr target) {
+                    Object receiver = eval(target.receiver(), env);
+                    List<Object> keys = new ArrayList<>(target.arity());
+                    for (Ast.Expr index : target.indices()) keys.add(eval(index, env));
+                    Object value = eval(assignment.value(), env);
+                    return indexSetValue(receiver, keys, value, env);
+                }
                 Object value = eval(assignment.value(), env);
                 if (assignment.target() instanceof Ast.NameExpr target) {
                     env.assign(target.name(), value);
@@ -6309,12 +6316,6 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     throw new IllegalArgumentException(
                             "member assignment requires a mutable class or explicit struct");
-                }
-                if (assignment.target() instanceof Ast.IndexExpr target) {
-                    Object receiver = eval(target.receiver(), env);
-                    List<Object> keys = new ArrayList<>(target.arity());
-                    for (Ast.Expr index : target.indices()) keys.add(eval(index, env));
-                    return indexSetValue(receiver, keys, value, env);
                 }
                 throw new IllegalArgumentException("unsupported assignment target");
             }
