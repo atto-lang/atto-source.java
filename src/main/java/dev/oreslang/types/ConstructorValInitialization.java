@@ -79,7 +79,7 @@ public final class ConstructorValInitialization {
                 // RHS executes before the slot is written: reject reads of a missing slot.
                 scan(assignment.value(), state, required, klass);
                 if (!state.may.add(field)) {
-                    throw error(klass, field, "may be initialized more than once");
+                    throw error(klass, field, "is immutable; may be initialized more than once");
                 }
                 state.must.add(field);
             } else {
@@ -150,7 +150,8 @@ public final class ConstructorValInitialization {
     private static void requireComplete(State state, Set<String> required, String klass) {
         for (String field : required) {
             if (!state.must.contains(field)) {
-                throw error(klass, field, "is not definitely initialized on every normal constructor exit");
+                throw new IllegalArgumentException("constructor for " + klass
+                        + " did not initialize field '" + field + "' on every normal path");
             }
         }
     }
