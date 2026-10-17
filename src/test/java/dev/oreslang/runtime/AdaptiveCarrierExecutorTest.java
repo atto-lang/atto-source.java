@@ -101,9 +101,37 @@ class AdaptiveCarrierExecutorTest {
         }
     }
 
+    @Test void zeroMinimumStartsColdAndGrowsForRunnableWork() throws Exception {
+        var created = new AtomicInteger();
+        var factory = (java.util.concurrent.ThreadFactory) task ->
+                Thread.ofPlatform().daemon(true)
+                        .name("adaptive-cold-" + created.incrementAndGet())
+                        .unstarted(task);
+        try (var workers = new AdaptiveCarrierExecutor(0, 3, 8, factory)) {
+            assertEquals(0, workers.minimumCarriers());
+            assertEquals(0, workers.getPoolSize());
+            assertEquals(0, workers.prestartAllCoreThreads(),
+                    "zero-resident pool must not create a bootstrap carrier");
+
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var task = workers.submit(() -> {
+                entered.countDown();
+                assertTrue(release.await(5, TimeUnit.SECONDS));
+                return null;
+            });
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertEquals(1, workers.getPoolSize(),
+                    "first runnable turn creates exactly one carrier");
+            release.countDown();
+            task.get(5, TimeUnit.SECONDS);
+        }
+    }
+
     @Test void rejectsInvalidLimits() {
         var factory = (java.util.concurrent.ThreadFactory) task -> new Thread(task);
-        assertThrows(IllegalArgumentException.class, () -> new AdaptiveCarrierExecutor(0, 5, 1, factory));
+        assertThrows(IllegalArgumentException.class, () -> new AdaptiveCarrierExecutor(-1, 5, 1, factory));
+        assertThrows(IllegalArgumentException.class, () -> new AdaptiveCarrierExecutor(0, 0, 1, factory));
         assertThrows(IllegalArgumentException.class, () -> new AdaptiveCarrierExecutor(3, 2, 1, factory));
         assertThrows(IllegalArgumentException.class, () -> new AdaptiveCarrierExecutor(1, 257, 1, factory));
         assertThrows(IllegalArgumentException.class, () -> new AdaptiveCarrierExecutor(1, 3, 0, factory));
