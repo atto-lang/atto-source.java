@@ -28,6 +28,7 @@ MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
+CARRIER_VALIDATION_WORKFLOW = "private-oreslang-java-validation.yml"
 # This policy must be approved on the protected source main branch, not merely
 # present in the caller's current PR/worktree.
 SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
@@ -219,6 +220,27 @@ def gh_api(route, method="GET", payload=None):
         # Never echo stderr: a client can include private file bytes in errors.
         raise Denied("authenticated GitHub API request failed")
     return strict_github_api_json(p.stdout)
+
+
+def gh_api_no_content(route, method="POST", payload=None):
+    """Authenticated GitHub API call that must succeed with an empty body.
+
+    Workflow-dispatch returns HTTP 204. Keep this separate from security
+    decision reads so an empty response can never be mistaken for JSON.
+    """
+    argv = ["gh", "api", "--method", method, route,
+            "--header", "Accept: application/vnd.github+json"]
+    if payload is not None:
+        argv.extend(["--input", "-"])
+    env = verified_child_env()
+    try:
+        p = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
+                           capture_output=True, text=True, env=env, timeout=45, check=False)
+    except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
+        raise Denied("authenticated GitHub API action unavailable") from exc
+    if p.returncode != 0 or p.stdout.strip():
+        # Never echo response text: dispatch failures can include sensitive refs.
+        raise Denied("authenticated GitHub API action failed")
 
 
 def checked_repo(repository, expected_id=None):
@@ -996,8 +1018,16 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                     for key in ("users", "teams", "apps")):
                 raise Denied("private carrier main allows review bypass")
         require_protected_carrier_codeowners(repository)
-        return current_sha
-    base_sha = require_pinned_carrier_main()
+        workflow = gh_api(
+            f"repos/{repository}/contents/.github/workflows/"
+            + CARRIER_VALIDATION_WORKFLOW + "?ref=main")
+        if (workflow.get("type") != "file"
+                or type(workflow.get("size")) is not int
+                or not 1 <= workflow["size"] <= 128 * 1024):
+            raise Denied("private carrier validation workflow is unavailable")
+        workflow_sha = valid_sha(workflow.get("sha"))
+        return current_sha, workflow_sha
+    base_sha, carrier_workflow_sha = require_pinned_carrier_main()
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = nested_sha(base_commit, "tree")
     if base_commit.get("sha") != base_sha:
@@ -1025,7 +1055,9 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         current = checked_repo(repository, expected_id=approved_destination_id)
         if current.get("default_branch") != "main":
             raise Denied("private carrier default branch changed during transfer")
-        require_pinned_carrier_main(base_sha)
+        current_base, current_workflow = require_pinned_carrier_main(base_sha)
+        if current_base != base_sha or current_workflow != carrier_workflow_sha:
+            raise Denied("private carrier validation workflow changed during transfer")
 
     isolated_sha = None
     for batch in batches:
@@ -1119,6 +1151,23 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     # Readback may take time: check protected-main approval, destination
     # repository identity and private visibility again before success.
     authorize_write()
+
+    # Never execute workflow policy from the source-bearing CI branch itself.
+    # Dispatch the independently protected carrier-main workflow and make it
+    # checkout the immutable destination commit by SHA. A later branch rewrite
+    # therefore cannot change either the workflow definition or tested source.
+    dispatch_route = (
+        f"repos/{repository}/actions/workflows/"
+        + CARRIER_VALIDATION_WORKFLOW + "/dispatches")
+    gh_api_no_content(dispatch_route, payload={
+        "ref": "main",
+        "inputs": {
+            "carrier_commit_sha": commit_sha,
+            "carrier_base_sha": base_sha,
+            "source_commit_sha": expected_source_commit,
+            "source_tree_sha": expected_source_tree,
+        },
+    })
     return commit_sha, len(files)
 
 
