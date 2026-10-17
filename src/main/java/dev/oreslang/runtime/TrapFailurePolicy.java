@@ -92,7 +92,12 @@ public final class TrapFailurePolicy {
                 || failure instanceof NoSuchElementException
                 || failure instanceof NegativeArraySizeException
                 || failure instanceof ArrayStoreException) {
-            return true;
+            // These JDK exception types are guest errors only when they were
+            // raised by the Oreslang runtime itself. A host/FFI exception with
+            // the same Java class must be explicitly mapped by its adapter.
+            StackTraceElement[] trace = failure.getStackTrace();
+            return trace.length > 0
+                    && trace[0].getClassName().startsWith("dev.oreslang.");
         }
         // The interpreter's cast failure is a dedicated guest runtime type.
         return failure.getClass().getName()
