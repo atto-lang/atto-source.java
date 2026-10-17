@@ -351,7 +351,7 @@ public final class ActorRuntime implements AutoCloseable {
             char ch = raw.charAt(i);
             out.append(ch >= 0x20 && ch <= 0x7e ? ch : '?');
         }
-        if (out.isEmpty()) return "unknown";
+        if (out.length() == 0) return "unknown";
         return out.toString();
     }
 
@@ -7714,7 +7714,9 @@ public final class ActorRuntime implements AutoCloseable {
                                 rootSupervisionControl.retireGracefully(
                                         controlNotice.actor(),
                                         controlNotice.generation());
-                                consecutiveSupervisorControls++;
+                                if (consecutiveSupervisorControls < MAX_SUPERVISOR_CONTROL_BURST) {
+                                    consecutiveSupervisorControls++;
+                                }
                             }
                         }
                         processed++;
