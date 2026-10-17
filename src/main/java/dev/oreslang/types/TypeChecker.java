@@ -1804,16 +1804,6 @@ public final class TypeChecker {
             Type actual = ret.value() == null
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
-            if (expectedReturn == Primitive.COMPLEX && actual == Primitive.INT
-                    && ret.value() != null) {
-                Long literal = constantTupleIndex(ret.value());
-                if (literal != null
-                        && (literal < -9_007_199_254_740_992L
-                            || literal > 9_007_199_254_740_992L)) {
-                    throw new IllegalArgumentException(
-                            "integer literal outside exact binary64 range requires explicit conversion before complex return");
-                }
-            }
             requireReadonlyCapabilityPreserved(actual, expectedReturn, "return value");
             requireAssignable(actual, expectedReturn, "return value");
             return;
@@ -4172,6 +4162,15 @@ public final class TypeChecker {
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
+        if (expected == Primitive.COMPLEX) {
+            Long literal = constantTupleIndex(expr);
+            if (literal != null
+                    && (literal < -9_007_199_254_740_992L
+                        || literal > 9_007_199_254_740_992L)) {
+                throw new IllegalArgumentException(
+                        "integer literal outside exact binary64 range requires explicit conversion before complex coercion");
+            }
+        }
         if (expr instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
             return fn;
