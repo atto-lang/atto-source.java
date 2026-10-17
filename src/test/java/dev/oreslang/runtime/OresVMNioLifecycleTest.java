@@ -211,6 +211,9 @@ final class OresVMNioLifecycleTest {
                 assertTrue(vm.nioReadiness().awaitStopped(3, TimeUnit.SECONDS));
             } finally {
                 release.countDown();
+                // Even on a failed assertion, stop the source of terminal
+                // NIO deliveries before retiring actor carrier admission.
+                vm.nioReadiness().close();
                 first.source().close(); first.sink().close();
                 second.source().close(); second.sink().close();
                 third.source().close(); third.sink().close();
