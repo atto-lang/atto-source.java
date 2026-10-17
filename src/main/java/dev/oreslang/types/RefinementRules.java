@@ -24,8 +24,9 @@ public final class RefinementRules {
                 throw new IllegalArgumentException("unsatisfiable refinement interval");
             if (max >= min && max - min >= 0 && max - min < excluded.size() && max - min < 100_000) {
                 boolean member = false;
-                for (long i = min; i <= max; i++) {
+                for (long i = min; ; i++) {
                     if (!excluded.contains(i)) { member = true; break; }
+                    if (i == max) break; // avoid wraparound at Long.MAX_VALUE
                 }
                 if (!member) throw new IllegalArgumentException("unsatisfiable refinement exclusions");
             }
@@ -136,12 +137,18 @@ public final class RefinementRules {
         return normalize(base, spec.bounds()).contains(value);
     }
 
-    public record NominalValue(String qualifiedTypeName, Object underlying) {
-        public NominalValue {
+    /** Non-public constructor: no unchecked nominal wrapper manufacture. */
+    public static final class NominalValue {
+        private final String qualifiedTypeName;
+        private final Object underlying;
+        private NominalValue(String qualifiedTypeName, Object underlying) {
             if (qualifiedTypeName == null || qualifiedTypeName.isBlank())
                 throw new IllegalArgumentException("nominal identity is required");
-            Objects.requireNonNull(underlying);
+            this.qualifiedTypeName = qualifiedTypeName;
+            this.underlying = Objects.requireNonNull(underlying);
         }
+        public String qualifiedTypeName() { return qualifiedTypeName; }
+        public Object intoInner() { return underlying; }
     }
     public record CheckedValue(boolean ok, Object value, String error) { }
 
