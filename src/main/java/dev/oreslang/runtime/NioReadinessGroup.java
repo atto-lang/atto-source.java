@@ -582,7 +582,7 @@ public final class NioReadinessGroup implements AutoCloseable {
                 try {
                     target = startReactorLocked();
                     consecutiveCommandPressure = 0;
-                } catch (IOException | RuntimeException failure) {
+                } catch (IOException | RuntimeException | Error failure) {
                     // Admission may still use existing reactors; throttle
                     // retries rather than allocating a selector on every
                     // subsequent request during FD/thread exhaustion.
