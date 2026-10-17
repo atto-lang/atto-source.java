@@ -188,6 +188,7 @@ public final class VmNioTcpListener implements AutoCloseable {
     public final class Connection implements AutoCloseable {
         private final SocketChannel channel;
         private boolean terminated;
+        private int activeOperations;
         // Only terminal-exported operations are retained; each removes itself
         // on settlement. Guarded by the listener gate with 'terminated'.
         private final Set<OresFuture<?>> outstanding = new HashSet<>();
@@ -220,8 +221,18 @@ public final class VmNioTcpListener implements AutoCloseable {
                 if (admittedOperations >= maxPending)
                     return new RejectedExecutionException("TCP operation capacity exhausted");
                 ++admittedOperations;
+                ++activeOperations;
                 return null;
             }
+        }
+
+        private void releaseSocketOperation() {
+            synchronized (gate) {
+                if (activeOperations <= 0)
+                    throw new IllegalStateException("TCP socket operation reservation underflow");
+                --activeOperations;
+            }
+            releaseOperation();
         }
 
         public OresFuture<List<Long>> readBytesAsync(int maximum) {
@@ -231,7 +242,7 @@ public final class VmNioTcpListener implements AutoCloseable {
             try {
                 raw = readiness.readAsync(channel, maximum);
             } catch (RuntimeException | Error failure) {
-                releaseOperation();
+                releaseSocketOperation();
                 throw failure;
             }
             OresFuture<List<Long>> exposed = new OresFuture<>(() -> raw.cancel(false), () -> { });
@@ -254,7 +265,7 @@ public final class VmNioTcpListener implements AutoCloseable {
                     if (mappingFailure instanceof VirtualMachineError fatal) throw fatal;
                     if (mappingFailure instanceof ThreadDeath fatal) throw fatal;
                 } finally {
-                    releaseOperation();
+                    releaseSocketOperation();
                 }
             });
             return track(exposed);
@@ -279,10 +290,10 @@ public final class VmNioTcpListener implements AutoCloseable {
             try {
                 written = readiness.writeAsync(channel, snapshot);
             } catch (RuntimeException | Error failure) {
-                releaseOperation();
+                releaseSocketOperation();
                 throw failure;
             }
-            written.whenCompleteRuntime((value, failure) -> releaseOperation());
+            written.whenCompleteRuntime((value, failure) -> releaseSocketOperation());
             return track(written);
         }
 
