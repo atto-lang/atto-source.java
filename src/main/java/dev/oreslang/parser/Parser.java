@@ -1638,6 +1638,10 @@ public final class Parser {
     }
 
     private Ast.TypeRef parseMetaValue() {
+        if (match(MINUS)) {
+            Token literal = consume(INT, "expected integer after '-' in annotation bound");
+            return Ast.TypeRef.intLiteral("-" + literal.lexeme());
+        }
         if (match(INT)) return Ast.TypeRef.intLiteral(previous().lexeme());
         if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
         if (match(TRUE)) return Ast.TypeRef.boolLiteral(true);
