@@ -8542,12 +8542,21 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
 
-            // Mutable identity-bearing values have identity equality by default.
-            // The same-object case returned true above; distinct maps/objects
-            // must never acquire host structural equality by accident.
-            if (left instanceof OresObject || right instanceof OresObject
-                    || left instanceof OresMap || right instanceof OresMap) {
+            // Objects remain identity-bearing. Maps, however, are value
+            // containers: compare canonical stable keys and guest values
+            // recursively rather than inheriting JVM object identity.
+            if (left instanceof OresObject || right instanceof OresObject) {
                 return false;
+            }
+            if (left instanceof OresMap || right instanceof OresMap) {
+                if (!(left instanceof OresMap a) || !(right instanceof OresMap b)) return false;
+                if (a.entries.size() != b.entries.size()) return false;
+                if (comparisonPairSeen(left, right, seen)) return true;
+                for (Map.Entry<OresMap.StableKey, Object> entry : a.entries.entrySet()) {
+                    if (!b.entries.containsKey(entry.getKey())) return false;
+                    if (!valueEquals(entry.getValue(), b.entries.get(entry.getKey()), seen)) return false;
+                }
+                return true;
             }
 
             if (left instanceof ActorRuntime.ActorId || right instanceof ActorRuntime.ActorId) {
