@@ -57,6 +57,12 @@ final class GroupPhysicalTurnPermitsTest {
         assertEquals(GroupPhysicalTurnPermits.Admission.QUEUED, gate.tryRequest(actor(3)).status());
         assertEquals(GroupPhysicalTurnPermits.Admission.QUEUE_FULL, gate.tryRequest(actor(4)).status());
         assertFalse(gate.tryRelease(new GroupPhysicalTurnPermits.Grant(actor(1), one.ticket() + 100)).released());
+        assertFalse(gate.tryRelease(new GroupPhysicalTurnPermits.Grant(actor(1), one.ticket())).released(),
+                "a numerically identical but forged token must not free a credit");
+        var anotherGroup = new GroupPhysicalTurnPermits(1, 0);
+        var foreign = anotherGroup.tryRequest(actor(1)).grant();
+        assertEquals(one.ticket(), foreign.ticket(), "control: numeric tickets overlap");
+        assertFalse(gate.tryRelease(foreign).released(), "cross-group token replay");
         assertEquals(2, gate.trySnapshot().active());
         var next = gate.tryRelease(two).successor();
         assertEquals(actor(3), next.actor());

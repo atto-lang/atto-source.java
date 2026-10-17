@@ -93,7 +93,10 @@ final class GroupPhysicalTurnPermits {
         if (!lock.tryLock()) return new Release(false, true, null);
         try {
             Grant held = active.get(grant.actor());
-            if (held == null || held.ticket() != grant.ticket())
+            // Tokens are capabilities, not matching numeric tuples. Never
+            // let a forged copy or another group's identical ticket release
+            // this group's physical carrier credit.
+            if (held != grant)
                 return new Release(false, false, null);
             active.remove(grant.actor());
             if (!sealed && !queue.isEmpty()) {
