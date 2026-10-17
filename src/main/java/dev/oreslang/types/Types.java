@@ -269,12 +269,18 @@ public final class Types {
 
     private static boolean numericWidening(Type from, Type to) {
         if (from == Primitive.INT && (to == Primitive.FLOAT || to == Primitive.DECIMAL || to == Primitive.COMPLEX)) return true;
-        if ((from == Primitive.FLOAT || from == Primitive.DECIMAL) && to == Primitive.COMPLEX) return true;
+        if (from == Primitive.FLOAT && to == Primitive.COMPLEX) return true;
+        // Decimal is an exact decimal carrier. It must never implicitly narrow
+        // into binary64 complex arithmetic.
         return false;
     }
 
     public static Type numericJoin(Type left, Type right) {
         if (!isNumeric(left) || !isNumeric(right)) return Unknown.INSTANCE;
+        if ((left == Primitive.COMPLEX && right == Primitive.DECIMAL)
+                || (left == Primitive.DECIMAL && right == Primitive.COMPLEX)) {
+            return Unknown.INSTANCE;
+        }
         if (left == Primitive.COMPLEX || right == Primitive.COMPLEX) return Primitive.COMPLEX;
         if (left == Primitive.DECIMAL || right == Primitive.DECIMAL) return Primitive.DECIMAL;
         if (left == Primitive.FLOAT || right == Primitive.FLOAT) return Primitive.FLOAT;
