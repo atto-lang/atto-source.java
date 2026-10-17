@@ -10,6 +10,7 @@ import java.util.EnumSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -51,6 +52,7 @@ public final class RuntimePermissions {
     }
 
     private static final String ARG_PREFIX = "--ores-permission-";
+    private static final String BUILD_ARG_PREFIX = "--ores-build-permission-";
 
     private record Rule(
             boolean allowAll,
@@ -64,10 +66,33 @@ public final class RuntimePermissions {
     }
 
     private final EnumMap<Permission, Rule> rules;
+    // Optional immutable authority ceiling. Local rules are the runtime grant;
+    // every authorization must satisfy both layers.
+    private final RuntimePermissions ceiling;
 
     private RuntimePermissions(EnumMap<Permission, Rule> rules) {
+        this(rules, null);
+    }
+
+    private RuntimePermissions(
+            EnumMap<Permission, Rule> rules,
+            RuntimePermissions ceiling) {
         this.rules = new EnumMap<>(Permission.class);
         this.rules.putAll(rules);
+        this.ceiling = ceiling;
+    }
+
+    /**
+     * Return this runtime grant attenuated by a second permission set.
+     * Chaining preserves every prior ceiling; no withAllowed()/allowAll()
+     * operation can widen the inherited authority.
+     */
+    public RuntimePermissions boundedBy(RuntimePermissions buildCeiling) {
+        Objects.requireNonNull(buildCeiling, "buildCeiling");
+        RuntimePermissions combined = ceiling == null
+                ? buildCeiling
+                : buildCeiling.boundedBy(ceiling);
+        return new RuntimePermissions(rules, combined);
     }
 
     /** Deny every privileged host-I/O operation. */
@@ -91,18 +116,36 @@ public final class RuntimePermissions {
     public static RuntimePermissions fromApplicationArguments(
             String[] args,
             IsolatePolicy isolatePolicy) {
+        return fromApplicationArguments(args, isolatePolicy, ARG_PREFIX, true);
+    }
+
+    /**
+     * Parse the host-supplied immutable build ceiling. Older embedders without
+     * this layer retain their coarse isolate capabilities as the ceiling.
+     */
+    public static RuntimePermissions buildCeilingFromApplicationArguments(
+            String[] args,
+            IsolatePolicy isolatePolicy) {
+        return fromApplicationArguments(args, isolatePolicy, BUILD_ARG_PREFIX, true);
+    }
+
+    private static RuntimePermissions fromApplicationArguments(
+            String[] args,
+            IsolatePolicy isolatePolicy,
+            String prefix,
+            boolean legacyCapabilityFallback) {
         Builder builder = new Builder();
         boolean sawPermissionArgument = false;
         boolean sawExplicitMarker = false;
         Set<String> seenSerializedRules = new LinkedHashSet<>();
 
         for (String arg : args) {
-            if (!arg.startsWith(ARG_PREFIX) || arg.startsWith("--ores-permission-check=")) continue;
+            if (arg == null) throw new IllegalArgumentException("null Oreslang permission argument");
+            if (!arg.startsWith(prefix)
+                    || (prefix.equals(ARG_PREFIX)
+                        && arg.startsWith("--ores-permission-check="))) continue;
             sawPermissionArgument = true;
-            // Even deny-all must stay explicit. Duplicated markers and exact
-            // rule arguments are ambiguous/corrupted serialized policies,
-            // not an opportunity to silently reinterpret caller authority.
-            if (arg.equals(ARG_PREFIX + "explicit=true")) {
+            if (arg.equals(prefix + "explicit=true")) {
                 if (sawExplicitMarker)
                     throw new IllegalArgumentException("duplicate Oreslang permission marker");
                 sawExplicitMarker = true;
@@ -110,7 +153,7 @@ public final class RuntimePermissions {
             }
             if (!seenSerializedRules.add(arg))
                 throw new IllegalArgumentException("duplicate Oreslang permission argument");
-            String remainder = arg.substring(ARG_PREFIX.length());
+            String remainder = arg.substring(prefix.length());
             int equals = remainder.indexOf('=');
             if (equals <= 0) {
                 throw new IllegalArgumentException("invalid Oreslang permission argument: " + arg);
@@ -134,21 +177,15 @@ public final class RuntimePermissions {
             else builder.allow(permission, value);
         }
 
-        if (!sawPermissionArgument)
-            return fromCapabilities(isolatePolicy.capabilities());
-
-        // Serialized scoped authority must carry the marker emitted by
-        // applicationArguments(). A partial/truncated policy must not
-        // silently become an authorization grant. The marker is a format
-        // invariant, NOT a cryptographic proof of the host's authority.
+        if (!sawPermissionArgument) {
+            return legacyCapabilityFallback
+                    ? fromCapabilities(isolatePolicy.capabilities())
+                    : denyAll();
+        }
         if (!sawExplicitMarker)
             throw new IllegalArgumentException("missing explicit Oreslang permission marker");
 
         RuntimePermissions explicit = builder.build();
-        // Scoped rules ATTENUATE isolate authority; they must never add a
-        // coarse capability omitted by the host's isolation boundary. The
-        // OresContext.requirePermission path also checks the coarse policy,
-        // but standalone embedders must not receive an over-granting object.
         for (Permission permission : Permission.values()) {
             if (explicit.grantsAnything(permission)
                     && !isolatePolicy.capabilities().contains(permission.capability())) {
@@ -160,24 +197,32 @@ public final class RuntimePermissions {
     }
 
     public String[] applicationArguments() {
+        return applicationArguments(ARG_PREFIX);
+    }
+
+    public String[] buildCeilingApplicationArguments() {
+        return applicationArguments(BUILD_ARG_PREFIX);
+    }
+
+    private String[] applicationArguments(String prefix) {
         ArrayList<String> arguments = new ArrayList<>();
-        // Distinguish an explicitly empty (deny-all) permission policy from
-        // the legacy embedding API that omitted a permission policy entirely.
-        arguments.add(ARG_PREFIX + "explicit=true");
+        // Distinguish explicitly empty (deny-all) authority from omitted
+        // legacy policy. The ceiling is serialized separately from the grant.
+        arguments.add(prefix + "explicit=true");
         for (Permission permission : Permission.values()) {
             Rule rule = rules.get(permission);
             if (rule == null) continue;
             if (rule.allowAll()) {
-                arguments.add(ARG_PREFIX + permission.cliName() + "-allow=*");
+                arguments.add(prefix + permission.cliName() + "-allow=*");
             } else {
                 rule.allowed().stream().sorted().forEach(scope ->
-                        arguments.add(ARG_PREFIX + permission.cliName() + "-allow=" + scope));
+                        arguments.add(prefix + permission.cliName() + "-allow=" + scope));
             }
             if (rule.denyAll()) {
-                arguments.add(ARG_PREFIX + permission.cliName() + "-deny=*");
+                arguments.add(prefix + permission.cliName() + "-deny=*");
             } else {
                 rule.denied().stream().sorted().forEach(scope ->
-                        arguments.add(ARG_PREFIX + permission.cliName() + "-deny=" + scope));
+                        arguments.add(prefix + permission.cliName() + "-deny=" + scope));
             }
         }
         return arguments.toArray(String[]::new);
@@ -240,6 +285,7 @@ public final class RuntimePermissions {
     }
 
     public boolean allows(Permission permission, String resource) {
+        if (ceiling != null && !ceiling.allows(permission, resource)) return false;
         Rule rule = rules.get(permission);
         if (rule == null || !safeScope(resource)) return false;
 
@@ -290,6 +336,8 @@ public final class RuntimePermissions {
      * same numeric-address boundary.
      */
     public boolean allowsNetworkConnection(String requested, String selectedIpv4) {
+        if (ceiling != null && !ceiling.allowsNetworkConnection(requested, selectedIpv4))
+            return false;
         if (!allows(Permission.NET, requested)) return false;
         NetworkScope target = parseNetworkScope(requested, false);
         NetworkScope resolved = parseNetworkScope(selectedIpv4, false);
@@ -326,6 +374,8 @@ public final class RuntimePermissions {
      * local interface rather than one authorized address.
      */
     public boolean allowsEphemeralNetworkBind(String requestedHost, String selectedIpv4) {
+        if (ceiling != null && !ceiling.allowsEphemeralNetworkBind(requestedHost, selectedIpv4))
+            return false;
         if (!allows(Permission.NET, requestedHost)) return false;
         NetworkScope requested = parseNetworkScope(requestedHost, false);
         NetworkScope selected = parseNetworkScope(selectedIpv4, false);
@@ -346,6 +396,7 @@ public final class RuntimePermissions {
     }
 
     public boolean grantsAnything(Permission permission) {
+        if (ceiling != null && !ceiling.grantsAnything(permission)) return false;
         Rule rule = rules.get(permission);
         return rule != null && !rule.denyAll() && (rule.allowAll() || !rule.allowed().isEmpty());
     }
@@ -597,12 +648,14 @@ public final class RuntimePermissions {
     public static final class Builder {
         private final EnumMap<Permission, MutableRule> rules =
                 new EnumMap<>(Permission.class);
+        private RuntimePermissions ceiling;
 
         public Builder() { }
 
         public Builder(RuntimePermissions source) {
             source.rules.forEach((permission, rule) ->
                     rules.put(permission, new MutableRule(rule)));
+            ceiling = source.ceiling;
         }
 
         public Builder allowAll(Permission permission) {
@@ -711,7 +764,7 @@ public final class RuntimePermissions {
         public RuntimePermissions build() {
             EnumMap<Permission, Rule> frozen = new EnumMap<>(Permission.class);
             rules.forEach((permission, rule) -> frozen.put(permission, rule.freeze()));
-            return new RuntimePermissions(frozen);
+            return new RuntimePermissions(frozen, ceiling);
         }
     }
 }
