@@ -34,6 +34,14 @@ CARRIER_VALIDATION_WORKFLOW = "private-oreslang-java-validation.yml"
 SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
 SOURCE_METADATA_ROUTE = "repos/" + SOURCE_REPOSITORY
+# GitHub incident closure is NECESSARY but not SUFFICIENT for source export.
+# Even a closed incident never replaces protected-branch review, exact
+# snapshot approval, destination privacy, or immutable-tree verification.
+SOURCE_INCIDENT_REPOSITORY = "ores-truffle-oreslang/oreslang-platform-conformance"
+SOURCE_INCIDENT_NUMBER = 22
+SOURCE_INCIDENT_ROUTE = (
+    "repos/" + SOURCE_INCIDENT_REPOSITORY + "/issues/" + str(SOURCE_INCIDENT_NUMBER)
+)
 PROTECTED_BRANCH_ROUTE = SOURCE_METADATA_ROUTE + "/branches/main"
 PROTECTED_POLICY_ROUTE = (
     SOURCE_METADATA_ROUTE + "/contents/"
@@ -490,6 +498,29 @@ def require_protected_carrier_codeowners(repository):
         raise Denied("private carrier security CODEOWNER lacks write permission")
 
 
+def require_incident_containment():
+    """Require an independently observable completed incident before export.
+
+    Closing the issue alone does not authorize a transfer; protected-main,
+    CODEOWNER, exact-snapshot, private-carrier and runtime gates remain
+    mandatory. Recheck on each Git write to reject incident reopening.
+    """
+    issue = gh_api(SOURCE_INCIDENT_ROUTE)
+    canonical_url = "https://api.github.com/" + SOURCE_INCIDENT_ROUTE
+    canonical_repository_url = (
+        "https://api.github.com/repos/" + SOURCE_INCIDENT_REPOSITORY
+    )
+    if (type(issue.get("number")) is not int
+            or issue["number"] != SOURCE_INCIDENT_NUMBER
+            or issue.get("url") != canonical_url
+            or issue.get("repository_url") != canonical_repository_url
+            or issue.get("state") != "closed"
+            or issue.get("state_reason") != "completed"
+            or not isinstance(issue.get("closed_at"), str)
+            or not issue["closed_at"].endswith("Z")):
+        raise Denied("private-source exposure incident #22 remains unresolved")
+
+
 def require_protected_main_policy(approved_policy):
     """Require a known private source and protected main, not just its blob.
 
@@ -543,6 +574,9 @@ def require_protected_main_policy(approved_policy):
                 not isinstance(allowances.get(key, []), list)
                 or allowances.get(key) for key in ("users", "teams", "apps")):
             raise Denied("branch review bypass allowances are not permitted")
+    # This is a necessary additional gate, never sufficient authorization.
+    # require_protected_main_policy runs before source reads AND each Git write.
+    require_incident_containment()
     require_protected_source_codeowners()
     metadata = gh_api(PROTECTED_POLICY_ROUTE)
     if (metadata.get("type") != "file"
@@ -972,8 +1006,8 @@ def require_private_ci_api_budget(file_count, estimated_writes=None):
         raise Denied("GitHub core API budget unavailable")
     # Each write revalidates both source and carrier CODEOWNERS, the pinned
     # carrier validation-workflow blob, and all immutable approvals. Reserve
-    # one additional core read per write for that protected workflow pin.
-    required = 25 * estimated_writes + 160
+    # two extra reads per write: pinned carrier workflow AND incident state.
+    required = 26 * estimated_writes + 160
     if remaining < required:
         raise Denied("insufficient GitHub core API budget for safe private CI export")
 
