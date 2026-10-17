@@ -150,6 +150,14 @@ public final class ConstructorValInitialization {
                 && select.mode() == Ast.WaitMode.BLOCKING) {
             throw constructionSuspension(klass, "blocking select");
         }
+        if (stmt instanceof Ast.DeferStmt defer) {
+            // Defer executes before the constructor can complete, so its
+            // cleanup remains inside the construction region even when the
+            // deferred expression is represented by a lambda.
+            requireComplete(state, required, klass);
+            scanDeferred(defer.expression(), state, required, klass);
+            return state;
+        }
 
         // Until the frontend has a sound CFG for loop backedges, exceptional
         // completion, deferred cleanup and nonblocking detached arms, all
@@ -189,27 +197,65 @@ public final class ConstructorValInitialization {
 
     /**
      * Check reads and reject hidden writes through expression-valued control
-     * flow, nested statements, or callbacks. All Ast syntax nodes are records;
-     * traverse their record components so new expression forms are scanned
-     * instead of silently bypassing the checker.
+     * flow, nested statements, or callbacks. The `immediate` bit distinguishes
+     * code executing as part of this constructor activation from a callable
+     * body that is merely being created. Deferred callable bodies are still
+     * inspected for construction-sensitive field access, but an await inside
+     * such a body is not itself a suspension of the constructor.
      */
     private static void scan(
             Object node,
             ConstructorFlowState state,
             Set<String> required,
             String klass) {
+        scan(node, state, required, klass, true);
+    }
+
+    private static void scan(
+            Object node,
+            ConstructorFlowState state,
+            Set<String> required,
+            String klass,
+            boolean immediate) {
         if (node == null) return;
 
-        if (node instanceof Ast.AwaitExpr) {
-            throw constructionSuspension(klass, "await");
+        if (node instanceof Ast.LambdaExpr lambda) {
+            scanLambdaBody(lambda, state, required, klass, false);
+            return;
         }
-        if (node instanceof Ast.ChannelOpExpr channel
-                && channel.mode() == Ast.WaitMode.BLOCKING) {
-            throw constructionSuspension(klass, "blocking channel operation");
+        if (node instanceof Ast.AwaitExpr awaited) {
+            if (immediate) throw constructionSuspension(klass, "await");
+            scan(awaited.expression(), state, required, klass, false);
+            return;
         }
-        if (node instanceof Ast.DynamicSelectExpr select
+        if (node instanceof Ast.ChannelOpExpr channel) {
+            if (immediate && channel.mode() == Ast.WaitMode.BLOCKING) {
+                throw constructionSuspension(klass, "blocking channel operation");
+            }
+            scan(channel.channel(), state, required, klass, immediate);
+            scan(channel.value(), state, required, klass, immediate);
+            // Nonblocking write callbacks are registered for later execution;
+            // their bodies are not part of this constructor activation.
+            scan(channel.callbackBody(), state, required, klass, false);
+            return;
+        }
+        if (node instanceof Ast.DynamicSelectExpr select) {
+            if (immediate && select.mode() == Ast.WaitMode.BLOCKING) {
+                throw constructionSuspension(klass, "blocking dynamic select");
+            }
+            scan(select.cases(), state, required, klass, immediate);
+            return;
+        }
+        if (node instanceof Ast.ForOfStmt loop && immediate && loop.asyncIteration()) {
+            throw constructionSuspension(klass, "async iteration");
+        }
+        if (node instanceof Ast.ForOfDestructureStmt loop && immediate && loop.asyncIteration()) {
+            throw constructionSuspension(klass, "async iteration");
+        }
+        if (node instanceof Ast.SelectStmt select
+                && immediate
                 && select.mode() == Ast.WaitMode.BLOCKING) {
-            throw constructionSuspension(klass, "blocking dynamic select");
+            throw constructionSuspension(klass, "blocking select");
         }
         if (node instanceof Ast.AssignExpr assignment) {
             String field = blankValTarget(assignment.target(), required);
@@ -226,7 +272,7 @@ public final class ConstructorValInitialization {
             throw error(klass, member.member(), "is read before constructor initialization");
         }
         if (node instanceof Iterable<?> values) {
-            for (Object value : values) scan(value, state, required, klass);
+            for (Object value : values) scan(value, state, required, klass, immediate);
             return;
         }
         if (!(node instanceof Record record)) {
@@ -239,12 +285,37 @@ public final class ConstructorValInitialization {
         if (node.getClass().getEnclosingClass() != Ast.class) return;
         for (RecordComponent component : record.getClass().getRecordComponents()) {
             try {
-                scan(component.getAccessor().invoke(record), state, required, klass);
+                scan(component.getAccessor().invoke(record), state, required, klass, immediate);
             } catch (ReflectiveOperationException e) {
                 throw new IllegalStateException(
                         "unable to inspect constructor syntax "
                                 + record.getClass().getSimpleName(), e);
             }
+        }
+    }
+
+    private static void scanLambdaBody(
+            Ast.LambdaExpr lambda,
+            ConstructorFlowState state,
+            Set<String> required,
+            String klass,
+            boolean immediate) {
+        if (lambda.expressionBody() != null) {
+            scan(lambda.expressionBody(), state, required, klass, immediate);
+        } else {
+            scan(lambda.blockBody(), state, required, klass, immediate);
+        }
+    }
+
+    private static void scanDeferred(
+            Ast.Expr expression,
+            ConstructorFlowState state,
+            Set<String> required,
+            String klass) {
+        if (expression instanceof Ast.LambdaExpr lambda) {
+            scanLambdaBody(lambda, state, required, klass, true);
+        } else {
+            scan(expression, state, required, klass, true);
         }
     }
 
