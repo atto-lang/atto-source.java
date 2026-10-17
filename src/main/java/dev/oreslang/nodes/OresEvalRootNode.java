@@ -1219,7 +1219,7 @@ public final class OresEvalRootNode extends RootNode {
                                 : "method " + method.name();
                 Object shaped = shapeReturnedValue(returnType, value, label);
                 return function != null && function.trapped()
-                        ? trapSuccess(shaped) : shaped;
+                        ? trapSuccess(function, shaped) : shaped;
             }
         }
 
@@ -4971,15 +4971,22 @@ public final class OresEvalRootNode extends RootNode {
                 return callFunctionBodyUnchecked(fn, args);
             }
             try {
-                return trapSuccess(callFunctionBodyUnchecked(fn, args));
+                return trapSuccess(fn, callFunctionBodyUnchecked(fn, args));
             } catch (RuntimeException failure) {
                 if (!isTrappableFailure(failure)) throw failure;
                 return trapFailure(failure);
             }
         }
 
-        private TrapResultValue trapSuccess(Object value) {
-            return new TrapResultValue(true, value, null, value == null);
+        private TrapResultValue trapSuccess(Ast.FunctionDecl function, Object value) {
+            boolean voidSuccess = function.kind() == Ast.CallableKind.ROUTINE
+                    || function.returnType() == null
+                    || function.returnType().name().equals("void");
+            if (voidSuccess != (value == null)) {
+                throw new OresPanic(
+                        "trap success invariant violated for callable '" + function.name() + "'");
+            }
+            return new TrapResultValue(true, value, null, voidSuccess);
         }
 
         private TrapResultValue trapFailure(Throwable failure) {
@@ -9877,6 +9884,12 @@ public final class OresEvalRootNode extends RootNode {
     private record TrapResultValue(
             boolean success, Object value, TrapErrorValue error, boolean voidSuccess)
             implements OresMutex.SharedState {
+        private TrapResultValue {
+            boolean valid = success
+                    ? error == null && (voidSuccess ? value == null : value != null)
+                    : value == null && !voidSuccess && error != null;
+            if (!valid) throw new OresPanic("invalid compiler-owned TrapResult state");
+        }
         private List<?> successBundle() {
             if (!success) return List.of();
             return voidSuccess ? List.of() : List.of(value);
