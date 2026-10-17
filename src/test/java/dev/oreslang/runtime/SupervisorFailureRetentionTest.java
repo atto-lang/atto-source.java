@@ -26,8 +26,12 @@ final class SupervisorFailureRetentionTest {
         var supervisor = ActorRuntime.SupervisorId.create();
         var group = ActorRuntime.ActorGroupId.create();
         var lane = new SupervisorFailureControl(supervisor, group, Runnable::run, 4);
-        lane.publish(notice(supervisor, group));
-        lane.publish(notice(supervisor, group));
+        var first = notice(supervisor, group);
+        var second = notice(supervisor, group);
+        lane.reserve(first.actorId());
+        lane.reserve(second.actorId());
+        lane.publish(first);
+        lane.publish(second);
         assertEquals(2, lane.queued());
         assertThrows(IllegalStateException.class,
                 () -> lane.install(n -> fail("inline executor must never dispatch trusted CONTROL")),
