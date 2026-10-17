@@ -298,6 +298,86 @@ final class ConstructorDelegationTest {
                 """));
     }
 
+    @Test
+    void returnsExitOneDelegationFrameWithoutSkippingItsCaller() throws Exception {
+        assertEquals("42|1", run("""
+                define class Counter as
+                  val int value;
+                  let int outerRan: 0;
+                  constructor(self) {
+                    constructor(40);
+                    self.outerRan = 1;
+                    return;
+                  }
+                  constructor(self, int n) {
+                    constructor(n, 2);
+                    return;
+                  }
+                  constructor(self, int n, int offset) {
+                    self.value = n + offset;
+                    return;
+                  }
+                  pub get(): int { return self.value; }
+                  pub ran(): int { return self.outerRan; }
+                end
+                pub routine main(): void {
+                  val c = new Counter();
+                  stdio.stdout.write(c.get());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(c.ran());
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void publicEntrypointMayDelegateToPrivateSibling() throws Exception {
+        assertEquals("42", run("""
+                pub define class Counter as
+                  val int value;
+                  pub constructor(self) {
+                    constructor(42);
+                  }
+                  private constructor(self, int value) {
+                    self.value = value;
+                  }
+                  pub get(): int { return self.value; }
+                end
+                pub routine main(): void {
+                  val c = new Counter();
+                  stdio.stdout.write(c.get());
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void terminalConstructorMustInitializeBeforeReturningToDelegator() {
+        expectReject("""
+                define class Broken as
+                  val int value;
+                  constructor(self) {
+                    constructor(10);
+                    self.value = 11;
+                  }
+                  constructor(self, int n) {
+                    return;
+                  }
+                end
+                """, "did not initialize field 'value'");
+    }
+
+    @Test
+    void nestedCycleWithThreeDistinctAritiesIsRejected() {
+        expectReject("""
+                define class Broken as
+                  constructor(self) { constructor(1); }
+                  constructor(self, int n) { constructor(n, 2); }
+                  constructor(self, int n, int m) { constructor(); }
+                end
+                """, "delegation cycle");
+    }
+
     private static void expectReject(String source, String fragment) {
         Ast.Program program = Parser.parse(source);
         RuntimeException failure = assertThrows(
