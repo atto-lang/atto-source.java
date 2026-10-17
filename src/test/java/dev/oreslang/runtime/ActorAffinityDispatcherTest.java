@@ -76,6 +76,50 @@ final class ActorAffinityDispatcherTest {
     }
 
     @Test
+    void busyHostSubscriberCannotHideAnIdleAlreadyWarmLane() throws Exception {
+        var executors = new java.util.ArrayList<java.util.concurrent.ThreadPoolExecutor>();
+        var dispatcher = new ActorAffinityDispatcher(3, 32, new int[0], index -> {
+            var pool = new java.util.concurrent.ThreadPoolExecutor(
+                    1, 1, 60L, TimeUnit.SECONDS,
+                    new java.util.concurrent.ArrayBlockingQueue<Runnable>(32),
+                    task -> new Thread(task, "test-warm-host-lane-" + index));
+            executors.add(pool);
+            return pool;
+        });
+        var blocked = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        try {
+            dispatcher.executeOnLane(0, () -> {
+                blocked.countDown();
+                try { release.await(3, TimeUnit.SECONDS); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(blocked.await(2, TimeUnit.SECONDS));
+            var warm = new CountDownLatch(1);
+            dispatcher.executeOnLane(2, warm::countDown);
+            assertTrue(warm.await(2, TimeUnit.SECONDS));
+
+            var notification = new CountDownLatch(1);
+            var chosen = new java.util.concurrent.atomic.AtomicReference<String>();
+            dispatcher.executeHostOnWarmLane(() -> {
+                chosen.set(Thread.currentThread().getName());
+                notification.countDown();
+            });
+            assertTrue(notification.await(2, TimeUnit.SECONDS),
+                    "idle warm lane must not wait behind a blocked subscriber");
+            assertEquals("test-warm-host-lane-2", chosen.get());
+            assertEquals(0, executors.get(1).getPoolSize(),
+                    "host notifications must not bootstrap a third native lane");
+        } finally {
+            release.countDown();
+            dispatcher.shutdownNow();
+            assertTrue(dispatcher.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void firstColdNioNotificationDeterministicallyStartsLaneZero() throws Exception {
         var executors = new java.util.ArrayList<java.util.concurrent.ThreadPoolExecutor>();
         var dispatcher = new ActorAffinityDispatcher(3, 16, new int[0], index -> {
