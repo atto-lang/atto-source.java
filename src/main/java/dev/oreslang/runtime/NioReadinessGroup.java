@@ -15,6 +15,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -41,6 +42,12 @@ public final class NioReadinessGroup implements AutoCloseable {
     private final ArrayList<Reactor> reactors = new ArrayList<>();
     private final IdentityHashMap<SelectableChannel, Watch> ownership = new IdentityHashMap<>();
     private final AtomicInteger pending = new AtomicInteger();
+    // Includes selector watches that have retired but whose terminal Future
+    // callbacks are still queued or running. Protects against unbounded
+    // notification buildup when host subscribers run slowly.
+    private final AtomicInteger notificationReservations = new AtomicInteger();
+    private final AtomicInteger liveReactors = new AtomicInteger();
+    private final ThreadPoolExecutor completionExecutor;
     // A transient registration burst must not spin up extra selector threads.
     // Counter is protected by the lifecycle monitor.
     private int consecutiveCommandPressure;
@@ -56,15 +63,34 @@ public final class NioReadinessGroup implements AutoCloseable {
         this.maxReactors = maxReactors;
         this.maxPending = maxPending;
         this.commandCapacity = commandCapacity;
-        Reactor first = new Reactor(0);
-        synchronized (lifecycle) {
-            reactors.add(first);
-            try { first.start(); }
-            catch (RuntimeException | Error problem) {
-                reactors.clear();
-                first.abortUnstarted();
-                throw problem;
+        // Dedicated completion workers are not selector or actor carriers.
+        // Thread creation happens at bootstrap, never on an I/O-ready path.
+        completionExecutor = new ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(maxPending), new java.util.concurrent.ThreadFactory() {
+                    private final AtomicInteger ids = new AtomicInteger();
+                    @Override public Thread newThread(Runnable work) {
+                        return Thread.ofPlatform().daemon(true)
+                                .name("ores-nio-completion-" + ids.getAndIncrement()).unstarted(work);
+                    }
+                });
+        try {
+            if (completionExecutor.prestartAllCoreThreads() != 2)
+                throw new RejectedExecutionException("NIO completion worker bootstrap failed");
+            Reactor first = new Reactor(0);
+            synchronized (lifecycle) {
+                reactors.add(first);
+                liveReactors.incrementAndGet();
+                try { first.start(); }
+                catch (RuntimeException | Error problem) {
+                    liveReactors.decrementAndGet();
+                    reactors.clear();
+                    first.abortUnstarted();
+                    throw problem;
+                }
             }
+        } catch (IOException | RuntimeException | Error failure) {
+            completionExecutor.shutdownNow();
+            throw failure;
         }
     }
 
@@ -72,6 +98,7 @@ public final class NioReadinessGroup implements AutoCloseable {
         synchronized (lifecycle) { return reactors.size(); }
     }
     public int pendingCount() { return pending.get(); }
+    int pendingNotifications() { return notificationReservations.get(); }
 
     /** Register one kernel-readiness notification without blocking a carrier. */
     public OresFuture<Integer> watch(SelectableChannel channel, int interestOps) {
@@ -84,8 +111,9 @@ public final class NioReadinessGroup implements AutoCloseable {
                     new IllegalStateException("NIO manager or channel closed"));
             if (ownership.containsKey(channel)) return OresFuture.failed(
                     new IllegalStateException("channel already has a pending readiness watch"));
-            if (pending.get() >= maxPending) return OresFuture.failed(
-                    new RejectedExecutionException("NIO readiness admission exhausted"));
+            if (pending.get() >= maxPending || notificationReservations.get() >= maxPending)
+                return OresFuture.failed(new RejectedExecutionException(
+                        "NIO readiness or completion notification capacity exhausted"));
             Reactor target = leastBacklogged();
             // Reactor scaling is about *runnable registration work*, not the
             // number of pending network reads. The active kernel wait is idle.
@@ -98,7 +126,12 @@ public final class NioReadinessGroup implements AutoCloseable {
                 Reactor extra = null;
                 try {
                     extra = new Reactor(reactors.size());
-                    extra.start();
+                    liveReactors.incrementAndGet();
+                    try { extra.start(); }
+                    catch (RuntimeException | Error startFailure) {
+                        liveReactors.decrementAndGet();
+                        throw startFailure;
+                    }
                     reactors.add(extra);
                     target = extra;
                     consecutiveCommandPressure = 0;
@@ -121,10 +154,12 @@ public final class NioReadinessGroup implements AutoCloseable {
             Watch watch = new Watch(channel, interestOps, target);
             ownership.put(channel, watch);
             pending.incrementAndGet();
+            notificationReservations.incrementAndGet();
             target.admitted.put(watch, Boolean.TRUE);
             if (!target.commands.offer(watch)) {
                 target.admitted.remove(watch);
                 pending.decrementAndGet();
+                notificationReservations.decrementAndGet();
                 ownership.remove(channel);
                 return OresFuture.failed(new RejectedExecutionException("NIO reactor command queue full"));
             }
@@ -195,11 +230,30 @@ public final class NioReadinessGroup implements AutoCloseable {
                 if (ownership.get(watch.channel) == watch) ownership.remove(watch.channel);
                 pending.decrementAndGet();
             }
-            // OresFuture notifications may enqueue a guest continuation, but
-            // may never execute guest code in this reactor call stack.
-            if (!watch.future.isCancelled()) {
-                if (error != null) watch.future.failFromRuntime(error);
-                else watch.future.completeFromRuntime(events);
+            // Runtime subscribers run synchronously in OresFuture.settle().
+            // Dispatch even host-only subscribers away from the selector:
+            // a slow or adversarial subscriber must not park NIO readiness.
+            // Every admitted watch owns one notification reservation until
+            // terminal callbacks finish, so this bounded queue cannot fill
+            // while normal lifecycle invariants are respected.
+            try {
+                completionExecutor.execute(() -> {
+                    try {
+                        if (!watch.future.isCancelled()) {
+                            if (error != null) watch.future.failFromRuntime(error);
+                            else watch.future.completeFromRuntime(events);
+                        }
+                    } finally {
+                        notificationReservations.decrementAndGet();
+                    }
+                });
+            } catch (RejectedExecutionException impossible) {
+                // A selector must NEVER call synchronous Future subscribers
+                // as a saturation fallback. Unexpected executor shutdown is
+                // an invariant failure, not permission to run guest callbacks.
+                notificationReservations.decrementAndGet();
+                throw new IllegalStateException(
+                        "NIO completion executor terminated before reactor quiescence", impossible);
             }
         }
 
@@ -260,6 +314,12 @@ public final class NioReadinessGroup implements AutoCloseable {
                 cancellations.clear();
                 try { selector.close(); } catch (IOException ignored) { }
                 stopped.countDown();
+                // Last selector closes admission and only then allows the
+                // dedicated completion workers to drain and terminate.
+                if (liveReactors.decrementAndGet() == 0) {
+                    synchronized (lifecycle) { closed = true; }
+                    completionExecutor.shutdown();
+                }
             }
         }
     }
@@ -281,6 +341,7 @@ public final class NioReadinessGroup implements AutoCloseable {
             long left = deadline - System.nanoTime();
             if (left <= 0 || !reactor.stopped.await(left, TimeUnit.NANOSECONDS)) return false;
         }
-        return true;
+        long left = deadline - System.nanoTime();
+        return left > 0 && completionExecutor.awaitTermination(left, TimeUnit.NANOSECONDS);
     }
 }
