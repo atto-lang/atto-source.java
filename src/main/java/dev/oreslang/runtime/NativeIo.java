@@ -36,9 +36,43 @@ public final class NativeIo {
         Path path = canonicalExistingPath(rawPath);
         context.requirePermission(RuntimePermissions.Permission.READ, path.toString(), "fs.read_text");
         try {
-            return Files.readString(path, StandardCharsets.UTF_8);
+            return readUtf8NoFollow(path);
         } catch (IOException failure) {
             throw ioFailure("read", path, failure);
+        }
+    }
+
+    /**
+     * Open by already-authorized canonical path without following a final
+     * symlink planted between permission admission and the actual file open.
+     * Package-private for direct symlink-race regression; no guest Java API.
+     *
+     * This narrows a leaf-component TOCTOU window. Parent-directory swaps
+     * still require descriptor-relative SecureDirectoryStream/openat handling
+     * on providers that support it; do not treat this as full path isolation.
+     */
+    static String readUtf8NoFollow(Path path) throws IOException {
+        try (var stream = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS);
+             var reader = new InputStreamReader(stream, StandardCharsets.UTF_8.newDecoder())) {
+            StringBuilder value = new StringBuilder();
+            char[] buffer = new char[8192];
+            int count;
+            while ((count = reader.read(buffer)) != -1) {
+                value.append(buffer, 0, count);
+            }
+            return value.toString();
+        }
+    }
+
+    static void writeUtf8NoFollow(Path path, String value, boolean append) throws IOException {
+        try (var stream = Files.newOutputStream(
+                    path,
+                    StandardOpenOption.CREATE,
+                    append ? StandardOpenOption.APPEND : StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE,
+                    LinkOption.NOFOLLOW_LINKS);
+             var writer = new OutputStreamWriter(stream, StandardCharsets.UTF_8.newEncoder())) {
+            writer.write(value);
         }
     }
 
@@ -162,13 +196,7 @@ public final class NativeIo {
         Path path = canonicalWritePath(rawPath);
         context.requirePermission(RuntimePermissions.Permission.WRITE, path.toString(), "fs.write_text");
         try {
-            Files.writeString(
-                    path,
-                    value,
-                    StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE);
+            writeUtf8NoFollow(path, value, false);
         } catch (IOException failure) {
             throw ioFailure("write", path, failure);
         }
@@ -178,13 +206,7 @@ public final class NativeIo {
         Path path = canonicalWritePath(rawPath);
         context.requirePermission(RuntimePermissions.Permission.WRITE, path.toString(), "fs.append_text");
         try {
-            Files.writeString(
-                    path,
-                    value,
-                    StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.APPEND,
-                    StandardOpenOption.WRITE);
+            writeUtf8NoFollow(path, value, true);
         } catch (IOException failure) {
             throw ioFailure("append", path, failure);
         }
