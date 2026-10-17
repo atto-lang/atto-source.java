@@ -4877,10 +4877,10 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void unregisterActor(ActorCell<?> cell) {
-        // Keep the actor discoverable until all runtime-owned teardown that is
-        // part of its termination contract has completed. ActorRef.awaitTermination()
-        // treats absence from this map as terminal, so removing the actor first
-        // would let observers race ahead of creator-owned ActorGroup cleanup.
+        // Keep registry/group cleanup ahead of terminal observer publication.
+        // ActorRef.awaitTermination() no longer treats registry absence alone
+        // as success; it falls back to DONE across this unregister-to-publish
+        // window, so out-of-lock teardown cannot fabricate termination.
         Set<ActorGroupId> affected = new java.util.HashSet<>();
         synchronized (groupMembershipLock) {
             Set<ActorGroupId> memberships = groupMemberships.get(cell.ref.id());
