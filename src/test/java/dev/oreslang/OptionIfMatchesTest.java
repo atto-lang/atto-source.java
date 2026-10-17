@@ -256,6 +256,27 @@ final class OptionIfMatchesTest {
     }
 
     @Test
+    void projectedCopyPayloadDoesNotConsumeMoveOnlyHolder() {
+        String program = """
+                define class Holder as
+                  final Option<int> slot: None;
+                end
+                fnc consumeInt(int value): void { return; }
+                fnc consumeHolder(Holder value): void { return; }
+
+                fnc good(Holder holder): void {
+                  if holder.slot matches Some(n) then
+                    consumeInt(n);
+                    consumeHolder(holder);
+                  fi
+                  return;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(program));
+        assertDoesNotThrow(() -> OwnershipChecker.check(typed));
+    }
+
+    @Test
     void ordinaryFooIsNotAutomaticallyOptional() {
         String program = FOO + """
                 fnc bad(Foo m2): int {
