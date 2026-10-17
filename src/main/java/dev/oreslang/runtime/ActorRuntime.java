@@ -740,6 +740,8 @@ public final class ActorRuntime implements AutoCloseable {
             long controlRejected,
             long lastContiguouslyProcessedSequence,
             long nextAdmissionSequence,
+            long accountedActorBytes,
+            long policyHeapLimitBytes,
             boolean sourceReceiveSuspended,
             boolean sealing,
             boolean stopped) { }
@@ -763,6 +765,9 @@ public final class ActorRuntime implements AutoCloseable {
                         cell.maxQueuedContinuations, cell.rejectedUserMessages,
                         cell.rejectedUrgentMessages, cell.rejectedContinuations,
                         cell.lastProcessedUserMessageSequence, cell.nextUserMessageSequence,
+                        (isPrivateKind(cell.kind) ? cell.memorySlice.usedBytes() : cell.sharedMailboxBytes.get())
+                                + cell.outputBytes.get(),
+                        cell.policy.maxHeapBytes(),
                         cell.sourceReceiveSuspended, cell.sealing, cell.stopped.get()));
             }
         }
@@ -5069,7 +5074,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (isPrivateKind(cell.kind)) {
             MemoryReservation reservation;
             try {
-                reservation = cell.memorySlice.reserveMailbox(prepared);
+                reservation = cell.reservePrivateMailbox(prepared);
             } catch (IllegalStateException exceeded) {
                 throw new IllegalStateException(
                         "private actor mailbox limit exceeded for " + ref.id() + ": " + exceeded.getMessage(),
@@ -7233,6 +7238,33 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private MemoryReservation reservePrivateMailbox(Object isolatedMessage) {
+            long bytes = estimateFrozenBytes(isolatedMessage);
+            synchronized (lifecycleLock) {
+                if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+                if (stopped.get()) throw terminated(ref);
+                long sliceUsed = memorySlice.usedBytes();
+                long outputUsed = outputBytes.get();
+                long combined;
+                try {
+                    combined = Math.addExact(Math.addExact(sliceUsed, outputUsed), bytes);
+                } catch (ArithmeticException overflow) {
+                    throw new IllegalStateException(
+                            "private actor combined memory accounting overflow for " + ref.id(),
+                            overflow);
+                }
+                if (combined > policy.maxHeapBytes()) {
+                    throw new IllegalStateException(
+                            "private actor combined memory limit exceeded for " + ref.id()
+                                    + ": mailboxRequested=" + bytes
+                                    + " privateUsed=" + sliceUsed
+                                    + " outputUsed=" + outputUsed
+                                    + " limit=" + policy.maxHeapBytes());
+                }
+                return memorySlice.reserveMailbox(isolatedMessage);
+            }
+        }
+
         private void reserveSharedMailbox(long bytes) {
             if (bytes < 0) throw new IllegalArgumentException("shared mailbox reservation cannot be negative");
             synchronized (lifecycleLock) {
@@ -7245,9 +7277,22 @@ public final class ActorRuntime implements AutoCloseable {
                 } catch (ArithmeticException overflow) {
                     throw new IllegalStateException("shared actor mailbox memory accounting overflow");
                 }
-                if (next > policy.maxHeapBytes()) {
-                    throw new IllegalStateException("shared actor mailbox memory limit exceeded for " + ref.id()
-                            + ": requested=" + bytes + " used=" + current + " limit=" + policy.maxHeapBytes());
+                long outputUsed = outputBytes.get();
+                long combined;
+                try {
+                    combined = Math.addExact(next, outputUsed);
+                } catch (ArithmeticException overflow) {
+                    throw new IllegalStateException(
+                            "shared actor combined memory accounting overflow for " + ref.id(),
+                            overflow);
+                }
+                if (combined > policy.maxHeapBytes()) {
+                    throw new IllegalStateException(
+                            "shared actor combined memory limit exceeded for " + ref.id()
+                                    + ": mailboxRequested=" + bytes
+                                    + " mailboxUsed=" + current
+                                    + " outputUsed=" + outputUsed
+                                    + " limit=" + policy.maxHeapBytes());
                 }
                 reserveSharedRuntimeBytes(bytes, "shared actor mailbox");
                 sharedMailboxBytes.set(next);
