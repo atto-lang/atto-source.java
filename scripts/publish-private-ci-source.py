@@ -61,6 +61,7 @@ REQUIRED_CODEOWNER_PATHS = (
     "/docs/security/PRIVATE_CI_POLICY_INTEGRATION_REVIEW_2026-10-16.md",
     "/docs/security/PRIVATE_EXACT_MAIN_VALIDATION.md",
     "/scripts/check-private-ci-destination.sh",
+    "/scripts/ci_private_mirror_preflight.py",
     "/scripts/publish-private-ci-source.py",
     "/scripts/run-in-private-ci-destination.sh",
     "/scripts/test-private-ci-destination.sh",
