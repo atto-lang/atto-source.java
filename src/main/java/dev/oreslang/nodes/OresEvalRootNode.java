@@ -9187,312 +9187,40 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private record Complex(double real, double imaginary) implements OresMutex.SharedState {
-        private static final int DIRECT_DD_COMPONENT_EXPONENT_SPREAD = 256;
-
         @Override public Iterable<?> sharedStateChildren(){return List.of();}
-        private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
-        private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
+
+        private Complex add(Complex o) {
+            var value = dev.oreslang.runtime.Complex128Math.add(
+                    real, imaginary, o.real, o.imaginary);
+            return new Complex(value.real(), value.imaginary());
+        }
+
+        private Complex sub(Complex o) {
+            var value = dev.oreslang.runtime.Complex128Math.subtract(
+                    real, imaginary, o.real, o.imaginary);
+            return new Complex(value.real(), value.imaginary());
+        }
+
         private Complex mul(Complex o) {
-            double ac = real * o.real, bd = imaginary * o.imaginary;
-            double ad = real * o.imaginary, bc = imaginary * o.real;
-            double realResult = ac - bd, imaginaryResult = ad + bc;
-            if (Double.isFinite(real) && Double.isFinite(imaginary)
-                    && Double.isFinite(o.real) && Double.isFinite(o.imaginary)
-                    && (Double.isNaN(realResult) || Double.isNaN(imaginaryResult)
-                        || (realResult == 0.0 && ac != 0.0 && bd != 0.0)
-                        || (imaginaryResult == 0.0 && ad != 0.0 && bc != 0.0)
-                        || (ac == 0.0 && real != 0.0 && o.real != 0.0)
-                        || (bd == 0.0 && imaginary != 0.0 && o.imaginary != 0.0)
-                        || (ad == 0.0 && real != 0.0 && o.imaginary != 0.0)
-                        || (bc == 0.0 && imaginary != 0.0 && o.real != 0.0))) {
-                // Exact binary64 inputs and exact products/sums recover components
-                // erased by intermediate underflow or overflow/cancellation.
-                // Only exceptional finite operands take this allocating path.
-                java.math.BigDecimal a = new java.math.BigDecimal(real);
-                java.math.BigDecimal b = new java.math.BigDecimal(imaginary);
-                java.math.BigDecimal c = new java.math.BigDecimal(o.real);
-                java.math.BigDecimal d = new java.math.BigDecimal(o.imaginary);
-                double exactReal = a.multiply(c).subtract(b.multiply(d)).doubleValue();
-                double exactImaginary = a.multiply(d).add(b.multiply(c)).doubleValue();
-                if (exactReal == 0.0 && realResult == 0.0) {
-                    exactReal = Math.copySign(0.0, realResult);
-                }
-                if (exactImaginary == 0.0 && imaginaryResult == 0.0) {
-                    exactImaginary = Math.copySign(0.0, imaginaryResult);
-                }
-                return new Complex(exactReal, exactImaginary);
-            }
-            return new Complex(realResult, imaginaryResult);
+            var value = dev.oreslang.runtime.Complex128Math.multiply(
+                    real, imaginary, o.real, o.imaginary);
+            return new Complex(value.real(), value.imaginary());
         }
 
         private Complex div(Complex o) {
-            double numeratorScale = Math.max(Math.abs(real), Math.abs(imaginary));
-            double divisorScale = Math.max(Math.abs(o.real), Math.abs(o.imaginary));
-            if (divisorScale > 0.0
-                    && Double.isFinite(real) && Double.isFinite(imaginary)
-                    && Double.isFinite(o.real) && Double.isFinite(o.imaginary)) {
-                if (numeratorScale == 0.0) return divExactFinite(o);
-
-                int numeratorExponent = Math.getExponent(numeratorScale);
-                int divisorExponent = Math.getExponent(divisorScale);
-                double a = Math.scalb(real, -numeratorExponent);
-                double b = Math.scalb(imaginary, -numeratorExponent);
-                double c = Math.scalb(o.real, -divisorExponent);
-                double d = Math.scalb(o.imaginary, -divisorExponent);
-
-                // Keep ordinary finite division allocation-free, but stop using
-                // a single rounded multiply/add/divide chain as the final answer.
-                // Wide component spreads are routed to exact rational rounding;
-                // balanced inputs use compensated double-double intermediates.
-                if ((real != 0.0 && a == 0.0)
-                        || (imaginary != 0.0 && b == 0.0)
-                        || (o.real != 0.0 && c == 0.0)
-                        || (o.imaginary != 0.0 && d == 0.0)
-                        || componentExponentSpread(real, imaginary)
-                            > DIRECT_DD_COMPONENT_EXPONENT_SPREAD
-                        || componentExponentSpread(o.real, o.imaginary)
-                            > DIRECT_DD_COMPONENT_EXPONENT_SPREAD) {
-                    return divExactFinite(o);
-                }
-
-                double realQuotient = divideScaledComponent(a, b, c, d, false);
-                double imaginaryQuotient = divideScaledComponent(a, b, c, d, true);
-                int exponent = numeratorExponent - divisorExponent;
-                double realResult = Math.scalb(realQuotient, exponent);
-                double imaginaryResult = Math.scalb(imaginaryQuotient, exponent);
-
-                // Subnormal final scaling and zero/overflow boundaries are
-                // rounding-sensitive enough to require the exact rational path.
-                if (realQuotient == 0.0 || imaginaryQuotient == 0.0
-                        || !Double.isFinite(realResult) || !Double.isFinite(imaginaryResult)
-                        || (realResult != 0.0 && Math.abs(realResult) < Double.MIN_NORMAL)
-                        || (imaginaryResult != 0.0
-                            && Math.abs(imaginaryResult) < Double.MIN_NORMAL)
-                        || (realResult == 0.0 && realQuotient != 0.0)
-                        || (imaginaryResult == 0.0 && imaginaryQuotient != 0.0)) {
-                    return divExactFinite(o);
-                }
-                return new Complex(realResult, imaginaryResult);
-            }
-
-            // Exceptional-value and zero-divisor policy remains intentionally
-            // separate from the finite reference contract.
-            double denominator = o.real * o.real + o.imaginary * o.imaginary;
-            return new Complex((real * o.real + imaginary * o.imaginary) / denominator,
-                    (imaginary * o.real - real * o.imaginary) / denominator);
-        }
-
-        private static int componentExponentSpread(double x, double y) {
-            if (x == 0.0 || y == 0.0) return 0;
-            return Math.abs(Math.getExponent(Math.abs(x)) - Math.getExponent(Math.abs(y)));
-        }
-
-        private static double twoSumError(double a, double b, double sum) {
-            double bVirtual = sum - a;
-            return (a - (sum - bVirtual)) + (b - bVirtual);
-        }
-
-        private static double quickTwoSumError(double a, double b, double sum) {
-            return b - (sum - a);
-        }
-
-        private static double divideScaledComponent(
-                double a, double b, double c, double d, boolean imaginaryComponent) {
-            double firstLeft = imaginaryComponent ? b : a;
-            double secondLeft = imaginaryComponent ? a : b;
-
-            double firstHigh = firstLeft * c;
-            double firstLow = Math.fma(firstLeft, c, -firstHigh);
-            double secondRawHigh = secondLeft * d;
-            double secondRawLow = Math.fma(secondLeft, d, -secondRawHigh);
-            double secondHigh = imaginaryComponent ? -secondRawHigh : secondRawHigh;
-            double secondLow = imaginaryComponent ? -secondRawLow : secondRawLow;
-
-            double numeratorSum = firstHigh + secondHigh;
-            double numeratorError = twoSumError(firstHigh, secondHigh, numeratorSum)
-                    + firstLow + secondLow;
-            double numeratorHigh = numeratorSum + numeratorError;
-            double numeratorLow =
-                    quickTwoSumError(numeratorSum, numeratorError, numeratorHigh);
-
-            double ccHigh = c * c;
-            double ccLow = Math.fma(c, c, -ccHigh);
-            double ddHigh = d * d;
-            double ddLow = Math.fma(d, d, -ddHigh);
-            double denominatorSum = ccHigh + ddHigh;
-            double denominatorError = twoSumError(ccHigh, ddHigh, denominatorSum)
-                    + ccLow + ddLow;
-            double denominatorHigh = denominatorSum + denominatorError;
-            double denominatorLow =
-                    quickTwoSumError(denominatorSum, denominatorError, denominatorHigh);
-
-            double q1 = numeratorHigh / denominatorHigh;
-            double productHigh = denominatorHigh * q1;
-            double productError = Math.fma(denominatorHigh, q1, -productHigh)
-                    + denominatorLow * q1;
-            double productSum = productHigh + productError;
-            double productLow = quickTwoSumError(productHigh, productError, productSum);
-            productHigh = productSum;
-
-            double residualSum = numeratorHigh - productHigh;
-            double residualError = twoSumError(numeratorHigh, -productHigh, residualSum)
-                    + numeratorLow - productLow;
-            double residualHigh = residualSum + residualError;
-            double residualLow =
-                    quickTwoSumError(residualSum, residualError, residualHigh);
-            double q2 = (residualHigh + residualLow) / denominatorHigh;
-
-            double quotientHigh = q1 + q2;
-            double quotientLow = twoSumError(q1, q2, quotientHigh);
-
-            double qhProductHigh = denominatorHigh * quotientHigh;
-            double qhProductError =
-                    Math.fma(denominatorHigh, quotientHigh, -qhProductHigh)
-                    + denominatorLow * quotientHigh;
-            double qhProductSum = qhProductHigh + qhProductError;
-            double qhProductLow =
-                    quickTwoSumError(qhProductHigh, qhProductError, qhProductSum);
-            qhProductHigh = qhProductSum;
-
-            residualSum = numeratorHigh - qhProductHigh;
-            residualError = twoSumError(numeratorHigh, -qhProductHigh, residualSum)
-                    + numeratorLow - qhProductLow;
-            residualHigh = residualSum + residualError;
-            residualLow = quickTwoSumError(residualSum, residualError, residualHigh);
-
-            double qlProductHigh = denominatorHigh * quotientLow;
-            double qlProductError =
-                    Math.fma(denominatorHigh, quotientLow, -qlProductHigh)
-                    + denominatorLow * quotientLow;
-            double qlProductSum = qlProductHigh + qlProductError;
-            double qlProductLow =
-                    quickTwoSumError(qlProductHigh, qlProductError, qlProductSum);
-            qlProductHigh = qlProductSum;
-
-            double secondResidualSum = residualHigh - qlProductHigh;
-            double secondResidualError =
-                    twoSumError(residualHigh, -qlProductHigh, secondResidualSum)
-                    + residualLow - qlProductLow;
-            double secondResidualHigh = secondResidualSum + secondResidualError;
-            double secondResidualLow = quickTwoSumError(
-                    secondResidualSum, secondResidualError, secondResidualHigh);
-            double q3 = (secondResidualHigh + secondResidualLow) / denominatorHigh;
-            return (quotientHigh + quotientLow) + q3;
-        }
-
-        private Complex divExactFinite(Complex o) {
-            // BigDecimal(double) captures the exact finite binary64 input.
-            // Products/sums stay exact. The quotient is then converted to an
-            // integer rational and rounded directly to nearest-even binary64,
-            // eliminating any fixed decimal MathContext precision assumption.
-            java.math.BigDecimal a = new java.math.BigDecimal(real);
-            java.math.BigDecimal b = new java.math.BigDecimal(imaginary);
-            java.math.BigDecimal c = new java.math.BigDecimal(o.real);
-            java.math.BigDecimal d = new java.math.BigDecimal(o.imaginary);
-            java.math.BigDecimal denominator = c.multiply(c).add(d.multiply(d));
-            java.math.BigDecimal realNumerator = a.multiply(c).add(b.multiply(d));
-            java.math.BigDecimal imaginaryNumerator = b.multiply(c).subtract(a.multiply(d));
-            return new Complex(
-                    roundExactRational(realNumerator, denominator),
-                    roundExactRational(imaginaryNumerator, denominator));
-        }
-
-        private static double roundExactRational(
-                java.math.BigDecimal numerator, java.math.BigDecimal denominator) {
-            if (denominator.signum() <= 0) {
-                throw new ArithmeticException(
-                        "complex finite divisor denominator must be positive");
-            }
-            int signum = numerator.signum();
-            if (signum == 0) return 0.0;
-
-            java.math.BigInteger n = numerator.unscaledValue().abs();
-            java.math.BigInteger d = denominator.unscaledValue();
-            int scaleDelta = denominator.scale() - numerator.scale();
-            if (scaleDelta > 0) {
-                n = n.multiply(java.math.BigInteger.TEN.pow(scaleDelta));
-            } else if (scaleDelta < 0) {
-                d = d.multiply(java.math.BigInteger.TEN.pow(-scaleDelta));
-            }
-            return roundRationalToBinary64(n, d, signum < 0);
-        }
-
-        private static double roundRationalToBinary64(
-                java.math.BigInteger numerator,
-                java.math.BigInteger denominator,
-                boolean negative) {
-            long signBit = negative ? Long.MIN_VALUE : 0L;
-            int exponent = floorBinaryExponent(numerator, denominator);
-
-            if (exponent < Double.MIN_EXPONENT) {
-                java.math.BigInteger significand =
-                        roundRatioToInteger(numerator.shiftLeft(1074), denominator);
-                if (significand.signum() == 0) {
-                    return Double.longBitsToDouble(signBit);
-                }
-                if (significand.bitLength() > 53) {
-                    throw new ArithmeticException("subnormal complex rounding overflow");
-                }
-                long raw = significand.longValueExact();
-                if (raw > (1L << 52)) {
-                    throw new ArithmeticException(
-                            "subnormal complex rounding escaped normal boundary");
-                }
-                return Double.longBitsToDouble(signBit | raw);
-            }
-
-            if (exponent > Double.MAX_EXPONENT) {
-                return Double.longBitsToDouble(signBit | 0x7ff0000000000000L);
-            }
-
-            int shift = 52 - exponent;
-            java.math.BigInteger significand = shift >= 0
-                    ? roundRatioToInteger(numerator.shiftLeft(shift), denominator)
-                    : roundRatioToInteger(numerator, denominator.shiftLeft(-shift));
-
-            if (significand.equals(java.math.BigInteger.ONE.shiftLeft(53))) {
-                significand = significand.shiftRight(1);
-                exponent++;
-                if (exponent > Double.MAX_EXPONENT) {
-                    return Double.longBitsToDouble(signBit | 0x7ff0000000000000L);
-                }
-            }
-
-            long rawSignificand = significand.longValueExact();
-            long fraction = rawSignificand - (1L << 52);
-            long exponentBits = ((long) exponent + 1023L) << 52;
-            return Double.longBitsToDouble(signBit | exponentBits | fraction);
-        }
-
-        private static int floorBinaryExponent(
-                java.math.BigInteger numerator, java.math.BigInteger denominator) {
-            int exponent = numerator.bitLength() - denominator.bitLength();
-            if (exponent >= 0) {
-                if (numerator.compareTo(denominator.shiftLeft(exponent)) < 0) {
-                    exponent--;
-                }
-            } else if (numerator.shiftLeft(-exponent).compareTo(denominator) < 0) {
-                exponent--;
-            }
-            return exponent;
-        }
-
-        private static java.math.BigInteger roundRatioToInteger(
-                java.math.BigInteger numerator, java.math.BigInteger denominator) {
-            java.math.BigInteger[] qr = numerator.divideAndRemainder(denominator);
-            int half = qr[1].shiftLeft(1).compareTo(denominator);
-            if (half > 0 || (half == 0 && qr[0].testBit(0))) {
-                return qr[0].add(java.math.BigInteger.ONE);
-            }
-            return qr[0];
+            var value = dev.oreslang.runtime.Complex128Math.divide(
+                    real, imaginary, o.real, o.imaginary);
+            return new Complex(value.real(), value.imaginary());
         }
 
         @Override public String toString() {
             String imaginaryText = Double.toString(imaginary);
             // Comparing with < 0 fails for IEEE negative zero.
-            return real + (imaginaryText.startsWith("-") ? "" : "+") + imaginaryText + "i";
+            return real + (imaginaryText.startsWith("-") ? "" : "+")
+                    + imaginaryText + "i";
         }
     }
+
     /**
      * Runtime provenance for infer struct. It behaves as a Map for existing
      * structural operations while remaining immutable across aliases and async
