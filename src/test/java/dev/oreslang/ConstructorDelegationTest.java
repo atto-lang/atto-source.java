@@ -196,6 +196,108 @@ final class ConstructorDelegationTest {
                 """));
     }
 
+    @Test
+    void terminalConstructorMustStillInitializeEveryBlankVal() {
+        expectReject("""
+                define class Broken as
+                  val int value;
+                  constructor() { constructor(1); }
+                  constructor(int n) { return; }
+                end
+                """, "did not initialize field");
+    }
+
+    @Test
+    void repeatedDelegationChainCannotHideMissingInitialization() {
+        expectReject("""
+                define class Broken as
+                  val int value;
+                  constructor() { constructor(1); }
+                  constructor(int n) { constructor(n, 2); }
+                  constructor(int n, int x) {
+                    if n > 10 then
+                      self.value = x;
+                    fi
+                  }
+                end
+                """, "did not initialize field");
+    }
+
+    @Test
+    void rejectsDelegationInsideLambdaAndDeferredCleanup() {
+        expectReject("""
+                define class Broken as
+                  constructor() {
+                    val f = || -> { constructor(1); };
+                  }
+                  constructor(int n) { return; }
+                end
+                """, "first top-level");
+        expectReject("""
+                define class Broken as
+                  constructor() {
+                    defer || -> { constructor(1); };
+                  }
+                  constructor(int n) { return; }
+                end
+                """, "first top-level");
+    }
+
+    @Test
+    void rejectsNonScalarDelegationParametersAndAllocations() {
+        expectReject("""
+                define class Broken as
+                  constructor(self, (int) => int fn) {
+                    constructor(fn(4));
+                  }
+                  constructor(int n) { return; }
+                end
+                """, "pure scalar");
+        expectReject("""
+                define class Item as
+                  constructor() { return; }
+                end
+                define class Broken as
+                  constructor() {
+                    constructor(new Item());
+                  }
+                  constructor(Item n) { return; }
+                end
+                """, "pure scalar");
+    }
+
+    @Test
+    void recursiveChainWithThreeDifferentAritiesIsRejected() {
+        expectReject("""
+                define class Broken as
+                  constructor() { constructor(1); }
+                  constructor(int n) { constructor(n, 2); }
+                  constructor(int n, int extra) { constructor(); }
+                end
+                """, "delegation cycle");
+    }
+
+    @Test
+    void constructorDelegationArgumentsCanUsePureArithmetic() throws Exception {
+        assertEquals("42", run("""
+                define class Number as
+                  val int value;
+                  constructor(self, int x) {
+                    constructor(x * 2, 2);
+                  }
+                  constructor(self, int x, int y) {
+                    self.value = x + y;
+                  }
+                  pub get(): int { return self.value; }
+                end
+                pub routine main(): void {
+                  val n = new Number(20);
+                  stdio.stdout.write(n.get());
+                  return;
+                }
+                """));
+    }
+
     private static void expectReject(String source, String fragment) {
         Ast.Program program = Parser.parse(source);
         RuntimeException failure = assertThrows(
