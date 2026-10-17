@@ -199,6 +199,11 @@ public final class OresContext implements AutoCloseable {
                     ActorRuntime.DispatcherConfig.defaults(),
                     this::executeActorTurn,
                     vm::executeControl);
+            // NIO completions share the existing actor-carrier admission
+            // domain. A full queue stages bounded records and retries after
+            // actor turns; no dedicated per-VM NIO completion threads start.
+            actors.bindNioCompletionCapacityHook(vm.nioReadiness()::retryStagedNotifications);
+            vm.nioReadiness().bindVmCompletionExecutor(actors::executeHostIoCompletion);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
             actors.setActorExitHook(gc::retireActorDomain);
@@ -576,6 +581,25 @@ public final class OresContext implements AutoCloseable {
         }
         nativeIo.close();
         http.close();
+
+        // Completion delivery is actor-carrier-owned in a full OresContext.
+        // The NIO selector and every accepted completion record MUST drain
+        // while actor dispatcher carriers are still available; reversing
+        // this order would strand accepted terminal notifications forever.
+        vm.nioReadiness().close();
+        try {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0 || !vm.nioReadiness().awaitStopped(
+                    remaining, java.util.concurrent.TimeUnit.NANOSECONDS)) {
+                throw new IllegalStateException(
+                        "Oreslang VM NIO completions did not quiesce before actor shutdown");
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(
+                    "interrupted while draining VM NIO completions", interrupted);
+        }
+
         RuntimeException failure = null;
         try {
             asyncRuntime.close();
