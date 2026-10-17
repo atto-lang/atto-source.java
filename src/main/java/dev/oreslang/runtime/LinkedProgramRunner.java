@@ -183,6 +183,29 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             OutputStream out,
             OutputStream err) throws IOException {
+        return runWithExitStatus(
+                entryFile, policy, permissions, permissions, permissionCheckMode,
+                executionProfile, allowedHostClasses, environment, out, err);
+    }
+
+    /**
+     * Execute with a separately supplied build-time authority ceiling. Runtime
+     * grants are always attenuated by this ceiling and can never expand it.
+     */
+    public static RunResult runWithExitStatus(
+            Path entryFile,
+            IsolatePolicy policy,
+            RuntimePermissions buildCeiling,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses,
+            Map<String, String> environment,
+            OutputStream out,
+            OutputStream err) throws IOException {
+        java.util.Objects.requireNonNull(buildCeiling, "buildCeiling");
+        java.util.Objects.requireNonNull(permissions, "permissions");
+        RuntimePermissions effectivePermissions = permissions.boundedBy(buildCeiling);
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
@@ -211,7 +234,7 @@ public final class LinkedProgramRunner {
         // the same scoped host-owned policy at each operation.
         if (permissionCheckMode == PermissionCheckMode.COMPILE) {
             for (Ast.Program program : programs.values())
-                CapabilityChecker.check(program, policy, permissionCheckMode, permissions);
+                CapabilityChecker.check(program, policy, permissionCheckMode, effectivePermissions);
         }
         int exitStatus = 0;
         String entryId = unitId(entry);
@@ -229,6 +252,7 @@ public final class LinkedProgramRunner {
                 Context.Builder builder = policy.restrictedContextBuilder(
                         executionProfile,
                         effectiveHostClasses,
+                        buildCeiling,
                         permissions,
                         permissionCheckMode);
                 if (out != null) builder.out(forwardingStream(out));
