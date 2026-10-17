@@ -248,6 +248,52 @@ class DispatcherTest(unittest.TestCase):
                 for name,val in saved.items(): setattr(MOD,name,val)
                 for name,val in pub_saved.items(): setattr(MOD.PUB,name,val)
 
+    def test_cleanup_exact_payload_ref_removes_only_our_commit(self):
+        r=receipt(); branch="ci/oreslang-"+r["source_tree_sha"]
+        old_api=MOD.PUB.gh_api; old_no=MOD.PUB.gh_api_no_content; old_list=MOD.api_list
+        removed=[]
+        try:
+            MOD.PUB.gh_api=lambda route:{
+              "ref":"refs/heads/"+branch,
+              "object":{"sha":"a"*40,"type":"commit"}
+            }
+            MOD.PUB.gh_api_no_content=lambda route,method="POST",payload=None: removed.append(
+                (route,method))
+            MOD.api_list=lambda route:[]
+            MOD.cleanup_exact_payload_ref(r,"a"*40)
+            self.assertEqual(len(removed),1)
+            self.assertEqual(removed[0][1],"DELETE")
+        finally:
+            MOD.PUB.gh_api=old_api; MOD.PUB.gh_api_no_content=old_no; MOD.api_list=old_list
+
+    def test_cleanup_exact_payload_ref_refuses_moved_ref(self):
+        r=receipt(); branch="ci/oreslang-"+r["source_tree_sha"]
+        old_api=MOD.PUB.gh_api; old_no=MOD.PUB.gh_api_no_content
+        try:
+            MOD.PUB.gh_api=lambda route:{
+              "ref":"refs/heads/"+branch,
+              "object":{"sha":"b"*40,"type":"commit"}
+            }
+            MOD.PUB.gh_api_no_content=lambda *args,**kwargs: self.fail("must not delete moved ref")
+            with self.assertRaisesRegex(MOD.Denied,"ref moved"):
+                MOD.cleanup_exact_payload_ref(r,"a"*40)
+        finally:
+            MOD.PUB.gh_api=old_api; MOD.PUB.gh_api_no_content=old_no
+
+    def test_payload_readback_rejects_duplicate_protected_entries(self):
+        import hashlib
+        r=receipt()
+        provenance=json.dumps(r,sort_keys=True,separators=(",",":"))+"\n"
+        raw=provenance.encode("utf-8")
+        prov_sha=hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\0"+raw).hexdigest()
+        rows=[
+          {"path":MOD.PREFIX,"type":"tree","mode":"040000","sha":r["source_tree_sha"]},
+          {"path":MOD.PREFIX,"type":"tree","mode":"040000","sha":r["source_tree_sha"]},
+          {"path":MOD.PROVENANCE,"type":"blob","mode":"100644","sha":prov_sha},
+        ]
+        with self.assertRaisesRegex(MOD.Denied,"exact source/provenance"):
+            MOD.verify_payload_root_entries(rows,r,provenance)
+
     def test_payload_readback_requires_exact_source_and_provenance_modes_and_hash(self):
         import hashlib
         r=receipt()
