@@ -172,6 +172,11 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         CURRENT_NATIVE_THREAD_ID.set(nativeCurrentThreadId());
         carrierThreads.set(slot, Thread.currentThread());
         try {
+            // nativeStart() is the publication barrier for first runnable
+            // admission. Signal only after this Java Thread identity is
+            // visible so execute()/diagnostics/shutdown cannot observe an
+            // already-created pthread as "not started".
+            nativeCarrierReady(nativeHandle, slot);
             while (!shutdown.get()) {
                 nativeAwaitEnabled(nativeHandle, slot);
                 if (shutdown.get()) break;
@@ -428,6 +433,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private static native void nativeAwaitEnabled(long handle, int slot);
     private static native void nativeShutdown(long handle);
     private static native long nativeCurrentThreadId();
+    private static native void nativeCarrierReady(long handle, int slot);
     private static native long nativeCurrentThreadCpuNanos();
     private static native long nativeCarrierCpuTimeNanos(long handle, int slot);
 }
