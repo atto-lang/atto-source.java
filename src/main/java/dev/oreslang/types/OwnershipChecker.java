@@ -988,11 +988,19 @@ public final class OwnershipChecker {
             checkExpr(conditional.condition(), scope, false);
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
 
-            ValueInfo left = checkExpr(conditional.whenTrue(), scope, consuming);
+            // Mirror TypeChecker: a proved guard belongs to the true edge,
+            // not the false edge or the enclosing lexical scope. Retain the
+            // original owner/loan provenance when a refinement alias is made.
+            Scope trueScope = new Scope(scope);
+            defineConditionAliases(conditional.condition(), trueScope, scope);
+            ValueInfo left = checkExpr(conditional.whenTrue(), trueScope, consuming);
+            trueScope.close();
             Map<VarState, StateSnapshot> leftExit = stateSnapshot(scope);
 
             restoreState(base);
-            ValueInfo right = checkExpr(conditional.whenFalse(), scope, consuming);
+            Scope falseScope = new Scope(scope);
+            ValueInfo right = checkExpr(conditional.whenFalse(), falseScope, consuming);
+            falseScope.close();
             Map<VarState, StateSnapshot> rightExit = stateSnapshot(scope);
 
             mergeBranchState(base, List.of(leftExit, rightExit));
