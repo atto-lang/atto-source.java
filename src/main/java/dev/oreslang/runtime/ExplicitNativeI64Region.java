@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * access; Arena.ofShared supports actor continuation carrier migration.
  */
 public final class ExplicitNativeI64Region implements AutoCloseable {
+    private static final int MIN_SUPPORTED_FFM_FEATURE = 25;
     public static final class Slot {
         private final Object owner;
         private final int index;
@@ -133,6 +134,11 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         if (slots < 1 || slots > 65536) {
             throw new IllegalArgumentException("native region size must be 1..65536 slots");
         }
+        if (Runtime.version().feature() < MIN_SUPPORTED_FFM_FEATURE) {
+            throw new IllegalStateException(
+                    "explicit actor-native heap requires Java 25+ FFM; running Java "
+                    + Runtime.version().feature());
+        }
         this.requireActor = Objects.requireNonNull(requireActor);
         this.onRetired = Objects.requireNonNull(onRetired);
         this.reservation = Objects.requireNonNull(reservation);
@@ -145,7 +151,9 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         for (int i = 0; i < slots; i++) freeSlots[i] = slots - i - 1;
         Object allocatedArena = null;
         try {
-            // The class is deliberately unavailable on Java 21. Never
+            // Java 21 exposes preview java.lang.foreign classes too, so class
+            // presence alone is NOT a supported-runtime check. The explicit
+            // feature gate above requires the Java 25+ FFM contract. Never
             // silently substitute an unmanaged DirectByteBuffer.
             Class<?> arenaType = Class.forName("java.lang.foreign.Arena");
             Class<?> segmentType = Class.forName("java.lang.foreign.MemorySegment");
@@ -184,10 +192,23 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     }
 
     public static boolean isAvailable() {
+        if (Runtime.version().feature() < MIN_SUPPORTED_FFM_FEATURE) {
+            return false;
+        }
         try {
-            Class.forName("java.lang.foreign.Arena");
+            Class<?> arenaType = Class.forName("java.lang.foreign.Arena");
+            Class<?> segmentType = Class.forName("java.lang.foreign.MemorySegment");
+            Class<?> valueLayoutType = Class.forName("java.lang.foreign.ValueLayout");
+            Class<?> ofLongType = Class.forName("java.lang.foreign.ValueLayout$OfLong");
+            arenaType.getMethod("ofShared");
+            arenaType.getMethod("allocate", long.class, long.class);
+            arenaType.getMethod("close");
+            valueLayoutType.getField("JAVA_LONG_UNALIGNED");
+            ofLongType.getMethod("withOrder", ByteOrder.class);
+            segmentType.getMethod("get", ofLongType, long.class);
+            segmentType.getMethod("set", ofLongType, long.class, long.class);
             return true;
-        } catch (ClassNotFoundException absent) {
+        } catch (ReflectiveOperationException | LinkageError unsupported) {
             return false;
         }
     }
