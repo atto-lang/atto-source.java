@@ -358,9 +358,18 @@ public final class NativeIo {
         Path path = canonicalWritePath(rawPath);
         context.requirePermission(RuntimePermissions.Permission.WRITE, path.toString(), "fs.mkdir_all");
         try {
-            Files.createDirectories(path);
+            // A Java pathname-based Files.createDirectories call can follow a
+            // swapped ancestor after authorization. SecureDirectoryStream has
+            // no mkdirat operation. Until an audited native dirfd-relative
+            // adapter is available, only an existing verified directory is
+            // an idempotent success; new directory creation fails closed.
+            if (!secureFileAttributes(path).isDirectory())
+                throw new IllegalArgumentException("fs.mkdir_all target is not a directory");
+        } catch (java.nio.file.NoSuchFileException missing) {
+            throw new SecurityException(
+                    "fs.mkdir_all creating new directories requires a verified mkdirat adapter", missing);
         } catch (IOException failure) {
-            throw ioFailure("create directory", path, failure);
+            throw ioFailure("verify directory", path, failure);
         }
     }
 
