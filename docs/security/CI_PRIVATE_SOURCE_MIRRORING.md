@@ -27,11 +27,13 @@ launcher**. It accepts an approved destination, a bounded local source
 directory, and a new isolated CI branch:
 
 ```bash
+SOURCE_TREE_SHA='<independently approved lowercase 40-hex Git tree SHA>'
+SOURCE_COMMIT_SHA='<independently approved immutable 40-hex commit SHA>'
 scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --source-dir ./verified-source-tree \
-  --branch ci/oreslang-verified-20261013 \
-  --expected-source-tree '<trusted full 40-hex Git tree SHA>' \
-  --expected-source-commit '<trusted immutable 40-hex source commit SHA>'
+  --branch "ci/oreslang-${SOURCE_TREE_SHA}" \
+  --expected-source-tree "${SOURCE_TREE_SHA}" \
+  --expected-source-commit "${SOURCE_COMMIT_SHA}"
 ```
 
 A matching policy Git blob on `main` is not authorization by itself. The
@@ -130,7 +132,7 @@ workflows that execute with the carrier's own token. Even verified branch
 protection metadata is not proof of a safe workflow: independent reviewers
 must still audit the carrier's effective rulesets and executable workflow
 definitions for exfiltration and unsafe privilege escalation.
-Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
+Finally, it creates a commit and a **new** `ci/oreslang-<exact source Git tree SHA>` ref. A generic branch name or a hash other than the separately approved immutable source tree is rejected before reading policy data, source bytes or performing any Git write. Existing
 branches, including `main`, are never updated. Before declaring success,
 it verifies that the ref-creation response, fresh ref readback (including
 exact ref name and object type), base and newly created commit identities,
