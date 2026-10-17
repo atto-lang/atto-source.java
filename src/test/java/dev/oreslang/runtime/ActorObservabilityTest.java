@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -272,33 +271,16 @@ final class ActorObservabilityTest {
     void fullDiagnosticJournalDropsRecordWithoutDelayingActorFinalization()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
-            Field queueField = ActorRuntime.class.getDeclaredField("supervisionEvents");
-            Field countField = ActorRuntime.class.getDeclaredField("supervisionEventsQueued");
-            queueField.setAccessible(true);
-            countField.setAccessible(true);
-
-            @SuppressWarnings("unchecked")
-            ConcurrentLinkedQueue<ActorRuntime.ActorTerminationEvent> queue =
-                    (ConcurrentLinkedQueue<ActorRuntime.ActorTerminationEvent>)
-                            queueField.get(runtime);
-            AtomicInteger queued = (AtomicInteger) countField.get(runtime);
-
-            for (int i = 0; i < 4_096; ++i) {
-                queue.add(new ActorRuntime.ActorTerminationEvent(
-                        i,
-                        ActorRuntime.ActorId.create(),
-                        1L,
-                        ActorRuntime.ActorKind.SHARED,
-                        Optional.empty(),
-                        ActorRuntime.ActorTerminationKind.NORMAL,
-                        0L,
-                        0L,
-                        0,
-                        0,
-                        "",
-                        ""));
-            }
-            queued.set(4_096);
+            Field headField =
+                    ActorRuntime.class.getDeclaredField("supervisionEventHead");
+            Field tailField =
+                    ActorRuntime.class.getDeclaredField("supervisionEventTail");
+            headField.setAccessible(true);
+            tailField.setAccessible(true);
+            var head = (java.util.concurrent.atomic.AtomicLong) headField.get(runtime);
+            var tail = (java.util.concurrent.atomic.AtomicLong) tailField.get(runtime);
+            head.set(0L);
+            tail.set(4_096L); // reserve the complete bounded ring
 
             var actor = runtime.<String>spawnShared(
                     () -> (message, context) -> { });
@@ -312,15 +294,65 @@ final class ActorObservabilityTest {
     }
 
     @Test
+    void concurrentActorDeathsDrainInExactMonotonicJournalOrder()
+            throws Exception {
+        final int count = 128;
+        try (ActorRuntime runtime = new ActorRuntime();
+             var killers = java.util.concurrent.Executors.newFixedThreadPool(8)) {
+            var actors = new java.util.ArrayList<ActorRuntime.ActorRef<String>>(count);
+            for (int i = 0; i < count; ++i) {
+                actors.add(runtime.<String>spawnShared(
+                        () -> (message, context) -> { }));
+            }
+
+            var start = new CountDownLatch(1);
+            var stopped = new CountDownLatch(count);
+            for (var actor : actors) {
+                killers.execute(() -> {
+                    try {
+                        start.await();
+                        actor.stop();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    } finally {
+                        stopped.countDown();
+                    }
+                });
+            }
+            start.countDown();
+            assertTrue(stopped.await(5, TimeUnit.SECONDS));
+            for (var actor : actors)
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+
+            var seenActors = new java.util.HashSet<ActorRuntime.ActorId>();
+            for (long expected = 0; expected < count; ++expected) {
+                ActorRuntime.ActorTerminationEvent event =
+                        runtime.pollTerminationEvent().orElseThrow();
+                assertEquals(expected, event.sequence(),
+                        "MPSC journal must never expose a later terminal record first");
+                assertTrue(seenActors.add(event.actorId()),
+                        "one actor must produce exactly one terminal record");
+            }
+            assertEquals(count, seenActors.size());
+            assertTrue(runtime.pollTerminationEvent().isEmpty());
+            assertEquals(0L, runtime.supervisionEventsDropped());
+        }
+    }
+
+    @Test
     void exhaustedDiagnosticSequenceFailsClosedWithoutWrappingOrBlockingTermination()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
-            Field sequenceField =
-                    ActorRuntime.class.getDeclaredField("supervisionEventSequence");
-            sequenceField.setAccessible(true);
-            var sequence =
-                    (java.util.concurrent.atomic.AtomicLong) sequenceField.get(runtime);
-            sequence.set(Long.MAX_VALUE);
+            Field headField =
+                    ActorRuntime.class.getDeclaredField("supervisionEventHead");
+            Field tailField =
+                    ActorRuntime.class.getDeclaredField("supervisionEventTail");
+            headField.setAccessible(true);
+            tailField.setAccessible(true);
+            var head = (java.util.concurrent.atomic.AtomicLong) headField.get(runtime);
+            var tail = (java.util.concurrent.atomic.AtomicLong) tailField.get(runtime);
+            head.set(Long.MAX_VALUE);
+            tail.set(Long.MAX_VALUE);
 
             var actor = runtime.<String>spawnShared(
                     () -> (message, context) -> { });
