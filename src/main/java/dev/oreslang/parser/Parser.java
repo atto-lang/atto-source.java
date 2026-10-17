@@ -22,6 +22,8 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    // Constraint annotations are enforceable only on checked aliases/newtypes for now.
+    private int unboundConstraintAnnotations;
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
     private int matchGuardStartToken = -1;
@@ -179,6 +181,11 @@ public final class Parser {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
+        if (unboundConstraintAnnotations != 0) {
+            throw new IllegalArgumentException("refinement: @Size/@Length/@NotEmpty on fields, "
+                    + "functions, parameters or local bindings are not yet executable; "
+                    + "use a checked type alias/newtype instead");
+        }
         return new Ast.Program(namespace, imports, modules);
     }
 
@@ -1124,13 +1131,20 @@ public final class Parser {
         }
         consumeStatementTerminator("type alias/newtype should end with ';'");
         Ast.RefinementSpec normalized = RefinementSyntax.parse(target, annotations, nominal, suffix);
+        unboundConstraintAnnotations -= annotations.stream()
+                .filter(a -> isConstraintAnnotation(a.name())).count();
         return new Ast.TypeAliasDecl(name, visibility, generics, target, normalized);
+    }
+
+    private static boolean isConstraintAnnotation(String name) {
+        return name.equals("Size") || name.equals("Length") || name.equals("NotEmpty");
     }
 
     private List<Ast.Annotation> parseAnnotations() {
         List<Ast.Annotation> result = new ArrayList<>();
         while (match(AT)) {
             String name = consume(IDENT, "expected annotation name").lexeme();
+            if (isConstraintAnnotation(name)) unboundConstraintAnnotations++;
             // These names claim code generation, target selection or ABI effects.
             // Until a typed annotation registry and AOT lowering exist, retaining
             // them as inert metadata would silently change program semantics.
