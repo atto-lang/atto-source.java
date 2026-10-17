@@ -1167,6 +1167,142 @@ final class NioReadinessGroupTest {
         }
     }
 
+
+    /**
+     * Kernel readiness and Oreslang `select` are different layers. The
+     * selector publishes one Future; ChannelRuntime then atomically selects
+     * between that Future and a channel without running the subscriber on the
+     * kernel selector carrier.
+     */
+    @Test void nioFutureWinsSelectWithoutConsumingLosingChannel() throws Exception {
+        var pipe = java.nio.channels.Pipe.open();
+        try (var group = new NioReadinessGroup(1, 8, 8);
+             var source = pipe.source(); var sink = pipe.sink()) {
+            source.configureBlocking(false);
+            var readiness = group.watch(source, SelectionKey.OP_READ);
+            var channel = new ChannelRuntime.Channel<Integer>(1);
+            var selected = ChannelRuntime.SelectSet.of(
+                    ChannelRuntime.read(channel), ChannelRuntime.await(readiness))
+                    .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+            var completionCarrier = new java.util.concurrent.atomic.AtomicReference<String>();
+            var completionObserved = new java.util.concurrent.CountDownLatch(1);
+            selected.whenCompleteRuntime((value, failure) -> {
+                completionCarrier.set(Thread.currentThread().getName());
+                completionObserved.countDown();
+            });
+
+            assertFalse(selected.isDone());
+            assertEquals(1, readiness.pendingRuntimeWaiterCount());
+            assertEquals(1, sink.write(java.nio.ByteBuffer.wrap(new byte[] {23})));
+
+            var result = selected.get(3, TimeUnit.SECONDS);
+            assertEquals(1, result.index());
+            assertEquals(ChannelRuntime.SelectOperation.FUTURE, result.operation());
+            assertTrue(((Integer) result.value() & SelectionKey.OP_READ) != 0);
+            assertEquals(0, readiness.pendingRuntimeWaiterCount());
+            assertTrue(completionObserved.await(3, TimeUnit.SECONDS));
+            assertNotNull(completionCarrier.get());
+            assertFalse(completionCarrier.get().startsWith("ores-nio-reactor-"),
+                    "user/select subscribers must never run on the Java NIO selector");
+
+            assertTrue(channel.tryWrite(7));
+            assertEquals(7, channel.tryRead().orElseThrow(),
+                    "an unselected channel read must remain unconsumed");
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            assertEquals(0, group.pendingNotifications());
+        }
+    }
+
+    @Test void channelWinsSelectButIndependentNioWatchRemainsLive() throws Exception {
+        var pipe = java.nio.channels.Pipe.open();
+        try (var group = new NioReadinessGroup(1, 8, 8);
+             var source = pipe.source(); var sink = pipe.sink()) {
+            source.configureBlocking(false);
+            var readiness = group.watch(source, SelectionKey.OP_READ);
+            var channel = new ChannelRuntime.Channel<Integer>(1);
+            var selected = ChannelRuntime.SelectSet.of(
+                    ChannelRuntime.read(channel), ChannelRuntime.await(readiness))
+                    .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+
+            assertEquals(1, readiness.pendingRuntimeWaiterCount());
+            assertTrue(channel.tryWrite(42));
+            var result = selected.get(3, TimeUnit.SECONDS);
+            assertEquals(0, result.index());
+            assertEquals(ChannelRuntime.SelectOperation.READ, result.operation());
+            assertEquals(42, result.value());
+            assertEquals(0, readiness.pendingRuntimeWaiterCount(),
+                    "the losing Future listener must be detached");
+            assertFalse(readiness.isDone(),
+                    "losing selection never cancels another owner's readiness operation");
+
+            assertEquals(1, sink.write(java.nio.ByteBuffer.wrap(new byte[] {9})));
+            assertTrue((readiness.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
+            assertEquals(0, selected.get(3, TimeUnit.SECONDS).index(),
+                    "late readiness cannot replace the committed channel winner");
+            assertTrue(channel.tryWrite(43));
+            assertEquals(43, channel.tryRead().orElseThrow());
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            assertEquals(0, group.pendingNotifications());
+        }
+    }
+
+    @Test void cancelledSelectDetachesNioFutureWaiterWithoutRevokingWatch() throws Exception {
+        var pipe = java.nio.channels.Pipe.open();
+        try (var group = new NioReadinessGroup(1, 8, 8);
+             var source = pipe.source(); var sink = pipe.sink()) {
+            source.configureBlocking(false);
+            var readiness = group.watch(source, SelectionKey.OP_READ);
+            var channel = new ChannelRuntime.Channel<Integer>(1);
+            var selected = ChannelRuntime.SelectSet.of(
+                    ChannelRuntime.read(channel), ChannelRuntime.await(readiness))
+                    .selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+
+            assertEquals(1, readiness.pendingRuntimeWaiterCount());
+            assertTrue(selected.cancel(false));
+            assertTrue(selected.isCancelled());
+            assertEquals(0, readiness.pendingRuntimeWaiterCount());
+            assertEquals(0, channel.pendingRegistrations());
+            assertFalse(readiness.isDone());
+
+            assertEquals(1, sink.write(java.nio.ByteBuffer.wrap(new byte[] {5})));
+            assertTrue((readiness.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
+            assertTrue(selected.isCancelled());
+            assertTrue(channel.tryWrite(8));
+            assertEquals(8, channel.tryRead().orElseThrow());
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            assertEquals(0, group.pendingNotifications());
+        }
+    }
+
+    @Test void selectorShutdownFailsSelectedFutureAndPreservesLosingChannel()
+            throws Exception {
+        var pipe = java.nio.channels.Pipe.open();
+        try (var group = new NioReadinessGroup(1, 8, 8);
+             var source = pipe.source(); var sink = pipe.sink()) {
+            source.configureBlocking(false);
+            var readiness = group.watch(source, SelectionKey.OP_READ);
+            var channel = new ChannelRuntime.Channel<Integer>(1);
+            var selected = ChannelRuntime.SelectSet.of(
+                    ChannelRuntime.read(channel), ChannelRuntime.await(readiness))
+                    .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+
+            assertEquals(1, readiness.pendingRuntimeWaiterCount());
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            var error = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> selected.get(3, TimeUnit.SECONDS));
+            assertInstanceOf(java.io.IOException.class, error.getCause());
+            assertEquals(0, readiness.pendingRuntimeWaiterCount());
+            assertEquals(0, group.pendingCount());
+            assertEquals(0, group.pendingNotifications());
+            assertTrue(channel.tryWrite(99));
+            assertEquals(99, channel.tryRead().orElseThrow());
+        }
+    }
+
     @Test void invalidLimitsAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(0, 10, 8));
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(5, 10, 8));
