@@ -106,7 +106,8 @@ final class OresVMNioLifecycleTest {
         try {
             pipe.source().configureBlocking(false);
             actors.bindNioCompletionCapacityHook(vm.nioReadiness()::retryStagedNotifications);
-            vm.nioReadiness().bindVmCompletionExecutor(actors::executeHostIoCompletion);
+            vm.nioReadiness().bindVmCompletionExecutor(
+                    actors::executeHostIoCompletion, true);
             assertTrue(vm.nioReadiness().usesVmCompletionCarriers());
             assertEquals(0, vm.nioReadiness().completionCarrierCount());
             assertEquals(0, actors.startedActorCarrierCount());
