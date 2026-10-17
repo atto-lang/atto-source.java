@@ -1755,9 +1755,17 @@ public final class OwnershipChecker {
                     if (argumentExpr instanceof Ast.LambdaExpr lambda
                             && isBorrowedCallable(parameterType)
                             && !parameterType.mutableBorrow()) {
+                        VarState captureRoot = constructionSelfCaptureRoot(argumentExpr, scope);
+                        if (captureRoot != null && constructionCallLoan != null) {
+                            throw error("first-class call cannot hold overlapping construction self callback borrows");
+                        }
                         argument = checkLambda(
                                 lambda, scope, null,
                                 false, false, initializingClass != null);
+                        if (captureRoot != null) {
+                            beginPersistentBorrow(captureRoot, true);
+                            constructionCallLoan = ownershipRoot(captureRoot);
+                        }
                     } else {
                         argument = checkExpr(argumentExpr, scope, false);
                     }
