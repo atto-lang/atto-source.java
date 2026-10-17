@@ -132,6 +132,70 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
     }
 
     @Test
+    void partialMailboxRejectionRetainsEarlierAdmissionAndOriginalFailure()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var routerRef = new AtomicReference<ActorPipelineCorrelatedMailboxRouter<String>>();
+            var report = new AtomicReference<List<ActorPipelineCorrelatedMailboxRouter.Admission>>();
+            var reportReady = new CountDownLatch(1);
+            var delivered = new CountDownLatch(1);
+
+            var workerA = runtime.<String>spawnShared(() -> (value, actor) -> {
+                if (!"payload".equals(value))
+                    throw new AssertionError("unexpected first branch payload");
+                delivered.countDown();
+            });
+            var workerB = runtime.<String>spawnShared(() -> (value, actor) -> {
+                throw new AssertionError("stopped worker must never receive routed DATA");
+            });
+            var sink = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                report.set(routerRef.get().forwardAll("payload"));
+                reportReady.countDown();
+            });
+
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, fanInGraph(),
+                    Map.of("source", source, "worker-a", workerA,
+                           "worker-b", workerB, "sink", sink), 41, 16);
+            routerRef.set(router);
+            // Binding is valid when the host installs the graph. Make only
+            // the SECOND recipient reject admission during the routed turn.
+            workerB.stop();
+            workerB.getDone().get(5, TimeUnit.SECONDS);
+
+            router.ingress("source", "start");
+            assertTrue(reportReady.await(5, TimeUnit.SECONDS),
+                    "first branch success must remain reportable");
+            assertTrue(delivered.await(5, TimeUnit.SECONDS));
+            var receipts = report.get();
+            assertNotNull(receipts);
+            assertEquals(2, receipts.size());
+            assertTrue(receipts.get(0).admitted());
+            assertFalse(receipts.get(1).admitted());
+            assertNull(receipts.get(0).failure());
+            assertNotNull(receipts.get(1).failure());
+            assertNotNull(receipts.get(1).failure().getCause(),
+                    "preallocated failure receipt must retain actual exception");
+            assertEquals(receipts.get(0).flowId(), receipts.get(1).flowId());
+            assertNotEquals(receipts.get(0).routeId(), receipts.get(1).routeId());
+            assertThrows(UnsupportedOperationException.class, receipts::clear);
+
+            source.drain().get(5, TimeUnit.SECONDS);
+            workerA.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(0, router.outstanding(),
+                    "accepted and rejected branch frame credits must retire");
+            router.close();
+            source.stop();
+            workerA.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            workerA.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void ordinaryActorMailCannotBorrowAnEarlierOrDifferentRouteFrame()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
