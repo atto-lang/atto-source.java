@@ -1052,6 +1052,14 @@ public final class NioReadinessGroup implements AutoCloseable {
                 TimeUnit.NANOSECONDS.timedWait(notificationDrain, left);
             }
         }
+        // A bound OresContext may have used the lazy private pool only as a
+        // one-shot off-selector submitter for cold actor-carrier startup.
+        // NIO teardown is not quiescent until that helper has also exited.
+        if (ownedCompletionExecutor != null) {
+            left = deadline - System.nanoTime();
+            if (left <= 0 || !ownedCompletionExecutor.awaitTermination(
+                    left, TimeUnit.NANOSECONDS)) return false;
+        }
         return true;
     }
 }
