@@ -2377,6 +2377,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_source_local_runner_entrypoints_and_admission_tests_are_owned(self):
         required = set(pub.REQUIRED_CODEOWNER_PATHS)
         runner_paths = {
+            "/.github/workflows/private-ci-mirror-preflight.yml",
             "/.github/workflows/private-exact-main-validation.yml",
             "/.github/workflows/private-exact-candidate-validation.yml",
             "/.github/workflows/private-exact-publisher-validation.yml",
