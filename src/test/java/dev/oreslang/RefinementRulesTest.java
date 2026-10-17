@@ -13,6 +13,27 @@ final class RefinementRulesTest {
                 .modules().getFirst().declarations().getFirst();
     }
 
+    @Test void generatedDescriptorIsCanonicalAndFailClosed() {
+        var a = alias("@Min(1) @Max(65535) type Port = int;");
+        var b = alias("type Port = int with value >= 1 and value <= 65535;");
+        var da = RefinementRules.descriptor(null, a.target(), a.refinement());
+        var db = RefinementRules.descriptor(null, b.target(), b.refinement());
+        assertEquals(da, db);
+        assertEquals(64, da.fingerprint().length());
+        assertTrue(da.accepts(1L));
+        assertTrue(da.accepts(65535L));
+        assertFalse(da.accepts(0L));
+        assertFalse(da.accepts(65536L));
+        assertFalse(da.accepts(1.0));
+        var n = alias("@MinLength(1) define newtype Username(string);");
+        assertThrows(IllegalArgumentException.class,
+                () -> RefinementRules.descriptor("Username", n.target(), n.refinement()));
+        var one = RefinementRules.descriptor("app.Username", n.target(), n.refinement());
+        var two = RefinementRules.descriptor("other.Username", n.target(), n.refinement());
+        assertNotEquals(one.fingerprint(), two.fingerprint());
+        assertFalse(one.accepts(String.valueOf((char) 0xD800)));
+    }
+
     @Test void proveStrongerToWeakerButNotReverse() {
         Ast.TypeAliasDecl exact = alias("type Exact = string with length eq 10;");
         Ast.TypeAliasDecl nonEmpty = alias("type NonEmpty = string with length gt 0;");
