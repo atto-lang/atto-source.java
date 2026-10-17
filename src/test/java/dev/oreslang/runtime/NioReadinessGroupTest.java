@@ -928,6 +928,80 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void thousandsOfInlineReentrantNotificationsDrainWithoutStackRecursion()
+            throws Exception {
+        // Dispatch is intentionally private: use reflection only to
+        // synthesize completion records without opening thousands of FDs.
+        var publish = NioReadinessGroup.class.getDeclaredMethod(
+                "dispatchNotification", Runnable.class);
+        publish.setAccessible(true);
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(Runnable::run);
+            var callbacks = new java.util.concurrent.atomic.AtomicInteger();
+            Runnable[] chained = new Runnable[1];
+            chained[0] = () -> {
+                if (callbacks.incrementAndGet() < 4_000) {
+                    try {
+                        publish.invoke(group, chained[0]);
+                    } catch (ReflectiveOperationException failure) {
+                        throw new AssertionError("nested notification publication failed", failure);
+                    }
+                }
+            };
+            publish.invoke(group, chained[0]);
+            assertEquals(4_000, callbacks.get());
+            assertEquals(0, group.stagedNotificationCount());
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void slowInlineHostCallbackDoesNotBlockCompetingNotificationAdmission()
+            throws Exception {
+        var publish = NioReadinessGroup.class.getDeclaredMethod(
+                "dispatchNotification", Runnable.class);
+        publish.setAccessible(true);
+        var callbackEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseCallback = new java.util.concurrent.CountDownLatch(1);
+        var followupDelivered = new java.util.concurrent.CountDownLatch(1);
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(Runnable::run);
+            Thread host = new Thread(() -> {
+                try {
+                    publish.invoke(group, (Runnable) () -> {
+                        callbackEntered.countDown();
+                        try {
+                            releaseCallback.await(3, TimeUnit.SECONDS);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                    });
+                } catch (ReflectiveOperationException failure) {
+                    throw new AssertionError(failure);
+                }
+            }, "slow-inline-host-callback");
+            host.start();
+            try {
+                assertTrue(callbackEntered.await(3, TimeUnit.SECONDS));
+                long started = System.nanoTime();
+                publish.invoke(group, (Runnable) followupDelivered::countDown);
+                long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(
+                        System.nanoTime() - started);
+                assertTrue(elapsedMillis < 500,
+                        "notification ingress waited behind an inline subscriber: "
+                                + elapsedMillis + "ms");
+            } finally {
+                releaseCallback.countDown();
+                host.join(3000);
+            }
+            assertFalse(host.isAlive());
+            assertTrue(followupDelivered.await(3, TimeUnit.SECONDS));
+            assertEquals(0, group.stagedNotificationCount());
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void invalidLimitsAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(0, 10, 8));
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(5, 10, 8));
