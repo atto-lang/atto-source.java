@@ -2935,132 +2935,24 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        /**
+         * Statement-flow adapter for the canonical suspendable condition
+         * evaluator below. Keep one implementation of && short-circuiting,
+         * refinement bindings, duplicate detection and failure propagation.
+         */
         private void evalSuspendableCondition(
                 SourceTask task,
                 Ast.Expr condition,
                 Env env,
                 java.util.function.BiConsumer<SourceTask, ConditionResult> continuation) {
-            if (condition instanceof Ast.BinaryExpr binary
-                    && binary.operator().equals("&&")) {
-                evalSuspendableCondition(
-                        task,
-                        binary.left(),
-                        env,
-                        (t, left) -> {
-                            if (!left.matched()) {
-                                continuation.accept(t, left);
-                                return;
-                            }
-                            Env rightEnv = new Env(env);
-                            left.bindings().forEach((name, value) ->
-                                    rightEnv.define(name, value, Ast.BindingKind.VAL));
-                            evalSuspendableCondition(
-                                    t,
-                                    binary.right(),
-                                    rightEnv,
-                                    (t2, right) ->
-                                            continuation.accept(
-                                                    t2,
-                                                    mergeConditionBindings(
-                                                            left,
-                                                            right)));
-                        });
-                return;
-            }
-
-            if (condition instanceof Ast.TypeTestExpr test) {
-                evalSuspendableExpr(
-                        task,
-                        test.value(),
-                        env,
-                        (t, value, failure) -> {
-                            if (failure != null) {
-                                throw sourceFailure(failure);
-                            }
-                            boolean matched =
-                                    oresTypeMatches(
-                                            value,
-                                            test.targetType());
-                            if (matched && test.binding() != null) {
-                                continuation.accept(
-                                        t,
-                                        new ConditionResult(
-                                                true,
-                                                Map.of(
-                                                        test.binding(),
-                                                        value)));
-                            } else {
-                                continuation.accept(
-                                        t,
-                                        matched
-                                                ? ConditionResult.match()
-                                                : ConditionResult.noMatch());
-                            }
-                        });
-                return;
-            }
-
-            if (condition instanceof Ast.PatternTestExpr test) {
-                evalSuspendableExpr(
-                        task,
-                        test.value(),
-                        env,
-                        (t, value, failure) -> {
-                            if (failure != null) {
-                                throw sourceFailure(failure);
-                            }
-                            LinkedHashMap<String, Object> bindings =
-                                    new LinkedHashMap<>();
-                            boolean matched =
-                                    patternMatches(
-                                            test.pattern(),
-                                            value,
-                                            bindings);
-                            continuation.accept(
-                                    t,
-                                    matched
-                                            ? new ConditionResult(
-                                                    true,
-                                                    Map.copyOf(bindings))
-                                            : ConditionResult.noMatch());
-                        });
-                return;
-            }
-
-            evalSuspendableExpr(
+            evalSuspendableCondition(
                     task,
                     condition,
                     env,
                     (t, value, failure) -> {
-                        if (failure != null) {
-                            throw sourceFailure(failure);
-                        }
-                        continuation.accept(
-                                t,
-                                truth(value)
-                                        ? ConditionResult.match()
-                                        : ConditionResult.noMatch());
+                        if (failure != null) throw sourceFailure(failure);
+                        continuation.accept(t, (ConditionResult) value);
                     });
-        }
-
-        private ConditionResult mergeConditionBindings(
-                ConditionResult left,
-                ConditionResult right) {
-            if (!left.matched() || !right.matched()) {
-                return ConditionResult.noMatch();
-            }
-            LinkedHashMap<String, Object> bindings =
-                    new LinkedHashMap<>(left.bindings());
-            for (Map.Entry<String, Object> entry : right.bindings().entrySet()) {
-                if (bindings.containsKey(entry.getKey())) {
-                    throw new IllegalStateException(
-                            "condition pattern binds '" + entry.getKey() + "' more than once");
-                }
-                bindings.put(entry.getKey(), entry.getValue());
-            }
-            return new ConditionResult(
-                    true,
-                    Map.copyOf(bindings));
         }
 
         private void evalSuspendableExpr(
