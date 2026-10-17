@@ -2,7 +2,6 @@ package dev.oreslang.types;
 
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -239,6 +238,9 @@ public final class EnumCaseOverloadPolicy {
         if (value.isBlank()) throw new IllegalArgumentException("blank identity");
         for (int i = 0; i < value.length(); i++) {
             char c = value.charAt(i);
+            if (Character.isISOControl(c) || Character.isWhitespace(c)) {
+                throw new IllegalArgumentException("control/whitespace in canonical identity");
+            }
             if (Character.isHighSurrogate(c)) {
                 if (i + 1 == value.length() || !Character.isLowSurrogate(value.charAt(++i))) {
                     throw new IllegalArgumentException("malformed UTF-16 identity");
