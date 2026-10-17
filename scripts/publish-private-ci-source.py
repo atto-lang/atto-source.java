@@ -92,6 +92,7 @@ REQUIRED_CODEOWNER = "@ORESoftware"
 GITHUB_ACTIONS_APP_ID = 15368
 SOURCE_POLICY_CHECK = "private-ci-policy"
 CARRIER_POLICY_CHECK = "carrier-policy"
+CARRIER_POLICY_PATH = ".github/private-ci-carrier-policy.json"
 
 PROTECTED_RULES_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection"
 
@@ -488,12 +489,14 @@ def require_protected_carrier_codeowners(repository):
         raise Denied("private carrier CODEOWNERS blob integrity failed")
     effective = [line.strip() for line in decoded.splitlines()
                  if line.strip() and not line.strip().startswith("#")]
-    # The last matching rule wins. Require these final two rules in order:
-    # no later wildcard or exception can remove security ownership.
-    expected = ["/.github/CODEOWNERS " + REQUIRED_CODEOWNER,
-                "/.github/workflows/ " + REQUIRED_CODEOWNER]
+    # The last matching rule wins. Require the same terminal trust root
+    # carried by approved private CI destinations: future workflow files,
+    # CODEOWNERS itself, and the issuer policy declaring carrier-policy.
+    expected = ["/.github/workflows/ " + REQUIRED_CODEOWNER,
+                "/.github/CODEOWNERS " + REQUIRED_CODEOWNER,
+                "/" + CARRIER_POLICY_PATH + " " + REQUIRED_CODEOWNER]
     if effective[-len(expected):] != expected:
-        raise Denied("private carrier workflows lack terminal security CODEOWNER coverage")
+        raise Denied("private carrier security files lack terminal CODEOWNER coverage")
     errors = gh_api(route + "/codeowners/errors?ref=main")
     if not isinstance(errors.get("errors"), list) or errors["errors"]:
         raise Denied("private carrier CODEOWNERS has GitHub validation errors")
@@ -504,6 +507,54 @@ def require_protected_carrier_codeowners(repository):
             or owner.get("type") != "User"
             or access.get("permission") not in ("write", "admin")):
         raise Denied("private carrier security CODEOWNER lacks write permission")
+
+
+def require_protected_carrier_policy(repository):
+    """Bind carrier-policy required-check provenance to reviewed main bytes."""
+    route = (
+        f"repos/{repository}/contents/" + CARRIER_POLICY_PATH + "?ref=main"
+    )
+    metadata = gh_api(route)
+    if (metadata.get("type") != "file"
+            or metadata.get("encoding") != "base64"
+            or not isinstance(metadata.get("content"), str)
+            or len(metadata["content"]) > 24 * 1024
+            or type(metadata.get("size")) is not int
+            or not 1 <= metadata["size"] <= 16 * 1024):
+        raise Denied("private carrier issuer policy metadata is unavailable")
+    try:
+        encoded = "".join(metadata["content"].splitlines())
+        raw = base64.b64decode(encoded, validate=True)
+        decoded = raw.decode("utf-8")
+    except (ValueError, UnicodeError) as exc:
+        raise Denied("private carrier issuer policy is not valid UTF-8/base64") from exc
+    if base64.b64encode(raw).decode("ascii") != encoded:
+        raise Denied("private carrier issuer policy base64 is noncanonical")
+    digest = hashlib.sha1(
+        b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
+    ).hexdigest()
+    if (len(raw) != metadata["size"]
+            or b"\0" in raw
+            or valid_sha(metadata.get("sha")) != digest):
+        raise Denied("private carrier issuer policy blob integrity failed")
+    try:
+        policy = json.loads(decoded)
+    except (TypeError, ValueError) as exc:
+        raise Denied("private carrier issuer policy is not valid JSON") from exc
+    expected = {
+        "schema": 1,
+        "carrier": {
+            "context": CARRIER_POLICY_CHECK,
+            "appId": GITHUB_ACTIONS_APP_ID,
+        },
+    }
+    if (not isinstance(policy, dict)
+            or policy != expected
+            or list(policy.keys()) != ["schema", "carrier"]
+            or not isinstance(policy.get("carrier"), dict)
+            or list(policy["carrier"].keys()) != ["context", "appId"]):
+        raise Denied("private carrier issuer policy identity mismatch")
+    return digest
 
 
 def require_incident_containment():
@@ -1136,6 +1187,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                     for key in ("users", "teams", "apps")):
                 raise Denied("private carrier main allows review bypass")
         require_protected_carrier_codeowners(repository)
+        require_protected_carrier_policy(repository)
         workflow = gh_api(
             f"repos/{repository}/contents/.github/workflows/"
             + CARRIER_VALIDATION_WORKFLOW + "?ref=main")
