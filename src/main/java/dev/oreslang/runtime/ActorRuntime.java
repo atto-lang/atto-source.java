@@ -876,7 +876,10 @@ public final class ActorRuntime implements AutoCloseable {
                     abandonedContinuations,
                     failureType,
                     "");
-        } catch (RuntimeException diagnosticsInvariant) {
+        } catch (Throwable diagnosticsFailure) {
+            // Diagnostic allocation/validation is explicitly non-authoritative.
+            // In particular, an OOME while allocating Optional/event state must
+            // not leave an otherwise-quiescent actor permanently unfinalized.
             supervisionEventsDropped.incrementAndGet();
             return;
         }
