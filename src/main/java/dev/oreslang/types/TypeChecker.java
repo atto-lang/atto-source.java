@@ -5554,7 +5554,12 @@ public final class TypeChecker {
     }
 
     private boolean structuralPatternMayMatch(Type subject, Record targetShape) {
-        if (subject == Unknown.INSTANCE || subject instanceof Generic) return true;
+        // Opaque tops disclose no fields statically, but a checked structural
+        // pattern may validate them at runtime and recover a readonly view.
+        // Do not confuse this with implicit Any/unknown member access.
+        if (subject == Unknown.INSTANCE || subject == Types.Any.INSTANCE
+                || subject == Types.UnknownValue.INSTANCE
+                || subject instanceof Generic) return true;
         if (subject instanceof Union union) {
             return union.options().stream()
                     .anyMatch(option -> structuralPatternMayMatch(option, targetShape));
