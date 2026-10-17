@@ -5168,11 +5168,16 @@ public final class TypeChecker {
             Env.Binding binding = sourceEnv.lookup(name.name());
             Type narrowed = isBuiltinIntegerPredicate(call, sourceEnv)
                     ? Primitive.INT : Primitive.FLOAT;
-            // Narrow stable lexical values only; aliases and rebindable
-            // locations cannot inherit this proof across mutation.
+            // A runtime scalar guard validates the *value*, not capabilities
+            // attached to a borrow, generic, union or nominal wrapper. Never
+            // erase borrow/ownership/effect metadata by refining its deref'd
+            // type to a bare primitive. This stage supports only opaque
+            // source top values and already-typed matching scalars.
             if (binding != null && binding.kind() != Ast.BindingKind.LET
                     && !binding.hasUninitializedFields()
-                    && typesMayOverlap(deref(binding.type()), narrowed)) {
+                    && (binding.type() == Types.Any.INSTANCE
+                        || binding.type() == Types.UnknownValue.INSTANCE
+                        || binding.type() == narrowed)) {
                 destination.define(name.name(), narrowed, binding.kind());
             }
             return;
