@@ -186,6 +186,20 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
         });
     }
 
+    /**
+     * Return DATA to the authenticated original ingress actor without
+     * passing through intermediary handlers. The trusted MailFrame preserves
+     * the full provenance path and one-shot branch identity even under fan-in.
+     * A forward route may reply only once, and a reply cannot be re-forwarded.
+     * This remains a HOST integration; guest self.reply lowering is gated.
+     */
+    void reply(M value) {
+        inLiveGeneration(() -> {
+            sendChild(session.returnToOrigin(current()), value);
+            return null;
+        });
+    }
+
     /** Every recipient gets an independent admission result; earlier
      * successes are not rolled back when a later mailbox is full or stopped. */
     List<Admission> forwardAll(M value) {
