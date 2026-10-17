@@ -267,10 +267,11 @@ public final class NioReadinessGroup implements AutoCloseable {
                             break;
                         }
                     }
-                    // At most 8192 records per draining invocation. A full
-                    // actor pool returns rejection, not an unbounded retry
-                    // loop on the selector; independent retry hooks provide
-                    // subsequent capacity notifications.
+                    // Bound each dispatch lease to 64 x 128 records before
+                    // releasing it for competing callers. Reentrant inline
+                    // requests are iterated rather than recursively drained.
+                    // A full actor pool stops this pass on rejection; its
+                    // capacity hook must initiate the next attempt.
                 } while (!rejected && notificationRetryRequested.get()
                         && ++passes < 64);
             } finally {
