@@ -212,8 +212,8 @@ final class NioReadinessGroupTest {
             listener.configureBlocking(false);
             listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
             int port = ((InetSocketAddress) listener.getLocalAddress()).getPort();
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
             for (int round = 0; round < 48; ++round) {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
                 var abandoned = group.acceptAsync(listener);
                 assertTrue(abandoned.cancel(false));
                 while ((group.pendingCount() != 0 || group.activeAcceptLeases() != 0)
