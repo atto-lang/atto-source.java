@@ -91,8 +91,13 @@ def parse_json_bytes(raw, label, require_object=True):
     raw = bytes(raw)
     if raw.startswith(b"\xef\xbb\xbf"):
         raise Denied("BOM is not allowed: " + label)
+    def reject_constant(value):
+        raise Denied("nonstandard JSON number: " + label)
+
     try:
-        value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
+        value = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=unique_object,
+            parse_constant=reject_constant)
     except (UnicodeError, ValueError, RecursionError) as exc:
         raise Denied("invalid JSON: " + label) from exc
     if require_object and type(value) is not dict:
@@ -151,7 +156,7 @@ def load_receipt(path):
     raw = Path(path).read_bytes()
     doc = parse_json_bytes(raw, "authorization receipt")
     canonical = canonical_receipt_bytes(doc)
-    if raw.rstrip(b"\n") != canonical:
+    if raw not in (canonical, canonical + b"\n"):
         raise Denied("authorization receipt is not canonical")
     return doc, canonical
 
@@ -191,8 +196,13 @@ def content_bytes(repo, path, ref):
             or type(doc.get("size")) is not int
             or doc["size"] < 1 or doc["size"] > MAX_FILE):
         raise Denied("reviewed file metadata is invalid: " + path)
+    encoded = doc["content"]
+    if any(ch not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\r\n"
+           for ch in encoded):
+        raise Denied("reviewed file content is not strict base64: " + path)
+    compact = encoded.replace("\r", "").replace("\n", "")
     try:
-        raw = base64.b64decode(doc["content"], validate=True)
+        raw = base64.b64decode(compact, validate=True)
     except (ValueError, TypeError) as exc:
         raise Denied("reviewed file content is not strict base64: " + path) from exc
     if len(raw) != doc["size"]:
@@ -351,8 +361,10 @@ def git_output(root, *args):
         raise Denied("source checkout must be a real directory")
     try:
         p = subprocess.run(
-            ["git", "-C", str(root), *args], capture_output=True, text=True,
-            env=pub.verified_child_env(), timeout=30, check=False)
+            ["git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
+             "-c", "core.hooksPath=/dev/null", "-C", str(root), *args],
+            capture_output=True, text=True, env=pub.verified_child_env(),
+            timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
         raise Denied("local source Git proof unavailable") from exc
     if p.returncode != 0:
