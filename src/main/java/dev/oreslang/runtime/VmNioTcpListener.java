@@ -203,13 +203,19 @@ public final class VmNioTcpListener implements AutoCloseable {
 
         public VmNioTcpListener ownerListener() { return VmNioTcpListener.this; }
 
-        public OresFuture<List<Long>> readBytesAsync(int maximum) {
+        private Throwable reserveSocketOperation() {
             synchronized (gate) {
-                if (closed || terminated)
-                    return OresFuture.failed(new IOException("TCP connection closed"));
+                if (closed || terminated) return new IOException("TCP connection closed");
+                if (admittedOperations >= maxPending)
+                    return new RejectedExecutionException("TCP operation capacity exhausted");
+                ++admittedOperations;
+                return null;
             }
-            if (!reserveOperation())
-                return OresFuture.failed(new RejectedExecutionException("TCP operation capacity exhausted"));
+        }
+
+        public OresFuture<List<Long>> readBytesAsync(int maximum) {
+            Throwable denial = reserveSocketOperation();
+            if (denial != null) return OresFuture.failed(denial);
             final OresFuture<byte[]> raw;
             try {
                 raw = readiness.readAsync(channel, maximum);
@@ -256,12 +262,8 @@ public final class VmNioTcpListener implements AutoCloseable {
                     return OresFuture.failed(new IllegalArgumentException("TCP byte outside 0..255"));
                 snapshot[i] = (byte) b;
             }
-            synchronized (gate) {
-                if (closed || terminated)
-                    return OresFuture.failed(new IOException("TCP connection closed"));
-            }
-            if (!reserveOperation())
-                return OresFuture.failed(new RejectedExecutionException("TCP operation capacity exhausted"));
+            Throwable denial = reserveSocketOperation();
+            if (denial != null) return OresFuture.failed(denial);
             final OresFuture<Integer> written;
             try {
                 written = readiness.writeAsync(channel, snapshot);
