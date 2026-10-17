@@ -90,12 +90,16 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
 
         @Override public void close() {
             synchronized (ExplicitNativeI64Region.this) {
-                if (released.compareAndSet(false, true)) {
+                if (!released.get()) {
+                    // Validate before committing release state. If accounting is
+                    // corrupt, keep the pin logically live so cleanup can fail
+                    // closed/retry rather than silently marking it discharged.
                     if (lifetimePinCount <= 0) {
                         throw new IllegalStateException(
                                 "actor-native lifetime pin accounting underflow");
                     }
                     lifetimePinCount--;
+                    released.set(true);
                 }
                 if (closed.get() && loanCount == 0 && lifetimePinCount == 0
                         && !physicalClosed.get()) {
