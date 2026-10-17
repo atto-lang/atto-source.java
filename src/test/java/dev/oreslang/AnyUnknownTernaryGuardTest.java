@@ -73,6 +73,22 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void integerGuardUsesTheCanonicalIntegerDomainAcrossSurfaceSpellings() throws Exception {
+        String output = run("""
+                fnc check(u64 value): bool {
+                  return Integer.is_int(value);
+                }
+
+                pub fnc main(): void {
+                  stdio.stdout.write(check(42));
+                  return;
+                }
+                """);
+
+        assertEquals("true", output);
+    }
+
+    @Test
     void opaqueTypesCannotCrossAsyncBoundaryWithoutNarrowing() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
