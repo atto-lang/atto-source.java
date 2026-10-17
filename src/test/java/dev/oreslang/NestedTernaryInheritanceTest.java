@@ -1,6 +1,5 @@
 package dev.oreslang;
 
-import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -147,6 +146,48 @@ final class NestedTernaryInheritanceTest {
                     return;
                 }
                 """));
+    }
+
+    @Test
+    void doubleGuardNarrowsForFloatingPointOperations() throws Exception {
+        String program = """
+                fnc foo(any v): float {
+                    return Double.is_double(v) ? v * 2.0 : 0.0;
+                }
+                pub fnc main(): void {
+                    stdio.stdout.write(foo(2.5));
+                    stdio.stdout.write(foo("x"));
+                    return;
+                }
+                """;
+        accept(program);
+        assertEquals("5.00.0", run(program));
+    }
+
+    @Test
+    void userDefinedDoubleNamespaceCannotForgeRefinement() {
+        reject("""
+                define module Double
+                  pub fnc is_double(any value): bool { return true; }
+                end
+                pub fnc bad(any v): float {
+                  return Double.is_double(v) ? v : 0.0;
+                }
+                """);
+    }
+
+    @Test
+    void missingFalseBranchCannotEscapeThroughChainedTrueExpression() {
+        reject("""
+                pub fnc bad(): int {
+                    return true ? ((false ? 3) + 5) : 0;
+                }
+                """);
+        reject("""
+                pub fnc bad(): int {
+                    return true ? (false ? 3) : (false ? 4);
+                }
+                """);
     }
 
     @Test
