@@ -87,16 +87,18 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
             if (admittedTurns == Integer.MAX_VALUE)
                 throw new RejectedExecutionException("runnable admission counter exhausted");
 
+            NoGrowthTurn queued = new NoGrowthTurn(task);
             boolean previous = Boolean.TRUE.equals(FORBID_WORKER_START.get());
             FORBID_WORKER_START.set(Boolean.TRUE);
             try {
-                super.execute(task);
+                super.execute(queued);
                 admittedTurns++;
             } catch (RuntimeException rejected) {
                 // A guarded ThreadFactory failure can happen after queue offer
-                // only if the last worker disappeared concurrently. Remove the
-                // exact submitted identity before returning ownership to NIO.
-                getQueue().remove(task);
+                // only if the last worker disappeared concurrently. NoGrowthTurn
+                // retains Object identity equality, so rollback cannot remove a
+                // different value-equal host notification.
+                getQueue().remove(queued);
                 throw rejected;
             } finally {
                 if (previous) FORBID_WORKER_START.set(Boolean.TRUE);
@@ -106,6 +108,12 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
     }
 
     int minimumCarriers() { return minimum; }
+
+    private static final class NoGrowthTurn implements Runnable {
+        private final Runnable command;
+        private NoGrowthTurn(Runnable command) { this.command = command; }
+        @Override public void run() { command.run(); }
+    }
 
     @Override public void execute(Runnable task) {
         Objects.requireNonNull(task, "task");
