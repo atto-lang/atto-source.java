@@ -18,8 +18,8 @@ final class VmNioTcpListenerTest {
             assertEquals(1, vm.nioReactorCount());
             var firstAccept = first.acceptAsync();
             var secondAccept = second.acceptAsync();
-            try (var client1 = new Socket(InetAddress.getLoopbackAddress(), first.localPort());
-                 var client2 = new Socket(InetAddress.getLoopbackAddress(), second.localPort())) {
+            try (var client1 = new Socket(InetAddress.getByName("127.0.0.1"), first.localPort());
+                 var client2 = new Socket(InetAddress.getByName("127.0.0.1"), second.localPort())) {
                 client1.setSoTimeout(3000);
                 client2.setSoTimeout(3000);
                 var server1 = firstAccept.get(3, TimeUnit.SECONDS);
@@ -61,7 +61,7 @@ final class VmNioTcpListenerTest {
             assertEquals(0, vm.nioReadiness().pendingCount());
             assertEquals(0, vm.nioReadiness().activeAcceptLeases());
             var armed = listener.acceptAsync();
-            try (var peer = new Socket(InetAddress.getLoopbackAddress(), listener.localPort())) {
+            try (var peer = new Socket(InetAddress.getByName("127.0.0.1"), listener.localPort())) {
                 var accepted = armed.get(3, TimeUnit.SECONDS);
                 try {
                     var rejected = listener.acceptAsync();
@@ -84,7 +84,7 @@ final class VmNioTcpListenerTest {
         OresVM vm = OresVM.create(Runnable::run);
         try (var listener = VmNioTcpListener.loopback(vm.nioReadiness(), 0, 16, 1, 16)) {
             var accepting = listener.acceptAsync();
-            try (var peer = new Socket(InetAddress.getLoopbackAddress(), listener.localPort())) {
+            try (var peer = new Socket(InetAddress.getByName("127.0.0.1"), listener.localPort())) {
                 var connected = accepting.get(3, TimeUnit.SECONDS);
                 connected.closeAsync().get(3, TimeUnit.SECONDS);
                 var late = connected.readBytesAsync(1);
