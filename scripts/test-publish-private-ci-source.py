@@ -2290,5 +2290,28 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.assertTrue((MODULE.parent.parent / path.lstrip("/")).is_file())
 
 
+
+    def test_private_source_ci_python_verifiers_use_isolated_mode(self):
+        root = MODULE.parent.parent
+        runner_proofs = {
+            ".github/workflows/private-exact-main-validation.yml": 1,
+            ".github/workflows/private-exact-candidate-validation.yml": 2,
+            ".github/workflows/private-exact-publisher-validation.yml": 1,
+        }
+        for rel, expected_count in runner_proofs.items():
+            with self.subTest(workflow=rel):
+                source = (root / rel).read_text(encoding="utf-8")
+                self.assertEqual(source.count("python3 -I - <<'PY'"), expected_count)
+                self.assertNotIn("python3 - <<'PY'", source)
+        publisher = (root / ".github/workflows/private-exact-publisher-validation.yml"
+                     ).read_text(encoding="utf-8")
+        self.assertIn("python3 -I -m py_compile", publisher)
+        preflight = (root / ".github/workflows/private-ci-mirror-preflight.yml"
+                     ).read_text(encoding="utf-8")
+        self.assertIn("python3 -I -m py_compile", preflight)
+        self.assertIn("python3 -I scripts/test-publish-private-ci-source.py", preflight)
+        self.assertNotIn("python3 scripts/test-publish-private-ci-source.py", preflight)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
