@@ -173,7 +173,7 @@ public final class SupervisorProcess implements AutoCloseable {
     }
 
     private void finishCallback(
-            SupervisorFailureControl.Notice notice,
+            Pending current,
             Directive decision,
             Throwable error) {
         synchronized (this) {
