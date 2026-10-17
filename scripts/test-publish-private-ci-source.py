@@ -2413,16 +2413,19 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     for path in pub.REQUIRED_CODEOWNER_PATHS]
         self.assertEqual(effective[-len(required):], required)
         self.assertEqual(len(effective), len(set(effective)))
-        self.assertGreaterEqual(len(required), 18)
+        self.assertGreaterEqual(len(required), 20)
 
     def test_source_local_runner_entrypoints_and_admission_tests_are_owned(self):
         required = set(pub.REQUIRED_CODEOWNER_PATHS)
         runner_paths = {
+            "/.github/workflows/private-ci-mirror-preflight.yml",
             "/.github/workflows/private-exact-main-validation.yml",
             "/.github/workflows/private-exact-candidate-validation.yml",
             "/.github/workflows/private-exact-publisher-validation.yml",
             "/docs/security/PRIVATE_EXACT_MAIN_VALIDATION.md",
             "/docs/security/PRIVATE_CI_POLICY_INTEGRATION_REVIEW_2026-10-16.md",
+            "/scripts/ci_private_mirror_preflight.py",
+            "/tests/test_ci_private_mirror_preflight.py",
             "/src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java",
             "/src/test/java/dev/oreslang/PrivateExactPublisherAdmissionMutationTest.java",
             "/src/test/java/dev/oreslang/PrivateExactPublisherValidationWorkflowSecurityTest.java",
