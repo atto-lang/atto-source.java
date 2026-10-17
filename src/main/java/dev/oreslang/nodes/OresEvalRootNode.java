@@ -4988,7 +4988,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isVoidReturnType(Ast.FunctionDecl function) {
-            if (function.kind() == Ast.CallableKind.ROUTINE || function.returnType() == null) return true;
+            if (function.returnType() == null) return true;
             Ast.TypeRef type = function.returnType();
             Set<String> seen = new java.util.HashSet<>();
             while (type != null && seen.add(type.name())) {
