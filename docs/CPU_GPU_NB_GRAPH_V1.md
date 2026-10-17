@@ -42,11 +42,41 @@ value binding, and a bare empty `gpu {}` is rejected rather than fabricating
 a kernel launch, result, or completion value. An effectful `gpu { ... }` may
 be a statement only once the typed launch and device-effect checks exist.
 An internal host-graph `Unit` completion sentinel is an implementation detail,
-not an Oreslang expression value or an alternate type spelling. The last
-value expression without a semicolon is the proposed region result, or an
-explicit value-result form can be selected by the grammar team; ordinary
-`return` must not silently return from the enclosing routine. This is not
-existing parser behavior.
+not an Oreslang expression value or an alternate type spelling. **Canonical explicit-return rule:** value-producing CPU/GPU regions require
+`return expression;` on every reachable normal completion path. A trailing
+expression never implicitly becomes the result. `return` exits the innermost
+execution region, not the surrounding function. Void regions may fall through
+or use `return;`; non-void regions cannot use bare `return;`. Empty GPU
+regions remain invalid. These are prospective semantics, not enabled lowering.
+
+```ores
+const result = cpu { return compute(); };                // T
+const future = nb cpu { return compute(); };             // Future<T>
+const stream = cpu { return make_stream(); };             // ReadableStream<T>
+const pending = nb cpu { return make_stream(); };        // Future<ReadableStream<T>>
+// REJECT: missing explicit value return
+const invalid = cpu { compute(); };
+```
+
+**Streams and channels are independent of nonblocking submission.** Returning a
+`ReadableStream<T>` returns its handle; `nb` wraps asynchronous stream
+construction in `Future<ReadableStream<T>>`, not an implicit stream of futures.
+Explicit `Channel<T>` handles require bounded element and byte credits,
+ownership transfer, terminal close/error, and cancellation that wakes blocked
+producers/consumers. Proposed `cpu gen* { yield value; }` and
+`nb cpu gen* { yield value; }` produce streams incrementally, with `yield`
+reserved for element emission, distinct from `rt cooperate` scheduler
+cooperation. Generator termination uses `return;`. These forms remain
+fail-closed until compiler lowering, backpressure, and physical cleanup exist.
+GPU kernels cannot yield, await host channels, or call host `writech`; a
+bounded host continuation publishes after device completion and transfer fence.
+
+**Required tests:** reject implicit expression tails, missing return paths,
+bare return in non-void regions, valued return in void regions, unbounded
+publication, GPU-side yield/channel I/O, and unsupported generator syntax.
+Eventually accept explicit-return scalar CPU/nb CPU, stream-handle construction,
+and bounded generator/channel cancellation and close tests on real compilers.
+
 
 ## Separate execution regions from anonymous GPU kernel declarations
 
