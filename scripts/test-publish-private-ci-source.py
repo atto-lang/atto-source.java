@@ -123,7 +123,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == pub.PROTECTED_RULES_ROUTE:
             return {"enforce_admins": {"enabled": True},
                     "required_status_checks": {"strict": True,
-                                               "contexts": ["preflight-regressions"]},
+                                               "contexts": ["preflight-regressions", "private-ci-policy"],
+                                               "checks": [{"context": "private-ci-policy", "app_id": 15368}]},
                     "required_conversation_resolution": {"enabled": True}}
         if route == pub.PROTECTED_REVIEWS_ROUTE:
             return {"required_approving_review_count": 1,
@@ -180,7 +181,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             valid_checks = self.carrier_status_checks.pop(0)
             return {"enforce_admins": {"enabled": self.carrier_admin_enforced.pop(0)},
                     "required_status_checks": {"strict": valid_checks,
-                                               "contexts": ["verified-carrier-ci"] if valid_checks else []},
+                                               "contexts": ["verified-carrier-ci", "carrier-policy"] if valid_checks else [],
+                                               "checks": [{"context": "carrier-policy", "app_id": 15368}] if valid_checks else []},
                     "required_conversation_resolution": {
                         "enabled": self.carrier_conversations.pop(0)}}
         if route == "repos/trusted/ci/branches/main/protection/required_pull_request_reviews":
@@ -348,6 +350,30 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "administrator and CI protections"):
                 self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_protected_carrier_requires_issuer_bound_actions_check(self):
+        original = self.fake_api
+        forged = (
+            None, [],
+            [{"context": "carrier-policy", "app_id": -1}],
+            [{"context": "carrier-policy", "app_id": 15369}],
+            [{"context": "carrier-policy", "app_id": False}],
+            [{"context": "wrong-policy", "app_id": 15368}],
+            [{"context": "carrier-policy", "app_id": 15368},
+             {"context": "carrier-policy", "app_id": 15368}],
+        )
+        for entries in forged:
+            with self.subTest(checks=entries):
+                self.route_calls.clear()
+                def spoofed(route, method="GET", payload=None):
+                    result = original(route, method, payload)
+                    if route == "repos/trusted/ci/branches/main/protection":
+                        result["required_status_checks"]["checks"] = entries
+                    return result
+                with patch.object(pub, "gh_api", side_effect=spoofed):
+                    with self.assertRaises(pub.Denied):
+                        self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_carrier_main_requires_strict_status_checks_before_source_read(self):
         self.carrier_status_checks = [False] * 100
@@ -853,6 +879,30 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     with self.assertRaisesRegex(pub.Denied, "resolved review conversations"):
                         self.publish()
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_protected_source_requires_issuer_bound_actions_check(self):
+        original = self.fake_api
+        forged = (
+            None, [],
+            [{"context": "private-ci-policy", "app_id": -1}],
+            [{"context": "private-ci-policy", "app_id": 15369}],
+            [{"context": "private-ci-policy", "app_id": True}],
+            [{"context": "wrong-policy", "app_id": 15368}],
+            [{"context": "private-ci-policy", "app_id": 15368},
+             {"context": "private-ci-policy", "app_id": 15368}],
+        )
+        for entries in forged:
+            with self.subTest(checks=entries):
+                self.route_calls.clear()
+                def spoofed(route, method="GET", payload=None):
+                    result = original(route, method, payload)
+                    if route == pub.PROTECTED_RULES_ROUTE:
+                        result["required_status_checks"]["checks"] = entries
+                    return result
+                with patch.object(pub, "gh_api", side_effect=spoofed):
+                    with self.assertRaises(pub.Denied):
+                        self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_source_branch_protection_must_enforce_admins_and_strict_ci(self):
         failures = (
@@ -2446,12 +2496,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     for path in pub.REQUIRED_CODEOWNER_PATHS]
         self.assertEqual(effective[-len(required):], required)
         self.assertEqual(len(effective), len(set(effective)))
-        self.assertGreaterEqual(len(required), 20)
+        self.assertGreaterEqual(len(required), 22)
 
     def test_source_local_runner_entrypoints_and_admission_tests_are_owned(self):
         required = set(pub.REQUIRED_CODEOWNER_PATHS)
         runner_paths = {
             "/.github/workflows/private-ci-mirror-preflight.yml",
+            "/.github/workflows/private-ci-policy.yml",
+            "/.github/private-ci-required-checks.json",
             "/.github/workflows/private-exact-main-validation.yml",
             "/.github/workflows/private-exact-candidate-validation.yml",
             "/.github/workflows/private-exact-publisher-validation.yml",
