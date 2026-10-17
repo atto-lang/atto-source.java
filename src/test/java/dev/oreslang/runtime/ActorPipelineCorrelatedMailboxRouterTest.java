@@ -388,6 +388,73 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
     }
 
     @Test
+    void compilerForwardAllBridgeReturnsPreallocatedTypedBranchReceipts()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var report = new AtomicReference<List<ActorRuntime.ActorRouteReceipt>>();
+            var reportReady = new CountDownLatch(1);
+            var delivered = new CountDownLatch(1);
+
+            var workerA = runtime.<String>spawnShared(() -> (value, actor) -> {
+                assertEquals("payload", value);
+                delivered.countDown();
+            });
+            var workerB = runtime.<String>spawnShared(() -> (value, actor) -> {
+                throw new AssertionError("stopped worker must never receive routed DATA");
+            });
+            var sink = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                report.set(runtime.routeCurrentPipelineForwardAll("payload"));
+                reportReady.countDown();
+            });
+
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, fanInGraph(),
+                    Map.of("source", source, "worker-a", workerA,
+                           "worker-b", workerB, "sink", sink), 43, 16);
+
+            workerB.stop();
+            workerB.getDone().get(5, TimeUnit.SECONDS);
+
+            assertThrows(SecurityException.class,
+                    () -> runtime.routeCurrentPipelineForwardAll("host-spoof"));
+            router.ingress("source", "start");
+
+            assertTrue(reportReady.await(5, TimeUnit.SECONDS));
+            assertTrue(delivered.await(5, TimeUnit.SECONDS));
+            var receipts = report.get();
+            assertNotNull(receipts);
+            assertEquals(2, receipts.size());
+            assertThrows(UnsupportedOperationException.class, receipts::clear);
+
+            var first = receipts.get(0);
+            var second = receipts.get(1);
+            assertEquals(0, first.edgeIndex());
+            assertEquals(1, second.edgeIndex());
+            assertEquals(first.flowId(), second.flowId());
+            assertNotEquals(first.routeId(), second.routeId());
+            assertTrue(first.admitted());
+            assertEquals("", first.error());
+            assertFalse(second.admitted());
+            assertEquals("worker-b", second.target());
+            assertTrue(second.error().contains("mailbox admission rejected"));
+
+            source.drain().get(5, TimeUnit.SECONDS);
+            workerA.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(0, router.outstanding(),
+                    "source fanout bridge must retire accepted, rejected and source frames");
+
+            router.close();
+            source.stop();
+            workerA.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            workerA.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void partialMailboxRejectionRetainsEarlierAdmissionAndOriginalFailure()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
