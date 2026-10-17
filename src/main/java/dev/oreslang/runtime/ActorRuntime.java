@@ -7939,23 +7939,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void terminateTree(Throwable cause, boolean recordCause) {
-            if (recordCause && cause != null) {
-                CoreLog.record(
-                        cause instanceof ActorCancelledException
-                                ? CoreLog.Level.INFO
-                                : CoreLog.Level.ERROR,
-                        cause instanceof ActorCancelledException
-                                ? CoreLog.ACTOR_CANCELLED
-                                : CoreLog.ACTOR_TERMINAL_FAILURE,
-                        ref.generation());
-            }
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             List<DrainWaiter> failedDrainWaiters;
+            boolean wonTerminalCause = false;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
-                    ref.terminationCause.compareAndSet(null, cause);
+                    wonTerminalCause =
+                            ref.terminationCause.compareAndSet(null, cause);
                 }
                 stopped.set(true);
                 sealing = true;
@@ -7973,6 +7965,17 @@ public final class ActorRuntime implements AutoCloseable {
                 pendingOperations.clear();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
+            }
+
+            if (wonTerminalCause) {
+                CoreLog.record(
+                        cause instanceof ActorCancelledException
+                                ? CoreLog.Level.INFO
+                                : CoreLog.Level.ERROR,
+                        cause instanceof ActorCancelledException
+                                ? CoreLog.ACTOR_CANCELLED
+                                : CoreLog.ACTOR_TERMINAL_FAILURE,
+                        ref.generation());
             }
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
