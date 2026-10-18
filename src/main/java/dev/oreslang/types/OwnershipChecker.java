@@ -39,12 +39,14 @@ public final class OwnershipChecker {
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Map<String, Ast.ClassDecl>> linkedClassesByModule = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
+    private String currentLexicalModule;
     /** Every active try records outer roots transferred anywhere inside its body. */
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
 
@@ -66,24 +68,70 @@ public final class OwnershipChecker {
         }
         OwnershipChecker checker = new OwnershipChecker(program);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
-            String name = entry.getKey();
+            String key = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
-            if (name == null || declaration == null || !name.equals(declaration.name())
+            if (key == null || declaration == null
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
-                throw new IllegalArgumentException("invalid linked ownership class: " + name);
+                throw new IllegalArgumentException("invalid linked ownership class: " + key);
             }
-            boolean imported = program.imports().stream().anyMatch(use ->
-                    use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
-                            && use.names().contains(name));
-            if (!imported || checker.classes.containsKey(name)
-                    || checker.ambiguousClasses.contains(name)) {
+            ScopedLinkedClass binding = scopedLinkedClass(program, key, declaration);
+            Map<String, Ast.ClassDecl> scoped =
+                    checker.linkedClassesByModule.computeIfAbsent(
+                            binding.scope(), ignored -> new HashMap<>());
+            if (scoped.putIfAbsent(binding.name(), declaration) != null) {
                 throw new IllegalArgumentException(
-                        "linked ownership class was not uniquely imported: " + name);
+                        "linked ownership class was not uniquely imported in module '"
+                                + binding.scope() + "': " + binding.name());
             }
-            checker.classes.put(name, declaration);
         }
         checker.validate(program);
         return program;
+    }
+
+    private record ScopedLinkedClass(String scope, String name) { }
+
+    private static String importScope(Ast.ImportDecl imported) {
+        return imported.lexicalModule() == null
+                ? Parser.ROOT_MODULE
+                : imported.lexicalModule();
+    }
+
+    private static ScopedLinkedClass scopedLinkedClass(
+            Ast.Program program,
+            String key,
+            Ast.ClassDecl declaration) {
+        String name = declaration.name();
+        if (key.equals(name)) {
+            Set<String> scopes = program.imports().stream()
+                    .filter(use -> use.kind() == Ast.ImportKind.CLASS
+                            && !use.wildcard()
+                            && use.names().contains(name))
+                    .map(OwnershipChecker::importScope)
+                    .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+            if (scopes.size() != 1) {
+                throw new IllegalArgumentException(
+                        "legacy linked ownership class key '" + name
+                                + "' must resolve to exactly one lexical import scope");
+            }
+            return new ScopedLinkedClass(scopes.iterator().next(), name);
+        }
+        String suffix = "::" + name;
+        if (!key.endsWith(suffix)) {
+            throw new IllegalArgumentException(
+                    "invalid scoped linked ownership class key: " + key);
+        }
+        String scope = key.substring(0, key.length() - suffix.length());
+        boolean imported = !scope.isBlank() && program.imports().stream().anyMatch(use ->
+                use.kind() == Ast.ImportKind.CLASS
+                        && !use.wildcard()
+                        && importScope(use).equals(scope)
+                        && use.names().contains(name));
+        if (!imported) {
+            throw new IllegalArgumentException(
+                    "linked ownership class was not imported in module '"
+                            + scope + "': " + name);
+        }
+        return new ScopedLinkedClass(scope, name);
     }
 
     private void index(Ast.Program program) {
@@ -129,9 +177,15 @@ public final class OwnershipChecker {
 
     private void validate(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
-            for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn) checkFunction(fn);
-                else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
+            String previousModule = currentLexicalModule;
+            currentLexicalModule = module.name();
+            try {
+                for (Ast.Decl decl : module.declarations()) {
+                    if (decl instanceof Ast.FunctionDecl fn) checkFunction(fn);
+                    else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
+                }
+            } finally {
+                currentLexicalModule = previousModule;
             }
         }
     }
@@ -3095,6 +3149,13 @@ public final class OwnershipChecker {
     }
 
     private Ast.ClassDecl findClass(String name) {
+        String scope = currentLexicalModule == null
+                ? Parser.ROOT_MODULE
+                : currentLexicalModule;
+        Ast.ClassDecl linked = linkedClassesByModule
+                .getOrDefault(scope, Map.of())
+                .get(name);
+        if (linked != null) return linked;
         if (ambiguousClasses.contains(name)) return null;
         return classes.get(name);
     }
