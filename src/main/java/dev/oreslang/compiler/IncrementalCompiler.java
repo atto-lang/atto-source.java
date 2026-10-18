@@ -236,6 +236,70 @@ public final class IncrementalCompiler {
         return new LinkedClasses(Map.copyOf(linked), Map.copyOf(aliases));
     }
 
+    private static Map<String, Ast.InterfaceDecl> linkedImportedContracts(
+            String unitId,
+            Ast.Program program,
+            Map<String, Ast.Program> programs,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, Ast.InterfaceDecl> result = new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.kind() != Ast.ImportKind.CONTRACT || imported.wildcard()) continue;
+
+            String targetId = ImportGraph.resolveImportUnitId(
+                    unitId, imported, programs.keySet(), importResolutions);
+            if (targetId == null) continue;
+            Ast.Program target = programs.get(targetId);
+            if (target == null) {
+                throw new IllegalArgumentException(
+                        "missing linked contract source '" + targetId + "'");
+            }
+
+            for (String sourceName : imported.names()) {
+                Ast.InterfaceDecl match = findExportedContract(target, sourceName, imported.path());
+                if (!match.parents().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "imported contract '" + sourceName
+                                    + "' has inherited obligations; parent provenance is required");
+                }
+                validatePortableImportedContract(match, targetId);
+                String localName = ImportRules.localName(imported, sourceName);
+                if (result.putIfAbsent(localName, match) != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate imported contract metadata for '" + localName + "'");
+                }
+            }
+        }
+        return Map.copyOf(result);
+    }
+
+    private static Ast.InterfaceDecl findExportedContract(
+            Ast.Program target,
+            String sourceName,
+            String importPath) {
+        Ast.InterfaceDecl match = null;
+        for (Ast.ModuleDecl module : target.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.InterfaceDecl iface
+                        && iface.moduleContract()
+                        && iface.visibility() == Ast.Visibility.PUBLIC
+                        && iface.name().equals(sourceName)) {
+                    if (match != null) {
+                        throw new IllegalArgumentException(
+                                "import contract '" + sourceName + "' from '"
+                                        + importPath + "' is ambiguous");
+                    }
+                    match = iface;
+                }
+            }
+        }
+        if (match == null) {
+            throw new IllegalArgumentException(
+                    "import contract '" + sourceName + "' from '" + importPath
+                            + "' does not resolve to an exported contract");
+        }
+        return match;
+    }
+
     public synchronized void clear() {
         cache.clear();
         cachedImportResolutionDigests.clear();
