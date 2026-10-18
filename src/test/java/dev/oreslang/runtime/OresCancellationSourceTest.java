@@ -265,4 +265,48 @@ final class OresCancellationSourceTest {
         }
     }
 
+
+    @Test
+    void reentrantTokenObserversQueueNewCancellationWaves() {
+        try (OresCancellationSource root = new OresCancellationSource();
+             OresCancellationSource unrelated = new OresCancellationSource()) {
+            AtomicInteger rootNotices = new AtomicInteger();
+            AtomicInteger unrelatedNotices = new AtomicInteger();
+            java.util.concurrent.atomic.AtomicReference<OresCancellationSource> lateChild =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            root.token().onCancellationRequested(() -> {
+                rootNotices.incrementAndGet();
+                assertFalse(root.cancel(), "reentrant claim must lose");
+                assertTrue(unrelated.cancel(), "independent source is claimed");
+                OresCancellationSource child =
+                        OresCancellationSource.linked(root.token());
+                assertTrue(child.isCancellationRequested());
+                lateChild.set(child);
+            });
+            unrelated.token().onCancellationRequested(unrelatedNotices::incrementAndGet);
+            assertTrue(root.cancel());
+            assertEquals(1, rootNotices.get());
+            assertEquals(1, unrelatedNotices.get());
+            OresCancellationSource child = lateChild.get();
+            assertNotNull(child);
+            try (child) {
+                assertTrue(child.isCancellationRequested());
+                assertEquals(0, child.notification().pendingRuntimeWaiterCount());
+            }
+        }
+    }
+
+    @Test
+    void detachedLinkedChildIsNotRetainedByItsFormerParent() {
+        try (OresCancellationSource root = new OresCancellationSource();
+             OresCancellationSource child = OresCancellationSource.linked(root.token())) {
+            assertFalse(root.isCancellationRequested());
+            assertTrue(child.cancel());
+            assertTrue(root.cancel());
+            assertFalse(child.cancel());
+            assertTrue(child.isCancellationRequested());
+            assertEquals(0, root.notification().pendingRuntimeWaiterCount());
+        }
+    }
+
 }
