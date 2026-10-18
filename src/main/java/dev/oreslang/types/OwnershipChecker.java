@@ -198,14 +198,21 @@ public final class OwnershipChecker {
             try {
                 for (Ast.FieldDecl field : klass.fields()) {
                     if (field.initializer() == null) continue;
-                    ValueInfo value = checkExpr(field.initializer(), initializerScope, true);
-                    if (isBorrowValue(value)) {
-                        throw error("class field '" + klass.name() + "." + field.name()
-                                + "' cannot store a borrowed initializer result");
-                    }
-                    if (containsMutexGuardType(value.type)) {
-                        throw error("class field '" + klass.name() + "." + field.name()
-                                + "' cannot store a MutexGuard");
+                    Scope fieldScope = field.isStatic() ? new Scope(null) : initializerScope;
+                    try {
+                        ValueInfo value = checkExpr(field.initializer(), fieldScope, true);
+                        if (isBorrowValue(value)) {
+                            throw error((field.isStatic() ? "static field '" : "class field '")
+                                    + klass.name() + "." + field.name()
+                                    + "' cannot store a borrowed initializer result");
+                        }
+                        if (containsMutexGuardType(value.type)) {
+                            throw error((field.isStatic() ? "static field '" : "class field '")
+                                    + klass.name() + "." + field.name()
+                                    + "' cannot store a MutexGuard");
+                        }
+                    } finally {
+                        if (field.isStatic()) fieldScope.close();
                     }
                 }
             } finally {
