@@ -55,10 +55,12 @@ public final class EnumCaseSourceBindings {
         public Map<String, EnumInfo> enums() { return enums; }
 
         /**
-         * Resolves types ONLY from compiler-proven local qualified parameter
-         * type refs. It is forbidden to derive them from runtime enum objects.
+         * SOURCE-FREE / OFFLINE ORACLE ONLY. These TypeRef values are
+         * caller-supplied and NOT a validated expression type proof. Never
+         * wire this helper into runtime or optimizer dispatch: production
+         * lowering must supply typechecker-authenticated symbol IDs instead.
          */
-        public Candidate select(Key key, List<Ast.TypeRef> staticArgumentTypes) {
+        public Candidate selectStagedTypeRefs(Key key, List<Ast.TypeRef> staticArgumentTypes) {
             List<Candidate> candidates = families.get(key);
             if (candidates == null) throw new IllegalArgumentException("unknown static callable family");
             if (staticArgumentTypes.size() != key.arity()) {
