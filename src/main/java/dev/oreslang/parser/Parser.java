@@ -61,7 +61,7 @@ public final class Parser {
         }
 
         List<Ast.ImportDecl> imports = new ArrayList<>();
-        while (match(IMPORT)) imports.add(parseImport());
+        while (match(IMPORT)) imports.add(parseImport(null));
 
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
@@ -124,7 +124,7 @@ public final class Parser {
                         throw error(previous(), "modules do not accept declaration modifiers");
                     }
                     rejectCallableStructuralAnnotation(annotations, "module declarations");
-                    modules.add(parseModule(annotations));
+                    modules.add(parseModule(annotations, imports));
                     continue;
                 }
                 if (match(CONTRACT)) {
@@ -177,7 +177,7 @@ public final class Parser {
         return new Ast.Program(namespace, imports, modules);
     }
 
-    private Ast.ImportDecl parseImport() {
+    private Ast.ImportDecl parseImport(String lexicalModule) {
         Ast.ImportKind kind;
         List<String> names = new ArrayList<>();
         boolean wildcard = false;
@@ -224,7 +224,7 @@ public final class Parser {
         String path = consume(STRING, "expected quoted import path").lexeme();
         if (path.isBlank()) throw error(previous(), "import path cannot be empty");
         consume(SEMICOLON, "expected ';' after import");
-        return new Ast.ImportDecl(kind, names, wildcard, namespace, path);
+        return new Ast.ImportDecl(kind, names, wildcard, namespace, path, lexicalModule);
     }
 
     private void parseImportSelection(Ast.ImportKind kind, List<String> names) {
@@ -252,15 +252,30 @@ public final class Parser {
         return consume(IDENT, "expected imported name").lexeme();
     }
 
-    private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
+    private Ast.ModuleDecl parseModule(
+            List<Ast.Annotation> annotations,
+            List<Ast.ImportDecl> programImports) {
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
         List<Ast.TypeRef> contracts = match(CONFORMS) ? parseTypeRefList() : List.of();
         // Canonical module syntax is "define module Name as ... end".
         // Keep the pre-"as" spelling accepted while existing source migrates.
         match(AS);
+
+        // Imports are lexical dependencies of this module, not of the entire
+        // source file. Keep them in Program.imports so the existing linker and
+        // import-closure machinery can still discover every source dependency,
+        // but attach the module identity for name visibility/reachability.
+        while (match(IMPORT)) programImports.add(parseImport(name));
+
         List<Ast.Decl> declarations = new ArrayList<>();
-        while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
+        while (!check(END) && !check(EOF)) {
+            if (check(IMPORT)) {
+                throw error(peek(),
+                        "module imports must appear before module declarations");
+            }
+            declarations.add(parseModuleMember());
+        }
         consume(END, "expected 'end' to close module " + name);
         return new Ast.ModuleDecl(name, annotations, contracts, declarations);
     }
