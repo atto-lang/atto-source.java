@@ -22,6 +22,7 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    private boolean legacyMaxActorThreadsEnumDeclared;
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
     private int matchGuardStartToken = -1;
@@ -111,6 +112,14 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (matchContextualIdentifier("enum")) {
+                    if (!annotations.isEmpty()) {
+                        throw error(previous(), "built-in MaxActorThreads enum cannot carry annotations");
+                    }
+                    validateOnlyVisibilityModifiers(modifiers, "built-in MaxActorThreads enum");
+                    parseLegacyMaxActorThreadsEnum();
+                    continue;
+                }
                 if (match(ACTOR, ISOACTOR)) {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
                     continue;
@@ -858,15 +867,71 @@ public final class Parser {
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods, threads);
     }
 
+    /**
+     * Compatibility declaration from the earlier, immutable enum proposal.
+     * General enum lowering remains a separate compiler feature: no arbitrary
+     * values, redefinitions, duplicate declarations or user enum shadowing.
+     */
+    private void parseLegacyMaxActorThreadsEnum() {
+        if (legacyMaxActorThreadsEnumDeclared) {
+            throw error(previous(), "duplicate MaxActorThreads enum definition");
+        }
+        String name = consume(IDENT, "expected MaxActorThreads enum name").lexeme();
+        if (!name.equals("MaxActorThreads")) {
+            throw error(previous(), "general enum declaration requires enum compiler lowering");
+        }
+        consume(AS, "MaxActorThreads requires 'as'");
+        for (Ast.MaxActorThreads tier : Ast.MaxActorThreads.values()) {
+            String member = consume(IDENT, "expected MaxActorThreads." + tier.name()).lexeme();
+            if (!member.equals(tier.name())) {
+                throw error(previous(), "MaxActorThreads members require canonical order");
+            }
+            String type = consume(IDENT, "expected 'int' backing type").lexeme();
+            if (!type.equals("int")) {
+                throw error(previous(), "MaxActorThreads backing type must be int");
+            }
+            consume(EQUAL, "expected '=' after MaxActorThreads backing type");
+            String literal = consume(INT, "expected canonical MaxActorThreads integer").lexeme();
+            if (!literal.equals(Integer.toString(tier.value()))) {
+                throw error(previous(), "MaxActorThreads backing value must be the canonical integer");
+            }
+            match(SEMICOLON);
+        }
+        consume(END, "expected 'end' after MaxActorThreads.HIGH");
+        legacyMaxActorThreadsEnumDeclared = true;
+    }
+
     /** Normalize Java-style source annotations into the same actor policy as native syntax. */
     private Ast.ActorThreadPolicy parseActorThreadAnnotation(List<Ast.Annotation> annotations) {
         Ast.ActorThreadPolicy result = null;
         for (Ast.Annotation annotation : annotations) {
+            if (result != null) {
+                throw error(previous(),
+                        "duplicate actor thread policy: @ActorThreads and @ActorMaxThreads cannot be combined");
+            }
+            if (annotation.name().equals("ActorMaxThreads")) {
+                if (annotation.arguments().size() != 1) {
+                    throw error(previous(), "@ActorMaxThreads requires exactly one enum value");
+                }
+                Ast.TypeRef value = annotation.arguments().getFirst();
+                if (value.inferArguments() || !value.arguments().isEmpty()
+                        || !value.name().startsWith("MaxActorThreads.")) {
+                    throw error(previous(),
+                            "@ActorMaxThreads expects MaxActorThreads.LOW/MEDIUM/HIGH");
+                }
+                String member = value.name().substring("MaxActorThreads.".length());
+                Ast.MaxActorThreads tier;
+                try { tier = Ast.MaxActorThreads.valueOf(member); }
+                catch (IllegalArgumentException invalid) {
+                    throw error(previous(), "unknown MaxActorThreads enum member: " + member);
+                }
+                result = newActorThreadPolicy(1, tier.value());
+                continue;
+            }
             if (!annotation.name().equals("ActorThreads")) {
                 throw error(previous(), "@" + annotation.name()
                         + " on actor declarations is not a supported actor annotation");
             }
-            if (result != null) throw error(previous(), "duplicate @ActorThreads annotation");
             int min = 1, max = 1;
             for (Ast.TypeRef arg : annotation.arguments()) {
                 if (!arg.isNamedParameter()) {
