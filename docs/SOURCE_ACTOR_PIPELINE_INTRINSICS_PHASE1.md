@@ -222,6 +222,49 @@ provides safe rejection classification, **not exactly-once processing,
 transactional multi-mailbox fanout, durable acknowledgement or remote
 delivery guarantees**.
 
+## Exclusive mailbox admission / runner audit — 2026-10-17
+
+The VM-owned route `MailFrame` now contains an atomic three-state
+publication protocol: `FREE → CLAIMED → PUBLISHED` for a successful
+one-shot delivery, or `CLAIMED → FREE` on **known prepublication**
+rejection. `ActorRuntime.sendWithPipelineFrame` claims before any
+fallible DATA preparation and refunds the claim with mailbox credits if
+it never publishes. Two concurrent publishers cannot enqueue the same
+sealed frame. `PUBLISHED` never transitions backward.
+
+The exact mailbox `tryWrite` commit is immediately followed by a
+**nonthrowing, allocation-free, monitor-free** publication state update.
+No fallible session/epoch lookup can now throw *between* actual enqueue
+and the publication marker. For a postpublication fault, the router
+preserves envelope-owned child cleanup and refuses any automatic
+source/reverse retry, including ingress. A returned failure is only a
+safe rollback when publication has provably not occurred.
+
+The standalone route ledger smoke adds a prepublication claim/retry
+test, an eight-way CAS contention test, and no replay after publication.
+Together with existing 8,000 RR and 2,000 native-style logical branch
+iterations, these remain committed but **not exact-head Maven/JUnit
+execution evidence** until an authorized runner executes them.
+
+**Private alternate-org runner proof:** The source files
+`ActorPipelineRoutePlan.java`, `ActorPipelineRouteSession.java` and
+their two JDK21 standalone smoke tests were copied byte-for-byte to
+private [zed-pkg-test test PR #7](https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/pull/7)
+and [ores-stack test PR #3](https://github.com/ores-stack/ores-stack-infra/pull/3).
+The GitHub connector confirmed all **four original Git blob SHAs** after
+each copy and embedded exact `git hash-object` assertions in the
+private JDK21 workflow. No cross-org source checkout token or secret
+was used. Both orgs' workflow attempts failed with **no steps and no
+artifacts**, so they supply **no JDK21 runtime pass**. These are
+**four-file test-closure mirrors**, NOT copies of or proofs against
+the entire Java PR Git tree. The exact full-tree mirror remains blocked
+by unavailable Git tree enumeration/transfer and runner scheduling.
+
+A separate **local JDK21 isolated algorithm model**, not the original
+repository source, passed 500 × eight-contender route-claim races and
+200,000 COW membership reads across 10,000 updates. It is supplemental
+algorithm evidence only, not a substitute for Maven/GraalVM execution.
+
 ## Evidence required before promotion
 
 1. Exact-head Maven/JUnit compilation and execution of
