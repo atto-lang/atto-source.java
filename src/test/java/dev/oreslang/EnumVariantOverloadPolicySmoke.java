@@ -81,6 +81,23 @@ public final class EnumVariantOverloadPolicySmoke {
                 List.of(a, b)));
         EnumVariantOverloadPolicy.admit(List.of(sig(a, b), sig(c, f)));
         rejected(() -> EnumVariantOverloadPolicy.admit(List.of(sig(a, f), sig(f, b))));
+        // Limits are PER ARITY, not per callable name: 129 total across 65 arities is legal.
+        List<Signature> acrossArities = new ArrayList<>();
+        acrossArities.add(sig());
+        for (int size = 1; size <= 64; size++) {
+            List<Parameter> argsA = new ArrayList<>();
+            List<Parameter> argsB = new ArrayList<>();
+            argsA.add(a);
+            argsB.add(b);
+            for (int pos = 1; pos < size; pos++) {
+                argsA.add(n);
+                argsB.add(n);
+            }
+            acrossArities.add(new Signature("file::module", Domain.MODULE, "f", argsA));
+            acrossArities.add(new Signature("file::module", Domain.MODULE, "f", argsB));
+        }
+        eq(129, acrossArities.size());
+        EnumVariantOverloadPolicy.admit(acrossArities);
         // Arity differences always remain separate.
         EnumVariantOverloadPolicy.admit(List.of(sig(n), sig(n, n), sig(n, n, n)));
         System.out.println("PASS: " + checks + " release-active enum overload policy checks (host-only)");
