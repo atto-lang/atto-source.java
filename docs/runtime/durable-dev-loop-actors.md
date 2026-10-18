@@ -1,6 +1,6 @@
 # Durable actor development loops
 
-Status: **v1 reducer, SQLite journal/outbox, ActorRuntime coordinator, activity protocol, GitHub CI ingress, durable supervisor accounting, UI projection and typed workflow graph are implemented as Java/Graal reference layers. Guest-language single-state actor integration remains gated on the canonical actor state-loan work.**
+Status: **the Java/Graal V1 vertical slice is implemented: deterministic reducer, crash-safe SQLite journal/outbox, atomic receipt+outcome commits, ActorRuntime coordinator, capability-checked activity workers, authenticated and restart-durable GitHub CI ingress, durable supervisor accounting, isolated UI projection fan-out, and a typed workflow graph with ordered durable transition replay. Guest-language single-state actor integration remains gated on the canonical actor state-loan work.**
 
 This document defines the first Oreslang architecture for long-running actor
 workflows whose execution can be projected into UI nodes while surviving
@@ -143,10 +143,15 @@ repositories and future SHA-256 repositories.
 
 For mirrored CI, the correlation layer requires the exact Git tree object id
 when the expectation pins a tree. GitHubWebhookActorV1 verifies the HMAC over
-the exact raw webhook body, rejects ambiguous multi-run matches, replays an
-exact previously matched GitHub delivery deterministically, and rejects reuse of
-a matched delivery id with a different signed payload. Unmatched deliveries are
-not sealed so an event that arrived before run registration can be retried.
+the exact raw webhook body and derives repository, commit, workflow-run id,
+workflow name, conclusion and report URL only from that authenticated payload.
+The separate Git-tree proof must name the authenticated commit. The persistent
+SqliteGitHubWebhookLedgerV1 restores run correlations after ingress restart and
+permanently binds each GitHub delivery id to the signed payload digest, event
+name and exact tree-proof commit/tree/receipt identity. Exact redelivery may be
+routed again because the downstream workflow journal is idempotent; rebinding
+the same delivery id to different signed bytes or proof identity fails closed.
+Ambiguous multi-run matches route nowhere.
 
 ## Delivery deduplication and audit
 
@@ -335,17 +340,20 @@ implicit behavior in v1.
 1. Integrate the durable coordinator with the canonical Oreslang single-state
    actor/state-loan surface once that language work lands; do not regress to
    ordinary actor instance fields.
-2. Add PostgreSQL persistence with the same replay, atomic receipt+event,
-   leasing and crash/reconciliation contracts as the SQLite reference.
-3. Persist/rebuild shared webhook registrations and delivery receipts so ingress
-   restart does not depend on in-memory registration order.
-4. Add concrete sandboxed coding/Git/CI/model adapters that consume
-   WorkflowActivityProtocolV1 claims and provider-specific reconciliation.
+2. Add PostgreSQL persistence with the same deterministic replay, atomic
+   receipt+event, leasing, delivery-identity and crash/reconciliation contracts
+   as the SQLite reference.
+3. Add concrete sandboxed coding/Git/CI/model/provider adapters that consume
+   WorkflowActivityProtocolV1 claims, preserve worker ownership, emit durable
+   receipts and implement provider-specific reconciliation.
+4. Add actual-usage settlement for model tokens/spend in addition to current
+   pre-execution durable reservation/admission accounting.
 5. Add parallel fan-out/join, durable timers/waits and compensation as explicit
-   typed graph primitives.
-6. Add Java/LLVM differential trace fixtures for reducer, journal and typed
-   workflow execution.
+   typed graph primitives. V1 intentionally has one active control token.
+6. Add Java/LLVM differential trace fixtures for reducer, journal, webhook
+   correlation and typed workflow execution.
 7. Add formal/model checks for terminal-state monotonicity, claim uniqueness,
-   bounded cycles, cancellation authority and causal effect retirement.
+   every-cycle-bounded graph structure, cancellation authority, delivery
+   identity and causal effect retirement.
 8. Restore exact-tree GitHub Actions evidence when a private validation
    destination is explicitly approved by the repository's protected CI policy.
