@@ -112,6 +112,43 @@ does not support guest-owned streamed bodies, arbitrary structured headers,
 JSON helpers, or trailers. It must not be used as evidence that the marketing syntax is
 shipping.
 
+## October 18 hardening audit — exact-file local evidence
+
+After PR #1399's guest bridge, a review uncovered two additional problems in
+the trusted HTTP/1.1 response writer. Both were fixed and tested:
+
+- **Cancellation precommit:** `HttpResponseDraft.writeTo` now checks the
+  request's cancellation predicate *before* emitting any HTTP headers, and
+  checks again before each potentially blocking stream read and before each
+  write. A cancelled request cannot start a producer if already aborted.
+- **Combined header quota:** a response's own frozen header list and the
+  exchange's previously staged headers are validated together, before wire
+  commitment. The aggregate cap is 100 fields / 32 KiB; individually legal
+  header sets cannot bypass the cap by being concatenated.
+- **Affine concurrency:** a 12-carrier race on one response is required to
+  admit exactly one handoff. The contract also covers immutable body copies,
+  multiple `Set-Cookie` fields, HEAD stream suppression, 204, forbidden
+  framing headers, and CR/LF and NUL injection.
+- **Cancellation during streaming:** an already-open producer is closed
+  exactly once and not read once cancellation has been observed.
+- **Socket regressions:** a real loopback HTTP/1.1 client confirms that
+  cancelled and over-budget responses close without transmitting headers,
+  and that valid buffered/streamed requests continue to work.
+
+The committed Java source blob SHA is
+`12795f73da01f5423a95756d72176c43277addba`; the committed standalone
+wire checker SHA is `e62b4e00cd49a805aebf625bc14b921c1bcee4ed`.
+Both hashes were verified against *the exact locally compiled files*. JDK21
+`scripts/test-http-response-draft.sh` **passed five consecutive local runs**.
+These are transport-only checks, not compiler, Java/Graal native-image, LLVM,
+or true guest streaming conformance.
+
+The source repository's checked-in private-CI destination allowlist still
+contains **zero approved repositories**. Candidate private test organizations
+checked on October 18 show zero-step runner failures; neither a funded runner
+nor protected approval for cross-org source copying has been demonstrated.
+No cross-repository export is authorized.
+
 ## Next implementation gates
 
 1. Establish a private, authorized CI runner; the source repository's checked-in
