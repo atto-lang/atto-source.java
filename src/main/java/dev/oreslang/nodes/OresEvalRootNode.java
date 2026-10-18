@@ -5784,6 +5784,16 @@ public final class OresEvalRootNode extends RootNode {
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
+                if (receiver instanceof OresObject object
+                        && object == env.constructingObject
+                        && object.klass.actorKind() == Ast.ActorKind.NONE) {
+                    // Runtime defense for unchecked/linker-created AST: do
+                    // not dispatch methods on a partially constructed object.
+                    // Reject before evaluating arguments with possible effects.
+                    throw new IllegalArgumentException(
+                            "cannot dispatch instance method '" + methodCall.member()
+                                    + "' on constructing self");
+                }
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
                 if (receiver instanceof OresObject object) {
@@ -6525,6 +6535,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof OresObject object
+                    && object == env.constructingObject
+                    && object.klass.actorKind() == Ast.ActorKind.NONE
+                    && findField(object.klass, name, new LinkedHashSet<>()) == null) {
+                // A member reference can create a bound callable, even if
+                // nobody invokes it synchronously. Permit field projections,
+                // but never manufacture method callables for constructing self.
+                throw new IllegalArgumentException(
+                        "cannot reference instance method/member '" + name
+                                + "' on constructing self");
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
