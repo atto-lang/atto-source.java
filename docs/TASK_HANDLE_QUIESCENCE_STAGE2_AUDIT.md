@@ -91,8 +91,33 @@ The source-org Actions administrator must fix or provide an approved
 source-local runner. Never mirror this private source to an unapproved
 cross-organization CI repository. Keep this PR stacked on #1402 and draft.
 
-The new **current source count** is 37 JUnit methods (24 in `TaskHandleTest`,
-13 in `TaskScopeTest`), plus the stage-1 cancellation tree tests.
+The new **current source count** is 38 JUnit methods (24 in `TaskHandleTest`,
+14 in `TaskScopeTest`), plus the stage-1 cancellation tree tests.
 Earlier counts in the original audit are historical snapshots, not an
 up-to-date passing-test assertion. The added test is committed but not yet
 executed by the exact-source JUnit workflow.
+
+
+### Expanded lock scope correction: scheduling outside admission monitor
+
+Audit found a second path: even after moving terminal-subscriber
+registration, `TaskHandle.start(scheduler, ...)` could dispatch the first
+guest turn inline under `admissionLock`. The corrected implementation
+now reserves one `active` slot atomically with the sealed-state check,
+**releases the lock**, then starts the scheduler task and registers
+`getDone()` outside it. A rejected scheduler start rolls back the
+reserved slot under the same lock and publishes scope completion (when
+sealed and empty) only after releasing the monitor.
+
+The inline-scheduler regression now checks **both** guest-turn dispatch
+and terminal observer delivery for `Thread.holdsLock(admissionLock) == false`.
+A second, controlled executor-blocking regression exercises
+`cancel()` during the slot-reserved-but-not-yet-started interval:
+cancellation must not wait on a blocked scheduler dispatcher; its child
+token is either linked before cancellation or inherits the already
+cancelled parent, and the scoped join barrier waits for real quiescence.
+
+Current exact source has 38 JUnit methods in the two stage-2 test files.
+Both new regressions are **committed but unexecuted** by source Actions.
+This does not establish source-language Task lowering or bounded wall
+latency for arbitrary cancellation callbacks.
