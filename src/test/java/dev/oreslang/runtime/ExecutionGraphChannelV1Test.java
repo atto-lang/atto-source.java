@@ -14,8 +14,11 @@ final class ExecutionGraphChannelV1Test {
     @Test
     void explicitRendezvousChannelAppliesBackpressureUntilRead() {
         var output = new ChannelRuntime.Channel<Long>(0, 1);
-        var operation = ExecutionGraphChannelV1.publishOne(constant(42L), output, Runnable::run);
+        var queued = new ArrayDeque<Runnable>();
+        var operation = ExecutionGraphChannelV1.publishOne(constant(42L), output, queued::add);
         assertFalse(operation.isDone());
+        assertEquals(1, queued.size());
+        queued.removeFirst().run();
         assertEquals(1, output.pendingRegistrations());
         assertEquals(42L, output.readAsync().join());
         assertNull(operation.join());
@@ -26,7 +29,10 @@ final class ExecutionGraphChannelV1Test {
     @Test
     void bufferedChannelIsDistinctFromOneShotFuture() {
         var output = new ChannelRuntime.Channel<Long>(1);
-        var completion = ExecutionGraphChannelV1.publishOne(constant(73L), output, Runnable::run);
+        var queued = new ArrayDeque<Runnable>();
+        var completion = ExecutionGraphChannelV1.publishOne(constant(73L), output, queued::add);
+        assertEquals(1, queued.size());
+        queued.removeFirst().run();
         assertNull(completion.join());
         assertEquals(73L, output.readAsync().join());
         output.close();
@@ -49,7 +55,10 @@ final class ExecutionGraphChannelV1Test {
     @Test
     void cancellingPendingBackpressuredWriteRefundsRegistration() {
         var output = new ChannelRuntime.Channel<Long>(0, 1);
-        var completion = ExecutionGraphChannelV1.publishOne(constant(3L), output, Runnable::run);
+        var queued = new ArrayDeque<Runnable>();
+        var completion = ExecutionGraphChannelV1.publishOne(constant(3L), output, queued::add);
+        assertEquals(1, queued.size());
+        queued.removeFirst().run();
         assertEquals(1, output.pendingRegistrations());
         assertTrue(completion.cancel(false));
         assertEquals(0, output.pendingRegistrations());
@@ -61,7 +70,10 @@ final class ExecutionGraphChannelV1Test {
     void closedStreamPropagatesFailureWithoutHiddenRetries() {
         var output = new ChannelRuntime.Channel<Long>(1);
         output.close();
-        var completion = ExecutionGraphChannelV1.publishOne(constant(3L), output, Runnable::run);
+        var queued = new ArrayDeque<Runnable>();
+        var completion = ExecutionGraphChannelV1.publishOne(constant(3L), output, queued::add);
+        assertEquals(1, queued.size());
+        queued.removeFirst().run();
         assertInstanceOf(ChannelRuntime.ChannelClosedException.class,
                 assertThrows(CompletionException.class, completion::join).getCause());
     }
