@@ -188,6 +188,8 @@ public final class WorkflowJournalV1 {
             }
         }
 
+        prevalidateCausalEffectLocked(entry, incomingRunId);
+
         long followingSequence = Math.addExact(nextSequence, 1L);
         if (runId == null) {
             runId = incomingRunId;
@@ -198,9 +200,11 @@ public final class WorkflowJournalV1 {
         journal.add(entry);
         nextSequence = followingSequence;
 
-        if (entry.disposition() == DurableDevLoopV1.Disposition.APPLIED
-                && isTerminal(snapshot.phase())) {
-            abandonPendingEffectsLocked();
+        if (entry.disposition() == DurableDevLoopV1.Disposition.APPLIED) {
+            retireCausalEffectLocked(entry.event(), incomingRunId);
+            if (isTerminal(snapshot.phase())) {
+                abandonPendingEffectsLocked();
+            }
         }
 
         for (var effect : newEffects.entrySet()) {
@@ -437,6 +441,97 @@ public final class WorkflowJournalV1 {
             throw new IllegalStateException(
                     "transition commands do not match reducer replay");
         }
+    }
+
+    private void prevalidateCausalEffectLocked(
+            DurableDevLoopV1.JournalEntry entry,
+            String incomingRunId) {
+        if (entry.disposition() != DurableDevLoopV1.Disposition.APPLIED) {
+            return;
+        }
+        String key = causalEffectKey(entry.event(), incomingRunId);
+        if (key == null) {
+            return;
+        }
+        MutableEffect effect = effects.get(key);
+        if (effect == null) {
+            throw new IllegalStateException(
+                    "applied workflow event lacks causal effect " + key);
+        }
+        if (!causalCommandMatches(entry.event(), effect.command)) {
+            throw new IllegalStateException(
+                    "causal effect command type mismatch for " + key);
+        }
+    }
+
+    private void retireCausalEffectLocked(
+            DurableDevLoopV1.Event event,
+            String incomingRunId) {
+        String key = causalEffectKey(event, incomingRunId);
+        if (key == null) {
+            return;
+        }
+        MutableEffect effect = effects.get(key);
+        if (effect.state == EffectState.PENDING) {
+            effect.state = EffectState.ABANDONED;
+            effect.retryAllowed = false;
+        } else if (effect.state == EffectState.CLAIMED
+                || effect.state == EffectState.AMBIGUOUS) {
+            effect.retryAllowed = false;
+        }
+    }
+
+    private static boolean causalCommandMatches(
+            DurableDevLoopV1.Event event,
+            DurableDevLoopV1.Command command) {
+        if (event instanceof DurableDevLoopV1.CodeChanged) {
+            return command instanceof DurableDevLoopV1.RequestCode;
+        }
+        if (event instanceof DurableDevLoopV1.PushRecorded) {
+            return command instanceof DurableDevLoopV1.PushCode;
+        }
+        if (event instanceof DurableDevLoopV1.CiCompleted) {
+            return command instanceof DurableDevLoopV1.AwaitCi;
+        }
+        if (event instanceof DurableDevLoopV1.EvaluationPassed
+                || event instanceof DurableDevLoopV1.EvaluationFailed) {
+            return command instanceof DurableDevLoopV1.Evaluate;
+        }
+        if (event instanceof DurableDevLoopV1.BugReportCreated) {
+            return command instanceof DurableDevLoopV1.CreateBugReport;
+        }
+        if (event instanceof DurableDevLoopV1.ApprovalGranted) {
+            return command instanceof DurableDevLoopV1.RequestApproval;
+        }
+        return true;
+    }
+
+    private static String causalEffectKey(
+            DurableDevLoopV1.Event event,
+            String runId) {
+        String prefix = "devloop/" + runId + "/iteration/";
+        if (event instanceof DurableDevLoopV1.CodeChanged changed) {
+            return prefix + changed.iteration() + "/code";
+        }
+        if (event instanceof DurableDevLoopV1.PushRecorded pushed) {
+            return prefix + pushed.iteration() + "/push";
+        }
+        if (event instanceof DurableDevLoopV1.CiCompleted ci) {
+            return prefix + "1/ci/" + ci.commitSha();
+        }
+        if (event instanceof DurableDevLoopV1.EvaluationPassed passed) {
+            return prefix + "1/evaluate/" + passed.commitSha();
+        }
+        if (event instanceof DurableDevLoopV1.EvaluationFailed failed) {
+            return prefix + "1/evaluate/" + failed.commitSha();
+        }
+        if (event instanceof DurableDevLoopV1.BugReportCreated bug) {
+            return prefix + bug.iteration() + "/bug/" + bug.commitSha();
+        }
+        if (event instanceof DurableDevLoopV1.ApprovalGranted approval) {
+            return prefix + "1/approval/" + approval.commitSha();
+        }
+        return null;
     }
 
     private void abandonPendingEffectsLocked() {
