@@ -4904,7 +4904,7 @@ public final class TypeChecker {
      */
     private static final Set<String> ACTOR_CONTROL_AND_RESOURCE_CAPABILITIES = Set.of(
             "Pointer", "NetworkCodec", "ActorMessageCodec", "SupervisorControlCodec",
-            "ControlCodec", "Serializable", "Sendable", "Stream", "Observable",
+            "ControlCodec", "Serializable", "Sendable", "AnyCallable", "Stream", "Observable",
             "ActorRef", "ActorHandle", "ActorControlHandle", "ActorGroup",
             "ActorGroupJoinCapability", "ProxyActor", "Mailman", "EventBus",
             "ContinuationTarget", "Region", "RegionTransfer", "OwnedRegion",
