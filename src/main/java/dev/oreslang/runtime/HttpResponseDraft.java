@@ -205,7 +205,9 @@ public final class HttpResponseDraft {
         if (!bodyPresent) throw new IllegalStateException("bodyless response");
         if (!bodyOpened.compareAndSet(false, true))
             throw new IllegalStateException("response body already consumed");
-        return stream == null ? new ByteArrayInputStream(bytes)
+        InputStream input = stream == null ? new ByteArrayInputStream(bytes)
                 : Objects.requireNonNull(stream.get(), "body stream supplier produced null");
+        // Both the abort worker and response writer may close this source.
+        return new CloseOnceInputStream(input);
     }
 }
