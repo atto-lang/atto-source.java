@@ -93,4 +93,24 @@ git update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",source/fake-su
 git commit -qm gitlink
 link_tree="$(git rev-parse 'HEAD:source')"
 assert_status 67 'gitlink/submodule rejected' "$link_tree" source
+# The old process-substitution reader silently ignored an index-enumeration
+# failure. Simulate a failing git ls-files --stage while other Git commands
+# succeed, and confirm the verifier refuses to certify an incomplete audit.
+real_git="$(command -v git)"
+mkdir -p "$work/broken-index-bin"
+cat > "$work/broken-index-bin/git" <<'MOCK_GIT'
+#!/usr/bin/env bash
+if [[ "${1:-}" == ls-files && "${2:-}" == --stage ]]; then
+  exit 99
+fi
+exec "$REAL_GIT" "$@"
+MOCK_GIT
+chmod +x "$work/broken-index-bin/git"
+export REAL_GIT="$real_git"
+(
+  export PATH="$work/broken-index-bin:$PATH"
+  assert_status 68 'index enumeration failure never certifies source' "$link_tree" source
+)
+# Verify ordinary source works after removing the adversarial Git shim.
+assert_status 67 'gitlink remains disallowed after index failure test' "$link_tree" source
 echo 'SOURCE_TREE_GATE_TESTS_PASS'
