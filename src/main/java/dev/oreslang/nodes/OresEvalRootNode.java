@@ -1943,18 +1943,24 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowCont continuation) {
             try {
                 if (stmt instanceof Ast.BindingStmt binding) {
+                    boolean recursiveLambda = binding.initializer() instanceof Ast.LambdaExpr;
+                    if (recursiveLambda) {
+                        env.reserve(binding.name(), binding.kind());
+                    }
                     evalSuspendableExpr(
                             task,
                             binding.initializer(),
                             env,
                             (t, value, failure) -> {
                                 if (failure != null) {
+                                    if (recursiveLambda) env.discardReservation(binding.name());
                                     continuation.accept(
                                             t,
                                             SourceFlow.throwing(failure));
                                     return;
                                 }
-                                env.define(binding.name(), value, binding.kind());
+                                if (recursiveLambda) env.initialize(binding.name(), value);
+                                else env.define(binding.name(), value, binding.kind());
                                 continuation.accept(t, SourceFlow.normal());
                             });
                     return;
@@ -5076,7 +5082,12 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
-                    env.initialize(binding.name(), eval(binding.initializer(), env));
+                    try {
+                        env.initialize(binding.name(), eval(binding.initializer(), env));
+                    } catch (RuntimeException | Error failure) {
+                        env.discardReservation(binding.name());
+                        throw failure;
+                    }
                 } else {
                     env.define(binding.name(), eval(binding.initializer(), env), binding.kind());
                 }
@@ -9009,6 +9020,12 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = slots.get(name);
             if (slot == null) throw new IllegalArgumentException("unknown binding " + name);
             slot.value = value;
+        }
+        private void discardReservation(String name) {
+            Slot slot = slots.get(name);
+            if (slot != null && slot.value == MISSING) {
+                slots.remove(name, slot);
+            }
         }
         private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
         private void assign(String name, Object value) {
