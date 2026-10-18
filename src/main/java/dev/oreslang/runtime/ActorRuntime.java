@@ -262,6 +262,29 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Host-visible reasoned health for the bounded terminal diagnostic journal.
+     * Actor lifecycle correctness never depends on these best-effort records.
+     */
+    public record TerminalJournalStats(
+            int backlog,
+            int capacity,
+            long nextSequence,
+            long published,
+            long droppedContention,
+            long droppedCapacity,
+            long droppedSequenceExhaustion,
+            long droppedTotal) {
+        public TerminalJournalStats {
+            if (backlog < 0 || capacity < 0 || backlog > capacity
+                    || nextSequence < 0 || published < 0
+                    || droppedContention < 0 || droppedCapacity < 0
+                    || droppedSequenceExhaustion < 0 || droppedTotal < 0) {
+                throw new IllegalArgumentException("invalid terminal journal statistics");
+            }
+        }
+    }
+
     /** Internal payload published into the bounded ordered diagnostic journal. */
     private record ActorTerminationPayload(
             ActorId actorId,
@@ -728,6 +751,10 @@ public final class ActorRuntime implements AutoCloseable {
             new ArrayDeque<>(SUPERVISION_EVENT_CAPACITY);
     private final ReentrantLock supervisionEventQueueLock = new ReentrantLock();
     private final AtomicLong supervisionEventSequence = new AtomicLong();
+    private final AtomicLong supervisionEventsPublished = new AtomicLong();
+    private final AtomicLong supervisionEventContentionDrops = new AtomicLong();
+    private final AtomicLong supervisionEventCapacityDrops = new AtomicLong();
+    private final AtomicLong supervisionEventSequenceExhaustionDrops = new AtomicLong();
     private final AtomicLong supervisionEventsDropped = new AtomicLong();
     private final AtomicLong lifecyclePublicationFailures = new AtomicLong();
     /** Authoritative finalization bodies that may still submit observer work. */
@@ -1010,6 +1037,29 @@ public final class ActorRuntime implements AutoCloseable {
         return supervisionEventsDropped.get();
     }
 
+    /**
+     * Reasoned terminal-journal health. This intentionally takes the trusted
+     * consumer lock so backlog and next-sequence are from one coherent instant;
+     * actor producers still use nonblocking tryLock publication.
+     */
+    public TerminalJournalStats terminalJournalStats() {
+        requireSupervisorContext("inspect actor termination journal statistics");
+        supervisionEventQueueLock.lock();
+        try {
+            return new TerminalJournalStats(
+                    supervisionEvents.size(),
+                    SUPERVISION_EVENT_CAPACITY,
+                    supervisionEventSequence.get(),
+                    supervisionEventsPublished.get(),
+                    supervisionEventContentionDrops.get(),
+                    supervisionEventCapacityDrops.get(),
+                    supervisionEventSequenceExhaustionDrops.get(),
+                    supervisionEventsDropped.get());
+        } finally {
+            supervisionEventQueueLock.unlock();
+        }
+    }
+
     /** Immutable point-in-time actor state for debugging and control planes. */
     public Optional<ActorSnapshot> snapshot(ActorRef<?> ref) {
         requireSupervisorContext("inspect actor state");
@@ -1142,31 +1192,35 @@ public final class ActorRuntime implements AutoCloseable {
                 "");
 
         if (supervisionEventSequence.get() == Long.MAX_VALUE) {
+            supervisionEventSequenceExhaustionDrops.incrementAndGet();
             supervisionEventsDropped.incrementAndGet();
             return;
         }
 
-        boolean published = false;
-        if (supervisionEventQueueLock.tryLock()) {
-            try {
-                // A concurrent drain may have consumed the final representable
-                // sequence after the optimistic precheck above. Recheck while
-                // owning the queue/sequence critical section so an event that
-                // can never be sequenced does not occupy bounded capacity.
-                if (supervisionEventSequence.get() != Long.MAX_VALUE
-                        && supervisionEvents.size() < SUPERVISION_EVENT_CAPACITY) {
-                    supervisionEvents.addLast(payload);
-                    published = true;
-                }
-            } finally {
-                supervisionEventQueueLock.unlock();
-            }
-        }
-        if (!published) {
-            // Contention, capacity pressure and terminal sequence exhaustion
-            // are all explicit best-effort telemetry drops. Actor finalization
-            // never waits for diagnostics.
+        if (!supervisionEventQueueLock.tryLock()) {
+            supervisionEventContentionDrops.incrementAndGet();
             supervisionEventsDropped.incrementAndGet();
+            return;
+        }
+        try {
+            // A concurrent drain may have consumed the final representable
+            // sequence after the optimistic precheck above. Recheck while
+            // owning the queue/sequence critical section so an event that
+            // can never be sequenced does not occupy bounded capacity.
+            if (supervisionEventSequence.get() == Long.MAX_VALUE) {
+                supervisionEventSequenceExhaustionDrops.incrementAndGet();
+                supervisionEventsDropped.incrementAndGet();
+                return;
+            }
+            if (supervisionEvents.size() >= SUPERVISION_EVENT_CAPACITY) {
+                supervisionEventCapacityDrops.incrementAndGet();
+                supervisionEventsDropped.incrementAndGet();
+                return;
+            }
+            supervisionEvents.addLast(payload);
+            supervisionEventsPublished.incrementAndGet();
+        } finally {
+            supervisionEventQueueLock.unlock();
         }
     }
 
