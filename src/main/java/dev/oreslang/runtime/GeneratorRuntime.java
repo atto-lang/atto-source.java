@@ -192,8 +192,10 @@ public final class GeneratorRuntime {
         }
 
         private synchronized Step<T> next() {
-            if (done || closed.get()) { awaitProducerExit(); return Step.doneStep(); }
+            // Reject a failed producer admission even on subsequent pulls.
+            // Otherwise a failed first launch can become a silent DONE or hang.
             throwIfBackingFailed();
+            if (done || closed.get()) { awaitProducerExit(); return Step.doneStep(); }
             startIfNeeded();
             throwIfBackingFailed();
             putResume();
@@ -219,7 +221,9 @@ public final class GeneratorRuntime {
         private void startIfNeeded() {
             synchronized (launchLock) {
                 if (closed.get() || !started.compareAndSet(false, true)) return;
-                OresFuture<Void> task = runtime.submit(() -> {
+                OresFuture<Void> task;
+                try {
+                    task = runtime.submit(() -> {
                     try {
                         takeResume();
                         if (!closed.get()) {
@@ -232,7 +236,14 @@ public final class GeneratorRuntime {
                         if (!closed.get()) publish(new FailedEvent<>(failure));
                     }
                     return null;
-                });
+                    });
+                } catch (RuntimeException | Error admissionFailure) {
+                    // No producer exists to publish an Event. Retain the
+                    // original rejection and make every pull fail before it
+                    // can wait indefinitely on the empty event queue.
+                    backingFailure = admissionFailure;
+                    return;
+                }
                 producerTask.set(task);
                 // Admission/context entry can fail before the producer body runs.
                 // Its catch block then never publishes an event. Deliver that
