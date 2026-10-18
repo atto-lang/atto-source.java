@@ -300,6 +300,76 @@ public final class WorkflowSupervisorActorV1 {
                 return;
             }
 
+            if (message instanceof Reserve reserve) {
+                if (workflowStore != null) {
+                    DurableDevLoopV1.Snapshot workflow =
+                            workflowStore.replayDevLoop()
+                                    .machine()
+                                    .snapshot();
+                    if (isTerminal(workflow.phase())) {
+                        WorkflowSupervisorPolicyV1.Usage usage =
+                                ledger.usage();
+                        String reason = switch (workflow.phase()) {
+                            case CANCELLED ->
+                                    usage.cancelled()
+                                            ? usage.cancellationReason()
+                                            : "workflow_cancelled";
+                            case FAILED -> "workflow_failed";
+                            case COMPLETED -> "workflow_completed";
+                            default -> throw new IllegalStateException(
+                                    "non-terminal workflow reached "
+                                            + "terminal guard");
+                        };
+                        emit(
+                                context,
+                                new AdmissionEvaluated(
+                                        new WorkflowSupervisorPolicyV1.Admission(
+                                                WorkflowSupervisorPolicyV1.Decision.CANCEL,
+                                                usage,
+                                                reason)));
+                        return;
+                    }
+                }
+
+                emit(
+                        context,
+                        new AdmissionEvaluated(
+                                ledger.reserve(
+                                        reserve.effectKey(),
+                                        reserve.activity(),
+                                        reserve.nowMillis(),
+                                        reserve.estimatedModelTokens(),
+                                        reserve.estimatedSpendMicros(),
+                                        workflowStore == null
+                                                ? reserve.currentAmbiguousEffects()
+                                                : workflowStore.snapshot()
+                                                        .ambiguousEffects(),
+                                        reserve.protectedWrite())));
+                return;
+            }
+
+            if (message instanceof SettleUsage settle) {
+                WorkflowSupervisorPolicyV1.Usage usage =
+                        ledger.settle(
+                                settle.effectKey(),
+                                settle.actualModelTokens(),
+                                settle.actualSpendMicros());
+
+                if (usage.cancelled() && workflowStore != null) {
+                    DurableDevLoopV1 machine =
+                            workflowStore.replayDevLoop().machine();
+                    if (!isTerminal(machine.snapshot().phase())) {
+                        workflowStore.append(machine.accept(
+                                "supervisor-budget-cancel",
+                                new DurableDevLoopV1.Cancel(
+                                        usage.cancellationReason())));
+                    }
+                }
+
+                emit(context, new UsagePublished(usage));
+                return;
+            }
+
             if (message instanceof Cancel cancel) {
                 WorkflowSupervisorPolicyV1.Usage usage;
                 if (workflowStore == null) {
