@@ -69,6 +69,51 @@ final class WorkflowActivityActorV1Test {
     }
 
     @Test
+    void terminalActivityAcceptsCompletedOutcomeWithoutReducerEvent()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = WorkflowActivityActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            var command = new DurableDevLoopV1.CancelWork(
+                    "operator",
+                    "effect/cancel");
+            actor.send(new WorkflowActivityActorV1.Configure(
+                    "cancel-1",
+                    WorkflowActivityProtocolV1.Kind.CANCELLATION,
+                    WorkflowActivityProtocolV1.requiredCapabilities(
+                            command)));
+            next(outputs);
+
+            var claim = new WorkflowJournalV1.Claim(
+                    command.effectKey(),
+                    command,
+                    "claim/cancel",
+                    1,
+                    1000L);
+            actor.send(new WorkflowActivityActorV1.Dispatch(
+                    "run-1", claim));
+            next(outputs);
+
+            var completed = new WorkflowActivityProtocolV1.Completed(
+                    claim.effectKey(),
+                    claim.claimToken(),
+                    "receipt://cancel");
+            actor.send(new WorkflowActivityActorV1.ReportOutcome(
+                    completed));
+            var accepted = assertInstanceOf(
+                    WorkflowActivityActorV1.OutcomeAccepted.class,
+                    next(outputs));
+            assertEquals(completed, accepted.outcome());
+
+            actor.send(new WorkflowActivityActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void staleClaimOutcomeFailsWorkerActorInsteadOfCompletingNewAttempt()
             throws Exception {
         try (var runtime = new ActorRuntime()) {
