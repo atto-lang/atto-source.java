@@ -509,6 +509,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     "BASH_ENV"):
             self.assertNotIn(key, environment)
 
+    def test_github_api_denies_missing_binary_without_spawning(self):
+        with patch.object(pub.os, "lstat", side_effect=FileNotFoundError):
+            with patch.object(pub.subprocess, "run", side_effect=AssertionError(
+                    "unexpected process launch")):
+                with self.assertRaisesRegex(pub.Denied, "unavailable"):
+                    pub.gh_api("repos/trusted/ci")
+
     def test_real_github_reviews_list_parser(self):
         with patch.object(pub, 'trusted_github_cli', return_value='/usr/bin/gh'):
             from unittest.mock import Mock
