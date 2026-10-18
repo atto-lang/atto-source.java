@@ -438,4 +438,116 @@ final class VmNioTcpListenerTest {
             vm.close();
         }
     }
+    private static final class ClosingProbeSocket extends java.nio.channels.SocketChannel {
+        final java.util.concurrent.CountDownLatch closeEntered =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch releaseClose =
+                new java.util.concurrent.CountDownLatch(1);
+        private final boolean injectFailure;
+
+        ClosingProbeSocket(boolean injectFailure) {
+            super(java.nio.channels.spi.SelectorProvider.provider());
+            this.injectFailure = injectFailure;
+        }
+
+        @Override protected void implCloseSelectableChannel() throws java.io.IOException {
+            closeEntered.countDown();
+            try {
+                if (!releaseClose.await(5, TimeUnit.SECONDS))
+                    throw new java.io.IOException("socket-close probe timed out");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new java.io.IOException("socket-close probe interrupted", interrupted);
+            }
+            if (injectFailure)
+                throw new java.io.IOException("injected socket descriptor close failure");
+        }
+        @Override protected void implConfigureBlocking(boolean blocked) { }
+        @Override public java.nio.channels.SocketChannel bind(java.net.SocketAddress address) {
+            return this;
+        }
+        @Override public <T> java.nio.channels.SocketChannel setOption(
+                java.net.SocketOption<T> option, T value) { return this; }
+        @Override public <T> T getOption(java.net.SocketOption<T> option) { return null; }
+        @Override public java.util.Set<java.net.SocketOption<?>> supportedOptions() {
+            return java.util.Set.of();
+        }
+        @Override public java.nio.channels.SocketChannel shutdownInput() { return this; }
+        @Override public java.nio.channels.SocketChannel shutdownOutput() { return this; }
+        @Override public java.net.Socket socket() {
+            throw new UnsupportedOperationException("socket-close probe");
+        }
+        @Override public boolean isConnected() { return true; }
+        @Override public boolean isConnectionPending() { return false; }
+        @Override public boolean connect(java.net.SocketAddress address) { return true; }
+        @Override public boolean finishConnect() { return true; }
+        @Override public java.net.SocketAddress getRemoteAddress() { return null; }
+        @Override public int read(java.nio.ByteBuffer target) { return -1; }
+        @Override public long read(java.nio.ByteBuffer[] target, int offset, int length) {
+            return -1;
+        }
+        @Override public int write(java.nio.ByteBuffer source) { return 0; }
+        @Override public long write(java.nio.ByteBuffer[] source, int offset, int length) {
+            return 0;
+        }
+        @Override public java.net.SocketAddress getLocalAddress() { return null; }
+    }
+
+    private static void verifyConnectionCloseFailurePropagation(boolean failClose)
+            throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        try (var listener = VmNioTcpListener.loopback(vm.nioReadiness(), 0, 8, 2, 2)) {
+            ClosingProbeSocket probe = new ClosingProbeSocket(failClose);
+            // Package-only controlled channel creation exercises the real
+            // connection close path without performing fake kernel I/O.
+            var connection = listener.new Connection(probe);
+            var unexpected = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Thread closer = Thread.ofPlatform().start(() -> {
+                try { connection.close(); }
+                catch (Throwable failure) { unexpected.set(failure); }
+            });
+            try {
+                assertTrue(probe.closeEntered.await(3, TimeUnit.SECONDS));
+                assertFalse(connection.closeAsync().isDone(),
+                        "connection close Future must wait for physical socket close");
+            } finally {
+                probe.releaseClose.countDown();
+                closer.join(3000);
+            }
+            assertFalse(closer.isAlive(), "socket closer stranded");
+            assertNull(unexpected.get(), "connection close unexpectedly threw");
+            if (failClose) {
+                var connectionError = assertThrows(ExecutionException.class,
+                        () -> connection.closeAsync().get(3, TimeUnit.SECONDS));
+                assertInstanceOf(java.io.IOException.class, connectionError.getCause());
+                assertTrue(connectionError.getCause().getMessage()
+                        .contains("injected socket descriptor"));
+                var listenerError = assertThrows(ExecutionException.class,
+                        () -> listener.closeAsync().get(3, TimeUnit.SECONDS));
+                assertInstanceOf(java.io.IOException.class, listenerError.getCause());
+                assertTrue(listenerError.getCause().getMessage()
+                        .contains("injected socket descriptor"),
+                        "child close failure must not be hidden by listener quiescence");
+                assertFalse(listener.isTerminated(),
+                        "failure to retire child descriptor is not clean shutdown");
+            } else {
+                connection.closeAsync().get(3, TimeUnit.SECONDS);
+                listener.closeAsync().get(3, TimeUnit.SECONDS);
+                assertTrue(listener.isTerminated());
+            }
+        } finally {
+            vm.close();
+        }
+    }
+
+    @Test void connectionCloseFutureWaitsForPhysicalSocketRetirement()
+            throws Exception {
+        verifyConnectionCloseFailurePropagation(false);
+    }
+
+    @Test void failedSocketClosePropagatesThroughConnectionAndListener()
+            throws Exception {
+        verifyConnectionCloseFailurePropagation(true);
+    }
+
 }
