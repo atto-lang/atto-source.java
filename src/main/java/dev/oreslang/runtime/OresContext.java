@@ -497,23 +497,36 @@ public final class OresContext implements AutoCloseable {
         garbageCollector.close();
     }
 
+    /**
+     * Output flushing is unconditional but must not overwrite a prior
+     * physical-shutdown failure. A fatal JVM failure takes precedence even
+     * when raised by the final flush after an ordinary close error.
+     */
+    static void closeWithUnconditionalFlush(Runnable closePhases, Runnable flush) {
+        Objects.requireNonNull(closePhases);
+        Objects.requireNonNull(flush);
+        Throwable failure = null;
+        try { closePhases.run(); }
+        catch (RuntimeException | Error error) { failure = error; }
+        try { flush.run(); }
+        catch (RuntimeException | Error error) { failure = mergeCloseFailure(failure, error); }
+        rethrowCloseFailure(failure);
+    }
+
     @Override
     public void close() {
-        try {
+        closeWithUnconditionalFlush(() -> {
             // Host I/O may still call into async/actor/VM state. Prove both
             // physical host domains retired before revoking deeper runtimes.
             closeIndependentHostServices(nativeIo::close, http::close);
 
-            // These phases are strictly dependent. In particular, an actor
-            // physical-shutdown timeout must preserve VM/code images so a live
-            // carrier cannot execute against already-retired runtime state.
+            // A failed predecessor may still own successor memory. Retain
+            // all downstream VM/code-image resources for subsequent retries.
             runDependentClosePhases(
                     asyncRuntime::close,
                     actors::close,
                     vm::close,
                     this::releaseRetiredContextResources);
-        } finally {
-            output.flush();
-        }
+        }, output::flush);
     }
 }
