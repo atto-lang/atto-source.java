@@ -310,21 +310,21 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
             snapshot = new ArrayList<>(active);
             owned = ownsPool ? pool : null;
         }
-        RuntimeException failure = null;
+        Throwable failure = null;
         for (Actor actor : snapshot) {
             try { actor.close(); }
-            catch (RuntimeException e) {
-                if (failure == null) failure = e;
-                else failure.addSuppressed(e);
+            catch (RuntimeException | Error error) {
+                // One failing Context must not prevent other actor retirement.
+                failure = VerifiedCloseFence.mergeRetirementFailure(failure, error);
             }
         }
         if (owned != null) {
             try { owned.close(); }
-            catch (RuntimeException e) {
-                if (failure == null) failure = e;
-                else failure.addSuppressed(e);
+            catch (RuntimeException | Error error) {
+                // Always attempt physical Engine teardown after every actor.
+                failure = VerifiedCloseFence.mergeRetirementFailure(failure, error);
             }
         }
-        if (failure != null) throw failure;
+        VerifiedCloseFence.rethrowRetirementFailure(failure);
     }
 }
