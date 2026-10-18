@@ -128,6 +128,61 @@ final class TypedWorkflowGraphV1Test {
                                 "start", "go", "done", null))));
     }
 
+    @Test
+    void boundedEdgeElsewhereInSccDoesNotHideUnboundedSubcycle() {
+        var nodes = java.util.List.of(
+                node(
+                        "start",
+                        TypedWorkflowGraphV1.NodeKind.TRIGGER,
+                        "input",
+                        java.util.Map.of("go", "x")),
+                node(
+                        "a",
+                        TypedWorkflowGraphV1.NodeKind.ACTIVITY,
+                        "x",
+                        java.util.Map.of("to_b", "x")),
+                node(
+                        "b",
+                        TypedWorkflowGraphV1.NodeKind.ACTIVITY,
+                        "x",
+                        java.util.Map.of(
+                                "to_a", "x",
+                                "to_c", "x")),
+                node(
+                        "c",
+                        TypedWorkflowGraphV1.NodeKind.ACTIVITY,
+                        "x",
+                        java.util.Map.of(
+                                "to_b", "x",
+                                "done", "x")),
+                node(
+                        "done",
+                        TypedWorkflowGraphV1.NodeKind.TERMINAL,
+                        "x",
+                        java.util.Map.of()));
+
+        var edges = java.util.List.of(
+                new TypedWorkflowGraphV1.Edge(
+                        "start", "go", "a", null),
+                new TypedWorkflowGraphV1.Edge(
+                        "a", "to_b", "b", 3),
+                new TypedWorkflowGraphV1.Edge(
+                        "b", "to_a", "a", null),
+                new TypedWorkflowGraphV1.Edge(
+                        "b", "to_c", "c", null),
+                new TypedWorkflowGraphV1.Edge(
+                        "c", "to_b", "b", null),
+                new TypedWorkflowGraphV1.Edge(
+                        "c", "done", "done", null));
+
+        var error = assertThrows(
+                IllegalArgumentException.class,
+                () -> new TypedWorkflowGraphV1(
+                        "start", nodes, edges));
+        assertTrue(error.getMessage().contains(
+                "entirely of unbounded edges"));
+    }
+
     private static TypedWorkflowGraphV1.Node node(
             String id,
             TypedWorkflowGraphV1.NodeKind kind,
