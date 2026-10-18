@@ -3581,6 +3581,21 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        // 'suspends' is a callable effect, not a scheduler instruction.
+        // Unlike async task it creates NO Task/Future; the caller's Task
+        // executes its body and may cooperatively suspend. Preserve the AST
+        // effect until typed suspension-aware function values are implemented.
+        // 'suspend' is a contextual spelling only before lambda parameters.
+        if (check(SUSPENDS) || (isContextualIdentifier("suspend")
+                && (checkNext(PIPE) || (checkNext(LPAREN))))) {
+            advance();
+            Ast.LambdaExpr body;
+            if (check(PIPE)) body = parsePipeLambda(false);
+            else if (check(LPAREN) && looksLikeLambda()) body = parseLambda(false);
+            else throw error(peek(),
+                    "'suspends' must prefix a callable lambda; 'suspends task' is redundant, use 'async task'");
+            return new Ast.SuspendsLambdaExpr(body);
+        }
         // Keep `async` lambda identity explicit in the AST. Ordinary async
         // lambdas yield Future<R>; `async task` means the whole body is a
         // single scheduled Task<R>, not Future<Task<R>>.
