@@ -106,6 +106,11 @@ and bytes. Draft supervisor-scoping remediation:
 - Approval and revocation keys include the scope identity. A second tenant's
   identical module name and digest do not inherit the first tenant's grant
   and cannot revoke it. Capability and content checks still run separately.
+- The earlier `canShare()` result is only advisory. An adversarial loader
+  must call `acquireApprovedForAdversarialSharing(scope, codeUnitId, source)`,
+  which checks the **current** authorization and pins the Source atomically
+  under the registry lock. After revocation/closure no new shared image
+  leases may be acquired; already-pinned generations can drain normally.
 - The old unscoped approval/revocation API fails closed. The old unscoped
   query returns false for source compatibility. Closing a scope revokes
   all its approvals and prevents future use; a manager closes only scopes
