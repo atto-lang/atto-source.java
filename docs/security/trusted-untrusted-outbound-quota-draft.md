@@ -85,3 +85,33 @@ host helper tests is not the same as executing an authenticated guest request.
 - Run the actual protected guest and full original runtime tests; source-org
   Actions currently fail before jobs execute. Keep every associated PR draft
   until both CI and the appropriate protected tests pass.
+
+## October 18 — bounded actor-context ingress prototype (NOT production enabled)
+
+`TrustedActorLoopbackEgressBridge` is a trusted-only registration for a real
+`ActorRuntime.ActorRef` with a fixed `127.0.0.1` HTTP destination and
+host-owned child/supervisor/tenant quota scopes. The actor-facing entry
+points are static `submitGetFromCurrentActor()` and
+`pollFromCurrentActor(ticket)`: they select a binding using
+`ActorRuntime.currentActorRuntime()`, `currentActorId()` and the
+`UNTRUSTED` kind from the active actor turn, **not** a guest-provided
+sender, binding object, URL, clock or network-capability token.
+
+The host uses a separately supplied control executor to call the existing
+loopback HTTP probe, which performs atomic quota admission before dispatch.
+The actor sees only an integer ticket (at most 16 unconsumed per bound actor)
+and an immutable `PENDING/OK/FAILED/CANCELLED` result, which is consumed
+once. Java host response futures never expose callback registration to guest
+code, so guest callbacks cannot accidentally run on the trusted executor.
+Closing the host binding removes runtime/actor lookup authority and cancels
+pending host operations; repeated shutdown can retry cleanup.
+
+[Private source-exact carrier run #39146404950](https://github.com/scintilla-run-test/gleam-runner-conformance/actions/runs/39146404950)
+passed a simulated actor-identity harness and real loopback HTTP/TCP transport
+checks. This is **not** proof of actual isolated guest execution. The new
+`TrustedActorLoopbackEgressBridgeRuntimeTest` contains a real
+`ActorRuntime.spawnUntrusted` turn and a forged-sender negative case,
+but has **not** run against full source/GraalVM CI. Its source is pinned in
+the carrier manifest and explicitly marked unexecuted. No Oreslang guest
+compiler intrinsic has been wired, no general outbound destination is
+accepted, and direct UNTRUSTED `NativeIo` networking remains denied.
