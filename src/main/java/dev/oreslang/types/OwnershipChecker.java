@@ -1462,60 +1462,6 @@ public final class OwnershipChecker {
         if (call.callee() instanceof Ast.MemberExpr member) {
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
-            if (member.member().equals("flatten")
-                    && member.receiver() instanceof Ast.NameExpr rootName) {
-                VarState owner = scope.lookup(rootName.name());
-                if (owner != null && owner.type.isBorrow()
-                        && owner.type.borrowedTarget().name().equals("Future")) {
-                    throw error("Future.flatten cannot consume a borrowed Future");
-                }
-                if (owner != null && !owner.type.isBorrow()
-                        && owner.type.name().equals("Future")
-                        && owner.type.arguments().size() == 1) {
-                    Ast.TypeRef inner = owner.type.arguments().getFirst();
-                    if (!inner.name().equals("Future") || inner.arguments().size() != 1) {
-                        throw error("Future.flatten requires Future<Future<T>>");
-                    }
-                    if (!call.arguments().isEmpty()) {
-                        throw error("Future.flatten expects no arguments");
-                    }
-                    requireUsable(owner, rootName.name(), false);
-                    if (owner.kind == ValueKind.MOVE_ONLY) move(owner, rootName.name());
-                    return new ValueInfo(inner, kindOfType(inner), null);
-                }
-            }
-
-            // A field/index projection of an affine Future has no owned
-            // extraction operation yet. Reading it as an ordinary member call
-            // would allow repeated flattening of the same task capability.
-            // Temporaries returned by a call are fresh and can be transferred
-            // directly; projected owners must be moved into a named binding.
-            if (member.member().equals("flatten")
-                    && !(member.receiver() instanceof Ast.NameExpr)) {
-                ValueInfo candidate = checkExpr(member.receiver(), scope, false);
-                Ast.TypeRef candidateType = candidate.type;
-                if (candidateType != null && candidateType.isBorrow()
-                        && candidateType.borrowedTarget().name().equals("Future")) {
-                    throw error("Future.flatten cannot consume a borrowed Future");
-                }
-                if (candidateType != null
-                        && candidateType.name().equals("Future")
-                        && candidateType.arguments().size() == 1) {
-                    Ast.TypeRef nested = candidateType.arguments().getFirst();
-                    if (!nested.name().equals("Future") || nested.arguments().size() != 1) {
-                        throw error("Future.flatten requires Future<Future<T>>");
-                    }
-                    if (!call.arguments().isEmpty()) {
-                        throw error("Future.flatten expects no arguments");
-                    }
-                    if (!(member.receiver() instanceof Ast.CallExpr)) {
-                        throw error("Future.flatten cannot consume an owned Future projection; "
-                                + "move the Future into a named local first");
-                    }
-                    return new ValueInfo(nested, kindOfType(nested), null);
-                }
-            }
-
             // Native collection mutations are effects on the receiver, not
             // harmless reads. TypeChecker validates method availability/arity.
             // A const/let read-only view must not gain mutation via .add/.set.
@@ -1859,14 +1805,48 @@ public final class OwnershipChecker {
         // to be ownership-checked twice on the ordinary method-call path.
         if (member.member().equals("flatten") || member.member().equals("unwrap_all")) {
             Ast.TypeRef hint = receiverType(member.receiver(), scope);
-            if (hint != null && !(hint.name().equals("Option")
-                    && hint.arguments().size() == 1)) {
+            if (hint != null
+                    && !(hint.name().equals("Option") && hint.arguments().size() == 1)
+                    && !(member.member().equals("flatten")
+                            && hint.name().equals("Future")
+                            && hint.arguments().size() == 1)) {
                 return null;
             }
         }
 
         ValueInfo receiver = checkExpr(member.receiver(), scope, false);
         Ast.TypeRef receiverType = receiver.type;
+        // Analyze each receiver exactly once. Previously a Future returned
+        // from a call was checked here and again on the ordinary call path,
+        // potentially consuming affine captures twice during compilation.
+        if (member.member().equals("flatten") && receiverType != null) {
+            Ast.TypeRef concrete = receiverType.isBorrow()
+                    ? receiverType.borrowedTarget() : receiverType;
+            if (concrete.name().equals("Future") && concrete.arguments().size() == 1) {
+                if (receiverType.isBorrow()) {
+                    throw error("Future.flatten cannot consume a borrowed Future");
+                }
+                Ast.TypeRef inner = concrete.arguments().getFirst();
+                if (!inner.name().equals("Future") || inner.arguments().size() != 1) {
+                    throw error("Future.flatten requires Future<Future<T>>");
+                }
+                if (!arguments.isEmpty()) {
+                    throw error("Future.flatten expects no arguments");
+                }
+                if (member.receiver() instanceof Ast.NameExpr name) {
+                    VarState owner = scope.lookup(name.name());
+                    if (owner != null && owner.kind == ValueKind.MOVE_ONLY) {
+                        move(owner, name.name());
+                    }
+                } else if (receiver.kind == ValueKind.MOVE_ONLY
+                        && (member.receiver() instanceof Ast.MemberExpr
+                            || member.receiver() instanceof Ast.IndexExpr)) {
+                    throw error("Future.flatten cannot consume an owned Future projection; "
+                            + "move the Future into a named local first");
+                }
+                return new ValueInfo(inner, kindOfType(inner), null);
+            }
+        }
         if (receiverType == null || receiverType.isBorrow()) return null;
         boolean option = receiverType.name().equals("Option") && receiverType.arguments().size() == 1;
         boolean result = receiverType.name().equals("Result") && receiverType.arguments().size() == 2;
