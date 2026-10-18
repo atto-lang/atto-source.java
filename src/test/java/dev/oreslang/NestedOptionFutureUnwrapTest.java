@@ -303,6 +303,26 @@ final class NestedOptionFutureUnwrapTest {
                 """));
     }
 
+    @Test
+    void flattenSupportsNestedVoidFutureWithoutFabricatingAValue() throws Exception {
+        String program = """
+                async fnc done(): void {
+                  return;
+                }
+                async fnc nested(): Future<void> {
+                  return done();
+                }
+                pub fnc main(): void {
+                  val Future<void> joined = nested().flatten();
+                  await joined;
+                  stdio.stdout.write("done");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("done", run(program));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "nested-option-future.ores")
