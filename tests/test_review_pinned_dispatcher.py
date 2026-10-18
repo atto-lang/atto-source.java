@@ -499,4 +499,95 @@ class DispatcherTest(unittest.TestCase):
                 for name,val in saved.items(): setattr(MOD,name,val)
                 for name,val in pub_saved.items(): setattr(MOD.PUB,name,val)
 
+    def _enabled_review_policy(self):
+        return {
+            "schema":2,"enabled":True,"minimumPermission":"write",
+            "disallowedReviewerIds":[11139560,2148448],
+            "reviewer":{"login":"external-reviewer","id":9000001},
+        }
+
+    def _check_live_policy_bytes(self, raw):
+        old=MOD.content_file
+        try:
+            MOD.content_file=lambda *args,**kwargs:(
+                raw,receipt()["independent_reviewer_policy_blob_sha"])
+            return MOD.require_live_reviewer_policy(receipt())
+        finally:
+            MOD.content_file=old
+
+    def _reject_policy(self, policy):
+        with self.assertRaises(MOD.Denied):
+            self._check_live_policy_bytes(
+                json.dumps(policy,separators=(",",":"),allow_nan=False).encode())
+
+    def test_live_reviewer_policy_exact_canonical_success(self):
+        self.assertEqual(self._check_live_policy_bytes(
+            json.dumps(self._enabled_review_policy(),separators=(",",":")).encode()),"write")
+
+    def test_live_reviewer_schema_float_denied(self):
+        p=self._enabled_review_policy();p["schema"]=2.0;self._reject_policy(p)
+
+    def test_live_reviewer_schema_boolean_denied(self):
+        p=self._enabled_review_policy();p["schema"]=True;self._reject_policy(p)
+
+    def test_live_reviewer_denylist_not_list_denied(self):
+        for bad in (None,"11139560,2148448",{"a":11139560,"b":2148448},123):
+            with self.subTest(value=bad):
+                p=self._enabled_review_policy();p["disallowedReviewerIds"]=bad
+                self._reject_policy(p)
+
+    def test_live_reviewer_denylist_float_id_denied(self):
+        p=self._enabled_review_policy();p["disallowedReviewerIds"][0]=11139560.0
+        self._reject_policy(p)
+
+    def test_live_reviewer_denylist_boolean_id_denied(self):
+        p=self._enabled_review_policy();p["disallowedReviewerIds"][0]=True
+        self._reject_policy(p)
+
+    def test_live_reviewer_denylist_duplicates_denied(self):
+        p=self._enabled_review_policy();p["disallowedReviewerIds"].append(11139560)
+        self._reject_policy(p)
+
+    def test_live_reviewer_denylist_additional_id_denied(self):
+        p=self._enabled_review_policy();p["disallowedReviewerIds"].append(9000002)
+        self._reject_policy(p)
+
+    def test_live_reviewer_policy_reviewer_float_id_denied(self):
+        p=self._enabled_review_policy();p["reviewer"]["id"]=9000001.0
+        self._reject_policy(p)
+
+    def test_live_reviewer_policy_reviewer_boolean_id_denied(self):
+        p=self._enabled_review_policy();p["reviewer"]["id"]=True
+        self._reject_policy(p)
+
+    def test_live_reviewer_policy_invalid_login_denied(self):
+        for login in ("","not valid","-leading","trailing-","a"*41,9000001):
+            with self.subTest(login=login):
+                p=self._enabled_review_policy();p["reviewer"]["login"]=login
+                self._reject_policy(p)
+
+    def test_live_reviewer_policy_noncanonical_permission_denied(self):
+        for permission in (None,True,3,["write"],"Write","triage"):
+            with self.subTest(permission=permission):
+                p=self._enabled_review_policy();p["minimumPermission"]=permission
+                self._reject_policy(p)
+
+    def test_live_reviewer_policy_duplicate_json_key_denied(self):
+        good=json.dumps(self._enabled_review_policy(),separators=(",",":"))
+        with self.assertRaises(MOD.Denied):
+            self._check_live_policy_bytes(
+                (good[:-1]+',"schema":2}').encode())
+
+    def test_receipt_boolean_repository_id_denied(self):
+        p=receipt();p["source_repository_id"]=True
+        with self.assertRaises(MOD.Denied):MOD.validate_receipt(p)
+
+    def test_receipt_float_schema_denied(self):
+        p=receipt();p["schema"]=3.0
+        with self.assertRaises(MOD.Denied):MOD.validate_receipt(p)
+
+    def test_receipt_unhashable_reviewer_permission_denied(self):
+        p=receipt();p["independent_reviewer_carrier_permission"]=["admin"]
+        with self.assertRaises(MOD.Denied):MOD.validate_receipt(p)
+
 if __name__=="__main__": unittest.main()
