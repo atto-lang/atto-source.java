@@ -90,3 +90,9 @@ connector does not establish the underlying billing/policy/runner cause.
 The source-org Actions administrator must fix or provide an approved
 source-local runner. Never mirror this private source to an unapproved
 cross-organization CI repository. Keep this PR stacked on #1402 and draft.
+
+The new **current source count** is 37 JUnit methods (24 in `TaskHandleTest`,
+13 in `TaskScopeTest`), plus the stage-1 cancellation tree tests.
+Earlier counts in the original audit are historical snapshots, not an
+up-to-date passing-test assertion. The added test is committed but not yet
+executed by the exact-source JUnit workflow.
