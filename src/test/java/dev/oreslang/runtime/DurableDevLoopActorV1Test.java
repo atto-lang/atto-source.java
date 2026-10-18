@@ -36,7 +36,19 @@ final class DurableDevLoopActorV1Test {
                     DurableDevLoopV1.Phase.CODING,
                     opened.projection().phase());
 
-            actor.send(new DurableDevLoopActorV1.Deliver(
+            actor.send(new DurableDevLoopActorV1.ClaimEffect(
+                    "coder-recover",
+                    100L,
+                    100L));
+            var claim = assertInstanceOf(
+                    DurableDevLoopActorV1.EffectClaimed.class,
+                    next(outputs)).claim();
+
+            actor.send(new DurableDevLoopActorV1.CompleteAndDeliver(
+                    claim.effectKey(),
+                    claim.claimToken(),
+                    "receipt://code/recover",
+                    150L,
                     "code-1",
                     new DurableDevLoopV1.CodeChanged(
                             1, "patch://one")));
