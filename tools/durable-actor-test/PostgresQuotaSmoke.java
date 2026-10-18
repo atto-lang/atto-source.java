@@ -38,12 +38,13 @@ public final class PostgresQuotaSmoke {
         rejects(() -> store.enqueue(address,new DurableActorStore.Inbound("m3",bytes("c"))),
             "inbox admission must stop at two entries");
 
-        var first=store.activate(address);
+        var firstOwner=UUID.randomUUID();
+        var first=store.acquireLease(address,firstOwner).activation();
         ok(first.inbox().size()==2, "bounded activation");
         var next = new DurableActorStore.Snapshot(0,1,"code-v1",1,bytes("one"));
         var firstIntent = new DurableActorStore.Outbound("o1","idempotent-key-one",bytes("push"));
-        ok(store.commitTurn(new DurableActorStore.Turn(address,first.epoch(),0,
-            "m1",next,List.of(firstIntent)))==1,"first atomic commit");
+        ok(store.commitOwnedTurn(new DurableActorStore.Turn(address,first.epoch(),0,
+            "m1",next,List.of(firstIntent)),firstOwner)==1,"first atomic commit");
         ok(store.enqueue(address,new DurableActorStore.Inbound("m3",bytes("c"))),
             "consumption frees one inbox slot");
         var blocked= new DurableActorStore.Outbound("o2","idempotent-key-two",bytes("test"));
