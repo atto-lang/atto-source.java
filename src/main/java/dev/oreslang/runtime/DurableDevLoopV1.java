@@ -1,11 +1,11 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
-import java.util.Set;
+import java.util.Map;
 
 /**
  * Deterministic correctness kernel for a durable AI development-loop actor.
@@ -23,9 +23,10 @@ import java.util.Set;
  * WRITING_BUG_REPORT and then either returning to CODING or terminating at the
  * retry budget.</p>
  *
- * <p>Duplicate delivery IDs are recorded as no-op DUPLICATE entries. CI events
- * for a commit other than the exact expected commit are recorded as STALE and
- * cannot advance the workflow.</p>
+ * <p>Duplicate delivery IDs with the exact same immutable event are recorded
+ * as no-op DUPLICATE entries. Reuse of a delivery ID with a different payload
+ * is recorded as CONFLICT and cannot advance the workflow. CI events for a
+ * commit other than the exact expected commit are recorded as STALE.</p>
  */
 public final class DurableDevLoopV1 {
 
@@ -45,6 +46,7 @@ public final class DurableDevLoopV1 {
     public enum Disposition {
         APPLIED,
         DUPLICATE,
+        CONFLICT,
         STALE,
         REJECTED
     }
@@ -239,7 +241,7 @@ public final class DurableDevLoopV1 {
 
     private final String runId;
     private final int maxIterations;
-    private final Set<String> seenEventIds = new HashSet<>();
+    private final Map<String, Event> seenEvents = new HashMap<>();
     private final List<JournalEntry> journal = new ArrayList<>();
 
     private Phase phase = Phase.CREATED;
@@ -275,18 +277,25 @@ public final class DurableDevLoopV1 {
         event = Objects.requireNonNull(event, "event");
 
         final long sequence = nextSequence;
-        nextSequence = Math.addExact(nextSequence, 1L);
+        final long followingSequence =
+                Math.addExact(nextSequence, 1L);
 
         final ApplyResult result;
-        if (!seenEventIds.add(eventId)) {
+        Event prior = seenEvents.get(eventId);
+        if (prior != null) {
             result = new ApplyResult(
-                    Disposition.DUPLICATE, List.of());
+                    prior.equals(event)
+                            ? Disposition.DUPLICATE
+                            : Disposition.CONFLICT,
+                    List.of());
         } else {
             result = applyFresh(event);
+            seenEvents.put(eventId, event);
         }
 
         assertInvariants();
 
+        nextSequence = followingSequence;
         JournalEntry entry = new JournalEntry(
                 sequence, eventId, event, result.disposition());
         journal.add(entry);
@@ -345,7 +354,7 @@ public final class DurableDevLoopV1 {
                 lastBugReportRef,
                 cancelReason,
                 nextSequence,
-                seenEventIds.size(),
+                seenEvents.size(),
                 journal.size());
     }
 
