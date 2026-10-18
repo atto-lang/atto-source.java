@@ -851,10 +851,29 @@ public final class OresScheduler implements AutoCloseable {
             }
 
             try {
+                // Settled futures need no dependency edge and cannot take
+                // part in a *pending* cycle. Keep their fast path lock-free.
+                Object alreadyTerminal = awaited.runtimeTerminalStateOrNull();
+                if (alreadyTerminal != null) {
+                    deliverAwaitCompletion(
+                            OresFuture.runtimeTerminalValue(alreadyTerminal),
+                            OresFuture.runtimeTerminalFailure(alreadyTerminal));
+                    return;
+                }
                 // Register before callback publication. Detect A -> B -> ... -> A
                 // under one lock, including cycles crossing scheduler instances.
                 // No user code executes while the graph lock is held.
                 if (!registerAwaitDependency(completion, awaited)) {
+                    // The producer may have settled while another task
+                    // published a dependency. Prefer the terminal outcome
+                    // over a now-obsolete await graph.
+                    Object terminal = awaited.runtimeTerminalStateOrNull();
+                    if (terminal != null) {
+                        deliverAwaitCompletion(
+                                OresFuture.runtimeTerminalValue(terminal),
+                                OresFuture.runtimeTerminalFailure(terminal));
+                        return;
+                    }
                     failTerminal(new IllegalStateException(
                             "cyclic Future await dependency detected"));
                     return;
