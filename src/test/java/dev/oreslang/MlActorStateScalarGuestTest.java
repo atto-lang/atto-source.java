@@ -163,7 +163,7 @@ final class MlActorStateScalarGuestTest {
 
     private static String gitBlobSha(String text) throws Exception {
         byte[] content = text.getBytes(StandardCharsets.UTF_8);
-        byte[] prefix = ("blob " + content.length + "\\0")
+        byte[] prefix = ("blob " + content.length + "\0")
                 .getBytes(StandardCharsets.UTF_8);
         MessageDigest sha = MessageDigest.getInstance("SHA-1");
         sha.update(prefix);
