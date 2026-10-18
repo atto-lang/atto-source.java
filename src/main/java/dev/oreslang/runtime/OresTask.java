@@ -63,6 +63,11 @@ public final class OresTask<T> implements Awaitable<T> {
         return completion.cancel(true);
     }
 
+    /** Internal scope path: revoke now, deliver host waiters after siblings. */
+    Runnable cancelDeferredNotification() {
+        return completion.cancelDeferredNotification();
+    }
+
     /**
      * A fresh, independently cancellable observation of physical Task exit.
      * Cancelling this observer never cancels the producer or another observer.
