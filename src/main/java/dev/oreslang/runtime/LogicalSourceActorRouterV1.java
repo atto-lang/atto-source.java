@@ -258,9 +258,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                         Math.addExact(prior.incarnation, 1L));
                 candidateLeaseTransferred = true;
                 published = true;
-                upgrading = false;
-                pauseOwned = false;
-                routeLock.notifyAll();
+                // Keep host route admission paused until the old physical
+                // incarnation is terminal and its generation lease is safe to
+                // release. The new route is authoritative but not yet open.
             }
 
             // Route publication is the commit point. Only now make the stale
@@ -277,12 +277,20 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             } else {
                 synchronized (routeLock) {
                     retiredRoutes.add(prior);
+                    upgrading = false;
+                    pauseOwned = false;
+                    routeLock.notifyAll();
                 }
                 throw new IllegalStateException(
                         "old physical actor did not terminate after route publication; "
                                 + "its generation remains pinned for later reaping");
             }
             replacement = null; // authoritative route owns it
+            synchronized (routeLock) {
+                upgrading = false;
+                pauseOwned = false;
+                routeLock.notifyAll();
+            }
             return true;
         } finally {
             if (!published) {
@@ -299,6 +307,15 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                         upgrading = false;
                         routeLock.notifyAll();
                     }
+                }
+            }
+            if (published && pauseOwned) {
+                // Post-commit cleanup failure cannot roll routing back. Reopen
+                // the authoritative new route while retaining any unreaped old
+                // generation lease.
+                synchronized (routeLock) {
+                    upgrading = false;
+                    routeLock.notifyAll();
                 }
             }
             if (!candidateLeaseTransferred) candidateLease.close();
@@ -391,9 +408,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         requireBlockingHostSurface("close a logical source actor");
         final Route route;
         synchronized (routeLock) {
+            awaitUpgradeLocked();
             if (closed) return;
             closed = true;
-            upgrading = false;
             route = active;
             routeLock.notifyAll();
         }
