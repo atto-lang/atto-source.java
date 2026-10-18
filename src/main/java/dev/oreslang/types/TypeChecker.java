@@ -122,12 +122,13 @@ public final class TypeChecker {
         return checkTypesWithDiagnostics(program).program();
     }
 
-    public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
-        // Parser/AST admission alone must NEVER activate new enum values,
-        // constructors, pattern exhaustiveness, or serialization semantics.
-        // Until the complete enum type/ownership/runtime lowering from #623
-        // is integrated, fail before annotation expansion can rewrite, erase,
-        // or manufacture declaration provenance.
+    /**
+     * Fail closed at *every* publicly callable typecheck boundary. Imported
+     * class aliases are not an alternate admission path for unsupported enum
+     * and named-pattern values, even before annotation expansion.
+     */
+    private static void rejectUnlinkedEnumAndPatternDeclarations(Ast.Program program) {
+        java.util.Objects.requireNonNull(program, "program");
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.EnumDecl
@@ -138,6 +139,12 @@ public final class TypeChecker {
                 }
             }
         }
+    }
+
+    public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        // Neither the normal nor import-aware checker may permit unlinked enum
+        // declarations into annotation expansion or typecheck collections.
+        rejectUnlinkedEnumAndPatternDeclarations(program);
         program = AnnotationExpander.expand(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
@@ -156,6 +163,9 @@ public final class TypeChecker {
     public static Ast.Program checkTypesWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
+        // Linked class/type-alias resolution is never proof of an enum/pattern
+        // type. Keep parity with checkTypesWithDiagnostics before any rewrite.
+        rejectUnlinkedEnumAndPatternDeclarations(program);
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
