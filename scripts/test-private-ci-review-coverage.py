@@ -72,6 +72,25 @@ def require_active_security_job(workflow):
     return block
 
 
+def require_exact_security_steps(job):
+    """Only the reviewed checkout and three mandatory verification steps may run."""
+    matches = list(re.finditer(r"(?m)^      - (?:name|uses): ", job))
+    blocks = [job[m.start():matches[i + 1].start() if i + 1 < len(matches)
+                  else len(job)] for i, m in enumerate(matches)]
+    headings = [block.splitlines()[0].strip() for block in blocks]
+    expected = [
+        "- uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4",
+        "- name: Validate CI security review coverage",
+        "- name: Validate offline regression runner",
+        "- name: Execute exact source-free publisher suite with isolated Python",
+    ]
+    if headings != expected:
+        raise ValueError("private-CI job has an extra, missing, or unreviewed step")
+    checkout = [line.strip() for line in blocks[0].splitlines() if line.strip()]
+    if checkout != [expected[0], "with:", "persist-credentials: false"]:
+        raise ValueError("private-CI checkout action is not precisely pinned")
+
+
 def require_exact_publisher_execution(workflow):
     """Pin the reviewed publisher execution step; reject masked or inert edits."""
     name = "Execute exact source-free publisher suite with isolated Python"
@@ -141,6 +160,7 @@ def validate(codeowners, workflow):
         if missing:
             raise ValueError(event + " does not trigger on " + sorted(missing)[0])
     active_job = require_active_security_job(workflow)
+    require_exact_security_steps(active_job)
     require_exact_publisher_execution(active_job)
     require_unconditional_test_step(
         active_job, "Validate CI security review coverage",
@@ -253,7 +273,7 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
         block = ("      - name: Validate CI security review coverage\n"
                  "        run: python3 -I -B scripts/test-private-ci-review-coverage.py\n")
         damaged = self.workflow.replace(block, block + block)
-        with self.assertRaisesRegex(ValueError, "duplicated required executable step"):
+        with self.assertRaisesRegex(ValueError, "duplicated required executable step|unreviewed step"):
             validate(self.owners, damaged)
 
     def test_job_skip_condition_is_denied(self):
@@ -332,6 +352,32 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
                    + "    steps:\n" + step)
         with self.assertRaisesRegex(ValueError, "unreviewed additional job"):
             validate(self.owners, damaged)
+
+    def test_unreviewed_additional_action_step_is_denied(self):
+        damaged = self.workflow + "      - uses: actions/cache@unreviewed-step\n"
+        with self.assertRaisesRegex(ValueError, "unreviewed step"):
+            validate(self.owners, damaged)
+
+    def test_unreviewed_step_before_security_check_is_denied(self):
+        marker = "      - name: Validate CI security review coverage\n"
+        damaged = self.workflow.replace(marker,
+              "      - uses: actions/cache@unreviewed-step\n" + marker)
+        with self.assertRaisesRegex(ValueError, "unreviewed step"):
+            validate(self.owners, damaged)
+
+    def test_checkout_pin_mutation_is_denied(self):
+        damaged = self.workflow.replace(
+            "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "actions/checkout@v4")
+        with self.assertRaisesRegex(ValueError, "unreviewed step"):
+            validate(self.owners, damaged)
+
+    def test_checkout_credential_persistence_is_denied(self):
+        damaged = self.workflow.replace("persist-credentials: false",
+                                       "persist-credentials: true")
+        with self.assertRaisesRegex(ValueError, "not precisely pinned"):
+            validate(self.owners, damaged)
+
 
 
 if __name__ == "__main__":
