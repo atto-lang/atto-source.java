@@ -265,6 +265,15 @@ public final class EnumVariantOverloadPolicy {
 
         private AotImage(PreparedFamily family, Map<String, String> implementations) {
             this.family = Objects.requireNonNull(family, "prepared compiler family");
+            // A virtual receiver requires an exact-signature vtable or an explicit
+            // sealed/final-receiver proof. A direct body relocation is unsound.
+            for (List<Signature> group : family.byArity.values()) {
+                for (Signature declaration : group) {
+                    if (declaration.domain() == Domain.INSTANCE) {
+                        throw new IllegalArgumentException("instance method requires virtual-slot AOT lowering");
+                    }
+                }
+            }
             Objects.requireNonNull(implementations, "compiled implementations");
             Map<String, String> expected = new HashMap<>();
             for (List<Signature> arityGroup : family.byArity.values()) {
