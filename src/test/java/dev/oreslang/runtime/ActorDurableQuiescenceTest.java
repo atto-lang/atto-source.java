@@ -112,8 +112,13 @@ final class ActorDurableQuiescenceTest {
         ActorRuntime.TurnExecutor executor = turn -> {
             turn.run();
             callbackExited.countDown();
-            if (!releaseHostBoundary.await(5, TimeUnit.SECONDS)) {
-                throw new IllegalStateException("host test boundary timed out");
+            try {
+                if (!releaseHostBoundary.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("host test boundary timed out");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("host test interrupted", e);
             }
         };
         try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
