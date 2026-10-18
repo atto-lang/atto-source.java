@@ -33,6 +33,13 @@ final class NativeTestingFrameworkTest {
         assertFalse(output.contains("ORES_TEST|PASS|meta/third|\nORES_TEST|SUMMARY|total=2"));
     }
 
+    @Test
+    void nativeSeededFuzzHelperRunsThroughGuestLanguage() throws Exception {
+        String output = run(Path.of("examples/native-fuzz-testing.ores"));
+        assertTrue(output.contains(
+                "ORES_TEST|SUMMARY|total=2|passed=2|failed=0|skipped=0|filtered=0"));
+    }
+
     private static String run(Path entry) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         LinkedProgramRunner.run(
