@@ -56,7 +56,15 @@ public final class AsyncRuntime implements AutoCloseable {
         private final CountDownLatch exited = new CountDownLatch(1);
         private volatile Thread thread;
         private volatile OresFuture<?> completion;
+        private final OresFuture<Void> quiesced = new OresFuture<>();
+
+        private void markExited() {
+            exited.countDown();
+            quiesced.completeFromRuntime(null);
+        }
     }
+
+    private record Submission<T>(OresFuture<T> completion, TaskExit exit) { }
 
     public AsyncRuntime() {
         this(TurnExecutor.direct());
@@ -102,6 +110,10 @@ public final class AsyncRuntime implements AutoCloseable {
      * interrupts the current virtual carrier when possible.
      */
     public <T> OresFuture<T> submit(Task<T> task) {
+        return submitInternal(task).completion();
+    }
+
+    private <T> Submission<T> submitInternal(Task<T> task) {
         Objects.requireNonNull(task, "task");
         if (closed.get()) throw new RejectedExecutionException("async runtime is closed");
 
@@ -112,7 +124,7 @@ public final class AsyncRuntime implements AutoCloseable {
             if (carrier != null) carrier.cancel(true);
             if (exit.state.compareAndSet(0, 2)) {
                 taskExits.remove(exit.completion, exit);
-                exit.exited.countDown();
+                exit.markExited();
             }
         });
         exit.completion = completion;
@@ -130,19 +142,19 @@ public final class AsyncRuntime implements AutoCloseable {
                     // TurnExecutor has returned, including its context leave.
                     exit.state.set(2);
                     taskExits.remove(completion, exit);
-                    exit.exited.countDown();
+                    exit.markExited();
                 }
             });
         } catch (RejectedExecutionException rejected) {
             taskExits.remove(completion, exit);
             exit.state.set(2);
-            exit.exited.countDown();
+            exit.markExited();
             throw new RejectedExecutionException("async runtime is closed", rejected);
         }
         backing.set(scheduled);
         if (completion.isCancelled()) {
             scheduled.cancel(true);
-            if (exit.state.compareAndSet(0, 2)) exit.exited.countDown();
+            if (exit.state.compareAndSet(0, 2)) exit.markExited();
             if (exit.state.get() == 2) taskExits.remove(completion, exit);
         }
         completion.whenCompleteRuntime((value, failure) -> {
@@ -153,7 +165,7 @@ public final class AsyncRuntime implements AutoCloseable {
 
         // Close may race submission after the initial check.
         if (closed.get()) completion.cancel(true);
-        return completion;
+        return new Submission<>(completion, exit);
     }
 
     /**
@@ -163,7 +175,8 @@ public final class AsyncRuntime implements AutoCloseable {
      * must be complete before the compiler enables Task blocks.
      */
     public <T> OresTask<T> submitTask(Task<T> task) {
-        return new OresTask<>(submit(task));
+        Submission<T> submitted = submitInternal(task);
+        return new OresTask<>(submitted.completion(), submitted.exit().quiesced);
     }
 
     /**
