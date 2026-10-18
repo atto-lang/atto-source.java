@@ -24,6 +24,11 @@ public final class EnumVariantOverloadPolicySmoke {
     public static void main(String[] ignored) {
         EnumInfo foo = new EnumInfo("file::Foo", Map.of("A", Payload.NULLARY,
                 "B", Payload.NULLARY, "C", Payload.PRIMITIVE));
+        Map<String, Payload> mutableCases = new java.util.HashMap<>();
+        mutableCases.put("A", Payload.NULLARY);
+        EnumInfo frozenEnum = new EnumInfo("file::Mutable", mutableCases);
+        mutableCases.put("B", Payload.COMPLEX);
+        check(frozenEnum.cases().size() == 1 && frozenEnum.eligible());
         EnumInfo bar = new EnumInfo("file::Bar", Map.of("A", Payload.NULLARY,
                 "C", Payload.FIXED_PRIMITIVE_TUPLE));
         EnumParameter f = EnumParameter.whole(foo);
@@ -32,6 +37,10 @@ public final class EnumVariantOverloadPolicySmoke {
         EnumParameter c = EnumParameter.variant(foo, "C");
         EnumParameter g = EnumParameter.whole(bar);
         Primitive n = new Primitive("int");
+        List<Parameter> mutableParams = new ArrayList<>(List.of(f, n));
+        Signature frozenSignature = new Signature("file::module", Domain.MODULE, "f", mutableParams);
+        mutableParams.clear();
+        check(frozenSignature.arity() == 2);
         Signature general = sig(f, n);
         Signature specializedA = sig(a, n);
         Signature specializedB = sig(b, n);
