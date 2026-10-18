@@ -255,7 +255,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
                             "ambiguous group forward; use selective fanout or round robin");
                 child = session.forwardTo(source, edges.getFirst().target());
             }
-            sendChild(child, value);
+            sendChild(source, child, value);
             ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
@@ -269,7 +269,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
                     ? session.forwardRoundRobin(source)
                     : session.forwardRoundRobinEligible(
                             source, groupEligible(source.receiver()));
-            sendChild(child, value);
+            sendChild(source, child, value);
             ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
@@ -282,7 +282,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
             if (routingGroup != null && !groupEligible(source.receiver()).contains(target))
                 throw new IllegalStateException(
                         "target is not an active ActorGroup graph member");
-            sendChild(session.forwardTo(source, target), value);
+            sendChild(source, session.forwardTo(source, target), value);
             ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
@@ -301,7 +301,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
                     throw new IllegalStateException(
                             "key-selected actor is not an active ActorGroup member");
             }
-            sendChild(session.forwardByKey(source, key), value);
+            sendChild(source, session.forwardByKey(source, key), value);
             ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
@@ -423,11 +423,20 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
         });
     }
 
-    private void sendChild(ActorPipelineRouteSession.MailFrame child, M value) {
+    private void sendChild(
+            ActorPipelineRouteSession.MailFrame source,
+            ActorPipelineRouteSession.MailFrame child, M value) {
         try {
             owner.sendWithPipelineFrame(targets.get(child.receiver()),
                     Objects.requireNonNull(value, "pipeline payload"), child, this);
         } catch (RuntimeException | Error failed) {
+            if (ActorPipelineRouteSession.wasMailboxPublished(child)) {
+                // Accepted DATA is not a failed admission. Its envelope owns
+                // child cleanup; do not let a caught exception replay source.
+                ActorPipelineRouteSession.retireDelivered(source);
+                throw new IllegalStateException(
+                        "pipeline DATA already published; retry is unsafe", failed);
+            }
             ActorPipelineRouteSession.retireDelivered(child);
             throw failed;
         }
@@ -445,12 +454,15 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
             owner.sendWithPipelineFrame(
                     targets.get(child.receiver()), value, child, this);
         } catch (RuntimeException rejected) {
+            if (ActorPipelineRouteSession.wasMailboxPublished(child))
+                throw new IllegalStateException(
+                        "pipeline return DATA already published; retry is unsafe", rejected);
             session.restoreRejectedReturn(source, child);
             throw rejected;
         } catch (Error fatal) {
-            // Fatal VM faults are not retryable. Do not resurrect a route
-            // after unclassified failure or pretend no publication happened.
-            ActorPipelineRouteSession.retireDelivered(child);
+            // A published child is owned by its envelope, not this catch.
+            if (!ActorPipelineRouteSession.wasMailboxPublished(child))
+                ActorPipelineRouteSession.retireDelivered(child);
             throw fatal;
         }
     }
