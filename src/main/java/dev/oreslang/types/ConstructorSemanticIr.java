@@ -300,6 +300,121 @@ public final class ConstructorSemanticIr {
         }
     }
 
+    /** Stable lexical identity after name resolution; spelling alone is never identity. */
+    public record CaptureBindingId(String declarationId) {
+        public CaptureBindingId {
+            if (declarationId == null || declarationId.isBlank()) {
+                throw new IllegalArgumentException("capture binding id cannot be blank");
+            }
+        }
+    }
+
+    public enum CaptureAccess {
+        READ,
+        WRITE;
+
+        public CaptureAccess merge(CaptureAccess other) {
+            Objects.requireNonNull(other, "capture access");
+            return this == WRITE || other == WRITE ? WRITE : READ;
+        }
+    }
+
+    /**
+     * One resolved free-variable dependency of a callable/deferred continuation.
+     *
+     * <p>{@code debugName} exists only for diagnostics. Shadowed declarations may
+     * share the same source spelling but must carry distinct binding ids.</p>
+     */
+    public record CaptureBinding(
+            CaptureBindingId bindingId,
+            String debugName,
+            Types.Type type,
+            CaptureAccess access,
+            Set<CallableCapability> capabilities) {
+        public CaptureBinding {
+            Objects.requireNonNull(bindingId, "capture binding id");
+            if (debugName == null || debugName.isBlank()) {
+                throw new IllegalArgumentException("capture debug name cannot be blank");
+            }
+            Objects.requireNonNull(type, "capture type");
+            Objects.requireNonNull(access, "capture access");
+            capabilities = Set.copyOf(capabilities);
+        }
+
+        public CaptureBinding merge(CaptureBinding other) {
+            Objects.requireNonNull(other, "other capture binding");
+            if (!bindingId.equals(other.bindingId)
+                    || !debugName.equals(other.debugName)
+                    || !type.equals(other.type)) {
+                throw new IllegalArgumentException(
+                        "cannot merge inconsistent semantic capture bindings");
+            }
+            java.util.LinkedHashSet<CallableCapability> mergedCapabilities =
+                    new java.util.LinkedHashSet<>(capabilities);
+            mergedCapabilities.addAll(other.capabilities);
+            return new CaptureBinding(
+                    bindingId,
+                    debugName,
+                    type,
+                    access.merge(other.access),
+                    mergedCapabilities);
+        }
+    }
+
+    /**
+     * Backend-neutral resolved capture plan.
+     *
+     * <p>Ownership validation and runtime lowering must consume the same plan.
+     * Re-running a spelling-based free-variable walk in a backend is not
+     * authoritative. The plan never grants actor/network transport authority.</p>
+     */
+    public record CapturePlan(List<CaptureBinding> bindings) {
+        public CapturePlan {
+            bindings = List.copyOf(bindings);
+            java.util.HashSet<CaptureBindingId> ids = new java.util.HashSet<>();
+            for (CaptureBinding binding : bindings) {
+                Objects.requireNonNull(binding, "capture binding");
+                if (!ids.add(binding.bindingId())) {
+                    throw new IllegalArgumentException(
+                            "duplicate semantic capture binding id: "
+                                    + binding.bindingId().declarationId());
+                }
+            }
+        }
+
+        public static CapturePlan empty() {
+            return new CapturePlan(List.of());
+        }
+
+        public boolean capturesBorrow() {
+            return bindings.stream().anyMatch(binding ->
+                    binding.capabilities().contains(CallableCapability.BORROWED));
+        }
+
+        public boolean capturesConstructionState() {
+            return bindings.stream().anyMatch(binding ->
+                    binding.capabilities().contains(CallableCapability.CONSTRUCTION_SCOPED));
+        }
+
+        public CapturePlan merge(CapturePlan other) {
+            Objects.requireNonNull(other, "other capture plan");
+            java.util.LinkedHashMap<CaptureBindingId, CaptureBinding> merged =
+                    new java.util.LinkedHashMap<>();
+            for (CaptureBinding binding : bindings) {
+                merged.put(binding.bindingId(), binding);
+            }
+            for (CaptureBinding binding : other.bindings) {
+                merged.merge(binding.bindingId(), binding, CaptureBinding::merge);
+            }
+            return new CapturePlan(List.copyOf(merged.values()));
+        }
+
+        /** Executable environments are never actor DATA, even when captures are serializable. */
+        public boolean actorDataAdmissible() {
+            return false;
+        }
+    }
+
     /**
      * Concrete callable semantic type. Parameter names never participate in
      * identity; ownership/effect metadata does.
