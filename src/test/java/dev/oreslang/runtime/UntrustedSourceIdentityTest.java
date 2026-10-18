@@ -40,6 +40,15 @@ final class UntrustedSourceIdentityTest {
         assertThrows(IllegalArgumentException.class,
                 () -> UntrustedSourceIdentity.inspect("a\u0000name", "valid"));
         assertThrows(IllegalArgumentException.class,
+                () -> UntrustedSourceIdentity.inspect("unit" + ((char) 0x202E) + ".ores", "valid"),
+                "Unicode right-to-left override may spoof a module identity");
+        assertThrows(IllegalArgumentException.class,
+                () -> UntrustedSourceIdentity.inspect("unit" + ((char) 0x200B) + ".ores", "valid"),
+                "zero-width code-unit formatting makes diagnostics ambiguous");
+        assertThrows(IllegalArgumentException.class,
+                () -> UntrustedSourceIdentity.inspect("unit" + ((char) 0x2066) + ".ores", "valid"),
+                "isolate formatting control must not enter logical IDs");
+        assertThrows(IllegalArgumentException.class,
                 () -> UntrustedSourceIdentity.inspect("", "valid"));
         assertThrows(IllegalArgumentException.class,
                 () -> UntrustedSourceIdentity.inspect("a".repeat(513), "valid"));
