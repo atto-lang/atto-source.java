@@ -275,6 +275,7 @@ public class TaskScopeTest {
             Object admissionMonitor = monitorField.get(scope);
             AtomicInteger notifications = new AtomicInteger();
             AtomicReference<Boolean> callbackHeldLock = new AtomicReference<>();
+            AtomicReference<Boolean> guestHeldLock = new AtomicReference<>();
             scope.getDone().whenCompleteRuntime((ignored, failure) -> {
                 notifications.incrementAndGet();
                 callbackHeldLock.set(Thread.holdsLock(admissionMonitor));
@@ -284,6 +285,7 @@ public class TaskScopeTest {
             // completes before TaskScope subscribes to TaskHandle.getDone(),
             // the callback is delivered synchronously at registration.
             TaskHandle<Integer> child = scope.startTask(resume -> {
+                guestHeldLock.set(Thread.holdsLock(admissionMonitor));
                 scope.seal();
                 return OresScheduler.done(7);
             });
@@ -291,8 +293,61 @@ public class TaskScopeTest {
                     child.getDone().get(3, TimeUnit.SECONDS));
             assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
             assertEquals(1, notifications.get());
+            assertEquals(Boolean.FALSE, guestHeldLock.get(),
+                    "guest dispatch must never run under admissionLock");
             assertEquals(Boolean.FALSE, callbackHeldLock.get(),
                     "scope completion observers must not execute under admissionLock");
+        }
+    }
+
+    @Test void blockedSchedulerAdmissionDoesNotBlockParentCancellation()
+            throws Exception {
+        CountDownLatch dispatchEntered = new CountDownLatch(1);
+        CountDownLatch releaseDispatch = new CountDownLatch(1);
+        java.util.concurrent.Executor blockingExecutor = runnable -> {
+            dispatchEntered.countDown();
+            awaitUninterruptibly(releaseDispatch);
+            runnable.run();
+        };
+        try (OresScheduler scheduler =
+                     OresScheduler.runtimeOwned("blocked-admission-regression",
+                             1, blockingExecutor)) {
+            TaskScope scope = scheduler.newTaskScope();
+            AtomicReference<TaskHandle<Integer>> admitted = new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            Thread submitter = new Thread(() -> {
+                try {
+                    admitted.set(scope.startTask(resume -> OresScheduler.done(123)));
+                } catch (Throwable error) {
+                    failure.set(error);
+                }
+            });
+            submitter.start();
+            try {
+                assertTrue(dispatchEntered.await(3, TimeUnit.SECONDS));
+                CountDownLatch cancelled = new CountDownLatch(1);
+                AtomicReference<Boolean> cancelledFirst = new AtomicReference<>();
+                Thread canceller = new Thread(() -> {
+                    try {
+                        cancelledFirst.set(scope.cancel("scope shutdown"));
+                    } finally {
+                        cancelled.countDown();
+                    }
+                });
+                canceller.start();
+                assertTrue(cancelled.await(2, TimeUnit.SECONDS),
+                        "scope.cancel must not wait on executor dispatch under admissionLock");
+                assertTrue(cancelledFirst.get());
+            } finally {
+                releaseDispatch.countDown();
+            }
+            submitter.join(3000);
+            assertFalse(submitter.isAlive());
+            assertNull(failure.get());
+            assertNotNull(admitted.get());
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    admitted.get().getDone().get(3, TimeUnit.SECONDS));
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
         }
     }
 
