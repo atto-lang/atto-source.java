@@ -21,14 +21,61 @@ final class ParserTest {
     }
 
     @Test
-    void omittedArgumentsFailClosedInAllConstructorAndCallPositions() {
+    void omittedArgumentsAreParsedAsStagedNodesAndRejectedByTypeChecking() {
         for (String expression : List.of("f(_, 1)", "f(omit, 1)",
                 "f(x: 1)", "new Thing(_, 1)", "new Thing(x: 1)",
                 "spawn Worker(_, 1)", "spawn Worker(x: 1)")) {
             String source = "pub fnc test(): void { const v = " + expression + "; return; }";
+            Ast.Program parsed = assertDoesNotThrow(() -> Parser.parse(source), expression);
+            Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                    parsed.modules().getFirst().declarations().getFirst();
+            Ast.BindingStmt value = (Ast.BindingStmt) fn.body().getFirst();
+            assertTrue(value.initializer() instanceof Ast.StagedCallExpr
+                    || value.initializer() instanceof Ast.StagedNewExpr, expression);
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                    () -> Parser.parse(source), expression);
+                    () -> TypeChecker.check(parsed), expression);
             assertTrue(failure.getMessage().contains("not yet enabled"), failure::toString);
+        }
+    }
+
+    @Test
+    void stagedCallItemsPreserveTypedNamesOmissionsAndSourceOrder() {
+        Ast.Program program = Parser.parse(
+                "pub fnc test(): void { const v = f(c: effectC(), b: _, a: effectA()); return; }");
+        Ast.FunctionDecl function = (Ast.FunctionDecl)
+                program.modules().getFirst().declarations().getFirst();
+        Ast.BindingStmt binding = (Ast.BindingStmt) function.body().getFirst();
+        Ast.StagedCallExpr call = assertInstanceOf(
+                Ast.StagedCallExpr.class, binding.initializer());
+        assertEquals(List.of("c", "b", "a"),
+                call.arguments().stream().map(Ast.CallArgument::label).toList());
+        assertEquals(List.of(false, true, false),
+                call.arguments().stream().map(Ast.CallArgument::omitted).toList());
+        assertNull(call.arguments().get(1).value());
+        assertFalse(call.typeArgumentsPresent());
+    }
+
+    @Test
+    void namedCallsCannotResumePositionalOrCreateInvalidHoles() {
+        for (String invocation : List.of("f(a: 1, 2)", "f(1,, 2)",
+                "new Thing(a: 1, 2)", "spawn Worker(a: 1, 2)")) {
+            String source = "pub fnc test(): void { const v = " + invocation + "; return; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(source), invocation);
+        }
+    }
+
+    @Test
+    void ordinaryPositionalCallsRemainUnchanged() {
+        for (String invocation : List.of("f(1, 2)", "f(3, None, true)",
+                "new Thing(1, 2)", "spawn Worker(1, 2)")) {
+            String source = "pub fnc test(): void { const v = " + invocation + "; return; }";
+            Ast.Program parsed = Parser.parse(source);
+            Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                    parsed.modules().getFirst().declarations().getFirst();
+            Ast.BindingStmt value = (Ast.BindingStmt) fn.body().getFirst();
+            assertFalse(value.initializer() instanceof Ast.StagedCallExpr);
+            assertFalse(value.initializer() instanceof Ast.StagedNewExpr);
         }
     }
 
