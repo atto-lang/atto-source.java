@@ -467,6 +467,7 @@ public final class TypeChecker {
                 // direct-call specialization because polymorphic function
                 // values are not implemented.
                 if (fn.kind() == Ast.CallableKind.FNC
+                        && !fn.suspends()
                         && fn.genericParameters().isEmpty()
                         && callableCounts.getOrDefault(fn.name(), 0) == 1) {
                     mergeMember(members, fn.name(), signature, "module " + module.name());
