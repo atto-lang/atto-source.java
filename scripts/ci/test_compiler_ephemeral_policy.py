@@ -81,7 +81,8 @@ class BundleEphemeralPolicyTests(unittest.TestCase):
                      '--expected-manifest-sha256', '--probe-launcher',
                      'positive and negative OresMain source checks',
                      '--check', 'JAVA_HOME', 'status --porcelain', 'ls-files -v',
-                     "'HEAD^{tree}'", 'test_compiler_bundle.py'):
+                     "'HEAD^{tree}'", 'test_compiler_bundle.py',
+                     'test_compiler_ephemeral_policy.py'):
             self.assertIn(text, self.source)
 
     def test_approved_only_for_exact_protected_source_private_ref(self):

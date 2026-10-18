@@ -67,6 +67,7 @@ jobs:
             exit 1
           fi
           python3 -m unittest discover -s scripts/ci -p 'test_compiler_bundle.py' -v
+          python3 -m unittest discover -s scripts/ci -p 'test_compiler_ephemeral_policy.py' -v
       - name: Install existing GraalVM JDK25 without shared dependency cache
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # pinned setup action
         with:
