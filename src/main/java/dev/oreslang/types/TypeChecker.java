@@ -4948,7 +4948,11 @@ public final class TypeChecker {
     static String actorBoundarySimpleName(String name) {
         int dot = name.lastIndexOf('.');
         int scope = name.lastIndexOf("::");
-        return name.substring(Math.max(dot + 1, scope + 2));
+        // A missing namespace delimiter has index -1: never treat it as
+        // a real "::" prefix or strip the first character of a bare name.
+        int offset = Math.max(dot < 0 ? 0 : dot + 1,
+                scope < 0 ? 0 : scope + 2);
+        return name.substring(offset);
     }
 
     private void validateActorCallableBoundaryType(
