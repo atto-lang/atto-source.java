@@ -123,6 +123,60 @@ final class WorkflowActivityProtocolV1Test {
                                         1, sha('a')))));
     }
 
+    @Test
+    void terminalActivityUsesCompletionWithoutInventingWorkflowEvent() {
+        var cancelClaim = claim(new DurableDevLoopV1.CancelWork(
+                "operator",
+                "effect/cancel"));
+        var escalationClaim = claim(new DurableDevLoopV1.Escalate(
+                3,
+                "budget exhausted",
+                "effect/escalate"));
+
+        assertDoesNotThrow(
+                () -> WorkflowActivityProtocolV1.validateOutcome(
+                        cancelClaim,
+                        new WorkflowActivityProtocolV1.Completed(
+                                cancelClaim.effectKey(),
+                                cancelClaim.claimToken(),
+                                "receipt://cancel")));
+        assertDoesNotThrow(
+                () -> WorkflowActivityProtocolV1.validateOutcome(
+                        escalationClaim,
+                        new WorkflowActivityProtocolV1.Completed(
+                                escalationClaim.effectKey(),
+                                escalationClaim.claimToken(),
+                                "receipt://notify")));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorkflowActivityProtocolV1.validateOutcome(
+                        cancelClaim,
+                        new WorkflowActivityProtocolV1.Succeeded(
+                                cancelClaim.effectKey(),
+                                cancelClaim.claimToken(),
+                                "receipt://wrong",
+                                new DurableDevLoopV1.Cancel("duplicate"))));
+    }
+
+    @Test
+    void eventProducingActivityCannotReportCompletionWithoutEvent() {
+        var claim = claim(new DurableDevLoopV1.RequestCode(
+                1,
+                "goal",
+                null,
+                "effect/code"));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorkflowActivityProtocolV1.validateOutcome(
+                        claim,
+                        new WorkflowActivityProtocolV1.Completed(
+                                claim.effectKey(),
+                                claim.claimToken(),
+                                "receipt://code")));
+    }
+
     private static WorkflowJournalV1.Claim claim(
             DurableDevLoopV1.Command command) {
         return new WorkflowJournalV1.Claim(
