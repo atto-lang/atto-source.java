@@ -105,6 +105,44 @@ final class MessagePackActorMailboxIntegrationTest {
         }
     }
 
+
+    @Test
+    void failedBinaryEncodingReleasesAllSharedScratchBeforeNextAdmission()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var delivered = new ArrayBlockingQueue<Object>(2);
+            var ref = runtime.<Object>spawnSharedTrusted(
+                    context -> (value, turn) -> delivered.add(value));
+            runtime.bindSerializableMailbox(ref,
+                    new MailboxSchema(
+                            "test.Shared.Scratch.v1",
+                            list(string())));
+
+            long baseline = runtime.actorMemoryBytes();
+            String chunk = "s".repeat(8_192);
+            List<String> oversized =
+                    java.util.Collections.nCopies(200, chunk);
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> ref.send(oversized));
+            assertEquals(baseline, runtime.actorMemoryBytes(),
+                    "shared encode failure must release runtime scratch");
+
+            ref.send(List.of("after-shared-failure"));
+            assertEquals(
+                    List.of("after-shared-failure"),
+                    delivered.poll(5, TimeUnit.SECONDS));
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (runtime.actorMemoryBytes() != baseline
+                    && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertEquals(baseline, runtime.actorMemoryBytes(),
+                    "shared retained wire/decode reservation must close");
+        }
+    }
+
     @Test
     void concurrentOversizedBinarySendsCannotLeakAggregateScratch()
             throws Exception {
