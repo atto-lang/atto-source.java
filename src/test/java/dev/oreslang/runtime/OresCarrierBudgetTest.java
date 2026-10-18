@@ -124,8 +124,12 @@ final class OresCarrierBudgetTest {
 
     @Test void budgetedControlDomainCanBorrowIdleGlobalPermits() throws Exception {
         String previous = System.getProperty(OresCarrierBudget.PROPERTY);
+        String previousBackend = System.getProperty("ores.runtime.carriers");
+        String previousAffinity = System.getProperty("ores.actor.affinity");
         try {
             System.setProperty(OresCarrierBudget.PROPERTY, "8");
+            System.setProperty("ores.runtime.carriers", "java");
+            System.setProperty("ores.actor.affinity", "none");
             OresVM vm = OresVM.create(Runnable::run);
             CountDownLatch entered = new CountDownLatch(4);
             CountDownLatch release = new CountDownLatch(1);
@@ -157,6 +161,56 @@ final class OresCarrierBudgetTest {
         } finally {
             if (previous == null) System.clearProperty(OresCarrierBudget.PROPERTY);
             else System.setProperty(OresCarrierBudget.PROPERTY, previous);
+            if (previousBackend == null) System.clearProperty("ores.runtime.carriers");
+            else System.setProperty("ores.runtime.carriers", previousBackend);
+            if (previousAffinity == null) System.clearProperty("ores.actor.affinity");
+            else System.setProperty("ores.actor.affinity", previousAffinity);
+        }
+    }
+
+    @Test void defaultTopologyDoesNotBorrowControlAgainstUntrackedActorCapacity()
+            throws Exception {
+        String previous = System.getProperty(OresCarrierBudget.PROPERTY);
+        String previousBackend = System.getProperty("ores.runtime.carriers");
+        String previousAffinity = System.getProperty("ores.actor.affinity");
+        try {
+            System.setProperty(OresCarrierBudget.PROPERTY, "8");
+            System.clearProperty("ores.runtime.carriers");
+            System.clearProperty("ores.actor.affinity");
+            OresVM vm = OresVM.create(Runnable::run);
+            CountDownLatch firstEntered = new CountDownLatch(1);
+            CountDownLatch secondEntered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            try {
+                vm.dispatchHostIoMapping(() -> {
+                    firstEntered.countDown();
+                    try {
+                        release.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                vm.dispatchHostIoMapping(secondEntered::countDown);
+
+                assertTrue(firstEntered.await(2, TimeUnit.SECONDS));
+                assertFalse(secondEntered.await(100, TimeUnit.MILLISECONDS),
+                        "default/native-affine topology must not borrow CONTROL capacity");
+                assertEquals(1, vm.controlCarrierCount());
+                assertEquals(1, vm.carrierPermitSnapshot().controlHeld());
+
+                release.countDown();
+                assertTrue(secondEntered.await(2, TimeUnit.SECONDS));
+            } finally {
+                release.countDown();
+                vm.close();
+            }
+        } finally {
+            if (previous == null) System.clearProperty(OresCarrierBudget.PROPERTY);
+            else System.setProperty(OresCarrierBudget.PROPERTY, previous);
+            if (previousBackend == null) System.clearProperty("ores.runtime.carriers");
+            else System.setProperty("ores.runtime.carriers", previousBackend);
+            if (previousAffinity == null) System.clearProperty("ores.actor.affinity");
+            else System.setProperty("ores.actor.affinity", previousAffinity);
         }
     }
 
