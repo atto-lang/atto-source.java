@@ -651,10 +651,15 @@ public final class ActorRuntime implements AutoCloseable {
             return reserve(frameAndDecodeBytes, "private binary actor mailbox");
         }
 
-        private synchronized MemoryReservation reserve(long bytes, String purpose) {
+        private MemoryReservation reserve(long bytes, String purpose) {
+            reserveBytes(bytes, purpose);
+            return new MemoryReservation(this, bytes);
+        }
+
+        private synchronized void reserveBytes(long bytes, String purpose) {
             if (bytes < 0) throw new IllegalArgumentException("memory reservation cannot be negative");
             if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
-            if (bytes == 0) return new MemoryReservation(this, 0);
+            if (bytes == 0) return;
 
             long current = usedBytes.get();
             long next;
@@ -670,7 +675,14 @@ public final class ActorRuntime implements AutoCloseable {
 
             reservePrivateRuntimeBytes(bytes, owner, purpose);
             usedBytes.set(next);
-            return new MemoryReservation(this, bytes);
+        }
+
+        private void reserveTransientBytes(long bytes, String purpose) {
+            reserveBytes(bytes, purpose);
+        }
+
+        private void releaseTransientBytes(long bytes) {
+            release(bytes);
         }
 
         private void requireCurrentOwner() {
@@ -841,6 +853,92 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public void close() {
             if (released.compareAndSet(false, true)) slice.release(bytes);
+        }
+    }
+
+    /**
+     * Dynamic reservation for binary-mailbox construction. The codec charges
+     * every variable-sized output allocation before it happens; after encoding
+     * this same reservation is atomically resized into retained wire+decode
+     * ownership so there is never an unaccounted release/re-reserve gap.
+     */
+    private final class BinaryMailboxReservation
+            implements MessagePackCollectionCodec.ScratchBudget, AutoCloseable {
+        private final ActorCell<?> cell;
+        private long bytes;
+        private boolean closed;
+
+        private BinaryMailboxReservation(ActorCell<?> cell) {
+            this.cell = Objects.requireNonNull(cell);
+        }
+
+        @Override
+        public synchronized void reserve(long additionalBytes) {
+            if (additionalBytes < 0)
+                throw new IllegalArgumentException("negative binary mailbox scratch reservation");
+            if (additionalBytes == 0) return;
+            if (closed)
+                throw new IllegalStateException("binary mailbox reservation is closed");
+            long next;
+            try {
+                next = Math.addExact(bytes, additionalBytes);
+            } catch (ArithmeticException overflow) {
+                throw new IllegalStateException("binary mailbox scratch accounting overflow");
+            }
+            if (isPrivateKind(cell.kind)) {
+                cell.memorySlice.reserveTransientBytes(
+                        additionalBytes,
+                        "private binary actor codec scratch");
+            } else {
+                cell.reserveSharedMailbox(additionalBytes);
+            }
+            bytes = next;
+        }
+
+        @Override
+        public synchronized void release(long releasedBytes) {
+            if (releasedBytes < 0)
+                throw new IllegalArgumentException("negative binary mailbox scratch release");
+            if (releasedBytes == 0) return;
+            if (closed || releasedBytes > bytes) {
+                throw new IllegalStateException(
+                        "binary mailbox scratch accounting underflow");
+            }
+            if (isPrivateKind(cell.kind)) {
+                cell.memorySlice.releaseTransientBytes(releasedBytes);
+            } else {
+                cell.releaseSharedMailbox(releasedBytes);
+            }
+            bytes -= releasedBytes;
+        }
+
+        synchronized void resizeTo(long retainedBytes) {
+            if (retainedBytes < 0)
+                throw new IllegalArgumentException("negative binary mailbox retained reservation");
+            if (closed)
+                throw new IllegalStateException("binary mailbox reservation is closed");
+            if (retainedBytes > bytes) {
+                reserve(retainedBytes - bytes);
+            } else if (retainedBytes < bytes) {
+                release(bytes - retainedBytes);
+            }
+        }
+
+        synchronized long bytes() { return bytes; }
+
+        @Override
+        public synchronized void close() {
+            if (closed) return;
+            long remaining = bytes;
+            if (remaining != 0) {
+                if (isPrivateKind(cell.kind)) {
+                    cell.memorySlice.releaseTransientBytes(remaining);
+                } else {
+                    cell.releaseSharedMailbox(remaining);
+                }
+                bytes = 0;
+            }
+            closed = true;
         }
     }
 
@@ -4473,102 +4571,122 @@ public final class ActorRuntime implements AutoCloseable {
         boolean mailboxSlotTransferred = false;
         try {
         MessagePackCollectionCodec.MailboxWireCodec schema = cell.mailboxSchema;
-        byte[] binaryFrame = null;
+        final Object prepared;
+        final Runnable release;
         if (schema != null) {
-            // The mailbox stores immutable runtime-owned wire bytes, never a
-            // pointer into the sender's guest graph. Pre-decode for strict
-            // type/ownership/quota admission; decode again on the recipient's
-            // actor execution turn to establish the recipient-owned graph.
-            binaryFrame = schema.encode(message);
-            message = (M) schema.decode(binaryFrame);
-            if (message instanceof TaggedMessageCodec.TaggedValue tagged) {
-                // The closed codec has already validated every nominal
-                // owner, tag, and nested payload. Project the whole decoded
-                // tagged value into immutable data-only lists for the legacy
-                // capability/quota walkers; the mailbox retains the owned
-                // binary frame and reconstructs nominal values on its lane.
-                // Never treat arbitrary host TaggedValue as Sendable here.
-                message = (M) TaggedMessageCodec.preflightProjection(tagged);
-            }
-        }
-        validateMessageGraph(message);
-        if (cell.kind == ActorKind.UNTRUSTED) {
-            rejectUntrustedInboundCapabilities(message, new IdentityHashMap<>(), 0);
-        }
-        requireMutexTransport(cell, message, new IdentityHashMap<>(), 0);
-        requireOwnedActorRefs(message, new IdentityHashMap<>(), 0);
-        long runtimeRemaining = Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
-        if (cell.kind == ActorKind.SHARED) {
-            requireOwnedSharedHandles(message, new IdentityHashMap<>(), 0);
-            long actorRemaining = Math.max(0L, cell.policy.maxHeapBytes() - cell.sharedMailboxBytes.get());
-            long allowed = Math.min(actorRemaining, runtimeRemaining);
+            /*
+             * A sealed compiler/runtime codec is itself the Sendable proof for
+             * this data-only domain. Do not pre-decode on the sender: that used
+             * to allocate an entire second object graph before any byte quota
+             * was reserved. Instead, the encoder charges its growing wire
+             * buffer before allocation and returns a conservative recipient
+             * decode footprint.
+             */
+            BinaryMailboxReservation reservation =
+                    new BinaryMailboxReservation(cell);
+            boolean retained = false;
             try {
-                estimateSharedTransportBytes(message, new IdentityHashMap<>(), 0, allowed);
-            } catch (IllegalStateException tooLarge) {
-                throw new IllegalStateException(
-                        "shared actor mailbox memory limit exceeded for " + ref.id() + ": " + tooLarge.getMessage(),
-                        tooLarge);
+                MessagePackCollectionCodec.EncodedMailboxFrame encoded =
+                        schema.encodeForMailbox(message, reservation);
+                byte[] binaryFrame = encoded.bytes();
+                long accountedBytes = Math.addExact(
+                        Math.addExact(24L, binaryFrame.length),
+                        encoded.decodedBytes());
+
+                // This resize is atomic with respect to actor/runtime quota
+                // accounting. It grows before releasing surplus scratch and
+                // leaves wire+decode ownership charged until envelope close.
+                reservation.resizeTo(accountedBytes);
+                prepared = binaryFrame;
+                release = reservation::close;
+                retained = true;
+            } finally {
+                if (!retained) reservation.close();
             }
         } else {
-            long actorRemaining = cell.memorySlice.remainingBytes();
-            try {
-                estimatePrivateTransportBytes(message, new IdentityHashMap<>(), 0, actorRemaining);
-            } catch (IllegalStateException tooLarge) {
-                throw new IllegalStateException(
-                        "private actor mailbox limit exceeded for " + ref.id() + ": " + tooLarge.getMessage(),
-                        tooLarge);
+            validateMessageGraph(message);
+            if (cell.kind == ActorKind.UNTRUSTED) {
+                rejectUntrustedInboundCapabilities(
+                        message,
+                        new IdentityHashMap<>(),
+                        0);
             }
-            try {
-                estimatePrivateTransportBytes(message, new IdentityHashMap<>(), 0, runtimeRemaining);
-            } catch (IllegalStateException aggregateExceeded) {
-                throw new IllegalStateException(
-                        "private actor aggregate runtime limit exceeded for " + ref.id()
-                                + ": " + aggregateExceeded.getMessage(),
-                        aggregateExceeded);
+            requireMutexTransport(cell, message, new IdentityHashMap<>(), 0);
+            requireOwnedActorRefs(message, new IdentityHashMap<>(), 0);
+            long runtimeRemaining =
+                    Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
+            if (cell.kind == ActorKind.SHARED) {
+                requireOwnedSharedHandles(message, new IdentityHashMap<>(), 0);
+                long actorRemaining = Math.max(
+                        0L,
+                        cell.policy.maxHeapBytes() - cell.sharedMailboxBytes.get());
+                long allowed = Math.min(actorRemaining, runtimeRemaining);
+                try {
+                    estimateSharedTransportBytes(
+                            message,
+                            new IdentityHashMap<>(),
+                            0,
+                            allowed);
+                } catch (IllegalStateException tooLarge) {
+                    throw new IllegalStateException(
+                            "shared actor mailbox memory limit exceeded for "
+                                    + ref.id() + ": " + tooLarge.getMessage(),
+                            tooLarge);
+                }
+            } else {
+                long actorRemaining = cell.memorySlice.remainingBytes();
+                try {
+                    estimatePrivateTransportBytes(
+                            message,
+                            new IdentityHashMap<>(),
+                            0,
+                            actorRemaining);
+                } catch (IllegalStateException tooLarge) {
+                    throw new IllegalStateException(
+                            "private actor mailbox limit exceeded for "
+                                    + ref.id() + ": " + tooLarge.getMessage(),
+                            tooLarge);
+                }
+                try {
+                    estimatePrivateTransportBytes(
+                            message,
+                            new IdentityHashMap<>(),
+                            0,
+                            runtimeRemaining);
+                } catch (IllegalStateException aggregateExceeded) {
+                    throw new IllegalStateException(
+                            "private actor aggregate runtime limit exceeded for "
+                                    + ref.id() + ": "
+                                    + aggregateExceeded.getMessage(),
+                            aggregateExceeded);
+                }
             }
-        }
 
-        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (closed.get())
+                throw new IllegalStateException("actor runtime is closed");
 
-        Object prepared = binaryFrame != null
-                ? binaryFrame
-                : isPrivateKind(cell.kind) ? isolateCopy(message) : freezeForTransport(message);
-        Runnable release;
-        if (binaryFrame != null) {
-            // Account for both the retained wire and the expected decoded
-            // guest graph. Decode is executed on the recipient's actor lane;
-            // this reservation lasts until the envelope is released.
-            long accountedBytes = Math.addExact(
-                    Math.addExact(24L, binaryFrame.length),
-                    estimateFrozenBytes(message));
+            prepared = isPrivateKind(cell.kind)
+                    ? isolateCopy(message)
+                    : freezeForTransport(message);
             if (isPrivateKind(cell.kind)) {
                 MemoryReservation reservation;
                 try {
-                    reservation = cell.memorySlice.reserveSerializedMailbox(accountedBytes);
+                    reservation = cell.memorySlice.reserveMailbox(prepared);
                 } catch (IllegalStateException exceeded) {
                     throw new IllegalStateException(
-                            "private binary actor mailbox limit exceeded for " + ref.id()
-                                    + ": " + exceeded.getMessage(), exceeded);
+                            "private actor mailbox limit exceeded for "
+                                    + ref.id() + ": " + exceeded.getMessage(),
+                            exceeded);
                 }
                 release = reservation::close;
             } else {
-                cell.reserveSharedMailbox(accountedBytes);
-                release = () -> cell.releaseSharedMailbox(accountedBytes);
+                long bytes = estimateSharedMailboxBytes(
+                        prepared,
+                        new IdentityHashMap<>(),
+                        0);
+                cell.reserveSharedMailbox(bytes);
+                release = () -> cell.releaseSharedMailbox(bytes);
             }
-        } else if (isPrivateKind(cell.kind)) {
-            MemoryReservation reservation;
-            try {
-                reservation = cell.memorySlice.reserveMailbox(prepared);
-            } catch (IllegalStateException exceeded) {
-                throw new IllegalStateException(
-                        "private actor mailbox limit exceeded for " + ref.id() + ": " + exceeded.getMessage(),
-                        exceeded);
-            }
-            release = reservation::close;
-        } else {
-            long bytes = estimateSharedMailboxBytes(prepared, new IdentityHashMap<>(), 0);
-            cell.reserveSharedMailbox(bytes);
-            release = () -> cell.releaseSharedMailbox(bytes);
         }
 
         ActorId sender = currentActorId().orElse(null);
