@@ -174,7 +174,7 @@ This fallback becomes usable only after:
   and invokes the bounded Git-object writer without falling back to mutable or
   protected-branch assumptions;
 - all four exact-head independent approvals exist;
-- incident #22 has the explicit independent resume comment;
+- incidents #22 and #77 are both closed/completed and each has its own independently bound resume comment;
 - the carrier workflow/security changes themselves have been independently
   reviewed;
 - the read-only verifier and publisher/admission tests execute successfully on
@@ -187,10 +187,10 @@ Until then, export remains denied.
 ## Source-writing dispatcher
 
 The canonical source-writing fallback is `scripts/dispatch-review-pinned-private-ci.py`,
-reviewed on publisher/dispatcher PR #1217. It consumes only a schema-2 receipt from
+reviewed on publisher/dispatcher PR #1217. It consumes only a schema-3 receipt from
 the read-only verifier and is intentionally unusable while the independent reviewer
-policy is disabled, any security PR is draft/unapproved, incident #22 is not
-independently resumed, or the destination/snapshot ledgers are empty.
+policy is disabled, any security PR is draft/unapproved, either incident #22 or #77 is not
+closed/completed and independently resumed, or the destination/snapshot ledgers are empty.
 
 Before reading source it requires the exact `ci/oreslang-<source-tree>` ref to be
 absent and rechecks live repository identity, all exact-head reviews, both reviewer
