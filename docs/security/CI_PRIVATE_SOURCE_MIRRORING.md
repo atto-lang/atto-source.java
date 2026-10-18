@@ -265,13 +265,29 @@ Python executable (including `PYTHON=/bin/true`), invokes the genuine
 tokens and Python startup hooks, and uses an empty temporary GitHub CLI
 configuration. Its SHA-256 manifest pins the nine script/test inputs plus
 the source CODEOWNERS file, protected destination allowlist, and private-CI
-workflow definition before and after execution. Sixteen source-free
+workflow definition before and after execution. Eighteen source-free
 adversarial runner self-tests check failure behavior, including interpreter
-substitution, Python startup injection, symlinks and mid-run policy edits.
+substitution, Python startup injection, symlinks, mid-run policy edits,
+missing merged-main discovery, and a deliberately truncated test suite.
+Every publisher-suite repetition independently discovers and executes the
+same Python TestSuite; the publisher requires at least 97 canonical
+publisher tests and 10 merged-main cases, with unique test IDs and equal
+discovered/executed counts. A single passing test is not sufficient.
+The review-coverage verifier additionally pins the executable full-suite
+workflow step, denying conditional skips, result masking and inert early exits
+as well as step- and job-level skip/continue-on-error controls.
 The runner emits `PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1` **only** when
 every step succeeds and the input manifest is unchanged. These controls
 isolate credentials and Python imports, but are **not** a network sandbox:
 run offline or in a network-restricted environment.
+
+Local validation on October 18 used the exact committed Git blobs
+for the runner, review-coverage validator, CODEOWNERS and workflow.
+The review validator passed 21/21 tests; a separate synthetic fixture
+exercised the real runner with the 107-test minimum and six adversarial
+checks. These are NOT execution of the private publisher's complete Python
+suite. The source org's Actions remains unallocated (zero job steps).
+Do not publish sensitive blobs to a different org based on synthetic tests.
 
 Until the actual command above produces its final success receipt and
 independent source branch/destination approvals are complete, CI publication
