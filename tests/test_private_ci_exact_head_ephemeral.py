@@ -94,6 +94,23 @@ class SourceLocalEphemeralWorkflowTests(unittest.TestCase):
         self.assertIn('test "$(git rev-parse HEAD)" = "$APPROVED_SHA"',self.job)
         self.assertIn('test "$(git rev-parse \'HEAD^{tree}\')" = "$APPROVED_TREE"',self.job)
 
+    def test_immutable_repository_identity_rejects_renames_and_forks(self):
+        self.assertIn("github.repository_id == '1400792274'", self.job)
+        self.assertIn("github.repository_id != '1400792274'", self.deny)
+        self.assertIn("github.event.repository.fork == false", self.job)
+        self.assertIn("github.event.repository.fork == true", self.deny)
+        self.assertIn("github.event.repository.private == true", self.job)
+        self.assertIn("github.event.repository.private != true", self.deny)
+
+    def test_denial_and_approved_jobs_have_opposing_identity_conditions(self):
+        for approved, denied in (
+            ("github.repository_id == '1400792274'","github.repository_id != '1400792274'"),
+            ("github.event.repository.fork == false","github.event.repository.fork == true"),
+            ("github.ref_protected == true","github.ref_protected != true"),
+            ("vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true'","vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true'")):
+            self.assertIn(approved,self.job)
+            self.assertIn(denied,self.deny)
+
     def test_no_source_mirroring_or_external_artifact_publish(self):
         for bad in ("git push", "repository_dispatch", "pull_request_target:", "cache: maven", "secrets."):
             self.assertNotIn(bad,self.job)
