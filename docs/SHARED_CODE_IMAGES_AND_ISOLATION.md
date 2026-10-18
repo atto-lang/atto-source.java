@@ -86,6 +86,46 @@ library; ordinary JVM verification skips only this isolate-dependent method.
 untrusted actors share the trusted/private Graal JIT cache. Their sandbox
 execution engine remains isolated.
 
+## Security hardening: supervisor-scoped untrusted sharing
+
+The historical process allowlist `(codeUnitId, sha256)` was
+**not an authorization boundary**: one tenant's approval could let a separate
+supervisor consume or revoke the same exact image by submitting the same path
+and bytes. Draft supervisor-scoping remediation:
+
+- A trusted supervisor calls
+  `SharedCodeRegistry.process().newSupervisorScope(supervisorPolicy)` to
+  mint an opaque object capability. The scope is bound to the particular
+  registry and **supervisor policy instance**, not to a guest-chosen string,
+  module path, matching policy contents or hash.
+- A caller explicitly authorizes reuse through
+  `HotReloadManager.forUntrustedActors(policy, profile, scope)`. Two
+  managers may share code approval only if the *same trusted owner* passes
+  the *same token* to each. Managers created without a supplied scope mint
+  a private scope and never implicitly inherit another manager's grants.
+- Approval and revocation keys include the scope identity. A second tenant's
+  identical module name and digest do not inherit the first tenant's grant
+  and cannot revoke it. Capability and content checks still run separately.
+- The old unscoped approval/revocation API fails closed. The old unscoped
+  query returns false for source compatibility. Closing a scope revokes
+  all its approvals and prevents future use; a manager closes only scopes
+  it minted, not caller-owned shared authorities. Already-running code-image
+  leases remain pinned until each generation actually retires.
+- Tests cover equal-but-distinct supervisor policies, cross-supervisor
+  revocation attempts, foreign/retired tokens, hostile source policy
+  rejection, and explicit two-manager sharing.
+
+**Integration note:** This is hardening for the historical Java #416 branch,
+*not* proof that adversarial code may reuse the trusted host's compiled
+instructions. The newer [Java #569](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/569)
+and [#1275](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1275)
+require a distinct ONE-UNTRUSTED-ENGINE code-cache boundary. When these
+branches are reconciled, scoped sharing grants must apply only to the
+matching trust-domain-local code image (or untrusted grants must remain
+disabled); untrusted execution must not import trusted executable images.
+No physical code-page sharing, cross-tenant fault isolation, or successful
+exact-source native-isolate validation is claimed.
+
 ## Actor construction and lexical rules
 
 - Actor `constructor(...)` remains rejected. Ordinary classes may have
