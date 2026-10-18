@@ -2,6 +2,10 @@
 # Execute actual private-CI offline regression suites. Never publishes source.
 set -euo pipefail
 umask 077
+# Sanitize executable lookup BEFORE even dirname is invoked.
+# /usr/bin and /bin are system-managed on supported Linux/macOS hosts.
+export PATH=/usr/bin:/bin
+hash -r
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # Do not accept a caller-supplied executable: PYTHON=/bin/true used to
 # produce false-positive receipts without running ANY regression.
@@ -14,8 +18,6 @@ fi
 # and standard utilities, not shell functions or an untrusted PATH directory.
 # On supported Linux/macOS hosts /usr/bin/python3 is required; fail closed
 # rather than accepting a user-writable interpreter location.
-export PATH=/usr/bin:/bin
-hash -r
 python_bin=/usr/bin/python3
 if [[ ! -x "$python_bin" || ! -x /bin/bash ]]; then
   echo 'PRIVATE_CI_TRUSTED_INTERPRETER_MISSING' >&2
