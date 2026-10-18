@@ -812,10 +812,10 @@ public final class GitHubWebhookActorV1 {
         }
 
         private void writeState(PrivateState state) {
+            WorkflowPrivateActorStateV1.ScrubbableOutput bytes =
+                    new WorkflowPrivateActorStateV1.ScrubbableOutput();
             byte[] encoded = null;
             try {
-                ByteArrayOutputStream bytes =
-                        new ByteArrayOutputStream();
                 try (DataOutputStream output =
                              new DataOutputStream(bytes)) {
                     output.writeInt(1);
@@ -878,7 +878,7 @@ public final class GitHubWebhookActorV1 {
                         writeString(output, entry.getValue());
                     }
                 }
-                encoded = bytes.toByteArray();
+                encoded = bytes.snapshotAndWipe();
                 WorkflowPrivateActorStateV1.write(
                         stateBlock, encoded);
             } catch (IOException failure) {
@@ -886,6 +886,7 @@ public final class GitHubWebhookActorV1 {
                         "failed to encode GitHub webhook private state",
                         failure);
             } finally {
+                bytes.wipe();
                 if (encoded != null) {
                     Arrays.fill(encoded, (byte) 0);
                 }
