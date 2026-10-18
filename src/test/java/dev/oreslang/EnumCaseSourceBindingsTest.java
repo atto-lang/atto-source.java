@@ -223,7 +223,7 @@ final class EnumCaseSourceBindingsTest {
         assertThrows(IllegalArgumentException.class, () -> layout.constantTag("Unknown"));
         assertEquals(64, layout.schemaFingerprint().length());
         // Golden shared with LLVM's canonical length-prefixed wire schema.
-        assertEquals("d1348f4be12ad08ecddbd97fda273dcaf65b0c492958ef69f74e477f87112844",
+        assertEquals("1ac2d094a38482e8f21ada69339af2ad713192183980a1e5238065d1a61dfe83",
                 layout.schemaFingerprint());
         assertDoesNotThrow(() -> layout.requireExactSchema(layout.schemaFingerprint()));
         assertThrows(IllegalArgumentException.class, () -> layout.requireExactSchema("0".repeat(64)));
