@@ -43,7 +43,7 @@ jobs:
       - name: Compile real parser, migration and offline enum binding regression suites
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
-            -Dtest=EnumFrontendMainRebaseTest,EnumFrontendRootAdmissionTest,EnumCaseSourceBindingsTest,EnumCaseSourceCallPlanTest,EnumCaseOverloadPolicyTest,EnumCaseAstBoundaryAuditTest,EnumV2MigrationTest,EnumTag32SchemaVisibilityTest \
+            -Dtest=EnumFrontendMainRebaseTest,EnumFrontendRootAdmissionTest,EnumCaseSourceBindingsTest,EnumCaseSourceCallPlanTest,EnumCaseOverloadPolicyTest,EnumCaseAstBoundaryAuditTest,EnumV2MigrationTest,EnumTag32SchemaVisibilityTest,EnumNullaryStagedLiteralBindingTest \
             test
       - name: Compile isolated Java policy under strict warnings
         run: |
