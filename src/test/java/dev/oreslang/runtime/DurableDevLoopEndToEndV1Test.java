@@ -94,7 +94,8 @@ final class DurableDevLoopEndToEndV1Test {
                     opened.projection().phase());
 
             webhook.send(new GitHubWebhookActorV1.Configure(
-                    webhookSecret));
+                    webhookSecret,
+                    database.toString()));
             assertInstanceOf(
                     GitHubWebhookActorV1.Ready.class,
                     nextWebhook(webhookOut));
