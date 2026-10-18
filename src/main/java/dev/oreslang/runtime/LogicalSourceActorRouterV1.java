@@ -205,7 +205,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         HotReloadManager.Generation.ActorRouteLease candidateLease =
                 candidateGeneration.pinActorRoute();
 
-        final Route prior;
+        Route prior = null;
         boolean pauseOwned = false;
         ActorRuntime.SourceActorTransfer transfer = null;
         ActorRuntime.ActorRef<Object> replacement = null;
@@ -319,7 +319,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                                     candidateLease,
                                     candidate,
                                     replacement,
-                                    prior.incarnation));
+                                    prior == null ? 0L : prior.incarnation));
                         }
                         // The candidate context must stay pinned until its
                         // unpublished physical actor actually finalizes.
