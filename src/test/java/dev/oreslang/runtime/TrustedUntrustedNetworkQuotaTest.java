@@ -173,6 +173,30 @@ final class TrustedUntrustedNetworkQuotaTest {
     }
 
     @Test
+    void supervisorRevocationBlocksReservedButNotCommittedNetworkStarts() {
+        AtomicLong clock = new AtomicLong();
+        var http = new TrustedUntrustedNetworkQuota(
+                TrustedUntrustedNetworkQuota.Policy.initialDefault(), clock::get);
+        var reservedHttp = http.tryStartHttp();
+        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, reservedHttp.status());
+        http.close();
+        assertFalse(reservedHttp.lease().commitDispatch());
+        assertTrue(reservedHttp.lease().abortBeforeDispatch());
+        assertFalse(reservedHttp.lease().abortBeforeDispatch());
+        assertEquals(0, http.httpInFlight());
+        assertEquals(TrustedUntrustedNetworkQuota.Status.CLOSED, http.tryStartHttp().status());
+
+        var tcp = new TrustedUntrustedNetworkQuota(
+                TrustedUntrustedNetworkQuota.Policy.initialDefault(), clock::get);
+        var reservedTcp = tcp.tryOpenTcp();
+        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, reservedTcp.status());
+        tcp.close();
+        assertFalse(reservedTcp.lease().commitDispatch());
+        assertTrue(reservedTcp.lease().abortBeforeDispatch());
+        assertEquals(0, tcp.tcpConnections());
+    }
+
+    @Test
     void malformedPolicyRejected() {
         assertThrows(IllegalArgumentException.class,
                 () -> new TrustedUntrustedNetworkQuota.Policy(0, 2, 10, 10));
