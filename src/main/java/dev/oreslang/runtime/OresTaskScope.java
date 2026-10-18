@@ -97,7 +97,20 @@ public final class OresTaskScope implements AutoCloseable {
         Objects.requireNonNull(frame, "frame");
         Objects.requireNonNull(onPhysicalExit, "onPhysicalExit");
         synchronized (gate) {
-            ensureAdmitting();
+            try {
+                ensureAdmitting();
+            } catch (RuntimeException | Error rejectedByScope) {
+                // The caller already acquired the code-generation lease
+                // before calling this method. A cancelled/closed parent
+                // scope rejects without scheduling; it still owns the
+                // responsibility to release that unused lease exactly once.
+                try {
+                    onPhysicalExit.run();
+                } catch (RuntimeException | Error releaseFailure) {
+                    rejectedByScope.addSuppressed(releaseFailure);
+                }
+                throw rejectedByScope;
+            }
             OresFuture<Void> exited = new OresFuture<>();
             OresFuture<T> completion;
             try {
