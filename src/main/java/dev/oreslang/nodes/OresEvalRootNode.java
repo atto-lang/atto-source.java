@@ -14,6 +14,7 @@ import dev.oreslang.runtime.OresRwLock;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.OresAsyncTrace;
+import dev.oreslang.runtime.OresHostFailureTransfer;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.Awaitable;
@@ -213,7 +214,17 @@ public final class OresEvalRootNode extends RootNode {
                 // The host/embedder thread may block waiting for the root task;
                 // no Ores carrier is consumed. Completion is published only
                 // after the final scheduler turn fully unwinds.
-                return task.join();
+                try {
+                    return task.join();
+                } catch (RuntimeException failure) {
+                    // Truffle's PolyglotException does not preserve arbitrary
+                    // Java cause/suppressed metadata from a guest failure. The
+                    // original task failure still owns Oreslang's logical async
+                    // trace here, so publish a one-shot trusted host handoff
+                    // before crossing that boundary.
+                    OresHostFailureTransfer.publish(unwrapFutureFailure(failure));
+                    throw failure;
+                }
             }
 
             // Internal callers already executing under an Ores scheduler keep
