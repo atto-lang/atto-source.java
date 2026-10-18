@@ -104,7 +104,9 @@ public final class OresVM implements AutoCloseable {
         // carriers are created only when independent runnable CONTROL turns contend.
         int maximumControlParallelism = carrierBudget == null
                 ? Integer.getInteger("ores.runtime.control.max.parallelism", 20)
-                : Math.min(20, carrierBudget.borrowingMaximumPerDomain());
+                : OresCarrierBudget.explicitWorkConservingJvmTopology()
+                        ? Math.min(20, carrierBudget.borrowingMaximumPerDomain())
+                        : carrierBudget.controlReserve();
         validateControlBounds(controlParallelism, maximumControlParallelism);
         this.controlExecutor = new AdaptiveCarrierExecutor(
                 controlParallelism, maximumControlParallelism,
