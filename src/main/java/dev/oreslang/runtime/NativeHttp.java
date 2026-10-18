@@ -554,10 +554,15 @@ public final class NativeHttp implements AutoCloseable {
                 synchronized (state) {
                     if (state.terminal) throw new IllegalStateException("HTTP request was cancelled before response commitment");
                     if (state.committed) throw new IllegalStateException("response already started");
+                    // Preflight must be non-I/O, non-consuming, and serialized
+                    // with setHeader, cancellation and exchange ownership.
+                    draft.preflight(state.raw);
+                    draft.claim();
                     state.committed = true;
                     state.responseStatus = draft.status();
                 }
-                draft.writeTo(state.raw, () -> state.terminal, input -> state.activeResponseInput = input);
+                draft.writeClaimedTo(state.raw, () -> state.terminal,
+                        input -> state.activeResponseInput = input);
                 state.finish();
                 return null;
             });
