@@ -75,6 +75,9 @@ public final class OptionalCallShapeBinder {
         public static Parameter variadic(String name) { return new Parameter(name, false, true); }
     }
 
+    /** Exact source-to-formal mapping for an explicit no-value call item. */
+    public record OmittedCallItem(int callItemIndex, int parameterIndex) { }
+
     /**
      * Formal-to-source index plan. -1 marks an omitted OPTIONAL scalar formal;
      * the final variadic formal is represented separately by a list of source
@@ -157,7 +160,8 @@ public final class OptionalCallShapeBinder {
                 throw new IllegalArgumentException(
                         "evaluated-source to original-call-item index map has incorrect size");
             }
-            int rawCallItems = supplied + explicitlyOmittedParameterIndices.size();
+            int rawCallItems = Math.addExact(
+                    supplied, explicitlyOmittedParameterIndices.size());
             int priorCallItemIndex = -1;
             for (int callItemIndex : callItemIndexByEvaluatedSource) {
                 if (callItemIndex <= priorCallItemIndex || callItemIndex >= rawCallItems) {
@@ -225,6 +229,21 @@ public final class OptionalCallShapeBinder {
                 throw new IllegalStateException("inconsistent omitted call-item origin plan");
             }
             return List.copyOf(result);
+        }
+
+        /**
+         * Preserve the source order of explicit omissions while identifying
+         * the formal they skip. In named calls, formal indexes can be reordered;
+         * never infer a formal from the raw omission item's ordinal.
+         */
+        public List<OmittedCallItem> omittedCallItemBindings() {
+            List<Integer> itemIndexes = omittedCallItemIndices();
+            List<OmittedCallItem> mappings = new ArrayList<>(itemIndexes.size());
+            for (int i = 0; i < itemIndexes.size(); i++) {
+                mappings.add(new OmittedCallItem(
+                        itemIndexes.get(i), explicitlyOmittedParameterIndices.get(i)));
+            }
+            return List.copyOf(mappings);
         }
         public boolean omitted(int parameterIndex) {
             return parameterIndex != variadicParameterIndex
