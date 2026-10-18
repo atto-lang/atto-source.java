@@ -566,12 +566,14 @@ public final class TypeChecker {
         }
         if (fn.name().equals("main")) {
             throw new IllegalArgumentException(
-                    "program entrypoint 'main' cannot declare unchecked terminal effects; "
+                    "program entrypoint 'main' cannot declare checked terminal effects; "
                             + "handle them before the process boundary");
         }
-        for (Ast.TypeRef type : java.util.stream.Stream.of(
-                effects.throwsTypes(), effects.raisesTypes(), effects.panicsTypes())
-                .flatMap(java.util.Collection::stream).toList()) {
+        List<Ast.TypeRef> effectTypes = new ArrayList<>();
+        effectTypes.addAll(effects.throwsTypes());
+        effectTypes.addAll(effects.raisesTypes());
+        effectTypes.addAll(effects.panicsTypes());
+        for (Ast.TypeRef type : effectTypes) {
             if (type.inferArguments() || mentionsEffectGeneric(type, generics)) {
                 throw new IllegalArgumentException(
                         "checked effect types must be concrete at declaration time: " + type);
