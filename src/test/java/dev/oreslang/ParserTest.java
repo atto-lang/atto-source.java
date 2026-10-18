@@ -15,6 +15,20 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
     @Test
+    void ownershipOnlyAnalysisRejectsOptionalPipeLambdaFormals() {
+        Ast.Program parsed = Parser.parse("""
+                pub fnc main(): void {
+                    const callback = (|string? label| -> label);
+                    return;
+                }
+                """);
+        IllegalArgumentException rejection = assertThrows(
+                IllegalArgumentException.class, () -> OwnershipChecker.check(parsed));
+        assertTrue(rejection.getMessage().contains("Option<T> ABI"),
+                rejection::toString);
+    }
+
+    @Test
     void nameFirstOptionalFormalAndStandaloneOwnershipAdmissionAreFailClosed() {
         Ast.Program parsed = Parser.parse("""
                 pub fnc work(label: string?, required: Option<int>): void {
