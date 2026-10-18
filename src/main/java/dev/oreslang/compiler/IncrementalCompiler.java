@@ -287,7 +287,9 @@ public final class IncrementalCompiler {
                             .append(':').append(field.type() == null ? "<inferred>" : typeRef(field.type())).append('\n');
                 }
                 if (field.visibility() != Ast.Visibility.PUBLIC) continue;
-                abi.append(" field ").append(field.bindingKind()).append(' ')
+                abi.append(field.isStatic() ? " static-field " : " field ")
+                        .append(field.bindingKind()).append(' ')
+                        .append(field.mutableReferent() ? "mut-referent " : "readonly-referent ")
                         .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
                         .append(' ').append(field.name()).append('\n');
             }
@@ -302,7 +304,10 @@ public final class IncrementalCompiler {
         if (decl instanceof Ast.InterfaceDecl iface) {
             // Private contracts/traits/interfaces are not part of the imported ABI.
             if (iface.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append("interface ").append(iface.visibility()).append(' ').append(iface.name());
+            abi.append(iface.staticContract()
+                            ? "static-contract "
+                            : iface.moduleContract() ? "module-contract " : "interface ")
+                    .append(iface.visibility()).append(' ').append(iface.name());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");
             for (Ast.TypeRef parent : iface.parents()) abi.append(typeRef(parent)).append(',');
@@ -312,7 +317,12 @@ public final class IncrementalCompiler {
                 if (member instanceof Ast.InterfaceFunctionDecl fn) {
                     memberEntries.add(interfaceFunctionAbi(fn));
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
-                    memberEntries.add(" iface-field " + field.name() + ":" + typeRef(field.type()) + "\n");
+                    memberEntries.add(
+                            " iface-field "
+                                    + (field.bindingKind() == null ? "readable" : field.bindingKind())
+                                    + " "
+                                    + (field.mutableReferent() ? "mut-referent " : "readonly-referent ")
+                                    + field.name() + ":" + typeRef(field.type()) + "\n");
                 }
             }
             memberEntries.stream().sorted().forEach(abi::append);
@@ -327,6 +337,7 @@ public final class IncrementalCompiler {
         }
         if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
             abi.append("binding ").append(field.bindingKind()).append(' ')
+                    .append(field.mutableReferent() ? "mut-referent " : "readonly-referent ")
                     .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
                     .append(' ').append(field.name()).append('\n');
         }
