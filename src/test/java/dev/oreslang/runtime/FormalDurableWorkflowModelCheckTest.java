@@ -60,8 +60,7 @@ final class FormalDurableWorkflowModelCheckTest {
             EffectState effectState,
             boolean retryAllowed,
             int attempts,
-            DeliveryState deliveryState,
-            int journalEntries) {
+            DeliveryState deliveryState) {
 
         static State initial() {
             return new State(
@@ -69,8 +68,7 @@ final class FormalDurableWorkflowModelCheckTest {
                     EffectState.PENDING,
                     true,
                     0,
-                    DeliveryState.NONE,
-                    0);
+                    DeliveryState.NONE);
         }
     }
 
@@ -135,8 +133,7 @@ final class FormalDurableWorkflowModelCheckTest {
                         EffectState.CLAIMED,
                         true,
                         s.attempts() + 1,
-                        s.deliveryState(),
-                        s.journalEntries()));
+                        s.deliveryState()));
             }
 
             case COMPLETE_LIVE_CLAIM -> {
@@ -148,8 +145,7 @@ final class FormalDurableWorkflowModelCheckTest {
                         EffectState.COMPLETED,
                         false,
                         s.attempts(),
-                        s.deliveryState(),
-                        s.journalEntries()));
+                        s.deliveryState()));
             }
 
             case EXPIRE_CLAIM -> {
@@ -161,8 +157,7 @@ final class FormalDurableWorkflowModelCheckTest {
                         EffectState.AMBIGUOUS,
                         s.retryAllowed(),
                         s.attempts(),
-                        s.deliveryState(),
-                        s.journalEntries()));
+                        s.deliveryState()));
             }
 
             case RECONCILE_SAFE_TO_RETRY -> {
@@ -176,8 +171,7 @@ final class FormalDurableWorkflowModelCheckTest {
                                 : EffectState.ABANDONED,
                         s.retryAllowed(),
                         s.attempts(),
-                        s.deliveryState(),
-                        s.journalEntries()));
+                        s.deliveryState()));
             }
 
             case RECONCILE_COMPLETED -> {
@@ -189,8 +183,7 @@ final class FormalDurableWorkflowModelCheckTest {
                         EffectState.COMPLETED,
                         false,
                         s.attempts(),
-                        s.deliveryState(),
-                        s.journalEntries()));
+                        s.deliveryState()));
             }
 
             case CAUSAL_OUTCOME -> {
@@ -208,8 +201,7 @@ final class FormalDurableWorkflowModelCheckTest {
                         nextEffect,
                         false,
                         s.attempts(),
-                        DeliveryState.SEALED,
-                        s.journalEntries() + 1));
+                        DeliveryState.SEALED));
             }
 
             case EARLY_REJECT -> {
@@ -221,8 +213,7 @@ final class FormalDurableWorkflowModelCheckTest {
                         s.effectState(),
                         s.retryAllowed(),
                         s.attempts(),
-                        DeliveryState.RETRYABLE_REJECTED,
-                        s.journalEntries() + 1));
+                        DeliveryState.RETRYABLE_REJECTED));
             }
 
             case RETRY_REJECTED_AS_OUTCOME -> {
@@ -241,34 +232,21 @@ final class FormalDurableWorkflowModelCheckTest {
                         nextEffect,
                         false,
                         s.attempts(),
-                        DeliveryState.SEALED,
-                        s.journalEntries() + 1));
+                        DeliveryState.SEALED));
             }
 
             case EXACT_DUPLICATE -> {
                 if (s.deliveryState() != DeliveryState.SEALED) {
                     yield Optional.empty();
                 }
-                yield Optional.of(new State(
-                        s.runPhase(),
-                        s.effectState(),
-                        s.retryAllowed(),
-                        s.attempts(),
-                        s.deliveryState(),
-                        s.journalEntries() + 1));
+                yield Optional.of(s);
             }
 
             case CONFLICTING_REUSE -> {
                 if (s.deliveryState() == DeliveryState.NONE) {
                     yield Optional.empty();
                 }
-                yield Optional.of(new State(
-                        s.runPhase(),
-                        s.effectState(),
-                        s.retryAllowed(),
-                        s.attempts(),
-                        s.deliveryState(),
-                        s.journalEntries() + 1));
+                yield Optional.of(s);
             }
 
             case CANCEL -> {
@@ -285,16 +263,13 @@ final class FormalDurableWorkflowModelCheckTest {
                         nextEffect,
                         false,
                         s.attempts(),
-                        s.deliveryState(),
-                        s.journalEntries() + 1));
+                        s.deliveryState()));
             }
         };
     }
 
     private static void assertSafety(State state) {
         assertTrue(state.attempts() >= 0 && state.attempts() <= 2);
-        assertTrue(state.journalEntries() >= 0);
-
         if (state.effectState() == EffectState.ABANDONED
                 || state.effectState() == EffectState.COMPLETED) {
             assertFalse(
