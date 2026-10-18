@@ -119,8 +119,10 @@ public final class Parser {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
                 if (match(MODULE)) {
-                    if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                            || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                    if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.generator
+                            || modifiers.structural || modifiers.nonLexical || modifiers.trapped
+                            || modifiers.isStatic || modifiers.isAbstract || modifiers.shared
+                            || modifiers.untrusted || modifiers.ipc || modifiers.ffi) {
                         throw error(previous(), "modules do not accept declaration modifiers");
                     }
                     rejectCallableStructuralAnnotation(annotations, "module declarations");
@@ -189,11 +191,6 @@ public final class Parser {
             consume(AS, "'import *' requires 'as <namespace>'");
             namespace = consume(IDENT, "expected import namespace").lexeme();
         } else {
-            if (check(EXTERN)) {
-                throw error(peek(),
-                        "extern is reserved for compiler-owned ForeignDecl lowering; "
-                                + "ffi actor foreign declarations are not enabled on this compiler slice");
-            }
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "function imports use 'import fnc', not 'import fn'");
             }
@@ -312,8 +309,10 @@ public final class Parser {
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
             }
-            if (modifiers.shared || modifiers.untrusted) {
-                throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
+            if (modifiers.shared || modifiers.untrusted
+                    || modifiers.ipc || modifiers.ffi) {
+                throw error(previous(),
+                        "'shared'/'untrusted'/'ipc'/'ffi' must modify an actor declaration");
             }
             if (match(CONTRACT)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -399,8 +398,10 @@ public final class Parser {
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
                 return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
             }
-            if (modifiers.shared || modifiers.untrusted) {
-                throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
+            if (modifiers.shared || modifiers.untrusted
+                    || modifiers.ipc || modifiers.ffi) {
+                throw error(previous(),
+                        "'shared'/'untrusted'/'ipc'/'ffi' must modify an actor declaration");
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         }
@@ -413,8 +414,10 @@ public final class Parser {
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
                 return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
             }
-            if (modifiers.shared || modifiers.untrusted) {
-                throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
+            if (modifiers.shared || modifiers.untrusted
+                    || modifiers.ipc || modifiers.ffi) {
+                throw error(previous(),
+                        "'shared'/'untrusted'/'ipc'/'ffi' must modify an actor declaration");
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         }
@@ -818,6 +821,11 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (check(EXTERN)) {
+                throw error(peek(),
+                        "extern is reserved for compiler-owned ForeignDecl lowering; "
+                                + "ffi actor foreign declarations are not enabled on this compiler slice");
+            }
             if (isLegacyFnSpelling()) {
                 if (mods.isStatic) throw error(peek(), "static actor functions use 'static fnc', not 'static fn'");
                 throw error(peek(), "actor methods omit 'fn'/'fnc'; declare the method name directly");
