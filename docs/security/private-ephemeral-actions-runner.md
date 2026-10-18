@@ -1,17 +1,20 @@
 # Private Oreslang GitHub Actions runner: emergency CI recovery
 
-**Purpose:** Execute the existing JVM and native-image gates for draft PRs
-[#949](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/949)
-and [#950](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/950)
-when the source organization's GitHub-hosted runners fail before the first step.
+**Purpose:** Execute the reviewed exact-main, exact-candidate and publisher
+validation gates in the original private Java source repository when
+GitHub-hosted jobs fail before the first step. The current canonical security
+integration is PR #1217; this runner path must not create a second
+cross-organization source-copy mechanism.
 
 **Do not copy private source to another repository.** The protected
 `.github/private-ci-approved-repositories.txt` currently authorizes **zero**
 cross-repository destinations. In particular, `zed-pkg-test/java-app` is
-public and must not receive private code. Follow the disclosure/containment
-work in [security issue #832](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/832)
-and the runner-admission diagnostic in
-[CI issue #898](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/898).
+public and must not receive private code. Follow the public-source exposure incident
+[platform-conformance #22](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/issues/22),
+the private-carrier incident
+[#77](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/issues/77),
+and the runner-admission blocker
+[Java #963](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/963).
 
 ## Safe fallback configuration (repository admins only)
 
@@ -21,11 +24,13 @@ and the runner-admission diagnostic in
    Give it no cloud/admin privileges, no application secrets, and no network
    access beyond what is required for GitHub Actions, Maven dependencies,
    GraalVM/native-image setup and trusted build tools.
-2. Require branch protection/rulesets for both integration refs:
-   restrict who can push, require reviewed workflow changes, disable force
-   pushes, and restrict deployment/runner administrators. **The workflows
-   live in mutable feature branches**, so workflow-file code review matters
-   even though their current YAML has job-level safeguards.
+2. Require effective protection for trusted `main`: restrict who can push,
+   require reviewed workflow changes, disable force pushes/deletions, and
+   restrict runner administrators. The reviewed workflows explicitly require
+   `github.ref_protected == true`; do not remove this check to accommodate an
+   ineligible plan. GitHub Free for organizations does not provide protected
+   branches for private repositories. Upgrade the organization to GitHub Team
+   or Enterprise before treating this path as executable.
 3. In the **private source repository**, navigate to **Settings > Actions >
    Runners > New self-hosted runner** and follow the official instructions
    for a verified runner package. Prefer GitHub's **just-in-time (JIT)
@@ -41,24 +46,21 @@ and the runner-admission diagnostic in
    a **fresh isolated VM**, enforce its destruction after exactly one job,
    and provision new workers for focused Maven, full Maven and each AOT/hybrid
    job. A runner's label or deregistration alone is not VM isolation.
-5. Freeze and review the target commit. In **Settings > Secrets and variables
-   > Actions > Variables**, set **both** repository variables:
-   - `ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA`: exact full 40-character
-     head SHA of the reviewed PR #949 **or** #950 source branch (one at a time).
-   - `ORESLANG_PRIVATE_EPHEMERAL_RUNNER`: exact string `true`, only after
-     runners are online and the approved SHA is set. Otherwise leave it
-     unset/`false`; the workflow defaults to `ubuntu-24.04`.
-   All jobs are skipped before checkout in self-hosted mode unless
-   `github.sha` matches the approved SHA, the private repository identity
-   matches, and the exact branch ref matches. When switching between PR #949
-   and #950, update the approved SHA **first** and provision new workers.
-   A new commit invalidates the previous approved SHA; do not silently
-   authorize subsequent pushes. On unapproved SHA in runner-opt-in mode,
-   all executable JVM/native jobs are ineligible for runner admission, and
-   a separate `deny-unapproved-runner` job fails the overall workflow
-   **on a hosted runner without checkout**. This is necessary because
-   conditional *skipped* required checks can otherwise be treated as
-   passing by GitHub; never interpret a skipped test job as verification.
+5. Freeze and review the target commit/tree. In **Settings > Secrets and
+   variables > Actions > Variables**, set the variables required by the chosen
+   reviewed workflow. For exact-main this includes:
+   - `ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA`: exact reviewed 40-character
+     `main` commit;
+   - `ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE`: exact Git tree for that
+     commit;
+   - `ORESLANG_PRIVATE_EPHEMERAL_RUNNER=true` only while the disposable
+     runner is online.
+   Candidate/publisher workflows additionally pin their trusted workflow SHA
+   and exact candidate commit/tree. A new commit invalidates the previous
+   approval. Never broaden an approval to a moving branch name.
+   The separate deny job intentionally runs without source checkout; if hosted
+   minutes are exhausted it may itself be zero-step, which is still a fail-
+   closed result rather than test evidence.
 6. **Re-run the failed workflow for the already-approved exact SHA**, after
    runner provisioning. Do not push an extra commit solely to activate a
    runner, because it changes the SHA and invalidates approval. Note that
@@ -72,14 +74,14 @@ and the runner-admission diagnostic in
    No arbitrary `pull_request`, `pull_request_target`, forks or
    unreviewed workflow inputs may run on this worker.
 7. Verify that **steps actually executed**. A run marked `failure` with no
-   step records is runner infrastructure failure, **not** a compiler or
-   JUnit failure. For PR #949 require focused Future/channel/host-listener
-   tests and native AOT/hybrid output `first:7:9`. For #950 additionally
-   require typed Future/select, ownership and readonly regressions, full
-   Maven `verify`, and AOT/hybrid output `future:4`.
-   Record Git head/tree SHA, JDK/GraalVM version, test counts, stdout and
-   final conclusions on each PR. Test evidence belongs to the **exact
-   source head**, not an older or partial mirror.
+   step records is runner infrastructure failure, **not** a compiler or JUnit
+   failure. For exact-main require focused JUnit, a fresh full Maven
+   `clean verify`, stress replays and native AOT/hybrid/isolate guest
+   execution. For exact-candidate/publisher validation require the workflow's
+   exact reviewed candidate SHA/tree, complete declared test inventory and
+   bounded identity receipt. Record Git head/tree SHA, JDK/GraalVM version,
+   test counts, stdout and final conclusions. Evidence belongs only to the
+   exact source head tested.
 8. When verification is finished, reset the repository variable to
    `false` (or delete it), delete the approved SHA variable, stop/dispose
    of all ephemeral runner VMs, revoke
@@ -92,14 +94,14 @@ and the runner-admission diagnostic in
   but cannot provision VMs, read the organization's Actions billing warnings,
   change repository variables, or register runners. These require separate
   authorized administrative action.
-- This opt-in changes **only** the dedicated PR #949/#950 workflows. Existing
-  general source-org workflows still require their own GitHub-hosted minutes
-  or approved runner adaptation. A green focused gate alone is insufficient
-  for merge if repository-required checks remain failing.
+- This opt-in applies only to the reviewed private exact-main/candidate/
+  publisher workflows. General source workflows still require hosted minutes
+  or separately reviewed runner adaptation. A green focused gate alone is
+  insufficient for merge if repository-required checks remain failing.
 - Runner labels do not themselves enforce host security. Never use a persistent
   shared machine that could retain private source or later run malicious code.
-- Draft PRs remain unmerged until actual executed, reviewed, exact-head
-  evidence is available. Merge #949 first and revalidate/rebase #950.
+- Security and compiler PRs remain draft/unmerged until actual executed,
+  reviewed, exact-head evidence is available.
 
 
 ### Additional hardening
