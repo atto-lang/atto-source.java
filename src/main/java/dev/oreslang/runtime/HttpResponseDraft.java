@@ -35,6 +35,7 @@ public final class HttpResponseDraft {
     private final Supplier<? extends InputStream> stream;
     private final boolean bodyPresent;
     private final AtomicBoolean handedOff = new AtomicBoolean();
+    private final AtomicBoolean bodyOpened = new AtomicBoolean();
 
     private HttpResponseDraft(int status, List<Map.Entry<String, String>> headers,
                               byte[] bytes, Supplier<? extends InputStream> stream,
@@ -118,6 +119,8 @@ public final class HttpResponseDraft {
     InputStream openBody() {
         if (!handedOff.get()) throw new IllegalStateException("response not handed off");
         if (!bodyPresent) throw new IllegalStateException("bodyless response");
+        if (!bodyOpened.compareAndSet(false, true))
+            throw new IllegalStateException("response body already consumed");
         return stream == null ? new ByteArrayInputStream(bytes)
                 : Objects.requireNonNull(stream.get(), "body stream supplier produced null");
     }
