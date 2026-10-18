@@ -482,6 +482,27 @@ public final class WorkflowSupervisorActorV1 {
                             value.currentAmbiguousEffects(),
                     "protectedWrite", value.protectedWrite());
         }
+        if (message instanceof Reserve value) {
+            return WorkflowActorWireV1.map(
+                    "type", "reserve",
+                    "effectKey", value.effectKey(),
+                    "activity", value.activity().name(),
+                    "nowMillis", value.nowMillis(),
+                    "estimatedModelTokens",
+                            value.estimatedModelTokens(),
+                    "estimatedSpendMicros",
+                            value.estimatedSpendMicros(),
+                    "currentAmbiguousEffects",
+                            value.currentAmbiguousEffects(),
+                    "protectedWrite", value.protectedWrite());
+        }
+        if (message instanceof SettleUsage value) {
+            return WorkflowActorWireV1.map(
+                    "type", "settle_usage",
+                    "effectKey", value.effectKey(),
+                    "actualModelTokens", value.actualModelTokens(),
+                    "actualSpendMicros", value.actualSpendMicros());
+        }
         if (message instanceof Cancel value) {
             return WorkflowActorWireV1.map(
                     "type", "cancel",
@@ -523,6 +544,28 @@ public final class WorkflowSupervisorActorV1 {
                             map, "currentAmbiguousEffects"),
                     WorkflowActorWireV1.bool(
                             map, "protectedWrite"));
+            case "reserve" -> new Reserve(
+                    WorkflowActorWireV1.string(map, "effectKey"),
+                    WorkflowActivityProtocolV1.Kind.valueOf(
+                            WorkflowActorWireV1.string(
+                                    map, "activity")),
+                    WorkflowActorWireV1.longValue(
+                            map, "nowMillis"),
+                    WorkflowActorWireV1.longValue(
+                            map, "estimatedModelTokens"),
+                    WorkflowActorWireV1.longValue(
+                            map, "estimatedSpendMicros"),
+                    WorkflowActorWireV1.integer(
+                            map, "currentAmbiguousEffects"),
+                    WorkflowActorWireV1.bool(
+                            map, "protectedWrite"));
+            case "settle_usage" -> new SettleUsage(
+                    WorkflowActorWireV1.string(
+                            map, "effectKey"),
+                    WorkflowActorWireV1.longValue(
+                            map, "actualModelTokens"),
+                    WorkflowActorWireV1.longValue(
+                            map, "actualSpendMicros"));
             case "cancel" -> new Cancel(
                     WorkflowActorWireV1.string(map, "reason"));
             case "query" -> new QueryUsage();
