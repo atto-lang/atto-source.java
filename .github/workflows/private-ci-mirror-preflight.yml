@@ -44,14 +44,16 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Validate CI security review coverage
+        run: python3 -B scripts/test-private-ci-review-coverage.py
+      - name: Validate offline regression runner
+        run: bash scripts/test-run-private-ci-regressions-local.sh
       - name: Assert private CI guard fail-closed behavior
         run: |
           set -euo pipefail
           bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
           python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/test-private-ci-merged-main.py scripts/test-private-ci-review-coverage.py
-          python3 -B scripts/test-private-ci-review-coverage.py
           bash -n scripts/run-private-ci-regressions-local.sh scripts/test-run-private-ci-regressions-local.sh
-          bash scripts/test-run-private-ci-regressions-local.sh
           bash scripts/test-private-ci-destination.sh
           bash -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh
           bash tools/test-verify-exact-source-tree.sh
