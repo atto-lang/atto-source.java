@@ -31,7 +31,7 @@ jobs:
       - name: Verify host-only source admission and tests not requiring an isolate
         run: >
           mvn -B -ntp
-          -Dtest=SourceActorSpawnExecutionTest,IsolationHotReloadTest,SharedUntrustedIsolatePoolTest,SharedUntrustedActorSupervisorTest,SharedUntrustedActorSupervisorNoImageTest,ActorStrictHeapAdmissionTest,VerifiedCloseFenceTest,GuestAdmissionDeadlineTest
+          -Dtest=SourceActorSpawnExecutionTest,IsolationHotReloadTest,SharedUntrustedIsolatePoolTest,UntrustedSourceImageCacheTest,SharedUntrustedActorSupervisorTest,SharedUntrustedActorSupervisorNoImageTest,ActorStrictHeapAdmissionTest,VerifiedCloseFenceTest,GuestAdmissionDeadlineTest
           test
 
   native-isolate-e2e:
@@ -64,7 +64,7 @@ jobs:
           set -eu
           mvn -B -ntp \
             -DargLine="-Dpolyglot.engine.IsolateLibrary=${PWD}/target/liboresvm.so" \
-            -Dtest=SharedUntrustedIsolatePoolTest,UntrustedJitCodeUnitTest,SharedUntrustedActorSupervisorTest,ActorStrictHeapAdmissionTest,VerifiedCloseFenceTest,GuestAdmissionDeadlineTest \
+            -Dtest=SharedUntrustedIsolatePoolTest,UntrustedSourceImageCacheTest,UntrustedJitCodeUnitTest,SharedUntrustedActorSupervisorTest,ActorStrictHeapAdmissionTest,VerifiedCloseFenceTest,GuestAdmissionDeadlineTest \
             test
       - name: Report actually executed integration tests
         if: always()
@@ -73,6 +73,7 @@ jobs:
           import xml.etree.ElementTree as ET
           names = [
               'target/surefire-reports/TEST-dev.oreslang.runtime.SharedUntrustedIsolatePoolTest.xml',
+              'target/surefire-reports/TEST-dev.oreslang.runtime.UntrustedSourceImageCacheTest.xml',
               'target/surefire-reports/TEST-dev.oreslang.runtime.UntrustedJitCodeUnitTest.xml',
               'target/surefire-reports/TEST-dev.oreslang.runtime.SharedUntrustedActorSupervisorTest.xml',
               'target/surefire-reports/TEST-dev.oreslang.runtime.ActorStrictHeapAdmissionTest.xml',
