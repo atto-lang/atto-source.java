@@ -206,6 +206,59 @@ final class EnumCaseOverloadPolicyTest {
     }
 
     @Test
+    void oversizedIdentityAndInputCollectionsFailBeforeCopyingOrHexExpansion() {
+        String longId = "x".repeat(EnumCaseOverloadPolicy.MAX_ID_BYTES + 1);
+        assertThrows(IllegalArgumentException.class, () ->
+                enumCase("root.Foo", longId));
+        assertThrows(IllegalArgumentException.class, () ->
+                enumType("root." + longId));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Signature(MODULE, "root.module", longId, List.of()));
+        String nonAscii = "é".repeat(EnumCaseOverloadPolicy.MAX_ID_BYTES);
+        assertThrows(IllegalArgumentException.class, () ->
+                enumType("root." + nonAscii));
+        assertDoesNotThrow(() -> enumCase("root.Foo", "A".repeat(512)));
+        // Adversarial List implementations must be rejected on size alone;
+        // scanning or copying their elements before a bound is a DoS.
+        java.util.List<Signature> overlargeCandidates =
+                new java.util.AbstractList<>() {
+                    @Override public Signature get(int index) {
+                        throw new AssertionError("oversized signature list inspected");
+                    }
+                    @Override public int size() {
+                        return EnumCaseOverloadPolicy.MAX_CANDIDATES + 1;
+                    }
+                };
+        assertThrows(IllegalArgumentException.class, () ->
+                EnumCaseOverloadPolicy.validateFamily(overlargeCandidates, ENUMS));
+        java.util.List<Parameter> overlargeArity =
+                new java.util.AbstractList<>() {
+                    @Override public Parameter get(int index) {
+                        throw new AssertionError("oversized parameter list inspected");
+                    }
+                    @Override public int size() {
+                        return EnumCaseOverloadPolicy.MAX_ARITY + 1;
+                    }
+                };
+        assertThrows(IllegalArgumentException.class, () ->
+                new Signature(MODULE, "root.module", "f", overlargeArity));
+        java.util.List<String> overlargeCases =
+                new java.util.AbstractList<>() {
+                    @Override public String get(int index) {
+                        throw new AssertionError("oversized enum case list inspected");
+                    }
+                    @Override public int size() {
+                        return EnumCaseOverloadPolicy.MAX_CASES + 1;
+                    }
+                };
+        assertThrows(IllegalArgumentException.class, () ->
+                new EnumInfo("root.Foo", overlargeCases, true));
+        assertThrows(IllegalArgumentException.class, () ->
+                EnumCaseOverloadPolicy.selectStatic(
+                        List.of(call(fixed("int"))), ENUMS, overlargeArity));
+    }
+
+    @Test
     void staticProofCannotFabricateANarrowingOrWrongArity() {
         Signature a = call(enumCase("root.Foo", "A"));
         assertThrows(IllegalArgumentException.class, () ->
