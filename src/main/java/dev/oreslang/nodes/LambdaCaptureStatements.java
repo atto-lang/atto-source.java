@@ -54,6 +54,19 @@ final class LambdaCaptureStatements {
                 value(arm.guard(), branch, free);
                 scan(arm.body(), branch, free);
             }
+        } else if (stmt instanceof Ast.SwitchStmt s) {
+            value(s.subject(), locals, free);
+            for (Ast.SwitchCase arm : s.cases()) {
+                for (Ast.Expr e : arm.constants()) value(e, locals, free);
+                scan(arm.body(), locals, free);
+            }
+            scan(s.defaultBody(), locals, free);
+        } else if (stmt instanceof Ast.TryStmt s) {
+            scan(s.body(), locals, free);
+            Set<String> caught = new HashSet<>(locals);
+            if (s.errorName() != null) caught.add(s.errorName());
+            scan(s.catchBody(), caught, free);
+            scan(s.finallyBody(), locals, free);
         } else {
             throw new IllegalArgumentException("unsupported lexical capture statement " + stmt);
         }
