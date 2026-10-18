@@ -161,22 +161,28 @@ final class ConstructorSemanticIrTest {
     }
 
     @Test
-    void recursiveSelfCellIsRuntimeFixpointNotExternalOwnershipOrActorData() {
-        ConstructorSemanticIr.CaptureBinding recursive =
-                new ConstructorSemanticIr.CaptureBinding(
-                        "root::fact", ConstructorSemanticIr.CaptureOrigin.RECURSIVE_SELF, false);
-        assertFalse(recursive.participatesInExternalOwnership());
-        assertFalse(recursive.actorDataAdmissible());
-
-        ConstructorSemanticIr.CaptureBinding outer =
-                new ConstructorSemanticIr.CaptureBinding(
-                        "root::bias", ConstructorSemanticIr.CaptureOrigin.EXTERNAL_BINDING, true);
-        assertTrue(outer.participatesInExternalOwnership());
-        assertFalse(outer.actorDataAdmissible());
+    void actorSelfReborrowRequiresCanonicalSemanticOriginNotSourceSpelling() {
+        var canonical = new ConstructorSemanticIr.ResolvedCaptureBinding(
+                new ConstructorSemanticIr.CaptureBindingId("root::actor#receiver"),
+                "renamedReceiver",
+                Types.Unknown.INSTANCE,
+                ConstructorSemanticIr.CaptureOrigin.CANONICAL_ACTOR_SELF,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.ACTOR_SELF_REBORROW,
+                Set.of(ConstructorSemanticIr.CallableCapability.ACTOR_LOCAL));
+        assertFalse(canonical.participatesInExternalOwnership());
+        assertEquals(List.of(), new ConstructorSemanticIr.CapturePlan(List.of(canonical))
+                .externalOwnershipBindings());
 
         assertThrows(IllegalArgumentException.class, () ->
-                new ConstructorSemanticIr.CaptureBinding(
-                        "root::fact", ConstructorSemanticIr.CaptureOrigin.RECURSIVE_SELF, true));
+                new ConstructorSemanticIr.ResolvedCaptureBinding(
+                        new ConstructorSemanticIr.CaptureBindingId("root::fn#fake-self"),
+                        "self",
+                        Types.Unknown.INSTANCE,
+                        ConstructorSemanticIr.CaptureOrigin.EXTERNAL_BINDING,
+                        ConstructorSemanticIr.CaptureAccess.READ,
+                        ConstructorSemanticIr.CaptureTransfer.ACTOR_SELF_REBORROW,
+                        Set.of(ConstructorSemanticIr.CallableCapability.ACTOR_LOCAL)));
     }
 
     @Test
@@ -585,5 +591,100 @@ final class ConstructorSemanticIrTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new ConstructorSemanticIr.CapturePlan(List.of(first, second)));
     }
+
+    @Test
+    void canonicalActorSelfRejectsWriteWrongTransferCapabilityLaunderingAndDuplicates() {
+        var id = new ConstructorSemanticIr.CaptureBindingId("root::actor#self");
+        var actorLocal = Set.of(ConstructorSemanticIr.CallableCapability.ACTOR_LOCAL);
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new ConstructorSemanticIr.ResolvedCaptureBinding(
+                        id, "self", Types.Unknown.INSTANCE,
+                        ConstructorSemanticIr.CaptureOrigin.CANONICAL_ACTOR_SELF,
+                        ConstructorSemanticIr.CaptureAccess.WRITE,
+                        ConstructorSemanticIr.CaptureTransfer.ACTOR_SELF_REBORROW,
+                        actorLocal));
+        assertThrows(IllegalArgumentException.class, () ->
+                new ConstructorSemanticIr.ResolvedCaptureBinding(
+                        id, "self", Types.Unknown.INSTANCE,
+                        ConstructorSemanticIr.CaptureOrigin.CANONICAL_ACTOR_SELF,
+                        ConstructorSemanticIr.CaptureAccess.READ,
+                        ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
+                        actorLocal));
+        assertThrows(IllegalArgumentException.class, () ->
+                new ConstructorSemanticIr.ResolvedCaptureBinding(
+                        id, "self", Types.Unknown.INSTANCE,
+                        ConstructorSemanticIr.CaptureOrigin.CANONICAL_ACTOR_SELF,
+                        ConstructorSemanticIr.CaptureAccess.READ,
+                        ConstructorSemanticIr.CaptureTransfer.ACTOR_SELF_REBORROW,
+                        Set.of()));
+        assertThrows(IllegalArgumentException.class, () ->
+                new ConstructorSemanticIr.ResolvedCaptureBinding(
+                        id, "self", Types.Unknown.INSTANCE,
+                        ConstructorSemanticIr.CaptureOrigin.CANONICAL_ACTOR_SELF,
+                        ConstructorSemanticIr.CaptureAccess.READ,
+                        ConstructorSemanticIr.CaptureTransfer.ACTOR_SELF_REBORROW,
+                        Set.of(
+                                ConstructorSemanticIr.CallableCapability.ACTOR_LOCAL,
+                                ConstructorSemanticIr.CallableCapability.CAPTURES_SERIALIZABLE_DATA)));
+
+        var first = new ConstructorSemanticIr.ResolvedCaptureBinding(
+                id, "self", Types.Unknown.INSTANCE,
+                ConstructorSemanticIr.CaptureOrigin.CANONICAL_ACTOR_SELF,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.ACTOR_SELF_REBORROW,
+                actorLocal);
+        var second = new ConstructorSemanticIr.ResolvedCaptureBinding(
+                new ConstructorSemanticIr.CaptureBindingId("root::actor#other-self"),
+                "self", Types.Unknown.INSTANCE,
+                ConstructorSemanticIr.CaptureOrigin.CANONICAL_ACTOR_SELF,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.ACTOR_SELF_REBORROW,
+                actorLocal);
+        assertThrows(IllegalArgumentException.class,
+                () -> new ConstructorSemanticIr.CapturePlan(List.of(first, second)));
+    }
+
+    @Test
+    void capturePlanOrderingAndMergeAreDeterministicAcrossTraversalOrder() {
+        var a = new ConstructorSemanticIr.ResolvedCaptureBinding(
+                new ConstructorSemanticIr.CaptureBindingId("root::fn#a"),
+                "a", Types.Primitive.INT,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
+                Set.of());
+        var b = new ConstructorSemanticIr.ResolvedCaptureBinding(
+                new ConstructorSemanticIr.CaptureBindingId("root::fn#b"),
+                "b", Types.Primitive.INT,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
+                Set.of());
+        var xRead = new ConstructorSemanticIr.ResolvedCaptureBinding(
+                new ConstructorSemanticIr.CaptureBindingId("root::fn#x"),
+                "x", Types.Primitive.INT,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.DETACHED_VALUE_SNAPSHOT,
+                Set.of(ConstructorSemanticIr.CallableCapability.CAPTURES_SHAREABLE_DATA));
+        var xWrite = new ConstructorSemanticIr.ResolvedCaptureBinding(
+                new ConstructorSemanticIr.CaptureBindingId("root::fn#x"),
+                "x", Types.Primitive.INT,
+                ConstructorSemanticIr.CaptureAccess.WRITE,
+                ConstructorSemanticIr.CaptureTransfer.DETACHED_OWNERSHIP_MOVE,
+                Set.of(ConstructorSemanticIr.CallableCapability.BORROWED));
+
+        var shuffled = new ConstructorSemanticIr.CapturePlan(List.of(xRead, b, a));
+        assertEquals(List.of(a, b, xRead), shuffled.bindings(),
+                "capture layout must be canonical rather than AST traversal-order dependent");
+
+        var left = new ConstructorSemanticIr.CapturePlan(List.of(xRead, b));
+        var right = new ConstructorSemanticIr.CapturePlan(List.of(a, xWrite));
+        assertEquals(left.merge(right), right.merge(left),
+                "equivalent branch joins must have byte-stable capture ordering");
+
+        var onlyA = new ConstructorSemanticIr.CapturePlan(List.of(a));
+        assertEquals(left.merge(right).merge(onlyA), left.merge(right.merge(onlyA)),
+                "capture-plan merge must be associative for deterministic CFG joins");
+    }
+
 
 }
