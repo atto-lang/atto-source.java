@@ -111,6 +111,59 @@ public final class OptionalCallShapeBinder {
         }
     }
 
+    /**
+     * All compiler entry points must reject staged T? formal declarations
+     * until Option<T> ABI and ownership lowering is implemented. Check even
+     * unused declarations before any optimization or signature collection.
+     */
+    public static void requireNoUnloweredOptionalFormals(Ast.Program program) {
+        Objects.requireNonNull(program, "program");
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FunctionDecl function) {
+                    requireNoUnloweredOptionalFormals(function.parameters());
+                } else if (decl instanceof Ast.ClassDecl klass) {
+                    if (klass.constructor() != null) {
+                        requireNoUnloweredOptionalFormals(klass.constructor().parameters());
+                    }
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        requireNoUnloweredOptionalFormals(method.parameters());
+                    }
+                } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    for (Ast.InterfaceMember member : iface.members()) {
+                        if (member instanceof Ast.InterfaceFunctionDecl function) {
+                            requireNoUnloweredOptionalFormals(function.parameters());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    public static void requireNoUnloweredOptionalFormals(List<Ast.Param> parameters) {
+        Objects.requireNonNull(parameters, "parameters");
+        for (Ast.Param formal : parameters) {
+            Objects.requireNonNull(formal, "formal");
+            if (formal.optional()) {
+                throw new IllegalArgumentException(
+                        "T? optional formal '" + formal.name()
+                        + "' requires checked Option<T> ABI and ownership lowering (not yet enabled)");
+            }
+        }
+    }
+
+    /** The reference shape is an omittable source T, never a required Option<T>. */
+    public static List<Parameter> declaredParameterShapes(List<Ast.Param> parameters) {
+        Objects.requireNonNull(parameters, "parameters");
+        List<Parameter> result = new ArrayList<>(parameters.size());
+        for (Ast.Param formal : parameters) {
+            Objects.requireNonNull(formal, "formal");
+            result.add(formal.optional() ? Parameter.optional(formal.name())
+                                         : Parameter.required(formal.name()));
+        }
+        return List.copyOf(result);
+    }
+
     public record Parameter(String name, boolean optional, boolean variadic) {
         public Parameter {
             if (name == null || name.isBlank()) {
