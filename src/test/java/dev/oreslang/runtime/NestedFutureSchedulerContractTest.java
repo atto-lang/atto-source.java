@@ -99,6 +99,31 @@ final class NestedFutureSchedulerContractTest {
         }
     }
 
+    @Test
+    void cancellationAndOuterCompletionRaceDoesNotRetainAwaiters() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            for (int trial = 0; trial < 64; trial++) {
+                OresFuture<OresFuture<Integer>> outer = new OresFuture<>();
+                OresFuture<Integer> inner = new OresFuture<>();
+                AtomicInteger turns = new AtomicInteger();
+                OresFuture<Integer> joined = twoStage(scheduler, outer, turns);
+                awaitWaiters(outer, 1);
+
+                Thread producer = Thread.ofPlatform().start(() -> outer.completeFromRuntime(inner));
+                joined.cancel(false);
+                producer.join();
+
+                awaitWaiters(outer, 0);
+                awaitWaiters(inner, 0);
+                assertTrue(joined.isCancelled());
+                assertFalse(inner.isCancelled());
+                inner.completeFromRuntime(trial);
+                assertTrue(joined.isCancelled());
+                assertTrue(turns.get() <= 2);
+            }
+        }
+    }
+
     private static OresFuture<Integer> twoStage(
             OresScheduler scheduler,
             OresFuture<OresFuture<Integer>> outer,
