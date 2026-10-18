@@ -8,6 +8,7 @@ import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
@@ -78,6 +79,103 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
         if (left instanceof PersistentActorMap || right instanceof PersistentActorMap)
             return false;
         return Objects.equals(left, right);
+    }
+
+    /**
+     * A nested persistent map can have thousands of levels even though a
+     * *single* HAMT lookup is bounded. AbstractMap.equals/hashCode recurse
+     * through values and overflow the host call stack. Compare nested roots
+     * iteratively; preserve AbstractMap semantics for arbitrary other Maps.
+     */
+    private record EqualityPair(PersistentActorMap left, PersistentActorMap right) { }
+
+    @Override
+    public boolean equals(Object other) {
+        if (other == this) return true;
+        if (!(other instanceof PersistentActorMap that)) return super.equals(other);
+        var pending = new ArrayDeque<EqualityPair>();
+        var visited = new IdentityHashMap<PersistentActorMap,
+                IdentityHashMap<PersistentActorMap, Boolean>>();
+        pending.push(new EqualityPair(this, that));
+        while (!pending.isEmpty()) {
+            EqualityPair pair = pending.pop();
+            if (pair.left == pair.right) continue;
+            var matches = visited.computeIfAbsent(pair.left, ignored -> new IdentityHashMap<>());
+            if (matches.put(pair.right, Boolean.TRUE) != null) continue;
+            if (pair.left.size() != pair.right.size()) return false;
+            for (Map.Entry<String, Object> entry : pair.left.entrySet()) {
+                Object rightValue = pair.right.get(entry.getKey());
+                if (rightValue == null) return false; // Null values cannot be stored.
+                Object leftValue = entry.getValue();
+                if (leftValue instanceof PersistentActorMap leftMap
+                        && rightValue instanceof PersistentActorMap rightMap) {
+                    pending.push(new EqualityPair(leftMap, rightMap));
+                } else if (!Objects.equals(leftValue, rightValue)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private static final class HashFrame {
+        final PersistentActorMap map;
+        final Iterator<Map.Entry<String, Object>> entries;
+        Map.Entry<String, Object> waiting;
+        int sum;
+
+        HashFrame(PersistentActorMap map) {
+            this.map = map;
+            this.entries = map.entrySet().iterator();
+        }
+    }
+
+    /** Match Map's entry hash sum, without recursive nested value hashing. */
+    @Override
+    public int hashCode() {
+        var completed = new IdentityHashMap<PersistentActorMap, Integer>();
+        var visiting = new IdentityHashMap<PersistentActorMap, Boolean>();
+        var pending = new ArrayDeque<HashFrame>();
+        visiting.put(this, Boolean.TRUE);
+        pending.push(new HashFrame(this));
+        while (!pending.isEmpty()) {
+            HashFrame frame = pending.peek();
+            if (frame.waiting != null) {
+                PersistentActorMap child = (PersistentActorMap) frame.waiting.getValue();
+                Integer childHash = completed.get(child);
+                if (childHash == null) {
+                    if (visiting.put(child, Boolean.TRUE) != null)
+                        throw new IllegalStateException("cycle in sealed persistent map graph");
+                    pending.push(new HashFrame(child));
+                    continue;
+                }
+                frame.sum += frame.waiting.getKey().hashCode() ^ childHash;
+                frame.waiting = null;
+                continue;
+            }
+            if (!frame.entries.hasNext()) {
+                completed.put(frame.map, frame.sum);
+                visiting.remove(frame.map);
+                pending.pop();
+                continue;
+            }
+            Map.Entry<String, Object> entry = frame.entries.next();
+            Object value = entry.getValue();
+            if (value instanceof PersistentActorMap child) {
+                Integer childHash = completed.get(child);
+                if (childHash == null) {
+                    frame.waiting = entry;
+                    if (visiting.put(child, Boolean.TRUE) != null)
+                        throw new IllegalStateException("cycle in sealed persistent map graph");
+                    pending.push(new HashFrame(child));
+                    continue;
+                }
+                frame.sum += entry.getKey().hashCode() ^ childHash;
+            } else {
+                frame.sum += entry.getKey().hashCode() ^ value.hashCode();
+            }
+        }
+        return completed.get(this);
     }
 
     private static int hash(String key) {
