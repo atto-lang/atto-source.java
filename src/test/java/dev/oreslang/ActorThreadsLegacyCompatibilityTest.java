@@ -93,7 +93,11 @@ final class ActorThreadsLegacyCompatibilityTest {
                 "@ActorMaxThreads(MaxActorThreads.UNKNOWN) define actor Worker as end",
                 "@ActorMaxThreads(1) define actor Worker as end",
                 "@ActorMaxThreads() define actor Worker as end",
-                "@ActorMaxThreads(MaxActorThreads.LOW) define class C as end"
+                "@ActorMaxThreads(MaxActorThreads.LOW) define class C as end",
+                "@ActorMaxThreads(MaxActorThreads.LOW) fnc work(): void { return; }",
+                "define class C as @ActorMaxThreads(MaxActorThreads.LOW) fnc work(): void { return; } end",
+                "define class C as @ActorMaxThreads(MaxActorThreads.LOW) let int n = 0; end",
+                "define actor Worker as @ActorMaxThreads(MaxActorThreads.LOW) fnc work(): void { return; } end"
         };
         for (String source : invalid) {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
