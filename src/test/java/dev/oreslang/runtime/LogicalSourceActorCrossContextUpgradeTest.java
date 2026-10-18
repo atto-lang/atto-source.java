@@ -300,6 +300,58 @@ final class LogicalSourceActorCrossContextUpgradeTest {
     }
 
     @Test
+    void candidateFromForeignHotReloadManagerIsRejectedBeforeMigration() throws Exception {
+        String v1 = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 1; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { return; }
+                """;
+        String v2 = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 999; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { val version = 2; return; }
+                """;
+
+        try (HotReloadManager left =
+                     new HotReloadManager(IsolatePolicy.developer(),
+                             ExecutionProfile.serverJit());
+             HotReloadManager right =
+                     new HotReloadManager(IsolatePolicy.developer(),
+                             ExecutionProfile.serverJit())) {
+            var first = left.stageActorGeneration("left-v1.ores", v1);
+            var foreign = right.stageActorGeneration("right-v2.ores", v2);
+            try (LogicalSourceActorRouterV1 router =
+                         LogicalSourceActorRouterV1.spawn(
+                                 first,
+                                 ActorRuntime.ActorKind.SHARED,
+                                 "Counter",
+                                 WAIT)) {
+                var before = router.physicalAddressForTesting();
+                assertThrows(SecurityException.class,
+                        () -> router.upgradeTo(foreign, WAIT));
+                assertEquals(1L, router.ref().incarnation());
+                assertEquals(before, router.physicalAddressForTesting());
+                router.ref().send(1L);
+                assertEquals(2L, next(router.ref()));
+            }
+        }
+    }
+
+    @Test
     void incompatibleCrossContextCandidateRollsBackAndOldRouteKeepsWorking()
             throws Exception {
         String base = """
