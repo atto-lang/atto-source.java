@@ -25,6 +25,7 @@ final class ActorIpcBootstrapV1 {
                     + 32
                     + 32
                     + Long.BYTES * 2
+                    + Long.BYTES * 2
                     + Long.BYTES
                     + Long.BYTES
                     + Long.BYTES * 2;
@@ -42,6 +43,7 @@ final class ActorIpcBootstrapV1 {
             out.put(master);
             out.put(challenge);
             putUuid(out, bootstrap.logicalActorId());
+            putUuid(out, bootstrap.codeGenerationId());
             out.putLong(bootstrap.incarnation());
             out.putLong(bootstrap.routeEpoch());
             putUuid(out, bootstrap.sessionId());
