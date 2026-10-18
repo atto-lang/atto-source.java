@@ -718,21 +718,16 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong normalTerminations = new AtomicLong();
     private final AtomicLong cancelledTerminations = new AtomicLong();
     private final AtomicLong failedTerminations = new AtomicLong();
-    // Bounded terminal journal. Capacity admission + payload publication are
-    // one ArrayBlockingQueue.offer operation, so a producer cannot reserve an
-    // ordering slot and die before publishing it. Sequence numbers are assigned
-    // only when the trusted supervisor actually drains a published payload.
-    // This deliberately prefers failure-time debuggability/predictability over
-    // a lock-free MPSC ring with a poisonable producer-publication gap.
-    private final ArrayBlockingQueue<ActorTerminationPayload> supervisionEvents =
-            new ArrayBlockingQueue<>(SUPERVISION_EVENT_CAPACITY);
+    // Bounded terminal journal. The queue itself is protected by one explicit
+    // lock, but producers only tryLock(): actor finalization never waits for a
+    // diagnostic consumer or another diagnostic producer. Capacity admission
+    // and payload publication happen in the same critical section, so there is
+    // no reserve-before-publish poison gap. Consumers may wait on one another;
+    // they are trusted host/supervisor code, not actor execution.
+    private final ArrayDeque<ActorTerminationPayload> supervisionEvents =
+            new ArrayDeque<>(SUPERVISION_EVENT_CAPACITY);
+    private final ReentrantLock supervisionEventQueueLock = new ReentrantLock();
     private final AtomicLong supervisionEventSequence = new AtomicLong();
-    /**
-     * Serializes dequeue + sequence assignment for the diagnostic journal.
-     * Producers never acquire this lock, so actor finalization remains
-     * nonblocking even if several supervisor consumers contend while draining.
-     */
-    private final ReentrantLock supervisionEventDrainLock = new ReentrantLock();
     private final AtomicLong supervisionEventsDropped = new AtomicLong();
     private final AtomicLong lifecyclePublicationFailures = new AtomicLong();
     /** Authoritative finalization bodies that may still submit observer work. */
@@ -961,45 +956,47 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public Optional<ActorTerminationEvent> pollTerminationEvent() {
         requireSupervisorContext("drain actor termination diagnostics");
-        // Multiple trusted consumers may drain concurrently. Serialize only
-        // the short dequeue/sequence critical section so FIFO queue order and
-        // externally visible sequence order cannot diverge.
-        supervisionEventDrainLock.lock();
+        // The same queue lock couples FIFO dequeue with sequence assignment.
+        // Concurrent trusted consumers therefore cannot invert journal order.
+        supervisionEventQueueLock.lock();
         try {
             for (;;) {
-                ActorTerminationPayload payload = supervisionEvents.poll();
+                ActorTerminationPayload payload = supervisionEvents.pollFirst();
                 if (payload == null) return Optional.empty();
 
-                for (;;) {
-                    long current = supervisionEventSequence.get();
-                    if (current == Long.MAX_VALUE) {
-                        // Never wrap diagnostic order into negative values. The
-                        // authoritative ActorRef terminal state still survives.
-                        supervisionEventsDropped.incrementAndGet();
-                        break;
-                    }
-                    if (supervisionEventSequence.compareAndSet(current, current + 1L)) {
-                        return Optional.of(new ActorTerminationEvent(
-                                current,
-                                payload.actorId(),
-                                payload.generation(),
-                                payload.actorKind(),
-                                payload.parentId(),
-                                payload.terminationKind(),
-                                payload.acceptedUserMessages(),
-                                payload.processedUserMessages(),
-                                payload.abandonedUserMessages(),
-                                payload.abandonedContinuations(),
-                                payload.failureType(),
-                                payload.failureMessage()));
-                    }
+                long current = supervisionEventSequence.get();
+                if (current == Long.MAX_VALUE) {
+                    // Never wrap diagnostic order into negative values. The
+                    // authoritative ActorRef terminal state still survives.
+                    supervisionEventsDropped.incrementAndGet();
+                    continue;
                 }
-                // Sequence space exhausted (or was concurrently test-fenced):
-                // discard this already-published diagnostic and keep draining
-                // without blocking actor teardown or later queue reclamation.
+                supervisionEventSequence.set(current + 1L);
+                return Optional.of(new ActorTerminationEvent(
+                        current,
+                        payload.actorId(),
+                        payload.generation(),
+                        payload.actorKind(),
+                        payload.parentId(),
+                        payload.terminationKind(),
+                        payload.acceptedUserMessages(),
+                        payload.processedUserMessages(),
+                        payload.abandonedUserMessages(),
+                        payload.abandonedContinuations(),
+                        payload.failureType(),
+                        payload.failureMessage()));
             }
         } finally {
-            supervisionEventDrainLock.unlock();
+            supervisionEventQueueLock.unlock();
+        }
+    }
+
+    private int supervisionEventBacklog() {
+        supervisionEventQueueLock.lock();
+        try {
+            return supervisionEvents.size();
+        } finally {
+            supervisionEventQueueLock.unlock();
         }
     }
 
@@ -1114,8 +1111,25 @@ public final class ActorRuntime implements AutoCloseable {
                 terminal.failureType(),
                 "");
 
-        if (supervisionEventSequence.get() == Long.MAX_VALUE
-                || !supervisionEvents.offer(payload)) {
+        if (supervisionEventSequence.get() == Long.MAX_VALUE) {
+            supervisionEventsDropped.incrementAndGet();
+            return;
+        }
+
+        boolean published = false;
+        if (supervisionEventQueueLock.tryLock()) {
+            try {
+                if (supervisionEvents.size() < SUPERVISION_EVENT_CAPACITY) {
+                    supervisionEvents.addLast(payload);
+                    published = true;
+                }
+            } finally {
+                supervisionEventQueueLock.unlock();
+            }
+        }
+        if (!published) {
+            // Contention and capacity pressure are both explicit best-effort
+            // telemetry drops. Actor finalization never waits for diagnostics.
             supervisionEventsDropped.incrementAndGet();
         }
     }
@@ -1144,7 +1158,7 @@ public final class ActorRuntime implements AutoCloseable {
                 dispatcherPressure(untrustedDispatcher, dispatcherConfig.maxActors()),
                 lifecycleObserverDispatcher.getPoolSize(),
                 lifecycleObserverDispatcher.getQueue().size(),
-                supervisionEvents.size(),
+                supervisionEventBacklog(),
                 SUPERVISION_EVENT_CAPACITY,
                 watchdogNotices.size(),
                 WATCHDOG_NOTICE_CAPACITY,
