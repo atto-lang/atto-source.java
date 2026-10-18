@@ -3509,6 +3509,13 @@ public final class TypeChecker {
                                 "generic static function '" + klass.name() + "." + fn.name()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
+                    // Ordinary Fnc values do not encode the suspends effect.
+                    // Direct static calls are resolved earlier with effect admission.
+                    if (fn.suspends()) {
+                        throw new IllegalArgumentException("suspends static function '" + klass.name()
+                                + "." + fn.name() + "' cannot be used as an ordinary Fnc value "
+                                + "until callable types preserve suspension effects");
+                    }
                     // Generator declarations are deliberately restricted to top-level/module
                     // callables, so class static functions cannot produce generator activations.
                     return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
@@ -4276,6 +4283,11 @@ public final class TypeChecker {
                                 + "' must be specialized by a direct call; polymorphic function values are not supported yet");
             }
             requireClassMemberVisible(fn.visibility(), findDeclaringClass(klass, fn, new LinkedHashSet<>()), "static function", fn.name());
+            if (fn.suspends()) {
+                throw new IllegalArgumentException("suspends static function '" + klass.name()
+                        + "." + fn.name() + "' cannot be passed as an ordinary Fnc callback "
+                        + "until function signatures carry suspension effects");
+            }
             return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
         }
 
