@@ -4439,7 +4439,7 @@ public final class TypeChecker {
             Env env,
             Set<String> generics,
             Type self) {
-        Type receiver = typeOf(member.receiver(), env, generics, self);
+        Type receiver = typeOfStaticNamespaceReceiver(member.receiver(), env, generics, self);
         Type receiverValueType = deref(unwrapMutexGuard(receiver));
         Type normalized = receiverDispatchType(receiverValueType);
         int arity = expected.parameters().size();
