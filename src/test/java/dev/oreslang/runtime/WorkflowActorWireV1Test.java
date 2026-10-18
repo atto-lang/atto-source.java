@@ -104,6 +104,33 @@ final class WorkflowActorWireV1Test {
     }
 
     @Test
+    void capabilityWireOrderIsDeterministic() {
+        var values = new java.util.LinkedHashSet<
+                WorkflowActivityProtocolV1.Capability>();
+        values.add(WorkflowActivityProtocolV1.Capability.GIT_PUSH);
+        values.add(
+                WorkflowActivityProtocolV1.Capability.REPOSITORY_READ);
+
+        assertEquals(
+                java.util.List.of("GIT_PUSH", "REPOSITORY_READ"),
+                WorkflowActorWireV1.capabilities(values));
+    }
+
+    @Test
+    void malformedEncodedIntegerFailsAsWireValidationError() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorkflowActorWireV1.event(
+                        WorkflowActorWireV1.map(
+                                "type", "code_changed",
+                                "int1", "not-a-number",
+                                "text1", "patch://one",
+                                "text2", null,
+                                "text3", null,
+                                "text4", null)));
+    }
+
+    @Test
     void actualActorRuntimeAcceptsWireMapAndOutput() throws Exception {
         try (var runtime = new ActorRuntime()) {
             ActorRuntime.ActorRef<Object> actor =
