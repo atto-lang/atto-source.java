@@ -5,6 +5,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -497,6 +498,7 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
                     "persisted effect keys do not match reconstructed workflow");
         }
 
+        HashSet<Long> activeClaimNumbers = new HashSet<>();
         for (Map.Entry<String, MutableEffect> entry
                 : restored.effects.entrySet()) {
             EffectSnapshot persisted = persistedEffects.get(entry.getKey());
@@ -510,6 +512,13 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
                     persisted,
                     state.runId(),
                     state.nextClaimNumber());
+            if ((persisted.state() == EffectState.CLAIMED
+                    || persisted.state() == EffectState.AMBIGUOUS)
+                    && !activeClaimNumbers.add(
+                            claimNumberFromToken(persisted.claimToken()))) {
+                throw new IllegalStateException(
+                        "duplicate active persisted claim number");
+            }
             if (effect.retryAllowed != persisted.retryAllowed()) {
                 throw new IllegalStateException(
                         "persisted retry authority disagrees with "
@@ -667,6 +676,21 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
                     "persisted claim token effect digest mismatch");
         }
         return claimNumber;
+    }
+
+    private static long claimNumberFromToken(String claimToken) {
+        String[] parts = claimToken.split("/", -1);
+        if (parts.length != 9) {
+            throw new IllegalStateException(
+                    "persisted claim token has invalid structure");
+        }
+        try {
+            return Long.parseLong(parts[2]);
+        } catch (NumberFormatException failure) {
+            throw new IllegalStateException(
+                    "persisted claim token has invalid claim number",
+                    failure);
+        }
     }
 
     private static String claimToken(
