@@ -207,7 +207,8 @@ public final class HttpResponseDraft {
             throw new IllegalStateException("response body already consumed");
         InputStream input = stream == null ? new ByteArrayInputStream(bytes)
                 : Objects.requireNonNull(stream.get(), "body stream supplier produced null");
-        // Both the abort worker and response writer may close this source.
+        // The HTTP I/O worker and cancellation cleanup may close concurrently.
+        // Close the source once even when both paths race.
         return new CloseOnceInputStream(input);
     }
 }
