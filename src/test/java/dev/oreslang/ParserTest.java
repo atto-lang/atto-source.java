@@ -17,6 +17,23 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ParserTest {
 
     @Test
+    void preflightRejectsUncalledStagedCallsAndConstructionBeforeSideEffects() {
+        for (String invocation : List.of("f(label: 1)", "new Box(label: _)",
+                "spawn Worker(label: omit)")) {
+            Ast.Program parsed = Parser.parse(
+                    "pub fnc neverCalled(): void { const result = "
+                            + invocation + "; return; }");
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(parsed),
+                    invocation);
+            assertTrue(failure.getMessage().contains("not yet enabled"),
+                    failure::toString);
+        }
+    }
+
+
+    @Test
     void bothPipeDeclarationSpellingsPreserveOmittableFormalMetadata() {
         for (String declaration : List.of(
                 "pub fnc bridge = |string? label| -> { return; }",
