@@ -55,7 +55,7 @@ scope_reviewed='6220209e55dc43311e7d2ead98225e916ee9540e'
 context_path='src/main/java/dev/oreslang/runtime/OresContext.java'
 context_reviewed='02743c060500746ce62df14263cac01f5e5abb18'
 frame_test_path='src/test/java/dev/oreslang/runtime/OresTaskScopeFrameTest.java'
-frame_test_reviewed='8ceacdeaf48336e9621f3bad0862de8c8e217c70'
+frame_test_reviewed='349fe2389a24b77dc9c6e2895ebaa00145aa3d2d'
 
 mapfile -t runtime_paths < <(git diff --name-only "$runtime_previous" "$runtime")
 if (("${#runtime_paths[@]}" != 7)); then
