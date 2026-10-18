@@ -322,12 +322,26 @@ public final class SqliteWorkflowJournalV1
 
     private void refresh() {
         requireOpen();
+        boolean transactionResolved = false;
         try {
-            delegate = loadVerifiedStore();
+            execute("BEGIN");
+            WorkflowJournalV1 refreshed = loadVerifiedStore();
+            execute("COMMIT");
+            transactionResolved = true;
+            delegate = refreshed;
+        } catch (RuntimeException | Error failure) {
+            if (!transactionResolved && connection != null) {
+                rollbackAndReloadOrInvalidate(failure);
+            }
+            throw failure;
         } catch (SQLException failure) {
-            throw new IllegalStateException(
+            IllegalStateException wrapped = new IllegalStateException(
                     "failed to refresh workflow SQLite journal",
                     failure);
+            if (!transactionResolved && connection != null) {
+                rollbackAndReloadOrInvalidate(wrapped);
+            }
+            throw wrapped;
         }
     }
 
