@@ -121,6 +121,11 @@ class HttpResponseDraftTest {
         }
     }
 
+    @Test @org.junit.jupiter.api.Timeout(20)
+    void blockingHostSuppliersRespectBoundedOpenerLifetime() throws Exception {
+        HttpResponseBodyOpenGateCheck.main(new String[0]);
+    }
+
     @Test void streamProducerIsLazyAndSingleUse() throws Exception {
         AtomicInteger opened = new AtomicInteger();
         HttpResponseDraft response = HttpResponseDraft.streaming(() -> {
