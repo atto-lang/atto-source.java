@@ -1,7 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.LongSupplier;
 
 /**
@@ -60,16 +60,34 @@ final class TrustedUntrustedNetworkQuota implements AutoCloseable {
     static final class Lease implements AutoCloseable {
         private final TrustedUntrustedNetworkQuota owner;
         private final boolean http;
-        private final AtomicBoolean released = new AtomicBoolean();
+        // 0=reserved but not dispatched, 1=dispatched, 2=settled.
+        // This makes pre-dispatch token refunds one-shot even under racing
+        // cancellation/close. Never publish this lease to untrusted code.
+        private final AtomicInteger lifecycle = new AtomicInteger();
 
         private Lease(TrustedUntrustedNetworkQuota owner, boolean http) {
             this.owner = owner;
             this.http = http;
         }
 
+        /** Call immediately before performing external I/O. */
+        boolean commitDispatch() {
+            return lifecycle.compareAndSet(0, 1);
+        }
+
+        /** Refund an admission that was never dispatched; cannot be replayed. */
+        boolean abortBeforeDispatch() {
+            if (!lifecycle.compareAndSet(0, 2)) return false;
+            owner.refundUnsent(http);
+            return true;
+        }
+
         /** Idempotent under cancellation / timeout / response-close races. */
         @Override public void close() {
-            if (released.compareAndSet(false, true)) owner.release(http);
+            int previous = lifecycle.getAndSet(2);
+            if (previous != 2) owner.release(http);
+            // Conservative: close without explicit abort consumes start rate.
+            // Otherwise failing I/O could restore tokens and enable floods.
         }
     }
 
@@ -116,6 +134,12 @@ final class TrustedUntrustedNetworkQuota implements AutoCloseable {
         if (!tcpStarts.tryConsume(1)) return Admission.denied(Status.RATE_LIMITED);
         tcpConnections++;
         return new Admission(Status.ADMITTED, new Lease(this, false));
+    }
+
+    private synchronized void refundUnsent(boolean http) {
+        release(http);
+        if (http) httpStarts.refundFailedSend(1);
+        else tcpStarts.refundFailedSend(1);
     }
 
     private synchronized void release(boolean http) {
