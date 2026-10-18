@@ -423,6 +423,130 @@ final class DurableDevLoopEndToEndV1Test {
         }
     }
 
+    @Test
+    void cancellationTerminalEffectCompletesThroughActivityActor()
+            throws Exception {
+        Path database = tempDir.resolve("devloop-cancel-e2e.db");
+        String runId = "run-cancel-e2e";
+
+        try (var runtime = new ActorRuntime()) {
+            var workflow = DurableDevLoopActorV1.spawn(runtime);
+            var supervisor = WorkflowSupervisorActorV1.spawn(runtime);
+            var cancellation = configuredActivity(
+                    runtime,
+                    "cancel-worker",
+                    WorkflowActivityProtocolV1.Kind.CANCELLATION);
+
+            awaitReady(workflow.raw());
+            awaitReady(supervisor.raw());
+
+            var workflowOut = workflow.outputs();
+            var supervisorOut = supervisor.outputs();
+
+            workflow.send(new DurableDevLoopActorV1.OpenRun(
+                    database.toString(),
+                    runId,
+                    3,
+                    "start",
+                    "cancel workflow"));
+            assertInstanceOf(
+                    DurableDevLoopActorV1.Opened.class,
+                    nextWorkflow(workflowOut));
+
+            supervisor.send(new WorkflowSupervisorActorV1.Configure(
+                    database.toString(),
+                    runId,
+                    new WorkflowSupervisorPolicyV1.Policy(
+                            60_000L,
+                            10_000L,
+                            5,
+                            5_000_000L,
+                            1,
+                            false),
+                    100L,
+                    database.toString()));
+            assertInstanceOf(
+                    WorkflowSupervisorActorV1.Ready.class,
+                    nextSupervisor(supervisorOut));
+
+            supervisor.send(new WorkflowSupervisorActorV1.Cancel(
+                    "operator request"));
+            var usage = assertInstanceOf(
+                    WorkflowSupervisorActorV1.UsagePublished.class,
+                    nextSupervisor(supervisorOut));
+            assertTrue(usage.usage().cancelled());
+
+            workflow.send(new DurableDevLoopActorV1.ClaimEffect(
+                    "cancel-worker",
+                    200L,
+                    100L));
+            var claimed = assertInstanceOf(
+                    DurableDevLoopActorV1.EffectClaimed.class,
+                    nextWorkflow(workflowOut));
+            assertInstanceOf(
+                    DurableDevLoopV1.CancelWork.class,
+                    claimed.claim().command());
+
+            cancellation.send(new WorkflowActivityActorV1.Dispatch(
+                    runId,
+                    claimed.claim()));
+            assertInstanceOf(
+                    WorkflowActivityActorV1.Authorized.class,
+                    nextActivity(cancellation.outputs()));
+
+            var completed = new WorkflowActivityProtocolV1.Completed(
+                    claimed.claim().effectKey(),
+                    claimed.claim().claimToken(),
+                    "receipt://cancel/e2e");
+            cancellation.send(new WorkflowActivityActorV1.ReportOutcome(
+                    completed));
+            assertInstanceOf(
+                    WorkflowActivityActorV1.OutcomeAccepted.class,
+                    nextActivity(cancellation.outputs()));
+
+            workflow.send(new DurableDevLoopActorV1.CompleteEffect(
+                    claimed.claim().effectKey(),
+                    claimed.claim().claimToken(),
+                    completed.receiptRef(),
+                    250L));
+            var updated = assertInstanceOf(
+                    DurableDevLoopActorV1.EffectUpdated.class,
+                    nextWorkflow(workflowOut));
+            assertEquals(
+                    DurableDevLoopV1.Phase.CANCELLED,
+                    updated.projection().phase());
+            assertEquals(1, updated.projection().completedEffects());
+            assertEquals(1, updated.projection().abandonedEffects());
+
+            shutdown(cancellation);
+
+            supervisor.send(new WorkflowSupervisorActorV1.Shutdown());
+            nextSupervisor(supervisorOut);
+            supervisor.raw().getDone().get(5, TimeUnit.SECONDS);
+
+            workflow.send(new DurableDevLoopActorV1.Shutdown(
+                    "test complete"));
+            assertInstanceOf(
+                    DurableDevLoopActorV1.Stopping.class,
+                    nextWorkflow(workflowOut));
+            workflow.raw().getDone().get(5, TimeUnit.SECONDS);
+        }
+
+        try (var store = SqliteWorkflowJournalV1.open(database)) {
+            assertEquals(
+                    DurableDevLoopV1.Phase.CANCELLED,
+                    store.replayDevLoop().machine().snapshot().phase());
+            var effect = store.effect(
+                    "devloop/" + runId + "/cancel").orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.COMPLETED,
+                    effect.state());
+            assertEquals(
+                    "receipt://cancel/e2e",
+                    effect.receiptRef());
+        }
+    }
+
     private static WorkflowActivityActorV1.Ref configuredActivity(
             ActorRuntime runtime,
             String workerId,
