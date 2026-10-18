@@ -72,6 +72,40 @@ final class DeferredChannelOwnershipHardeningTest {
     }
 
     @Test
+    void callbackReadCaptureCopiesRebindableScalarAtRegistration() {
+        accept("""
+                actor fnc good(): void {
+                  val Channel<int> output = Channel.new<int>(1);
+                  let int value = 7;
+                  nb cb writech output, 42 || -> {
+                    stdio.println(value);
+                  };
+                  value = 99;
+                  stdio.println(value);
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void nbSelectReadCaptureCopiesRebindableScalarAtRegistration() {
+        accept("""
+                actor fnc good(): void {
+                  val Channel<int> input = Channel.new<int>(1);
+                  let int value = 7;
+                  nb select {
+                    case readch input: val received {
+                      stdio.println(value);
+                    }
+                  }
+                  value = 99;
+                  stdio.println(value);
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void callbackDoesNotStealUncapturedBorrow() {
         accept(BAR + """
                 actor fnc good(): void {
