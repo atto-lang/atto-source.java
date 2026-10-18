@@ -454,6 +454,87 @@ final class GitHubWebhookActorV1Test {
     }
 
     @Test
+    void rejectedTreeProofDoesNotPoisonDurableDeliveryAcrossRestart()
+            throws Exception {
+        Path db = tempDir.resolve("webhook-proof-poison.db");
+        byte[] secret =
+                "0123456789abcdef0123456789abcdef"
+                        .getBytes(StandardCharsets.UTF_8);
+        String commit = sha('a');
+        String tree = sha('b');
+        byte[] body = workflowRunBody(
+                "org/repo",
+                commit,
+                53L,
+                "ci",
+                "success",
+                "https://github.example/actions/runs/53");
+        var headers = new GitHubWebhookSecurityV1.Headers(
+                "sha256=" + hmac(secret, body),
+                "delivery-proof-retry",
+                "workflow_run");
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = GitHubWebhookActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new GitHubWebhookActorV1.Configure(
+                    secret, db.toString()));
+            next(outputs);
+            actor.send(new GitHubWebhookActorV1.RegisterRun(
+                    new GitHubCiCorrelationV1.Expectation(
+                            "run-proof-retry",
+                            "org/repo",
+                            commit,
+                            tree,
+                            "ci")));
+            next(outputs);
+
+            actor.send(new GitHubWebhookActorV1.ReceiveCiWebhook(
+                    headers,
+                    body,
+                    new GitHubWorkflowRunPayloadV1.GitTreeProof(
+                            sha('c'),
+                            tree,
+                            "tree-proof://bad")));
+
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> actor.raw().getDone().get(
+                            5, TimeUnit.SECONDS));
+        }
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = GitHubWebhookActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new GitHubWebhookActorV1.Configure(
+                    secret, db.toString()));
+            next(outputs);
+
+            actor.send(new GitHubWebhookActorV1.ReceiveCiWebhook(
+                    headers,
+                    body,
+                    new GitHubWorkflowRunPayloadV1.GitTreeProof(
+                            commit,
+                            tree,
+                            "tree-proof://53")));
+
+            var matched = assertInstanceOf(
+                    GitHubWebhookActorV1.Matched.class,
+                    next(outputs));
+            assertEquals("run-proof-retry", matched.runId());
+            assertEquals("delivery-proof-retry", matched.deliveryId());
+
+            actor.send(new GitHubWebhookActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void invalidWebhookSignatureFailsIngressActor() throws Exception {
         byte[] secret =
                 "0123456789abcdef0123456789abcdef"
