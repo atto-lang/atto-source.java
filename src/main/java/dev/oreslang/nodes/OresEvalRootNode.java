@@ -5718,11 +5718,6 @@ public final class OresEvalRootNode extends RootNode {
 
             if (!tailBarrier) {
                 if (value instanceof Ast.CallExpr call) {
-                    // Inspect the complete lexical environment only when a
-                    // call can actually elide this activation. Parent frames
-                    // remain visible here; branches/loops need only propagate
-                    // explicit defer/handler barriers, not eagerly rescan data.
-                    if (env.hasLiveMutexGuards()) throw new ReturnSignal(eval(value, env));
                     if (isBooleanIntrinsicCall(call, env)) {
                         throw new ReturnSignal(evalBooleanIntrinsic(call, env));
                     }
@@ -5731,7 +5726,9 @@ public final class OresEvalRootNode extends RootNode {
                             ? invocation.target() instanceof TailCallable callable
                                     && callable.owner() == this
                             : invocation.owner() == this;
-                    if (localTailTarget) {
+                    // Only a local tail transfer discards this activation.
+                    // Native and cross-unit calls retain the frame and cleanup.
+                    if (localTailTarget && !env.hasLiveMutexGuards()) {
                         throw new TailCallSignal(invocation);
                     }
                     // Crossing an untyped linked-code-unit boundary keeps this
