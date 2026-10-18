@@ -197,6 +197,35 @@ public final class ActorRuntime implements AutoCloseable {
     public enum ActorTerminationKind { NORMAL, CANCELLED, FAILED }
 
     /**
+     * Correctness-critical retained supervisor CONTROL failure.
+     *
+     * <p>This is intentionally separate from the droppable terminal journal.
+     * One failed actor owns at most one pending event, generation-bound to that
+     * exact incarnation. Runtime actor capacity remains charged until the event
+     * is acknowledged, so crash storms cannot outrun bounded supervisor state.</p>
+     */
+    public record SupervisorControlEvent(
+            ActorId actorId,
+            long generation,
+            ActorKind actorKind,
+            Optional<ActorId> parentId,
+            ActorFailure.Kind failureKind,
+            String failureType) {
+        public SupervisorControlEvent {
+            Objects.requireNonNull(actorId, "actorId");
+            Objects.requireNonNull(actorKind, "actorKind");
+            parentId = parentId == null ? Optional.empty() : parentId;
+            Objects.requireNonNull(parentId, "parentId");
+            Objects.requireNonNull(failureKind, "failureKind");
+            if (failureKind == ActorFailure.Kind.NONE) {
+                throw new IllegalArgumentException(
+                        "supervisor CONTROL failure kind cannot be NONE");
+            }
+            failureType = failureType == null ? "" : failureType;
+        }
+    }
+
+    /**
      * Bounded immutable supervisor diagnostic. This is NOT actor mail and is
      * never required for lifecycle correctness; a full observer queue may drop
      * records rather than delaying actor finalization.
@@ -421,6 +450,8 @@ public final class ActorRuntime implements AutoCloseable {
             DispatcherPressure untrustedDomain,
             int lifecycleObserverCarriers,
             int lifecycleObserverBacklog,
+            int supervisorControlBacklog,
+            int supervisorControlCapacity,
             int terminalJournalBacklog,
             int terminalJournalCapacity,
             int watchdogNoticeBacklog,
@@ -433,6 +464,8 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(sharedDomain, "sharedDomain");
             Objects.requireNonNull(untrustedDomain, "untrustedDomain");
             if (lifecycleObserverCarriers < 0 || lifecycleObserverBacklog < 0
+                    || supervisorControlBacklog < 0 || supervisorControlCapacity < 0
+                    || supervisorControlBacklog > supervisorControlCapacity
                     || terminalJournalBacklog < 0 || terminalJournalCapacity < 0
                     || terminalJournalBacklog > terminalJournalCapacity
                     || watchdogNoticeBacklog < 0 || watchdogNoticeCapacity < 0
@@ -808,12 +841,33 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong supervisionEventCapacityDrops = new AtomicLong();
     private final AtomicLong supervisionEventSequenceExhaustionDrops = new AtomicLong();
     private final AtomicLong supervisionEventsDropped = new AtomicLong();
+    /**
+     * Authoritative pending failure controls. Cardinality is bounded by
+     * maxActors because a failed actor's capacity slot is not released until
+     * its control event is acknowledged.
+     */
+    private final ConcurrentHashMap<ActorId, PendingSupervisorControl>
+            pendingSupervisorControls = new ConcurrentHashMap<>();
+    private final AtomicLong supervisorControlPublished = new AtomicLong();
+    private final AtomicLong supervisorControlAcknowledged = new AtomicLong();
     private final AtomicLong lifecyclePublicationFailures = new AtomicLong();
     /** Authoritative finalization bodies that may still submit observer work. */
     private final AtomicInteger finalizationPublicationsInFlight = new AtomicInteger();
     private final Object finalizationPublicationDrain = new Object();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
+
+    private final class PendingSupervisorControl {
+        private final SupervisorControlEvent event;
+        private final ActorCell<?> cell;
+
+        private PendingSupervisorControl(
+                SupervisorControlEvent event,
+                ActorCell<?> cell) {
+            this.event = Objects.requireNonNull(event, "event");
+            this.cell = Objects.requireNonNull(cell, "cell");
+        }
+    }
 
     public ActorRuntime() {
         this(IsolatePolicy.developer(), DispatcherConfig.defaults(), TurnExecutor.direct());
@@ -1084,6 +1138,116 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecyclePublicationFailures.get(),
                 watchdogOverruns.get(),
                 watchdogNoticesDropped.get());
+    }
+
+    private void publishSupervisorControl(
+            ActorCell<?> cell,
+            ActorTerminalState terminal) {
+        if (terminal.terminationKind() != ActorTerminationKind.FAILED) return;
+
+        ActorFailure.Kind failureKind =
+                ActorFailure.kindFromTypeName(terminal.failureType());
+        if (failureKind == ActorFailure.Kind.NONE) {
+            failureKind = ActorFailure.Kind.RUNTIME_FAILURE;
+        }
+        SupervisorControlEvent event = new SupervisorControlEvent(
+                terminal.actorId(),
+                terminal.generation(),
+                terminal.actorKind(),
+                terminal.parentId(),
+                failureKind,
+                terminal.failureType());
+
+        if (!cell.supervisorControlPending.compareAndSet(false, true)) {
+            throw new IllegalStateException(
+                    "duplicate supervisor CONTROL publication for " + terminal.actorId());
+        }
+        PendingSupervisorControl pending =
+                new PendingSupervisorControl(event, cell);
+        PendingSupervisorControl previous =
+                pendingSupervisorControls.putIfAbsent(terminal.actorId(), pending);
+        if (previous != null) {
+            throw new IllegalStateException(
+                    "duplicate pending supervisor CONTROL actor id " + terminal.actorId());
+        }
+        supervisorControlPublished.incrementAndGet();
+    }
+
+    /**
+     * Non-destructively observe one correctness-critical supervisor CONTROL event.
+     *
+     * <p>Observation is deliberately separate from acknowledgement. A supervisor
+     * may inspect the failure, compute restart/escalation policy, persist an
+     * external decision, or itself crash without losing the authoritative event.
+     * The failed actor's maxActors reservation remains charged until the exact
+     * actor incarnation is explicitly acknowledged.</p>
+     */
+    public Optional<SupervisorControlEvent> peekSupervisorControlEvent() {
+        requireSupervisorContext("inspect actor supervisor CONTROL failures");
+        for (PendingSupervisorControl pending : pendingSupervisorControls.values()) {
+            return Optional.of(pending.event);
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Explicitly acknowledge one previously observed supervisor CONTROL event.
+     *
+     * <p>The generation is mandatory even though ActorId values are not recycled:
+     * supervision policy is incarnation-scoped, and stale acknowledgements must
+     * never release capacity belonging to another generation if identity rules
+     * evolve. A generation mismatch leaves the event pending.</p>
+     */
+    public boolean acknowledgeSupervisorControlEvent(
+            ActorId actorId,
+            long generation) {
+        requireSupervisorContext("acknowledge actor supervisor CONTROL failure");
+        Objects.requireNonNull(actorId, "actorId");
+        if (generation <= 0) {
+            throw new IllegalArgumentException(
+                    "supervisor CONTROL generation must be positive");
+        }
+
+        for (;;) {
+            PendingSupervisorControl pending = pendingSupervisorControls.get(actorId);
+            if (pending == null) return false;
+            if (pending.event.generation() != generation) return false;
+            if (!pendingSupervisorControls.remove(actorId, pending)) {
+                continue;
+            }
+
+            if (!pending.cell.supervisorControlPending.compareAndSet(true, false)) {
+                lifecyclePublicationFailures.incrementAndGet();
+            }
+            supervisorControlAcknowledged.incrementAndGet();
+            tryReleaseActorSlot(pending.cell);
+            return true;
+        }
+    }
+
+    /**
+     * Legacy compatibility alias. Despite its historical name, this method is
+     * now non-destructive; callers must explicitly acknowledge the returned
+     * actor id/generation after policy handling succeeds.
+     */
+    @Deprecated(forRemoval = true)
+    public Optional<SupervisorControlEvent> pollSupervisorControlEvent() {
+        return peekSupervisorControlEvent();
+    }
+
+    public int supervisorControlBacklog() {
+        requireSupervisorContext("inspect actor supervisor CONTROL backlog");
+        return pendingSupervisorControls.size();
+    }
+
+    public long supervisorControlPublished() {
+        requireSupervisorContext("inspect actor supervisor CONTROL publications");
+        return supervisorControlPublished.get();
+    }
+
+    public long supervisorControlAcknowledged() {
+        requireSupervisorContext("inspect actor supervisor CONTROL acknowledgements");
+        return supervisorControlAcknowledged.get();
     }
 
     /** Host/supervisor nonblocking terminal-event drain.
@@ -1378,6 +1542,8 @@ public final class ActorRuntime implements AutoCloseable {
                 dispatcherPressure(untrustedDispatcher, dispatcherConfig.maxActors()),
                 lifecycleObserverDispatcher.getPoolSize(),
                 lifecycleObserverDispatcher.getQueue().size(),
+                pendingSupervisorControls.size(),
+                dispatcherConfig.maxActors(),
                 supervisionEventBacklog(),
                 SUPERVISION_EVENT_CAPACITY,
                 watchdogNoticeBacklog(),
@@ -5423,9 +5589,12 @@ public final class ActorRuntime implements AutoCloseable {
         return firstFatal;
     }
 
-    private void releaseActorSlotAfterLifecycleObservers(ActorCell<?> cell) {
+    private void tryReleaseActorSlot(ActorCell<?> cell) {
+        if (!cell.lifecycleObserversRetired.get()
+                || cell.supervisorControlPending.get()) {
+            return;
+        }
         if (!cell.actorSlotReleasePending.compareAndSet(true, false)) {
-            lifecyclePublicationFailures.incrementAndGet();
             return;
         }
         int remaining = actorCapacityInUse.decrementAndGet();
@@ -5433,6 +5602,13 @@ public final class ActorRuntime implements AutoCloseable {
             actorCapacityInUse.incrementAndGet();
             lifecyclePublicationFailures.incrementAndGet();
         }
+    }
+
+    private void retireLifecycleObservers(ActorCell<?> cell) {
+        if (!cell.lifecycleObserversRetired.compareAndSet(false, true)) {
+            lifecyclePublicationFailures.incrementAndGet();
+        }
+        tryReleaseActorSlot(cell);
     }
 
     private void submitLifecycleObservers(ActorCell<?> cell, Runnable observers) {
@@ -5444,7 +5620,7 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 observers.run();
             } finally {
-                releaseActorSlotAfterLifecycleObservers(cell);
+                retireLifecycleObservers(cell);
                 if (previous) LIFECYCLE_OBSERVER_CALLBACK.set(Boolean.TRUE);
                 else LIFECYCLE_OBSERVER_CALLBACK.remove();
             }
@@ -7664,9 +7840,12 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicBoolean stopped = new AtomicBoolean();
         /**
          * The global actor-capacity slot remains charged after logical
-         * finalization until the terminal observer bundle retires.
+         * finalization until the terminal observer bundle retires and any
+         * correctness-critical supervisor CONTROL failure is acknowledged.
          */
         private final AtomicBoolean actorSlotReleasePending = new AtomicBoolean();
+        private final AtomicBoolean lifecycleObserversRetired = new AtomicBoolean();
+        private final AtomicBoolean supervisorControlPending = new AtomicBoolean();
         /** Set under lifecycleLock by gracefulStop; no further user admissions. */
         private boolean sealing;
         // Lifetime-affine structured owner: never transferred before physical
@@ -8189,6 +8368,13 @@ public final class ActorRuntime implements AutoCloseable {
 
             if (retainedTerminal != null) {
                 try {
+                    publishSupervisorControl(this, retainedTerminal);
+                } catch (Throwable failure) {
+                    // A publication anomaly fails closed: supervisorControlPending
+                    // remains charged so replacement churn cannot hide the crash.
+                    firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+                }
+                try {
                     recordTerminationEvent(retainedTerminal);
                 } catch (Throwable failure) {
                     firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
@@ -8292,7 +8478,7 @@ public final class ActorRuntime implements AutoCloseable {
             } else if (actorSlotReleasePending.get()) {
                 // Duplicate/invalid publication cannot retain runtime capacity
                 // forever merely because there is no observer bundle to submit.
-                releaseActorSlotAfterLifecycleObservers(this);
+                retireLifecycleObservers(this);
             }
 
             // Preserve VM-fatal semantics, but only after best-effort terminal
