@@ -295,4 +295,27 @@ class AsyncNativeIoTest {
                 "successfully closed resource must not close a second time");
     }
 
+    @Test
+    void fatalHostCleanupStillAttemptsIndependentResourcesAndRemainsRetryable() throws Exception {
+        AsyncNativeIo io = new AsyncNativeIo(1);
+        AtomicInteger fatalAttempts = new AtomicInteger();
+        AtomicInteger healthyAttempts = new AtomicInteger();
+        OutOfMemoryError injected = new OutOfMemoryError("synthetic fatal cleanup");
+        io.register(() -> {
+            if (fatalAttempts.incrementAndGet() == 1) throw injected;
+        });
+        io.register(healthyAttempts::incrementAndGet);
+
+        assertSame(injected, assertThrows(OutOfMemoryError.class, io::close),
+                "VM-fatal cleanup errors must retain their identity");
+        assertEquals(1, healthyAttempts.get(),
+                "independent resources must still be attempted");
+        assertEquals(1, fatalAttempts.get());
+        assertDoesNotThrow(io::close,
+                "failed fatal resource must remain registered for retry");
+        assertEquals(2, fatalAttempts.get());
+        assertEquals(1, healthyAttempts.get());
+    }
+
+
 }
