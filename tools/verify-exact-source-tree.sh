@@ -73,6 +73,39 @@ while IFS= read -r -d '' entry; do
     echo "SOURCE_WORKTREE_DIRTY; missing or non-regular tracked file" >&2
     exit 67
   fi
+  # Reject path redirection through an untracked symlinked ancestor, even
+  # when the bytes at the resolved leaf happen to match the committed blob.
+  prefix=""
+  remaining="$path"
+  while [[ "$remaining" == */* ]]; do
+    component="${remaining%%/*}"
+    if [[ -z "$component" || "$component" == . || "$component" == .. ]]; then
+      echo "SOURCE_TREE_UNSAFE_ENTRY; unsafe tracked path component" >&2
+      exit 68
+    fi
+    prefix="${prefix:+$prefix/}$component"
+    if [[ -L "$prefix" || ! -d "$prefix" ]]; then
+      echo "SOURCE_WORKTREE_DIRTY; tracked path has a non-directory or symlink parent" >&2
+      exit 67
+    fi
+    remaining="${remaining#*/}"
+  done
+  # A source file hardlinked to another location can be altered without a
+  # write through the certified subtree. Require a single-linked file, like
+  # the source-free no-follow verifier. Ubuntu's stat is used in GitHub CI;
+  # BSD stat is supported for local development.
+  if link_count="$(stat -c %h -- "$path" 2>/dev/null)"; then
+    :
+  elif link_count="$(stat -f %l -- "$path" 2>/dev/null)"; then
+    :
+  else
+    echo "SOURCE_TREE_INDEX_ERROR; cannot inspect tracked file link count" >&2
+    exit 68
+  fi
+  if [[ "$link_count" != 1 ]]; then
+    echo "SOURCE_WORKTREE_DIRTY; multiply-linked source file forbidden" >&2
+    exit 67
+  fi
   if [[ "$mode" == 100755 && ! -x "$path" ]] \
       || [[ "$mode" == 100644 && -x "$path" ]]; then
     echo "SOURCE_WORKTREE_DIRTY; tracked file mode differs from attested tree" >&2
