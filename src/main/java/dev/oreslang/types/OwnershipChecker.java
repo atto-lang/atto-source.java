@@ -1825,10 +1825,16 @@ public final class OwnershipChecker {
             }
         }
         Ast.TypeRef result = Ast.TypeRef.inferred();
-        // An async callable whose expression returns a Task is a future
-        // of the Task, not a flattened single Task. Do not guess the
-        // result type of arbitrary ordinary lambdas here.
-        if (!task && lambda.expressionBody() instanceof Ast.TaskExpr) {
+        // A lambda whose body explicitly returns a Task creates a genuine
+        // nested Task, whether its own scheduling layer is async Future or
+        // async Task. Detect the simple syntactic return here; TypeChecker
+        // must independently resolve exact return types across all paths.
+        boolean returnsTask = lambda.expressionBody() instanceof Ast.TaskExpr
+                || (lambda.blockBody() != null
+                    && lambda.blockBody().size() == 1
+                    && lambda.blockBody().getFirst() instanceof Ast.ReturnStmt returned
+                    && returned.value() instanceof Ast.TaskExpr);
+        if (returnsTask) {
             result = new Ast.TypeRef("Task", List.of(result), false);
         }
         return new ValueInfo(
