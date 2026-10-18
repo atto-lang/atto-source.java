@@ -193,6 +193,27 @@ final class SharedCodeRegistryTest {
     }
 
     @Test
+    void hotLoaderCannotBorrowForeignSupervisorOrRegistryAuthority() {
+        IsolatePolicy owner = IsolatePolicy.developer();
+        IsolatePolicy other = IsolatePolicy.developer();
+        try (var scope = SharedCodeRegistry.process().newSupervisorScope(owner);
+             var wrongRegistry = new SharedCodeRegistry().newSupervisorScope(owner)) {
+            assertThrows(SecurityException.class, () ->
+                    HotReloadManager.forUntrustedActors(
+                            other, ExecutionProfile.serverJit(), scope),
+                    "a manager with equal-looking policy must not borrow foreign authority");
+            assertThrows(SecurityException.class, () ->
+                    HotReloadManager.forUntrustedActors(
+                            owner, ExecutionProfile.serverJit(), wrongRegistry),
+                    "only scopes minted by the owning process code registry are valid");
+            try (var allowed = HotReloadManager.forUntrustedActors(
+                    owner, ExecutionProfile.serverJit(), scope)) {
+                assertEquals(0, allowed.liveGenerations());
+            }
+        }
+    }
+
+    @Test
     void untrustedManagersShareOnlyExactSupervisorApprovedImages() {
         org.junit.jupiter.api.Assumptions.assumeTrue(
                 System.getProperty("polyglot.engine.IsolateLibrary") != null,
