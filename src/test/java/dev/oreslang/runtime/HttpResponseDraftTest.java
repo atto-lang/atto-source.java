@@ -40,7 +40,7 @@ class HttpResponseDraftTest {
             assertThrows(IllegalArgumentException.class, () -> HttpResponseDraft.text("", code, List.of()));
             assertThrows(IllegalArgumentException.class, () -> HttpResponseDraft.binary(new byte[0], code, List.of()));
             assertThrows(IllegalArgumentException.class,
-                    () -> HttpResponseDraft.streaming(ByteArrayInputStream::nullInputStream, code, List.of()));
+                    () -> HttpResponseDraft.streaming(java.io.InputStream::nullInputStream, code, List.of()));
             assertEquals(code, HttpResponseDraft.empty(code, List.of()).status());
         }
         for (int code : List.of(0, 101, 199, 600)) {
@@ -95,5 +95,6 @@ class HttpResponseDraftTest {
         }
         assertEquals(1, opened.get());
         assertThrows(IllegalStateException.class, response::claim);
+        assertThrows(IllegalStateException.class, response::openBody);
     }
 }
