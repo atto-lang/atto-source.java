@@ -797,6 +797,14 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void armAwait(OresFuture<?> awaited) {
+            // Awaiting the task's own completion creates an unresolvable
+            // dependency (including Future.flatten() cycles). Reject before
+            // publishing a waiter, rather than retaining the task forever.
+            if (awaited == completion) {
+                failTerminal(new IllegalStateException(
+                        "scheduler task cannot await its own completion Future"));
+                return;
+            }
             if (!phase.compareAndSet(RUNNING, WAITING)) {
                 return;
             }
