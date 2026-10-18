@@ -271,9 +271,8 @@ public final class TypeChecker {
             }
             boolean imported = program.imports().stream().anyMatch(use ->
                     use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
-                            && use.names().size() == 1
-                            && use.names().getFirst().equals(linked.name())
-                            && ImportRules.exposedBindings(use).contains(localName));
+                            && use.names().contains(linked.name())
+                            && ImportRules.localName(use, linked.name()).equals(localName));
             if (!imported || checker.linkedModuleNamespaces.putIfAbsent(localName, linked) != null) {
                 throw new IllegalArgumentException(
                         "linked module namespace lacks a unique explicit module import: " + localName);
