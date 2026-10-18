@@ -33,6 +33,12 @@ public final class OresMain {
     private OresMain() { }
 
     public static void main(String[] args) throws Exception {
+        if (args.length > 0 && args[0].equals("test")) {
+            int status = OresTestCommand.run(
+                    java.util.Arrays.copyOfRange(args, 1, args.length));
+            if (status != 0) System.exit(status);
+            return;
+        }
         if (args.length == 1 && args[0].equals("--build-info")) {
             System.out.println("{\"build_mode\":\"" + NativeBuildMode.kind().name().toLowerCase(Locale.ROOT)
                     + "\",\"default_execution_mode\":\"" + NativeBuildMode.defaultExecutionMode()
