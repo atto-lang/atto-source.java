@@ -312,8 +312,19 @@ public final class OptionalCallAbiPreview {
             throw new IllegalArgumentException(
                     "generic or borrowed construction requires separate target type proof");
         }
+        // Constructor 'self' is a construction-scoped receiver, not a guest
+        // value argument. The caller must erase it *before* ABI planning:
+        // silently binding it would corrupt effective arity and could make a
+        // named 'self:' item appear to initialize or expose the receiver.
+        for (Ast.Param formal : selectedFormals) {
+            Objects.requireNonNull(formal, "construction formal");
+            if (formal.name().equals("self")) {
+                throw new IllegalArgumentException(
+                        "construction-scoped self must be erased before user argument ABI binding");
+            }
+        }
         List<OptionalCallShapeBinder.Parameter> shapes =
-                OptionalCallShapeBinder.declaredParameterShapes(selectedFormals);
+                OptionalCallShapeBinder.formalParameterShapes(selectedFormals);
         OptionalCallShapeBinder.Plan plan =
                 OptionalCallShapeBinder.bindParsed(shapes, construction.arguments());
         Preview arguments = prepareExact(
