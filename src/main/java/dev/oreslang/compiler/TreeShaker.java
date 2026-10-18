@@ -345,7 +345,8 @@ public final class TreeShaker {
                         substitute(call.callee(), substitutions, shadowed),
                         call.typeArguments(),
                         call.typeArgumentsPresent(),
-                        arguments);
+                        arguments,
+                        call.uncheckedEffects());
             }
             if (expression instanceof Ast.MemberExpr member) {
                 return new Ast.MemberExpr(
@@ -929,7 +930,8 @@ public final class TreeShaker {
                         callee,
                         call.typeArguments(),
                         call.typeArgumentsPresent(),
-                        arguments);
+                        arguments,
+                        call.uncheckedEffects());
 
                 InlineTarget target = resolveInlineTarget(callee, module, locals);
                 if (target != null && canInlineConstantCall(target, rewritten, arguments)) {

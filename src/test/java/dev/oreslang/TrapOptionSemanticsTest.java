@@ -99,13 +99,13 @@ final class TrapOptionSemanticsTest {
     @Test
     void panicStillBypassesTrap() throws Exception {
         String program = """
-                trap fnc panics(): int {
+                trap fnc fails_with_panic(): int {
                   val Option<int> missing = None;
                   return missing.unwrap();
                 }
 
                 pub fnc main(): void {
-                  val Option<int> ignored = panics();
+                  val Option<int> ignored = fails_with_panic();
                   stdio.stdout.write("unreachable");
                   return;
                 }

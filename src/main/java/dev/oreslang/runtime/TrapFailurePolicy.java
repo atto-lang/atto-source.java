@@ -26,17 +26,23 @@ public final class TrapFailurePolicy {
 
     public static boolean isTrappable(
             RuntimeException failure, Class<? extends Throwable> panicType) {
-        return permits(failure, panicType, false);
+        return permits(failure, panicType, false, false);
     }
 
     public static boolean isGuestCatchable(
             Throwable failure, Class<? extends Throwable> panicType) {
-        return permits(failure, panicType, true);
+        return permits(failure, panicType, true, false);
+    }
+
+    /** A raise cannot be recovered if doing so would swallow fatal cleanup/control failures. */
+    public static boolean isRecoverableRaise(Throwable failure, Class<? extends Throwable> panicType) {
+        return failure instanceof GuestFailure guest && guest.operation.equals("raise")
+                && permits(failure, panicType, false, true);
     }
 
     private static boolean permits(
             Throwable failure, Class<? extends Throwable> panicType,
-            boolean explicitGuestCatch) {
+            boolean explicitGuestCatch, boolean recoveringRaise) {
         Objects.requireNonNull(failure, "failure");
         Objects.requireNonNull(panicType, "panicType");
 
@@ -47,7 +53,9 @@ public final class TrapFailurePolicy {
             if (visited.size() >= MAX_FAILURE_NODES) return false;
             Throwable current = pending.removeFirst();
             if (visited.put(current, Boolean.TRUE) != null) return false;
-            if (panicType.isInstance(current)
+            if ((current instanceof GuestFailure guest && (guest.operation.equals("panic")
+                    || (guest.operation.equals("raise") && !recoveringRaise)))
+                    || panicType.isInstance(current)
                     || current instanceof Error
                     || current instanceof CancellationException
                     || current instanceof InterruptedException

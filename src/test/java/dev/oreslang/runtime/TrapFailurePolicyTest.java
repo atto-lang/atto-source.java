@@ -105,4 +105,36 @@ final class TrapFailurePolicyTest {
         }
         assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
     }
+
+    @Test void recoveryInspectsSuppressedFatalAndControlFailures() {
+        for (Throwable terminal : new Throwable[]{new GuestFailure("panic", "fatal"), new GuestPanic(),
+                new CancellationException(), new SecurityException(), new InterruptedException(),
+                new RejectedExecutionException(), new ProcessExitSignal(0), new TimeoutException()}) {
+            GuestFailure raise = new GuestFailure("raise", "original");
+            raise.addSuppressed(new CompletionException(terminal));
+            assertFalse(TrapFailurePolicy.isRecoverableRaise(raise, GuestPanic.class), terminal::toString);
+        }
+        GuestFailure ordinary = new GuestFailure("raise", 1L);
+        ordinary.addSuppressed(new GuestFailure("throw", "cleanup"));
+        assertTrue(TrapFailurePolicy.isRecoverableRaise(ordinary, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(new GuestFailure("throw", "ordinary"), GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(null, GuestPanic.class));
+    }
+
+    @Test void recoveryFailsClosedOnCyclesAndExcessiveFailureGraphs() {
+        GuestFailure raise = new GuestFailure("raise", "original");
+        RuntimeException wrapper = new RuntimeException(raise);
+        raise.addSuppressed(wrapper);
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(raise, GuestPanic.class));
+        GuestFailure wide = new GuestFailure("raise", "original");
+        for (int i = 0; i < 65; i++) wide.addSuppressed(new IllegalStateException());
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(wide, GuestPanic.class));
+    }
+
+    @Test void invalidPayloadNeverExecutesHostToString() {
+        Object hostile = new Object() {
+            @Override public String toString() { throw new AssertionError("must not run"); }
+        };
+        assertThrows(IllegalArgumentException.class, () -> new GuestFailure("raise", hostile));
+    }
 }

@@ -660,6 +660,7 @@ public final class TypeChecker {
                             + module + "." + fn.name() + "'");
         }
 
+        FailureAnalysis.validateRecoveryResult(fn.body(), !fn.generator() && returns != Primitive.VOID);
         Ast.ActorKind previousActorKind = currentActorKind;
         boolean previousGenerator = currentGenerator;
         boolean previousAsync = currentAsyncCallable;
@@ -1436,6 +1437,7 @@ public final class TypeChecker {
             }
             defineImplicitArguments(env, methodArgumentTypes);
             Type returns = resolve(method.returnType(), generics, callableSelf);
+            FailureAnalysis.validateRecoveryResult(method.body(), returns != Primitive.VOID);
             if (actorStartupHook && returns != Primitive.VOID) {
                 throw new IllegalArgumentException(
                         "actor lifecycle hook '" + klass.name() + ".on_start' must return void");
@@ -1639,6 +1641,7 @@ public final class TypeChecker {
     }
 
     private void checkCallableBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
+        FailureAnalysis.validateRecoveryResult(body, expectedReturn != Primitive.VOID && expectedReturn != Unknown.INSTANCE);
         checkIsolatedArmBlock(body, parent, generics, expectedReturn, self, false);
     }
 
@@ -2382,6 +2385,27 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr intrinsic && intrinsic.name().startsWith("$failure$")) {
+                String operation = intrinsic.name().substring(9);
+                if (!Set.of("throw", "raise", "panic", "recover").contains(operation)
+                        || call.typeArgumentsPresent() || call.uncheckedEffects()
+                        || call.arguments().size() != (operation.equals("recover") ? 0 : 1)) {
+                    throw new IllegalArgumentException("invalid compiler failure intrinsic: " + operation);
+                }
+                if (operation.equals("recover")) {
+                    return new Named("Option", List.of(new Union(List.of(
+                            Primitive.STRING, Primitive.INT, Primitive.FLOAT, Primitive.BOOL))));
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    Type payload = typeOf(argument, env, generics, self);
+                    if (!(payload instanceof StringLiteral) && payload != Primitive.STRING
+                            && payload != Primitive.INT && payload != Primitive.FLOAT && payload != Primitive.BOOL) {
+                        throw new IllegalArgumentException("failure payload must be a scalar string, int, float or bool; "
+                                + "object payload transport is not yet supported");
+                    }
+                }
+                return Primitive.VOID;
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");

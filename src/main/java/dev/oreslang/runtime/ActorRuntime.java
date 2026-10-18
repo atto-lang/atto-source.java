@@ -1381,6 +1381,10 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean enqueue(Runnable continuation) {
             return enqueueContinuation(actorId, continuation);
         }
+
+        private boolean ownedBy(ActorRuntime runtime) {
+            return ActorRuntime.this == runtime;
+        }
     }
 
     /**
@@ -1726,7 +1730,9 @@ public final class ActorRuntime implements AutoCloseable {
     /**
      * Register scheduler plumbing only. Future completion enqueues the supplied
      * continuation back to the captured actor; the callback body itself is not
-     * run on the producer/completion thread.
+     * run on the producer/completion thread. This is a RESUME lane: it may run
+     * while a source receive is logically suspended. Ordinary event handlers
+     * must use {@link #enqueueEventOnCompletion} instead.
      */
     public <T> void enqueueOnCompletion(
             OresFuture<T> future,
@@ -1736,6 +1742,9 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(continuation, "continuation");
 
+        if (!target.ownedBy(this)) {
+            throw new IllegalArgumentException("ContinuationTarget belongs to a different ActorRuntime");
+        }
         ActorCell<?> cell = actors.get(target.actorId());
         if (cell == null || !ownFuture(cell, future)) return;
 
@@ -1744,7 +1753,40 @@ public final class ActorRuntime implements AutoCloseable {
                         target.enqueue(() -> continuation.accept(value, failure)));
     }
 
+    /**
+     * Register a one-shot guest EVENT, distinct from a suspended task's resume.
+     * Even an already-settled Future only publishes bounded actor work. The
+     * event waits for the current source receive to finish across all of its
+     * cooperative handoffs and pending awaits. It enters after the publishing
+     * physical carrier boundary exits, with the actor execution lease held.
+     *
+     * <p>This serial policy cannot be used to resume the receive itself: awaiting
+     * an event blocked behind that receive would deadlock. Use the resume API
+     * for compiler-owned await continuations. This is runtime plumbing, not a
+     * source-language callback annotation or a multi-shot stream subscription.</p>
+     */
+    public <T> void enqueueEventOnCompletion(
+            OresFuture<T> future,
+            ContinuationTarget target,
+            BiConsumer<? super T, ? super Throwable> event) {
+        Objects.requireNonNull(future, "future");
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(event, "event");
+        if (!target.ownedBy(this)) {
+            throw new IllegalArgumentException("ContinuationTarget belongs to a different ActorRuntime");
+        }
+        ActorCell<?> cell = actors.get(target.actorId());
+        if (cell == null || !ownFuture(cell, future)) return;
+        future.whenCompleteRuntime((value, failure) ->
+                enqueueContinuation(target.actorId(), () -> event.accept(value, failure), true));
+    }
+
     private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
+        return enqueueContinuation(actorId, continuation, false);
+    }
+
+    private boolean enqueueContinuation(
+            ActorId actorId, Runnable continuation, boolean event) {
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
@@ -1759,8 +1801,9 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             synchronized (cell.lifecycleLock) {
                 if (cell.stopped.get() || cell.finalized || closed.get()) return false;
-                if (!cell.continuationMailbox.tryWrite(
-                        MessageEnvelope.continuation(continuation))) {
+                ChannelRuntime.Channel<MessageEnvelope> lane = event
+                        ? cell.eventMailbox : cell.continuationMailbox;
+                if (!lane.tryWrite(MessageEnvelope.continuation(continuation))) {
                     throw new IllegalStateException(
                             "actor continuation mailbox capacity invariant violated for " + actorId);
                 }
@@ -1771,7 +1814,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // leave its TurnExecutor boundary before the continuation can
                 // run. That makes scheduler cooperation a real carrier handoff
                 // rather than a same-batch queue rotation.
-                if (currentActor.get() == cell) {
+                if (currentActor.get() == cell || (event && cell.carrierActive)) {
                     cell.sourceHandoffRequested = true;
                 }
             }
@@ -6661,6 +6704,9 @@ public final class ActorRuntime implements AutoCloseable {
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
+        /** Guest events share the bounded control quota but cannot resume a receive. */
+        private final ChannelRuntime.Channel<MessageEnvelope> eventMailbox =
+                new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
         /** True while one source receive owns actor state across suspension. */
         private boolean sourceReceiveSuspended;
         private final Object lifecycleLock = new Object();
@@ -6869,7 +6915,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean hasQueuedWorkLocked() {
-            return !continuationMailbox.isEmpty() || (!sourceReceiveSuspended && !mailbox.isEmpty());
+            return !continuationMailbox.isEmpty()
+                    || (!sourceReceiveSuspended && (!eventMailbox.isEmpty() || !mailbox.isEmpty()));
         }
 
         private OresScheduler sourceScheduler() {
@@ -7394,11 +7441,19 @@ public final class ActorRuntime implements AutoCloseable {
                         // Stop closes the user mailbox under this same lock.
                         if (stopped.get() || finalized) break;
 
-                        // Continuations always outrank user mail. While a
-                        // source receive is suspended, user mail is not runnable.
+                        // A foreign event may arrive between the previous
+                        // envelope's handoff check and this poll. It must still
+                        // cross the full TurnExecutor boundary before admission.
+                        if (sourceHandoffRequested) {
+                            sourceHandoffRequested = false;
+                            break;
+                        }
+                        // Only RESUMES can run during a suspended source receive.
+                        // EVENTS cannot overtake its logical tail on a CPU yield.
                         envelope = continuationMailbox.tryRead().orElse(null);
                         if (envelope == null && !sourceReceiveSuspended) {
-                            envelope = mailbox.tryRead().orElse(null);
+                            envelope = eventMailbox.tryRead().orElse(null);
+                            if (envelope == null) envelope = mailbox.tryRead().orElse(null);
                         }
                     }
                     if (envelope == null) break;
@@ -7527,6 +7582,12 @@ public final class ActorRuntime implements AutoCloseable {
                 })) {
                     // Reclaim admitted control mail even after termination closes the channel.
                 }
+                while (eventMailbox.drainOne(event -> {
+                    releaseMailboxSlot(true);
+                    event.close();
+                })) {
+                    // Events and resumes share reservations, including teardown.
+                }
                 sourceHandoffRequested = false;
             }
 
@@ -7571,6 +7632,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
+                eventMailbox.close(cause);
                 drainMailboxReservations();
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);

@@ -40,6 +40,19 @@ public final class Ast {
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
+    public enum FailureEffect { THROWS, RAISES, PANICS }
+
+    /** Signature metadata lives in compiler-owned annotations so all AST rewrites preserve it. */
+    public static java.util.Set<FailureEffect> failureEffects(List<Annotation> annotations) {
+        java.util.EnumSet<FailureEffect> effects = java.util.EnumSet.noneOf(FailureEffect.class);
+        for (Annotation annotation : annotations) {
+            if (annotation.name().startsWith("$failure$")) {
+                effects.add(FailureEffect.valueOf(annotation.name().substring(9).toUpperCase(java.util.Locale.ROOT)));
+            }
+        }
+        return java.util.Set.copyOf(effects);
+    }
+
     public enum ActorKind { NONE, PRIVATE, SHARED, UNTRUSTED }
 
     public record Annotation(String name, List<TypeRef> arguments) {
@@ -255,6 +268,8 @@ public final class Ast {
             this(name, kind, visibility, async, false, generator, structural, nonLexical,
                     trapped, actorKind, genericParameters, parameters, returnType, annotations, body);
         }
+
+        public java.util.Set<FailureEffect> failureEffects() { return Ast.failureEffects(annotations); }
 
         public FunctionDecl {
             genericParameters = List.copyOf(genericParameters);
@@ -472,6 +487,8 @@ public final class Ast {
             this(name, visibility, isStatic, isAbstract, async, false, structural,
                     explicitReceiverType, genericParameters, parameters, returnType, annotations, body);
         }
+
+        public java.util.Set<FailureEffect> failureEffects() { return Ast.failureEffects(annotations); }
 
         public MethodDecl {
             genericParameters = List.copyOf(genericParameters);
@@ -922,7 +939,12 @@ public final class Ast {
             Expr callee,
             List<TypeRef> typeArguments,
             boolean typeArgumentsPresent,
-            List<Expr> arguments) implements Expr {
+            List<Expr> arguments,
+            boolean uncheckedEffects) implements Expr {
+        /** Compatibility constructor: existing and compiler-generated calls check signatures. */
+        public CallExpr(Expr callee, List<TypeRef> typeArguments, boolean typeArgumentsPresent, List<Expr> arguments) {
+            this(callee, typeArguments, typeArgumentsPresent, arguments, false);
+        }
         public CallExpr {
             typeArguments = List.copyOf(typeArguments);
             arguments = List.copyOf(arguments);

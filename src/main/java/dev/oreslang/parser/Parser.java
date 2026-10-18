@@ -482,6 +482,7 @@ public final class Parser {
             Ast.TypeRef returnType = check(LBRACE)
                     ? Ast.TypeRef.simple("void")
                     : parseTypeRef();
+            annotations = parseFailureEffects(annotations);
             List<Ast.Stmt> body = parseBlock();
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
                     generics, params, returnType, annotations, body, specs);
@@ -492,6 +493,7 @@ public final class Parser {
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
+        annotations = parseFailureEffects(annotations);
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs);
@@ -1058,6 +1060,7 @@ public final class Parser {
         }
 
         Ast.TypeRef returnType = parseReturnType(annotations);
+        annotations = parseFailureEffects(annotations);
         // An abstract class may declare required slots as `name(args): Type;`.
         // Such signatures are abstract, but remain private unless explicitly pub.
         // Their identity is still name + arity only.
@@ -1074,6 +1077,17 @@ public final class Parser {
         } else body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body);
+    }
+
+    private List<Ast.Annotation> parseFailureEffects(List<Ast.Annotation> annotations) {
+        List<Ast.Annotation> result = new ArrayList<>(annotations);
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        while (match(THROWS, RAISES, PANICS)) {
+            String effect = previous().lexeme();
+            if (!seen.add(effect)) throw error(previous(), "duplicate failure effect '" + effect + "'");
+            result.add(new Ast.Annotation("$failure$" + effect, List.of()));
+        }
+        return result;
     }
 
     private String parseMethodName() {
@@ -1693,12 +1707,12 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
-        // Keep these distinct from ordinary calls/identifiers. Exception
-        // effect checking, typed recovery and actor CONTROL delivery have
-        // not yet been lowered in the Java/Graal production compiler.
-        if (check(THROW) || check(RAISE) || check(PANIC) || check(RECOVER)) {
-            throw error(peek(), "typed exceptional effect '" + peek().lexeme()
-                    + "' requires checked exception and supervision lowering; source effect is not yet enabled");
+        if (match(THROW, RAISE, PANIC)) {
+            String operation = previous().lexeme();
+            Ast.Expr value = parseExpression();
+            consumeStatementTerminator(operation + " statement should end with ';'");
+            // Compiler-only callees cannot be spelled as source identifiers.
+            return new Ast.ExprStmt(new Ast.CallExpr(new Ast.NameExpr("$failure$" + operation), List.of(value)));
         }
         // The value-producing static select expression is not lowered yet.
         // Preserve historical statement sources until expression migration
@@ -3230,6 +3244,16 @@ public final class Parser {
     }
 
     private Ast.Expr parseUnary() {
+        if (match(UNCHECKED)) {
+            Token keyword = previous();
+            Ast.Expr operand = parseUnary();
+            if (!(operand instanceof Ast.CallExpr call)
+                    || (call.callee() instanceof Ast.NameExpr name && name.name().startsWith("$failure$"))) {
+                throw error(keyword, "unchecked must prefix a function or method call; use 'await unchecked call()' for async calls");
+            }
+            if (call.uncheckedEffects()) throw error(keyword, "duplicate unchecked on the same call");
+            return new Ast.CallExpr(call.callee(), call.typeArguments(), call.typeArgumentsPresent(), call.arguments(), true);
+        }
         // Signed i64's negative endpoint requires magnitude 2^63, which
         // cannot be parsed as a positive Java long. Treat exactly that
         // token sequence as a single negative literal, without broadening
@@ -3542,6 +3566,11 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        if (match(RECOVER)) {
+            consume(LPAREN, "recover requires 'recover()'");
+            consume(RPAREN, "recover takes no arguments");
+            return new Ast.CallExpr(new Ast.NameExpr("$failure$recover"), List.of());
+        }
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));

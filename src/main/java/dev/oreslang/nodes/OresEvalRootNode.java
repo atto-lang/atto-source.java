@@ -1910,26 +1910,30 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
+            RecoveryState recovery = recoveryState(currentFlow.failure());
+            Env cleanupEnv = new Env(env);
+            cleanupEnv.define("$recovery$", recovery, Ast.BindingKind.VAL);
             evalSuspendableExpr(
                     task,
                     defer instanceof Ast.LambdaExpr
                             ? new Ast.CallExpr(defer, List.of())
                             : defer,
-                    env,
+                    cleanupEnv,
                     (ignored, ignoredValue, failure) -> {
+                        recovery.active = false;
                         if (failure != null) {
                             runOneDefer(
                                     task,
                                     env,
                                     defers,
-                                    mergeCleanupFailure(currentFlow, failure),
+                                    mergeCleanupFailure(recovery.recovered ? SourceFlow.normal() : currentFlow, failure),
                                     continuation);
                         } else {
                             runOneDefer(
                                     task,
                                     env,
                                     defers,
-                                    currentFlow,
+                                    recovery.recovered ? SourceFlow.normal() : currentFlow,
                                     continuation);
                         }
                     });
@@ -4854,6 +4858,19 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private static final class RecoveryState {
+            private dev.oreslang.runtime.GuestFailure failure;
+            private boolean recovered;
+            private boolean active = true;
+            private RecoveryState(dev.oreslang.runtime.GuestFailure failure) { this.failure = failure; }
+        }
+
+        private RecoveryState recoveryState(Throwable failure) {
+            // Actor panic always escapes to supervision; only raises are recoverable here.
+            return new RecoveryState(dev.oreslang.runtime.TrapFailurePolicy.isRecoverableRaise(failure, OresPanic.class)
+                    ? (dev.oreslang.runtime.GuestFailure) failure : null);
+        }
+
         private boolean isTrappableFailure(RuntimeException failure) {
             return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
                     failure, OresPanic.class);
@@ -5007,18 +5024,21 @@ public final class OresEvalRootNode extends RootNode {
             } catch (RuntimeException | Error failure) {
                 abnormalExit = true;
                 pendingFailure = failure;
-                throw failure;
             } finally {
-                Throwable originalFailure = pendingFailure;
                 // Always run the entire LIFO cleanup stack. In particular,
                 // a failed defer must not prevent remaining resource cleanup.
                 while (!deferred.isEmpty()) {
                     Ast.Expr cleanup = deferred.pop();
+                    RecoveryState recovery = recoveryState(pendingFailure);
+                    Env cleanupEnv = new Env(env);
+                    cleanupEnv.define("$recovery$", recovery, Ast.BindingKind.VAL);
                     try {
                         eval(cleanup instanceof Ast.LambdaExpr
                                 ? new Ast.CallExpr(cleanup, List.of())
-                                : cleanup, env);
+                                : cleanup, cleanupEnv);
+                        if (recovery.recovered) pendingFailure = null;
                     } catch (RuntimeException | Error failure) {
+                        if (recovery.recovered) pendingFailure = null;
                         if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
                             // Never let a deferred ordinary failure replace a panic,
                             // denial, cancellation, host Error, or earlier process exit.
@@ -5035,6 +5055,8 @@ public final class OresEvalRootNode extends RootNode {
                             }
                             pendingFailure = failure;
                         }
+                    } finally {
+                        recovery.active = false;
                     }
                 }
                 try {
@@ -5056,7 +5078,7 @@ public final class OresEvalRootNode extends RootNode {
                 // If only the body failed, Java will rethrow it naturally.
                 // If cleanup failed, the most recent failure takes precedence
                 // and retains earlier failures as suppressed exceptions.
-                if (pendingFailure != null && pendingFailure != originalFailure) {
+                if (pendingFailure != null) {
                     if (pendingFailure instanceof RuntimeException runtimeFailure) {
                         throw runtimeFailure;
                     }
@@ -6093,6 +6115,22 @@ public final class OresEvalRootNode extends RootNode {
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
+                if (name.name().startsWith("$failure$")) {
+                    return (Invokable) args -> {
+                        String operation = name.name().substring(9);
+                        if (operation.equals("recover")) {
+                            Object candidate = env.lookup("$recovery$");
+                            if (candidate instanceof RecoveryState recovery && recovery.active && recovery.failure != null) {
+                                Object value = recovery.failure.value;
+                                recovery.recovered = true;
+                                recovery.failure = null;
+                                return new OptionValue(true, value);
+                            }
+                            return new OptionValue(false, null);
+                        }
+                        throw new dev.oreslang.runtime.GuestFailure(operation, args.getFirst());
+                    };
+                }
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);

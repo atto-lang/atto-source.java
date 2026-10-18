@@ -34,7 +34,11 @@ public final class OresCompiler {
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
         OwnershipChecker.check(checked.program());
-        return new AnalysisResult(checked.program(), checked.warnings());
+        java.util.List<String> warnings = new java.util.ArrayList<>(checked.warnings());
+        dev.oreslang.types.FailureAnalysis.analyze(checked.program()).stream()
+                .filter(d -> !d.code().equals("failure-unknown"))
+                .forEach(d -> warnings.add(d.toString()));
+        return new AnalysisResult(checked.program(), warnings);
     }
 
     /**

@@ -1,0 +1,8 @@
+# These commands exercise actual Java HOST runtime callbacks and carrier boundaries.
+# No claim of comprehensive Oreslang source memory-access instrumentation.
+[fuzz]
+command = ["bash", "run-probe.sh"]
+corpus = "corpus"
+max_bytes = 2
+[race]
+command = ["bash", "run-probe.sh"]

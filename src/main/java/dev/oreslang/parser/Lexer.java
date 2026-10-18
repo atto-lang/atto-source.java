@@ -25,7 +25,9 @@ public final class Lexer {
         KEYWORDS.put("type", TYPE); KEYWORDS.put("types", TYPES); KEYWORDS.put("typeof", TYPEOF); KEYWORDS.put("interface", INTERFACE); KEYWORDS.put("trait", TRAIT); KEYWORDS.put("struct", STRUCT); KEYWORDS.put("impl", IMPL); KEYWORDS.put("abstract", ABSTRACT);
         KEYWORDS.put("void", VOID); KEYWORDS.put("static", STATIC); KEYWORDS.put("pub", PUB); KEYWORDS.put("private", PRIVATE);
         KEYWORDS.put("return", RETURN); KEYWORDS.put("defer", DEFER);
-        // Reserved until compiler-checked typed effects and source lowering exist.
+        // Explicit failure operations and advisory signature markers.
+        KEYWORDS.put("unchecked", UNCHECKED);
+        KEYWORDS.put("throws", THROWS); KEYWORDS.put("raises", RAISES); KEYWORDS.put("panics", PANICS);
         KEYWORDS.put("throw", THROW); KEYWORDS.put("raise", RAISE);
         KEYWORDS.put("panic", PANIC); KEYWORDS.put("recover", RECOVER); KEYWORDS.put("val", VAL); KEYWORDS.put("const", CONST);
         KEYWORDS.put("let", LET); KEYWORDS.put("mut", MUT); KEYWORDS.put("self", SELF); KEYWORDS.put("true", TRUE); KEYWORDS.put("false", FALSE);

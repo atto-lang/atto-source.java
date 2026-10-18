@@ -79,6 +79,7 @@ public final class OresMain {
         boolean coreDebug = "true".equalsIgnoreCase(debugEnv) || "1".equals(debugEnv);
         boolean strict = false;
         boolean checkOnly = false;
+        boolean failureAnalysis = false;
         boolean buildAnalysis = false;
         List<String> buildDefines = new ArrayList<>();
         Set<String> buildEntryPoints = new LinkedHashSet<>();
@@ -96,6 +97,7 @@ public final class OresMain {
             try {
                 if (arg.equals("--strict-isolate")) strict = true;
                 else if (arg.equals("--check")) checkOnly = true;
+                else if (arg.equals("--analyze")) { checkOnly = true; failureAnalysis = true; }
                 else if (arg.equals("--core-perf")) corePerf = true;
                 else if (arg.equals("--no-core-perf")) corePerf = false;
                 else if (arg.equals("--core-debug")) coreDebug = true;
@@ -188,7 +190,9 @@ public final class OresMain {
         String directOresSource = filename.endsWith(".ores") ? readBoundedOresSource(path) : null;
         if (directOresSource != null) {
             formatSyntaxWarnings(path, directOresSource).forEach(System.err::println);
-            formatSelectReturnWarnings(path, directOresSource).forEach(System.err::println);
+            for (String warning : formatSelectReturnWarnings(path, directOresSource)) {
+                if (!failureAnalysis || !warning.contains(": warning: failure-")) System.err.println(warning);
+            }
         }
 
         IsolatePolicy policy = strict ? IsolatePolicy.strictFaas() : IsolatePolicy.developer();
@@ -241,12 +245,20 @@ public final class OresMain {
         }
 
         if (checkOnly) {
+            if (failureAnalysis && directOresSource == null) {
+                throw new UsageException("--analyze requires a .ores source file");
+            }
             try {
                 LinkedProgramRunner.validate(
                         path,
                         System.getenv(),
                         policy,
                         permissionCheckMode);
+                if (failureAnalysis) {
+                    for (var diagnostic : dev.oreslang.types.FailureAnalysis.analyze(Parser.parse(directOresSource))) {
+                        System.err.println(path.toAbsolutePath() + ": warning: " + diagnostic);
+                    }
+                }
             } catch (Exception error) {
                 System.err.println(formatCheckDiagnostic(path, error));
                 return 1;
@@ -322,7 +334,7 @@ public final class OresMain {
 
     private static void printUsage() {
         System.err.println(
-                "usage: oreslang-compiler [--check|--build-analysis] "
+                "usage: oreslang-compiler [--check|--analyze|--build-analysis] "
                         + "[--permission-check=runtime|compile] [--allow-all] "
                         + "[--allow-read[=PATH,...]] [--deny-read[=PATH,...]] "
                         + "[--allow-write[=PATH,...]] [--deny-write[=PATH,...]] "
@@ -365,6 +377,7 @@ public final class OresMain {
         try {
             Path normalized = path.toAbsolutePath().normalize();
             return OresCompiler.parseAndTypeCheckWithDiagnostics(source).warnings().stream()
+                    .filter(warning -> !warning.startsWith("failure-unknown"))
                     .map(warning -> normalized + ": warning: " + warning)
                     .toList();
         } catch (IllegalArgumentException ignored) {

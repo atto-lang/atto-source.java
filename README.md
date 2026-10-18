@@ -40,3 +40,7 @@ and remaining physical-isolation work are tracked in
 Async filesystem, TCP and HTTP client APIs: [usage and execution guarantees](docs/ASYNC_IO.md).
 
 Core assertions: see [Assert API and trap behavior](docs/ASSERT.md).
+
+Failure operations and optional `throws`/`raises`/`panics` signatures are described
+in [Failure effects](docs/FAILURE_EFFECTS.md). Use `oreslang-core --analyze file.ores`
+for advisory failure analysis without executing source.
