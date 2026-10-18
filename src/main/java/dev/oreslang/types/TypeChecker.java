@@ -4369,6 +4369,7 @@ public final class TypeChecker {
                     location + " cannot have type void: void is a completion, not a storable value; "
                             + "use Future<void> to track completion or Option<void> to represent presence");
         }
+        Types.requireValueShape(type, location);
     }
 
     private void defineDestructureBinding(Env env, Ast.DestructureBinding binding, Type type) {
