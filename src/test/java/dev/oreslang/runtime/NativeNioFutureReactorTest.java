@@ -378,4 +378,21 @@ final class NativeNioFutureReactorTest {
             reactor.close();
         }
     }
+    @Test void terminalCleanupVisitsEveryAdmittedOperationDespiteHostFailures() {
+        var visited = new java.util.ArrayList<Integer>();
+        AssertionError fatal = new AssertionError("first terminal callback failure");
+        IllegalStateException later = new IllegalStateException("third terminal callback failure");
+        Throwable result = NativeNioFutureReactor.exhaustTerminalCleanup(
+                java.util.List.of(0, 1, 2, 3, 4), id -> {
+                    visited.add(id);
+                    if (id == 0) throw fatal;
+                    if (id == 2) throw later;
+                });
+        assertEquals(java.util.List.of(0, 1, 2, 3, 4), visited);
+        assertSame(fatal, result);
+        assertArrayEquals(new Throwable[]{later}, result.getSuppressed());
+        assertNull(NativeNioFutureReactor.exhaustTerminalCleanup(
+                java.util.List.of(1, 2), ignored -> {}));
+    }
+
 }
