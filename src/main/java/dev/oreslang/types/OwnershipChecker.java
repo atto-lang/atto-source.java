@@ -53,6 +53,7 @@ public final class OwnershipChecker {
     }
 
     public static Ast.Program check(Ast.Program program) {
+        rejectUnlinkedEnumAst(program);
         OwnershipChecker checker = new OwnershipChecker(program);
         checker.validate(program);
         return program;
@@ -64,6 +65,7 @@ public final class OwnershipChecker {
         if (linkedClasses == null) {
             throw new IllegalArgumentException("linked public classes cannot be null");
         }
+        rejectUnlinkedEnumAst(program);
         OwnershipChecker checker = new OwnershipChecker(program);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
@@ -84,6 +86,23 @@ public final class OwnershipChecker {
         }
         checker.validate(program);
         return program;
+    }
+
+    /**
+     * Independent ownership entrypoints must never silently ignore a nominal
+     * enum AST that has not been linked and typechecked. A direct caller could
+     * otherwise confuse "ownership passed" with executable enum support.
+     */
+    private static void rejectUnlinkedEnumAst(Ast.Program program) {
+        java.util.Objects.requireNonNull(program, "program");
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.EnumDecl || decl instanceof Ast.PatternDecl) {
+                    throw new IllegalArgumentException(
+                            "enum/pattern ownership requires linked nominal semantics; syntax-only AST");
+                }
+            }
+        }
     }
 
     private void index(Ast.Program program) {
