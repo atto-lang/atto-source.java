@@ -26,7 +26,7 @@ Live destination metadata must supply an exact integer repository ID and
 literal JSON booleans `private: true`, `archived: false`, and `disabled:
 false`. Missing, stringified, or otherwise ill-typed fields deny admission.
 These checks agree with the checked-in protected policy workflow. The source
-preflight requires at least **90** review-pinned verifier regression methods,
+preflight requires at least **94** review-pinned verifier regression methods,
 fully executed and successful in **three** no-skip rounds. The verifier bounds
 JSON reads before decoding, rejects NaN, Infinity and non-finite exponents,
 requires literal integer identities (not equal-valued floats or strings),
@@ -36,7 +36,7 @@ review/incident timestamps.
 Authorization file inputs (destination and snapshot ledgers, reviewer policy,
 carrier workflow) are size-bounded **before reading and hashing**; oversized,
 empty or invalid-UTF8 ledgers and malformed source-commit/destination JSON
-metadata fail closed. The 90-test verifier suite includes exact file-size
+metadata fail closed. The 94-test verifier suite includes exact file-size
 boundaries and adversarial malformed inputs.
 
 Input files are opened with no-follow, nonblocking flags and must be
