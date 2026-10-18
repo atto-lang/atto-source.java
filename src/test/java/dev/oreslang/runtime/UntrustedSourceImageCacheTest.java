@@ -59,9 +59,14 @@ final class UntrustedSourceImageCacheTest {
         var two = new UntrustedSourceImageCache();
         try (var a = one.acquire("core.ores", "core-v1");
              var b = two.acquire("core.ores", "core-v1")) {
-            assertNotSame(a.source(), b.source());
-            assertEquals(1, one.liveImages());
+            // Polyglot may intern immutable Source wrappers, but each cache
+            // owns its own authorization, quotas and image-lease lifetime.
+            assertEquals("core.ores", a.source().getName());
+            assertEquals("core.ores", b.source().getName());
+            a.close();
+            assertEquals(0, one.liveImages());
             assertEquals(1, two.liveImages());
+            assertEquals(7L, two.pinnedBytes());
         }
     }
 
@@ -85,6 +90,27 @@ final class UntrustedSourceImageCacheTest {
         try (var recovered = cache.acquire("b", "x")) {
             assertEquals(1, cache.liveImages());
         }
+    }
+
+    @Test
+    void oneThousandActorLeasesKeepExactlyOneImmutableImage() {
+        var cache = new UntrustedSourceImageCache();
+        List<UntrustedSourceImageCache.Lease> actors = new ArrayList<>();
+        Source expected = null;
+        try {
+            for (int i = 0; i < 1_000; i++) {
+                var lease = cache.acquire("worker.ores", "same-compiled-program");
+                if (expected == null) expected = lease.source();
+                else assertSame(expected, lease.source());
+                actors.add(lease);
+            }
+            assertEquals(1, cache.liveImages());
+            assertEquals(21L, cache.pinnedBytes());
+        } finally {
+            for (int i = actors.size() - 1; i >= 0; --i) actors.get(i).close();
+        }
+        assertEquals(0, cache.liveImages());
+        assertEquals(0L, cache.pinnedBytes());
     }
 
     @Test
