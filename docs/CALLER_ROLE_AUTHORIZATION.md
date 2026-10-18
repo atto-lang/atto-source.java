@@ -76,19 +76,24 @@ the standalone static index; the executable enum frontend remains gated.
 
 ## Incremental ABI and import boundary
 
-- `IncrementalCompiler.abiDigest` uses a versioned **v4** fingerprint for
+- `IncrementalCompiler.abiDigest` uses a versioned **v5** fingerprint for
   exported `@CallerRole` and `@CallableBy` metadata on public functions and
   methods. Role argument ordering is canonicalized for a stable digest.
   Public nominal enum case name, wire tag, payload type and declaration
   visibility also affect the exported source ABI. A module with publicly
-  exposed role metadata also includes its private local enum schemas in
-  the ABI to prevent policy meaning from changing under a stale cache.
-  Unrelated private enums are excluded. These fingerprints enable
+  exposed role metadata fingerprints only those private local enums
+  referenced by the exported `@CallerRole` or `@CallableBy` annotations.
+  Retagging a referenced private enum invalidates importing builds;
+  unrelated private enums are excluded. These fingerprints enable
   cache invalidation; they are **not** authenticated call-site metadata.
 - `ImportGraph.validateLinkedImports` currently **rejects** cross-source
   import of a protected public function or class static method, and module or
   wildcard imports that expose one, including protected public static
-  class methods reachable through whole-module imports. A plain exported
+  class methods reachable through whole-module imports and imported
+  subclasses inheriting protected public methods. Inherited method
+  resolution requires verified local parent identities; unresolved
+  ancestors fail closed until authenticated cross-file class ancestry
+  contracts are available. A plain exported
   sibling function can still be imported. This deliberately blocks a loss of `@CallableBy` when
   an importer only sees an erased function signature.
 - Future policy-bearing imported declarations require exact source identity,
