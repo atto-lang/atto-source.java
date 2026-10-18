@@ -248,11 +248,21 @@ public final class GitHubWebhookActorV1 {
                     }
                     secret = configure.secret();
                     ledger = opened;
-                    accepted = true;
                     emit(context, new Ready());
+                    accepted = true;
                 } finally {
-                    if (!accepted && opened != null) {
-                        opened.close();
+                    if (!accepted) {
+                        if (secret != null) {
+                            Arrays.fill(secret, (byte) 0);
+                            secret = null;
+                        }
+                        ledger = null;
+                        expectations.clear();
+                        matchedDeliveries.clear();
+                        deliveryIdentities.clear();
+                        if (opened != null) {
+                            opened.close();
+                        }
                     }
                 }
                 return;
