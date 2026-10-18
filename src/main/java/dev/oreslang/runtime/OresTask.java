@@ -33,6 +33,10 @@ public final class OresTask<T> implements Awaitable<T> {
      * This does not launch another task, change its owner, or implicitly
      * flatten a Future<Task<T>>. The original owning runtime remains
      * responsible for its lifecycle.
+     *
+     * This returns the SAME cancelable completion capability: cancelling the
+     * projected OresFuture cancels the Task. It is not a read-only observer
+     * and must never cross trust domains without explicit cancel authority.
      */
     public OresFuture<T> asFuture() {
         return completion;
