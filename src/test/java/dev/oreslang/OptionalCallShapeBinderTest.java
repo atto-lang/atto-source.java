@@ -221,6 +221,59 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void explicitOmitConsumesFixedSlotButDoesNotEvaluateAnArgumentExpression() {
+        Plan plan = OptionalCallShapeBinder.bind(FOO, List.of(
+                Argument.positional(), Argument.positionalOmission(), Argument.positional()));
+        assertEquals(List.of(0, -1, 1), plan.sourceIndexByParameter());
+        assertEquals(List.of(1), plan.explicitlyOmittedParameterIndices());
+        assertTrue(plan.explicitlyOmitted(1));
+        assertTrue(plan.omitted(1));
+        assertEquals(2, plan.suppliedArgumentCount());
+
+        Plan named = OptionalCallShapeBinder.bind(FOO, List.of(
+                Argument.named("c"), Argument.namedOmission("b"), Argument.named("a")));
+        assertEquals(List.of(1, -1, 0), named.sourceIndexByParameter());
+        assertTrue(named.explicitlyOmitted(1));
+        assertEquals(2, named.suppliedArgumentCount());
+    }
+
+    @Test
+    void omissionAndExplicitOptionNoneHaveDistinctCompileTimePlans() {
+        Plan explicitOmit = OptionalCallShapeBinder.bind(FOO, List.of(
+                Argument.positional(), Argument.positionalOmission(), Argument.positional()));
+        Plan explicitNone = OptionalCallShapeBinder.bind(FOO, List.of(
+                Argument.positional(), Argument.positional(), Argument.positional()));
+        assertTrue(explicitOmit.explicitlyOmitted(1));
+        assertFalse(explicitNone.explicitlyOmitted(1));
+        assertEquals(2, explicitOmit.suppliedArgumentCount());
+        assertEquals(3, explicitNone.suppliedArgumentCount());
+        assertEquals(OptionalCallShapeBinder.OptionalAdaptation.PASS_OPTION,
+                OptionalCallShapeBinder.optionalAdaptation(Parameter.optional("b"), false,
+                        OptionalCallShapeBinder.SuppliedForm.NONE_LITERAL));
+    }
+
+    @Test
+    void omissionInRequiredOrRestOrDuplicateParameterFailsClosed() {
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.bind(FOO, List.of(
+                        Argument.positionalOmission(), Argument.positional(), Argument.positional())))
+                .getMessage().contains("required parameter"));
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.bind(List.of(Parameter.variadic("items")),
+                        List.of(Argument.positionalOmission())))
+                .getMessage().contains("rest tail"));
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.bind(FOO, List.of(
+                        Argument.positional(), Argument.positionalOmission(),
+                        Argument.named("b"), Argument.named("c"))))
+                .getMessage().contains("more than once"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Plan(List.of(0, -1, 1), -1, List.of(), List.of(0)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Plan(List.of(0, -1, 1), -1, List.of(), List.of(1, 1)));
+    }
+
+    @Test
     void variadicTailCollectsAllRemainingPositionalExpressions() {
         List<Parameter> signature = List.of(
                 Parameter.required("head"), Parameter.variadic("items"));
