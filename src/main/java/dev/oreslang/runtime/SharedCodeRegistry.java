@@ -85,6 +85,10 @@ public final class SharedCodeRegistry {
         policy.require(IsolatePolicy.Capability.HOT_CODE_LOAD, "modify adversarial shared code");
     }
 
+    synchronized void requireOwnedScope(SharingScope scope, IsolatePolicy supervisorPolicy) {
+        requireSupervisorScope(scope, supervisorPolicy);
+    }
+
     private void requireLiveScope(SharingScope scope) {
         Objects.requireNonNull(scope, "scope");
         if (scope.owner != this || scope.closed) {
