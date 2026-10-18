@@ -77,6 +77,46 @@ timers and safepoints; cancelling a shared Future's wait must not automatically
 cancel its producer. Blocking FFI may resist immediate cancellation and must
 not cause the runtime to claim physical quiescence prematurely.
 
+## Cancellation and shutdown hardening (2026-10-18)
+
+The TaskScope host runtime now cancels in two phases: its iterative walk
+first seals admissions and invokes the producer cancellation hooks for all
+owned children, and only then invokes ordinary synchronous completion
+subscribers. This prevents a blocked subscriber on one child from delaying
+revocation of its siblings. OresFuture's package-private
+`cancelDeferredNotification()` is NOT a general guest API; the caller must
+invoke each returned notification exactly once. Direct `cancel()` retains
+its established immediate delivery semantics.
+
+Both TaskScope cancellation and physical join use iterative traversal, avoiding
+Java call-stack exhaustion on deep supervision trees. An interrupted host
+closer restores its interrupt bit after waiting for physical cleanup instead
+of claiming success while owned continuations remain active. Other child joins
+continue even if one reports an exception, and failed scopes retain the
+recorded close failure for concurrent close observers.
+
+New checked-in JUnit coverage addresses: synchronous blocked cancellation
+subscribers, interrupted host shutdown, 4,096 nested TaskScopes, and explicit
+revocation-before-notification ordering. These tests remain **not executed**
+on the exact Java PR head while source-org Actions jobs receive no runnable
+steps.
+
+### CI confidentiality hold
+
+P0 security incidents oreslang-platform-conformance #22 and #77 prohibit
+new cross-organization private source mirrors without independent reviewed
+approval binding the destination numeric repository ID and exact source
+snapshot. The canonical policy draft Java PR #1217 is explicitly
+NON-AUTHORIZING until both incident gates are completed. Do not attempt a
+private-source mirror merely because another organization has Actions minutes.
+A private destination alone is not an authorization.
+
+A separate **source-free** synthetic cancellation model successfully ran on
+gha-indie-worker/gha-indie-worker-e2e draft PR #12, run 39171032154:
+20,011 independent-model assertions across 10,000 synthetic schedules, with
+4,096 nested scopes. This is **NOT** exact-tree or executable Oreslang
+Java/LLVM verification. No private Oreslang source was copied.
+
 ## Outstanding release blockers
 
 1. Deliver scheduler-owned quiescence for OresScheduler continuations; ensure
@@ -87,8 +127,7 @@ not cause the runtime to claim physical quiescence prematurely.
    and per-actor limits, without cross-domain cancel capabilities.
 4. Implement actual Task source type-checking, source lambda state machines,
    guest `get_done`/`cancel_and_join` and actor-owned admission.
-5. Harden multi-child cancellation if arbitrary synchronous completion
-   subscribers can block notification (revocation must fan out first).
+5. Verify two-phase multi-child cancellation against exact-head JUnit races, including blocked subscribers, reentrant callbacks and malformed host cancellation hooks.
 6. Run exact-head Maven/JDK25 JUnit including cancellation/cleanup races,
    Graal/native-image, LLVM native and cross-backend executable conformance.
 
