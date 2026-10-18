@@ -2,6 +2,7 @@
 """Exact-head Java ML guest evidence; only callable after real build/run steps."""
 import argparse
 import hashlib
+import os
 import json
 from pathlib import Path
 import re
@@ -33,7 +34,11 @@ def sha256(data):
 
 
 def git(*args):
-    return subprocess.check_output(['git', *args], text=True, timeout=10).strip()
+    return subprocess.check_output(
+        ['git', *args], text=True, timeout=10,
+        env={'PATH': os.defpath, 'LC_ALL': 'C', 'GIT_CONFIG_NOSYSTEM': '1',
+             'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_NO_REPLACE_OBJECTS': '1'},
+    ).strip()
 
 
 def make_receipt(expected_sha, report, output_file, build_info, jar):
@@ -48,21 +53,32 @@ def make_receipt(expected_sha, report, output_file, build_info, jar):
     require(git('rev-parse', 'HEAD:' + FIXTURE.as_posix()) == blob, 'fixture not tracked at this head')
     observed = Path(output_file).read_bytes()
     require(observed == STDOUT, 'real Java CLI stdout differs from exact golden')
-    suite = ET.fromstring(Path(report).read_bytes())
+    report_bytes = Path(report).read_bytes()
+    require(0 < len(report_bytes) <= 4_000_000, 'JUnit XML size outside bound')
+    suite = ET.fromstring(report_bytes)
     require(suite.tag == 'testsuite', 'invalid JUnit XML root')
     cases = suite.findall('testcase')
     actual_methods = {c.attrib.get('name') for c in cases}
+    require(all(c.attrib.get('classname') == 'dev.oreslang.MlActorStateScalarGuestTest'
+                for c in cases), 'wrong JUnit testcase class')
     require(len(cases) == len(EXPECTED_METHODS) and actual_methods == EXPECTED_METHODS,
             'missing, duplicate, or wrong ML JUnit test methods')
     for key in ('tests', 'failures', 'errors', 'skipped'):
         count = int(suite.attrib.get(key, '-1'))
         require(count == (len(EXPECTED_METHODS) if key == 'tests' else 0), 'JUnit ' + key + ' not admitted')
     require(all(len(c) == 0 for c in cases), 'unexpected failed/skipped child in JUnit')
-    build = json.loads(Path(build_info).read_text())
+    info_bytes = Path(build_info).read_bytes()
+    require(0 < len(info_bytes) <= 4096, 'build-info size outside bound')
+    build = json.loads(info_bytes)
     require(isinstance(build, dict) and all(k in build for k in
             ('build_mode', 'default_execution_mode', 'guest_execution')), 'CLI build-info missing fields')
+    require(all(isinstance(build[k], str) and 0 < len(build[k]) <= 128
+                and '\\n' not in build[k] and '\\r' not in build[k]
+                for k in ('build_mode', 'default_execution_mode', 'guest_execution')),
+            'invalid CLI build-info values')
     artifact = Path(jar)
     with zipfile.ZipFile(artifact) as z:
+        require(len(z.namelist()) == len(set(z.namelist())), 'duplicate jar archive entries')
         require('dev/oreslang/launcher/OresMain.class' in z.namelist(), 'jar lacks OresMain launcher')
         require('module-info.class' in z.namelist(), 'jar lacks Java module-info')
     return {
