@@ -69,29 +69,48 @@ def finite_json_float(value):
     return number
 
 def bounded_bytes(path, limit, label):
-    # Admission metadata must be a stable, ordinary file: following a symlink
-    # could read secrets from the dispatcher's trusted checkout or host.
-    # Nonblocking opens avoid waiting forever on a substituted FIFO/device.
-    nofollow = getattr(os, "O_NOFOLLOW", None)
-    if nofollow is None:
-        raise Denied("secure no-follow file access is unsupported")
-    flags = (os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0)
-             | getattr(os, "O_NONBLOCK", 0))
+    # Follow neither the final file nor any parent directory. O_NOFOLLOW on
+    # just the leaf still permits an attacker-controlled parent symlink.
+    # Keep open directory FDs throughout traversal, preventing path-swap races.
+    if any(not hasattr(os, flag) for flag in
+           ("O_NOFOLLOW", "O_DIRECTORY", "O_CLOEXEC", "O_NONBLOCK")):
+        raise Denied("secure descriptor-relative file access is unsupported")
+    target = Path(path)
+    parts = target.parts
+    if not parts or any(part in (".", "..", "") for part in parts):
+        raise Denied("unsafe " + label + " path components")
+    directory_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | os.O_CLOEXEC
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    directory_fd = None
     try:
-        fd = os.open(path, flags)
+        if target.is_absolute():
+            directory_fd = os.open(os.path.sep, directory_flags)
+            parts = parts[1:]
+        else:
+            directory_fd = os.open(".", directory_flags)
+        if not parts:
+            raise Denied("unsafe empty " + label + " path")
+        for component in parts[:-1]:
+            next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        fd = os.open(parts[-1], file_flags, dir_fd=directory_fd)
+        with os.fdopen(fd, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or not 0 < before.st_size <= limit):
+                raise Denied("invalid " + label + " input file")
+            raw = stream.read(limit + 1)
+            after = os.fstat(stream.fileno())
     except OSError as exc:
         raise Denied("unsafe " + label + " input path") from exc
-    with os.fdopen(fd, "rb") as stream:
-        before = os.fstat(stream.fileno())
-        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
-                or not 0 < before.st_size <= limit):
-            raise Denied("invalid " + label + " input file")
-        raw = stream.read(limit + 1)
-        after = os.fstat(stream.fileno())
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
     if (len(raw) != before.st_size or after.st_size != before.st_size
             or after.st_mtime_ns != before.st_mtime_ns
             or after.st_ctime_ns != before.st_ctime_ns
-            or raw.startswith(b"\xef\xbb\xbf")):
+            or raw.startswith(b"\xef\xbb\xbf") or b"\x00" in raw):
         raise Denied("invalid or changed " + label + " input bytes")
     return raw
 
