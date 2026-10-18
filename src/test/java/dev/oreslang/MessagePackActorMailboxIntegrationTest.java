@@ -66,6 +66,100 @@ final class MessagePackActorMailboxIntegrationTest {
         }
     }
 
+
+    @Test
+    void failedBinaryEncodingReleasesAllPrivateScratchBeforeNextAdmission()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var delivered = new ArrayBlockingQueue<Object>(2);
+            var ref = runtime.<Object>spawnPrivateTrusted(
+                    context -> (value, turn) -> delivered.add(value));
+            runtime.bindSerializableMailbox(ref,
+                    new MailboxSchema(
+                            "test.Private.Scratch.v1",
+                            list(string())));
+
+            long baseline = runtime.actorMemoryBytes();
+            String chunk = "x".repeat(8_192);
+            List<String> oversized =
+                    java.util.Collections.nCopies(200, chunk);
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> ref.send(oversized),
+                    "oversized frame must fail after exercising bounded writer growth");
+            assertEquals(baseline, runtime.actorMemoryBytes(),
+                    "failed encoding must release every scratch reservation");
+
+            ref.send(List.of("after-failure"));
+            assertEquals(
+                    List.of("after-failure"),
+                    delivered.poll(5, TimeUnit.SECONDS));
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (runtime.actorMemoryBytes() != baseline
+                    && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertEquals(baseline, runtime.actorMemoryBytes(),
+                    "retained wire/decode reservation must close with the envelope");
+        }
+    }
+
+    @Test
+    void concurrentOversizedBinarySendsCannotLeakAggregateScratch()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var delivered = new ArrayBlockingQueue<Object>(2);
+            var ref = runtime.<Object>spawnPrivateTrusted(
+                    context -> (value, turn) -> delivered.add(value));
+            runtime.bindSerializableMailbox(ref,
+                    new MailboxSchema(
+                            "test.Private.ConcurrentScratch.v1",
+                            list(string())));
+
+            long baseline = runtime.actorMemoryBytes();
+            String chunk = "y".repeat(8_192);
+            List<String> oversized =
+                    java.util.Collections.nCopies(200, chunk);
+            var failures =
+                    new java.util.concurrent.ConcurrentLinkedQueue<Throwable>();
+
+            try (var pool = java.util.concurrent.Executors.newFixedThreadPool(8)) {
+                var start = new java.util.concurrent.CountDownLatch(1);
+                var done = new java.util.concurrent.CountDownLatch(8);
+                for (int i = 0; i < 8; i++) {
+                    pool.execute(() -> {
+                        try {
+                            assertTrue(start.await(5, TimeUnit.SECONDS));
+                            ref.send(oversized);
+                            failures.add(new AssertionError(
+                                    "oversized binary send unexpectedly succeeded"));
+                        } catch (IllegalArgumentException
+                                | IllegalStateException expected) {
+                            // Either codec byte quota or concurrent actor/runtime
+                            // scratch quota may reject first; both must unwind.
+                        } catch (Throwable unexpected) {
+                            failures.add(unexpected);
+                        } finally {
+                            done.countDown();
+                        }
+                    });
+                }
+                start.countDown();
+                assertTrue(done.await(10, TimeUnit.SECONDS));
+            }
+
+            assertTrue(failures.isEmpty(), () -> "unexpected sender failure: " + failures);
+            assertEquals(baseline, runtime.actorMemoryBytes(),
+                    "all concurrent scratch reservations must be conserved");
+
+            ref.send(List.of("still-usable"));
+            assertEquals(
+                    List.of("still-usable"),
+                    delivered.poll(5, TimeUnit.SECONDS));
+        }
+    }
+
     @Test
     void lateSchemaBindingCannotRetroactivelyChangeMailboxMeaning() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
