@@ -488,6 +488,74 @@ final class SameModuleLiteralInvocationTest {
                 withCaller(module, ordinary), ordinary, staged));
     }
 
+    @Test
+    void duplicateSameScopeLocalsCannotEarnStagedLexicalWitness() {
+        Ast.Program original = program();
+        Ast.ModuleDecl module = original.modules().getFirst();
+        Ast.FunctionDecl source = caller(original);
+        Ast.StagedCallExpr staged = call(source);
+
+        Ast.BindingStmt seed = new Ast.BindingStmt(
+                Ast.BindingKind.CONST, Ast.TypeRef.simple("int"),
+                "seed", new Ast.LiteralExpr(7L));
+        Ast.FunctionDecl forged = withBody(source, List.of(
+                seed,
+                new Ast.BindingStmt(Ast.BindingKind.CONST, Ast.TypeRef.simple("int"),
+                        "seed", new Ast.LiteralExpr(8L)),
+                source.body().getFirst(), new Ast.ReturnStmt(null)));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(
+                        withCaller(module, forged), forged, staged));
+
+        Ast.FunctionDecl unique = withBody(source, List.of(
+                seed,
+                new Ast.BindingStmt(Ast.BindingKind.CONST, Ast.TypeRef.simple("int"),
+                        "other", new Ast.LiteralExpr(8L)),
+                source.body().getFirst(), new Ast.ReturnStmt(null)));
+        assertDoesNotThrow(() -> SameModuleLiteralInvocation.inspect(
+                withCaller(module, unique), unique, staged));
+    }
+
+    @Test
+    void callerParameterCollisionOrDuplicateFormalsNeedLexicalProof() {
+        Ast.Program original = program();
+        Ast.ModuleDecl module = original.modules().getFirst();
+        Ast.FunctionDecl source = caller(original);
+        Ast.StagedCallExpr staged = call(source);
+        Ast.Param param = new Ast.Param(Ast.TypeRef.simple("int"), "seed");
+        Ast.BindingStmt local = new Ast.BindingStmt(
+                Ast.BindingKind.CONST, Ast.TypeRef.simple("int"),
+                "seed", new Ast.LiteralExpr(7L));
+
+        Ast.FunctionDecl shadowed = withFormalsAndBody(source, List.of(param),
+                List.of(local, source.body().getFirst(), new Ast.ReturnStmt(null)));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(
+                        withCaller(module, shadowed), shadowed, staged));
+
+        Ast.FunctionDecl duplicated = withFormalsAndBody(source,
+                List.of(param, param),
+                List.of(source.body().getFirst(), new Ast.ReturnStmt(null)));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(
+                        withCaller(module, duplicated), duplicated, staged));
+
+        Ast.FunctionDecl legal = withFormalsAndBody(source, List.of(param),
+                List.of(source.body().getFirst(), new Ast.ReturnStmt(null)));
+        assertDoesNotThrow(() -> SameModuleLiteralInvocation.inspect(
+                withCaller(module, legal), legal, staged));
+    }
+
+    private static Ast.FunctionDecl withFormalsAndBody(
+            Ast.FunctionDecl source, List<Ast.Param> formals, List<Ast.Stmt> body) {
+        return new Ast.FunctionDecl(
+                source.name(), source.kind(), source.visibility(), source.async(),
+                source.suspends(), source.generator(), source.structural(),
+                source.nonLexical(), source.trapped(), source.actorKind(),
+                source.genericParameters(), formals, source.returnType(),
+                source.annotations(), body);
+    }
+
     private static Ast.FunctionDecl withBody(Ast.FunctionDecl source, List<Ast.Stmt> body) {
         return new Ast.FunctionDecl(
                 source.name(), source.kind(), source.visibility(), source.async(),
