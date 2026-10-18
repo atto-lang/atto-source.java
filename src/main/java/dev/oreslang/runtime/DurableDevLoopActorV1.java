@@ -1,5 +1,11 @@
 package dev.oreslang.runtime;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Objects;
@@ -262,174 +268,205 @@ public final class DurableDevLoopActorV1 {
         };
     }
 
+    private static final int PRIVATE_STATE_BYTES = 16_384;
+
+    private record PrivateConfig(
+            String databasePath,
+            String runId,
+            int maxIterations) { }
+
     private static ActorRuntime.Behavior<Object> createBehavior(
-            ActorRuntime.ActorContext<Object> ignored) {
-        return new Behavior();
+            ActorRuntime.ActorContext<Object> context) {
+        ActorRuntime.PrivateMemoryBlock state =
+                context.privateMemory()
+                        .orElseThrow(() -> new IllegalStateException(
+                                "dev-loop actor requires private memory"))
+                        .allocatePrivateBytes(PRIVATE_STATE_BYTES);
+        return new Behavior(state);
     }
 
     private static final class Behavior
             implements ActorRuntime.Behavior<Object> {
-        private SqliteWorkflowJournalV1 store;
-        private String runId;
-        private int maxIterations;
+        private final ActorRuntime.PrivateMemoryBlock stateBlock;
+
+        private Behavior(ActorRuntime.PrivateMemoryBlock stateBlock) {
+            this.stateBlock = Objects.requireNonNull(
+                    stateBlock, "stateBlock");
+        }
 
         @Override
         public void onMessage(
                 Object wire,
                 ActorRuntime.ActorContext<Object> context) {
             Message message = decodeMessage(wire);
+            PrivateConfig config = readConfig();
 
             if (message instanceof OpenRun open) {
-                open(open, context);
+                open(open, config, context);
                 return;
             }
 
-            requireOpen();
-
-            if (message instanceof Deliver deliver) {
-                if (requiresAtomicCompletion(deliver.event())) {
-                    throw new IllegalStateException(
-                            "causal workflow outcome requires atomic "
-                                    + "CompleteAndDeliver: "
-                                    + deliver.event().getClass().getSimpleName());
-                }
-                DurableDevLoopV1 machine =
-                        store.replayDevLoop().machine();
-                DurableDevLoopV1.Transition transition =
-                        machine.accept(
-                                deliver.eventId(),
-                                deliver.event());
-                store.append(transition);
-                emit(
-                        context,
-                        new Transitioned(
-                                transition.journalEntry(),
-                                projection()));
-                return;
-            }
-
-            if (message instanceof ClaimEffect claim) {
-                var claimed = store.claimNext(
-                        claim.workerId(),
-                        claim.nowMillis(),
-                        claim.leaseMillis());
-                emit(
-                        context,
-                        claimed.<Output>map(value ->
-                                new EffectClaimed(
-                                        value, projection()))
-                                .orElseGet(() ->
-                                        new NoEffectAvailable(
-                                                projection())));
-                return;
-            }
-
-            if (message instanceof CompleteEffect complete) {
-                DurableDevLoopV1.Command command =
-                        store.effect(complete.effectKey())
-                                .orElseThrow(() ->
-                                        new IllegalArgumentException(
-                                                "unknown effect key "
-                                                        + complete.effectKey()))
-                                .command();
-                if (requiresOutcome(command)) {
-                    throw new IllegalStateException(
-                            "effect " + complete.effectKey()
-                                    + " requires atomic CompleteAndDeliver");
-                }
-                store.complete(
-                        complete.effectKey(),
-                        complete.claimToken(),
-                        complete.receiptRef(),
-                        complete.nowMillis());
-                emit(
-                        context,
-                        new EffectUpdated(
-                                complete.effectKey(),
-                                projection()));
-                return;
-            }
-
-            if (message instanceof CompleteAndDeliver complete) {
-                DurableDevLoopV1.Transition transition =
-                        store.completeAndAppend(
-                                complete.effectKey(),
-                                complete.claimToken(),
-                                complete.receiptRef(),
-                                complete.nowMillis(),
-                                complete.eventId(),
-                                complete.event());
-                emit(
-                        context,
-                        new Transitioned(
-                                transition.journalEntry(),
-                                projection()));
-                return;
-            }
-
-            if (message instanceof ReleaseEffect release) {
-                store.releaseUnexecuted(
-                        release.effectKey(),
-                        release.claimToken(),
-                        release.reasonRef(),
-                        release.nowMillis());
-                emit(
-                        context,
-                        new EffectUpdated(
-                                release.effectKey(),
-                                projection()));
-                return;
-            }
-
-            if (message instanceof ExpireClaims expire) {
-                store.expireClaims(expire.nowMillis());
-                emit(
-                        context,
-                        new ProjectionPublished(projection()));
-                return;
-            }
-
-            if (message instanceof ReconcileCompleted completed) {
-                store.resolveAmbiguousAsCompleted(
-                        completed.effectKey(),
-                        completed.receiptRef(),
-                        completed.reconciliationRef());
-                emit(
-                        context,
-                        new EffectUpdated(
-                                completed.effectKey(),
-                                projection()));
-                return;
-            }
-
-            if (message instanceof ReconcileRetry retry) {
-                store.resolveAmbiguousForRetry(
-                        retry.effectKey(),
-                        retry.reconciliationRef());
-                emit(
-                        context,
-                        new EffectUpdated(
-                                retry.effectKey(),
-                                projection()));
-                return;
-            }
-
-            if (message instanceof QueryProjection) {
-                emit(
-                        context,
-                        new ProjectionPublished(projection()));
-                return;
-            }
+            requireOpen(config);
 
             if (message instanceof Shutdown shutdown) {
                 emit(
                         context,
-                        new Stopping(runId, shutdown.reason()));
-                SqliteWorkflowJournalV1 closing = store;
-                store = null;
-                context.runtime().endCurrentActorWithCleanup(
-                        closing::close);
+                        new Stopping(
+                                config.runId(),
+                                shutdown.reason()));
+                stateBlock.close();
+                context.runtime().endCurrentActor();
                 return;
+            }
+
+            try (SqliteWorkflowJournalV1 store =
+                    SqliteWorkflowJournalV1.open(
+                            Path.of(config.databasePath()))) {
+                verifyConfig(store, config);
+
+                if (message instanceof Deliver deliver) {
+                    if (requiresAtomicCompletion(deliver.event())) {
+                        throw new IllegalStateException(
+                                "causal workflow outcome requires atomic "
+                                        + "CompleteAndDeliver: "
+                                        + deliver.event()
+                                                .getClass()
+                                                .getSimpleName());
+                    }
+                    DurableDevLoopV1 machine =
+                            store.replayDevLoop().machine();
+                    DurableDevLoopV1.Transition transition =
+                            machine.accept(
+                                    deliver.eventId(),
+                                    deliver.event());
+                    store.append(transition);
+                    emit(
+                            context,
+                            new Transitioned(
+                                    transition.journalEntry(),
+                                    projection(store, config)));
+                    return;
+                }
+
+                if (message instanceof ClaimEffect claim) {
+                    var claimed = store.claimNext(
+                            claim.workerId(),
+                            claim.nowMillis(),
+                            claim.leaseMillis());
+                    emit(
+                            context,
+                            claimed.<Output>map(value ->
+                                    new EffectClaimed(
+                                            value,
+                                            projection(
+                                                    store,
+                                                    config)))
+                                    .orElseGet(() ->
+                                            new NoEffectAvailable(
+                                                    projection(
+                                                            store,
+                                                            config))));
+                    return;
+                }
+
+                if (message instanceof CompleteEffect complete) {
+                    DurableDevLoopV1.Command command =
+                            store.effect(complete.effectKey())
+                                    .orElseThrow(() ->
+                                            new IllegalArgumentException(
+                                                    "unknown effect key "
+                                                            + complete.effectKey()))
+                                    .command();
+                    if (requiresOutcome(command)) {
+                        throw new IllegalStateException(
+                                "effect " + complete.effectKey()
+                                        + " requires atomic CompleteAndDeliver");
+                    }
+                    store.complete(
+                            complete.effectKey(),
+                            complete.claimToken(),
+                            complete.receiptRef(),
+                            complete.nowMillis());
+                    emit(
+                            context,
+                            new EffectUpdated(
+                                    complete.effectKey(),
+                                    projection(store, config)));
+                    return;
+                }
+
+                if (message instanceof CompleteAndDeliver complete) {
+                    DurableDevLoopV1.Transition transition =
+                            store.completeAndAppend(
+                                    complete.effectKey(),
+                                    complete.claimToken(),
+                                    complete.receiptRef(),
+                                    complete.nowMillis(),
+                                    complete.eventId(),
+                                    complete.event());
+                    emit(
+                            context,
+                            new Transitioned(
+                                    transition.journalEntry(),
+                                    projection(store, config)));
+                    return;
+                }
+
+                if (message instanceof ReleaseEffect release) {
+                    store.releaseUnexecuted(
+                            release.effectKey(),
+                            release.claimToken(),
+                            release.reasonRef(),
+                            release.nowMillis());
+                    emit(
+                            context,
+                            new EffectUpdated(
+                                    release.effectKey(),
+                                    projection(store, config)));
+                    return;
+                }
+
+                if (message instanceof ExpireClaims expire) {
+                    store.expireClaims(expire.nowMillis());
+                    emit(
+                            context,
+                            new ProjectionPublished(
+                                    projection(store, config)));
+                    return;
+                }
+
+                if (message instanceof ReconcileCompleted completed) {
+                    store.resolveAmbiguousAsCompleted(
+                            completed.effectKey(),
+                            completed.receiptRef(),
+                            completed.reconciliationRef());
+                    emit(
+                            context,
+                            new EffectUpdated(
+                                    completed.effectKey(),
+                                    projection(store, config)));
+                    return;
+                }
+
+                if (message instanceof ReconcileRetry retry) {
+                    store.resolveAmbiguousForRetry(
+                            retry.effectKey(),
+                            retry.reconciliationRef());
+                    emit(
+                            context,
+                            new EffectUpdated(
+                                    retry.effectKey(),
+                                    projection(store, config)));
+                    return;
+                }
+
+                if (message instanceof QueryProjection) {
+                    emit(
+                            context,
+                            new ProjectionPublished(
+                                    projection(store, config)));
+                    return;
+                }
             }
 
             throw new IllegalStateException(
@@ -439,25 +476,24 @@ public final class DurableDevLoopActorV1 {
 
         private void open(
                 OpenRun open,
+                PrivateConfig existing,
                 ActorRuntime.ActorContext<Object> context) {
-            if (store != null) {
+            if (existing != null) {
                 throw new IllegalStateException(
                         "dev-loop actor is already open");
             }
 
-            SqliteWorkflowJournalV1 opened =
+            try (SqliteWorkflowJournalV1 store =
                     SqliteWorkflowJournalV1.open(
-                            Path.of(open.databasePath()));
-            boolean accepted = false;
-            try {
+                            Path.of(open.databasePath()))) {
                 WorkflowJournalV1.StoreSnapshot snapshot =
-                        opened.snapshot();
+                        store.snapshot();
                 DurableDevLoopV1 machine;
 
                 if (snapshot.runId() == null) {
                     machine = new DurableDevLoopV1(
                             open.runId(), open.maxIterations());
-                    opened.append(machine.accept(
+                    store.append(machine.accept(
                             open.startEventId(),
                             new DurableDevLoopV1.Start(open.goal())));
                 } else {
@@ -469,7 +505,7 @@ public final class DurableDevLoopActorV1 {
                                 "existing durable run identity/policy "
                                         + "does not match OpenRun");
                     }
-                    machine = opened.replayDevLoop().machine();
+                    machine = store.replayDevLoop().machine();
                     if (!open.goal().equals(
                             machine.snapshot().goal())) {
                         throw new IllegalStateException(
@@ -478,29 +514,41 @@ public final class DurableDevLoopActorV1 {
                     }
                 }
 
-                this.store = opened;
-                this.runId = open.runId();
-                this.maxIterations = open.maxIterations();
-                emit(context, new Opened(projection()));
-                accepted = true;
-            } finally {
-                if (!accepted) {
-                    this.store = null;
-                    this.runId = null;
-                    this.maxIterations = 0;
-                    opened.close();
-                }
+                PrivateConfig config = new PrivateConfig(
+                        open.databasePath(),
+                        open.runId(),
+                        open.maxIterations());
+                writeConfig(config);
+                emit(
+                        context,
+                        new Opened(projection(store, config)));
             }
         }
 
-        private WorkflowRunProjectionV1 projection() {
-            requireOpen();
+        private static void verifyConfig(
+                SqliteWorkflowJournalV1 store,
+                PrivateConfig config) {
+            WorkflowJournalV1.StoreSnapshot snapshot =
+                    store.snapshot();
+            if (!config.runId().equals(snapshot.runId())
+                    || snapshot.maxIterations() == null
+                    || config.maxIterations()
+                            != snapshot.maxIterations()) {
+                throw new IllegalStateException(
+                        "actor durable run identity/policy drift");
+            }
+        }
+
+        private static WorkflowRunProjectionV1 projection(
+                SqliteWorkflowJournalV1 store,
+                PrivateConfig config) {
             DurableDevLoopV1.Snapshot reducer =
                     store.replayDevLoop().machine().snapshot();
             WorkflowJournalV1.StoreSnapshot persisted =
                     store.snapshot();
-            if (!runId.equals(reducer.runId())
-                    || maxIterations != reducer.maxIterations()) {
+            if (!config.runId().equals(reducer.runId())
+                    || config.maxIterations()
+                            != reducer.maxIterations()) {
                 throw new IllegalStateException(
                         "actor durable run identity/policy drift");
             }
@@ -508,8 +556,67 @@ public final class DurableDevLoopActorV1 {
                     reducer, persisted);
         }
 
-        private void requireOpen() {
-            if (store == null) {
+        private PrivateConfig readConfig() {
+            byte[] payload =
+                    WorkflowPrivateActorStateV1.read(stateBlock);
+            if (payload.length == 0) {
+                return null;
+            }
+            try (DataInputStream input = new DataInputStream(
+                    new ByteArrayInputStream(payload))) {
+                int version = input.readInt();
+                if (version != 1) {
+                    throw new IllegalStateException(
+                            "unsupported dev-loop private-state version "
+                                    + version);
+                }
+                String databasePath = readString(input);
+                String runId = readString(input);
+                int maxIterations = input.readInt();
+                if (maxIterations <= 0 || maxIterations > 10_000) {
+                    throw new IllegalStateException(
+                            "invalid persisted maxIterations");
+                }
+                if (input.available() != 0) {
+                    throw new IllegalStateException(
+                            "trailing bytes in dev-loop private state");
+                }
+                return new PrivateConfig(
+                        databasePath,
+                        runId,
+                        maxIterations);
+            } catch (IOException | RuntimeException failure) {
+                if (failure instanceof IllegalStateException stateFailure) {
+                    throw stateFailure;
+                }
+                throw new IllegalStateException(
+                        "invalid dev-loop private state",
+                        failure);
+            }
+        }
+
+        private void writeConfig(PrivateConfig config) {
+            try {
+                ByteArrayOutputStream bytes =
+                        new ByteArrayOutputStream();
+                try (DataOutputStream output =
+                        new DataOutputStream(bytes)) {
+                    output.writeInt(1);
+                    writeString(output, config.databasePath());
+                    writeString(output, config.runId());
+                    output.writeInt(config.maxIterations());
+                }
+                WorkflowPrivateActorStateV1.write(
+                        stateBlock, bytes.toByteArray());
+            } catch (IOException failure) {
+                throw new IllegalStateException(
+                        "failed to encode dev-loop private state",
+                        failure);
+            }
+        }
+
+        private static void requireOpen(PrivateConfig config) {
+            if (config == null) {
                 throw new IllegalStateException(
                         "OpenRun must be the first dev-loop actor message");
             }
@@ -521,6 +628,30 @@ public final class DurableDevLoopActorV1 {
             context.runtime().emitCurrentActorOutput(
                     encodeOutput(output));
         }
+    }
+
+    private static void writeString(
+            DataOutputStream output,
+            String value) throws IOException {
+        byte[] bytes = requireText(value, "private-state string")
+                .getBytes(StandardCharsets.UTF_8);
+        output.writeInt(bytes.length);
+        output.write(bytes);
+    }
+
+    private static String readString(
+            DataInputStream input) throws IOException {
+        int length = input.readInt();
+        if (length <= 0 || length > PRIVATE_STATE_BYTES) {
+            throw new IllegalStateException(
+                    "invalid private-state string length");
+        }
+        byte[] bytes = input.readNBytes(length);
+        if (bytes.length != length) {
+            throw new IllegalStateException(
+                    "truncated private-state string");
+        }
+        return new String(bytes, StandardCharsets.UTF_8);
     }
 
     private static Map<String, Object> encodeMessage(Message message) {
