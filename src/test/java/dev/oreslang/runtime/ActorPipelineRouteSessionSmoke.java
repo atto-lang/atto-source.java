@@ -238,6 +238,29 @@ public final class ActorPipelineRouteSessionSmoke {
         siblings.complete(sharedRoot);
         check(siblings.outstanding() == 0, "sibling return rollback leaked credits");
 
+        // Publication is a monotonic VM fact, distinct from the current
+        // active-credit state. A return already enqueued in a real mailbox
+        // cannot be relabeled a rejection even after its envelope retires.
+        var published = new ActorPipelineRouteSession(plan, 23, 4);
+        var publishedRoot = published.ingress("source");
+        var publishedWorker = published.forwardTo(publishedRoot, "worker-a");
+        var publishedSink = published.forward(publishedWorker);
+        var publishedReply = published.returnToOrigin(publishedSink);
+        ActorPipelineRouteSession.markMailboxPublished(publishedReply);
+        check(ActorPipelineRouteSession.wasMailboxPublished(publishedReply),
+                "published reply lost monotonic mailbox marker");
+        reject(() -> ActorPipelineRouteSession.markMailboxPublished(publishedReply),
+                "one route frame published into multiple envelopes");
+        reject(() -> published.restoreRejectedReturn(publishedSink, publishedReply),
+                "published reply was improperly restored for retry");
+        ActorPipelineRouteSession.retireDelivered(publishedReply);
+        reject(() -> published.restoreRejectedReturn(publishedSink, publishedReply),
+                "retired published reply was resurrected");
+        published.complete(publishedRoot);
+        published.complete(publishedWorker);
+        check(published.outstanding() == 0,
+                "published reply teardown leaked route credits");
+
         var successfulReply = retry.returnToOrigin(retrySink);
         check(successfulReply.receiver().equals("source")
                         && successfulReply.routeId() > rejectedReply.routeId(),
