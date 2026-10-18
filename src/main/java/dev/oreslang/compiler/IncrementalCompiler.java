@@ -135,7 +135,7 @@ public final class IncrementalCompiler {
             Ast.Program checked;
             LinkedClasses linked = linkedPublicClasses(
                     id, parsed.get(id), parsed, normalizedImportResolutions);
-            Map<String, Ast.InterfaceDecl> linkedContracts =
+            Map<String, TypeChecker.LinkedInterfaceMetadata> linkedContracts =
                     linkedImportedContracts(
                             id, parsed.get(id), parsed, normalizedImportResolutions);
             if (linked.classes().isEmpty() && linkedContracts.isEmpty()) {
@@ -236,12 +236,14 @@ public final class IncrementalCompiler {
         return new LinkedClasses(Map.copyOf(linked), Map.copyOf(aliases));
     }
 
-    private static Map<String, Ast.InterfaceDecl> linkedImportedContracts(
-            String unitId,
-            Ast.Program program,
-            Map<String, Ast.Program> programs,
-            Map<String, Map<String, String>> importResolutions) {
-        LinkedHashMap<String, Ast.InterfaceDecl> result = new LinkedHashMap<>();
+    private static Map<String, TypeChecker.LinkedInterfaceMetadata>
+            linkedImportedContracts(
+                    String unitId,
+                    Ast.Program program,
+                    Map<String, Ast.Program> programs,
+                    Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, TypeChecker.LinkedInterfaceMetadata> result =
+                new LinkedHashMap<>();
         for (Ast.ImportDecl imported : program.imports()) {
             if (imported.kind() != Ast.ImportKind.CONTRACT || imported.wildcard()) continue;
 
@@ -255,7 +257,9 @@ public final class IncrementalCompiler {
             }
 
             for (String sourceName : imported.names()) {
-                Ast.InterfaceDecl match = findExportedContract(target, sourceName, imported.path());
+                ResolvedContract resolved =
+                        findExportedContract(target, sourceName, imported.path());
+                Ast.InterfaceDecl match = resolved.declaration();
                 if (!match.parents().isEmpty()) {
                     throw new IllegalArgumentException(
                             "imported contract '" + sourceName
@@ -263,7 +267,11 @@ public final class IncrementalCompiler {
                 }
                 validatePortableImportedContract(match, targetId);
                 String localName = ImportRules.localName(imported, sourceName);
-                if (result.putIfAbsent(localName, match) != null) {
+                TypeChecker.LinkedInterfaceMetadata metadata =
+                        new TypeChecker.LinkedInterfaceMetadata(
+                                match,
+                                targetId + "::" + resolved.ownerModule());
+                if (result.putIfAbsent(localName, metadata) != null) {
                     throw new IllegalArgumentException(
                             "duplicate imported contract metadata for '" + localName + "'");
                 }
@@ -272,11 +280,15 @@ public final class IncrementalCompiler {
         return Map.copyOf(result);
     }
 
-    private static Ast.InterfaceDecl findExportedContract(
+    private record ResolvedContract(
+            Ast.InterfaceDecl declaration,
+            String ownerModule) { }
+
+    private static ResolvedContract findExportedContract(
             Ast.Program target,
             String sourceName,
             String importPath) {
-        Ast.InterfaceDecl match = null;
+        ResolvedContract match = null;
         for (Ast.ModuleDecl module : target.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.InterfaceDecl iface
@@ -288,7 +300,7 @@ public final class IncrementalCompiler {
                                 "import contract '" + sourceName + "' from '"
                                         + importPath + "' is ambiguous");
                     }
-                    match = iface;
+                    match = new ResolvedContract(iface, module.name());
                 }
             }
         }
