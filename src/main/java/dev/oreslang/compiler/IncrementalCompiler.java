@@ -206,11 +206,19 @@ public final class IncrementalCompiler {
     }
 
     private static String abiDigest(Ast.Program program) {
-        StringBuilder abi = new StringBuilder("ores-abi-v2\n");
+        StringBuilder abi = new StringBuilder("ores-abi-v4\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
         for (Ast.ModuleDecl module : program.modules()) {
-            abi.append("module ").append(module.name()).append('\n');
+            abi.append("module ").append(module.name());
+            if (!module.contracts().isEmpty()) {
+                abi.append(" conforms ");
+                module.contracts().stream()
+                        .map(IncrementalCompiler::typeRef)
+                        .sorted()
+                        .forEach(contract -> abi.append(contract).append(','));
+            }
+            abi.append('\n');
             for (Ast.Annotation annotation : module.annotations()) {
                 if (annotation.name().equals("AdheresTo")) {
                     abi.append(" module-annotation AdheresTo:");
@@ -243,7 +251,15 @@ public final class IncrementalCompiler {
             abi.append(" extends ");
             for (Ast.TypeRef parent : klass.parents()) abi.append(typeRef(parent)).append(',');
             abi.append(" implements ");
-            for (Ast.TypeRef iface : klass.interfaces()) abi.append(typeRef(iface)).append(',');
+            klass.interfaces().stream()
+                    .map(IncrementalCompiler::typeRef)
+                    .sorted()
+                    .forEach(iface -> abi.append(iface).append(','));
+            abi.append(" implements-static ");
+            klass.staticContracts().stream()
+                    .map(IncrementalCompiler::typeRef)
+                    .sorted()
+                    .forEach(contract -> abi.append(contract).append(','));
             abi.append('\n');
             if (klass.constructor() != null
                     && klass.constructor().visibility() == Ast.Visibility.PUBLIC) {
@@ -255,6 +271,7 @@ public final class IncrementalCompiler {
                 // their class is public; all positional field slots affect ABI.
                 abi.append(" synthesized-constructor(");
                 for (Ast.FieldDecl field : klass.fields()) {
+                    if (field.isStatic()) continue;
                     abi.append(field.type() == null
                             ? "<inferred:" + field.initializer() + ">"
                             : typeRef(field.type())).append(',');
