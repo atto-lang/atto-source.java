@@ -233,6 +233,59 @@ final class CallerRoleContractsTest {
     }
 
     @Test
+    void guardedModuleNamespaceCannotBecomeAnErasedRecordValue() {
+        Ast.Program program = Parser.parse("""
+                define module Locked as
+                    define enum Roles as
+                        A
+                    end
+                    @CallableBy(Roles.A)
+                    pub fnc guarded(): void {}
+                    @CallerRole(Roles.A)
+                    pub fnc admitted(): void {}
+                end
+                define module Plain as
+                    pub fnc helper(): void {}
+                end
+                """);
+        var policy = CallerRoleContracts.validate(program);
+        Ast.ModuleDecl locked = program.modules().stream()
+                .filter(m -> m.name().equals("Locked")).findFirst().orElseThrow();
+        Ast.ModuleDecl plain = program.modules().stream()
+                .filter(m -> m.name().equals("Plain")).findFirst().orElseThrow();
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> policy.rejectModuleNamespaceValue(locked)).getMessage()
+                .contains("lose its verified callable declaration identity"));
+        assertDoesNotThrow(() -> policy.rejectModuleNamespaceValue(plain));
+        Ast.FunctionDecl guarded = locked.declarations().stream()
+                .filter(d -> d instanceof Ast.FunctionDecl fn && fn.name().equals("guarded"))
+                .map(d -> (Ast.FunctionDecl) d).findFirst().orElseThrow();
+        Ast.FunctionDecl admitted = locked.declarations().stream()
+                .filter(d -> d instanceof Ast.FunctionDecl fn && fn.name().equals("admitted"))
+                .map(d -> (Ast.FunctionDecl) d).findFirst().orElseThrow();
+        // Disallow aliasing the entire namespace without breaking verified,
+        // direct module-qualified calls.
+        assertDoesNotThrow(() -> policy.requireDirectCall(guarded, admitted, "Locked.guarded"));
+        assertThrows(IllegalArgumentException.class,
+                () -> policy.requireDirectCall(guarded, null, "Locked.guarded"));
+    }
+
+    @Test
+    void deferAndUnannotatedCallbacksNeverBorrowRegisteringCallersRole() {
+        Ast.Program program = Parser.parse(ROLES + """
+                @CallableBy(Callers.A)
+                pub fnc guarded(): void {}
+                @CallerRole(Callers.A)
+                pub fnc outer(): void {}
+                """);
+        var policy = CallerRoleContracts.validate(program);
+        Ast.FunctionDecl guarded = function(program, "guarded");
+        assertDoesNotThrow(() -> policy.requireDirectCall(guarded, function(program, "outer"), "guarded"));
+        assertThrows(IllegalArgumentException.class,
+                () -> policy.requireDirectCall(guarded, null, "guarded"));
+    }
+
+    @Test
     void protectedHostEntryPointIsRejected() {
         assertTrue(failure(ROLES + """
                 @CallableBy(Callers.A)
