@@ -46,6 +46,42 @@ final class NestedOptionFutureExtractionLanguageTest {
     }
 
     @Test
+    void unwrapAllHonorsDistinctStaticDepthsAcrossIdenticalCallSyntax() throws Exception {
+        String program = """
+                fnc one(Option<int> value): int {
+                  return value.unwrap_all();
+                }
+                fnc three(Option<Option<Option<int>>> value): int {
+                  return value.unwrap_all();
+                }
+                pub fnc main(): void {
+                  stdio.stdout.write(one(Some(1)));
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(three(Some(Some(Some(3)))));
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("1:3", run(program));
+    }
+
+    @Test
+    void unwrapAllStaticDepthStopsAtResultRatherThanTraversingVariants() throws Exception {
+        String program = """
+                fnc preserve(Option<Option<Result<int, String>>> value): Result<int, String> {
+                  return value.unwrap_all();
+                }
+                pub fnc main(): void {
+                  val Result<int, String> result = preserve(Some(Some(Ok(42))));
+                  stdio.stdout.write(result.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("42", run(program));
+    }
+
+    @Test
     void nestedUnwrapAllPanicsWhenEitherLayerIsMissing() {
         for (String nested : new String[] {"None", "Some(None)"}) {
             String program = """
