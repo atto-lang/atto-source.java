@@ -194,4 +194,30 @@ final class SameModuleLiteralInvocationTest {
         assertThrows(IllegalArgumentException.class,
                 () -> SameModuleLiteralInvocation.inspect(program, unsafe, call));
     }
+
+    @Test
+    void sameModuleQualifiedLiteralCallKeepsStaticTargetNoReceiverEvaluation() {
+        Ast.Program program = Parser.parse("""
+                define module app as
+                    pub fnc target(int a, bool c): int { return a; }
+                    pub fnc caller(): void {
+                        const result = app.target(c: true, a: 5);
+                        return;
+                    }
+                end
+                """);
+        Ast.FunctionDecl caller = caller(program);
+        Ast.StagedCallExpr staged = call(caller);
+        var preview = SameModuleLiteralInvocation.inspect(program, caller, staged);
+        assertSame(program.modules().getFirst().declarations().getFirst(),
+                preview.bound().selectedDeclaration());
+        assertEquals(dev.oreslang.types.OptionalCallTempLowering.TargetKind.STATIC_MODULE_FUNCTION,
+                preview.tempRecipe().targetKind());
+        assertNull(preview.tempRecipe().receiverExpression());
+        assertEquals(-1, preview.tempRecipe().receiverTempIndex());
+        assertEquals(List.of(1, 0),
+                preview.tempRecipe().abiSlots().stream()
+                        .map(slot -> slot.tempIndex()).toList());
+        assertThrows(IllegalStateException.class, preview::requireExecutable);
+    }
 }
