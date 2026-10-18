@@ -501,7 +501,10 @@ public final class ActorRuntime implements AutoCloseable {
         CompletableFuture<DurableQuiescence> future = new CompletableFuture<>();
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized || cell.durableFreezeRequested
-                    || cell.sourceReceiveSuspended || cell.finalCleanupActive) {
+                    || cell.sourceReceiveSuspended || cell.finalCleanupActive
+                    // A lazy/uninitialized actor cannot supply a durable
+                    // state snapshot even when no physical carrier is active.
+                    || (cell.behavior == null && cell.codeActorState == null)) {
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("actor cannot enter durable quiescence"));
             }
