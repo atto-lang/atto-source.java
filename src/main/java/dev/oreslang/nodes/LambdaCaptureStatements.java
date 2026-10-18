@@ -80,6 +80,12 @@ final class LambdaCaptureStatements {
             Set<String> loop = new HashSet<>(locals);
             loop.add(s.bindingName());
             scan(s.body(), loop, free);
+        } else if (stmt instanceof Ast.ForOfDestructureStmt s) {
+            value(s.iterable(), locals, free);
+            Set<String> loop = new HashSet<>(locals);
+            for (Ast.DestructureBinding b : s.bindings())
+                if (!b.isDiscard()) loop.add(b.name());
+            scan(s.body(), loop, free);
         } else {
             throw new IllegalArgumentException("unsupported lexical capture statement " + stmt);
         }
