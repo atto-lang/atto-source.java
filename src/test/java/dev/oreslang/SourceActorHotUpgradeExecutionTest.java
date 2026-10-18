@@ -28,6 +28,37 @@ final class SourceActorHotUpgradeExecutionTest {
         return assertInstanceOf(Long.class, value);
     }
 
+    private static void eventuallyUpgrade(
+            ActorRuntime runtime,
+            ActorRuntime.ActorRef<Object> ref,
+            ActorRuntime.ActorCodeExecutor candidate) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!runtime.upgradeSourceActorSameSchema(ref, candidate)) {
+            if (System.nanoTime() >= deadline)
+                fail("source actor never reached a physical upgrade safe point");
+            Thread.sleep(2);
+        }
+    }
+
+    private static <T extends Throwable> T eventuallyUpgradeThrows(
+            Class<T> type,
+            ActorRuntime runtime,
+            ActorRuntime.ActorRef<Object> ref,
+            ActorRuntime.ActorCodeExecutor candidate) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        for (;;) {
+            try {
+                boolean committed = runtime.upgradeSourceActorSameSchema(ref, candidate);
+                if (committed) fail("incompatible source actor upgrade unexpectedly committed");
+            } catch (Throwable failure) {
+                return assertInstanceOf(type, failure);
+            }
+            if (System.nanoTime() >= deadline)
+                fail("source actor never reached validation safe point");
+            Thread.sleep(2);
+        }
+    }
+
     @Test
     void realEvaluatorActorKeepsRefAndStateWhileReceiveCodeChanges() throws Exception {
         String v1 = """
@@ -111,7 +142,7 @@ final class SourceActorHotUpgradeExecutionTest {
                 ref.send(41L);
                 assertEquals(42L, nextLong(ref));
 
-                assertTrue(runtime.upgradeSourceActorSameSchema(ref, second));
+                eventuallyUpgrade(runtime, ref, second);
                 assertSame(originalRef, ref);
                 assertEquals(originalAddress, ref.address());
                 // Candidate on_start must NOT run during restore. If it did,
@@ -192,26 +223,22 @@ final class SourceActorHotUpgradeExecutionTest {
                         "Counter");
                 ref.getReady().get(5, TimeUnit.SECONDS);
 
-                assertThrows(IllegalArgumentException.class, () ->
-                        runtime.upgradeSourceActorSameSchema(
-                                ref,
-                                (ActorRuntime.ActorCodeExecutor)
-                                        ores.linkedCodeUnit("same-ast-different-file.ores")));
-                assertThrows(SecurityException.class, () ->
-                        runtime.upgradeSourceActorSameSchema(
-                                ref,
-                                (ActorRuntime.ActorCodeExecutor)
-                                        ores.linkedCodeUnit("bad-state.ores")));
-                assertThrows(SecurityException.class, () ->
-                        runtime.upgradeSourceActorSameSchema(
-                                ref,
-                                (ActorRuntime.ActorCodeExecutor)
-                                        ores.linkedCodeUnit("bad-wire.ores")));
-                assertThrows(SecurityException.class, () ->
-                        runtime.upgradeSourceActorSameSchema(
-                                ref,
-                                (ActorRuntime.ActorCodeExecutor)
-                                        ores.linkedCodeUnit("bad-kind.ores")));
+                eventuallyUpgradeThrows(
+                        IllegalArgumentException.class, runtime, ref,
+                        (ActorRuntime.ActorCodeExecutor)
+                                ores.linkedCodeUnit("same-ast-different-file.ores"));
+                eventuallyUpgradeThrows(
+                        SecurityException.class, runtime, ref,
+                        (ActorRuntime.ActorCodeExecutor)
+                                ores.linkedCodeUnit("bad-state.ores"));
+                eventuallyUpgradeThrows(
+                        SecurityException.class, runtime, ref,
+                        (ActorRuntime.ActorCodeExecutor)
+                                ores.linkedCodeUnit("bad-wire.ores"));
+                eventuallyUpgradeThrows(
+                        SecurityException.class, runtime, ref,
+                        (ActorRuntime.ActorCodeExecutor)
+                                ores.linkedCodeUnit("bad-kind.ores"));
 
                 ref.send(1L);
                 assertEquals(8L, nextLong(ref));
