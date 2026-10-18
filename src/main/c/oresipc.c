@@ -20,9 +20,6 @@
 
 #if defined(__linux__)
 #include <sys/syscall.h>
-#if __has_include(<linux/memfd.h>)
-#include <linux/memfd.h>
-#endif
 #endif
 
 #ifndef MFD_CLOEXEC
