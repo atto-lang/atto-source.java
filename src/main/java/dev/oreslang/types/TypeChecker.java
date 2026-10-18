@@ -57,6 +57,7 @@ public final class TypeChecker {
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Map<String, Ast.ClassDecl>> linkedClassesByModule = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     // Foreign aliases are visible only while expanding a public field in
@@ -150,23 +151,31 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
-            String name = entry.getKey();
+            String key = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
-            if (name == null || declaration == null || !name.equals(declaration.name())
+            if (key == null || declaration == null
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
-                throw new IllegalArgumentException("invalid linked public class: " + name);
+                throw new IllegalArgumentException("invalid linked public class: " + key);
             }
-            boolean imported = program.imports().stream().anyMatch(use ->
-                    use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
-                            && use.names().contains(name));
-            if (!imported || checker.classes.containsKey(name)
-                    || checker.ambiguousClasses.contains(name)) {
+            ScopedLinkedClass binding = scopedLinkedClass(program, key, declaration);
+            boolean localCollision = checker.classOwners.entrySet().stream().anyMatch(local ->
+                    local.getValue().equals(binding.scope())
+                            && local.getKey().name().equals(binding.name()));
+            if (localCollision) {
                 throw new IllegalArgumentException(
-                        "linked public class was not uniquely imported: " + name);
+                        "linked public class conflicts with local class '"
+                                + binding.scope() + "." + binding.name() + "'");
             }
-            checker.classes.put(name, declaration);
+            Map<String, Ast.ClassDecl> scoped =
+                    checker.linkedClassesByModule.computeIfAbsent(
+                            binding.scope(), ignored -> new HashMap<>());
+            if (scoped.putIfAbsent(binding.name(), declaration) != null) {
+                throw new IllegalArgumentException(
+                        "linked public class was not uniquely imported in module '"
+                                + binding.scope() + "': " + binding.name());
+            }
             Map<String, Ast.TypeAliasDecl> aliases =
-                    linkedAliases.getOrDefault(name, Map.of());
+                    linkedAliases.getOrDefault(key, Map.of());
             for (Map.Entry<String, Ast.TypeAliasDecl> alias : aliases.entrySet()) {
                 if (alias.getKey() == null || alias.getValue() == null
                         || !alias.getKey().equals(alias.getValue().name())) {
@@ -263,6 +272,51 @@ public final class TypeChecker {
                 }
             }
         }
+    }
+
+    private record ScopedLinkedClass(String scope, String name) { }
+
+    private static ScopedLinkedClass scopedLinkedClass(
+            Ast.Program program,
+            String key,
+            Ast.ClassDecl declaration) {
+        String name = declaration.name();
+        if (key.equals(name)) {
+            Set<String> scopes = program.imports().stream()
+                    .filter(use -> use.kind() == Ast.ImportKind.CLASS
+                            && !use.wildcard()
+                            && use.names().contains(name))
+                    .map(TypeChecker::importScope)
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            if (scopes.size() != 1) {
+                throw new IllegalArgumentException(
+                        "legacy linked class key '" + name
+                                + "' must resolve to exactly one lexical import scope");
+            }
+            return new ScopedLinkedClass(scopes.iterator().next(), name);
+        }
+
+        String suffix = "::" + name;
+        if (!key.endsWith(suffix)) {
+            throw new IllegalArgumentException(
+                    "invalid scoped linked public class key: " + key);
+        }
+        String scope = key.substring(0, key.length() - suffix.length());
+        if (scope.isBlank()) {
+            throw new IllegalArgumentException(
+                    "invalid scoped linked public class key: " + key);
+        }
+        boolean imported = program.imports().stream().anyMatch(use ->
+                use.kind() == Ast.ImportKind.CLASS
+                        && !use.wildcard()
+                        && importScope(use).equals(scope)
+                        && use.names().contains(name));
+        if (!imported) {
+            throw new IllegalArgumentException(
+                    "linked public class was not imported in module '"
+                            + scope + "': " + name);
+        }
+        return new ScopedLinkedClass(scope, name);
     }
 
     private static String importScope(Ast.ImportDecl imported) {
@@ -7974,7 +8028,7 @@ public final class TypeChecker {
         if (resolvingLinkedFieldAliases.get(ref.name()) == null
                 && hiddenLinkedAliasNames.contains(ref.name())
                 && !typeAliases.containsKey(ref.name())
-                && !classes.containsKey(ref.name())) {
+                && findClass(ref.name()) == null) {
             throw new IllegalArgumentException(
                     "private linked type alias '" + ref.name()
                             + "' is not imported; use the public class field contract");
@@ -8412,20 +8466,15 @@ public final class TypeChecker {
     }
 
     private Ast.ClassDecl findClass(String name) {
-        if (ambiguousClasses.contains(name)) throw new IllegalArgumentException("ambiguous class name '" + name + "'; qualify it with its module");
-        Ast.ClassDecl found = classes.get(name);
-        if (found == null) return null;
-
-        // Linked foreign classes have no local declaration owner. They are
-        // visible only in a lexical module that explicitly imported the class.
-        // Compiler-internal pre-validation runs with no current module and may
-        // inspect the linked registry without granting guest lexical access.
-        if (currentLexicalModule != null
-                && !classOwners.containsKey(found)
-                && !importedClassVisible(name)) {
-            return null;
+        Ast.ClassDecl linked = linkedClassesByModule
+                .getOrDefault(currentImportScope(), Map.of())
+                .get(name);
+        if (linked != null) return linked;
+        if (ambiguousClasses.contains(name)) {
+            throw new IllegalArgumentException(
+                    "ambiguous class name '" + name + "'; qualify it with its module");
         }
-        return found;
+        return classes.get(name);
     }
 
     private Ast.InterfaceDecl findInterface(String name) {
