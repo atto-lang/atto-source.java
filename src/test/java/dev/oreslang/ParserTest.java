@@ -15,6 +15,12 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
     @Test
+    void noneCallItemIsNotAnOmissionMarker() {
+        assertDoesNotThrow(() -> Parser.parse(
+                "pub fnc test(): void { const v = f(3, None, true); return; }"));
+    }
+
+    @Test
     void omittedArgumentsFailClosedInAllConstructorAndCallPositions() {
         for (String expression : List.of("f(_, 1)", "f(omit, 1)",
                 "f(x: 1)", "new Thing(_, 1)", "new Thing(x: 1)",
