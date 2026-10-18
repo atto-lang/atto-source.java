@@ -200,3 +200,59 @@ pub fnc main(): void {
 The `async task` example is **not executable yet**. Its Task-owned capture frame must be materialized before the parent stack returns. `await` and `suspends` are suspension boundaries: no ordinary live lexical borrow, MutexGuard or actor-private pointer may outlive such a boundary. A `suspends` call executed *inside* a Task never receives implicit actor permissions or ownership of the caller's heap.
 
 The Java parser and type checker now preserve the effect boundaries for existing synchronous/async/suspends callables, while `task {}`, `async task`, `async` lambda and `suspends` lambda source execution remain gated. LLVM continues to fail closed for unsupported native lambda/Task lowering. Runnable GraalVM/LLVM parity requires exact-head executable tests.
+
+## Tasks and the suspends callable effect — continuation contract
+
+`suspends fnc f(...): R` and `suspends |...| -> R` do **not** schedule
+or allocate another `Task<R>` or `Future<R>`. They run on the invoking
+execution unit, with one logical continuation and its *current* Task's
+cancellation/ownership domain. The short `suspend` spelling remains a
+contextual declaration/lambda alias, not a new launch kind.
+
+A `task { ... }` / `nb task { ... }` / `nb { ... }` expression, by
+contrast, launches **one** independently owned child `Task<R>`; the
+body begins with its own suspension effect. `do task { ... }` discards
+only the caller's handle, never the scope's ownership. Ordinary callers
+may launch a Task without becoming `suspends`; only an actual `await`
+or direct call to a `suspends` callable requires a suspension-enabled
+caller. Awaiting `Task<R>` produces exactly `R` (including `void`).
+
+```oreslang
+suspends fnc load(): int { return await fetch_async(); }
+
+fnc start(): Task<int> {
+    return task {
+        // The call may suspend this Task; it does not create another one.
+        return load();
+    };
+}
+
+suspends fnc consume(): int {
+    let Task<int> child = start();
+    return await child;
+}
+```
+
+The source samples illustrate the intended **post-lowering** contract; full
+Task source typing and execution remain disabled. A plain synchronous lambda
+must not borrow a surrounding `suspends` function's effect, while a
+`suspends` lambda explicitly carries that effect in its callable type.
+The latter still fails closed because typed suspension-callable re-entry and
+owned capture lowering are pending. `async task |...|` creates a Task on
+invocation; `suspends |...|` does not. `async suspends` and
+`suspends task { ... }` are invalid; they cannot silently create a
+second scheduling layer or erase a cancellation boundary.
+
+Cancellation of an owned Task cancels its suspended continuation and detaches
+its pending `await` registration; cancelling a waiter on a shared producer
+does NOT automatically cancel the producer. Only the Task's physical exit
+barrier may authorize reclamation of its continuation frame and owned resources.
+A `suspends` call must preserve the same cancellation cause across lexical
+`defer`/`finally` cleanup and must not catch normal cancellation as an
+ordinary `throw` or convert it to a successful result. Uninterruptible FFI
+requires separate bounded-domain shutdown semantics.
+
+Implementation gates: actor-affine TaskScope admission, typed suspends
+callables and effect propagation across indirect calls, source-level
+continuation lowering, exactly-once cleanup, cancellation wakeup and
+generation fences, source-native/WASM parity, and actual exact-head tests.
