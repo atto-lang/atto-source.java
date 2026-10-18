@@ -143,6 +143,10 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ClassDecl, String> classModules = new IdentityHashMap<>();
+        private final IdentityHashMap<Ast.ClassDecl, LinkedHashMap<String, Object>>
+                staticFieldValues = new IdentityHashMap<>();
+        private final Set<Ast.ClassDecl> initializingStaticFields =
+                java.util.Collections.newSetFromMap(new IdentityHashMap<>());
         /**
          * Immutable effective method slots, constructed before the evaluator is
          * published to actor carriers. Dispatch performs one selector lookup
