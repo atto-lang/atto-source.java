@@ -43,6 +43,45 @@ final class VoidCompletionValueBoundaryTest {
     }
 
     @Test
+    void classFieldsAndModuleBindingsCannotStoreVoid() {
+        IllegalArgumentException field = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Invalid as
+                          val void finished;
+                        end
+                        """));
+        assertTrue(field.getMessage().contains("void"), field::getMessage);
+
+        IllegalArgumentException module = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define module Invalid as
+                          val void finished = 1;
+                        end
+                        """));
+        assertTrue(module.getMessage().contains("void"), module::getMessage);
+    }
+
+    @Test
+    void optionVoidAndFutureVoidNeverImplicitlyConvertToEachOther() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(DECLARATIONS + """
+                        fnc invalid(): void {
+                          val Option<void> status = complete_async();
+                          return;
+                        }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(DECLARATIONS + """
+                        fnc invalid(): void {
+                          val Future<void> pending = complete_safely();
+                          return;
+                        }
+                        """));
+    }
+
+    @Test
     void voidIsStillLegalAsFutureOptionAndResultCompletionParameter() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(DECLARATIONS + """
                 fnc accepted(): void {
