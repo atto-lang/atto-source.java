@@ -129,19 +129,29 @@ public final class EnumCaseSourceBindings {
                 int prior = 0;
                 boolean eligible = true;
                 boolean nullary = true;
-                List<EnumTag32Plan.CaseTag> caseTags = new ArrayList<>();
                 for (Ast.EnumCase entry : en.cases()) {
                     if (entry.tag() <= prior || !cases.add(entry.name())) {
                         throw new IllegalArgumentException("duplicate/unordered enum case identity or tag");
                     }
                     prior = entry.tag();
-                    caseTags.add(new EnumTag32Plan.CaseTag(entry.name(), entry.tag()));
                     if (entry.payload() != null) nullary = false;
                     if (!eligiblePayload(entry.payload())) eligible = false;
                 }
                 // Record constructor enforces case-name limits and nonempty.
                 enums.put(id, new EnumInfo(id, List.copyOf(cases), eligible));
-                if (nullary && caseTags.size() <= EnumTag32Plan.MAX_CASES) {
+                // Nullary AOT layout is a deliberately smaller portable
+                // subset of the source/type-level enum model. Never reject
+                // an otherwise valid payload-bearing or Unicode source enum
+                // merely because the native AOT layout has narrower support.
+                // Runtime/TypeChecker still reject ALL enum guest execution.
+                if (nullary && en.cases().size() <= EnumTag32Plan.MAX_CASES
+                        && portableNullaryAotId(id)
+                        && en.cases().stream().allMatch(
+                                entry -> portableNullaryAotId(entry.name()))) {
+                    List<EnumTag32Plan.CaseTag> caseTags = new ArrayList<>();
+                    for (Ast.EnumCase entry : en.cases()) {
+                        caseTags.add(new EnumTag32Plan.CaseTag(entry.name(), entry.tag()));
+                    }
                     nullaryTagLayouts.put(id, new EnumTag32Plan(
                             id, caseTags, en.visibility() == Ast.Visibility.PUBLIC));
                 }
@@ -227,6 +237,22 @@ public final class EnumCaseSourceBindings {
 
     private record Pending(List<Ast.Param> parameters, Ast.FunctionDecl function,
                            Ast.MethodDecl method, Map<String, String> localEnums) { }
+
+    private static boolean portableNullaryAotId(String identity) {
+        // Mirrors the current staged native AOT identifier subset, not the
+        // broader language grammar. Qualified IDs permit dot separators.
+        if (identity == null || identity.isEmpty()) return false;
+        for (String component : identity.split("\\.", -1)) {
+            if (component.isEmpty()) return false;
+            for (int i = 0; i < component.length(); i++) {
+                char ch = component.charAt(i);
+                boolean head = (ch >= 'A' && ch <= 'Z')
+                        || (ch >= 'a' && ch <= 'z') || ch == '_';
+                if (!head && !(i > 0 && ch >= '0' && ch <= '9')) return false;
+            }
+        }
+        return true;
+    }
 
     private static boolean eligiblePayload(Ast.TypeRef payload) {
         if (payload == null) return true;
