@@ -1805,6 +1805,19 @@ public final class OwnershipChecker {
 
         ValueInfo receiver = checkExpr(member.receiver(), scope, false);
         Ast.TypeRef receiverType = receiver.type;
+        // flatten transfers a nested wrapper out of its owner. Dispatching
+        // through a borrow must never fall through to generic member-call
+        // handling, where a move-only Future or Option payload could escape
+        // without recording a move of the owning place.
+        if (member.member().equals("flatten")
+                && receiverType != null && receiverType.isBorrow()) {
+            Ast.TypeRef target = receiverType.borrowedTarget();
+            if (target != null
+                    && (target.name().equals("Option") || target.name().equals("Future"))) {
+                throw error("flatten cannot extract a nested Option/Future from a borrowed receiver; "
+                        + "move an owned wrapper or make an explicit permitted copy");
+            }
+        }
         if (receiverType == null || receiverType.isBorrow()) return null;
         boolean option = receiverType.name().equals("Option") && receiverType.arguments().size() == 1;
         boolean result = receiverType.name().equals("Result") && receiverType.arguments().size() == 2;
