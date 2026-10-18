@@ -107,13 +107,18 @@ public final class SqliteWorkflowSupervisorLedgerV1
             committed = true;
             return admission;
         } catch (RuntimeException | Error failure) {
-            if (!committed) rollbackQuietly();
+            if (!committed) {
+                rollbackOrInvalidate(failure);
+            }
             throw failure;
         } catch (SQLException failure) {
-            if (!committed) rollbackQuietly();
-            throw new IllegalStateException(
+            IllegalStateException wrapped = new IllegalStateException(
                     "workflow supervisor admission failed",
                     failure);
+            if (!committed) {
+                rollbackOrInvalidate(wrapped);
+            }
+            throw wrapped;
         }
     }
 
@@ -131,13 +136,18 @@ public final class SqliteWorkflowSupervisorLedgerV1
             committed = true;
             return cancelled;
         } catch (RuntimeException | Error failure) {
-            if (!committed) rollbackQuietly();
+            if (!committed) {
+                rollbackOrInvalidate(failure);
+            }
             throw failure;
         } catch (SQLException failure) {
-            if (!committed) rollbackQuietly();
-            throw new IllegalStateException(
+            IllegalStateException wrapped = new IllegalStateException(
                     "workflow supervisor cancellation failed",
                     failure);
+            if (!committed) {
+                rollbackOrInvalidate(wrapped);
+            }
+            throw wrapped;
         }
     }
 
@@ -354,11 +364,24 @@ public final class SqliteWorkflowSupervisorLedgerV1
         }
     }
 
-    private void rollbackQuietly() {
+    private void rollbackOrInvalidate(Throwable originalFailure) {
         try {
             execute("ROLLBACK");
+        } catch (SQLException rollbackFailure) {
+            originalFailure.addSuppressed(rollbackFailure);
+            invalidateConnection();
+        }
+    }
+
+    private void invalidateConnection() {
+        closed = true;
+        Connection doomed = connection;
+        connection = null;
+        if (doomed == null) return;
+        try {
+            doomed.close();
         } catch (SQLException ignored) {
-            // Original failure is more useful.
+            // Preserve the original transaction/rollback failure.
         }
     }
 
