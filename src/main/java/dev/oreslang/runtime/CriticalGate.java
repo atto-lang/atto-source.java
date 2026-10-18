@@ -95,25 +95,43 @@ public final class CriticalGate {
 
         /** Synchronous callers cannot suspend; never park an actor or ROOT carrier. */
         public void enterSync() {
-            OresFuture<Void> ready = request(true);
             if (ActorRuntime.inActorExecution()
                     || OresScheduler.current() != null
                     || OresScheduler.isSchedulerCarrierThread()) {
-                // Never park a scheduler/actor worker, including unbound
-                // after-turn or CONTROL dispatch callbacks. Release outside
-                // the monitor, because Future settlement runs callbacks.
-                boolean admittedNow;
+                // A carrier must NEVER register a waiter and then attempt to
+                // retract it. Between enqueue and close the owner could hand
+                // us the gate, creating a spurious ownership/cancel race.
+                // Admit only an immediately free gate, atomically, and leave
+                // both FIFO and the global wait graph untouched on contention.
+                Object domain = OresScheduler.currentTaskDomain();
+                if (domain == null) domain = ActorRuntime.currentActorExecutionDomain();
+                if (domain == null) domain = Thread.currentThread();
                 synchronized (COORDINATOR) {
-                    admittedNow = granted && !closed;
-                    if (admittedNow) synchronousOwner = Thread.currentThread();
+                    if (closed || requested) {
+                        throw new IllegalStateException("critical ticket already used or released");
+                    }
+                    if (owner != null || !waiters.isEmpty()) {
+                        if (owner != null && owner.logicalOwner == domain) {
+                            throw new IllegalStateException(
+                                    "recursive logical critical acquisition would deadlock");
+                        }
+                        throw new IllegalStateException(
+                                "contended synchronous critical call would block an actor/scheduler carrier; declare suspend critical and await it");
+                    }
+                    requested = true;
+                    logicalOwner = domain;
+                    owner = this;
+                    granted = true;
+                    synchronousOwner = Thread.currentThread();
                 }
-                if (!admittedNow) {
-                    close();
-                    throw new IllegalStateException(
-                            "contended synchronous critical call would block an actor/scheduler carrier; declare suspend critical and await it");
+                // Only runtime-Future publication happens after releasing the
+                // short metadata coordinator. No guest body executes under it.
+                if (!admitted.completeFromRuntime(null)) {
+                    throw new CancellationException("critical admission was revoked");
                 }
                 return;
             }
+            OresFuture<Void> ready = request(true);
             java.util.concurrent.CountDownLatch signal = null;
             synchronized (COORDINATOR) {
                 if (!granted && !closed) {
