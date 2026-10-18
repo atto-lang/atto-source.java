@@ -579,9 +579,9 @@ public final class WorkflowSupervisorActorV1 {
         }
 
         private void writeConfig(PrivateConfig config) {
+            WorkflowPrivateActorStateV1.ScrubbableOutput bytes =
+                    new WorkflowPrivateActorStateV1.ScrubbableOutput();
             try {
-                ByteArrayOutputStream bytes =
-                        new ByteArrayOutputStream();
                 try (DataOutputStream output =
                         new DataOutputStream(bytes)) {
                     output.writeInt(1);
@@ -601,7 +601,7 @@ public final class WorkflowSupervisorActorV1 {
                             output,
                             config.workflowDatabasePath());
                 }
-                byte[] encoded = bytes.toByteArray();
+                byte[] encoded = bytes.snapshotAndWipe();
                 try {
                     WorkflowPrivateActorStateV1.write(
                             stateBlock, encoded);
@@ -612,6 +612,8 @@ public final class WorkflowSupervisorActorV1 {
                 throw new IllegalStateException(
                         "failed to encode supervisor private state",
                         failure);
+            } finally {
+                bytes.wipe();
             }
         }
 
