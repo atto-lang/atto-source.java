@@ -110,12 +110,15 @@ final class ActorLifecycleObserverIsolationTest {
                     "child observer should eventually see terminal publication");
 
             // The child observer is still blocked. Parent teardown must have
-            // progressed independently because the child's publication was
-            // dispatched on the child lane rather than inside the parent turn.
+            // progressed independently because arbitrary lifecycle observers
+            // execute on the bounded lifecycle-observer domain, never inside
+            // the parent turn.
             assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS),
                     "blocked child observer must not pin parent structured teardown");
             assertTrue(child.get().awaitTermination(2, TimeUnit.SECONDS),
                     "terminal state is published before arbitrary DONE callbacks return");
+            releaseChildObserver.countDown();
+            child.get().getDone().get(3, TimeUnit.SECONDS);
         } finally {
             releaseChildObserver.countDown();
         }
@@ -184,6 +187,8 @@ final class ActorLifecycleObserverIsolationTest {
             assertTrue(child.get().awaitTermination(2, TimeUnit.SECONDS));
             assertTrue(child.get().done().isDone(),
                     "DONE terminal state must precede deferred output observers");
+            releaseOutputObserver.countDown();
+            child.get().getDone().get(3, TimeUnit.SECONDS);
         } finally {
             releaseOutputObserver.countDown();
         }
