@@ -177,6 +177,20 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     /**
+     * Stage and validate one actor-only generation without making it the
+     * manager's generic active source route and without executing init/main.
+     * The actor migration coordinator links declarations later through
+     * Generation.linkActorGeneration().
+     */
+    public synchronized Generation stageActorGeneration(
+            String name,
+            String sourceText) {
+        validateAdmissionInputs(name, sourceText);
+        OresCompiler.validateForIsolate(sourceText, guestPolicy);
+        return stage(name, digest(sourceText), sourceText, false);
+    }
+
+    /**
      * Transactional replacement for the generic source-loader path. The candidate
      * is NOT routable until its entrypoint returns successfully. An optimistic
      * supervisor routing epoch rejects stale publications (including A/B/A).
