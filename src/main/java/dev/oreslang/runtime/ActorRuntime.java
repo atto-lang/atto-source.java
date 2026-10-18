@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.ast.Ast;
+
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Array;
@@ -542,6 +544,55 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
+
+    /**
+     * Host/supervisor admission boundary for a prebuilt IPC actor executable.
+     *
+     * <p>The runtime's actual policy ceiling is used as authority; callers
+     * cannot pass a fabricated supervisor policy. Minting an executable actor
+     * capability requires spawn, IPC, child-process and hot-code authority.
+     * This method does not launch a process.</p>
+     */
+    public <T> ActorArtifact<T> admitIpcActorArtifact(
+            String actorTypeName,
+            Ast.ActorKind actorKind,
+            ActorArtifactAdmission.Manifest manifest,
+            byte[] exactArtifactBytes,
+            ActorArtifactAdmission.TrustedBuildAttestation attestation,
+            ActorArtifactAdmission.TrustedBuildAttestationPolicy attestationPolicy,
+            ActorArtifactAdmission.TrustedKeyPolicy keyPolicy,
+            ActorArtifactAdmission.TargetPolicy targetPolicy,
+            IsolatePolicy workerPolicy) {
+        requireSupervisorContext("admit IPC actor artifact");
+        for (IsolatePolicy.Capability capability : List.of(
+                IsolatePolicy.Capability.ACTOR_SPAWN,
+                IsolatePolicy.Capability.IPC,
+                IsolatePolicy.Capability.CHILD_PROCESS,
+                IsolatePolicy.Capability.HOT_CODE_LOAD)) {
+            if (!policyCeiling.allows(capability)) {
+                throw new SecurityException(
+                        capability + " capability required to admit IPC actor artifact");
+            }
+        }
+        return ActorArtifactAdmission.admitIpcActor(
+                runtimeInstanceId,
+                actorTypeName,
+                actorKind,
+                manifest,
+                exactArtifactBytes,
+                attestation,
+                attestationPolicy,
+                keyPolicy,
+                targetPolicy,
+                policyCeiling,
+                workerPolicy);
+    }
+
+    /** Trusted runtime affinity check used by the future IPC launcher. */
+    boolean ownsActorArtifact(ActorArtifact<?> artifact) {
+        return artifact != null && artifact.admittedForRuntime(runtimeInstanceId);
+    }
+
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
