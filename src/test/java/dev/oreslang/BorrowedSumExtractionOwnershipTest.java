@@ -43,6 +43,33 @@ final class BorrowedSumExtractionOwnershipTest {
     }
 
     @Test
+    void unwrapSafeCannotPackageAffineBorrowedValue() {
+        reject(BOX + """
+                fnc bad(borrow Option<Box> owner): Result<Box, OptionUnwrapError> {
+                  return owner.unwrap_safe();
+                }
+                """, "affine Option/Result through a borrow");
+    }
+
+    @Test
+    void unwrapOrCannotEscapeBorrowedAffinePayload() {
+        reject(BOX + """
+                fnc bad(borrow Option<Box> owner): Box {
+                  return owner.unwrap_or(new Box());
+                }
+                """, "affine Option/Result through a borrow");
+    }
+
+    @Test
+    void borrowedResultCanPerformReadOnlyQuery() {
+        accept(BOX + """
+                fnc query(borrow Result<Box, String> owner): bool {
+                  return owner.is_ok();
+                }
+                """);
+    }
+
+    @Test
     void borrowedOptionCanStillPerformReadOnlyQuery() {
         accept(BOX + """
                 fnc query(borrow Option<Box> owner): bool {
