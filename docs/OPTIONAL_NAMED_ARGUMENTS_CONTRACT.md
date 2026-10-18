@@ -682,3 +682,42 @@ receiver-before-argument ordering, distinct temporaries for repeated
 AST object identities, explicit omissions, Option adaptations, imported
 and shadowed names, and disabled guest execution. They are not passing
 JUnit evidence until an actual runner executes them.
+
+## Compiler-only hardening against lexical body reuse and phase confusion (2026-10-18)
+
+Two additional **non-executable** audit gates now apply on stacked Java
+PR #1397:
+
+1. `SameModuleLiteralInvocation.inspect` no longer infers a unique lexical
+   occurrence merely from finding the staged call directly in one statement.
+   Because the narrow helper does not recursively establish CFG/effects, it
+   refuses other complex statements and any other nonliteral expressions in
+   the caller body. This prevents a second nested occurrence of the identical
+   AST object, a prior side effect, or deferred work from being silently
+   admitted as a trustworthy direct-call witness. Rejected shapes must go
+   through the actual lexical TypeChecker/OwnershipChecker pipeline.
+
+2. `OptionalCallTempLowering.Recipe.steps()` now exposes a separate immutable
+   lowering-phase sequence: `CAPTURE_RECEIVER` (only a directly selected
+   instance method), `CAPTURE_ARGUMENT` once per lexical source occurrence,
+   `MATERIALIZE_ABI_SLOT` in formal order (including typed omission slots),
+   and `INVOKE_SELECTED`. Statically selected module functions do NOT
+   evaluate a guest callable object, and explicit class construction has no
+   guest receiver evaluation. It is wrong to execute the general preview's
+   `EVALUATE_CALLEE` as an actual member-expression value read in this
+   specialized lowering. All phase indexes are checked and the step list is
+   immutable.
+
+These additions remain `SHAPE_ONLY`: the apparent `INVOKE_SELECTED`
+operation is an IR ordering placeholder, not permission to call. Public
+`requireExecutable()` still rejects every invocation. Added committed JUnit
+sources test nested AST reuse, rejected unverified side effects/defer, static
+versus method capture ordering, and invalid phase indexes. Source-org GitHub
+Actions continues failing before test steps; the tests have not passed a
+real JDK25/GraalVM/LLVM run.
+
+The separately confirmed `sagitta-stack/sagitta-infra` GitHub Actions runner
+has passed **source-free synthetic canaries** only. Protected `main` lists
+no approved private CI destination, and security-review PR #1326 remains
+draft. No private compiler source may be mirrored there before the policy is
+reviewed and approved.
