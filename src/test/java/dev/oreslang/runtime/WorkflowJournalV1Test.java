@@ -616,6 +616,67 @@ final class WorkflowJournalV1Test {
     }
 
     @Test
+    void explicitPersistentStateRoundTripsClaimAndClockMetadata() {
+        var loop = new DurableDevLoopV1("run-persistent-state", 3);
+        var store = started(loop);
+        var claim = store.claimNext(
+                "worker-a", 100L, 75L).orElseThrow();
+
+        var state = store.persistentState();
+        var restored = WorkflowJournalV1.restore(state);
+
+        assertEquals(store.snapshot(), restored.snapshot());
+        assertEquals(store.journal(), restored.journal());
+        assertEquals(store.effects(), restored.effects());
+        assertEquals(
+                claim.claimToken(),
+                restored.effect(claim.effectKey())
+                        .orElseThrow()
+                        .claimToken());
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> restored.expireClaims(99L),
+                "restored clock watermark must reject regression");
+    }
+
+    @Test
+    void persistedEffectTamperingFailsClosed() {
+        var loop = new DurableDevLoopV1("run-persist-tamper", 3);
+        var store = started(loop);
+        var state = store.persistentState();
+        var original = state.effects().getFirst();
+
+        var tampered = new WorkflowJournalV1.EffectSnapshot(
+                original.effectKey(),
+                new DurableDevLoopV1.RequestCode(
+                        1,
+                        "changed goal",
+                        null,
+                        original.effectKey()),
+                original.state(),
+                original.attempts(),
+                original.workerId(),
+                original.claimToken(),
+                original.leaseUntilMillis(),
+                original.receiptRef(),
+                original.reconciliationRef(),
+                original.retryAllowed());
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> WorkflowJournalV1.restore(
+                        new WorkflowJournalV1.PersistentState(
+                                state.runId(),
+                                state.maxIterations(),
+                                state.nextSequence(),
+                                state.nextClaimNumber(),
+                                state.lastObservedMillis(),
+                                state.journal(),
+                                List.of(tampered))));
+    }
+
+    @Test
     void outOfOrderJournalEntryFailsClosedWithoutPartialAppend() {
         var loop = new DurableDevLoopV1("run-order", 3);
         var first = loop.accept(
