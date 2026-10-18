@@ -94,6 +94,7 @@ final class TrustedTcpLoopbackProbeTest {
                 var connection = broker.connect().get(3, TimeUnit.SECONDS);
                 assertTrue(ready.await(3, TimeUnit.SECONDS));
                 broker.close();
+                broker.close(); // retry shutdown must remain safe
                 assertFalse(connection.isOpen());
                 assertTrue(broker.connect().isCompletedExceptionally());
                 var retry = gate.tryOpenTcp(child, parent, tenant);
