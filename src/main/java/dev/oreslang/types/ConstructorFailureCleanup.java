@@ -7,10 +7,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-import static dev.oreslang.types.ConstructorSemanticIr.CleanupKind;
-import static dev.oreslang.types.ConstructorSemanticIr.CleanupEdge;
-import static dev.oreslang.types.ConstructorSemanticIr.ConstructionPhase;
-import static dev.oreslang.types.ConstructorSemanticIr.ConstructionState;
+import dev.oreslang.types.ConstructorSemanticIr.CleanupKind;
+import dev.oreslang.types.ConstructorSemanticIr.CleanupEdge;
+import dev.oreslang.types.ConstructorSemanticIr.ConstructionPhase;
+import dev.oreslang.types.ConstructorSemanticIr.ConstructionState;
 
 /**
  * A backend-neutral failure cleanup *plan*, not a runtime destructor.
