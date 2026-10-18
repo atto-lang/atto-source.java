@@ -471,7 +471,7 @@ final class ActorArtifactAdmissionTest {
                     () -> insufficient.admitIpcActorArtifact(
                             "ImageWorker",
                             Ast.ActorKind.PRIVATE,
-                            manifest,
+                            ActorArtifactAdmission.canonicalSignedManifest(manifest),
                             executable,
                             attestation,
                             TRUST_ATTESTATION,
@@ -491,7 +491,7 @@ final class ActorArtifactAdmissionTest {
             ActorArtifact<Object> artifact = runtime.admitIpcActorArtifact(
                     "ImageWorker",
                     Ast.ActorKind.PRIVATE,
-                    manifest,
+                    ActorArtifactAdmission.canonicalSignedManifest(manifest),
                     executable,
                     attestation,
                     TRUST_ATTESTATION,
@@ -524,7 +524,7 @@ final class ActorArtifactAdmissionTest {
             ActorArtifact<Object> artifact = runtime.admitIpcActorArtifact(
                     "ImageWorker",
                     Ast.ActorKind.PRIVATE,
-                    manifest,
+                    ActorArtifactAdmission.canonicalSignedManifest(manifest),
                     executable,
                     attestation,
                     TRUST_ATTESTATION,
