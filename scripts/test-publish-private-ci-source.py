@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location("private_publisher", MODULE)
 pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
 REAL_PREFLIGHT = pub.require_preflight
-A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
+A, B, C, D, E, F = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40, "f"*40)
 
 
 class DestinationBoundPublisherTests(unittest.TestCase):
@@ -168,22 +168,19 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             # The server must return the exact canonical digest of the isolated
             # source tree; no orphaned/stale destination files may survive.
             return {"sha": E if "base_tree" in payload else self.expected_source_tree()}
-        # Distinguish the default parent's earlier GET from the new commit's
-        # independent post-creation GET. POST /git/commits is already recorded.
-        if (route == "repos/trusted/ci/git/commits/" + A
-                and method == "GET"
-                and any(m == "POST" and path == "repos/trusted/ci/git/commits"
-                        for m, path, _ in self.route_calls)):
-            return {"sha": A, "tree": {"sha": E},
+        # Unlike the parent A, the created commit F has its own Git identity.
+        # Model a real acyclic commit graph instead of a self-parented fixture.
+        if route == "repos/trusted/ci/git/commits/" + F:
+            return {"sha": F, "tree": {"sha": E},
                     "parents": [{"sha": A}]}
         mapping = {
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
-            "repos/trusted/ci/git/commits": {"sha": A},
-            "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test", "object": {"type": "commit", "sha": A}},
+            "repos/trusted/ci/git/commits": {"sha": F},
+            "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test", "object": {"type": "commit", "sha": F}},
             "repos/trusted/ci/git/ref/heads/ci/oreslang-test": {
                 "ref": "refs/heads/ci/oreslang-test",
-                "object": {"type": "commit", "sha": A}},
+                "object": {"type": "commit", "sha": F}},
         }
         if route not in mapping:
             raise AssertionError("unexpected or cross-repository GitHub API route " + route)
@@ -213,7 +210,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_merged_main_positive_exact_tip(self):
         sha, count = self.publish_merged()
-        self.assertEqual((sha, count), (A, 1))
+        self.assertEqual((sha, count), (F, 1))
         self.assertTrue(any(m == "POST" and route.endswith("/git/refs")
                             for m, route, _ in self.route_calls))
 
@@ -1075,7 +1072,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
-        self.assertEqual((sha, count), (A, 1))
+        self.assertEqual((sha, count), (F, 1))
         writes = [(m, r, p) for m, r, p in self.route_calls if m == "POST"]
         self.assertEqual([r for _, r, _ in writes], [
             "repos/trusted/ci/git/blobs", "repos/trusted/ci/git/trees",
@@ -1095,20 +1092,23 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         # The commit GET must independently authenticate its tree and parent
         # before any newly created branch is made visible.
         self.publish()
-        commit_reads = [
+        parent_reads = [
             i for i, (method, route, _) in enumerate(self.route_calls)
-            if method == "GET" and route == "repos/trusted/ci/git/commits/" + A
-        ]
+            if method == "GET" and route == "repos/trusted/ci/git/commits/" + A]
+        created_reads = [
+            i for i, (method, route, _) in enumerate(self.route_calls)
+            if method == "GET" and route == "repos/trusted/ci/git/commits/" + F]
         create_commit = next(
             i for i, (method, route, _) in enumerate(self.route_calls)
             if method == "POST" and route == "repos/trusted/ci/git/commits")
         create_ref = next(
             i for i, (method, route, _) in enumerate(self.route_calls)
             if method == "POST" and route == "repos/trusted/ci/git/refs")
-        self.assertEqual(len(commit_reads), 2)
-        self.assertLess(commit_reads[0], create_commit)
-        self.assertLess(create_commit, commit_reads[1])
-        self.assertLess(commit_reads[1], create_ref)
+        self.assertEqual((len(parent_reads), len(created_reads)), (1, 1))
+        self.assertNotEqual(A, F)
+        self.assertLess(parent_reads[0], create_commit)
+        self.assertLess(create_commit, created_reads[0])
+        self.assertLess(created_reads[0], create_ref)
 
     def test_created_ci_commit_readback_fails_closed_before_ref(self):
         expected = self.expected_source_tree()
@@ -1116,14 +1116,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         forged_responses = (
             {},
             {"sha": B, "tree": {"sha": E}, "parents": [{"sha": A}]},
-            {"sha": A, "tree": None, "parents": [{"sha": A}]},
-            {"sha": A, "tree": {"sha": B}, "parents": [{"sha": A}]},
-            {"sha": A, "tree": {"sha": E}},
-            {"sha": A, "tree": {"sha": E}, "parents": []},
-            {"sha": A, "tree": {"sha": E}, "parents": [{"sha": B}]},
-            {"sha": A, "tree": {"sha": E}, "parents": [{"sha": A}, {"sha": B}]},
-            {"sha": A, "tree": {"sha": E}, "parents": "not-a-list"},
-            {"sha": A, "tree": {"sha": E}, "parents": [None]},
+            {"sha": F, "tree": None, "parents": [{"sha": A}]},
+            {"sha": F, "tree": {"sha": B}, "parents": [{"sha": A}]},
+            {"sha": F, "tree": {"sha": E}},
+            {"sha": F, "tree": {"sha": E}, "parents": []},
+            {"sha": F, "tree": {"sha": E}, "parents": [{"sha": B}]},
+            {"sha": F, "tree": {"sha": E}, "parents": [{"sha": A}, {"sha": B}]},
+            {"sha": F, "tree": {"sha": E}, "parents": "not-a-list"},
+            {"sha": F, "tree": {"sha": E}, "parents": [None]},
         )
         for forged in forged_responses:
             with self.subTest(forged=forged):
@@ -1131,10 +1131,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.mock_source_tree = expected
                 def api(route, method="GET", payload=None):
                     if (method == "GET"
-                            and route == "repos/trusted/ci/git/commits/" + A
-                            and any(m == "POST"
-                                    and p == "repos/trusted/ci/git/commits"
-                                    for m, p, _ in self.route_calls)):
+                            and route == "repos/trusted/ci/git/commits/" + F):
                         self.route_calls.append((method, route, payload))
                         return forged
                     return original(route, method, payload)
