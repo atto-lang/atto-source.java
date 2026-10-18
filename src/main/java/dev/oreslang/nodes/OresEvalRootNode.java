@@ -659,6 +659,13 @@ public final class OresEvalRootNode extends RootNode {
                         "source spawn target '" + actorTypeName
                                 + "' is not an actor");
             }
+            if (klass.actorBoundary() != Ast.ActorBoundary.LOCAL) {
+                throw new SecurityException(
+                        "external actor '" + actorTypeName + "' with boundary "
+                                + klass.actorBoundary()
+                                + " cannot enter local source-actor lowering; "
+                                + "authenticated boundary runtime required");
+            }
             return klass;
         }
 
