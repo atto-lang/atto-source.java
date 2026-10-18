@@ -35,7 +35,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Assert private CI guard fail-closed behavior
         run: |
           set -euo pipefail
@@ -46,5 +48,8 @@ jobs:
           bash tools/test-verify-exact-source-tree.sh
           for attempt in 1 2 3; do
             echo "Private publisher adversarial pass ${attempt}/3"
-            python3 scripts/test-publish-private-ci-source.py
+            python3 -B scripts/test-publish-private-ci-source.py
           done
+          # This separate module is also imported through load_tests above.
+          # Run it explicitly so CI logs and evidence always show its verdict.
+          python3 -B scripts/test-private-ci-merged-main.py
