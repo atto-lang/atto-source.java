@@ -2663,6 +2663,26 @@ public final class TypeChecker {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
+                if (member.member().equals("unwrap_all")
+                        && receiver instanceof Named outer
+                        && outer.name().equals("Option")
+                        && outer.arguments().size() == 1) {
+                    int depth = 0;
+                    Type current = receiver;
+                    while (current instanceof Named layer
+                            && layer.name().equals("Option")
+                            && layer.arguments().size() == 1) {
+                        if (++depth > 4096) {
+                            throw new IllegalArgumentException(
+                                    "Option.unwrap_all static depth exceeds 4096");
+                        }
+                        current = layer.arguments().getFirst();
+                    }
+                    // The compiler has already resolved the receiver's
+                    // lexical type. Store an immutable call-site proof; the
+                    // evaluator must not infer depth from OptionValue tags.
+                    Ast.CheckedOptionDepth.record(call, depth);
+                }
 
                 // Nested extraction has no user-visible generic or value
                 // arguments. Diagnose at the built-in boundary instead of
