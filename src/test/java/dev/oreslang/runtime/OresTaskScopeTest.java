@@ -373,4 +373,39 @@ final class OresTaskScopeTest {
         }
     }
 
+
+    @Test
+    void parentCancellationFinishesSubtreeWhenChildClaimedButNotTraversed()
+            throws Exception {
+        // Deterministically model the intermediate state of a competing
+        // cancel(): a child has sealed its own admission gate but has not
+        // reached its grandchildren. This interleaving is possible before
+        // its cancellation walk snapshots and visits the descendants.
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope root = new OresTaskScope(runtime)) {
+            OresTaskScope child = root.childScope();
+            OresTaskScope grandchild = child.childScope();
+            CountDownLatch entered = new CountDownLatch(1);
+            OresTask<Void> live = grandchild.submit(() -> {
+                entered.countDown();
+                Thread.sleep(30_000);
+                return null;
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            java.lang.reflect.Field claimed =
+                    OresTaskScope.class.getDeclaredField("cancelled");
+            claimed.setAccessible(true);
+            claimed.setBoolean(child, true);
+            assertFalse(grandchild.isCancelRequested());
+            assertTrue(root.cancel());
+            assertTrue(child.isCancelRequested());
+            assertTrue(grandchild.isCancelRequested(),
+                    "a claimed-but-untraversed child must not hide grandchildren");
+            assertTrue(live.isCancelled());
+            assertFalse(root.cancel(), "repeated cancellation remains idempotent");
+            root.close();
+            assertTrue(live.isQuiescent());
+        }
+    }
+
 }
