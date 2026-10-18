@@ -171,7 +171,7 @@ foo(3,,true);               // error: no empty positional grammar
 ```
 
 **Variadic contract — pure-binder stage only, surface spelling provisional:**
-a declaration may have at most one `rest ...T items` parameter and it must
+a declaration may have at most one `...T items` parameter and it must
 be the final formal. It is **not** optional (`?` is forbidden there).
 The callee sees an owned/borrow-checked typed collection of `T`; zero
 supplied tail elements is an **empty collection**, not `None`. Each
@@ -189,7 +189,7 @@ never means "zero rest arguments".
 Illustrative non-executable declaration:
 
 ```oreslang
-pub fnc log(string? prefix, rest ...string messages): void { /* ... */ }
+pub fnc log(string? prefix, ...string messages): void { /* ... */ }
 
 log();                          // prefix=None, messages=[]
 log("title", "a", "b");        // prefix=Some("title"), messages=["a","b"]
@@ -202,7 +202,7 @@ Overload admission treats a rest tail as a **supplied-argument range with
 no finite upper bound**: `[required_fixed, infinity)`. Any intersection
 with a fixed or optional overload count range is rejected at declaration
 or link time. Thus `f(int x)` cannot coexist with
-`f(int x, rest ...int tail)`. Overloads must never resolve by trying
+`f(int x, ...int tail)`. Overloads must never resolve by trying
 parameter types, labels, nullable coercions, or declaring order.
 Constructor overloads follow effective *user* arity and this same
 intersection rule, excluding a leading construction-scoped `self`.
@@ -214,3 +214,41 @@ null/void/rest cases. **These are tests of a proposed static contract**,
 not evidence that either frontend parses optional or rest declarations,
 that typed Option wrappers lower in any backend, or that CI/runtime parity
 is established. Dynamic and foreign calls remain fail-closed.
+
+## Positional omit marker and canonical variadic spelling
+
+The current shared v1 contract also defines a context-sensitive **`omit`
+call item**. It is not an expression and has no type or evaluated value.
+Only an OPTIONAL FIXED formal may receive it; it consumes one formal slot,
+and the compiler injects typed `None` in that slot. Omission through a
+named call is still preferred when readability permits.
+
+```oreslang
+foo(3, omit, true);         // valid: explicit omission of optional b
+foo(3, None, true);         // valid: explicit Option<string>.None value
+foo(3, "", true);           // valid: Some("")
+foo(3, void, true);         // invalid: void is not a value or omit marker
+foo(3,,true);               // invalid: no double-comma holes
+```
+
+Unlike `None` (a typed Option value), `omit` is a syntax-level event:
+it contributes NO argument expression, no borrowed value, and no move.
+Diagnostics and debug metadata may preserve the distinction between
+`explicit_omit`, `implicit_omit`, and `explicit_none`, but all three
+produce the same callee-visible Option<T>.None variant for a T? formal.
+It is forbidden on required formals and on rest elements. `void? name`
+and `Option<T>? name` declarations are rejected in the initial profile.
+
+Canonical trailing variadic declaration syntax is **`...T restName`**,
+NOT `rest ...T restName`. Zero rest arguments produce an empty readonly
+typed pack/slice, never `None`. Named `restName: List<T>` packs and
+a single final `...List<T>` spread are tracked by the shared reference
+spec but remain gated on compiler ownership/type/evaluation proof.
+The Java pure binder models fixed optional slots, the `omit` marker
+and positional rest; it intentionally rejects named rest and spreads.
+
+For an illustrative declaration `fnc log(string? prefix, ...string
+messages)`, `log(omit, "first", "second")` omits `prefix` while
+providing TWO rest elements. The compiler must preserve actual source
+expression indexes `[0, 1]` for those elements—`omit` cannot create
+a hole in the expression-evaluation permutation.
