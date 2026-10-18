@@ -5,7 +5,7 @@ on:
       - 'docs/ENUM_CASE_OVERLOAD_SPECIALIZATION.md'
       - 'src/main/java/dev/oreslang/types/EnumCaseOverloadPolicy.java'
       - 'src/test/java/dev/oreslang/EnumCaseOverloadPolicyTest.java'
-      - 'contracts/v2/test_enum_case_overlap_model.py'
+      - 'contracts/v2/**'
       - '.github/workflows/enum-case-overload-oracle.yml'
   workflow_dispatch:
 permissions:
@@ -32,5 +32,5 @@ jobs:
           javac --release 21 -Xlint:all -Werror -d /tmp/ores-enum-policy src/main/java/dev/oreslang/types/EnumCaseOverloadPolicy.java
       - name: Exhaustively check overload relation against finite oracle
         run: |
-          python3 -B -m unittest discover -s contracts/v2 -p 'test_enum_case_overlap_model.py' -v
-          python3 -B -O -m unittest discover -s contracts/v2 -p 'test_enum_case_overlap_model.py' -v
+          python3 -B -m unittest discover -s contracts/v2 -p 'test_enum_case_*.py' -v
+          python3 -B -O -m unittest discover -s contracts/v2 -p 'test_enum_case_*.py' -v
