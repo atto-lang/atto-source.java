@@ -103,7 +103,7 @@ final class DynInterfaceViewTest {
     void dynRejectsFieldAndGenericMethodRequirements() {
         for (String iface : new String[] {
                 "define interface Bad as val count: int; end",
-                "define interface Bad as fnc select<T>(T input) => int; end"
+                "define interface Bad as fnc pick<T>(T input) => int; end"
         }) {
             var failure = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(iface + """
