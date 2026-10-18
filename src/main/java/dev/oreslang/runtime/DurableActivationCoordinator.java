@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -34,6 +35,12 @@ public final class DurableActivationCoordinator {
 
     /** Reacquire persisted identity; epoch increments, invalidating older activations. */
     public DurableActorStore.Activation restore(DurableActorStore.Address address) {
+        throw new IllegalStateException("owner UUID required: use restoreLeased");
+    }
+
+    public PostgresDurableActorStore.LeaseActivation restoreLeased(
+            DurableActorStore.Address address, UUID owner) {
+        Objects.requireNonNull(owner);
         Objects.requireNonNull(address, "address");
         ReentrantLock guard = lock(address);
         guard.lock();
@@ -41,7 +48,10 @@ public final class DurableActivationCoordinator {
             if (!quiescence.isQuiescent(address)) {
                 throw new IllegalStateException("cannot activate while local actor callback runs");
             }
-            return store.activate(address);
+            if (!(store instanceof PostgresDurableActorStore postgres)) {
+                throw new IllegalStateException("owner-aware store is required");
+            }
+            return postgres.acquireLease(address, owner);
         } finally { guard.unlock(); }
     }
 
@@ -58,11 +68,19 @@ public final class DurableActivationCoordinator {
      * the immutable Turn. Never execute side effects directly inside this method.
      */
     public long commit(DurableActorStore.Turn turn) {
+        throw new IllegalStateException("owner UUID required: use commitLeased");
+    }
+
+    public long commitLeased(DurableActorStore.Turn turn, UUID owner) {
         Objects.requireNonNull(turn, "turn");
+        Objects.requireNonNull(owner);
         ReentrantLock guard = lock(turn.address());
         guard.lock();
         try {
-            return store.commitTurn(turn);
+            if (!(store instanceof PostgresDurableActorStore postgres)) {
+                throw new IllegalStateException("owner-aware store is required");
+            }
+            return postgres.commitOwnedTurn(turn, owner);
         } finally { guard.unlock(); }
     }
 
@@ -71,6 +89,11 @@ public final class DurableActivationCoordinator {
      * network call or hold an actor-owned borrow while the arena is released.
      */
     public void freeze(DurableActorStore.Address address, long epoch) {
+        throw new IllegalStateException("owner UUID required: use freezeLeased");
+    }
+
+    public void freezeLeased(DurableActorStore.Address address, long epoch, UUID owner) {
+        Objects.requireNonNull(owner);
         Objects.requireNonNull(address, "address");
         ReentrantLock guard = lock(address);
         guard.lock();
@@ -78,7 +101,10 @@ public final class DurableActivationCoordinator {
             if (!quiescence.isQuiescent(address)) {
                 throw new IllegalStateException("actor execution not quiescent");
             }
-            store.hibernate(address, epoch);
+            if (!(store instanceof PostgresDurableActorStore postgres)) {
+                throw new IllegalStateException("owner-aware store is required");
+            }
+            postgres.hibernateLease(address, epoch, owner);
         } finally { guard.unlock(); }
     }
 }
