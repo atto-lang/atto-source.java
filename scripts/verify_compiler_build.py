@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import resource
 import signal
 import stat
 import subprocess
@@ -49,11 +50,15 @@ def file_identity(path):
     return {'sha256': h.hexdigest(), 'bytes': meta.st_size}
 
 
+def _bound_child_output():
+    resource.setrlimit(resource.RLIMIT_FSIZE, (65536, 65536))
+
+
 def safe_run(argv, cwd, timeout=30):
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         proc = subprocess.Popen([str(x) for x in argv], cwd=cwd, env=ENV,
                                 stdin=subprocess.DEVNULL, stdout=out, stderr=err,
-                                start_new_session=True)
+                                start_new_session=True, preexec_fn=_bound_child_output)
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -144,6 +149,11 @@ def capture(repo, bundle, expected_sha, expected_tree, mode):
                               rb':[1-9][0-9]*:[1-9][0-9]*: error: ', re.M)
         deny(code == 1 and not stdout and expected.search(stderr) is not None,
              'negative real compiler check failed')
+    # A launcher must not silently add extra module-path/JNI artifacts.
+    deny({p.name for p in bundle.iterdir()} == {'launcher', 'oreslang-source.jar', 'lib', 'native'} and
+         sorted(library.iterdir()) == deps and
+         {p.name for p in (bundle / 'native').iterdir()} == {'liboresthread.so'},
+         'bundle file set mutated during compiler CLI checks')
     # Fail closed if execution modified anything whose identity we admitted.
     deny(all(file_identity(bundle / name) == identity for name, identity in files.items()),
          'bundle mutated during compiler CLI checks')
