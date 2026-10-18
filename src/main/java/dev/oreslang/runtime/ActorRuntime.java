@@ -317,6 +317,54 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** Bounded scheduler-domain pressure view for operations/debugging.
+     * These are physical host counts only; no guest heap/mail payload is exposed.
+     */
+    public record DispatcherPressure(
+            int startedCarriers,
+            int activeCarriers,
+            int queuedTasks,
+            int queueCapacity,
+            int maximumCarriers) {
+        public DispatcherPressure {
+            if (startedCarriers < 0 || activeCarriers < 0 || queuedTasks < 0
+                    || queueCapacity < 0 || maximumCarriers < 0
+                    || activeCarriers > startedCarriers
+                    || queuedTasks > queueCapacity
+                    || startedCarriers > maximumCarriers) {
+                throw new IllegalArgumentException("invalid actor dispatcher pressure");
+            }
+        }
+        public boolean saturated() {
+            return maximumCarriers > 0
+                    && startedCarriers >= maximumCarriers
+                    && (activeCarriers >= maximumCarriers || queuedTasks >= queueCapacity);
+        }
+    }
+
+    /** Runtime-wide physical scheduler pressure, distinct from logical actor state. */
+    public record ActorSchedulerSnapshot(
+            CarrierBackend carrierBackend,
+            DispatcherPressure privateDomain,
+            DispatcherPressure sharedDomain,
+            DispatcherPressure untrustedDomain,
+            int lifecycleObserverCarriers,
+            int lifecycleObserverBacklog,
+            int liveActors,
+            int reservedActorSlots) {
+        public ActorSchedulerSnapshot {
+            Objects.requireNonNull(carrierBackend, "carrierBackend");
+            Objects.requireNonNull(privateDomain, "privateDomain");
+            Objects.requireNonNull(sharedDomain, "sharedDomain");
+            Objects.requireNonNull(untrustedDomain, "untrustedDomain");
+            if (lifecycleObserverCarriers < 0 || lifecycleObserverBacklog < 0
+                    || liveActors < 0 || reservedActorSlots < 0
+                    || liveActors > reservedActorSlots) {
+                throw new IllegalArgumentException("invalid actor scheduler snapshot");
+            }
+        }
+    }
+
     /** Point-in-time supervisor view; never exposes mutable guest state. */
     public record ActorSnapshot(
             ActorId actorId,
@@ -1090,6 +1138,51 @@ public final class ActorRuntime implements AutoCloseable {
                 && usesNativeCarriers(untrustedDispatcher)
                 ? CarrierBackend.NATIVE_PTHREAD
                 : CarrierBackend.JVM_THREAD_POOL;
+    }
+
+    /** Supervisor-visible scheduler pressure for capacity planning and incident debugging. */
+    public ActorSchedulerSnapshot schedulerSnapshot() {
+        requireSupervisorContext("inspect actor scheduler pressure");
+        return new ActorSchedulerSnapshot(
+                carrierBackend(),
+                dispatcherPressure(privateDispatcher, dispatcherConfig.maxActors()),
+                dispatcherPressure(sharedDispatcher, dispatcherConfig.maxActors()),
+                dispatcherPressure(untrustedDispatcher, dispatcherConfig.maxActors()),
+                lifecycleObserverDispatcher.getPoolSize(),
+                lifecycleObserverDispatcher.getQueue().size(),
+                actorCount.get(),
+                actorCapacityInUse.get());
+    }
+
+    private static DispatcherPressure dispatcherPressure(
+            ExecutorService executor,
+            int configuredQueueCapacity) {
+        if (executor instanceof ActorAffinityDispatcher lanes) {
+            return new DispatcherPressure(
+                    lanes.startedCarrierCount(),
+                    lanes.activeCarrierCount(),
+                    lanes.queuedTaskCount(),
+                    lanes.queueCapacity(),
+                    lanes.maximumCarrierCount());
+        }
+        if (executor instanceof NativeCarrierExecutor nativePool) {
+            return new DispatcherPressure(
+                    nativePool.getStartedCarrierCount(),
+                    nativePool.getActiveCount(),
+                    nativePool.getQueueSize(),
+                    configuredQueueCapacity,
+                    nativePool.getMaximumPoolSize());
+        }
+        if (executor instanceof java.util.concurrent.ThreadPoolExecutor pool) {
+            int capacity = pool.getQueue().size() + pool.getQueue().remainingCapacity();
+            return new DispatcherPressure(
+                    pool.getPoolSize(),
+                    pool.getActiveCount(),
+                    pool.getQueue().size(),
+                    capacity,
+                    pool.getMaximumPoolSize());
+        }
+        return new DispatcherPressure(0, 0, 0, configuredQueueCapacity, 0);
     }
 
     /** Host/test census: physical actor carriers currently attached/alive. */
