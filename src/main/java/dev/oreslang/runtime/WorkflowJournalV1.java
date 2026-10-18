@@ -115,9 +115,7 @@ public final class WorkflowJournalV1 {
 
         String incomingRunId = requireText(
                 snapshot.runId(), "runId", 512);
-        if (runId == null) {
-            runId = incomingRunId;
-        } else if (!runId.equals(incomingRunId)) {
+        if (runId != null && !runId.equals(incomingRunId)) {
             throw new IllegalArgumentException(
                     "journal cannot mix workflow run ids");
         }
@@ -168,8 +166,12 @@ public final class WorkflowJournalV1 {
             }
         }
 
+        long followingSequence = Math.addExact(nextSequence, 1L);
+        if (runId == null) {
+            runId = incomingRunId;
+        }
         journal.add(entry);
-        nextSequence = Math.addExact(nextSequence, 1L);
+        nextSequence = followingSequence;
         for (var effect : newEffects.entrySet()) {
             effects.putIfAbsent(
                     effect.getKey(),
@@ -199,22 +201,29 @@ public final class WorkflowJournalV1 {
         for (MutableEffect effect : effects.values()) {
             if (effect.state != EffectState.PENDING) continue;
 
-            effect.attempts = Math.addExact(effect.attempts, 1);
+            int nextAttempt = Math.addExact(effect.attempts, 1);
+            long claimNumber = nextClaimNumber;
+            long followingClaimNumber =
+                    Math.addExact(nextClaimNumber, 1L);
+            long leaseUntil =
+                    Math.addExact(nowMillis, leaseMillis);
+            String token =
+                    "workflow/" + runId
+                            + "/claim/" + claimNumber;
+
+            effect.attempts = nextAttempt;
             effect.state = EffectState.CLAIMED;
             effect.workerId = workerId;
-            effect.claimToken =
-                    "workflow/" + runId
-                            + "/claim/" + nextClaimNumber;
-            nextClaimNumber = Math.addExact(nextClaimNumber, 1L);
-            effect.leaseUntilMillis =
-                    Math.addExact(nowMillis, leaseMillis);
+            effect.claimToken = token;
+            effect.leaseUntilMillis = leaseUntil;
+            nextClaimNumber = followingClaimNumber;
 
             return Optional.of(new Claim(
                     effect.effectKey,
                     effect.command,
-                    effect.claimToken,
-                    effect.attempts,
-                    effect.leaseUntilMillis));
+                    token,
+                    nextAttempt,
+                    leaseUntil));
         }
 
         return Optional.empty();
@@ -271,10 +280,12 @@ public final class WorkflowJournalV1 {
             String reconciliationRef) {
         MutableEffect effect =
                 requireState(effectKey, EffectState.AMBIGUOUS);
-        effect.receiptRef = requireText(
+        String receipt = requireText(
                 receiptRef, "receiptRef", 8_192);
-        effect.reconciliationRef = requireText(
+        String reconciliation = requireText(
                 reconciliationRef, "reconciliationRef", 8_192);
+        effect.receiptRef = receipt;
+        effect.reconciliationRef = reconciliation;
         effect.state = EffectState.COMPLETED;
         clearClaim(effect);
     }
