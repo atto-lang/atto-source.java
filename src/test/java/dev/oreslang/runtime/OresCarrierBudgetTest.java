@@ -48,8 +48,12 @@ final class OresCarrierBudgetTest {
 
     @Test void boundedVmKeepsControlAndLifecycleCapacityColdUntilDemand() throws Exception {
         String previous = System.getProperty(OresCarrierBudget.PROPERTY);
+        String previousBackend = System.getProperty("ores.runtime.carriers");
+        String previousAffinity = System.getProperty("ores.actor.affinity");
         try {
             System.setProperty(OresCarrierBudget.PROPERTY, "5");
+            System.setProperty("ores.runtime.carriers", "java");
+            System.setProperty("ores.actor.affinity", "none");
             OresVM vm = OresVM.create(Runnable::run);
             try {
                 assertEquals(0, vm.controlCarrierCount());
@@ -64,7 +68,8 @@ final class OresCarrierBudgetTest {
                 var actors = new ActorRuntime(IsolatePolicy.developer(), actorConfig,
                         ActorRuntime.TurnExecutor.direct(),
                         ActorRuntime.ControlDispatcher.unavailable(),
-                        vm.carrierBudget());
+                        vm.carrierBudget(),
+                        vm.carrierPermitPool());
                 CountDownLatch observerEntered = new CountDownLatch(1);
                 CountDownLatch releaseObserver = new CountDownLatch(1);
                 try {
@@ -94,6 +99,12 @@ final class OresCarrierBudgetTest {
                                     + actors.lifecycleObserverCarrierCount()
                                     <= vm.carrierBudget().maximum(),
                             "runtime-owned execution carriers must stay within configured ceiling");
+                    assertEquals(
+                            vm.controlCarrierCount()
+                                    + actors.startedActorCarrierCount()
+                                    + actors.lifecycleObserverCarrierCount(),
+                            vm.carrierPermitPool().totalHeld(),
+                            "shared coordinator must equal all live JVM execution carriers");
                 } finally {
                     releaseObserver.countDown();
                     actors.close();
@@ -104,6 +115,10 @@ final class OresCarrierBudgetTest {
         } finally {
             if (previous == null) System.clearProperty(OresCarrierBudget.PROPERTY);
             else System.setProperty(OresCarrierBudget.PROPERTY, previous);
+            if (previousBackend == null) System.clearProperty("ores.runtime.carriers");
+            else System.setProperty("ores.runtime.carriers", previousBackend);
+            if (previousAffinity == null) System.clearProperty("ores.actor.affinity");
+            else System.setProperty("ores.actor.affinity", previousAffinity);
         }
     }
 
