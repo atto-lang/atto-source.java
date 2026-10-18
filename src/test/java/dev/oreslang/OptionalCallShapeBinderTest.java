@@ -255,6 +255,37 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void parsedOptionalFormalMetadataBindsButRequiredOptionDoesNotBecomeOptional() {
+        Ast.Program parsed = Parser.parse(
+                "pub fnc target(string? a, Option<int> required, bool? c): void { return; }");
+        Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        List<Parameter> shape = OptionalCallShapeBinder.formalParameterShapes(fn.parameters());
+        assertEquals(List.of(true, false, true),
+                shape.stream().map(Parameter::optional).toList());
+        assertEquals(List.of("a", "required", "c"),
+                shape.stream().map(Parameter::name).toList());
+
+        Ast.Program callProgram = Parser.parse(
+                "pub fnc entry(): void { const result = target(c: _, required: None); return; }");
+        Ast.FunctionDecl entry = (Ast.FunctionDecl)
+                callProgram.modules().getFirst().declarations().getFirst();
+        Ast.BindingStmt binding = (Ast.BindingStmt) entry.body().getFirst();
+        Ast.StagedCallExpr call = (Ast.StagedCallExpr) binding.initializer();
+        Plan plan = OptionalCallShapeBinder.bindParsedFormals(fn.parameters(), call.arguments());
+        assertEquals(List.of(-1, 0, -1), plan.sourceIndexByParameter());
+        assertEquals(List.of(0), plan.callItemIndexByEvaluatedSource());
+        assertEquals(List.of(0), plan.omittedCallItemIndices());
+        assertTrue(plan.omitted(0));   // implicitly omitted T?
+        assertTrue(plan.explicitlyOmitted(2));
+        assertFalse(plan.omitted(1));  // supplied required Option<int> via None
+
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.bind(shape,
+                        List.of(Argument.namedOmission("required"))));
+    }
+
+    @Test
     void parsedCallItemsBindWithoutErasingRawOmissionPositions() {
         Ast.Program program = Parser.parse(
                 "pub fnc test(): void { const v = f(c: sideC(), b: _, a: sideA()); return; }");
