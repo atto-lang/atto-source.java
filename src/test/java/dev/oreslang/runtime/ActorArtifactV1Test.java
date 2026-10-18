@@ -17,7 +17,6 @@ final class ActorArtifactV1Test {
     void admitsExactSignedBytesAndRetainsImmutableCopy() throws Exception {
         byte[] artifact = "worker-native-image-v1".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         KeyPair pair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
-
         var unsigned = receipt(
                 artifact,
                 Ast.ActorKind.PRIVATE,
@@ -29,12 +28,12 @@ final class ActorArtifactV1Test {
                 IsolatePolicy.Capability.IPC,
                 IsolatePolicy.Capability.CHILD_PROCESS);
 
-        ActorArtifactV1<Object> admitted =
-                ActorArtifactV1.admit(
-                        signed,
-                        artifact,
-                        trusted(pair, "release-key-2026q4"),
-                        supervisor);
+        ActorArtifactV1<Object> admitted = ActorArtifactV1.admit(
+                signed,
+                artifact,
+                trusted(pair, "release-key-2026q4"),
+                expected(unsigned),
+                supervisor);
 
         artifact[0] ^= 0x55;
         assertEquals(
@@ -75,6 +74,7 @@ final class ActorArtifactV1Test {
                         signed,
                         tampered,
                         trusted(pair, "release"),
+                        expected(unsigned),
                         supervisor));
         assertTrue(failure.getMessage().contains("SHA-256 mismatch"),
                 failure.getMessage());
@@ -102,6 +102,7 @@ final class ActorArtifactV1Test {
                         signed,
                         artifact,
                         trusted(attacker, "release"),
+                        expected(original),
                         supervisor));
 
         byte[] forgedSignature = signed.signatureEd25519();
@@ -113,6 +114,7 @@ final class ActorArtifactV1Test {
                                 original, "release", forgedSignature),
                         artifact,
                         trusted(signer, "release"),
+                        expected(original),
                         supervisor));
 
         assertThrows(
@@ -122,6 +124,7 @@ final class ActorArtifactV1Test {
                                 original, "other-key", signed.signatureEd25519()),
                         artifact,
                         trusted(signer, "release"),
+                        expected(original),
                         supervisor));
 
         var altered = new ActorArtifactV1.UnsignedReceipt(
@@ -149,6 +152,62 @@ final class ActorArtifactV1Test {
                                 altered, "release", signed.signatureEd25519()),
                         artifact,
                         trusted(signer, "release"),
+                        expected(original),
+                        supervisor));
+    }
+
+    @Test
+    void rejectsSignedArtifactForDifferentExpectedActorOrAbi() throws Exception {
+        byte[] artifact = "trusted-worker".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        KeyPair pair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        var unsigned = receipt(
+                artifact,
+                Ast.ActorKind.PRIVATE,
+                Ast.ActorBoundary.IPC,
+                Set.of());
+        var signed = signed(pair, unsigned, "release");
+        IsolatePolicy supervisor = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.IPC,
+                IsolatePolicy.Capability.CHILD_PROCESS);
+
+        var wrongActor = new ActorArtifactV1.ExpectedActorContract(
+                "OtherWorker",
+                unsigned.actorKind(),
+                unsigned.actorBoundary(),
+                unsigned.artifactFormat(),
+                unsigned.compilerBackend(),
+                unsigned.targetTriple(),
+                unsigned.abi(),
+                unsigned.messageAbiSha256(),
+                unsigned.stateSchemaSha256());
+        assertThrows(
+                SecurityException.class,
+                () -> ActorArtifactV1.admit(
+                        signed,
+                        artifact,
+                        trusted(pair, "release"),
+                        wrongActor,
+                        supervisor));
+
+        byte[] wrongMessageAbi = unsigned.messageAbiSha256();
+        wrongMessageAbi[0] ^= 1;
+        var wrongAbi = new ActorArtifactV1.ExpectedActorContract(
+                unsigned.actorTypeName(),
+                unsigned.actorKind(),
+                unsigned.actorBoundary(),
+                unsigned.artifactFormat(),
+                unsigned.compilerBackend(),
+                unsigned.targetTriple(),
+                unsigned.abi(),
+                wrongMessageAbi,
+                unsigned.stateSchemaSha256());
+        assertThrows(
+                SecurityException.class,
+                () -> ActorArtifactV1.admit(
+                        signed,
+                        artifact,
+                        trusted(pair, "release"),
+                        wrongAbi,
                         supervisor));
     }
 
@@ -192,12 +251,12 @@ final class ActorArtifactV1Test {
         byte[] artifact = "worker".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         KeyPair pair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
 
-        var trusted = receipt(
+        var trustedReceipt = receipt(
                 artifact,
                 Ast.ActorKind.PRIVATE,
                 Ast.ActorBoundary.IPC,
                 Set.of());
-        var trustedSigned = signed(pair, trusted, "release");
+        var trustedSigned = signed(pair, trustedReceipt, "release");
 
         SecurityException noIpc = assertThrows(
                 SecurityException.class,
@@ -205,6 +264,7 @@ final class ActorArtifactV1Test {
                         trustedSigned,
                         artifact,
                         trusted(pair, "release"),
+                        expected(trustedReceipt),
                         IsolatePolicy.developer()));
         assertTrue(noIpc.getMessage().contains("IPC"), noIpc.getMessage());
 
@@ -224,6 +284,7 @@ final class ActorArtifactV1Test {
                         untrustedSigned,
                         artifact,
                         trusted(pair, "release"),
+                        expected(untrusted),
                         supervisor));
         assertTrue(
                 ambient.getMessage().contains("zero ambient guest capabilities"),
