@@ -583,7 +583,19 @@ public final class TreeShaker {
             if (declaration instanceof Ast.ClassDecl klass) {
                 List<Ast.FieldDecl> fields = new ArrayList<>();
                 for (Ast.FieldDecl field : klass.fields()) {
-                    fields.add((Ast.FieldDecl) rewriteDeclaration(module, field));
+                    // Class fields are not module bindings. Rewriting through
+                    // rewriteDeclaration used to let a same-named module const
+                    // leak into the class initializer. Preserve the class/static
+                    // namespace and rewrite only the initializer expression.
+                    fields.add(new Ast.FieldDecl(
+                            field.name(),
+                            field.visibility(),
+                            field.bindingKind(),
+                            field.type(),
+                            field.annotations(),
+                            rewriteExpression(field.initializer(), module, Map.of()),
+                            field.mutableReferent(),
+                            field.isStatic()));
                 }
                 Ast.ConstructorDecl constructor = klass.constructor();
                 if (constructor != null) {
@@ -625,6 +637,7 @@ public final class TreeShaker {
                         klass.genericParameters(),
                         klass.parents(),
                         klass.interfaces(),
+                        klass.staticContracts(),
                         fields,
                         constructor,
                         methods);
