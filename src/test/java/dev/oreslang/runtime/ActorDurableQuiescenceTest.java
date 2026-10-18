@@ -49,8 +49,9 @@ final class ActorDurableQuiescenceTest {
                         "freeze forbids a newly admitted callback while held");
                 assertFalse(completed.await(100, TimeUnit.MILLISECONDS),
                         "queued messages stay queued during quiescence");
-                assertThrows(IllegalStateException.class,
+                var repeat = assertThrows(java.util.concurrent.CompletionException.class,
                         () -> runtime.requestDurableQuiescence(actor).join());
+                assertInstanceOf(IllegalStateException.class, repeat.getCause());
                 proof.close();
                 assertTrue(completed.await(5, TimeUnit.SECONDS));
                 assertEquals(3, callbacks.get());
