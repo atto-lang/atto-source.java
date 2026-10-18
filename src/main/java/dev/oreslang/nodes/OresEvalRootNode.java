@@ -37,6 +37,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicLong;
@@ -142,6 +143,10 @@ public final class OresEvalRootNode extends RootNode {
         // path-dependent and must never be published as a declaration result.
         // Identity keys avoid recursively hashing record-based AST bodies.
         private final Map<Object, Boolean> suspensionResults =
+                java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+        // Cache immutable declaration metadata only; visibility and live field
+        // values are checked on every access. Class identity is not AST equality.
+        private final Map<Ast.ClassDecl, java.util.concurrent.ConcurrentHashMap<String, Optional<OwnedField>>> fieldLookups =
                 java.util.Collections.synchronizedMap(new IdentityHashMap<>());
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
@@ -555,7 +560,7 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.FieldDecl field : classFields) {
                 if (field.initializer() == null) continue;
                 OwnedField owned =
-                        findField(klass, field.name(), declarationIdentitySet());
+                        findField(klass, field.name());
                 Ast.ClassDecl fieldOwner =
                         owned == null ? klass : owned.owner();
                 Env initializerEnv =
@@ -4406,8 +4411,7 @@ public final class OresEvalRootNode extends RootNode {
                             args);
                 }
 
-                OwnedField ownedField = object.owner.findField(
-                        object.klass, member.member(), declarationIdentitySet());
+                OwnedField ownedField = object.owner.findField(object.klass, member.member());
                 if (ownedField != null) {
                     object.owner.requireClassMemberVisible(
                             ownedField.field().visibility(), ownedField.owner(),
@@ -4523,10 +4527,7 @@ public final class OresEvalRootNode extends RootNode {
                 Object receiver = eval(member.receiver(), env);
                 if (receiver instanceof OresObject object) {
                     OwnedField targetField =
-                            object.owner.findField(
-                                    object.klass,
-                                    member.member(),
-                                    declarationIdentitySet());
+                            object.owner.findField(object.klass, member.member());
                     if (targetField == null) {
                         throw new IllegalArgumentException(
                                 "unknown field " + member.member());
@@ -5865,8 +5866,7 @@ public final class OresEvalRootNode extends RootNode {
                         return object.owner.methodInvocation(object, method, args);
                     }
 
-                    OwnedField ownedField = object.owner.findField(
-                            object.klass, methodCall.member(), declarationIdentitySet());
+                    OwnedField ownedField = object.owner.findField(object.klass, methodCall.member());
                     if (ownedField != null) {
                         object.owner.requireClassMemberVisible(
                                 ownedField.field().visibility(),
@@ -6215,8 +6215,7 @@ public final class OresEvalRootNode extends RootNode {
                         if (!object.fields.containsKey(target.member())) {
                             throw new IllegalArgumentException("unknown field " + target.member());
                         }
-                        OwnedField ownedField = object.owner.findField(
-                                object.klass, target.member(), declarationIdentitySet());
+                        OwnedField ownedField = object.owner.findField(object.klass, target.member());
                         if (ownedField == null) {
                             throw new IllegalArgumentException("unknown field " + target.member());
                         }
@@ -7155,8 +7154,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object objectMember(OresObject object, String name, Env env) {
                 if (object.fields.containsKey(name)) {
-                    OwnedField ownedField = object.owner.findField(
-                            object.klass, name, declarationIdentitySet());
+                    OwnedField ownedField = object.owner.findField(object.klass, name);
                     if (ownedField != null) {
                         object.owner.requireClassMemberVisible(
                                 ownedField.field().visibility(),
@@ -7705,7 +7703,7 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         value = args.get(i);
                     } else if (field.initializer() != null) {
-                        OwnedField owned = findField(klass, field.name(), declarationIdentitySet());
+                        OwnedField owned = findField(klass, field.name());
                         Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
                         // The object must remain unobservable while fields
                         // are being initialized. Static analysis never binds
@@ -7779,7 +7777,7 @@ public final class OresEvalRootNode extends RootNode {
             // parent-field initializers.
             for (Ast.FieldDecl field : classFields) {
                 if (field.initializer() == null) continue;
-                OwnedField owned = findField(klass, field.name(), declarationIdentitySet());
+                OwnedField owned = findField(klass, field.name());
                 Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
                 // Do not bind self. Constructor parameters are scalar-only,
                 // and the partly built instance is not an initializer value.
@@ -7941,6 +7939,15 @@ public final class OresEvalRootNode extends RootNode {
                         "private " + kind + " '" + owner.name() + "." + name
                                 + "' is accessible only from code declared in class " + owner.name());
             }
+        }
+
+        private OwnedField findField(Ast.ClassDecl klass, String name) {
+            java.util.concurrent.ConcurrentHashMap<String, Optional<OwnedField>> fields;
+            synchronized (fieldLookups) {
+                fields = fieldLookups.computeIfAbsent(klass, ignored -> new java.util.concurrent.ConcurrentHashMap<>());
+            }
+            return fields.computeIfAbsent(name, key -> Optional.ofNullable(
+                    findField(klass, key, declarationIdentitySet()))).orElse(null);
         }
 
         private OwnedField findField(
@@ -8249,8 +8256,7 @@ public final class OresEvalRootNode extends RootNode {
                 // Actors are mailbox/capability identities and must never be
                 // erased into an ordinary structural object view.
                 if (object.klass.actorKind() != Ast.ActorKind.NONE) return Env.MISSING;
-                OwnedField owned = object.owner.findField(
-                        object.klass, name, declarationIdentitySet());
+                OwnedField owned = object.owner.findField(object.klass, name);
                 if (owned == null
                         || owned.field().visibility() != Ast.Visibility.PUBLIC) {
                     return Env.MISSING;
@@ -8914,8 +8920,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object destructureMember(Object value, String name, Env env) {
             if (value instanceof OresObject object) {
-                OwnedField ownedField = object.owner.findField(
-                        object.klass, name, declarationIdentitySet());
+                OwnedField ownedField = object.owner.findField(object.klass, name);
                 if (ownedField != null) {
                     object.owner.requireClassMemberVisible(
                             ownedField.field().visibility(),
