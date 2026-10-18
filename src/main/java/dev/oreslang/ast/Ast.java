@@ -326,6 +326,7 @@ public final class Ast {
             List<String> genericParameters,
             List<TypeRef> parents,
             List<TypeRef> interfaces,
+            List<TypeRef> staticContracts,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
             List<MethodDecl> methods) implements Decl {
@@ -333,8 +334,18 @@ public final class Ast {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
+            staticContracts = List.copyOf(staticContracts);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Compatibility constructor for AST producers without static-side contracts. */
+        public ClassDecl(
+                String name, Visibility visibility, boolean isAbstract, ActorKind actorKind,
+                List<String> genericParameters, List<TypeRef> parents, List<TypeRef> interfaces,
+                List<FieldDecl> fields, ConstructorDecl constructor, List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, genericParameters, parents,
+                    interfaces, List.of(), fields, constructor, methods);
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
