@@ -319,6 +319,18 @@ public final class DurableDevLoopActorV1 {
             }
 
             if (message instanceof CompleteEffect complete) {
+                DurableDevLoopV1.Command command =
+                        store.effect(complete.effectKey())
+                                .orElseThrow(() ->
+                                        new IllegalArgumentException(
+                                                "unknown effect key "
+                                                        + complete.effectKey()))
+                                .command();
+                if (requiresOutcome(command)) {
+                    throw new IllegalStateException(
+                            "effect " + complete.effectKey()
+                                    + " requires atomic CompleteAndDeliver");
+                }
                 store.complete(
                         complete.effectKey(),
                         complete.claimToken(),
@@ -694,6 +706,16 @@ public final class DurableDevLoopActorV1 {
         throw new IllegalArgumentException(
                 "unsupported dev-loop output "
                         + output.getClass().getName());
+    }
+
+    private static boolean requiresOutcome(
+            DurableDevLoopV1.Command command) {
+        return command instanceof DurableDevLoopV1.RequestCode
+                || command instanceof DurableDevLoopV1.PushCode
+                || command instanceof DurableDevLoopV1.AwaitCi
+                || command instanceof DurableDevLoopV1.Evaluate
+                || command instanceof DurableDevLoopV1.CreateBugReport
+                || command instanceof DurableDevLoopV1.RequestApproval;
     }
 
     private static String requireText(String value, String name) {
