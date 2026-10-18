@@ -43,11 +43,10 @@ fi
 # Independently check raw bytes against the attested Git blobs. Reject
 # symlinks/gitlinks and unmerged stages instead of following external content.
 # NUL-delimited index records preserve filenames containing whitespace/newlines.
+tab="$(printf '\t')"
 while IFS= read -r -d '' entry; do
-  metadata="${entry%%
-\t'*}"
-  path="${entry#*
-\t'}"
+  metadata="${entry%%"$tab"*}"
+  path="${entry#*"$tab"}"
   read -r mode blob stage <<< "$metadata"
   if [[ "$stage" != 0 || ( "$mode" != 100644 && "$mode" != 100755 ) ]]; then
     echo "SOURCE_TREE_UNSAFE_ENTRY; only stage-0 regular files are allowed" >&2
