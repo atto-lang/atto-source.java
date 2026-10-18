@@ -6214,6 +6214,30 @@ public final class OresEvalRootNode extends RootNode {
                         object.fields.put(target.member(), value);
                         return value;
                     }
+                    if (receiver instanceof ClassFacade klass) {
+                        Ast.FieldDecl field =
+                                klass.owner().findLocalStaticField(
+                                        klass.klass(), target.member());
+                        if (field == null) {
+                            throw new IllegalArgumentException(
+                                    "unknown static field "
+                                            + klass.klass().name() + "." + target.member());
+                        }
+                        klass.owner().requireClassMemberVisible(
+                                field.visibility(),
+                                klass.klass(),
+                                env.accessClass(),
+                                "static field",
+                                field.name());
+                        if (field.bindingKind() != Ast.BindingKind.LET) {
+                            throw new IllegalArgumentException(
+                                    "static field '" + klass.klass().name() + "."
+                                            + field.name() + "' is immutable");
+                        }
+                        klass.owner().writeStaticField(
+                                klass.klass(), field.name(), value);
+                        return value;
+                    }
                     // Explicit anonymous structs use this mutable map path.
                     // infer struct values use ReadonlyRecordValue instead.
                     if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
