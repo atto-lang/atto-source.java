@@ -164,8 +164,10 @@ public final class TypedWorkflowRunV1 {
     public synchronized Transition advance(
             String outcome,
             String payloadType) {
-        outcome = requireText(outcome, "outcome");
-        payloadType = requireText(payloadType, "payloadType");
+        final String normalizedOutcome =
+                requireText(outcome, "outcome");
+        final String normalizedPayloadType =
+                requireText(payloadType, "payloadType");
 
         TypedWorkflowGraphV1.Node from =
                 graph.nodes().get(currentNode);
@@ -175,28 +177,28 @@ public final class TypedWorkflowRunV1 {
                             + currentNode);
         }
 
-        String declaredType = from.outcomeTypes().get(outcome);
+        String declaredType = from.outcomeTypes().get(normalizedOutcome);
         if (declaredType == null) {
             throw new IllegalArgumentException(
                     "node " + currentNode
-                            + " has no outcome " + outcome);
+                            + " has no outcome " + normalizedOutcome);
         }
-        if (!declaredType.equals(payloadType)) {
+        if (!declaredType.equals(normalizedPayloadType)) {
             throw new IllegalArgumentException(
                     "outcome payload type mismatch: expected "
                             + declaredType
                             + " but received "
-                            + payloadType);
+                            + normalizedPayloadType);
         }
 
         TypedWorkflowGraphV1.Edge edge = graph.outgoing(currentNode)
                 .stream()
                 .filter(candidate ->
-                        candidate.outcome().equals(outcome))
+                        candidate.outcome().equals(normalizedOutcome))
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException(
                         "validated graph lost transition for "
-                                + currentNode + "." + outcome));
+                                + currentNode + "." + normalizedOutcome));
 
         String edgeKey = edgeKey(edge);
         int previous =
@@ -225,7 +227,7 @@ public final class TypedWorkflowRunV1 {
                 revision,
                 edge.fromNode(),
                 edge.outcome(),
-                payloadType,
+                normalizedPayloadType,
                 edge.toNode(),
                 next,
                 edge.maxTraversals(),
