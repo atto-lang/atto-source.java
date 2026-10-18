@@ -125,4 +125,116 @@ final class OresTaskScopeTest {
             assertTrue(AsyncRuntime.await(child.asFuture()));
         }
     }
+    @Test
+    void blockedCancellationSubscriberCannotStarveSiblingRevocation() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            CountDownLatch started = new CountDownLatch(2);
+            CountDownLatch callbackEntered = new CountDownLatch(1);
+            CountDownLatch releaseSubscriber = new CountDownLatch(1);
+            OresTask<Void> first = scope.submit(() -> {
+                started.countDown();
+                Thread.sleep(30_000);
+                return null;
+            });
+            OresTask<Void> second = scope.submit(() -> {
+                started.countDown();
+                Thread.sleep(30_000);
+                return null;
+            });
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            java.util.function.BiConsumer<Void, Throwable> subscriber = (value, failure) -> {
+                callbackEntered.countDown();
+                boolean interrupted = false;
+                for (;;) {
+                    try {
+                        releaseSubscriber.await();
+                        break;
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
+                }
+                if (interrupted) Thread.currentThread().interrupt();
+            };
+            first.getAwaited().whenCompleteRuntime(subscriber);
+            second.getAwaited().whenCompleteRuntime(subscriber);
+
+            AtomicReference<Throwable> cancelFailure = new AtomicReference<>();
+            Thread cancelThread = Thread.ofVirtual().start(() -> {
+                try { scope.cancel(); }
+                catch (Throwable failure) { cancelFailure.set(failure); }
+            });
+            try {
+                assertTrue(callbackEntered.await(2, TimeUnit.SECONDS));
+                // With single-phase cancellation, the first subscriber
+                // blocks and the second producer remains runnable.
+                assertTrue(first.isCancelled());
+                assertTrue(second.isCancelled());
+            } finally {
+                releaseSubscriber.countDown();
+            }
+            cancelThread.join();
+            assertNull(cancelFailure.get());
+            assertNull(AsyncRuntime.await(first.getDone()));
+            assertNull(AsyncRuntime.await(second.getDone()));
+        }
+    }
+
+    @Test
+    void interruptedScopeCloseStillJoinsPhysicalTaskCleanup() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch cleaning = new CountDownLatch(1);
+            CountDownLatch releaseCleanup = new CountDownLatch(1);
+            CountDownLatch closeReturned = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            java.util.concurrent.atomic.AtomicBoolean interruptRestored =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            OresTask<Void> task = scope.submit(() -> {
+                try {
+                    started.countDown();
+                    Thread.sleep(30_000);
+                } finally {
+                    cleaning.countDown();
+                    boolean interrupted = false;
+                    for (;;) {
+                        try {
+                            releaseCleanup.await();
+                            break;
+                        } catch (InterruptedException ignored) {
+                            interrupted = true;
+                        }
+                    }
+                    if (interrupted) Thread.currentThread().interrupt();
+                }
+                return null;
+            });
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            Thread closer = Thread.ofVirtual().start(() -> {
+                Thread.currentThread().interrupt();
+                try {
+                    scope.close();
+                    interruptRestored.set(Thread.currentThread().isInterrupted());
+                } catch (Throwable thrown) {
+                    failure.set(thrown);
+                } finally {
+                    closeReturned.countDown();
+                }
+            });
+            try {
+                assertTrue(cleaning.await(2, TimeUnit.SECONDS));
+                assertFalse(closeReturned.await(100, TimeUnit.MILLISECONDS));
+                assertFalse(task.isQuiescent());
+            } finally {
+                releaseCleanup.countDown();
+            }
+            assertTrue(closeReturned.await(3, TimeUnit.SECONDS));
+            closer.join();
+            assertNull(failure.get());
+            assertTrue(interruptRestored.get());
+            assertTrue(task.isQuiescent());
+        }
+    }
+
 }
