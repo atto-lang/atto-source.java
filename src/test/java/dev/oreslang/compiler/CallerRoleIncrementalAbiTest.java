@@ -168,6 +168,44 @@ final class CallerRoleIncrementalAbiTest {
     }
 
     @Test
+    void referencedPrivateEnumRetaggingInvalidatesPublicStaticMethodAbi() {
+        String a = IncrementalCompiler.abiDigest(Parser.parse("""
+                define module Gates as
+                    define enum Roles as Enter = 1 end
+                    define pub class Door as
+                        @CallableBy(Roles.Enter)
+                        pub static fnc open(): void {}
+                    end
+                end
+                """));
+        String b = IncrementalCompiler.abiDigest(Parser.parse("""
+                define module Gates as
+                    define enum Roles as Enter = 5 end
+                    define pub class Door as
+                        @CallableBy(Roles.Enter)
+                        pub static fnc open(): void {}
+                    end
+                end
+                """));
+        assertNotEquals(a, b);
+    }
+
+    @Test
+    void referencedPrivateEnumRetaggingInvalidatesPublicCallerGrantAbi() {
+        String a = IncrementalCompiler.abiDigest(Parser.parse("""
+                define enum Roles as A = 1 end
+                @CallerRole(Roles.A)
+                pub fnc caller(): void {}
+                """));
+        String b = IncrementalCompiler.abiDigest(Parser.parse("""
+                define enum Roles as A = 4 end
+                @CallerRole(Roles.A)
+                pub fnc caller(): void {}
+                """));
+        assertNotEquals(a, b);
+    }
+
+    @Test
     void implementationChangesDoNotModifyExportedPolicyAbi() {
         String first = fingerprint("""
                 @CallableBy(Callers.A)
