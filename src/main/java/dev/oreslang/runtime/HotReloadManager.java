@@ -164,21 +164,22 @@ public final class HotReloadManager implements AutoCloseable {
         }
         long id = sequence.incrementAndGet();
         SharedUntrustedIsolatePool.Group group = null;
-        Context context;
-        if (guestPolicy.adversarial()) {
-            // The isolated Engine must outlive all hot-loaded code generations.
-            // Per-generation contexts share ONE physical isolate heap/GC/JIT.
-            // No standalone restrictedContextBuilder() fallback is permitted.
-            if (untrustedPool == null) {
-                untrustedPool = new SharedUntrustedIsolatePool(
-                        256L * 1024 * 1024, MAX_ADVERSARIAL_LIVE_GENERATIONS);
-            }
-            group = untrustedPool.createGroup();
-            context = group.contextForSupervisor();
-        } else {
-            context = guestPolicy.restrictedContextBuilder(executionProfile).build();
-        }
+        Context context = null;
         try {
+            // Include group acquisition in rollback scope: context entry can
+            // fail after createGroup succeeds (e.g. during concurrent pool
+            // retirement), and must not strand an untracked Context/slot.
+            if (guestPolicy.adversarial()) {
+                // All generations remain in ONE physical untrusted Engine.
+                if (untrustedPool == null) {
+                    untrustedPool = new SharedUntrustedIsolatePool(
+                            256L * 1024 * 1024, MAX_ADVERSARIAL_LIVE_GENERATIONS);
+                }
+                group = untrustedPool.createGroup();
+                context = group.contextForSupervisor();
+            } else {
+                context = guestPolicy.restrictedContextBuilder(executionProfile).build();
+            }
             // Trusted code stays in its own execution domain. Adversarial
             // code is interned ONLY in the separate shared untrusted Engine,
             // with leases pinned through confirmed guest Context retirement.
@@ -198,12 +199,16 @@ public final class HotReloadManager implements AutoCloseable {
             }
             return generation;
         } catch (RuntimeException | Error failure) {
+            Throwable report = failure;
             try {
                 if (group != null) group.close();
-                else context.close(true);
-            } catch (RuntimeException cleanup) {
-                failure.addSuppressed(cleanup);
+                else if (context != null) context.close(true);
+            } catch (RuntimeException | Error cleanup) {
+                // A fatal Context cleanup cannot be masked by an ordinary
+                // acquisition error. Never attach raw guest exceptions.
+                report = VerifiedCloseFence.preferFatalSpawnCleanup(failure, cleanup);
             }
+            if (report != failure) throw (Error) report;
             throw failure;
         }
     }
