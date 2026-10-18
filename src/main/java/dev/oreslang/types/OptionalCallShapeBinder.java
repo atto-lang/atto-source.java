@@ -327,13 +327,14 @@ public final class OptionalCallShapeBinder {
             requireNoUnloweredOptionalFormalsInExpr(e.callee());
             for (Ast.TypeRef type : e.typeArguments()) requireNoOmittableTypeOutsideFormal(type, "call type argument");
             for (Ast.Expr arg : e.arguments()) requireNoUnloweredOptionalFormalsInExpr(arg);
-        } else if (expr instanceof Ast.StagedCallExpr e) {
-            requireNoUnloweredOptionalFormalsInExpr(e.callee());
-            for (Ast.TypeRef type : e.typeArguments()) requireNoOmittableTypeOutsideFormal(type, "staged call type argument");
-            for (Ast.CallArgument item : e.arguments()) requireNoUnloweredOptionalFormalsInExpr(item.value());
-        } else if (expr instanceof Ast.StagedNewExpr e) {
-            requireNoOmittableTypeOutsideFormal(e.type(), "staged construction type");
-            for (Ast.CallArgument item : e.arguments()) requireNoUnloweredOptionalFormalsInExpr(item.value());
+        } else if (expr instanceof Ast.StagedCallExpr) {
+            // Reject before executing any declaration, initializer or side effect,
+            // including when a source call is hidden in an uncalled branch.
+            throw new IllegalArgumentException(
+                    "staged named/optional calls are not yet enabled without checked Option<T> ABI lowering");
+        } else if (expr instanceof Ast.StagedNewExpr) {
+            throw new IllegalArgumentException(
+                    "staged named/optional construction is not yet enabled without checked Option<T> ABI lowering");
         } else if (expr instanceof Ast.RuntimeCallExpr e) {
             for (Ast.Expr arg : e.arguments()) requireNoUnloweredOptionalFormalsInExpr(arg);
         } else if (expr instanceof Ast.MemberExpr e) {
