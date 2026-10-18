@@ -53,6 +53,24 @@ public final class Ast {
             arguments = List.copyOf(arguments);
         }
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
+        /** Only formal-parameter syntax T? may construct this compiler-only marker. */
+        public static TypeRef omittableFormal(TypeRef inner) {
+            java.util.Objects.requireNonNull(inner, "omittable formal type");
+            if (inner.isOmittableFormal() || inner.name().equals("void")) {
+                throw new IllegalArgumentException("invalid nested or void omittable formal");
+            }
+            return new TypeRef("$omittable_formal$", List.of(inner), false);
+        }
+        public boolean isOmittableFormal() {
+            return name.equals("$omittable_formal$") && !inferArguments
+                    && arguments.size() == 1;
+        }
+        public TypeRef omittableValueType() {
+            if (!isOmittableFormal()) {
+                throw new IllegalStateException("not an omittable formal type");
+            }
+            return arguments.getFirst();
+        }
         /** A complement in type position. The token '!' is not a value operator here. */
         public static TypeRef complement(TypeRef excluded) {
             return excluded.isComplement()
@@ -203,6 +221,22 @@ public final class Ast {
     }
 
     public record Param(TypeRef type, String name, boolean structural, boolean mutable) {
+        public Param {
+            java.util.Objects.requireNonNull(type, "formal type");
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("formal parameter needs a name");
+            }
+            if (structural && type.isOmittableFormal()) {
+                throw new IllegalArgumentException(
+                        "structural borrowed formal cannot be an optional T? slot");
+            }
+        }
+        public boolean optional() { return type.isOmittableFormal(); }
+        public TypeRef valueType() { return optional() ? type.omittableValueType() : type; }
+        /** Intended callee type; not executable until verified Option ABI lowering. */
+        public TypeRef calleeType() {
+            return optional() ? new TypeRef("Option", List.of(valueType()), false) : type;
+        }
         public Param(TypeRef type, String name) { this(type, name, false, false); }
         public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
     }
