@@ -142,6 +142,17 @@
                   </arguments>
                 </configuration>
               </execution>
+              <execution>
+                <id>build-native-ipc-actor-transport</id>
+                <phase>generate-resources</phase>
+                <goals><goal>exec</goal></goals>
+                <configuration>
+                  <executable>sh</executable>
+                  <arguments>
+                    <argument>${project.basedir}/scripts/build-native-ipc.sh</argument>
+                  </arguments>
+                </configuration>
+              </execution>
             </executions>
           </plugin>
         </plugins>
