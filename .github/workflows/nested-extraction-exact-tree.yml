@@ -56,6 +56,12 @@ jobs:
           cache: maven
       - name: Run targeted nested extraction and scheduler regressions
         run: bash tools/run-nested-extraction-exact-tree.sh "${{ steps.tree.outputs.sha }}" . targeted
+      - name: Hash actual targeted JUnit XML reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          find target/surefire-reports -type f -name 'TEST-*.xml' -print0 | sort -z | xargs -0 -r sha256sum > "$RUNNER_TEMP/nested-junit-sha256.txt"
+          test -s "$RUNNER_TEMP/nested-junit-sha256.txt"
       - name: Upload real targeted JUnit reports and tree evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -63,6 +69,7 @@ jobs:
           name: nested-targeted-evidence
           path: |
             ${{ runner.temp }}/nested-provenance.txt
+            ${{ runner.temp }}/nested-junit-sha256.txt
             target/surefire-reports/**
           retention-days: 7
           if-no-files-found: error
@@ -100,6 +107,12 @@ jobs:
           cache: maven
       - name: Full Maven verification on the same exact source tree
         run: bash tools/run-nested-extraction-exact-tree.sh "${{ steps.tree.outputs.sha }}" . full
+      - name: Hash actual full-suite JUnit XML reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          find target/surefire-reports -type f -name 'TEST-*.xml' -print0 | sort -z | xargs -0 -r sha256sum > "$RUNNER_TEMP/nested-junit-sha256.txt"
+          test -s "$RUNNER_TEMP/nested-junit-sha256.txt"
       - name: Upload full Maven JUnit reports and tree evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -107,6 +120,7 @@ jobs:
           name: nested-full-evidence
           path: |
             ${{ runner.temp }}/nested-provenance.txt
+            ${{ runner.temp }}/nested-junit-sha256.txt
             target/surefire-reports/**
           retention-days: 7
           if-no-files-found: error
@@ -147,12 +161,20 @@ jobs:
           github-token: ${{ github.token }}
           cache: maven
       - name: Native Image smoke with verified tree
-        run: bash tools/run-nested-extraction-exact-tree.sh "${{ steps.tree.outputs.sha }}" . "${{ matrix.phase }}"
-      - name: Upload native provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/run-nested-extraction-exact-tree.sh "${{ steps.tree.outputs.sha }}" . "${{ matrix.phase }}" | tee "$RUNNER_TEMP/nested-${{ matrix.phase }}.log"
+          grep -F "NESTED_EXTRACTION_CI|PHASE_PASS|${{ matrix.phase }}|${{ steps.tree.outputs.sha }}" "$RUNNER_TEMP/nested-${{ matrix.phase }}.log"
+          sha256sum "$RUNNER_TEMP/nested-${{ matrix.phase }}.log" > "$RUNNER_TEMP/nested-native-sha256.txt"
+      - name: Upload native provenance and executed smoke logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nested-${{ matrix.phase }}-evidence
-          path: ${{ runner.temp }}/nested-provenance.txt
+          path: |
+            ${{ runner.temp }}/nested-provenance.txt
+            ${{ runner.temp }}/nested-${{ matrix.phase }}.log
+            ${{ runner.temp }}/nested-native-sha256.txt
           retention-days: 7
           if-no-files-found: error
