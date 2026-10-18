@@ -130,4 +130,31 @@ final class TaskSuspendsInteropTest {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
         }
     }
+
+    @Test
+    void namedMainInsideModuleDoesNotInheritRootTaskSuspensionAuthority() {
+        String source = """
+                define module Utility as
+                    async fnc number(): int { return 7; }
+                    fnc main(): int {
+                        return await number();
+                    }
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("await requires"), failure::getMessage);
+    }
+
+    @Test
+    void rootMainRetainsItsExistingVmTaskSuspensionPrivilege() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                async fnc number(): int { return 7; }
+                pub fnc main(): void {
+                    let int n = await number();
+                    return;
+                }
+                """));
+    }
+
 }
