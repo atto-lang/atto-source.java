@@ -1340,6 +1340,12 @@ public final class OwnershipChecker {
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.TaskExpr task) return checkTaskBody(task.body(), scope);
+        if (expr instanceof Ast.SuspendsLambdaExpr) {
+            // No callable-effect type, typed continuation re-entry point or
+            // lifetime proof exists yet for a first-class suspends closure.
+            // Never treat it as an ordinary synchronous lambda.
+            throw error("suspends lambda requires typed suspension-effect callable lowering");
+        }
         if (expr instanceof Ast.TaskLambdaExpr || expr instanceof Ast.AsyncLambdaExpr) {
             // An indirect/dynamically invoked scheduled lambda has no
             // verified parameter-to-capture type/ownership metadata yet.
@@ -2784,6 +2790,11 @@ public final class OwnershipChecker {
         }
         else if (expr instanceof Ast.AsyncLambdaExpr asyncLambda) {
             scanExpr(asyncLambda.lambda(), locals, outer, recursiveBinding, captures, false);
+        }
+        else if (expr instanceof Ast.SuspendsLambdaExpr suspendsLambda) {
+            // Transitive free names remain visible across a suspending
+            // nested closure; do not lose a borrow or move when nesting.
+            scanExpr(suspendsLambda.lambda(), locals, outer, recursiveBinding, captures, false);
         }
         else if (expr instanceof Ast.LambdaExpr lambda) {
             // A lexical nested closure can reference values that belong to an
