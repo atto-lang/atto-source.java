@@ -46,6 +46,14 @@ final class LambdaCaptureStatements {
                 scan(arm.body(), branch, free);
             }
             scan(s.elseBody(), locals, free);
+        } else if (stmt instanceof Ast.MatchStmt s) {
+            value(s.subject(), locals, free);
+            for (Ast.MatchArm arm : s.arms()) {
+                Set<String> branch = new HashSet<>(locals);
+                LambdaCaptureExpressions.pattern(arm.pattern(), branch);
+                value(arm.guard(), branch, free);
+                scan(arm.body(), branch, free);
+            }
         } else {
             throw new IllegalArgumentException("unsupported lexical capture statement " + stmt);
         }
