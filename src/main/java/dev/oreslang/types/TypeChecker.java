@@ -1833,6 +1833,23 @@ public final class TypeChecker {
         return typeOf(receiver, env, generics, self);
     }
 
+    /**
+     * This conversion is legal only at an explicit static member receiver.
+     * Ordinary expression typing retains the non-first-class ModuleNamespace
+     * marker and must never widen it into a structural runtime record.
+     */
+    private Type resolveStaticMemberReceiver(Type receiver) {
+        if (receiver instanceof ModuleNamespace namespace) {
+            Ast.ModuleDecl module = modules.get(namespace.moduleName());
+            if (module == null) {
+                throw new IllegalArgumentException(
+                        "unknown compile-time module namespace '" + namespace.moduleName() + "'");
+            }
+            return moduleShape(module);
+        }
+        return receiver;
+    }
+
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
