@@ -304,5 +304,6 @@ final class ActorExecutionGrantGateTest {
         assertThrows(IllegalArgumentException.class, () -> new ActorExecutionGrantGate(-1, 1));
         assertThrows(IllegalArgumentException.class, () -> new ActorExecutionGrantGate(1, 0));
         assertThrows(IllegalArgumentException.class, () -> new ActorExecutionGrantGate(1, -5));
+        assertThrows(IllegalArgumentException.class, () -> new ActorExecutionGrantGate(1, 4));
     }
 }
