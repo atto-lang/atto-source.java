@@ -66,10 +66,13 @@ jobs:
             --main-jar "$GITHUB_WORKSPACE/target/oreslang-source-0.1.0-SNAPSHOT.jar" \
             --dependency-dir "$GITHUB_WORKSPACE/target/compiler-runtime-deps" \
             --out-dir "$RUNNER_TEMP/oreslang-compiler-bundle"
+          BUNDLE_MANIFEST_SHA256="$(sha256sum "$RUNNER_TEMP/oreslang-compiler-bundle/manifest.json" | awk '{print $1}')"
           python3 scripts/ci/compiler_bundle.py verify \
             --bundle "$RUNNER_TEMP/oreslang-compiler-bundle" \
             --source-commit "$SOURCE_COMMIT" \
-            --source-tree "$SOURCE_TREE"
+            --source-tree "$SOURCE_TREE" \
+            --expected-manifest-sha256 "$BUNDLE_MANIFEST_SHA256" \
+            --probe-launcher
           sha256sum "$RUNNER_TEMP/oreslang-compiler-bundle/manifest.json"
           sha256sum "$RUNNER_TEMP/oreslang-compiler-bundle/run-oreslang"
       - name: Real Java OresMain positive/negative source checks
