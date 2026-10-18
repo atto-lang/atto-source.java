@@ -728,6 +728,21 @@ def publish(repository, source, branch, trusted_root, expected_tree=None,
         "tree": new_tree_sha, "parents": [base_sha]
     })
     commit_sha = valid_sha(commit.get("sha"))
+    # A successful POST response does not establish what tree and parent were
+    # actually stored in GitHub's commit database. Independently read the
+    # created commit before attaching any branch ref to it. A wrong tree here
+    # could run unreviewed destination workflows or publish stale source.
+    committed = gh_api(f"repos/{repository}/git/commits/{commit_sha}")
+    committed_tree = committed.get("tree")
+    committed_parents = committed.get("parents")
+    if (committed.get("sha") != commit_sha
+            or not isinstance(committed_tree, dict)
+            or committed_tree.get("sha") != new_tree_sha
+            or not isinstance(committed_parents, list)
+            or len(committed_parents) != 1
+            or not isinstance(committed_parents[0], dict)
+            or committed_parents[0].get("sha") != base_sha):
+        raise Denied("created CI commit read-back tree or parent differs from attestation")
     authorize_write()
     require_protected_main_policy(repository, approved_policy)
     verify_source()
