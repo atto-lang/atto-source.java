@@ -165,6 +165,20 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Opaque identity for the currently executing physical actor dispatch.
+     * Distinct simultaneous carriers in one actor domain MUST have distinct
+     * segment identities. Unlike {@link #currentExecutionDomain()}, this is
+     * never an actor-wide ownership key. Host callers use their Thread.
+     *
+     * <p>Use identity comparison, not equals(): ActorExecutionContext is a
+     * record whose value equality is intentionally not a lease identity.</p>
+     */
+    static Object currentMutexExecutionSegment() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? Thread.currentThread() : current;
+    }
+
+    /**
      * Stable actor execution domain for actor-local runtime services, or null
      * when the caller is not currently inside an actor mailbox turn.
      */
