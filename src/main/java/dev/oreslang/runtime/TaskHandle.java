@@ -34,6 +34,18 @@ public final class TaskHandle<T> {
         }
     }
 
+    /**
+     * Only scheduler lowering can create this marker. A user-raised
+     * CancellationException must remain Failed if it wins terminal settlement.
+     * A cancellation request already marked before Future binding must still
+     * report Cancelled even if a first resume races the binding path.
+     */
+    private static final class CancelledAtResume extends CancellationException {
+        CancelledAtResume() {
+            super("task cancelled before scheduler resume");
+        }
+    }
+
     private final TaskCancellation cancellation;
     // Observation only: cancelling getDone() must never forge a quiescence
     // witness or suppress the scheduler's eventual terminal outcome.
@@ -103,7 +115,7 @@ public final class TaskHandle<T> {
         Throwable unwrapped = failure == null ? null : OresFuture.unwrap(failure);
         if (unwrapped == null) {
             outcome = new Success<>(value);
-        } else if (source.isCancelled()) {
+        } else if (source.isCancelled() || unwrapped instanceof CancelledAtResume) {
             outcome = new Cancelled<>(Objects.requireNonNullElse(
                     cancellation.cancellationReason(), "cancelled"));
         } else {
@@ -147,7 +159,7 @@ public final class TaskHandle<T> {
         try {
             source = scheduler.start(resume -> {
                 if (handle.cancellation.isCancelled()) {
-                    throw new CancellationException("task cancelled before resume");
+                    throw new CancelledAtResume();
                 }
                 return task.resume(resume);
             }, handle::onQuiescent);
