@@ -7,6 +7,8 @@ import dev.oreslang.types.DeclaredEffectVerifier;
 import dev.oreslang.types.TypeChecker;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.graalvm.polyglot.Context;
@@ -42,6 +44,8 @@ final class MlActorStateScalarGuestTest {
 
     @Test void compiledActorStageHasOneStateSchemaAndDeclaredEffects() throws Exception {
         String text = source();
+        assertEquals("164bbae8cd4663d83224c7f433028f251d0d661d",
+                gitBlobSha(text), "ML fixture drifted from pinned source Git blob");
         assertDoesNotThrow(() -> verify(text));
         assertEquals(1, count(text, "    state {"));
         assertFalse(text.contains("self.state."));
@@ -155,6 +159,16 @@ final class MlActorStateScalarGuestTest {
                     }
                 end
                 """);
+    }
+
+    private static String gitBlobSha(String text) throws Exception {
+        byte[] content = text.getBytes(StandardCharsets.UTF_8);
+        byte[] prefix = ("blob " + content.length + "\\0")
+                .getBytes(StandardCharsets.UTF_8);
+        MessageDigest sha = MessageDigest.getInstance("SHA-1");
+        sha.update(prefix);
+        sha.update(content);
+        return HexFormat.of().formatHex(sha.digest());
     }
 
     private static void assertRejected(String text) {
