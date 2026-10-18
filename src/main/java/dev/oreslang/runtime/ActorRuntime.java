@@ -4850,6 +4850,22 @@ public final class ActorRuntime implements AutoCloseable {
         return cell != null && !cell.stopped.get();
     }
 
+    /**
+     * Hot-upgrade lifetime predicate: unlike isAlive(), this remains false
+     * after stop is requested until the physical carrier/final cleanup has
+     * completed and the cell reaches its finalization barrier.
+     */
+    boolean physicallyFinalizedForHotUpgrade(ActorRef<?> ref) {
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new ActorInvalidReferenceException(
+                    "ActorRef belongs to a different ActorRuntime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        return cell == null || cell.finalized();
+    }
+
+
     public void stop(ActorRef<?> ref) {
         requireCallerRuntimeAffinity("stop actors");
         Objects.requireNonNull(ref);
