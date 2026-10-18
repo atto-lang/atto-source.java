@@ -7838,10 +7838,6 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             if (publishTerminalObservers) {
-                // Callback-free authoritative termination becomes visible
-                // before any arbitrary Future/output/host observer executes.
-                ref.finalizedLatch.countDown();
-
                 // Parent tree progress is authoritative and precedes every
                 // arbitrary Future/output observer belonging to this child.
                 if (parent != null) {
@@ -7851,6 +7847,11 @@ public final class ActorRuntime implements AutoCloseable {
                         firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
                     }
                 }
+
+                // Callback-free termination becomes visible only after
+                // structured parent bookkeeping has advanced, but still
+                // before arbitrary Future/output/host observers execute.
+                ref.finalizedLatch.countDown();
 
                 final Runnable deferredOutputNotifications = outputNotifications;
                 final Throwable terminal = plan.terminal;
