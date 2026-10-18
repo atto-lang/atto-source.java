@@ -2551,6 +2551,8 @@ public final class OresEvalRootNode extends RootNode {
                 // Actor admission was checked before buildStaticSelectSet.
                 ActorRuntime.ContinuationTarget target =
                         context.actors().captureCurrentContinuationTarget();
+                Env captured = env.snapshotCaptures(
+                        LambdaCapturePlanner.capturesSelect(select));
                 context.actors().enqueueOnCompletion(
                         future,
                         target,
@@ -2562,7 +2564,7 @@ public final class OresEvalRootNode extends RootNode {
                                 executeSelectedArm(
                                         select,
                                         result,
-                                        env.snapshot(),
+                                        captured,
                                         true,
                                         true);
                             } catch (RuntimeException | Error callbackFailure) {
@@ -3990,7 +3992,9 @@ public final class OresEvalRootNode extends RootNode {
                                             ActorRuntime.ContinuationTarget target =
                                                     context.actors()
                                                             .captureCurrentContinuationTarget();
-                                            Env callbackEnv = env.snapshot();
+                                            Env callbackEnv = env.snapshotCaptures(
+                                                    LambdaCapturePlanner.capturesBlock(
+                                                            operation.callbackBody()));
                                             context.actors().enqueueOnCompletion(
                                                     completion,
                                                     target,
@@ -5445,7 +5449,8 @@ public final class OresEvalRootNode extends RootNode {
                 // Execution-domain admission occurred before selectAsync().
                 ActorRuntime.ContinuationTarget target =
                         context.actors().captureCurrentContinuationTarget();
-                Env captured = env.snapshot();
+                Env captured = env.snapshotCaptures(
+                        LambdaCapturePlanner.capturesSelect(selected));
                 context.actors().enqueueOnCompletion(
                         future,
                         target,
@@ -5590,7 +5595,9 @@ public final class OresEvalRootNode extends RootNode {
                 OresFuture<Void> completion = channel.writeAsync(value);
                 ActorRuntime.ContinuationTarget target =
                         context.actors().captureCurrentContinuationTarget();
-                Env callbackEnv = env.snapshot();
+                Env callbackEnv = env.snapshotCaptures(
+                                                    LambdaCapturePlanner.capturesBlock(
+                                                            operation.callbackBody()));
                 context.actors().enqueueOnCompletion(
                         completion,
                         target,
