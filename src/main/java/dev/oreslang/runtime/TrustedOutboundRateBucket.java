@@ -62,11 +62,12 @@ final class TrustedOutboundRateBucket {
     }
 
     /**
-     * Restore tokens ONLY when an already charged send fails *before* enqueue.
-     * A successful delivery does not refund rate tokens; mailbox credits
-     * require a separate exactly-once release mechanism.
+     * INTERNAL ONLY: roll back a provisional charge rejected before its lease
+     * was ever published to a caller. A published admission consumes start
+     * rate even when cancelled before IO, or delayed refunds can inflate
+     * a later token-bucket burst. Outstanding credits settle separately.
      */
-    synchronized void refundFailedSend(long units) {
+    synchronized void rollbackUnpublished(long units) {
         if (units <= 0 || units > burst) {
             throw new IllegalArgumentException("invalid refund");
         }
