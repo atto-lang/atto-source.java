@@ -28,6 +28,9 @@ define module OtpEventManager as
     if capacity < 1 || capacity > 4096; do
       return Err("subscription capacity must be 1..4096");
     fi
+    if subscriptions > capacity; do
+      return Err("subscriptions exceed configured capacity");
+    fi
     return Ok(subscriptions < capacity);
   }
 

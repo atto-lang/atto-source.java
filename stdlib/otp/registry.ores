@@ -22,11 +22,34 @@ define module OtpRegistry as
     return Ok(new Entry<Name, TargetRef>(name, actor_ref, incarnation));
   }
 
+  // Local comparison ONLY; an incarnation integer by itself is not an
+  // actor identity or an authentication token. Do not use to authorize lookups.
   pub fnc same_incarnation(
     int expected,
     int actual
   ): bool {
     return expected > 0 && expected == actual;
+  }
+
+  // Compare the whole runtime-validated registration tuple. A generation
+  // collision across distinct actor IDs or registry scopes MUST NOT alias.
+  // These integer tags are policy metadata, NOT self-authenticating leases:
+  // trusted actor/registry code must derive them from opaque capabilities and
+  // enforce atomically before lookup, delivery, teardown or revocation.
+  pub fnc registration_matches(
+    int expected_scope,
+    int expected_actor,
+    int expected_incarnation,
+    int actual_scope,
+    int actual_actor,
+    int actual_incarnation
+  ): bool {
+    return expected_scope > 0
+        && expected_actor > 0
+        && expected_incarnation > 0
+        && expected_scope == actual_scope
+        && expected_actor == actual_actor
+        && expected_incarnation == actual_incarnation;
   }
 
   pub fnc capacity_allows(
@@ -38,6 +61,9 @@ define module OtpRegistry as
     fi
     if capacity < 1 || capacity > 65536; do
       return Err("registry capacity must be 1..65536");
+    fi
+    if registered > capacity; do
+      return Err("registered count exceeds configured capacity");
     fi
     return Ok(registered < capacity);
   }
