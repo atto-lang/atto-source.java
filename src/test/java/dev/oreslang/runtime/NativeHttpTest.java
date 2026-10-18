@@ -1076,4 +1076,23 @@ class NativeHttpTest {
         }
         return output.toString(StandardCharsets.UTF_8);
     }
+    @Test
+    void hostAssertionFailureCannotStrandAcceptedHttpExchangeCleanup() {
+        var visited = new java.util.ArrayList<Integer>();
+        AssertionError unchecked = new AssertionError("first abort Error");
+        IllegalArgumentException later = new IllegalArgumentException("later abort failure");
+        RuntimeException result = NativeHttp.abortEveryAccepted(
+                List.of(0, 1, 2, 3), state -> {
+                    visited.add(state);
+                    if (state == 0) throw unchecked;
+                    if (state == 2) throw later;
+                });
+        assertEquals(List.of(0, 1, 2, 3), visited,
+                "unchecked host failure must never skip an accepted request");
+        assertInstanceOf(IllegalStateException.class, result);
+        assertSame(unchecked, result.getCause(),
+                "original host Error remains the primary failure cause");
+        assertArrayEquals(new Throwable[]{later}, result.getSuppressed());
+    }
+
 }
