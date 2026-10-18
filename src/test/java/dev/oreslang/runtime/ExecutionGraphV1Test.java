@@ -162,6 +162,34 @@ final class ExecutionGraphV1Test {
     }
 
     @Test
+    void interruptedPreAdmissionWorkerCannotReviveAfterSchedulerAccepts() {
+        var b = new ExecutionGraphV1.Builder();
+        var plan = b.build(b.cpuAdd(b.cpuI64(Long.MAX_VALUE), b.cpuI64(1)));
+        var workerRef = new java.util.concurrent.atomic.AtomicReference<Thread>();
+        var launched = new java.util.concurrent.CountDownLatch(1);
+        var future = plan.submitCpu(job -> {
+            var worker = new Thread(() -> {
+                launched.countDown();
+                job.run();
+            });
+            workerRef.set(worker);
+            worker.start();
+            try {
+                assertTrue(launched.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                worker.interrupt();
+                worker.join(5000);
+                assertFalse(worker.isAlive());
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(ex);
+            }
+        });
+        assertNotNull(workerRef.get());
+        var cause = assertThrows(CompletionException.class, future::join).getCause();
+        assertInstanceOf(InterruptedException.class, cause);
+    }
+
+    @Test
     void duplicateExecutorDispatchHasExactlyOneTerminalPublication() throws Exception {
         var b = new ExecutionGraphV1.Builder();
         var plan = b.build(b.cpuAdd(b.cpuI64(20), b.cpuI64(22)));
