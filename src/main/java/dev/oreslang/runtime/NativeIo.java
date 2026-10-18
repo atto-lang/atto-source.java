@@ -331,9 +331,10 @@ public final class NativeIo {
             } catch (IOException failure) {
                 throw new IllegalStateException("network close failed for " + endpoint + ": " + failure.getMessage(), failure);
             } finally {
-                // Failed socket.close must not strand a registered host handle.
-                // The OS close failure is still reported to the supervisor.
-                context.nativeIo().unregister(socket);
+                // A close failure does not prove the underlying handle
+                // retired. Keep it tracked for host revocation/retry unless
+                // the socket's own state confirms it closed.
+                if (socket.isClosed()) context.nativeIo().unregister(socket);
             }
         }
     }
