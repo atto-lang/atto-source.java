@@ -513,9 +513,19 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
             throw new IllegalStateException(
                     "persisted run identity/policy mismatch after reconstruction");
         }
-        if (state.nextClaimNumber() <= 0) {
+        long totalAttempts = 0L;
+        for (EffectSnapshot effect : state.effects()) {
+            totalAttempts = Math.addExact(
+                    totalAttempts, effect.attempts());
+        }
+        long expectedNextClaimNumber =
+                Math.addExact(totalAttempts, 1L);
+        if (state.nextClaimNumber() != expectedNextClaimNumber) {
             throw new IllegalStateException(
-                    "persisted nextClaimNumber must be positive");
+                    "persisted nextClaimNumber "
+                            + state.nextClaimNumber()
+                            + " does not match issued claim count "
+                            + totalAttempts);
         }
         if (state.lastObservedMillis() < -1L) {
             throw new IllegalStateException(
