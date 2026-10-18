@@ -101,7 +101,11 @@ final class LogicalSourceActorCrossContextUpgradeTest {
 
                 assertEquals(logicalBefore.actorId(), logicalAfter.actorId());
                 assertEquals(1L, logicalBefore.incarnation());
-                assertEquals(2L, logicalAfter.incarnation());
+                assertEquals(1L, logicalAfter.incarnation(),
+                        "transparent hot replacement preserves actor incarnation");
+                assertEquals(1L, logicalBefore.routeEpoch());
+                assertEquals(2L, logicalAfter.routeEpoch(),
+                        "physical route publication advances route epoch");
                 assertNotEquals(physicalBefore.runtimeId(), physicalAfter.runtimeId());
                 assertNotEquals(physicalBefore.actorId(), physicalAfter.actorId());
                 assertSame(second, router.generation());
@@ -177,6 +181,8 @@ final class LogicalSourceActorCrossContextUpgradeTest {
                         () -> router.upgradeTo(second, WAIT),
                         "v1 must not strand unread outputs in the retired physical stream");
                 assertEquals(1L, ref.incarnation());
+                assertEquals(1L, ref.routeEpoch(),
+                        "failed migration must not advance the route epoch");
                 assertEquals(42L, next(ref));
 
                 assertTrue(router.upgradeTo(second, WAIT));
@@ -236,6 +242,7 @@ final class LogicalSourceActorCrossContextUpgradeTest {
                         () -> router.upgradeTo(second, WAIT),
                         "v1 must not silently discard ActorGroup membership");
                 assertEquals(1L, router.ref().incarnation());
+                assertEquals(1L, router.ref().routeEpoch());
 
                 // Closing an ordinary cooperation group removes membership but
                 // does not stop unrelated members; migration can then proceed.
@@ -291,10 +298,94 @@ final class LogicalSourceActorCrossContextUpgradeTest {
                         () -> router.upgradeTo(second, WAIT),
                         "v1 must not strand a pending reader on the retired output channel");
                 assertEquals(1L, router.ref().incarnation());
+                assertEquals(1L, router.ref().routeEpoch());
                 assertTrue(pending.cancel(false));
                 assertTrue(router.upgradeTo(second, WAIT));
                 router.ref().send(1L);
                 assertEquals(2L, next(router.ref()));
+            }
+        }
+    }
+
+
+    @Test
+    void logicalOutputReaderRegistrationIsLinearizedBeforeMigration() throws Exception {
+        String v1 = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 1; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { return; }
+                """;
+        String v2 = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 999; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { val version = 2; return; }
+                """;
+
+        try (HotReloadManager manager =
+                     new HotReloadManager(IsolatePolicy.developer(),
+                             ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("logical-reader-v1.ores", v1);
+            var second = manager.stageActorGeneration("logical-reader-v2.ores", v2);
+            try (LogicalSourceActorRouterV1 router =
+                         LogicalSourceActorRouterV1.spawn(
+                                 first,
+                                 ActorRuntime.ActorKind.SHARED,
+                                 "Counter",
+                                 WAIT)) {
+                var ref = router.ref();
+                var result = new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
+                var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                Thread reader = Thread.ofPlatform().start(() -> {
+                    try {
+                        var step = ref.nextOutput(WAIT);
+                        if (!step.done()) {
+                            result.set(assertInstanceOf(Long.class, step.value().value()));
+                        }
+                    } catch (Throwable thrown) {
+                        failure.set(thrown);
+                    }
+                });
+
+                long deadline = System.nanoTime()
+                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                while (reader.getState() != Thread.State.WAITING
+                        && reader.getState() != Thread.State.TIMED_WAITING) {
+                    if (!reader.isAlive()) break;
+                    if (System.nanoTime() >= deadline)
+                        fail("logical output reader did not reach blocking wait");
+                    Thread.onSpinWait();
+                }
+                assertTrue(reader.isAlive(),
+                        () -> "logical reader failed before migration: " + failure.get());
+
+                assertThrows(IllegalStateException.class,
+                        () -> router.upgradeTo(second, WAIT),
+                        "migration must observe a logical reader registered before route-lock release");
+                assertEquals(1L, ref.routeEpoch());
+
+                ref.send(41L);
+                reader.join(java.util.concurrent.TimeUnit.SECONDS.toMillis(5));
+                assertFalse(reader.isAlive(), "logical reader did not complete");
+                assertNull(failure.get());
+                assertEquals(42L, result.get());
+
+                assertTrue(router.upgradeTo(second, WAIT));
+                assertEquals(1L, ref.incarnation());
+                assertEquals(2L, ref.routeEpoch());
             }
         }
     }
@@ -344,6 +435,7 @@ final class LogicalSourceActorCrossContextUpgradeTest {
                 assertThrows(SecurityException.class,
                         () -> router.upgradeTo(foreign, WAIT));
                 assertEquals(1L, router.ref().incarnation());
+                assertEquals(1L, router.ref().routeEpoch());
                 assertEquals(before, router.physicalAddressForTesting());
                 router.ref().send(1L);
                 assertEquals(2L, next(router.ref()));
@@ -391,6 +483,7 @@ final class LogicalSourceActorCrossContextUpgradeTest {
                 assertThrows(SecurityException.class,
                         () -> router.upgradeTo(bad, WAIT));
                 assertEquals(1L, ref.incarnation());
+                assertEquals(1L, ref.routeEpoch());
                 assertEquals(physical, router.physicalAddressForTesting());
                 assertSame(first, router.generation());
 
