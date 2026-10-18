@@ -2888,7 +2888,7 @@ public final class Parser {
                 // expression in a synthetic arm-local ReturnStmt solely for
                 // compatibility with the existing MatchValueArm conversion.
                 // Braced '{ return value; }' arms retain their old spelling.
-                if (check(RETURN) || check(ON) || isContextualIdentifier("on")
+                if (check(RETURN) || isContextualIdentifier("on")
                         || check(END) || (braced && check(RBRACE))) {
                     throw error(peek(), "value match arm requires an expression after '->'");
                 }

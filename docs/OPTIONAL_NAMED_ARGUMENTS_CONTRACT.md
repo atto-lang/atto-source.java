@@ -561,27 +561,27 @@ transferred by this audit.
 
 ### Mandatory explicit function returns and value-match arrow expressions
 
-Every non-\`void\`, non-generator function or concrete method must explicitly
-\`return\` a value on every reachable completion path. The last expression in
+Every non-`void`, non-generator function or concrete method must explicitly
+`return` a value on every reachable completion path. The last expression in
 a function body is **not** an implicit return. Returning a value-producing
-\`match\` uses a callable-level \`return match ... end\`.
+`match` uses a callable-level `return match ... end`.
 
-A \`match\` expression may use concise arrow expressions: \`on Some(x) -> x\`.
-Those arm expressions produce the value of the \`match\` expression; they
+A `match` expression may use concise arrow expressions: `on Some(x) -> x`.
+Those arm expressions produce the value of the `match` expression; they
 **do not** return from the enclosing function on their own. Existing braced
-\`on Some(x) -> { return x; }\` value arms remain compatible; their
-\`return\` is scoped to the match expression and is never a function return.
-\`do match\` is procedural and cannot appear as a returned expression.
+`on Some(x) -> { return x; }` value arms remain compatible; their
+`return` is scoped to the match expression and is never a function return.
+`do match` is procedural and cannot appear as a returned expression.
 
-\`\`\`ores
+```ores
 pub fnc greet(string? name): string {
     return match name over
         on Some(n) -> n
         on None -> "anonymous"
     end
 }
-\`\`\`
+```
 
-The syntax above is a **parsing contract only** while optional \`T?\`
+The syntax above is a **parsing contract only** while optional `T?`
 parameters are still staged. Type-checking and execution remain denied
 until the typed Option ABI and ownership admission are implemented.
