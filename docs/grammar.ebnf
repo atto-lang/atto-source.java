@@ -322,13 +322,16 @@ primary         = literal
                 | explicit_struct_literal
                 | "(" expression ")" ;
 
-lambda          = ( [ "nlex" ] | "async" [ "task" ] )
+lambda          = ( [ "nlex" ] | "async" [ "task" ] | ( "suspends" | "suspend" ) )
                   ( pipe_lambda | typed_legacy_lambda ) ;
-(* A plain lambda returns its body result. An async lambda returns Future<R>.
-   An async task lambda schedules the *whole* body as one Task<R> directly.
-   These effects are distinct: async |...| -> nb {...} yields
-   Future<Task<R>> without implicit flattening; async task |...| -> {...}
-   yields exactly Task<R>. Native/backend execution currently gated. *)
+(* 'suspends |...|' runs within the caller's Task and returns R, not a
+   new Task<R> or Future<R>. It requires suspension-effect callable typing
+   and continuation lowering, so source execution is currently gated.
+   A plain lambda has no suspension effect even when defined inside a
+   suspends/async function. An async lambda returns Future<R>; an async task
+   lambda creates exactly one Task<R>. These effects do not auto-flatten:
+   async |...| -> task {...} yields Future<Task<R>>, while
+   async task |...| -> task {...} yields Task<Task<R>>. *)
 pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" lambda_body ;
 lambda_param    = IDENT | type_ref IDENT ;
 typed_legacy_lambda
