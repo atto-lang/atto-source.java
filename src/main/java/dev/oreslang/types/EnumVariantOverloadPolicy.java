@@ -88,14 +88,14 @@ public final class EnumVariantOverloadPolicy {
      */
     public static void admit(List<Signature> candidates) {
         Objects.requireNonNull(candidates, "candidates");
-        if (candidates.isEmpty() || candidates.size() > MAX_CANDIDATES) {
-            throw new IllegalArgumentException("candidate limit");
-        }
+        if (candidates.isEmpty()) throw new IllegalArgumentException("empty family");
         List<Signature> slots = List.copyOf(candidates);
         Signature first = slots.get(0);
         Map<String, EnumInfo> registry = new HashMap<>();
+        Map<Integer, Integer> countsByArity = new HashMap<>();
         for (Signature slot : slots) {
-            Objects.requireNonNull(slot, "candidate");
+            int count = countsByArity.merge(slot.arity(), 1, Integer::sum);
+            if (count > MAX_CANDIDATES) throw new IllegalArgumentException("same-arity candidate limit");
             if (!slot.ownerId().equals(first.ownerId()) || slot.domain() != first.domain()
                     || !slot.name().equals(first.name())) {
                 throw new IllegalArgumentException("mixed callable family");
