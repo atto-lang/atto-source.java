@@ -149,4 +149,17 @@ final class AuthenticatedActorStreamSourceTest {
                         pub fnc main(): int { return 1; }
                         """)));
     }
+    @Test
+    void requiresExplicitConcreteActorStreamReturnDomain() throws Exception {
+        // The compiled graph is ActorStream<int>, not an erased any stream.
+        // Allowing a dynamic return signature here could bypass its checked
+        // send(T) boundary after the local capability escapes the factory.
+        String source = fixture().replace(
+                "make_actor_pipeline(): ActorStream<int>",
+                "make_actor_pipeline(): ActorStream<any>");
+        assertNotEquals(fixture(), source);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
 }
