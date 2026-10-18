@@ -90,4 +90,59 @@ final class ReturnCleanupMatchExprTest {
         assertThrows(IllegalArgumentException.class,
                 () -> ReturnCleanupChecker.check(withDefer(staged)));
     }
+
+    @Test
+    void returnedValueMatchArmAliasesMustBeTrackedAcrossDeferredRebinding() {
+        Ast.MatchExpr result = new Ast.MatchExpr(new Ast.LiteralExpr(true),
+                List.of(new Ast.MatchValueArm(new Ast.LiteralPattern(true),
+                                null, new Ast.NameExpr("result")),
+                        new Ast.MatchValueArm(new Ast.LiteralPattern(false),
+                                null, new Ast.LiteralExpr(0L))));
+        Ast.Expr write = new Ast.AssignExpr(new Ast.NameExpr("result"),
+                new Ast.LiteralExpr(2L));
+        assertThrows(IllegalArgumentException.class,
+                () -> ReturnCleanupChecker.check(withReturnedExpression(write, result)));
+    }
+
+    @Test
+    void conditionalReturnedArmAliasesMustBeTrackedAcrossDeferredRebinding() {
+        Ast.Expr selected = new Ast.ConditionalExpr(new Ast.LiteralExpr(true),
+                new Ast.NameExpr("result"), new Ast.LiteralExpr(0L));
+        Ast.Expr write = new Ast.AssignExpr(new Ast.NameExpr("result"),
+                new Ast.LiteralExpr(4L));
+        assertThrows(IllegalArgumentException.class,
+                () -> ReturnCleanupChecker.check(withReturnedExpression(write, selected)));
+    }
+
+    @Test
+    void computedReturnDoesNotMisidentifyOperandAsReturnedBinding() {
+        Ast.Expr computed = new Ast.BinaryExpr("+",
+                new Ast.NameExpr("result"), new Ast.LiteralExpr(1L));
+        Ast.Expr write = new Ast.AssignExpr(new Ast.NameExpr("result"),
+                new Ast.LiteralExpr(6L));
+        assertDoesNotThrow(
+                () -> ReturnCleanupChecker.check(withReturnedExpression(write, computed)));
+    }
+
+    @Test
+    void matchedPatternBindingReturnIsNotOuterBinding() {
+        Ast.MatchExpr result = new Ast.MatchExpr(new Ast.LiteralExpr(3L),
+                List.of(new Ast.MatchValueArm(new Ast.BindingPattern("result"),
+                        null, new Ast.NameExpr("result"))));
+        Ast.Expr write = new Ast.AssignExpr(new Ast.NameExpr("result"),
+                new Ast.LiteralExpr(7L));
+        assertDoesNotThrow(
+                () -> ReturnCleanupChecker.check(withReturnedExpression(write, result)));
+    }
+
+    private static Ast.Program withReturnedExpression(Ast.Expr cleanup, Ast.Expr returned) {
+        Ast.FunctionDecl fn = new Ast.FunctionDecl("g", Ast.Visibility.PRIVATE,
+                false, List.of(), List.of(), INT, List.of(), List.of(
+                        new Ast.BindingStmt(Ast.BindingKind.LET, INT, "result",
+                                new Ast.LiteralExpr(1L)),
+                        new Ast.DeferStmt(cleanup),
+                        new Ast.ReturnStmt(returned)));
+        return new Ast.Program(List.of(new Ast.ModuleDecl("app", List.of(fn))));
+    }
+
 }
