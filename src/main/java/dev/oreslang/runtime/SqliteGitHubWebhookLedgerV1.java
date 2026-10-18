@@ -95,13 +95,14 @@ public final class SqliteGitHubWebhookLedgerV1 implements AutoCloseable {
                                 + expectation.runId());
             }
             execute("COMMIT");
-        } catch (RuntimeException | SQLException failure) {
-            rollbackQuietly();
-            if (failure instanceof RuntimeException runtime) {
-                throw runtime;
-            }
-            throw new IllegalStateException(
+        } catch (RuntimeException failure) {
+            rollbackOrInvalidate(failure);
+            throw failure;
+        } catch (SQLException failure) {
+            IllegalStateException wrapped = new IllegalStateException(
                     "failed to register GitHub correlation", failure);
+            rollbackOrInvalidate(wrapped);
+            throw wrapped;
         }
     }
 
@@ -261,13 +262,14 @@ public final class SqliteGitHubWebhookLedgerV1 implements AutoCloseable {
             }
             execute("COMMIT");
             return DeliveryDisposition.FIRST_SEEN;
-        } catch (RuntimeException | SQLException failure) {
-            rollbackQuietly();
-            if (failure instanceof RuntimeException runtime) {
-                throw runtime;
-            }
-            throw new IllegalStateException(
+        } catch (RuntimeException failure) {
+            rollbackOrInvalidate(failure);
+            throw failure;
+        } catch (SQLException failure) {
+            IllegalStateException wrapped = new IllegalStateException(
                     "failed to record GitHub delivery", failure);
+            rollbackOrInvalidate(wrapped);
+            throw wrapped;
         }
     }
 
@@ -392,11 +394,24 @@ public final class SqliteGitHubWebhookLedgerV1 implements AutoCloseable {
         }
     }
 
-    private void rollbackQuietly() {
+    private void rollbackOrInvalidate(Throwable originalFailure) {
         try {
             execute("ROLLBACK");
+        } catch (SQLException rollbackFailure) {
+            originalFailure.addSuppressed(rollbackFailure);
+            invalidateConnection();
+        }
+    }
+
+    private void invalidateConnection() {
+        closed = true;
+        Connection doomed = connection;
+        connection = null;
+        if (doomed == null) return;
+        try {
+            doomed.close();
         } catch (SQLException ignored) {
-            // Preserve the original failure.
+            // Preserve the original transaction/rollback failure.
         }
     }
 
