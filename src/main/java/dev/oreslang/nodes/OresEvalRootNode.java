@@ -171,6 +171,8 @@ public final class OresEvalRootNode extends RootNode {
         private final IdentityHashMap<Ast.SelectStmt, AtomicLong> rootStaticSelectCursors =
                 new IdentityHashMap<>();
         private StartupPhase startupPhase = StartupPhase.CREATED;
+        /** Per-importer cache; identity is still verified against packaged source before first reuse. */
+        private volatile Evaluator packagedBooleanCore;
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private final ThreadLocal<Boolean> activeGeneratorAsync = new ThreadLocal<>();
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
@@ -6136,15 +6138,13 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Evaluator packagedCoreEvaluator() {
+            Evaluator cached = packagedBooleanCore;
+            if (cached != null) return cached;
+
             final String coreUnitId = CoreLibrarySources.unitId("std/core");
             synchronized (context) {
-                Object existing = context.linkedCodeUnit(coreUnitId);
-                if (existing != null) {
-                    if (existing instanceof Evaluator evaluator) return evaluator;
-                    throw new IllegalStateException(
-                            "reserved packaged core unit id is occupied by "
-                                    + existing.getClass().getName());
-                }
+                cached = packagedBooleanCore;
+                if (cached != null) return cached;
 
                 final String source;
                 try {
@@ -6153,11 +6153,28 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "cannot load packaged std/core source", failure);
                 }
-
                 Ast.Program coreProgram = OresCompiler.parseAndTypeCheck(source);
+
+                Object existing = context.linkedCodeUnit(coreUnitId);
+                if (existing != null) {
+                    if (!(existing instanceof Evaluator evaluator)) {
+                        throw new IllegalStateException(
+                                "reserved packaged core unit id is occupied by "
+                                        + existing.getClass().getName());
+                    }
+                    if (!evaluator.program.equals(coreProgram)) {
+                        throw new SecurityException(
+                                "reserved packaged core unit id does not contain "
+                                        + "compiler-owned std/core source");
+                    }
+                    packagedBooleanCore = evaluator;
+                    return evaluator;
+                }
+
                 Evaluator evaluator = new Evaluator(coreProgram, context, coreUnitId);
                 evaluator.link();
                 evaluator.initialize();
+                packagedBooleanCore = evaluator;
                 return evaluator;
             }
         }
