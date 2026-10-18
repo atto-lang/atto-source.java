@@ -26,6 +26,77 @@ final class StaticModuleNamespaceConfinementTest {
     }
 
     @Test
+    void localShadowingOfModuleNameStillProducesAnOrdinaryValue() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(MODULE + """
+                routine main(): void {
+                    const Catalog = 19;
+                    const copied = Catalog;
+                    return;
+                }
+                """)));
+    }
+
+    @Test
+    void noModuleNamespaceCanBePassedToAnyTypedParameter() {
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(MODULE + """
+                    fnc consume(any value): void { return; }
+                    routine main(): void {
+                        consume(Catalog);
+                        return;
+                    }
+                    """)));
+    }
+
+    @Test
+    void bareNamespaceCannotEscapeViaTupleOrOptionPayload() {
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(MODULE + """
+                    routine main(): void {
+                        const tuple = (Catalog, 1);
+                        return;
+                    }
+                    """)));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(MODULE + """
+                    routine main(): void {
+                        const result = Some(Catalog);
+                        return;
+                    }
+                    """)));
+    }
+
+    @Test
+    void importedModuleAliasIsNotAnOrdinaryValue() {
+        java.util.Map<String, String> sources = new java.util.LinkedHashMap<>();
+        sources.put("catalog.ores", MODULE);
+        sources.put("client.ores", """
+                import module Catalog as ImportedCatalog from "./catalog.ores";
+                routine main(): void {
+                    const escaped = ImportedCatalog;
+                    return;
+                }
+                """);
+        assertThrows(IllegalArgumentException.class, () ->
+                new dev.oreslang.compiler.IncrementalCompiler().compile(sources));
+    }
+
+    @Test
+    void importedWildcardNamespaceIsNotAnOrdinaryValue() {
+        java.util.Map<String, String> sources = new java.util.LinkedHashMap<>();
+        sources.put("catalog.ores", MODULE);
+        sources.put("client.ores", """
+                import module * as Namespace from "./catalog.ores";
+                routine main(): void {
+                    const escaped = Namespace;
+                    return;
+                }
+                """);
+        assertThrows(IllegalArgumentException.class, () ->
+                new dev.oreslang.compiler.IncrementalCompiler().compile(sources));
+    }
+
+    @Test
     void bareModuleNamespaceMustNeverBecomeRuntimeInstance() {
         // Known red regression: current TypeChecker exposes moduleShape as a
         // Record for NameExpr, while the evaluator creates a ModuleFacade.
