@@ -93,7 +93,9 @@ the standalone static index; the executable enum frontend remains gated.
   import of a protected public function or class static method, and module or
   wildcard imports that expose one, including protected public static
   class methods reachable through whole-module imports and imported
-  subclasses inheriting protected public methods. Inherited method
+  subclasses inheriting protected public methods. The import actor selector
+  also checks guarded public static functions of imported actor classes.
+  Inherited method
   resolution requires verified local parent identities; unresolved
   ancestors fail closed until authenticated cross-file class ancestry
   contracts are available. A plain exported
