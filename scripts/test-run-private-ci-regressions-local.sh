@@ -16,16 +16,34 @@ make_fixture() {
     "$fixture/test-run-private-ci-regressions-local.sh"
   printf 'def dummy(): return True\n' > "$fixture/test-private-ci-review-coverage.py"
   printf 'def dummy(): return True\n' > "$fixture/publish-private-ci-source.py"
-  printf 'def dummy(): return True\n' > "$fixture/test-private-ci-merged-main.py"
+  cat > "$fixture/test-private-ci-merged-main.py" <<'MERGED'
+import unittest
+class MergedMainProvenanceTests(unittest.TestCase):
+    pass
+for index in range(10):
+    setattr(MergedMainProvenanceTests, f"test_synthetic_{index:03d}",
+            lambda self: self.assertTrue(True))
+MERGED
   cat > "$fixture/test-publish-private-ci-source.py" <<'PY'
-import os, unittest
-class Tests(unittest.TestCase):
+import importlib.util, os, unittest
+from pathlib import Path
+class DestinationBoundPublisherTests(unittest.TestCase):
     def test_mocked(self):
         self.assertFalse(os.environ.get('GH_TOKEN'))
         self.assertFalse(os.environ.get('GITHUB_TOKEN'))
         self.assertTrue(os.path.isdir(os.environ['GH_CONFIG_DIR']))
         self.assertFalse(os.path.exists(os.path.join(os.environ['GH_CONFIG_DIR'], 'hosts.yml')))
         self.assertEqual(os.environ.get('GIT_TERMINAL_PROMPT'), '0')
+for index in range(96):
+    setattr(DestinationBoundPublisherTests, f"test_synthetic_{index:03d}",
+            lambda self: self.assertTrue(True))
+def load_tests(loader, suite, pattern):
+    spec = importlib.util.spec_from_file_location(
+        "synthetic_merged_tests", Path(__file__).with_name("test-private-ci-merged-main.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    suite.addTests(loader.loadTestsFromModule(module))
+    return suite
 if __name__ == '__main__':
     unittest.main()
 PY
@@ -145,4 +163,30 @@ rm "$root/.github/CODEOWNERS"
 if bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
 grep -q PRIVATE_CI_MISSING_OR_SYMLINKED_FILE "$root/out"
 echo 'PASS: missing CODEOWNERS policy fails closed'
-echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=16' 
+make_fixture
+cat > "$fixture/test-publish-private-ci-source.py" <<'PY'
+import unittest
+class DestinationBoundPublisherTests(unittest.TestCase):
+    def test_only_one_pass(self): self.assertTrue(True)
+if __name__ == "__main__": unittest.main()
+PY
+if PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
+grep -q PRIVATE_CI_TEST_INVENTORY_MISSING_LOAD_TESTS "$root/out"
+! grep -q '^PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1
+ "$root/out"
+echo 'PASS: a single passing test without full discovery cannot produce a success receipt'
+make_fixture
+python3 - "$fixture/test-publish-private-ci-source.py" <<'PY'
+from pathlib import Path
+import sys
+file = Path(sys.argv[1])
+content = file.read_text()
+assert "range(96)" in content
+file.write_text(content.replace("range(96)", "range(1)"))
+PY
+if PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
+grep -q PRIVATE_CI_TEST_INVENTORY_REJECTED "$root/out"
+! grep -q '^PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1
+ "$root/out"
+echo 'PASS: shortened suite with valid load_tests is rejected'
+echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=18' 
