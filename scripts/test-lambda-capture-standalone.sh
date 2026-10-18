@@ -14,13 +14,24 @@ if grep -F '.snapshot()' "$runtime_source" >/dev/null; then
   printf 'ambient Env.snapshot() is forbidden; deferred code must project explicit captures\n' >&2
   exit 1
 fi
-for required in   'capturesSelect(select)'   'capturesSelect(selected)'   'capturesBlock('   'snapshotCaptures(LambdaCapturePlanner.captures(lambda))'
+for required in \
+  'capturesSelect(select)' \
+  'capturesSelect(selected)' \
+  'capturesBlock(' \
+  'snapshotCaptures(LambdaCapturePlanner.captures(lambda))' \
+  'snapshotDetachedCaptures('
 do
   grep -F "$required" "$runtime_source" >/dev/null || {
     printf 'missing projected capture runtime path: %s\n' "$required" >&2
     exit 1
   }
 done
+
+detached_count="$(grep -F -c 'snapshotDetachedCaptures(' "$runtime_source")"
+if [[ "$detached_count" -lt 6 ]]; then
+  printf 'expected detached continuation capture API plus five runtime call sites, observed %s\n' "$detached_count" >&2
+  exit 1
+fi
 javac -d "$out" \
   "$src/ast/Ast.java" \
   "$src/nodes/LambdaCaptureExpressions.java" \
