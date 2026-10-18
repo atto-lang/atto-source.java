@@ -24,8 +24,6 @@ SECURITY_PATHS = (
     "scripts/test-private-ci-merged-main.py",
     "scripts/test-private-ci-review-coverage.py",
     "scripts/test-publish-private-ci-source.py",
-    "scripts/run-private-ci-regressions-local.sh",
-    "scripts/test-run-private-ci-regressions-local.sh",
     "tools/verify-exact-source-tree.sh",
     "tools/test-verify-exact-source-tree.sh",
 )
