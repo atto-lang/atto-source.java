@@ -79,10 +79,12 @@ final class TypeclassesAndEffectsFoundationTest {
 
     @Test void trapHandlesOnlyOrdinaryThrowOnItsOwnEdge() {
         var graph = new EffectContracts.Graph();
-        graph.add(EffectContracts.Callable.trapping("trapped", Set.of(THROW, PANIC), List.of()));
+        graph.add(EffectContracts.Callable.trapping("trapped", Set.of(THROW, RAISE, PANIC), List.of()));
         graph.add(EffectContracts.Callable.inferred("caller", Set.of(),
                 List.of(EffectContracts.Call.direct("trapped"))));
-        assertEquals(Set.of(PANIC), graph.infer().get("caller"));
+        var inferred = graph.infer();
+        assertFalse(inferred.get("trapped").contains(THROW));
+        assertEquals(Set.of(RAISE, PANIC), inferred.get("caller"));
         var another = new EffectContracts.Graph();
         another.add(EffectContracts.Callable.inferred("bad", Set.of(THROW), List.of()));
         another.add(EffectContracts.Callable.inferred("caller", Set.of(),
