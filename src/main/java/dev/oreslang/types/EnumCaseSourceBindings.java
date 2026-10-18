@@ -142,7 +142,8 @@ public final class EnumCaseSourceBindings {
                 // Record constructor enforces case-name limits and nonempty.
                 enums.put(id, new EnumInfo(id, List.copyOf(cases), eligible));
                 if (nullary && caseTags.size() <= EnumTag32Plan.MAX_CASES) {
-                    nullaryTagLayouts.put(id, new EnumTag32Plan(id, caseTags));
+                    nullaryTagLayouts.put(id, new EnumTag32Plan(
+                            id, caseTags, en.visibility() == Ast.Visibility.PUBLIC));
                 }
             }
             if (localEnums.putIfAbsent(owner, Map.copyOf(moduleEnums)) != null) {
