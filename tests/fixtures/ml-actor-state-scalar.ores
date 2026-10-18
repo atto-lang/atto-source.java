@@ -14,6 +14,9 @@
 // State is NEVER accessed through self.state or an ordinary instance field.
 define actor VersionedScalarStage as
     state {
+        // Demo-only identity pins, NOT credentials or runtime-authenticated identity.
+        run_id: int = 101;
+        incarnation: int = 1;
         weight: int = 10;
         version: int = 1;
         accumulated_gradient: int = 0;
@@ -31,10 +34,16 @@ define actor VersionedScalarStage as
     // sole actor state. This *scalar* reference computes in the short state
     // transaction; real tensor kernels must compute from a frozen pinned
     // storage snapshot OUTSIDE the loan.
-    private eval_affine(int expected_step, int expected_version, int microbatch, int x): Result<int, String>
+    private eval_affine(int expected_step, int expected_version, int microbatch, int x, int expected_run, int expected_incarnation): Result<int, String>
         with state.read, state.write
     {
         return using state.write(critical |s| -> {
+            if s.run_id != expected_run; do
+                return Err("STALE_RUN");
+            fi
+            if s.incarnation != expected_incarnation; do
+                return Err("STALE_INCAR");
+            fi
             if s.version != expected_version; do
                 return Err("STALE_VERSION");
             fi
@@ -70,10 +79,16 @@ define actor VersionedScalarStage as
     // The input comes from the *saved forward context*, never the untrusted
     // backward message. No gradient can be accepted without a prior matching
     // forward, and no microbatch can contribute twice.
-    private accumulate(int expected_step, int expected_version, int microbatch, int upstream): Result<int, String>
+    private accumulate(int expected_step, int expected_version, int microbatch, int upstream, int expected_run, int expected_incarnation): Result<int, String>
         with state.read, state.write
     {
         return using state.write(critical |s| -> {
+            if s.run_id != expected_run; do
+                return Err("STALE_RUN");
+            fi
+            if s.incarnation != expected_incarnation; do
+                return Err("STALE_INCAR");
+            fi
             if s.version != expected_version; do
                 return Err("STALE_VERSION");
             fi
@@ -120,8 +135,14 @@ define actor VersionedScalarStage as
     // two uniquely identified backward contributions, update weight and version together.
     // Real tensor-backed ML must prepare independent frozen parameter buffers
     // before entering this critical write scope.
-    private commit(int expected_step, int expected_version): Result<int, String> with state.read, state.write {
+    private commit(int expected_step, int expected_version, int expected_run, int expected_incarnation): Result<int, String> with state.read, state.write {
         return self.handle_state(critical write |s| -> {
+            if s.run_id != expected_run; do
+                return Err("STALE_RUN");
+            fi
+            if s.incarnation != expected_incarnation; do
+                return Err("STALE_INCAR");
+            fi
             if s.version != expected_version; do
                 return Err("STALE_VERSION");
             fi
@@ -158,15 +179,21 @@ define actor VersionedScalarStage as
         });
     }
 
-    // A controlled recovery path for a step whose full gradient fan-in
+    // A controlled recovery path (internal-only) for a step whose full gradient fan-in
     // exists but whose optimizer candidate is outside the bounded domain.
     // This is NOT a successful optimizer commit: committed weight is unchanged.
     // Bumping both fences retires all pending/late messages for the failed step.
     // Result keeps error and valid negative scalar outcomes disjoint.
-    private cancel_rejected(int expected_step, int expected_version): Result<int, String>
+    private cancel_rejected(int expected_step, int expected_version, int expected_run, int expected_incarnation): Result<int, String>
         with state.read, state.write
     {
         return self.handle_state(critical write |s| -> {
+            if s.run_id != expected_run; do
+                return Err("STALE_RUN");
+            fi
+            if s.incarnation != expected_incarnation; do
+                return Err("STALE_INCAR");
+            fi
             if s.step != expected_step || s.version != expected_version; do
                 return Err("STALE_STEP");
             fi
@@ -220,97 +247,107 @@ define actor VersionedScalarStage as
     // ActorRef callers ONLY send messages; they never invoke actor user methods.
     receive(ActorMail<String> mail): void {
         if mail.value == "orphan"; do
-            self.print_outcome(self.accumulate(1, 1, 2, 1));
+            self.print_outcome(self.accumulate(1, 1, 2, 1, 101, 1));
             return;
         fi
         if mail.value == "unsafe_forward"; do
-            self.print_outcome(self.eval_affine(1, 1, 1, 10001));
+            self.print_outcome(self.eval_affine(1, 1, 1, 10001, 101, 1));
             return;
         fi
         if mail.value == "forward1"; do
-            self.print_outcome(self.eval_affine(1, 1, 1, 2));
+            self.print_outcome(self.eval_affine(1, 1, 1, 2, 101, 1));
             return;
         fi
         if mail.value == "forward_duplicate"; do
-            self.print_outcome(self.eval_affine(1, 1, 1, 2));
+            self.print_outcome(self.eval_affine(1, 1, 1, 2, 101, 1));
             return;
         fi
         if mail.value == "forward2"; do
-            self.print_outcome(self.eval_affine(1, 1, 2, 3));
+            self.print_outcome(self.eval_affine(1, 1, 2, 3, 101, 1));
             return;
         fi
         if mail.value == "unsafe_upstream"; do
-            self.print_outcome(self.accumulate(1, 1, 1, 10001));
+            self.print_outcome(self.accumulate(1, 1, 1, 10001, 101, 1));
             return;
         fi
         if mail.value == "grad1"; do
-            self.print_outcome(self.accumulate(1, 1, 1, 1));
+            self.print_outcome(self.accumulate(1, 1, 1, 1, 101, 1));
             return;
         fi
         if mail.value == "duplicate"; do
-            self.print_outcome(self.accumulate(1, 1, 1, 1));
+            self.print_outcome(self.accumulate(1, 1, 1, 1, 101, 1));
             return;
         fi
         if mail.value == "early"; do
-            self.print_outcome(self.commit(1, 1));
+            self.print_outcome(self.commit(1, 1, 101, 1));
             return;
         fi
         if mail.value == "grad2"; do
-            self.print_outcome(self.accumulate(1, 1, 2, 1));
+            self.print_outcome(self.accumulate(1, 1, 2, 1, 101, 1));
             return;
         fi
         if mail.value == "commit"; do
-            self.print_outcome(self.commit(1, 1));
+            self.print_outcome(self.commit(1, 1, 101, 1));
             stdio.println(self.version());
             return;
         fi
         if mail.value == "stale"; do
-            self.print_outcome(self.accumulate(1, 1, 1, 1));
+            self.print_outcome(self.accumulate(1, 1, 1, 1, 101, 1));
             return;
         fi
         // A second step has mathematically valid individual contributions,
         // but its candidate weight would exceed the bounded safe domain.
         // Rejection must leave weight/version unchanged.
+        if mail.value == "wrong_run"; do
+            self.print_outcome(self.eval_affine(2, 2, 1, 2, 100, 1));
+            return;
+        fi
+        if mail.value == "wrong_incarnation"; do
+            self.print_outcome(self.eval_affine(2, 2, 1, 2, 101, 0));
+            return;
+        fi
         if mail.value == "high_forward1"; do
-            self.print_outcome(self.eval_affine(2, 2, 1, 10000));
+            self.print_outcome(self.eval_affine(2, 2, 1, 10000, 101, 1));
             return;
         fi
         if mail.value == "high_forward2"; do
-            self.print_outcome(self.eval_affine(2, 2, 2, 10000));
+            self.print_outcome(self.eval_affine(2, 2, 2, 10000, 101, 1));
             return;
         fi
         if mail.value == "high_grad1"; do
-            self.print_outcome(self.accumulate(2, 2, 1, 10000));
+            self.print_outcome(self.accumulate(2, 2, 1, 10000, 101, 1));
             return;
         fi
         if mail.value == "high_grad2"; do
-            self.print_outcome(self.accumulate(2, 2, 2, 10000));
+            self.print_outcome(self.accumulate(2, 2, 2, 10000, 101, 1));
             return;
         fi
         if mail.value == "high_commit"; do
-            self.print_outcome(self.commit(2, 2));
+            // Internal recovery policy: no externally addressed cancel command.
+            // The compensator itself rechecks full fan-in and unsafe candidate.
+            val Result<int, String> outcome = self.commit(2, 2, 101, 1);
+            self.print_outcome(outcome);
             stdio.println(self.version());
-            return;
-        fi
-        if mail.value == "cancel_failed"; do
-            val Result<int, String> outcome = self.cancel_rejected(2, 2);
             if outcome.is_err(); do
-                stdio.println("CANCEL_REJECTED");
-                return;
+                val Result<int, String> recovery = self.cancel_rejected(2, 2, 101, 1);
+                if recovery.is_err(); do
+                    stdio.println("CANCEL_REJECTED");
+                else
+                    stdio.println(recovery.unwrap());
+                fi
             fi
-            stdio.println(outcome.unwrap());
             return;
         fi
         if mail.value == "stale_after_cancel"; do
-            self.print_outcome(self.accumulate(2, 2, 1, 1));
+            self.print_outcome(self.accumulate(2, 2, 1, 1, 101, 1));
             return;
         fi
         if mail.value == "new_forward"; do
-            self.print_outcome(self.eval_affine(3, 3, 1, 2));
+            self.print_outcome(self.eval_affine(3, 3, 1, 2, 101, 1));
             return;
         fi
         if mail.value == "new_negative_forward"; do
-            self.print_outcome(self.eval_affine(3, 3, 2, -2));
+            self.print_outcome(self.eval_affine(3, 3, 2, -2, 101, 1));
             return;
         fi
         if mail.value == "after"; do
@@ -337,12 +374,13 @@ pub async routine main(): void {
     worker.send("grad2");
     worker.send("commit");
     worker.send("stale");
+    worker.send("wrong_run");
+    worker.send("wrong_incarnation");
     worker.send("high_forward1");
     worker.send("high_forward2");
     worker.send("high_grad1");
     worker.send("high_grad2");
     worker.send("high_commit");
-    worker.send("cancel_failed");
     worker.send("stale_after_cancel");
     worker.send("new_forward");
     worker.send("new_negative_forward");
