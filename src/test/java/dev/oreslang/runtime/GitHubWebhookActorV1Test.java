@@ -19,11 +19,15 @@ final class GitHubWebhookActorV1Test {
         byte[] secret =
                 "0123456789abcdef0123456789abcdef"
                         .getBytes(StandardCharsets.UTF_8);
-        byte[] body =
-                "{\"action\":\"completed\"}"
-                        .getBytes(StandardCharsets.UTF_8);
         String commit = sha('a');
         String tree = sha('b');
+        byte[] body = workflowRunBody(
+                "org/repo",
+                commit,
+                42L,
+                "ci",
+                "success",
+                "https://github.example/actions/runs/42");
 
         try (var runtime = new ActorRuntime()) {
             var actor = GitHubWebhookActorV1.spawn(runtime);
@@ -50,23 +54,24 @@ final class GitHubWebhookActorV1Test {
                             "delivery-1",
                             "workflow_run"),
                     body,
-                    new GitHubCiCorrelationV1.Observed(
-                            "org/repo",
+                    new GitHubWorkflowRunPayloadV1.GitTreeProof(
                             commit,
                             tree,
-                            42L,
-                            "ci",
-                            GitHubCiCorrelationV1.Conclusion.SUCCESS,
-                            "artifact://ci/42")));
+                            "tree-proof://42")));
 
             var matched = assertInstanceOf(
                     GitHubWebhookActorV1.Matched.class,
                     next(outputs));
             assertEquals("run-1", matched.runId());
             assertEquals("delivery-1", matched.deliveryId());
+            assertEquals("tree-proof://42",
+                    matched.treeProofReceiptRef());
             assertEquals(
                     DurableDevLoopV1.CiConclusion.SUCCESS,
                     matched.event().conclusion());
+            assertEquals(
+                    "https://github.example/actions/runs/42",
+                    matched.event().reportRef());
 
             actor.send(new GitHubWebhookActorV1.Shutdown());
             next(outputs);
@@ -80,7 +85,13 @@ final class GitHubWebhookActorV1Test {
         byte[] secret =
                 "0123456789abcdef0123456789abcdef"
                         .getBytes(StandardCharsets.UTF_8);
-        byte[] body = "{}".getBytes(StandardCharsets.UTF_8);
+        byte[] body = workflowRunBody(
+                "org/repo",
+                sha('a'),
+                43L,
+                "ci",
+                "success",
+                "https://github.example/actions/runs/43");
 
         try (var runtime = new ActorRuntime()) {
             var actor = GitHubWebhookActorV1.spawn(runtime);
@@ -104,14 +115,10 @@ final class GitHubWebhookActorV1Test {
                             "delivery-2",
                             "workflow_run"),
                     body,
-                    new GitHubCiCorrelationV1.Observed(
-                            "org/repo",
+                    new GitHubWorkflowRunPayloadV1.GitTreeProof(
                             sha('a'),
                             sha('c'),
-                            43L,
-                            "ci",
-                            GitHubCiCorrelationV1.Conclusion.SUCCESS,
-                            "artifact://ci/43")));
+                            "tree-proof://43")));
 
             var unmatched = assertInstanceOf(
                     GitHubWebhookActorV1.Unmatched.class,
@@ -146,20 +153,23 @@ final class GitHubWebhookActorV1Test {
                             "ci")));
             next(outputs);
 
+            byte[] body = workflowRunBody(
+                    "org/repo",
+                    sha('a'),
+                    44L,
+                    "ci",
+                    "success",
+                    "https://github.example/actions/runs/44");
             actor.send(new GitHubWebhookActorV1.ReceiveCiWebhook(
                     new GitHubWebhookSecurityV1.Headers(
                             "sha256=" + "00".repeat(32),
                             "delivery-bad",
                             "workflow_run"),
-                    "{}".getBytes(StandardCharsets.UTF_8),
-                    new GitHubCiCorrelationV1.Observed(
-                            "org/repo",
+                    body,
+                    new GitHubWorkflowRunPayloadV1.GitTreeProof(
                             sha('a'),
                             sha('b'),
-                            44L,
-                            "ci",
-                            GitHubCiCorrelationV1.Conclusion.SUCCESS,
-                            "artifact://ci/44")));
+                            "tree-proof://44")));
 
             assertThrows(
                     java.util.concurrent.ExecutionException.class,
@@ -175,6 +185,28 @@ final class GitHubWebhookActorV1Test {
         assertFalse(step.done());
         return GitHubWebhookActorV1.decodeOutput(
                 step.value().value());
+    }
+
+    private static byte[] workflowRunBody(
+            String repository,
+            String commit,
+            long runId,
+            String workflow,
+            String conclusion,
+            String htmlUrl) {
+        String json = "{"
+                + "\"action\":\"completed\","
+                + "\"repository\":{"
+                + "\"full_name\":\"" + repository + "\"},"
+                + "\"workflow_run\":{"
+                + "\"id\":" + runId + ","
+                + "\"name\":\"" + workflow + "\","
+                + "\"head_sha\":\"" + commit + "\","
+                + "\"status\":\"completed\","
+                + "\"conclusion\":\"" + conclusion + "\","
+                + "\"html_url\":\"" + htmlUrl + "\""
+                + "}}";
+        return json.getBytes(StandardCharsets.UTF_8);
     }
 
     private static String hmac(byte[] secret, byte[] body)
