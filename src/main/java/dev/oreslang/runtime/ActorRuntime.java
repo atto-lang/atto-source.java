@@ -176,6 +176,20 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Opaque identity for the currently executing physical actor dispatch.
+     * Distinct simultaneous carriers in one actor domain MUST have distinct
+     * segment identities. Unlike {@link #currentExecutionDomain()}, this is
+     * never an actor-wide ownership key. Host callers use their Thread.
+     *
+     * <p>Use identity comparison, not equals(): ActorExecutionContext is a
+     * record whose value equality is intentionally not a lease identity.</p>
+     */
+    static Object currentMutexExecutionSegment() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? Thread.currentThread() : current;
+    }
+
+    /**
      * Stable actor execution domain for actor-local runtime services, or null
      * when the caller is not currently inside an actor mailbox turn.
      */
@@ -185,6 +199,18 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
+
+    /**
+     * Requested physical heap placement is a requirement, not an assertion of
+     * physical isolation. VM_ISOLATE needs a verified external Graal supervisor.
+     */
+    public enum ActorHeapPlacement { ACTOR_ARENA, VM_ISOLATE, PROCESS_ISOLATE }
+
+    public static ActorHeapPlacement defaultHeapPlacement(ActorKind kind) {
+        return Objects.requireNonNull(kind, "kind") == ActorKind.UNTRUSTED
+                ? ActorHeapPlacement.VM_ISOLATE : ActorHeapPlacement.ACTOR_ARENA;
+    }
+
 
     /** Host-visible notice; it does not grant permission to interrupt a carrier. */
     public record WatchdogNotice(
@@ -1512,6 +1538,105 @@ public final class ActorRuntime implements AutoCloseable {
                 && usesNativeCarriers(untrustedDispatcher)
                 ? CarrierBackend.NATIVE_PTHREAD
                 : CarrierBackend.JVM_THREAD_POOL;
+    }
+
+
+    /**
+     * A Java memory quota or direct ByteBuffer does NOT provide an independent
+     * garbage collector or a separate Graal execution isolate.
+     */
+    public record ActorHeapStatus(
+            ActorKind kind,
+            boolean actorOwnedMemorySlice,
+            boolean canAllocateOwnerCheckedDirectMemory,
+            boolean independentOfParentContextHeap,
+            boolean independentlyCollectable) {
+        public ActorHeapStatus {
+            Objects.requireNonNull(kind, "kind");
+            if (independentlyCollectable && !independentOfParentContextHeap) {
+                throw new IllegalArgumentException(
+                        "independent actor GC requires a physically independent heap");
+            }
+        }
+    }
+
+    /**
+     * Production admission cannot route a host ActorRuntime into an independent
+     * VM/process. The older spawnUntrusted compatibility API remains available
+     * for bootstrap testing but cannot satisfy this placement requirement.
+     */
+    public <M> ActorRef<M> spawnWithHeapPlacement(
+            ActorKind kind,
+            IsolatePolicy policy,
+            ActorHeapPlacement placement,
+            BehaviorFactory<M> factory) {
+        requireSupervisorContext("admit actor heap placement");
+        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(policy, "policy");
+        Objects.requireNonNull(placement, "placement");
+        Objects.requireNonNull(factory, "factory");
+        if (placement != ActorHeapPlacement.ACTOR_ARENA) {
+            throw new IllegalStateException(
+                    "required " + placement + " backend is not attached to this "
+                    + "ActorRuntime; route via a verified Graal isolate or process");
+        }
+        if (kind == ActorKind.UNTRUSTED) {
+            throw new SecurityException(
+                    "untrusted actors cannot use host ACTOR_ARENA placement; "
+                    + "route to a verified sandboxed VM_ISOLATE or PROCESS_ISOLATE");
+        }
+        return spawn(kind, policy, factory);
+    }
+
+    /** Host-supervisor inspection of actual backing, never inferred from ActorKind. */
+    public ActorHeapStatus heapStatusFor(ActorRef<?> ref) {
+        requireSupervisorContext("inspect actor heap isolation");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException("ActorRef belongs to another runtime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) {
+            throw new IllegalStateException("actor was not found or has finalized");
+        }
+        boolean ownerCheckedRegion = cell.memorySlice != null;
+        return new ActorHeapStatus(
+                cell.kind, ownerCheckedRegion, ownerCheckedRegion, false, false);
+    }
+
+    public enum ActorHeapBacking {
+        OWNER_CHECKED_REGION,
+        DETERMINISTIC_NATIVE_ARENA,
+        INDEPENDENT_GRAAL_ISOLATE,
+        ISOLATED_PROCESS
+    }
+
+    /**
+     * Reject physical isolation requirements that this actor runtime cannot
+     * prove. A future router must check the actual backend at admission.
+     */
+    public void requireActorHeapBacking(ActorRef<?> ref, ActorHeapBacking backing) {
+        Objects.requireNonNull(backing, "backing");
+        ActorHeapStatus status = heapStatusFor(ref);
+        if (backing == ActorHeapBacking.OWNER_CHECKED_REGION) {
+            if (!status.actorOwnedMemorySlice()) {
+                throw new IllegalStateException("actor has no owner-checked region");
+            }
+            return;
+        }
+        throw new IllegalStateException("actor heap backing " + backing
+                + " is not implemented by the bootstrap ActorRuntime: "
+                + "native reclamation and physical isolate placement require "
+                + "verified backend routing");
+    }
+
+    public void requireIndependentGcHeap(ActorRef<?> ref) {
+        if (!heapStatusFor(ref).independentlyCollectable()) {
+            throw new IllegalStateException(
+                    "actor requires an independent physical GC heap; "
+                    + "the current JVM ActorRuntime provides only actor-local "
+                    + "ownership/quota boundaries, not an independent collector");
+        }
     }
 
     /** Coherent VM-wide execution-carrier permit pressure, when globally budgeted. */
