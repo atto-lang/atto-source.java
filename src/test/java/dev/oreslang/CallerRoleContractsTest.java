@@ -45,18 +45,61 @@ final class CallerRoleContractsTest {
         CallerRoleContracts.Index policy = CallerRoleContracts.validate(program);
         Ast.FunctionDecl sink = function(program, "sink");
         assertTrue(policy.isRestricted(sink));
-        policy.requireDirectCall(sink, policy.callerRoles(function(program, "a")), "sink");
-        policy.requireDirectCall(sink, policy.callerRoles(function(program, "b")), "sink");
+        policy.requireDirectCall(sink, function(program, "a"), "sink");
+        policy.requireDirectCall(sink, function(program, "b"), "sink");
         assertTrue(assertThrows(IllegalArgumentException.class,
                 () -> policy.requireDirectCall(sink,
-                        policy.callerRoles(function(program, "c")), "sink")).getMessage()
+                        function(program, "c"), "sink")).getMessage()
                 .contains("@CallableBy denies"));
         assertThrows(IllegalArgumentException.class,
                 () -> policy.requireDirectCall(sink,
-                        policy.callerRoles(function(program, "none")), "sink"));
+                        function(program, "none"), "sink"));
         assertThrows(IllegalArgumentException.class,
                 () -> policy.rejectReification(sink, "sink"));
         assertDoesNotThrow(() -> policy.rejectReification(function(program, "a"), "a"));
+    }
+
+    @Test
+    void arbitraryRoleSetsCannotImpersonateLexicallyAnnotatedCallers() {
+        Ast.Program program = Parser.parse(ROLES + """
+                @CallableBy(Callers.A)
+                pub fnc target(): void {}
+                @CallerRole(Callers.A)
+                pub fnc real(): void {}
+                pub fnc fake(): void {}
+                """);
+        var policy = CallerRoleContracts.validate(program);
+        var target = function(program, "target");
+        var real = function(program, "real");
+        var fake = function(program, "fake");
+        assertDoesNotThrow(() -> policy.requireDirectCall(target, real, "target"));
+        assertThrows(IllegalArgumentException.class,
+                () -> policy.requireDirectCall(target, fake, "target"));
+        assertThrows(IllegalArgumentException.class,
+                () -> policy.requireDirectCall(target, null, "target"));
+        // This is intentionally no longer an authorization API accepting strings.
+        assertThrows(IllegalArgumentException.class,
+                () -> policy.requireDirectCall(target, java.util.Set.of("__root__.Callers.A"), "target"));
+    }
+
+    @Test
+    void policyCannotBeSilentlyDroppedWhenTargetIsReplacedAfterIndexing() {
+        Ast.Program program = Parser.parse(ROLES + """
+                @CallableBy(Callers.A)
+                pub fnc target(): void {}
+                @CallerRole(Callers.A)
+                pub fnc real(): void {}
+                """);
+        var policy = CallerRoleContracts.validate(program);
+        Ast.FunctionDecl original = function(program, "target");
+        Ast.FunctionDecl copy = new Ast.FunctionDecl(
+                original.name(), original.kind(), original.visibility(), original.async(),
+                original.suspends(), original.generator(), original.structural(),
+                original.nonLexical(), original.trapped(), original.actorKind(),
+                original.genericParameters(), original.parameters(), original.returnType(),
+                original.annotations(), original.body(), original.genericSpecs());
+        assertThrows(IllegalArgumentException.class,
+                () -> policy.requireDirectCall(copy, function(program, "real"), "target"));
     }
 
     @Test
@@ -78,9 +121,9 @@ final class CallerRoleContractsTest {
         var policy = CallerRoleContracts.validate(program);
         var sink = function(program, "sink");
         assertThrows(IllegalArgumentException.class, () -> policy.requireDirectCall(
-                sink, policy.callerRoles(function(program, "wrong")), "sink"));
+                sink, function(program, "wrong"), "sink"));
         assertDoesNotThrow(() -> policy.requireDirectCall(
-                sink, policy.callerRoles(function(program, "right")), "sink"));
+                sink, function(program, "right"), "sink"));
     }
 
     @Test
@@ -137,8 +180,8 @@ final class CallerRoleContractsTest {
         var work = klass.methods().stream().filter(m -> m.name().equals("work")).findFirst().orElseThrow();
         var run = klass.methods().stream().filter(m -> m.name().equals("run")).findFirst().orElseThrow();
         assertThrows(IllegalArgumentException.class,
-                () -> policy.requireDirectCall(work, java.util.Set.of(), "work"));
-        assertDoesNotThrow(() -> policy.requireDirectCall(work, policy.callerRoles(run), "work"));
+                () -> policy.requireDirectCall(work, null, "work"));
+        assertDoesNotThrow(() -> policy.requireDirectCall(work, run, "work"));
     }
 
     @Test
