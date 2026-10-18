@@ -305,31 +305,85 @@ public final class WorkflowActivityProtocolV1 {
     private static void validateResultingEvent(
             DurableDevLoopV1.Command command,
             DurableDevLoopV1.Event event) {
-        boolean valid =
-                command instanceof DurableDevLoopV1.RequestCode
-                        && event instanceof DurableDevLoopV1.CodeChanged
-                || command instanceof DurableDevLoopV1.PushCode
-                        && event instanceof DurableDevLoopV1.PushRecorded
-                || command instanceof DurableDevLoopV1.AwaitCi
-                        && event instanceof DurableDevLoopV1.CiCompleted
-                || command instanceof DurableDevLoopV1.Evaluate
-                        && (event
-                                instanceof DurableDevLoopV1.EvaluationPassed
-                            || event
-                                instanceof DurableDevLoopV1.EvaluationFailed)
-                || command instanceof DurableDevLoopV1.CreateBugReport
-                        && event
-                                instanceof DurableDevLoopV1.BugReportCreated
-                || command instanceof DurableDevLoopV1.RequestApproval
-                        && event
-                                instanceof DurableDevLoopV1.ApprovalGranted;
+        if (command instanceof DurableDevLoopV1.RequestCode expected
+                && event instanceof DurableDevLoopV1.CodeChanged actual) {
+            requireEqual(
+                    expected.iteration(),
+                    actual.iteration(),
+                    "coding result iteration");
+            return;
+        }
+        if (command instanceof DurableDevLoopV1.PushCode expected
+                && event instanceof DurableDevLoopV1.PushRecorded actual) {
+            requireEqual(
+                    expected.iteration(),
+                    actual.iteration(),
+                    "push result iteration");
+            return;
+        }
+        if (command instanceof DurableDevLoopV1.AwaitCi expected
+                && event instanceof DurableDevLoopV1.CiCompleted actual) {
+            requireEqual(
+                    expected.commitSha(),
+                    actual.commitSha(),
+                    "CI result commitSha");
+            return;
+        }
+        if (command instanceof DurableDevLoopV1.Evaluate expected) {
+            if (event instanceof DurableDevLoopV1.EvaluationPassed actual) {
+                requireEqual(
+                        expected.commitSha(),
+                        actual.commitSha(),
+                        "evaluation result commitSha");
+                return;
+            }
+            if (event instanceof DurableDevLoopV1.EvaluationFailed actual) {
+                requireEqual(
+                        expected.commitSha(),
+                        actual.commitSha(),
+                        "evaluation result commitSha");
+                return;
+            }
+        }
+        if (command instanceof DurableDevLoopV1.CreateBugReport expected
+                && event instanceof DurableDevLoopV1.BugReportCreated actual) {
+            requireEqual(
+                    expected.iteration(),
+                    actual.iteration(),
+                    "bug-report result iteration");
+            requireEqual(
+                    expected.commitSha(),
+                    actual.commitSha(),
+                    "bug-report result commitSha");
+            return;
+        }
+        if (command instanceof DurableDevLoopV1.RequestApproval expected
+                && event instanceof DurableDevLoopV1.ApprovalGranted actual) {
+            requireEqual(
+                    expected.commitSha(),
+                    actual.commitSha(),
+                    "approval result commitSha");
+            return;
+        }
 
-        if (!valid) {
+        throw new IllegalArgumentException(
+                "activity result event "
+                        + event.getClass().getSimpleName()
+                        + " does not match command "
+                        + command.getClass().getSimpleName());
+    }
+
+    private static void requireEqual(
+            Object expected,
+            Object actual,
+            String field) {
+        if (!Objects.equals(expected, actual)) {
             throw new IllegalArgumentException(
-                    "activity result event "
-                            + event.getClass().getSimpleName()
-                            + " does not match command "
-                            + command.getClass().getSimpleName());
+                    field
+                            + " does not match durable command: expected "
+                            + expected
+                            + " but received "
+                            + actual);
         }
     }
 
