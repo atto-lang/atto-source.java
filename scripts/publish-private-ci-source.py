@@ -191,6 +191,48 @@ def require_trusted_branch_controls():
 
 
 
+def require_destination_workflow_owners(repository, expected_head):
+    """Verify that the reviewed destination commit actually owns CI workflows.
+
+    Required CODEOWNER review is a no-op if no effective CODEOWNERS pattern
+    matches the workflow files. Conservatively require these two final rules,
+    in order, so no later pattern can override either ownership assignment.
+    """
+    route = f"repos/{repository}/contents/.github/CODEOWNERS?ref={expected_head}"
+    response = gh_api(route)
+    if (response.get("type") != "file"
+            or response.get("encoding") != "base64"):
+        raise Denied("destination workflow CODEOWNERS file is unavailable")
+    declared = response.get("size")
+    encoded = response.get("content")
+    if (not isinstance(declared, int) or isinstance(declared, bool)
+            or declared < 1 or declared > 4096
+            or not isinstance(encoded, str)):
+        raise Denied("destination workflow CODEOWNERS file has invalid size")
+    try:
+        data = base64.b64decode("".join(encoded.split()), validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise Denied("destination workflow CODEOWNERS cannot be decoded") from exc
+    if len(data) != declared:
+        raise Denied("destination workflow CODEOWNERS byte length differs")
+    actual_blob = hashlib.sha1(
+        b"blob " + str(len(data)).encode("ascii") + bytes([0]) + data
+    ).hexdigest()
+    if valid_sha(response.get("sha")) != actual_blob:
+        raise Denied("destination workflow CODEOWNERS Git blob differs")
+    try:
+        rules = [line.strip() for line in data.decode("utf-8").splitlines()
+                 if line.strip() and not line.lstrip().startswith("#")]
+    except UnicodeDecodeError as exc:
+        raise Denied("destination workflow CODEOWNERS is not UTF-8") from exc
+    expected = [
+        f"/.github/ @{TRUSTED_SOURCE_REVIEWER}",
+        f"/.github/CODEOWNERS @{TRUSTED_SOURCE_REVIEWER}",
+    ]
+    if rules[-2:] != expected:
+        raise Denied("destination workflow CODEOWNERS rules missing or overridden")
+
+
 def require_destination_branch_controls(repository, default, expected_head):
     """Require independently reviewed destination workflows at the pinned HEAD."""
     branch_route = f"repos/{repository}/branches/{default}"
@@ -222,6 +264,8 @@ def require_destination_branch_controls(repository, default, expected_head):
     for actors in bypass.values():
         if not isinstance(actors, list) or actors:
             raise Denied("destination allows bypass of mandatory workflow review")
+
+    require_destination_workflow_owners(repository, expected_head)
 
 
 def require_protected_main_policy(repository, local_policy_digest):
