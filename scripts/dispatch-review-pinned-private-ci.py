@@ -390,6 +390,28 @@ def cleanup_exact_payload_ref(r,commit_sha):
     if any(isinstance(x,dict) and x.get("ref")=="refs/heads/"+branch for x in refs):
         raise Denied("payload ref cleanup could not be confirmed")
 
+
+def cleanup_exact_authorization_ref_if_present(commit_sha):
+    """Remove only our exact authorization ref; absence is already safe."""
+    commit_sha=require_sha(commit_sha,"payload commit")
+    branch=authorization_branch(commit_sha)
+    refs=api_list(f"repos/{CARRIER_REPO}/git/matching-refs/heads/{branch}")
+    exact=[x for x in refs if isinstance(x,dict) and x.get("ref")=="refs/heads/"+branch]
+    if not exact:
+        return
+    if len(exact)!=1:
+        raise Denied("authorization ref cleanup found ambiguous refs")
+    ref=PUB.gh_api(f"repos/{CARRIER_REPO}/git/ref/heads/{branch}")
+    obj=ref.get("object") or {}
+    if (ref.get("ref")!="refs/heads/"+branch or obj.get("type")!="commit"
+            or require_sha(obj.get("sha"),"cleanup authorization commit")!=commit_sha):
+        raise Denied("authorization ref cleanup refused because ref moved")
+    PUB.gh_api_no_content(
+        f"repos/{CARRIER_REPO}/git/refs/heads/{branch}",method="DELETE")
+    remaining=api_list(f"repos/{CARRIER_REPO}/git/matching-refs/heads/{branch}")
+    if any(isinstance(x,dict) and x.get("ref")=="refs/heads/"+branch for x in remaining):
+        raise Denied("authorization ref cleanup could not be confirmed")
+
 def require_staged_source(source_dir):
     source=Path(source_dir).resolve(strict=True)
     trusted=ROOT.resolve(strict=True)
@@ -468,6 +490,10 @@ def dispatch(receipt_path,source_dir):
         raise Denied("payload root tree readback invalid")
     verify_payload_root_entries(entries,r,provenance)
 
+    # A stale authorization ref from any earlier failed attempt could let the
+    # carrier pass its pre-checkout gate immediately when the payload ref is
+    # recreated. Refuse before creating the source-bearing trigger.
+    authorization_ref_absent(commit_sha)
     refresh_authorization(r,True); branch=branch_absent(r)
     created=PUB.gh_api(f"repos/{CARRIER_REPO}/git/refs",method="POST",
                        payload={"ref":"refs/heads/"+branch,"sha":commit_sha})
@@ -484,6 +510,10 @@ def dispatch(receipt_path,source_dir):
         create_authorization_ref(r,commit_sha)
     except Exception as exc:
         try:
+            # GitHub may have created the authorization ref even when its API
+            # response was malformed or interrupted. Remove that exact ref
+            # first so a later retry cannot inherit stale authorization.
+            cleanup_exact_authorization_ref_if_present(commit_sha)
             cleanup_exact_payload_ref(r,commit_sha)
         except Exception as cleanup:
             raise Denied(
