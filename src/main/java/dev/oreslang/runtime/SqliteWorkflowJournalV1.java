@@ -276,16 +276,6 @@ public final class SqliteWorkflowJournalV1
         }
     }
 
-    private void reloadAfterRollback() {
-        try {
-            delegate = loadVerifiedStore();
-        } catch (SQLException reloadFailure) {
-            throw new IllegalStateException(
-                    "workflow rollback succeeded but reload failed",
-                    reloadFailure);
-        }
-    }
-
     private void closeAfterFailedOpen() {
         if (connection == null) return;
         try {
@@ -652,7 +642,13 @@ public final class SqliteWorkflowJournalV1
             invalidateConnection();
             return;
         }
-        reloadAfterRollback();
+
+        try {
+            delegate = loadVerifiedStore();
+        } catch (SQLException | RuntimeException reloadFailure) {
+            originalFailure.addSuppressed(reloadFailure);
+            invalidateConnection();
+        }
     }
 
     private void invalidateConnection() {
