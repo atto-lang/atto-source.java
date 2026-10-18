@@ -315,7 +315,9 @@ def main():
         raise Denied("carrier repository ID mismatch")
     if destination.get("full_name") != CARRIER_REPO:
         raise Denied("carrier repository name mismatch")
-    if destination.get("private") is not True or destination.get("archived") is True or destination.get("disabled") is True:
+    if (destination.get("private") is not True
+            or destination.get("archived") is not False
+            or destination.get("disabled") is not False):
         raise Denied("carrier repository is not an active private repository")
 
     workflow_raw = Path(args.carrier_workflow).read_bytes()
