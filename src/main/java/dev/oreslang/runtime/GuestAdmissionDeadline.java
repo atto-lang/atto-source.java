@@ -20,9 +20,14 @@ final class GuestAdmissionDeadline implements AutoCloseable {
     private static final int RUNNING = 0;
     private static final int EXPIRED = 1;
     private static final int COMPLETE = 2;
+    // Keep elapsed-time subtraction unambiguous even across nanoTime wrap.
+    private static final Duration MAX_TIMEOUT = Duration.ofMinutes(5);
     private static final ScheduledThreadPoolExecutor TIMER = newTimer();
 
     private final AtomicInteger state = new AtomicInteger(RUNNING);
+    private final long startNanos;
+    private final long timeoutNanos;
+    private final Runnable revokeContext;
     private final ScheduledFuture<?> alarm;
 
     private static ScheduledThreadPoolExecutor newTimer() {
@@ -38,27 +43,44 @@ final class GuestAdmissionDeadline implements AutoCloseable {
     GuestAdmissionDeadline(Duration timeout, Runnable revokeContext) {
         Objects.requireNonNull(timeout, "timeout");
         Objects.requireNonNull(revokeContext, "revokeContext");
-        if (timeout.isZero() || timeout.isNegative()) {
-            throw new IllegalArgumentException("untrusted admission deadline must be positive");
+        if (timeout.isZero() || timeout.isNegative()
+                || timeout.compareTo(MAX_TIMEOUT) > 0) {
+            throw new IllegalArgumentException(
+                    "untrusted admission deadline must be positive and <=5 minutes");
         }
-        alarm = TIMER.schedule(() -> {
-            if (!state.compareAndSet(RUNNING, EXPIRED)) return;
-            // Never run native shutdown on the one shared timer thread.
-            Thread.ofVirtual().name("ores-untrusted-admission-revoke").start(() -> {
-                try { revokeContext.run(); }
-                catch (RuntimeException | Error ignored) {
-                    // Physical-close failures are recorded by the owner;
-                    // the owner retains the failed admission reservation.
-                }
-            });
-        }, timeout.toNanos(), TimeUnit.NANOSECONDS);
+        this.startNanos = System.nanoTime();
+        this.timeoutNanos = timeout.toNanos();
+        this.revokeContext = revokeContext;
+        alarm = TIMER.schedule(this::expireAndRevoke, timeoutNanos, TimeUnit.NANOSECONDS);
     }
 
-    /** True only if this admission beat the watchdog's expiry decision. */
+    /**
+     * Timer callbacks can be delayed by executor starvation or scheduling.
+     * Enforce the absolute monotonic deadline at the point of publication,
+     * independent of whether the asynchronous alarm has run.
+     */
     boolean commitIfLive() {
+        if (state.get() != RUNNING) return false;
+        if (System.nanoTime() - startNanos >= timeoutNanos) {
+            expireAndRevoke();
+            return false;
+        }
         if (!state.compareAndSet(RUNNING, COMPLETE)) return false;
         alarm.cancel(false);
         return true;
+    }
+
+    private void expireAndRevoke() {
+        if (!state.compareAndSet(RUNNING, EXPIRED)) return;
+        alarm.cancel(false);
+        // Native Context.close(true) must never run on the one timer thread.
+        Thread.ofVirtual().name("ores-untrusted-admission-revoke").start(() -> {
+            try { revokeContext.run(); }
+            catch (RuntimeException | Error ignored) {
+                // Owning supervisor/fence records unsuccessful teardown and
+                // refuses new allocation until physical close is confirmed.
+            }
+        });
     }
 
     @Override public void close() {
