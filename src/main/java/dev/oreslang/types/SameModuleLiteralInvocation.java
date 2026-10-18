@@ -112,6 +112,17 @@ public final class SameModuleLiteralInvocation {
             throw new IllegalArgumentException("only same-module direct/static call targets are inspectable");
         }
 
+        // This preview has no lexical-scope builder. A synthesized AST can
+        // reuse a formal/local name inside this one linear function body.
+        // The full semantic checker decides richer shadowing semantics;
+        // here even apparent same-scope rebinding must fail closed.
+        java.util.Set<String> localNames = new java.util.HashSet<>();
+        for (Ast.Param formal : caller.parameters()) {
+            if (!localNames.add(formal.name())) {
+                throw new IllegalArgumentException(
+                        "duplicate caller formal needs checked lexical scope");
+            }
+        }
         int siteOccurrences = 0;
         boolean terminated = false;
         for (Ast.Stmt statement : caller.body()) {
@@ -134,6 +145,11 @@ public final class SameModuleLiteralInvocation {
                 }
                 value = expression.expression();
             } else if (statement instanceof Ast.BindingStmt binding) {
+                if (binding.name() == null || binding.name().isBlank()
+                        || !localNames.add(binding.name())) {
+                    throw new IllegalArgumentException(
+                            "duplicate or invalid local binding requires checked lexical scope");
+                }
                 if (binding.initializer() == null) {
                     throw new IllegalArgumentException(
                             "uninitialized local requires definite-assignment proof");
