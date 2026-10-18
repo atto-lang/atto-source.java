@@ -166,6 +166,13 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
         java.util.concurrent.CompletableFuture.runAsync(() -> broker.close());
     }
 
+    /** Host-only diagnostic: never exposes binding objects or network handles. */
+    static boolean isRegisteredForHost(ActorRuntime runtime, ActorRuntime.ActorRef<?> actor) {
+        requireHost();
+        return actor != null && HOST_BINDINGS.containsKey(
+                new ActorKey(Objects.requireNonNull(runtime), actor.id()));
+    }
+
     private void requireBoundActorTurn() {
         if (ActorRuntime.currentActorKind() != ActorRuntime.ActorKind.UNTRUSTED
                 || ActorRuntime.currentActorRuntime() != runtime
@@ -186,6 +193,7 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
         requireHost();
         closed = true;
         HOST_BINDINGS.remove(bindingKey, this);
+        tickets.clear();
         // Repeated close retries outstanding host cancellation.
         broker.close();
     }
