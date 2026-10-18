@@ -296,7 +296,7 @@ public final class GitHubWebhookActorV1 {
                         secret,
                         receive.rawBody(),
                         receive.headers());
-                recordDelivery(verified);
+                recordDelivery(verified, receive.treeProof());
                 MatchedDelivery priorDelivery =
                         matchedDeliveries.get(verified.deliveryId());
                 if (priorDelivery != null) {
@@ -410,19 +410,29 @@ public final class GitHubWebhookActorV1 {
         }
 
         private void recordDelivery(
-                GitHubWebhookSecurityV1.VerifiedWebhook verified) {
+                GitHubWebhookSecurityV1.VerifiedWebhook verified,
+                GitHubWorkflowRunPayloadV1.GitTreeProof treeProof) {
             if (ledger != null) {
                 ledger.recordDelivery(
                         verified.deliveryId(),
                         verified.payloadSha256(),
-                        verified.eventName());
+                        verified.eventName(),
+                        treeProof.commitSha(),
+                        treeProof.treeSha(),
+                        treeProof.receiptRef());
                 return;
             }
 
             String identity =
                     verified.eventName()
                             + "\u0000"
-                            + verified.payloadSha256();
+                            + verified.payloadSha256()
+                            + "\u0000"
+                            + treeProof.commitSha()
+                            + "\u0000"
+                            + treeProof.treeSha()
+                            + "\u0000"
+                            + treeProof.receiptRef();
             String prior = deliveryIdentities.putIfAbsent(
                     verified.deliveryId(), identity);
             if (prior != null && !prior.equals(identity)) {
