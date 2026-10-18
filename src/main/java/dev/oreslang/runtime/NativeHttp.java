@@ -552,6 +552,7 @@ public final class NativeHttp implements AutoCloseable {
                 throw new IllegalArgumentException("buffered response exceeds configured limit");
             return operation(() -> {
                 synchronized (state) {
+                    if (state.terminal) throw new IllegalStateException("HTTP request was cancelled before response commitment");
                     if (state.committed) throw new IllegalStateException("response already started");
                     state.committed = true;
                     state.responseStatus = draft.status();
