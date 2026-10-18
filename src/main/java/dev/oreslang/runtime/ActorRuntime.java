@@ -1000,6 +1000,12 @@ public final class ActorRuntime implements AutoCloseable {
                 if (current == Long.MAX_VALUE) {
                     // Never wrap diagnostic order into negative values. The
                     // authoritative ActorRef terminal state still survives.
+                    // These records were admitted before the sequence fence
+                    // became exhausted, so classify their drain-time loss as
+                    // sequence exhaustion as well as in the aggregate drop
+                    // counter. This keeps reasoned journal telemetry
+                    // reconcilable under a queued-backlog exhaustion race.
+                    supervisionEventSequenceExhaustionDrops.incrementAndGet();
                     supervisionEventsDropped.incrementAndGet();
                     continue;
                 }
