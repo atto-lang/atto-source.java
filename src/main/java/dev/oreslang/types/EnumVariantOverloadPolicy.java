@@ -97,10 +97,24 @@ public final class EnumVariantOverloadPolicy {
      */
 
     public static void admit(List<Signature> candidates) {
+        validateFamily(snapshot(candidates));
+    }
+
+    /** A single bounded immutable snapshot prevents caller-list mutation between
+     * admission and construction of the prepared compiler image. */
+    private static List<Signature> snapshot(List<Signature> candidates) {
         Objects.requireNonNull(candidates, "candidates");
         if (candidates.isEmpty() || candidates.size() > MAX_TOTAL_CANDIDATES) {
             throw new IllegalArgumentException("empty or oversized callable family");
         }
+        List<Signature> slots = List.copyOf(candidates);
+        if (slots.isEmpty() || slots.size() > MAX_TOTAL_CANDIDATES) {
+            throw new IllegalArgumentException("callable family changed during snapshot");
+        }
+        return slots;
+    }
+
+    private static void validateFamily(List<Signature> candidates) {
         Signature first = Objects.requireNonNull(candidates.get(0), "candidate");
         Map<String, EnumInfo> registry = new HashMap<>();
         Map<Integer, List<Signature>> byArity = new HashMap<>();
@@ -141,8 +155,9 @@ public final class EnumVariantOverloadPolicy {
     /** Prepare a single immutable compiler family once, rather than revalidating
      * all declaration pairs at every call site. This is a host-only proof plan. */
     public static PreparedFamily prepare(List<Signature> candidates) {
-        admit(candidates);
-        return new PreparedFamily(candidates);
+        List<Signature> slots = snapshot(candidates);
+        validateFamily(slots);
+        return new PreparedFamily(slots);
     }
 
     /** Compatibility oracle: use {@link #prepare} once for production checker integration. */
