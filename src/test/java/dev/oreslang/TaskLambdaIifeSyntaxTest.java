@@ -72,15 +72,21 @@ final class TaskLambdaIifeSyntaxTest {
     }
 
     @Test
-    void asyncLambdaPrefixHasNoImplicitFutureTaskFlattening() {
+    void asyncLambdaWrapsNbWithExplicitFutureTaskNestingInAst() {
         for (String form : new String[]{
                 "async |int a, string b| -> nb { return a; }",
                 "async |int a, string b| -> { return nb { return a; }; }"
         }) {
-            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                    () -> initializer("(" + form + ")(5, \"xyz\")"));
-            assertTrue(error.getMessage().contains("async lambdas are not enabled"), error::getMessage);
-            assertTrue(error.getMessage().contains("Task<T>"), error::getMessage);
+            Ast.CallExpr call = assertInstanceOf(Ast.CallExpr.class,
+                    initializer("(" + form + ")(5, \"xyz\")"));
+            Ast.AsyncLambdaExpr outer = assertInstanceOf(Ast.AsyncLambdaExpr.class, call.callee());
+            if (outer.lambda().expressionBody() != null) {
+                assertInstanceOf(Ast.TaskExpr.class, outer.lambda().expressionBody());
+            } else {
+                Ast.ReturnStmt returned = assertInstanceOf(Ast.ReturnStmt.class,
+                        outer.lambda().blockBody().getFirst());
+                assertInstanceOf(Ast.TaskExpr.class, returned.value());
+            }
         }
     }
 
