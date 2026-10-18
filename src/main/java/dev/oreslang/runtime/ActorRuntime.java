@@ -5413,11 +5413,12 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 transferState = TransferState.PUBLISHED;
             }
-            try {
-                sourceRef.stop();
-            } finally {
-                freeze.close();
-            }
+            // Fail sealed after logical publication. If physical stop
+            // itself throws, never reopen the stale old incarnation merely
+            // because cleanup failed; its generation/transfer remains pinned
+            // for supervisor recovery.
+            sourceRef.stop();
+            freeze.close();
         }
 
         /**
