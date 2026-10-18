@@ -90,6 +90,70 @@ final class OresCarrierPermitPoolTest {
         assertEquals(0, permits.held(OresCarrierPermitPool.Domain.PRIVATE));
     }
 
+    @Test void denialReasonsAndSnapshotReconcileExactly() {
+        var permits = new OresCarrierPermitPool(5);
+        var held = new ArrayList<OresCarrierPermitPool.Permit>();
+        try {
+            held.add(permits.tryAcquire(OresCarrierPermitPool.Domain.CONTROL));
+            assertNotNull(held.get(0));
+            assertNull(permits.tryAcquire(OresCarrierPermitPool.Domain.CONTROL),
+                    "second CONTROL carrier must preserve four unmet reserves");
+
+            for (var domain : List.of(
+                    OresCarrierPermitPool.Domain.PRIVATE,
+                    OresCarrierPermitPool.Domain.SHARED,
+                    OresCarrierPermitPool.Domain.UNTRUSTED,
+                    OresCarrierPermitPool.Domain.LIFECYCLE)) {
+                var permit = permits.tryAcquire(domain);
+                assertNotNull(permit);
+                held.add(permit);
+            }
+            assertNull(permits.tryAcquire(OresCarrierPermitPool.Domain.PRIVATE),
+                    "fully held global ceiling must report hard capacity denial");
+
+            var snapshot = permits.snapshot();
+            assertEquals(5, snapshot.maximum());
+            assertEquals(5, snapshot.totalHeld());
+            assertEquals(0, snapshot.free());
+            assertEquals(1, snapshot.controlHeld());
+            assertEquals(1, snapshot.privateHeld());
+            assertEquals(1, snapshot.sharedHeld());
+            assertEquals(1, snapshot.untrustedHeld());
+            assertEquals(1, snapshot.lifecycleHeld());
+            assertEquals(1L, snapshot.deniedReserveProtection());
+            assertEquals(1L, snapshot.deniedCapacity());
+        } finally {
+            held.forEach(OresCarrierPermitPool.Permit::close);
+        }
+        var released = permits.snapshot();
+        assertEquals(0, released.totalHeld());
+        assertEquals(5, released.free());
+        assertEquals(1L, released.deniedReserveProtection());
+        assertEquals(1L, released.deniedCapacity());
+    }
+
+    @Test void multiAcquireRollbackDoesNotLeakPartialPermits() {
+        var permits = new OresCarrierPermitPool(8);
+        var control = permits.tryAcquire(OresCarrierPermitPool.Domain.CONTROL);
+        assertNotNull(control);
+        try {
+            assertNull(permits.tryAcquireMany(OresCarrierPermitPool.Domain.CONTROL, 4),
+                    "transaction must fail when its final permit would steal a reserve");
+            var snapshot = permits.snapshot();
+            assertEquals(1, snapshot.totalHeld(),
+                    "partial transaction must restore original held state");
+            assertEquals(1, snapshot.controlHeld());
+            assertEquals(7, snapshot.free());
+            assertEquals(1L, snapshot.deniedReserveProtection());
+            assertEquals(0L, snapshot.deniedCapacity());
+        } finally {
+            control.close();
+            control.close();
+        }
+        assertEquals(0, permits.totalHeld(),
+                "Permit.close must remain idempotent after transactional pressure");
+    }
+
     @Test void concurrentAcquireReleaseNeverExceedsMaximum() throws Exception {
         var permits = new OresCarrierPermitPool(16);
         var start = new CountDownLatch(1);
