@@ -119,6 +119,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                     dispatchFrozen = false;
                     activeFreeze = null;
                     consumed = true;
+                    checkStructuralInvariantsLocked();
                     lock.notifyAll();
                     return;
                 }
