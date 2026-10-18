@@ -175,4 +175,49 @@ final class SharedUntrustedIsolatePoolTest {
             }
         }
     }
+    @Test
+    @EnabledIfEnvironmentVariable(named = "ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches = "true")
+    void repeatedImportsPinOneImagePerContextAndRejectMixedGenerations() {
+        try (SharedUntrustedIsolatePool pool = new SharedUntrustedIsolatePool(
+                256L * 1024 * 1024, 2);
+             SharedUntrustedIsolatePool.Group first = pool.createGroup();
+             SharedUntrustedIsolatePool.Group second = pool.createGroup()) {
+            org.graalvm.polyglot.Source canonical =
+                    first.sourceImageForSupervisor("std/core.ores", "shared-core-v1");
+            for (int i = 0; i < 1_000; i++) {
+                assertSame(canonical,
+                        first.sourceImageForSupervisor("std/core.ores", "shared-core-v1"));
+            }
+            assertEquals(1, first.distinctCodeUnitsForSupervisor());
+            assertEquals(1, pool.liveCodeImagesForSupervisor());
+            assertSame(canonical,
+                    second.sourceImageForSupervisor("std/core.ores", "shared-core-v1"));
+            assertThrows(IllegalStateException.class,
+                    () -> first.sourceImageForSupervisor("std/core.ores", "shared-core-v2"),
+                    "a live Context cannot silently replace an imported module");
+            assertEquals(1, pool.liveCodeImagesForSupervisor());
+            first.close();
+            assertEquals(1, pool.liveCodeImagesForSupervisor(),
+                    "second Context pins its own lease");
+            second.close();
+            assertEquals(0, pool.liveCodeImagesForSupervisor());
+        }
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches = "true")
+    void contextHasBoundedDistinctModuleImages() {
+        try (SharedUntrustedIsolatePool pool = new SharedUntrustedIsolatePool(
+                256L * 1024 * 1024, 1);
+             SharedUntrustedIsolatePool.Group group = pool.createGroup()) {
+            for (int i = 0; i < 128; i++) {
+                group.sourceImageForSupervisor("unit-" + i, "code-" + i);
+            }
+            assertEquals(128, group.distinctCodeUnitsForSupervisor());
+            assertThrows(IllegalStateException.class,
+                    () -> group.sourceImageForSupervisor("unit-over-limit", "another"));
+            assertEquals(128, pool.liveCodeImagesForSupervisor());
+        }
+    }
+
 }
