@@ -31,14 +31,12 @@ final class NativeActorIpcTransportV1 implements AutoCloseable {
 
     static final int DATA = 1;
     static final int CONTROL = 2;
-    private static final int FRAME_OVERHEAD_BYTES = 116 + 32;
     private static final int DATA_WIRE_LIMIT =
-            ActorIpcSessionV1.MAX_PAYLOAD_BYTES + FRAME_OVERHEAD_BYTES;
+            ActorIpcSessionV1.maxWireFrameBytes(
+                    ActorIpcSessionV1.Lane.DATA);
     private static final int CONTROL_WIRE_LIMIT =
-            Math.max(
-                    ActorIpcSessionV1.MAX_CONTROL_PAYLOAD_BYTES
-                            + FRAME_OVERHEAD_BYTES,
-                    32 * 8 + 16 + FRAME_OVERHEAD_BYTES);
+            ActorIpcSessionV1.maxWireFrameBytes(
+                    ActorIpcSessionV1.Lane.CONTROL);
 
     private final ReentrantReadWriteLock lifecycle =
             new ReentrantReadWriteLock();
