@@ -258,10 +258,19 @@ The first command tests the runner against synthetic fixtures. The second
 compiles the actual publisher and its Python regressions, syntax-checks the
 actual Bash guards, executes the destination denial tests, and repeats the
 complete Python publisher suite (which also discovers merged-main tests)
-three times. The runner removes inherited GitHub token variables, uses a
-temporary empty GH CLI configuration, validates file SHA-256 stability and
-emits `PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1` **only** when every step
-succeeds. These controls isolate credentials, but are **not** a network sandbox:
+three times. It also executes the review-coverage validator, rather than
+only checking that the validator exists. The runner refuses a caller-selected
+Python executable (including `PYTHON=/bin/true`), invokes the genuine
+`python3` interpreter in isolated mode (`-I -B`), removes inherited GitHub
+tokens and Python startup hooks, and uses an empty temporary GitHub CLI
+configuration. Its SHA-256 manifest pins the nine script/test inputs plus
+the source CODEOWNERS file, protected destination allowlist, and private-CI
+workflow definition before and after execution. Sixteen source-free
+adversarial runner self-tests check failure behavior, including interpreter
+substitution, Python startup injection, symlinks and mid-run policy edits.
+The runner emits `PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1` **only** when
+every step succeeds and the input manifest is unchanged. These controls
+isolate credentials and Python imports, but are **not** a network sandbox:
 run offline or in a network-restricted environment.
 
 Until the actual command above produces its final success receipt and
