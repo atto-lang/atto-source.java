@@ -153,6 +153,8 @@ final class ParserTest {
         assertThrows(IllegalArgumentException.class,
                 () -> Ast.TypeRef.omittableFormal(optionalString));
         assertThrows(IllegalArgumentException.class,
+                () -> new Ast.TypeRef("List", List.of(optionalString), false));
+        assertThrows(IllegalArgumentException.class,
                 () -> new Ast.TypeRef("$omittable_formal$", List.of(), false));
         assertThrows(IllegalArgumentException.class,
                 () -> new Ast.TypeRef("$omittable_formal$", List.of(string), true));
@@ -162,6 +164,27 @@ final class ParserTest {
         assertEquals(string, new Ast.Param(optionalString, "value").valueType());
         assertFalse(new Ast.Param(new Ast.TypeRef(
                 "Option", List.of(string), false), "required").optional());
+    }
+
+    @Test
+    void syntheticNonFormalTQuestionCannotEnterTypeOrOwnershipPipelines() {
+        Ast.TypeRef optionalString = Ast.TypeRef.omittableFormal(Ast.TypeRef.simple("string"));
+        Ast.Program fieldProgram = new Ast.Program(List.of(
+                new Ast.ModuleDecl("app", List.of(
+                        new Ast.FieldDecl("bad", Ast.Visibility.PRIVATE,
+                                Ast.BindingKind.CONST, optionalString, (Ast.Expr) null)))));
+        for (Ast.Program program : List.of(fieldProgram,
+                new Ast.Program(List.of(new Ast.ModuleDecl("app", List.of(
+                        new Ast.TypeAliasDecl("Bad", List.of(), optionalString))))))) {
+            IllegalArgumentException typeFailure = assertThrows(
+                    IllegalArgumentException.class, () -> TypeChecker.checkTypes(program));
+            assertTrue(typeFailure.getMessage().contains("formal argument slots"),
+                    typeFailure::toString);
+            IllegalArgumentException ownershipFailure = assertThrows(
+                    IllegalArgumentException.class, () -> OwnershipChecker.check(program));
+            assertTrue(ownershipFailure.getMessage().contains("formal argument slots"),
+                    ownershipFailure::toString);
+        }
     }
 
     @Test
