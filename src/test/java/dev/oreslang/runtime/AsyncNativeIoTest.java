@@ -318,4 +318,24 @@ class AsyncNativeIoTest {
     }
 
 
+    @Test
+    void physicalClosePublishesTerminalFutureBeforeDroppingTracking() throws Exception {
+        AsyncNativeIo io = new AsyncNativeIo(1);
+        var pendingField = AsyncNativeIo.class.getDeclaredField("pending");
+        pendingField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        java.util.Set<OresFuture<?>> tracked =
+                (java.util.Set<OresFuture<?>>) pendingField.get(io);
+        OresFuture<Integer> future = new OresFuture<>();
+        synchronized (io) { tracked.add(future); }
+
+        io.close();
+        assertTrue(future.isDone(), "shutdown must settle the accepted future");
+        assertTrue(tracked.isEmpty(), "only terminal futures may leave tracking");
+        assertInstanceOf(IllegalStateException.class,
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> future.get(1, TimeUnit.SECONDS)).getCause());
+    }
+
+
 }
