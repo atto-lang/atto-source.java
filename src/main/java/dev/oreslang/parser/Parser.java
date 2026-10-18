@@ -816,15 +816,16 @@ public final class Parser {
         if (!braceStyle) match(AS);
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
+        List<Ast.ForeignDecl> foreignDeclarations = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
-            if (check(EXTERN)) {
-                throw error(peek(),
-                        "extern is reserved for compiler-owned ForeignDecl lowering; "
-                                + "ffi actor foreign declarations are not enabled on this compiler slice");
+            if (match(EXTERN)) {
+                foreignDeclarations.add(parseForeignDecl(
+                        annotations, mods, actorBoundary));
+                continue;
             }
             if (isLegacyFnSpelling()) {
                 if (mods.isStatic) throw error(peek(), "static actor functions use 'static fnc', not 'static fn'");
@@ -885,7 +886,69 @@ public final class Parser {
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, actorBoundary,
-                generics, parents, interfaces, fields, null, methods);
+                generics, parents, interfaces, fields, null,
+                foreignDeclarations, methods);
+    }
+
+    private Ast.ForeignDecl parseForeignDecl(
+            List<Ast.Annotation> annotations,
+            Modifiers beforeExtern,
+            Ast.ActorBoundary actorBoundary) {
+        if (actorBoundary != Ast.ActorBoundary.FFI) {
+            throw error(previous(),
+                    "extern declarations are only valid inside ffi actors");
+        }
+        if (!annotations.isEmpty()) {
+            throw error(previous(),
+                    "foreign declarations v1 do not accept annotations; "
+                            + "ABI layout and symbol metadata are compiler-owned");
+        }
+
+        Modifiers modifiers = mergeModifiers(beforeExtern, parseModifiers());
+        if (!modifiers.suspends
+                || modifiers.visibilitySeen
+                || modifiers.async
+                || modifiers.generator
+                || modifiers.structural
+                || modifiers.nonLexical
+                || modifiers.trapped
+                || modifiers.isStatic
+                || modifiers.isAbstract
+                || modifiers.shared
+                || modifiers.untrusted
+                || modifiers.ipc
+                || modifiers.ffi) {
+            throw error(previous(),
+                    "foreign declarations v1 require exactly 'extern suspends fnc'");
+        }
+
+        consume(FNC, "foreign declarations use 'extern suspends fnc'");
+        String name = consume(
+                IDENT,
+                "expected foreign function name after 'extern suspends fnc'").lexeme();
+        if (check(LT)) {
+            throw error(peek(),
+                    "foreign declarations v1 cannot be generic");
+        }
+
+        consume(LPAREN, "expected '(' after foreign function name");
+        List<Ast.Param> parameters = parseParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after foreign parameters");
+        for (Ast.Param parameter : parameters) {
+            if (parameter.structural() || parameter.mutable()) {
+                throw error(previous(),
+                        "foreign parameters v1 cannot be structural or mutable");
+            }
+        }
+        Ast.TypeRef returnType = parseReturnType(List.of());
+        consume(SEMICOLON,
+                "foreign declarations have no body and must end with ';'");
+        return new Ast.ForeignDecl(
+                name,
+                true,
+                parameters,
+                returnType,
+                name);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
