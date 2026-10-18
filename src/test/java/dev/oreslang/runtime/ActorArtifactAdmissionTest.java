@@ -11,6 +11,7 @@ import java.security.Signature;
 import java.util.Base64;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
