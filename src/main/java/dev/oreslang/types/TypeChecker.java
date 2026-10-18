@@ -79,7 +79,8 @@ public final class TypeChecker {
     private final Set<String> ambiguousClasses = new HashSet<>();
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
-    private final Set<String> importedValues = new HashSet<>();
+    private final Map<String, Set<String>> importedValuesByModule = new HashMap<>();
+    private final Map<String, Set<String>> importedClassesByModule = new HashMap<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -183,8 +184,7 @@ public final class TypeChecker {
     }
 
     private void validateImports(Ast.Program program) {
-        Set<String> exposed = new HashSet<>();
-        Set<String> localNames = new HashSet<>(Set.of(
+        Set<String> builtinNames = Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
@@ -192,10 +192,19 @@ public final class TypeChecker {
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
-                "self", "null"));
+                "self", "null");
 
+        Map<String, Set<String>> localNamesByModule = new LinkedHashMap<>();
+        Set<String> moduleNames = new LinkedHashSet<>();
         for (Ast.ModuleDecl module : program.modules()) {
-            if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
+            if (!module.name().equals(Parser.ROOT_MODULE)) moduleNames.add(module.name());
+        }
+        for (Ast.ModuleDecl module : program.modules()) {
+            Set<String> localNames = new HashSet<>(builtinNames);
+            // Module namespaces remain addressable as source-level names for
+            // compatibility, but declarations in sibling modules do not reserve
+            // this module's imported binding namespace.
+            localNames.addAll(moduleNames);
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) localNames.add(fn.name());
                 else if (declaration instanceof Ast.ClassDecl klass) localNames.add(klass.name());
@@ -203,26 +212,72 @@ public final class TypeChecker {
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
                 else if (declaration instanceof Ast.TypeAliasDecl alias) localNames.add(alias.name());
             }
+            localNamesByModule.put(module.name(), localNames);
         }
 
+        Map<String, Set<String>> exposedByModule = new LinkedHashMap<>();
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
+            String scope = importScope(imported);
+            Set<String> localNames = localNamesByModule.get(scope);
+            if (localNames == null) {
+                throw new IllegalArgumentException(
+                        "import is scoped to unknown module '" + scope + "'");
+            }
+            Set<String> exposed =
+                    exposedByModule.computeIfAbsent(scope, ignored -> new HashSet<>());
             for (String name : ImportRules.exposedBindings(imported)) {
-                if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
+                if (!exposed.add(name)) {
+                    throw new IllegalArgumentException(
+                            "duplicate imported name '" + name + "' in module '" + scope + "'");
+                }
                 if (localNames.contains(name)) {
-                    throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
+                    throw new IllegalArgumentException(
+                            "imported name '" + name + "' conflicts with a local or builtin name in module '"
+                                    + scope + "'");
                 }
                 // Cross-file imports are opaque to this per-unit typechecker.
-                // Runtime-bearing imports enter the value namespace. Oreslang
-                // classes also have a value-side constructor/static namespace,
-                // but actors/interfaces/traits/structs/type aliases do not.
+                // Runtime-bearing imports enter only their owning module's value
+                // namespace. Oreslang classes additionally have a value-side
+                // constructor/static namespace, while other type-only imports do not.
                 if (!ImportRules.isTypeOnlyKind(imported.kind())
                         || imported.kind() == Ast.ImportKind.CLASS
                         || ImportRules.isJavaPath(imported.path())) {
-                    importedValues.add(name);
+                    importedValuesByModule
+                            .computeIfAbsent(scope, ignored -> new HashSet<>())
+                            .add(name);
+                }
+                if (imported.kind() == Ast.ImportKind.CLASS) {
+                    importedClassesByModule
+                            .computeIfAbsent(scope, ignored -> new HashSet<>())
+                            .add(name);
                 }
             }
         }
+    }
+
+    private static String importScope(Ast.ImportDecl imported) {
+        return imported.lexicalModule() == null
+                ? Parser.ROOT_MODULE
+                : imported.lexicalModule();
+    }
+
+    private String currentImportScope() {
+        return currentLexicalModule == null
+                ? Parser.ROOT_MODULE
+                : currentLexicalModule;
+    }
+
+    private boolean importedValueVisible(String name) {
+        return importedValuesByModule
+                .getOrDefault(currentImportScope(), Set.of())
+                .contains(name);
+    }
+
+    private boolean importedClassVisible(String name) {
+        return importedClassesByModule
+                .getOrDefault(currentImportScope(), Set.of())
+                .contains(name);
     }
 
     private void collect(Ast.Program program) {
@@ -2113,7 +2168,7 @@ public final class TypeChecker {
                 rejectUnimportedClassNamespace(classNamespace);
                 return new ClassNamespace(qualifiedClassName(classNamespace));
             }
-            if (importedValues.contains(name.name())) return Unknown.INSTANCE;
+            if (importedValueVisible(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findSingleFunction(name.name());
             if (fn != null) {
                 rejectImplicitClassCallable(name.name());
@@ -3423,7 +3478,7 @@ public final class TypeChecker {
                         || name.name().equals("net")
                         || name.name().equals("http")
                         || name.name().equals("env"))) return Unknown.INSTANCE;
-            if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
+            if (member.receiver() instanceof Ast.NameExpr name && importedValueVisible(name.name())) return Unknown.INSTANCE;
 
             if (receiver instanceof ClassNamespace classNamespace) {
                 Ast.ClassDecl klass = findClass(classNamespace.className());
@@ -8337,7 +8392,19 @@ public final class TypeChecker {
 
     private Ast.ClassDecl findClass(String name) {
         if (ambiguousClasses.contains(name)) throw new IllegalArgumentException("ambiguous class name '" + name + "'; qualify it with its module");
-        return classes.get(name);
+        Ast.ClassDecl found = classes.get(name);
+        if (found == null) return null;
+
+        // Linked foreign classes have no local declaration owner. They are
+        // visible only in a lexical module that explicitly imported the class.
+        // Compiler-internal pre-validation runs with no current module and may
+        // inspect the linked registry without granting guest lexical access.
+        if (currentLexicalModule != null
+                && !classOwners.containsKey(found)
+                && !importedClassVisible(name)) {
+            return null;
+        }
+        return found;
     }
 
     private Ast.InterfaceDecl findInterface(String name) {
