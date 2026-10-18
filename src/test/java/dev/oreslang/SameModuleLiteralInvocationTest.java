@@ -315,4 +315,56 @@ final class SameModuleLiteralInvocationTest {
                 new Ast.Program(List.of(safe)), calling, staged));
     }
 
+
+    @Test
+    void duplicateNestedCallAstAndUnprovedEarlierEffectsAreNotLexicalProof() {
+        Ast.Program original = program();
+        Ast.ModuleDecl module = original.modules().getFirst();
+        Ast.FunctionDecl caller = caller(original);
+        Ast.StagedCallExpr target = call(caller);
+
+        // The exact same AST call object appears nested inside another
+        // expression as well as at its original direct statement site.
+        var nested = new Ast.BindingStmt(Ast.BindingKind.CONST, null, "hidden",
+                new Ast.ListExpr(List.of(target)));
+        Ast.FunctionDecl duplicate = withBody(caller, List.of(
+                nested, caller.body().getFirst(), new Ast.ReturnStmt(null)));
+        Ast.Program duplicateProgram = withCaller(module, duplicate);
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(duplicateProgram, duplicate, target));
+        assertTrue(failure.getMessage().contains("other expression"), failure::toString);
+
+        // Even when the original staged call is unique, this small witness
+        // cannot prove a separate earlier side effect or defer.
+        Ast.FunctionDecl effected = withBody(caller, List.of(
+                new Ast.ExprStmt(new Ast.CallExpr(
+                        new Ast.NameExpr("anotherEffect"), List.of())),
+                caller.body().getFirst()));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(
+                        withCaller(module, effected), effected, target));
+
+        Ast.FunctionDecl deferred = withBody(caller, List.of(
+                new Ast.DeferStmt(new Ast.LiteralExpr(1L)),
+                caller.body().getFirst()));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(
+                        withCaller(module, deferred), deferred, target));
+    }
+
+    private static Ast.FunctionDecl withBody(Ast.FunctionDecl source, List<Ast.Stmt> body) {
+        return new Ast.FunctionDecl(
+                source.name(), source.kind(), source.visibility(), source.async(),
+                source.suspends(), source.generator(), source.structural(),
+                source.nonLexical(), source.trapped(), source.actorKind(),
+                source.genericParameters(), source.parameters(), source.returnType(),
+                source.annotations(), body);
+    }
+
+    private static Ast.Program withCaller(Ast.ModuleDecl module, Ast.FunctionDecl caller) {
+        return new Ast.Program(List.of(new Ast.ModuleDecl(
+                module.name(), module.annotations(), module.contracts(),
+                List.of(module.declarations().getFirst(), caller))));
+    }
 }
