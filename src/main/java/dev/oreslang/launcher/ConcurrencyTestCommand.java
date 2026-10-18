@@ -35,7 +35,7 @@ final class ConcurrencyTestCommand {
         String entry = null;
         String replayArg = null;
         String traceArg = null;
-        String mode = "jit";
+        String mode = dev.oreslang.runtime.NativeBuildMode.defaultExecutionMode();
         String platform = "server";
         int iterations = 1;
         long seed = 1;
