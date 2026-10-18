@@ -3,7 +3,13 @@
 set -euo pipefail
 umask 077
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-python_bin="${PYTHON:-python3}"
+# Do not accept a caller-supplied executable: PYTHON=/bin/true used to
+# produce false-positive receipts without running ANY regression.
+if [[ -n "${PYTHON:-}" && "$PYTHON" != python3 ]]; then
+  echo 'PRIVATE_CI_UNSAFE_PYTHON_OVERRIDE: offline evidence requires python3' >&2
+  exit 2
+fi
+python_bin=python3
 repeats="${PRIVATE_CI_TEST_REPEATS:-3}"
 if [[ ! "$repeats" =~ ^[1-9][0-9]?$ ]]; then
   echo 'PRIVATE_CI_INVALID_REPEATS: expected an integer from 1 to 99' >&2
