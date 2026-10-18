@@ -5986,16 +5986,23 @@ public final class TypeChecker {
     }
 
     private boolean scalarSumCompositionType(Type type) {
+        return scalarSumCompositionType(type, 0);
+    }
+
+    private boolean scalarSumCompositionType(Type type, int depth) {
+        // Guest-controlled nested Option/Result shapes must not recurse
+        // without bound in the semantic pass or exhaust the Java stack.
+        if (depth > 64) return false;
         if (type instanceof Primitive primitive)
             return primitive != Primitive.VOID && primitive != Primitive.NULL;
         if (type instanceof StringLiteral) return true;
         if (!(type instanceof Named named)) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option")) return named.arguments().size() == 1
-                && scalarSumCompositionType(named.arguments().getFirst());
+                && scalarSumCompositionType(named.arguments().getFirst(), depth + 1);
         if (named.name().equals("Result")) return named.arguments().size() == 2
-                && scalarSumCompositionType(named.arguments().get(0))
-                && scalarSumCompositionType(named.arguments().get(1));
+                && scalarSumCompositionType(named.arguments().get(0), depth + 1)
+                && scalarSumCompositionType(named.arguments().get(1), depth + 1);
         return false;
     }
 
