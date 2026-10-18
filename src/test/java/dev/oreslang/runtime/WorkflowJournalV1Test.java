@@ -314,6 +314,96 @@ final class WorkflowJournalV1Test {
     }
 
     @Test
+    void appliedOutcomeRetiresStillPendingCausalEffect() {
+        var loop = new DurableDevLoopV1("run-causal-retire", 3);
+        var store = started(loop);
+
+        String codeKey = store.effects().getFirst().effectKey();
+        assertEquals(
+                WorkflowJournalV1.EffectState.PENDING,
+                store.effect(codeKey).orElseThrow().state());
+
+        append(store, loop.accept(
+                "code",
+                new DurableDevLoopV1.CodeChanged(
+                        1, "patch://one")));
+
+        var retired = store.effect(codeKey).orElseThrow();
+        assertEquals(
+                WorkflowJournalV1.EffectState.ABANDONED,
+                retired.state());
+        assertFalse(retired.retryAllowed());
+
+        var next = store.claimNext(
+                "worker-push", 100L, 100L).orElseThrow();
+        assertInstanceOf(
+                DurableDevLoopV1.PushCode.class,
+                next.command());
+    }
+
+    @Test
+    void secondIterationCausalKeysUseCurrentIteration() {
+        var loop = new DurableDevLoopV1("run-causal-iteration", 3);
+        var store = started(loop);
+        String sha1 = sha('a');
+        String sha2 = sha('b');
+
+        append(store, loop.accept(
+                "code-1",
+                new DurableDevLoopV1.CodeChanged(
+                        1, "patch://1")));
+        append(store, loop.accept(
+                "push-1",
+                new DurableDevLoopV1.PushRecorded(
+                        1, sha1)));
+        append(store, loop.accept(
+                "ci-fail-1",
+                new DurableDevLoopV1.CiCompleted(
+                        sha1,
+                        DurableDevLoopV1.CiConclusion.FAILURE,
+                        "artifact://tests/1")));
+        append(store, loop.accept(
+                "bug-1",
+                new DurableDevLoopV1.BugReportCreated(
+                        1, sha1, "bug://1")));
+        assertEquals(2, loop.snapshot().iteration());
+
+        append(store, loop.accept(
+                "code-2",
+                new DurableDevLoopV1.CodeChanged(
+                        2, "patch://2")));
+        append(store, loop.accept(
+                "push-2",
+                new DurableDevLoopV1.PushRecorded(
+                        2, sha2)));
+
+        String ci2Key =
+                "devloop/run-causal-iteration/iteration/2/ci/" + sha2;
+        assertEquals(
+                WorkflowJournalV1.EffectState.PENDING,
+                store.effect(ci2Key).orElseThrow().state());
+
+        append(store, loop.accept(
+                "ci-ok-2",
+                new DurableDevLoopV1.CiCompleted(
+                        sha2,
+                        DurableDevLoopV1.CiConclusion.SUCCESS,
+                        "artifact://tests/2")));
+
+        var retiredCi = store.effect(ci2Key).orElseThrow();
+        assertEquals(
+                WorkflowJournalV1.EffectState.ABANDONED,
+                retiredCi.state());
+        assertFalse(retiredCi.retryAllowed());
+
+        String evaluate2Key =
+                "devloop/run-causal-iteration/iteration/2/evaluate/" + sha2;
+        assertEquals(
+                WorkflowJournalV1.EffectState.PENDING,
+                store.effect(evaluate2Key).orElseThrow().state());
+    }
+
+    @Test
     void journalReplayReconstructsReducerStateAcrossFailureLoop() {
         var loop = new DurableDevLoopV1("run-replay-store", 3);
         var store = new WorkflowJournalV1();
