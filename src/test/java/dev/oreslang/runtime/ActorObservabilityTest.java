@@ -688,6 +688,43 @@ final class ActorObservabilityTest {
     }
 
     @Test
+    void queuedBacklogDroppedAtDrainTimeIsClassifiedAsSequenceExhaustion()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var first = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            var second = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            first.stop();
+            second.stop();
+            assertTrue(first.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(second.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(2, runtime.terminalJournalStats().backlog());
+
+            Field sequenceField =
+                    ActorRuntime.class.getDeclaredField("supervisionEventSequence");
+            sequenceField.setAccessible(true);
+            var sequence = (java.util.concurrent.atomic.AtomicLong)
+                    sequenceField.get(runtime);
+            sequence.set(Long.MAX_VALUE);
+
+            assertTrue(runtime.pollTerminationEvent().isEmpty(),
+                    "all queued events beyond the terminal sequence fence must be dropped");
+            var journal = runtime.terminalJournalStats();
+            assertEquals(0, journal.backlog());
+            assertEquals(Long.MAX_VALUE, journal.nextSequence());
+            assertEquals(2L, journal.published());
+            assertEquals(2L, journal.droppedSequenceExhaustion());
+            assertEquals(0L, journal.droppedContention());
+            assertEquals(0L, journal.droppedCapacity());
+            assertEquals(2L, journal.droppedTotal());
+            assertEquals(journal.droppedTotal(), runtime.supervisionEventsDropped());
+            assertTrue(first.terminalState().isPresent());
+            assertTrue(second.terminalState().isPresent());
+        }
+    }
+
+    @Test
     void exhaustedDiagnosticSequenceFailsClosedWithoutWrappingOrBlockingTermination()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
