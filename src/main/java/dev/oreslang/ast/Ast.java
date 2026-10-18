@@ -400,15 +400,30 @@ public final class Ast {
         }
     }
 
+    /**
+     * The leading source `self` binder is not a caller parameter. Retaining
+     * its presence lets lexical/ownership passes distinguish an explicitly
+     * authorized construction receiver from older implicit-receiver sources.
+     */
     public record ConstructorDecl(
             Visibility visibility,
             List<Param> parameters,
             List<Annotation> annotations,
-            List<Stmt> body) {
+            List<Stmt> body,
+            boolean bindsSelf) {
         public ConstructorDecl {
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
+        }
+
+        /** AST migration compatibility: the historic parser implied self. */
+        public ConstructorDecl(
+                Visibility visibility,
+                List<Param> parameters,
+                List<Annotation> annotations,
+                List<Stmt> body) {
+            this(visibility, parameters, annotations, body, false);
         }
 
         public int arity() { return parameters.size(); }
