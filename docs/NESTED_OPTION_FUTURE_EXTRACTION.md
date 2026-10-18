@@ -11,7 +11,7 @@ Status: **Java/GraalVM implementation under review, CI unverified**; LLVM has on
 * Java/GraalVM implemented (pending CI): `Option<...Option<T>...>.unwrap_all(): T` extracts every statically known option layer, panicking at the first absent layer.
 * Proposed `await_all e` where `e: Future<...Future<T>...>` sequentially awaits every statically known future layer, yielding `T`. Each successive future can only be observed after its producer yields it. This is an explicit operator, not a change to ordinary `await`.
 
-The compiler calculates the **return type** from statically known nested layers. Java/GraalVM currently walks only its own `OptionValue` wrappers iteratively for `unwrap_all()`; erased `Any`, unresolved generics and union/self-typed leaves are rejected by the type checker rather than guessing a runtime extraction depth. The future composition path awaits exactly one nested `OresFuture` layer on the scheduler and never traverses host-language `Future` interfaces. Unsupported erased/static shapes must fail closed. Do not implicitly traverse `Result`, `Option` from inside `Future`, or vice versa.
+The compiler calculates the **return type and precise extraction depth** from statically known nested layers. Java/GraalVM attaches this depth to each checked call-site by AST identity; the evaluator peels exactly that number of `OptionValue` wrappers and returns the leaf intact, even if the leaf's runtime representation happens to be another `OptionValue`. A missing layer fails closed, and `None` panics at any checked layer. Erased `Any`, unresolved generics and union/self-typed leaves are rejected by the type checker rather than guessing a runtime extraction depth. The future composition path awaits exactly one nested `OresFuture` layer on the scheduler and never traverses host-language `Future` interfaces. Unsupported erased/static shapes must fail closed. Do not implicitly traverse `Result`, `Option` from inside `Future`, or vice versa.
 
 For a nested option, `None`, `Some(None)`, and `Some(Some(v))` are distinct representations. `unwrap()` preserves these distinctions; `flatten()` intentionally joins them. `trap expr` always adds exactly one `Option` layer and must not turn an `unwrap()` panic into `None`.
 
@@ -55,9 +55,11 @@ The examples are independently compiled in appropriate ownership contexts; they 
 * Affine payload single transfer, ownership violation rejection, actor suspension and continuation affinity, cancellation/cleanup once, deep nested chains without recursion overflow.
 * The exact same source-level fixtures on Java/GraalVM and LLVM; report pending tests rather than claiming parity.
 
-## Review and evidence ledger (2026-10-17)
+## Review and evidence ledger (2026-10-18)
 
 * Java/GraalVM branch: `hardening/nested-option-future-extraction-20261017` / PR #1286: TypeChecker, OwnershipChecker, OresEvalRootNode and `NestedOptionFutureExtractionLanguageTest` changed.
 * LLVM branch: same name / PR #604: negative CTest fixtures for unsupported `Option<Option<int>>` and `Future<Future<int>>` native frontend admission. No Option/Future native runtime implementation is claimed.
 * GitHub Actions in the source Java organization reported completed failures with no assigned runner or executable job steps. These runs do not provide source-level test evidence; no funded exact-tree mirror test result is yet available.
 * Remaining requirements: validate Java test suite on a runner, exercise failure/cancellation/actor behavior, add deeper ownership/borrow-negative fixtures, then implement native continuation lowering before parity claims.
+
+* Hardening follow-up on Java PR #1286: `NestedFutureCycleInterleavingTest` uses carrier barriers to force simultaneous cross-scheduler cyclic registrations and cancellation while a guest turn is still executing; no sleep-based test coordination. This is committed source, **not a passing test claim**. Require GraalVM JDK 25 JUnit reports and exact-tree provenance before approval.
