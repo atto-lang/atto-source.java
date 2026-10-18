@@ -56,6 +56,8 @@ jobs:
           test "$(git rev-parse 'HEAD^{tree}')" = "$APPROVED_TREE"
           test -z "$(git diff --name-only)"
           test -z "$(git diff --cached --name-only)"
+          # Fail closed on workspace-injected Python modules or shell scripts.
+          test -z "$(git status --porcelain --untracked-files=all)"
 
       - name: Syntax-check every private CI authorization entrypoint
         run: |
@@ -228,7 +230,10 @@ jobs:
             "release_ready":False
           }
           target=pathlib.Path(os.environ["RUNNER_TEMP"])/"oreslang-exact-head-verification.json"
-          with target.open("x",encoding="utf-8") as stream:
+          # Create only in the runner-private directory; no symlink following,
+          # no overwrite, and readable only by the dedicated runner account.
+          fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_CLOEXEC|os.O_NOFOLLOW,0o600)
+          with os.fdopen(fd,"w",encoding="utf-8") as stream:
               json.dump(data,stream,sort_keys=True,indent=2)
               stream.write("\n")
           print("SOURCE_LOCAL_EXACT_HEAD_VALIDATION_PASS")

@@ -74,6 +74,26 @@ class SourceLocalEphemeralWorkflowTests(unittest.TestCase):
         self.assertIn('"private_source_transferred":False',self.job)
         self.assertIn('"release_ready":False',self.job)
 
+    def test_workspace_injection_checked_before_imports(self):
+        self.assertLess(self.job.index("git status --porcelain --untracked-files=all"),
+                        self.job.index("python3 -I -m py_compile"))
+        self.assertLess(self.job.index("git status --porcelain --untracked-files=all"),
+                        self.job.index("Execute mirror preflight adversarial suite"))
+        self.assertIn('test -z "$(git status --porcelain --untracked-files=all)"',self.job)
+
+    def test_receipt_is_exclusive_nofollow_private(self):
+        self.assertIn("os.O_CREAT|os.O_EXCL|os.O_CLOEXEC|os.O_NOFOLLOW,0o600",self.job)
+        self.assertNotIn('target.open("x",encoding="utf-8")',self.job)
+        self.assertLess(self.job.index("Create private same-repository security and compiler receipt"),
+                        self.job.index("Upload only minimal private receipt"))
+
+    def test_runner_identity_stays_bound_to_exact_ref(self):
+        self.assertIn('test "$GITHUB_EVENT_NAME" = "push"',self.job)
+        self.assertIn('test "$GITHUB_REF_PROTECTED" = "true"',self.job)
+        self.assertIn('test "$APPROVED_SHA" = "$GITHUB_SHA"',self.job)
+        self.assertIn('test "$(git rev-parse HEAD)" = "$APPROVED_SHA"',self.job)
+        self.assertIn('test "$(git rev-parse \'HEAD^{tree}\')" = "$APPROVED_TREE"',self.job)
+
     def test_no_source_mirroring_or_external_artifact_publish(self):
         for bad in ("git push", "repository_dispatch", "pull_request_target:", "cache: maven", "secrets."):
             self.assertNotIn(bad,self.job)
