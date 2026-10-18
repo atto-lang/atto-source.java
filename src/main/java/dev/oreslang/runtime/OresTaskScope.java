@@ -329,12 +329,22 @@ public final class OresTaskScope implements AutoCloseable {
     }
 
     private void joinExistingClose() {
+        // Every successful close() return is a physical-quiescence barrier,
+        // including when another host thread already claimed this scope's
+        // shutdown. Interruption must not let a concurrent closer escape
+        // before the owning closer has joined every child.
+        boolean interrupted = false;
         try {
-            fullyJoined.await();
-        } catch (InterruptedException interruption) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException(
-                    "interrupted while joining TaskScope termination", interruption);
+            for (;;) {
+                try {
+                    fullyJoined.await();
+                    break;
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
         }
         Throwable failure = closeFailure;
         if (failure instanceof RuntimeException runtimeFailure) throw runtimeFailure;
