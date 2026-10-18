@@ -5,6 +5,39 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+
+# An approved GitHub runner must execute only a reviewed exact commit/tree in
+# the source repository on a protected ref. No private source export.
+if [[ "${GITHUB_ACTIONS:-}" == 'true' ]]; then
+  [[ "${GITHUB_REPOSITORY:-}" == 'ores-truffle-oreslang/oreslang-source.java' ]] || {
+    echo 'ERROR: source repository identity mismatch' >&2
+    exit 2
+  }
+  [[ "${GITHUB_REF_PROTECTED:-}" == 'true' ]] || {
+    echo 'ERROR: unprotected source ref' >&2
+    exit 2
+  }
+  [[ "${ORES_TASK_EXPECTED_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || {
+    echo 'ERROR: reviewed commit SHA missing or invalid' >&2
+    exit 2
+  }
+  [[ "${ORES_TASK_EXPECTED_TREE:-}" =~ ^[0-9a-f]{40}$ ]] || {
+    echo 'ERROR: reviewed tree SHA missing or invalid' >&2
+    exit 2
+  }
+  [[ "$(git rev-parse 'HEAD^{commit}')" == "$ORES_TASK_EXPECTED_SHA" ]] || {
+    echo 'ERROR: checkout is not the reviewed commit' >&2
+    exit 2
+  }
+  [[ "$(git rev-parse 'HEAD^{tree}')" == "$ORES_TASK_EXPECTED_TREE" ]] || {
+    echo 'ERROR: checkout tree differs from reviewed tree' >&2
+    exit 2
+  }
+  [[ "${GITHUB_SHA:-}" == "$ORES_TASK_EXPECTED_SHA" ]] || {
+    echo 'ERROR: workflow event SHA differs from reviewed commit' >&2
+    exit 2
+  }
+fi
 frontend='6a15dba1c4be4e0e7f2313e58b6a68c31c7ad4e8'
 runtime='1a0e1607c51386ab77cd32ff49de19e4351f22f5'
 integrated_merge='5d4b582d6c36570f6829ab63710941137491e185'
