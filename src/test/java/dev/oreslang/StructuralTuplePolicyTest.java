@@ -78,6 +78,18 @@ final class StructuralTuplePolicyTest {
     }
 
     @Test
+    void overlargeTupleShapeIsRejectedBeforeTraversingHostileList() {
+        java.util.List<Slot> adversarial = new java.util.AbstractList<>() {
+            @Override public Slot get(int index) {
+                throw new AssertionError("oversized attacker list was traversed");
+            }
+            @Override public int size() { return 65; }
+        };
+        assertThrows(IllegalArgumentException.class, () -> new Shape(adversarial, true));
+        assertThrows(IllegalArgumentException.class, () -> new Shape(adversarial, false));
+    }
+
+    @Test
     void overloadSelectionGivesExpandedArityPrecedence() {
         var family = List.of(new Candidate("two", 2, null), new Candidate("tuple", 1, STRUCTURAL));
         assertEquals(new StructuralTuplePolicy.Selection("two", false),
