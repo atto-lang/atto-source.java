@@ -64,9 +64,11 @@ caller Futures. Pending calls receive a fresh cause-free,
 suppression-disabled `GenServerCallClosedException` containing only the
 bounded host exception **class name**.
 
-Exact target termination is projected the same way through
-`GenServerTargetTerminatedException`. Host messages, stack/cause graphs and
-suppressed exceptions cannot become cross-actor data through either path.
+Exact target termination is even narrower: the settlement API accepts only a
+closed payload-free termination kind (`FAILURE`, `CANCELLED`,
+`QUOTA_EXCEEDED`, `SHUTDOWN`, or `PROTOCOL`). It does not accept a host
+`Throwable` or free-form error string at all. `GenServerTargetTerminatedException`
+contains only that enum value and has no cause/suppressed graph.
 
 The ledger uses insertion-preserving storage, so multi-call close settlement is
 stable in admission order rather than inheriting hash-table iteration order.
