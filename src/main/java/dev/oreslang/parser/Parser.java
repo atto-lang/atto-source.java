@@ -1693,13 +1693,22 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
-        // Keep these distinct from ordinary calls/identifiers. Exception
-        // effect checking, typed recovery and actor CONTROL delivery have
-        // not yet been lowered in the Java/Graal production compiler.
-        if (check(THROW) || check(RAISE) || check(PANIC) || check(RECOVER)) {
-            throw error(peek(), "typed exceptional effect '" + peek().lexeme()
-                    + "' requires checked exception and supervision lowering; source effect is not yet enabled");
+        if (match(THROW)) {
+            Ast.Expr value = parseExpression();
+            consumeExpressionStatementTerminator(value, "throw statement should end with ';'");
+            return new Ast.ThrowStmt(value);
         }
+        if (match(RAISE)) {
+            Ast.Expr value = parseExpression();
+            consumeExpressionStatementTerminator(value, "raise statement should end with ';'");
+            return new Ast.RaiseStmt(value);
+        }
+        if (match(PANIC)) {
+            Ast.Expr value = parseExpression();
+            consumeExpressionStatementTerminator(value, "panic statement should end with ';'");
+            return new Ast.PanicStmt(value);
+        }
+        if (match(RECOVER)) return parseRecover();
         // The value-producing static select expression is not lowered yet.
         // Preserve historical statement sources until expression migration
         // provides an executable replacement; do-select stays procedural.
@@ -2525,6 +2534,18 @@ public final class Parser {
             Ast.DestructureKind kind,
             Ast.BindingKind inheritedKind,
             boolean inheritedMutableReferent) {
+        Ast.NestedDestructurePattern pattern =
+                parseDestructurePattern(kind, inheritedKind, inheritedMutableReferent);
+        consume(EQUAL, "expected '=' after destructure pattern");
+        Ast.Expr initializer = parseExpression();
+        consumeExpressionStatementTerminator(initializer, "destructure should end with ';'");
+        return new Ast.DestructureStmt(kind, List.of(), initializer, pattern);
+    }
+
+    private Ast.NestedDestructurePattern parseDestructurePattern(
+            Ast.DestructureKind kind,
+            Ast.BindingKind inheritedKind,
+            boolean inheritedMutableReferent) {
         Token.Type close;
         if (kind == Ast.DestructureKind.SEQUENCE) {
             if (match(LPAREN)) close = RPAREN;
@@ -2539,7 +2560,7 @@ public final class Parser {
 
         if (check(close)) throw error(peek(), "destructure pattern cannot be empty");
 
-        List<Ast.DestructureBinding> bindings = new ArrayList<>();
+        List<Ast.DestructurePattern> children = new ArrayList<>();
         Ast.BindingKind currentKind = inheritedKind;
         boolean currentMutableReferent = inheritedMutableReferent;
         do {
@@ -2547,15 +2568,24 @@ public final class Parser {
                 currentKind = parseBindingKind();
                 currentMutableReferent = parseReferentMutability(currentKind);
             }
-            boolean rest = match(ELLIPSIS);
 
+            if (kind == Ast.DestructureKind.SEQUENCE
+                    && (check(LBRACKET) || check(LPAREN))) {
+                children.add(parseDestructurePattern(
+                        Ast.DestructureKind.SEQUENCE,
+                        currentKind,
+                        currentMutableReferent));
+                continue;
+            }
+
+            boolean rest = match(ELLIPSIS);
             if (isDiscardToken(peek())) {
                 if (rest) throw error(peek(), "rest destructure binding cannot be a discard");
                 if (kind == Ast.DestructureKind.OBJECT) {
                     throw error(peek(), "bare '_' discard is only valid in sequence destructuring");
                 }
                 advance();
-                bindings.add(Ast.DestructureBinding.discard());
+                children.add(new Ast.DestructureBindingPattern(Ast.DestructureBinding.discard()));
                 continue;
             }
 
@@ -2563,18 +2593,15 @@ public final class Parser {
                 throw error(peek(), "destructure binding kind must be declared before the first binding");
             }
             String name = consume(IDENT, "expected binding name in destructure").lexeme();
-            bindings.add(new Ast.DestructureBinding(
-                    currentKind, name, rest, currentMutableReferent));
+            children.add(new Ast.DestructureBindingPattern(new Ast.DestructureBinding(
+                    currentKind, name, rest, currentMutableReferent)));
             if (rest && check(COMMA)) {
                 throw error(peek(), "rest destructure binding must be the final binding");
             }
         } while (match(COMMA));
 
         consume(close, kind == Ast.DestructureKind.SEQUENCE ? "expected ']'" : "expected '}'");
-        consume(EQUAL, "expected '=' after destructure pattern");
-        Ast.Expr initializer = parseExpression();
-        consumeExpressionStatementTerminator(initializer, "destructure should end with ';'");
-        return new Ast.DestructureStmt(kind, bindings, initializer);
+        return new Ast.NestedDestructurePattern(kind, children);
     }
 
     private boolean looksLikeDestructure() {
@@ -3069,6 +3096,17 @@ public final class Parser {
         List<Ast.Stmt> catchBody = parseBlock();
         List<Ast.Stmt> finallyBody = match(FINALLY) ? parseBlock() : List.of();
         return new Ast.TryStmt(body, error, catchBody, finallyBody);
+    }
+
+    private Ast.RecoverStmt parseRecover() {
+        List<Ast.Stmt> body = parseBlock();
+        consume(CATCH, "expected catch after recover block");
+        consume(LPAREN, "expected '(' after recover catch");
+        String signal = consume(IDENT, "expected recover signal binding").lexeme();
+        consume(RPAREN, "expected ')' after recover catch binding");
+        List<Ast.Stmt> catchBody = parseBlock();
+        List<Ast.Stmt> finallyBody = match(FINALLY) ? parseBlock() : List.of();
+        return new Ast.RecoverStmt(body, signal, catchBody, finallyBody);
     }
 
     private List<Ast.Stmt> parseUntil(Token.Type... terminators) {
