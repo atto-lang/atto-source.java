@@ -51,6 +51,27 @@ final class VerifiedCloseFence {
         return current;
     }
 
+    /**
+     * A failed untrusted spawn must keep its group slot reserved if closing
+     * that group also fails. Never attach raw cleanup/guest throwables to the
+     * error crossing the supervisor boundary. Preserve a VM-fatal cleanup
+     * failure as primary; otherwise keep the original spawn failure.
+     */
+    static Throwable preferFatalSpawnCleanup(Throwable admission, Throwable cleanup) {
+        Objects.requireNonNull(admission, "admission");
+        Objects.requireNonNull(cleanup, "cleanup");
+        if (isVmFatal(cleanup) && !isVmFatal(admission)) {
+            // The first failure might be a guest PolyglotException with
+            // private source. Record its occurrence, not the original cause.
+            cleanup.addSuppressed(new IllegalStateException(
+                    "untrusted spawn admission failed before fatal teardown"));
+            return cleanup;
+        }
+        admission.addSuppressed(new IllegalStateException(
+                "untrusted spawn teardown incomplete; reservation retained"));
+        return admission;
+    }
+
     static void rethrowRetirementFailure(Throwable failure) {
         if (failure == null) return;
         if (failure instanceof RuntimeException runtime) throw runtime;
