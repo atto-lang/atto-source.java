@@ -107,7 +107,7 @@ public final class HotReloadManager implements AutoCloseable {
         if (!guestPolicy.adversarial()) {
             OresCompiler.validateForIsolate(sourceText, guestPolicy);
         }
-        return stage(name, digest(sourceText), sourceText);
+        return stage(name, digest(sourceText), sourceText, true);
     }
 
     /**
@@ -123,10 +123,10 @@ public final class HotReloadManager implements AutoCloseable {
             // A trusted compiler cache/AST is NOT an untrusted isolate proof.
             // Restage the original bounded source and verify its digest here;
             // isolated parsing and type checking occur on guest evaluation.
-            return stage(unit.unitId(), digest(unit.sourceText()), unit.sourceText());
+            return stage(unit.unitId(), digest(unit.sourceText()), unit.sourceText(), true);
         }
         CapabilityChecker.check(unit.program(), guestPolicy);
-        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), true);
     }
 
     private void validateAdmissionInputs(
@@ -154,7 +154,8 @@ public final class HotReloadManager implements AutoCloseable {
         UntrustedSourceImageCache.validateCandidate(codeUnitId, sourceText);
     }
 
-    private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
+    private Generation stage(String codeUnitId, String sourceDigest,
+                             String sourceText, boolean publish) {
         if (guestPolicy.adversarial()
                 && generations.size() >= MAX_ADVERSARIAL_LIVE_GENERATIONS) {
             throw new IllegalStateException(
@@ -191,8 +192,10 @@ public final class HotReloadManager implements AutoCloseable {
                     group == null ? executionProfile : ExecutionProfile.serverHybrid(),
                     group);
             generations.put(id, generation);
-            activeByCodeUnit.put(codeUnitId, generation);
-            active.set(generation);
+            if (publish) {
+                activeByCodeUnit.put(codeUnitId, generation);
+                active.set(generation);
+            }
             return generation;
         } catch (RuntimeException | Error failure) {
             try {
@@ -206,9 +209,20 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     public synchronized Generation loadAndStart(String name, String sourceText) {
-        Generation generation = load(name, sourceText);
+        if (closed) throw new IllegalStateException("hot loader is closed");
+        validateAdmissionInputs(name, sourceText);
+        if (!guestPolicy.adversarial()) {
+            OresCompiler.validateForIsolate(sourceText, guestPolicy);
+        }
+        // A new version must remain invisible until guest parse, LINK, INIT,
+        // deadline admission, and actor capabilities all succeed. In
+        // particular, a failed candidate must not erase the prior live
+        // generation of the same module or become visible through active().
+        Generation generation = stage(name, digest(sourceText), sourceText, false);
         try {
             generation.start();
+            activeByCodeUnit.put(name, generation);
+            active.set(generation);
             return generation;
         } catch (RuntimeException | Error failure) {
             // Do not let rejected user source accumulate generations after
