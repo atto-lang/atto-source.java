@@ -1,8 +1,8 @@
 package dev.oreslang.runtime;
 
-import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -67,7 +67,7 @@ final class GenServerReplyLedger {
             long capacityRejected) { }
 
     private final int capacity;
-    private final Map<Long, Ticket> pending = new LinkedHashMap<>();
+    private final Set<Ticket> pending = new LinkedHashSet<>();
     private boolean closed;
     /** Monotonic, local, opaque. Zero permanently marks sequence exhaustion. */
     private long nextCorrelation = 1L;
@@ -107,7 +107,7 @@ final class GenServerReplyLedger {
             nextCorrelation = correlation == Long.MAX_VALUE
                     ? 0L : correlation + 1L;
             Ticket ticket = new Ticket(this, target, correlation);
-            pending.put(correlation, ticket);
+            pending.add(ticket);
             registered = saturatingIncrement(registered);
             return ticket;
         }
@@ -128,7 +128,7 @@ final class GenServerReplyLedger {
             return false;
         }
         synchronized (pending) {
-            boolean won = pending.remove(ticket.correlation, ticket);
+            boolean won = pending.remove(ticket);
             if (won) replyClaims = saturatingIncrement(replyClaims);
             else rejectedClaims = saturatingIncrement(rejectedClaims);
             return won;
@@ -144,7 +144,7 @@ final class GenServerReplyLedger {
             return false;
         }
         synchronized (pending) {
-            boolean won = pending.remove(ticket.correlation, ticket);
+            boolean won = pending.remove(ticket);
             if (won) retireClaims = saturatingIncrement(retireClaims);
             else rejectedClaims = saturatingIncrement(rejectedClaims);
             return won;
@@ -180,7 +180,7 @@ final class GenServerReplyLedger {
         synchronized (pending) {
             if (closed) return List.of();
             closed = true;
-            List<Ticket> discarded = List.copyOf(pending.values());
+            List<Ticket> discarded = List.copyOf(pending);
             pending.clear();
             return discarded;
         }
