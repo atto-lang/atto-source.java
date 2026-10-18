@@ -109,7 +109,7 @@ public final class PostgresDurableActorStore implements DurableActorStore {
     /** Legacy adapter entrypoint deliberately enforces the same healthy-owner admission. */
     @Override
     public Activation activate(Address key) {
-        return acquireLease(key, UUID.randomUUID()).activation();
+        throw new StaleActivationException("activation requires explicit owner UUID: use acquireLease");
     }
 
     /** No healthy owner can be displaced. Expiration is decided by PostgreSQL's clock. */
@@ -283,7 +283,12 @@ public final class PostgresDurableActorStore implements DurableActorStore {
 
     @Override
     public long commitTurn(Turn turn) {
+        throw new StaleActivationException("turn commit requires lease owner: use commitOwnedTurn");
+    }
+
+    public long commitOwnedTurn(Turn turn, UUID owner) {
         Objects.requireNonNull(turn);
+        Objects.requireNonNull(owner);
         return transact(c -> {
             Address key = turn.address();
             // Lock the actor before checking its epoch. Activate and hibernate use the same lock.
@@ -292,13 +297,15 @@ public final class PostgresDurableActorStore implements DurableActorStore {
             boolean active;
             try (PreparedStatement p = c.prepareStatement(
                     "SELECT activation_epoch,active,state_version,format_version,state_schema_version," +
-                    "code_generation,encoded_state,(lease_until>clock_timestamp()) AS lease_valid" +
+                    "code_generation,encoded_state,(lease_until>clock_timestamp()) AS lease_valid," +
+                    "lease_owner" +
                     " FROM ores_durable_actor WHERE " + KEY + " FOR UPDATE")) {
                 bind(p, key);
                 try (ResultSet rs = p.executeQuery()) {
                     if (!rs.next()) throw new StaleActivationException("unknown actor");
                     activeEpoch = rs.getLong(1);
-                    active = rs.getBoolean(2) && rs.getBoolean(8);
+                    active = rs.getBoolean(2) && rs.getBoolean(8) &&
+                            owner.equals(rs.getObject(9, UUID.class));
                     prior = new Snapshot(rs.getInt(4), rs.getInt(5), rs.getString(6),
                             rs.getLong(3), rs.getBytes(7));
                 }
@@ -346,12 +353,13 @@ public final class PostgresDurableActorStore implements DurableActorStore {
             try (PreparedStatement p = c.prepareStatement(
                     "UPDATE ores_durable_actor SET state_version=?,encoded_state=? WHERE " + KEY +
                     " AND activation_epoch=? AND active=true AND lease_until>clock_timestamp()" +
-                    " AND state_version=?")) {
+                    " AND state_version=? AND lease_owner=?")) {
                 p.setLong(1, next.stateVersion());
                 bindPayload(p, 2, next.encodedState());
                 bindShifted(p, 3, key);
                 p.setLong(7, turn.epoch());
                 p.setLong(8, turn.expectedStateVersion());
+                p.setObject(9, owner);
                 if (p.executeUpdate() != 1) throw new StaleActivationException("fenced actor update");
             }
             return next.stateVersion();
@@ -360,54 +368,12 @@ public final class PostgresDurableActorStore implements DurableActorStore {
 
     @Override
     public void hibernate(Address key, long epoch) {
-        Objects.requireNonNull(key);
-        transact(c -> {
-            try (PreparedStatement p = c.prepareStatement(
-                    "UPDATE ores_durable_actor SET active=false,lease_owner=NULL,lease_until=NULL WHERE " + KEY +
-                    " AND active=true AND lease_until>clock_timestamp() AND activation_epoch=?")) {
-                bind(p, key); p.setLong(5, epoch);
-                if (p.executeUpdate() != 1) throw new StaleActivationException("hibernate fenced");
-            }
-            return null;
-        });
+        throw new StaleActivationException("hibernate requires owner: use hibernateLease");
     }
 
     @Override
     public boolean acknowledge(Address key, long epoch, String intentId, String receiptId) {
-        Objects.requireNonNull(key);
-        if (intentId == null || intentId.isBlank() || receiptId == null || receiptId.isBlank())
-            throw new IllegalArgumentException("blank receipt identity");
-        return transact(c -> {
-            try (PreparedStatement p = c.prepareStatement(
-                    "SELECT activation_epoch,active,(lease_until>clock_timestamp()) FROM ores_durable_actor WHERE " + KEY + " FOR UPDATE")) {
-                bind(p, key);
-                try (ResultSet rs = p.executeQuery()) {
-                    if (!rs.next() || rs.getLong(1) != epoch || !rs.getBoolean(2) || !rs.getBoolean(3))
-                        throw new StaleActivationException("receipt fenced");
-                }
-            }
-            String old;
-            try (PreparedStatement p = c.prepareStatement(
-                    "SELECT receipt_id FROM ores_durable_outbox WHERE " + KEY +
-                    " AND intent_id=? FOR UPDATE")) {
-                bind(p, key); p.setString(5, intentId);
-                try (ResultSet rs = p.executeQuery()) {
-                    if (!rs.next()) throw new IllegalArgumentException("unknown operation");
-                    old = rs.getString(1);
-                }
-            }
-            if (old != null) {
-                if (!old.equals(receiptId)) throw new IllegalStateException("receipt conflict");
-                return false;
-            }
-            try (PreparedStatement p = c.prepareStatement(
-                    "UPDATE ores_durable_outbox SET receipt_id=? WHERE " + KEY + " AND intent_id=?")) {
-                p.setString(1, receiptId);
-                bindShifted(p, 2, key);
-                p.setString(6, intentId);
-                if (p.executeUpdate() != 1) throw new IllegalStateException("receipt vanished");
-            }
-            return true;
-        });
+        throw new StaleActivationException(
+                "outbox receipt requires owner and claim token: use PostgresDurableWorkflowGate.recordReceipt");
     }
 }
