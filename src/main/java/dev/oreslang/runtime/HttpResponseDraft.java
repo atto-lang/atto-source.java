@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import com.sun.net.httpserver.HttpExchange;
 import java.io.ByteArrayInputStream;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
