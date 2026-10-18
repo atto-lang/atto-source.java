@@ -198,6 +198,7 @@ public final class NativeHttp implements AutoCloseable {
     public final class Server implements AutoCloseable {
         private final HttpServer transport;
         private final Semaphore admission;
+        private final HttpResponseBodyOpenGate bodyOpenGate;
         private final int bodyLimit, deadlineMillis;
         private final ArrayDeque<Exchange> pending = new ArrayDeque<>();
         private final Set<State> active = ConcurrentHashMap.newKeySet();
@@ -209,6 +210,10 @@ public final class NativeHttp implements AutoCloseable {
         private Server(HttpServer transport, int capacity, int bodyLimit, int deadlineMillis) {
             this.transport = transport; this.admission = new Semaphore(capacity);
             this.bodyLimit = bodyLimit; this.deadlineMillis = deadlineMillis;
+            // A timed-out host Supplier can ignore interrupts. Retain its
+            // opener slot until it *actually returns*, even after HTTP admission
+            // is released, so hostile suppliers cannot create unbounded tasks.
+            this.bodyOpenGate = new HttpResponseBodyOpenGate(Math.min(32, capacity), io);
             // Preserve the original executor when diagnostics are off. In
             // diagnostic mode, measure the JDK-to-virtual-thread handoff.
             if (CorePerf.enabled() || CoreDebug.enabled()) {
@@ -562,7 +567,10 @@ public final class NativeHttp implements AutoCloseable {
                     state.responseStatus = draft.status();
                 }
                 draft.writeClaimedTo(state.raw, () -> state.terminal,
-                        input -> state.activeResponseInput = input);
+                        input -> state.activeResponseInput = input,
+                        () -> state.server.bodyOpenGate.open(draft, () -> state.terminal,
+                                TimeUnit.MILLISECONDS.toNanos(state.server.deadlineMillis)
+                                        - (System.nanoTime() - state.admittedNanos)));
                 state.finish();
                 return null;
             });
