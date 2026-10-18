@@ -102,7 +102,7 @@ def scenario(name, code, setup=None, *, aot=False):
             (repo / 'target').mkdir()
             (repo / 'target/stale.class').write_text('stale build')
         elif setup == 'wrong-jdk': env['NIO_TEST_JDK'] = '21'
-        elif setup in ('clean', 'test', 'verify', 'mutate'): env['NIO_TEST_FAIL'] = setup
+        elif setup in ('clean', 'test', 'verify', 'mutate', 'missing-reports', 'skip-tests'): env['NIO_TEST_FAIL'] = setup
         if aot: cmd.append('--native-aot')
         result = invoke(cmd, repo, env, check=False)
         assert result.returncode == code, (name, result.returncode, result.stderr)
