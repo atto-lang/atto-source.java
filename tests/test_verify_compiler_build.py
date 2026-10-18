@@ -121,6 +121,31 @@ exit 9
         with self.assertRaisesRegex(ValueError, 'masked Git index entry'):
             self.capture()
 
+    def test_verify_cli_rejects_mutated_dependency_after_receipt(self):
+        script = Path(__file__).resolve().parents[1] / 'scripts' / 'verify_compiler_build.py'
+        receipt = self.bundle.parent / 'receipt.json'
+        args = [sys.executable, str(script), '--source-root', str(self.repo),
+                '--bundle', str(self.bundle), '--expected-source-sha', self.commit,
+                '--expected-tree', self.tree, '--receipt', str(receipt)]
+        creation = subprocess.run(args, text=True, capture_output=True)
+        self.assertEqual(creation.returncode, 0, creation.stderr)
+        with ZipFile(self.bundle / 'lib' / 'dependency.jar', 'w') as jar:
+            jar.writestr('synthetic.txt', b'new contents')
+        verification = subprocess.run(args + ['--verify'], text=True, capture_output=True)
+        self.assertNotEqual(verification.returncode, 0)
+        self.assertIn('receipt mismatch', verification.stderr)
+
+    def test_launcher_creating_extra_module_jar_is_denied(self):
+        body = self.launcher.read_text().replace(
+            'exit 0;;',
+            'exit 0;;',
+        )
+        body = body.replace('case "$1" in',
+            'touch "' + str(self.bundle / 'lib' / 'surprise.jar') + '"\ncase "$1" in')
+        self.launcher.write_text(body)
+        with self.assertRaisesRegex(ValueError, 'bundle file set mutated'):
+            self.capture()
+
     def test_cannot_reuse_different_bundle(self):
         self.assertEqual(self.capture()['source_commit'], self.commit)
         self.assertEqual(self.capture()['source_tree'], self.tree)
