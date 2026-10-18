@@ -33,6 +33,7 @@ public final class OresDiagnosticRenderer {
 
     public static String renderJson(Throwable failure) {
         if (failure == null) throw new NullPointerException("failure");
+        failure = diagnosticRoot(failure);
         StringBuilder out = new StringBuilder(512);
         out.append("{\"schema\":");
         appendJsonString(out, SCHEMA);
@@ -71,7 +72,7 @@ public final class OresDiagnosticRenderer {
             if (suppressed instanceof OresAsyncTrace.LogicalAsyncStackTrace logical) {
                 logicalCount++;
                 out.append("\nOreslang causal async stack:");
-                out.append(logical.logicalTrace());
+                appendTextTrace(out, logical.trace());
             } else if (suppressed instanceof OresAsyncTrace.LogicalAsyncTraceElision elision) {
                 elidedTraces = saturatingAdd(elidedTraces, elision.elidedTraces());
             }
@@ -88,6 +89,73 @@ public final class OresDiagnosticRenderer {
         if (cause != null && cause != failure) {
             appendTextFailure(out, cause, seen, depth + 1, true);
         }
+    }
+
+    private static void appendTextTrace(StringBuilder out, OresAsyncTrace.Trace trace) {
+        appendTextFrame(out, "at", trace.currentFrame());
+        var events = trace.events();
+        for (int i = events.size() - 1; i >= 0; i--) {
+            OresAsyncTrace.Event event = events.get(i);
+            if (event instanceof OresAsyncTrace.AwaitEvent awaited) {
+                appendTextBoundary(out, "await", awaited.site(), null);
+            } else if (event instanceof OresAsyncTrace.CallEvent call) {
+                appendTextFrame(out, "at", call.caller());
+            } else if (event instanceof OresAsyncTrace.TailEvent tail) {
+                String detail = tail.from().symbol() + " -> " + tail.to().symbol()
+                        + (tail.repetitions() == 1
+                                ? ""
+                                : " repeated " + tail.repetitions() + " times");
+                appendTextBoundary(out, "tail-await", tail.site(), detail);
+            } else if (event instanceof OresAsyncTrace.BoundaryEvent boundary) {
+                appendTextBoundary(
+                        out,
+                        boundary.kind().name().toLowerCase(java.util.Locale.ROOT)
+                                .replace('_', '-'),
+                        boundary.site(),
+                        boundary.frame().symbol());
+            }
+        }
+        if (trace.elidedEvents() > 0) {
+            out.append("\n    ... ").append(trace.elidedEvents())
+                    .append(" older async trace events elided");
+        }
+    }
+
+    private static void appendTextFrame(
+            StringBuilder out,
+            String prefix,
+            OresAsyncTrace.Frame frame) {
+        out.append("\n    ").append(prefix).append(' ')
+                .append(safeHuman(bounded(frame.symbol(), MAX_TYPE_CHARS)));
+        appendTextSite(out, frame.site());
+    }
+
+    private static void appendTextBoundary(
+            StringBuilder out,
+            String kind,
+            OresAsyncTrace.SourceSite site,
+            String detail) {
+        out.append("\n    --- ").append(safeHuman(kind));
+        if (detail != null && !detail.isBlank()) {
+            out.append(' ').append(safeHuman(bounded(detail, MAX_MESSAGE_CHARS)));
+        }
+        appendTextSite(out, site);
+        out.append(" ---");
+    }
+
+    private static void appendTextSite(
+            StringBuilder out,
+            OresAsyncTrace.SourceSite site) {
+        out.append(" (").append(safeHuman(bounded(site.sourceId(), MAX_MESSAGE_CHARS)));
+        if (site.line() > 0) {
+            out.append(':').append(site.line());
+            if (site.column() > 0) out.append(':').append(site.column());
+        }
+        if (site.codeGenerationId() != null && !site.codeGenerationId().isBlank()) {
+            out.append(" @gen=")
+                    .append(safeHuman(bounded(site.codeGenerationId(), MAX_TYPE_CHARS)));
+        }
+        out.append(')');
     }
 
     private static void appendJsonFailure(
