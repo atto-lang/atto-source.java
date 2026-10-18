@@ -189,6 +189,39 @@ public class TaskScopeTest {
         }
     }
 
+    @Test void successfulTasksDoNotAccumulateOwnedCancellationNodes() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            TaskScope scope = scheduler.newTaskScope();
+            for (int i = 0; i < 500; i++) {
+                TaskHandle<Integer> child = scope.startTask(r -> OresScheduler.done(1));
+                assertEquals(new TaskHandle.Success<>(1),
+                        child.getDone().get(3, TimeUnit.SECONDS));
+                assertEquals(0, scope.liveCancellationChildren(),
+                        "completed Tasks must not remain owned until scope shutdown");
+            }
+            assertFalse(scope.isCancellationRequested());
+            scope.seal();
+            scope.getDone().get(3, TimeUnit.SECONDS);
+            assertEquals(0, scope.liveCancellationChildren());
+        }
+    }
+
+    @Test void completedChildKeepsSuccessWhenScopeCancelledLater() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            TaskHandle<Integer> child = scope.startTask(r -> OresScheduler.done(7));
+            assertEquals(new TaskHandle.Success<>(7),
+                    child.getDone().get(3, TimeUnit.SECONDS));
+            assertEquals(0, scope.liveCancellationChildren());
+            assertTrue(scope.cancel("late shutdown"));
+            scope.getDone().get(3, TimeUnit.SECONDS);
+            assertFalse(child.isCancellationRequested());
+            assertFalse(child.cancel("late"));
+            assertEquals(new TaskHandle.Success<>(7),
+                    child.getDone().get(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void schedulerRejectionDoesNotLeakScopeJoinSlots() throws Exception {
         OresScheduler scheduler = new OresScheduler(1);
         TaskScope scope = scheduler.newTaskScope();
