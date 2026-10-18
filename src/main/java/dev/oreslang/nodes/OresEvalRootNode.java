@@ -71,8 +71,25 @@ public final class OresEvalRootNode extends RootNode {
         return executeBoundary(OresContext.get(this), frame.getArguments());
     }
 
+    // Defensive runtime admission for direct AST consumers that bypass the
+    // TypeChecker path. Syntax-only enum/pattern declarations are not values:
+    // the evaluator must not quietly discard or interpret them.
+    static void rejectUnlinkedEnumAndPatternDeclarations(Ast.Program candidate) {
+        for (Ast.ModuleDecl module : candidate.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.EnumDecl
+                        || declaration instanceof Ast.PatternDecl) {
+                    throw new IllegalArgumentException(
+                            "enum and named pattern declarations are syntax-only; "
+                            + "runtime execution is not enabled");
+                }
+            }
+        }
+    }
+
     @TruffleBoundary
     private Object executeBoundary(OresContext context, Object[] arguments) {
+        rejectUnlinkedEnumAndPatternDeclarations(program);
         CapabilityChecker.check(program, context.isolatePolicy(), context.permissionCheckMode());
         if (arguments.length == 3
                 && REGISTER_IMPORT_COMMAND.equals(arguments[0])
