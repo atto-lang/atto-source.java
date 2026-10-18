@@ -9,6 +9,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Objects;
+import java.text.Normalizer;
 
 /** Pure, bounded supervisor input validation; never parses attacker source. */
 final class UntrustedSourceIdentity {
@@ -30,6 +31,12 @@ final class UntrustedSourceIdentity {
             // different immutable modules appear identical in diagnostics.
             // Such names are never authority; reject ambiguous spelling here.
             throw new IllegalArgumentException("invalid bounded untrusted code-unit identity");
+        }
+        // Import resolution and diagnostics must not disagree on visually
+        // identical Unicode spellings. Reject decomposed canonical aliases
+        // rather than silently rewriting an authority-bearing module ID.
+        if (!Normalizer.isNormalized(codeUnitId, Normalizer.Form.NFC)) {
+            throw new IllegalArgumentException("noncanonical untrusted code-unit identity");
         }
         for (int i = 0; i < codeUnitId.length(); i++) {
             char c = codeUnitId.charAt(i);
