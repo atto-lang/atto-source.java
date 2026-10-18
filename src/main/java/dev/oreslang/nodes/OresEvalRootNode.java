@@ -1305,6 +1305,7 @@ public final class OresEvalRootNode extends RootNode {
             Objects.requireNonNull(callback, "callback");
             return startFutureChainTask(new OresScheduler.Task<>() {
                 private int pc;
+                private OresFuture<?> adoptedInner;
 
                 @Override
                 public OresScheduler.Step<Object> resume(
@@ -1319,9 +1320,10 @@ public final class OresEvalRootNode extends RootNode {
                     }
 
                     if (pc == 1) {
-                        if (resume.failure() instanceof java.util.concurrent.CancellationException) {
-                            // A cancelled outer/inner stage cancels the composed Future;
-                            // it must not become an ordinary failed Future.
+                        if (resume.failure() != null && source.isCancelled()) {
+                            // Only the upstream Future's terminal state can
+                            // prove cancellation; a failed Future can also
+                            // carry a CancellationException as its error.
                             return OresScheduler.cancelled();
                         }
                         if (resume.failure() != null) {
@@ -1349,19 +1351,20 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException(
                                     "Future.compose/flatMap callback must return Future<T>");
                         }
+                        adoptedInner = nested;
                         pc = 2;
                         return OresScheduler.await(nested);
                     }
 
                     if (pc == 2) {
-                        if (resume.failure() instanceof java.util.concurrent.CancellationException) {
-                            // A cancelled outer/inner stage cancels the composed Future;
-                            // it must not become an ordinary failed Future.
+                        if (resume.failure() != null
+                                && adoptedInner != null && adoptedInner.isCancelled()) {
                             return OresScheduler.cancelled();
                         }
                         if (resume.failure() != null) {
                             throw sourceFailure(resume.failure());
                         }
+                        adoptedInner = null;
                         pc = 3;
                         return OresScheduler.done(resume.value());
                     }
