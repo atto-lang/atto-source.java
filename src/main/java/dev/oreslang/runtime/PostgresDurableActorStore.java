@@ -43,6 +43,24 @@ public final class PostgresDurableActorStore implements DurableActorStore {
         this.maxPendingOutbox = maxPendingOutbox;
     }
 
+    /** Check activation ownership inside the caller's open transaction. */
+    void requireOwnedActivation(Connection connection, Address address, long epoch)
+            throws SQLException {
+        Objects.requireNonNull(connection);
+        Objects.requireNonNull(address);
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT 1 FROM ores_durable_actor WHERE " + KEY +
+                " AND active=true AND activation_epoch=? AND lease_owner=?" +
+                " AND lease_expires_at>clock_timestamp() FOR UPDATE")) {
+            bind(statement, address);
+            statement.setLong(5, epoch);
+            statement.setString(6, leaseOwner);
+            try (ResultSet result = statement.executeQuery()) {
+                if (!result.next()) throw new StaleActivationException("activation not owned");
+            }
+        }
+    }
+
     public static final class StaleActivationException extends IllegalStateException {
         public StaleActivationException(String message) { super(message); }
     }
