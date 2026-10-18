@@ -238,7 +238,11 @@ public final class IncrementalCompiler {
         }
         if (decl instanceof Ast.ClassDecl klass) {
             if (klass.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append(klass.actorKind()).append(" pub class ").append(klass.name());
+            abi.append(klass.actorKind())
+                    .append('/')
+                    .append(klass.actorBoundary())
+                    .append(" pub class ")
+                    .append(klass.name());
             appendGenerics(abi, klass.genericParameters());
             abi.append(" extends ");
             for (Ast.TypeRef parent : klass.parents()) abi.append(typeRef(parent)).append(',');
