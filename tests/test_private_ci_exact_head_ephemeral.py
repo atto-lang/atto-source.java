@@ -45,6 +45,8 @@ class SourceLocalEphemeralWorkflowTests(unittest.TestCase):
                         self.job.index("uses: actions/checkout@"))
         self.assertIn('test "$APPROVED_SHA" = "$GITHUB_SHA"',self.job)
         self.assertIn('git rev-parse \'HEAD^{tree}\'',self.job)
+        self.assertLess(self.job.index("Check exact source commit and tree before execution"),
+                        self.job.index("Syntax-check every private CI authorization entrypoint"))
 
     def test_all_four_triplicate_security_suites_are_retained(self):
         for minimum in ("if count < 18:","if count < 49:","if count < 50:","if count < 174:"):

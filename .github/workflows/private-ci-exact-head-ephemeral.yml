@@ -48,6 +48,15 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+      - name: Check exact source commit and tree before execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APPROVED_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$APPROVED_TREE"
+          test -z "$(git diff --name-only)"
+          test -z "$(git diff --cached --name-only)"
+
       - name: Syntax-check every private CI authorization entrypoint
         run: |
           set -euo pipefail
@@ -177,15 +186,6 @@ jobs:
           print(f"VERIFIED_PUBLISHER_TESTS={result.testsRun}")
           PY
           done
-
-      - name: Check exact source commit and tree before execution
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$APPROVED_SHA"
-          test "$(git rev-parse 'HEAD^{tree}')" = "$APPROVED_TREE"
-          test -z "$(git diff --name-only)"
-          test -z "$(git diff --cached --name-only)"
 
       - name: Install pinned GraalVM JDK 25 without shared caches
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
