@@ -1,0 +1,120 @@
+# `oreslang test --race` and `--fuzz`: runtime contract (proposal)
+
+Status (2026-10-18): **not an implemented race detector or schedule fuzzer**.
+The Java launcher now provides `oreslang test <file.ores>` for existing
+Oreslang-native `TestSuite` execution, and deliberately exits **2** for
+`--race`, `--fuzz`, `--seed`, `--runs`, or `--replay`. These modes must
+remain unavailable until the checks below run on compiled guest programs.
+Do **not** mark an ordinary green test as race-free or deadlock-free.
+
+## Target CLI
+
+```sh
+oreslang test examples/native-testing.ores
+oreslang test --race path/to/test.ores
+oreslang test --fuzz --runs=10000 --seed=42 path/to/test.ores
+oreslang test --race --fuzz --seed=42 path/to/test.ores
+oreslang test --replay=failures/cycle-abc.orestrace path/to/test.ores
+```
+
+The test runner uses Oreslang's own `stdlib/testing.ores` and
+`ORES_TEST|...` protocol. Explicit `TestOptions(machine=true)` and a
+positive, consistent summary are required; a missing or failing summary is
+never success. File discovery and automatic test functions are future work.
+
+## Race detector: shadow memory and happens-before
+
+For every instrumented guest read, write and atomic access, OresVM records:
+
+- `(runtime incarnation, allocation domain, object generation, field/index)`
+  as the memory identity. Never treat a recycled pointer or old actor ID as
+  the same object after destruction/hot reload.
+- Logical **Task/actor continuation** as the execution identity, not the
+  physical Java/C++ worker thread or actor authorization domain.
+- Source file, source span, effect row, current critical ticket, RW loan
+  generation, and relevant allocation provenance.
+- Epoch/vector-clock or FastTrack-like last-write/last-read metadata.
+  An unordered pair of conflicting accesses to the same reachable mutable
+  location is a race. Plain atomic accesses are not data races but can still
+  participate in algorithmic races/liveness failures.
+
+Happens-before includes sequenced guest operations, release/acquire on
+CriticalGate/SharedMutex/RWLock, channel send/receive *commit*, Future result
+publication and its actual await-resumption edge, Task spawn/join, and actor
+mailbox delivery. **Cancellation requests are not physical-exit edges.**
+Public task cancellation cannot confer ownership of a critical ticket; only
+the scheduler's physical retirement barrier can.
+
+Actor-owned private heaps should be compiler-enforced disjoint, but a race
+mode must still validate trusted shared memory, FFI aliases, native buffers,
+per-actor state with physical max>1, and accidental escapes. Do not promise
+race detection for uninstrumented FFI, GPU, device memory, other processes,
+or opaque host callbacks. Those must be explicitly reported as coverage gaps
+and, in strict race mode, rejected where the operation may mutate shared state.
+
+Reports must provide both source locations, owners/continuations, allocation
+generation, last synchronization edges, and actionable `critical`/borrow
+checker remediation. Race mode is **not** just a JVM thread race detector.
+
+## Deadlock detection: logical resource dependency graph
+
+OresVM tracks `waiter -> resource -> owner` dependencies for CriticalGate,
+SharedMutex, RW state gate, Task join, Future producers, actor request/reply,
+channel admission and `select`. Graph edges are generation-authenticated and
+removed **before** a timeout/cancel result is externally published. Edge
+creation and removal are atomic against handoff; never publish callbacks while
+coordinator locks are held.
+
+Reject a definite single-resource dependency cycle before admission when
+possible. For alternatives (`select`, timeout, remote producer, external
+input), model OR dependencies and report `possible cycle` or `stalled`
+rather than a false definitive deadlock. No periodic thread polling is
+required for basic cycles: check at wait-edge insertions.
+
+`suspend critical` is the recommended source form for contended work.
+Its lock ticket can outlive `await` while the physical carrier is free;
+an unvalidated mutable `StateAccess` loan cannot outlive that await.
+CONTROL STOP/CANCEL/wakeups always have a reserved, non-user queue and cannot
+wait on ordinary critical admission.
+
+## Fuzzer: deterministic interleaving exploration
+
+On an explicit seed, choose scheduling decisions at compiler safepoints,
+`await`/resume, Task spawn/join, `critical` admission/release, channel
+select, actor mailbox dequeue, cancellation, timeout and supervisor restart.
+Record each choice with a stable resource ID and code-generation epoch.
+
+- No implicit `Thread.sleep` based exploration. Use bounded scheduling
+  choices, virtual time, reproducible PRNG, and optional preemption bounds.
+- Use seed + action trace + source/runtime hashes; replay fails closed if
+  source differs. Preserve failure trace artifacts and minimize/shrink them.
+- Assertions: exactly-once critical handoff, no simultaneous write loans,
+  no stale wait edges/permits, cancellation-vs-completion barriers, bounded
+  admission/CONTROL progress under stated fairness assumptions.
+- Watchdog/stall findings must distinguish deadlock, livelock, long I/O,
+  idle external-input waits and starvation. Neither a timeout nor a test-run
+  budget by itself proves deadlock.
+- Race and fuzz modes compose: schedule fuzzing explores more
+  happens-before interleavings while shadow memory detects conflicts.
+
+## Delivery milestones
+
+1. Physical-retirement gate and deterministic cancellation tests on Java
+   and LLVM, with no public-cancel-as-exit shortcut.
+2. Unify CriticalGate and SharedMutex logical continuation IDs and wait graph;
+   include Task joins, actor replies, RW loans and channels incrementally.
+3. Java reference shadow memory for a narrow shared-memory subset, plus known
+   good/bad .ores fixtures proving races are actually detected.
+4. Scheduler choice capture/replay for a narrow Task/CriticalGate subset and
+   deterministic synthetic deadlock fixtures. Prove seed replay identical.
+5. Widen to actors, channels, select, timeouts, restarts, FFI boundaries and
+   native LLVM/TSan-assisted backend verification.
+6. Only then enable `oreslang test --race` / `--fuzz` and a machine-readable
+   `ORES_TEST|RACE` / `ORES_TEST|DEADLOCK` / `ORES_TEST|FUZZ` report
+   protocol with explicit backend instrumentation coverage.
+
+Interim Java host tests include `CriticalPhysicalRetirementTest`,
+`CriticalLogicalDeadlockTest`, `CriticalSeededTransitionFuzzTest`,
+`CriticalCarrierNonparkingTest` and `NativeTestCommandTest`. Their tests
+must execute on the exact PR head. A GitHub Actions failure with zero job
+steps is **no execution evidence**.
