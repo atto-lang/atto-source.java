@@ -311,7 +311,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             // Route publication is the commit point. Only now make the stale
             // physical ActorRef terminal and reopen no old ingress.
             try {
-                transfer.retireSourceAfterPublication();
+                transfer.retireSourceAfterPublication(replacement);
             } catch (RuntimeException | Error retirementFailure) {
                 // stop() marks the cell stopped before its bounded host wait can
                 // fail. Keep the old generation pinned until finalization is
