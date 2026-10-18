@@ -81,6 +81,29 @@ final class NestedOptionFutureExtractionLanguageTest {
     }
 
     @Test
+    void nestedOptionExtractionCannotConsumeAnAffineOwnerTwice() {
+        for (String operation : new String[] {"unwrap_all", "flatten"}) {
+            String program = """
+                    define class Box as
+                      pub val int value = 42;
+                    end
+
+                    pub fnc main(): void {
+                      val Option<Option<Box>> owner = Some(Some(new Box()));
+                      val first = owner.%s();
+                      val second = owner.%s();
+                      return;
+                    }
+                    """.formatted(operation, operation);
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(program));
+            assertTrue(failure.getMessage().contains("moved value")
+                            || failure.getMessage().contains("moved"),
+                    "an affine Option must be consumed at most once: " + failure);
+        }
+    }
+
+        @Test
     void futureFlattenAwaitsOuterThenInnerViaScheduler() throws Exception {
         String program = """
                 async fnc base(): int {
