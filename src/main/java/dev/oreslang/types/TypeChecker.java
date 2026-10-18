@@ -2213,7 +2213,12 @@ public final class TypeChecker {
                     "ActorStream mailbox domain for " + actorClass.name());
             if (domain == null) {
                 domain = mailbox;
-            } else if (!assignable(mailbox, domain) || !assignable(domain, mailbox)) {
+            } else if (!mailbox.equals(domain)) {
+                // The transport erases per-edge guest payload types. Mutual
+                // assignability (including structural/readonly coercions) is
+                // not proof of an identical bidirectional mailbox contract.
+                // Every routed stage must therefore use the exact same type.
+
                 throw new IllegalArgumentException(
                         "ActorStream pipe stage ActorMail domains must match exactly: "
                                 + domain + " versus " + mailbox);
