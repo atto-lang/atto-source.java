@@ -142,4 +142,31 @@ final class OresMatrixComplexTest {
                 () -> OresMatrix.fromRows(oversizedRows));
     }
 
+    @Test
+    void outerHermitianPreservesComplexConjugationWithoutTemporaryCellGraph() {
+        OresVector left = OresVector.fromValues(List.of(
+                1.0,
+                new OresComplex(0.0, 2.0)));
+        OresVector right = OresVector.fromValues(List.of(
+                new OresComplex(3.0, 4.0)));
+        OresMatrix out = left.outerHermitian(right);
+        assertEquals(2, out.rows());
+        assertEquals(1, out.cols());
+        assertEquals(new OresComplex(3.0, -4.0), out.get(0, 0));
+        assertEquals(new OresComplex(8.0, 6.0), out.get(1, 0));
+        assertTrue(out.isComplex());
+    }
+
+    @Test
+    void outerHermitianRejectsOversizedExactWorkBeforeAllocatingOutput() {
+        OresVector thousandAndOne = OresVector.fromValues(
+                java.util.stream.IntStream.range(0, 1001)
+                        .mapToObj(i -> 1.0)
+                        .toList());
+        // 1001*1001 individual exact multiplications exceed the 1,000,000
+        // reference work budget even though the final backing arrays fit.
+        assertThrows(IllegalArgumentException.class,
+                () -> thousandAndOne.outerHermitian(thousandAndOne));
+    }
+
 }
