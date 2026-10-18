@@ -304,6 +304,7 @@ public final class NativeIo {
         }
 
         public String readLine() {
+            TrustedNetworkIngressGuard.rejectUntrustedDirectNetwork("network.socket.read_line");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.read_line");
             try {
                 return reader.readLine();
