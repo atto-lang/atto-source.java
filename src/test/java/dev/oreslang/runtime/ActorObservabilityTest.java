@@ -1142,4 +1142,82 @@ final class ActorObservabilityTest {
         }
     }
 
+
+    @Test
+    void actorMailAndSupervisorFailureRetainBoundedCausalTurnIdentity()
+            throws Exception {
+        var middleMail =
+                new java.util.concurrent.atomic.AtomicReference<
+                        ActorRuntime.ActorInboxMail<String>>();
+        var failedChild =
+                new java.util.concurrent.atomic.AtomicReference<
+                        ActorRuntime.ActorRef<String>>();
+        CountDownLatch middleHandled = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8, 16))) {
+            var middle = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        middleMail.set(context.currentMail().orElseThrow());
+                        var child = context.runtime().<String>spawnPrivate(
+                                () -> (childMessage, childContext) -> {
+                                    throw new IllegalStateException(
+                                            "causal-child-failure");
+                                });
+                        failedChild.set(child);
+                        child.send("fail");
+                        middleHandled.countDown();
+                    });
+
+            var root = runtime.<String>spawnShared(
+                    () -> (message, context) -> middle.send("from-root"));
+
+            root.send("start");
+            assertTrue(middleHandled.await(5, TimeUnit.SECONDS));
+            root.drain().get(5, TimeUnit.SECONDS);
+            middle.drain().get(5, TimeUnit.SECONDS);
+            assertNotNull(failedChild.get());
+            assertTrue(failedChild.get().awaitTermination(5, TimeUnit.SECONDS));
+
+            ActorRuntime.ActorInboxMail<String> received =
+                    middleMail.get();
+            assertNotNull(received);
+            assertEquals(middle.id(), received.recipient());
+            assertEquals(0L, received.sequence());
+            assertEquals(root.id(), received.sender().orElseThrow());
+            ActorRuntime.ActorCausalOrigin upstream =
+                    received.causalOrigin().orElseThrow();
+            assertEquals(root.id(), upstream.actorId());
+            assertEquals(root.generation(), upstream.generation());
+            assertEquals(0L, upstream.messageSequence(),
+                    "middle mail must point to the exact root input turn, not just root identity");
+
+            ActorRuntime.SupervisorFailureSignal signal =
+                    runtime.pollSupervisorFailure(middle).orElseThrow();
+            assertEquals(middle.id(), signal.supervisorId());
+            assertEquals(middle.generation(), signal.supervisorGeneration());
+            assertEquals(root.id(),
+                    signal.supervisorMessageSender().orElseThrow());
+            assertEquals(0L, signal.supervisorMessageSequence(),
+                    "failed child must retain the exact middle input turn that spawned it");
+            ActorRuntime.ActorCausalOrigin retainedUpstream =
+                    signal.upstreamCause().orElseThrow();
+            assertEquals(root.id(), retainedUpstream.actorId());
+            assertEquals(root.generation(), retainedUpstream.generation());
+            assertEquals(0L, retainedUpstream.messageSequence());
+            assertEquals(failedChild.get().id(),
+                    signal.childTerminal().actorId());
+
+            assertTrue(runtime.pollSupervisorFailure(middle).isEmpty(),
+                    "one failed child incarnation must produce exactly one causal signal");
+            assertEquals(0, runtime.supervisorControlStats().queuedFailures());
+
+            middle.stop();
+            root.stop();
+            assertTrue(middle.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(root.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
