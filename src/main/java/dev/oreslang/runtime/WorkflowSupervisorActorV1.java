@@ -207,12 +207,15 @@ public final class WorkflowSupervisorActorV1 {
                     this.ledger = opened;
                     this.workflowStore = workflowOpened;
                     this.runId = configure.runId();
-                    accepted = true;
                     emit(
                             context,
                             new Ready(runId, ledger.usage()));
+                    accepted = true;
                 } finally {
                     if (!accepted) {
+                        this.ledger = null;
+                        this.workflowStore = null;
+                        this.runId = null;
                         opened.close();
                         if (workflowOpened != null) {
                             workflowOpened.close();
