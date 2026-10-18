@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
 import dev.oreslang.types.OptionalCallAbiPreview;
 import dev.oreslang.types.OptionalCallEvaluationSchedule;
 import dev.oreslang.types.OptionalCallLiteralStage;
@@ -117,6 +118,101 @@ final class OptionalCallLiteralStageTest {
                 new Ast.NameExpr("f"), List.of(STRING), true, args);
         assertThrows(IllegalArgumentException.class,
                 () -> OptionalCallLiteralStage.prepareDirectLiteralCall(generic, optional));
+    }
+
+    @Test
+    void localCandidateUsesParsedDeclarationRatherThanCallerSuppliedFormals() {
+        Ast.Program program = Parser.parse("""
+                pub fnc f(int a, string? label, bool enabled): int {
+                    return a;
+                }
+                """);
+        Ast.FunctionDecl parsed = (Ast.FunctionDecl)
+                program.modules().getFirst().declarations().getFirst();
+        Ast.StagedCallExpr call = new Ast.StagedCallExpr(
+                new Ast.NameExpr("f"), List.of(), false, List.of(
+                    Ast.CallArgument.named("enabled", new Ast.LiteralExpr(true)),
+                    Ast.CallArgument.omit("label"),
+                    Ast.CallArgument.named("a", new Ast.LiteralExpr(12L))));
+        var candidate = OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
+                program, call);
+        assertSame(parsed, candidate.declaration());
+        assertEquals(List.of(BOOL, INT), candidate.preview().independentlyDerivedTypes());
+        assertEquals(List.of(2, 1, 0),
+                candidate.preview().invocation().arguments().abiSlots().stream()
+                        .map(OptionalCallAbiPreview.Slot::originalCallItemIndex).toList());
+        assertEquals(OptionalCallAbiPreview.Action.INJECT_NONE,
+                candidate.preview().invocation().arguments().abiSlots().get(1).action());
+    }
+
+    @Test
+    void localCandidateRejectsAmbiguousShadowedImportedAndWrongValueDeclarations() {
+        Ast.Program program = Parser.parse("""
+                pub fnc f(int a, string? label, bool enabled): int {
+                    return a;
+                }
+                """);
+        Ast.ModuleDecl module = program.modules().getFirst();
+        Ast.FunctionDecl fn = (Ast.FunctionDecl) module.declarations().getFirst();
+        Ast.StagedCallExpr call = new Ast.StagedCallExpr(
+                new Ast.NameExpr("f"), List.of(), false, List.of(
+                    Ast.CallArgument.named("enabled", new Ast.LiteralExpr(true)),
+                    Ast.CallArgument.named("a", new Ast.LiteralExpr(12L))));
+        var duplicated = new Ast.Program(List.of(
+                new Ast.ModuleDecl(module.name(), List.of(fn, fn))));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
+                        duplicated, call));
+
+        var sameNameValue = new Ast.FieldDecl("f", Ast.Visibility.PRIVATE,
+                Ast.BindingKind.VAL, INT, new Ast.LiteralExpr(3L));
+        var shadowed = new Ast.Program(List.of(
+                new Ast.ModuleDecl(module.name(), List.of(sameNameValue, fn))));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
+                        shadowed, call));
+
+        var extraModule = new Ast.Program(List.of(module, module));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
+                        extraModule, call));
+
+        var wrongFunction = new Ast.StagedCallExpr(new Ast.NameExpr("other"),
+                List.of(), false, call.arguments());
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
+                        program, wrongFunction));
+
+        var wrongLabel = new Ast.StagedCallExpr(new Ast.NameExpr("f"),
+                List.of(), false, List.of(
+                    Ast.CallArgument.named("doesNotExist", new Ast.LiteralExpr(12L))));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
+                        program, wrongLabel));
+    }
+
+    @Test
+    void localCandidateCannotProveNonliteralEffectsOrTypeSubstitution() {
+        Ast.Program program = Parser.parse("""
+                pub fnc f(int a, string? label, bool enabled): int {
+                    return a;
+                }
+                """);
+        var sideEffect = new Ast.StagedCallExpr(new Ast.NameExpr("f"),
+                List.of(), false, List.of(
+                    Ast.CallArgument.named("a",
+                            new Ast.CallExpr(new Ast.NameExpr("effect"), List.of())),
+                    Ast.CallArgument.named("enabled", new Ast.LiteralExpr(true))));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
+                        program, sideEffect));
+        var typeApplied = new Ast.StagedCallExpr(new Ast.NameExpr("f"),
+                List.of(INT), true, List.of(
+                    Ast.CallArgument.named("a", new Ast.LiteralExpr(1L)),
+                    Ast.CallArgument.named("enabled", new Ast.LiteralExpr(true))));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
+                        program, typeApplied));
     }
 
     @Test
