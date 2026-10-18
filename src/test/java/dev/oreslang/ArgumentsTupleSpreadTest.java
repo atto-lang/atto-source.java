@@ -91,6 +91,36 @@ final class ArgumentsTupleSpreadTest {
     }
 
     @Test
+    void tupleSpreadEvaluatesArgumentsOnceLeftToRight() throws Exception {
+        String program = """
+                fnc first(): int {
+                  stdio.stdout.write("L");
+                  return 19;
+                }
+
+                fnc second(): int {
+                  stdio.stdout.write("R");
+                  return 23;
+                }
+
+                fnc add(int left, int right): int {
+                  return left + right;
+                }
+
+                pub routine main(): void {
+                  stdio.stdout.write(add(...tuple(first(), second())));
+                  return;
+                }
+                """;
+
+        var typed = TypeChecker.check(Parser.parse(program));
+        assertDoesNotThrow(() -> OwnershipChecker.check(typed));
+        // The spread is ABI argument projection, not an instruction to
+        // reevaluate tuple elements after the tuple has been constructed.
+        assertEquals("LR42", run(program));
+    }
+
+    @Test
     void runtimeLengthCollectionsCannotSpreadIntoFixedArityCallables() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
