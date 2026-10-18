@@ -7,6 +7,7 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 import javax.sql.DataSource;
 
 /**
@@ -22,6 +23,8 @@ public final class PostgresDurableActorStore implements DurableActorStore {
     private static final long MAX_PENDING_BYTES = 32L * 1024L * 1024L;
     private static final int DEFAULT_PENDING_LIMIT = 256;
     private final DataSource source;
+    private final String leaseOwner = UUID.randomUUID().toString();
+    private static final int LEASE_SECONDS = 60;
     private final int maxPendingInbox;
     private final int maxPendingOutbox;
 
@@ -107,20 +110,28 @@ public final class PostgresDurableActorStore implements DurableActorStore {
             long current;
             try (PreparedStatement p = c.prepareStatement(
                     "SELECT activation_epoch,state_version,format_version,state_schema_version," +
-                    "code_generation,encoded_state FROM ores_durable_actor WHERE " + KEY + " FOR UPDATE")) {
+                    "code_generation,encoded_state,active," +
+                    "(lease_expires_at IS NOT NULL AND lease_expires_at < clock_timestamp())" +
+                    " FROM ores_durable_actor WHERE " + KEY + " FOR UPDATE")) {
                 bind(p, key);
                 try (ResultSet rs = p.executeQuery()) {
                     if (!rs.next()) throw new IllegalStateException("unknown actor");
                     current = rs.getLong(1);
                     if (current == Long.MAX_VALUE) throw new IllegalStateException("activation epoch exhausted");
+                    if (rs.getBoolean(7) && !rs.getBoolean(8))
+                        throw new StaleActivationException("live or unverified activation lease");
                     snap = new Snapshot(rs.getInt(3), rs.getInt(4), rs.getString(5),
                             rs.getLong(2), rs.getBytes(6));
                 }
             }
             try (PreparedStatement p = c.prepareStatement(
-                    "UPDATE ores_durable_actor SET activation_epoch=?,active=true WHERE " + KEY)) {
+                    "UPDATE ores_durable_actor SET activation_epoch=?,active=true," +
+                    "lease_owner=?,lease_expires_at=clock_timestamp()+make_interval(secs => ?)" +
+                    " WHERE " + KEY)) {
                 p.setLong(1, current + 1);
-                bindShifted(p, 2, key);
+                p.setString(2, leaseOwner);
+                p.setInt(3, LEASE_SECONDS);
+                bindShifted(p, 4, key);
                 if (p.executeUpdate() != 1) throw new IllegalStateException("actor vanished");
             }
             Pending pendingInbox = pendingCount(c, "ores_durable_inbox", key);
@@ -227,20 +238,27 @@ public final class PostgresDurableActorStore implements DurableActorStore {
             Snapshot prior;
             long activeEpoch;
             boolean active;
+            String currentOwner;
+            boolean unexpired;
             try (PreparedStatement p = c.prepareStatement(
                     "SELECT activation_epoch,active,state_version,format_version,state_schema_version," +
-                    "code_generation,encoded_state FROM ores_durable_actor WHERE " + KEY + " FOR UPDATE")) {
+                    "code_generation,encoded_state,lease_owner," +
+                    "(lease_expires_at IS NOT NULL AND lease_expires_at > clock_timestamp())" +
+                    " FROM ores_durable_actor WHERE " + KEY + " FOR UPDATE")) {
                 bind(p, key);
                 try (ResultSet rs = p.executeQuery()) {
                     if (!rs.next()) throw new StaleActivationException("unknown actor");
                     activeEpoch = rs.getLong(1);
                     active = rs.getBoolean(2);
+                    currentOwner = rs.getString(8);
+                    unexpired = rs.getBoolean(9);
                     prior = new Snapshot(rs.getInt(4), rs.getInt(5), rs.getString(6),
                             rs.getLong(3), rs.getBytes(7));
                 }
             }
             if (!active || activeEpoch != turn.epoch() ||
-                    prior.stateVersion() != turn.expectedStateVersion()) {
+                    prior.stateVersion() != turn.expectedStateVersion() ||
+                    !leaseOwner.equals(currentOwner) || !unexpired) {
                 throw new StaleActivationException("stale epoch or state version");
             }
             Snapshot next = turn.nextSnapshot();
@@ -281,12 +299,14 @@ public final class PostgresDurableActorStore implements DurableActorStore {
             }
             try (PreparedStatement p = c.prepareStatement(
                     "UPDATE ores_durable_actor SET state_version=?,encoded_state=? WHERE " + KEY +
-                    " AND activation_epoch=? AND active=true AND state_version=?")) {
+                    " AND activation_epoch=? AND active=true AND state_version=?" +
+                    " AND lease_owner=? AND lease_expires_at>clock_timestamp()")) {
                 p.setLong(1, next.stateVersion());
                 bindPayload(p, 2, next.encodedState());
                 bindShifted(p, 3, key);
                 p.setLong(7, turn.epoch());
                 p.setLong(8, turn.expectedStateVersion());
+                p.setString(9, leaseOwner);
                 if (p.executeUpdate() != 1) throw new StaleActivationException("fenced actor update");
             }
             return next.stateVersion();
@@ -298,12 +318,33 @@ public final class PostgresDurableActorStore implements DurableActorStore {
         Objects.requireNonNull(key);
         transact(c -> {
             try (PreparedStatement p = c.prepareStatement(
-                    "UPDATE ores_durable_actor SET active=false WHERE " + KEY +
-                    " AND active=true AND activation_epoch=?")) {
+                    "UPDATE ores_durable_actor SET active=false,lease_owner=NULL,lease_expires_at=NULL" +
+                    " WHERE " + KEY + " AND active=true AND activation_epoch=?" +
+                    " AND lease_owner=? AND lease_expires_at>clock_timestamp()")) {
                 bind(p, key); p.setLong(5, epoch);
+                p.setString(6, leaseOwner);
                 if (p.executeUpdate() != 1) throw new StaleActivationException("hibernate fenced");
             }
             return null;
+        });
+    }
+
+
+    /** Extend an active owned lease; expired or superseded epochs can never renew. */
+    public boolean renew(Address key, long epoch) {
+        Objects.requireNonNull(key);
+        return transact(c -> {
+            try (PreparedStatement p = c.prepareStatement(
+                    "UPDATE ores_durable_actor SET lease_expires_at=" +
+                    "clock_timestamp()+make_interval(secs => ?) WHERE " + KEY +
+                    " AND active=true AND activation_epoch=? AND lease_owner=?" +
+                    " AND lease_expires_at>clock_timestamp()")) {
+                p.setInt(1, LEASE_SECONDS);
+                bindShifted(p, 2, key);
+                p.setLong(6, epoch);
+                p.setString(7, leaseOwner);
+                return p.executeUpdate() == 1;
+            }
         });
     }
 
@@ -314,10 +355,13 @@ public final class PostgresDurableActorStore implements DurableActorStore {
             throw new IllegalArgumentException("blank receipt identity");
         return transact(c -> {
             try (PreparedStatement p = c.prepareStatement(
-                    "SELECT activation_epoch,active FROM ores_durable_actor WHERE " + KEY + " FOR UPDATE")) {
+                    "SELECT activation_epoch,active,lease_owner," +
+                    "(lease_expires_at IS NOT NULL AND lease_expires_at>clock_timestamp())" +
+                    " FROM ores_durable_actor WHERE " + KEY + " FOR UPDATE")) {
                 bind(p, key);
                 try (ResultSet rs = p.executeQuery()) {
-                    if (!rs.next() || rs.getLong(1) != epoch || !rs.getBoolean(2))
+                    if (!rs.next() || rs.getLong(1) != epoch || !rs.getBoolean(2) ||
+                        !leaseOwner.equals(rs.getString(3)) || !rs.getBoolean(4))
                         throw new StaleActivationException("receipt fenced");
                 }
             }
