@@ -1478,6 +1478,10 @@ public final class Parser {
     }
 
     private Ast.TypeRef parseTypeAtom() {
+        if (match(DYN)) {
+            // The checker admits only object-safe nominal interfaces and traits.
+            return Ast.TypeRef.dynamic(parseTypeAtom());
+        }
         if (match(BANG)) return Ast.TypeRef.complement(parseTypeAtom());
         if (match(TRUE)) return Ast.TypeRef.boolLiteral(true);
         if (match(FALSE)) return Ast.TypeRef.boolLiteral(false);
@@ -3586,6 +3590,7 @@ public final class Parser {
         }
         if (match(SPAWN)) {
             Ast.TypeRef type = parseTypeRef();
+            if (type.isDyn()) throw error(previous(), "dyn interfaces cannot be spawned as actors");
             consume(LPAREN, "expected '(' after actor type");
             List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after actor spawn arguments");
@@ -3596,6 +3601,7 @@ public final class Parser {
         }
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
+            if (type.isDyn()) throw error(previous(), "dyn interfaces cannot be constructed directly");
             consume(LPAREN, "expected '(' after new type");
             List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after constructor arguments");
