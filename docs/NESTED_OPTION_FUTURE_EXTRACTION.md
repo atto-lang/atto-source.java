@@ -58,3 +58,40 @@ The `trap` expression does not flatten successful `Option` payloads.
 
 See `docs/TRAP_EXPRESSION_UNWRAP.md` for the existing throw/panic separation
 and `docs/ADT_TYPE_SYSTEM.md` for exhaustive nested-pattern coverage.
+
+## JVM verification gate (2026-10-17)
+
+Focused language/ownership/scheduler regression command:
+
+```bash
+mvn -B -ntp -Dtest=NestedOptionFutureUnwrapTest,NestedFutureSchedulerContractTest,OptionResultSemanticsTest,TrapOptionSemanticsTest,FutureCompositionLanguageTest,AsyncAwaitLanguageTest,OresSchedulerTest test
+```
+
+Then run `mvn -B -ntp verify`, GraalVM Native Image smoke tests,
+and back-end differential fixtures. Passing static inspection is not passing CI.
+A workflow that finishes before any job steps execute does not validate Java source.
+Record actual step outcomes and commit/tree SHA with every conformance claim.
+
+**Private CI transfer is denied by default.** The checked-in
+`.github/private-ci-approved-repositories.txt` currently has no approved
+repositories. `docs/security/CI_PRIVATE_SOURCE_MIRRORING.md` requires a
+reviewed protected-branch approval of an exact private destination before
+any source-bearing blob transfer. Do not use a public or internal repository,
+temporary public refs, caches or logs to bypass the gate. Cross-organization
+`GITHUB_TOKEN` checkout without permission is not an acceptable shortcut.
+
+## Cancellation and race conformance
+
+A composed Future has one scheduler-owned continuation with two await
+registrations, not two simultaneous registered waits. Once the outer stage
+settles, the continuation adopts the inner Future as a new await. Cancelled
+compositions must detach the currently active registration and never
+re-enter guest code after terminal revocation.
+
+An independently owned producer is **not** automatically cancelled because
+a composition stopped waiting for it. A future API for structured
+cancellation must specify explicit task ownership separately from
+`flatten()`. `NestedFutureSchedulerContractTest` probes the scheduler
+part of that contract with pending, failed and cancelled stages, while
+`NestedOptionFutureUnwrapTest` probes the actual language-level member.
+Neither suite is a substitute for an executed JVM run.
