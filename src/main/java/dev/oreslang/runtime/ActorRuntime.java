@@ -727,6 +727,12 @@ public final class ActorRuntime implements AutoCloseable {
     private final ArrayBlockingQueue<ActorTerminationPayload> supervisionEvents =
             new ArrayBlockingQueue<>(SUPERVISION_EVENT_CAPACITY);
     private final AtomicLong supervisionEventSequence = new AtomicLong();
+    /**
+     * Serializes dequeue + sequence assignment for the diagnostic journal.
+     * Producers never acquire this lock, so actor finalization remains
+     * nonblocking even if several supervisor consumers contend while draining.
+     */
+    private final ReentrantLock supervisionEventDrainLock = new ReentrantLock();
     private final AtomicLong supervisionEventsDropped = new AtomicLong();
     private final AtomicLong lifecyclePublicationFailures = new AtomicLong();
     /** Authoritative finalization bodies that may still submit observer work. */
@@ -955,39 +961,45 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public Optional<ActorTerminationEvent> pollTerminationEvent() {
         requireSupervisorContext("drain actor termination diagnostics");
-        for (;;) {
-            ActorTerminationPayload payload = supervisionEvents.poll();
-            if (payload == null) return Optional.empty();
-
-            long sequence;
+        // Multiple trusted consumers may drain concurrently. Serialize only
+        // the short dequeue/sequence critical section so FIFO queue order and
+        // externally visible sequence order cannot diverge.
+        supervisionEventDrainLock.lock();
+        try {
             for (;;) {
-                long current = supervisionEventSequence.get();
-                if (current == Long.MAX_VALUE) {
-                    // Never wrap diagnostic order into negative values. The
-                    // authoritative ActorRef terminal state still survives.
-                    supervisionEventsDropped.incrementAndGet();
-                    payload = null;
-                    break;
+                ActorTerminationPayload payload = supervisionEvents.poll();
+                if (payload == null) return Optional.empty();
+
+                for (;;) {
+                    long current = supervisionEventSequence.get();
+                    if (current == Long.MAX_VALUE) {
+                        // Never wrap diagnostic order into negative values. The
+                        // authoritative ActorRef terminal state still survives.
+                        supervisionEventsDropped.incrementAndGet();
+                        break;
+                    }
+                    if (supervisionEventSequence.compareAndSet(current, current + 1L)) {
+                        return Optional.of(new ActorTerminationEvent(
+                                current,
+                                payload.actorId(),
+                                payload.generation(),
+                                payload.actorKind(),
+                                payload.parentId(),
+                                payload.terminationKind(),
+                                payload.acceptedUserMessages(),
+                                payload.processedUserMessages(),
+                                payload.abandonedUserMessages(),
+                                payload.abandonedContinuations(),
+                                payload.failureType(),
+                                payload.failureMessage()));
+                    }
                 }
-                if (supervisionEventSequence.compareAndSet(current, current + 1L)) {
-                    sequence = current;
-                    return Optional.of(new ActorTerminationEvent(
-                            sequence,
-                            payload.actorId(),
-                            payload.generation(),
-                            payload.actorKind(),
-                            payload.parentId(),
-                            payload.terminationKind(),
-                            payload.acceptedUserMessages(),
-                            payload.processedUserMessages(),
-                            payload.abandonedUserMessages(),
-                            payload.abandonedContinuations(),
-                            payload.failureType(),
-                            payload.failureMessage()));
-                }
+                // Sequence space exhausted (or was concurrently test-fenced):
+                // discard this already-published diagnostic and keep draining
+                // without blocking actor teardown or later queue reclamation.
             }
-            // Sequence space exhausted: discard this already-published
-            // diagnostic and continue draining without blocking later teardown.
+        } finally {
+            supervisionEventDrainLock.unlock();
         }
     }
 
