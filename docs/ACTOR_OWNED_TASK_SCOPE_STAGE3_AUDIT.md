@@ -61,6 +61,26 @@ Run against exact nested PR head:
 mvn -Dtest=TaskCancellationTest,TaskHandleTest,TaskScopeTest,ActorOwnedTaskScopeTest test
 ```
 
+## Supplemental isolated host-model check
+
+Using OpenJDK 21, a standalone **model of the ActorCell finalization gate**
+was compiled against the previously staged synthetic TaskHandle/TaskScope and
+scheduler/Future stubs. It passed 1,000 iterations:
+
+- 500 cases where the child task physically remained in execution while its
+  result was cancelled; actor finalization stayed pending until physical exit.
+- 500 cases where Task children had quiesced but the actor carrier lease was
+  still active; finalization remained pending until that lease was released.
+
+A completion Future's state can become visible before its synchronous
+notification callback has returned; the test therefore waits for eventual
+finalization rather than incorrectly requiring the callback to have run at
+the instant `getDone()` first becomes observable.
+
+**Limit:** this model does NOT compile or execute production ActorRuntime,
+OresScheduler, or GraalVM/Truffle code. No exact-tree Maven/JUnit source
+execution has yet been obtained.
+
 ## Important remaining gaps
 
 - Existing source `startActorTask` and untrusted quota-aware task lowering are
