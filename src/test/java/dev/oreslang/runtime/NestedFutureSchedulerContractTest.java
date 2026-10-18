@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -40,6 +41,35 @@ final class NestedFutureSchedulerContractTest {
             assertFalse(inner.isCancelled());
             assertTrue(inner.completeFromRuntime(42));
             assertTrue(derived.isCancelled());
+        }
+    }
+
+    @Test
+    void taskCannotAwaitItsOwnCompletionFuture() throws Exception {
+        OresFuture<Void> gate = new OresFuture<>();
+        AtomicReference<OresFuture<Integer>> owner = new AtomicReference<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> derived = scheduler.start(new OresScheduler.Task<>() {
+                private int pc;
+
+                @Override
+                public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
+                    if (pc++ == 0) {
+                        return OresScheduler.await(gate);
+                    }
+                    return OresScheduler.await(owner.get());
+                }
+            });
+            owner.set(derived);
+            assertTrue(gate.completeFromRuntime(null));
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> derived.get(3, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof IllegalStateException,
+                    failure.toString());
+            assertTrue(failure.getCause().getMessage().contains(
+                            "cannot await its own completion Future"),
+                    failure.toString());
+            assertEquals(0, derived.pendingRuntimeWaiterCount());
         }
     }
 
