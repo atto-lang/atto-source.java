@@ -24,6 +24,18 @@ final class ActorHotUpgradeIngressIntegrationTest {
     }
 
     @Test
+    void cannotFreezeAnActorBeforeItsLazyInitializationCompletes() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> context.self().stop());
+            assertThrows(IllegalStateException.class,
+                    () -> runtime.freezeUserIngressForHotUpgrade(actor));
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void freezeRejectsNewMessagesAndAllowsOldActorToResumeOnAbort() throws Exception {
         AtomicInteger delivered = new AtomicInteger();
         try (var runtime = new ActorRuntime()) {
