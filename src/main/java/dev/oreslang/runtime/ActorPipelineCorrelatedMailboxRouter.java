@@ -220,9 +220,31 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
         });
     }
 
-    /** Every recipient gets an independent admission result; earlier
-     * successes are not rolled back when a later mailbox is full or stopped. */
+    /** Guest projections hold DATA-only scalar metadata, never authority. */
+    private static Map<String, Object> guestReceipt(Admission receipt) {
+        return Map.of(
+                "edge_index", (long) receipt.edgeIndex(),
+                "target", receipt.target(),
+                "flow_id", receipt.flowId(),
+                "route_id", receipt.routeId(),
+                "admitted", receipt.admitted(),
+                "status", receipt.admitted() ? "admitted" : "rejected");
+    }
+
+    private record FanoutReports(
+            List<Admission> host, List<Map<String, Object>> guest) { }
+
+    /** Independent nontransactional branch admissions, with immutable
+     * typed guest receipts preallocated BEFORE any irreversible mailbox send. */
     List<Admission> forwardAll(M value) {
+        return forwardAllReports(value).host();
+    }
+
+    List<Map<String, Object>> forwardAllGuest(M value) {
+        return forwardAllReports(value).guest();
+    }
+
+    private FanoutReports forwardAllReports(M value) {
         return inLiveGeneration(() -> {
         var frame = current();
         Objects.requireNonNull(value, "pipeline payload");
@@ -231,35 +253,46 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
         // must never strand a live, undeliverable correlation child.
         var out = graph.forwardAll(frame.receiver());
         var result = new ArrayList<Admission>(out.size());
-        // Allocate the read-only wrapper before any live correlation frame
-        // or mailbox DATA publication. No final List.copyOf allocation
-        // occurs after successful sends have become externally visible.
+        var guestResult = new ArrayList<Map<String, Object>>(out.size());
+        // No new guest wrappers or public reports may allocate after admission.
         var completed = Collections.unmodifiableList(result);
+        var guestCompleted = Collections.unmodifiableList(guestResult);
+        var reports = new FanoutReports(completed, guestCompleted);
         var children = session.forwardAll(frame);
         // Pre-materialize EVERY successful AND failed branch receipt before
         // the first mailbox send. Allocation pressure must not turn a
         // nontransactional branch rejection into loss of earlier receipts.
         List<Admission> prepared;
         List<Admission> rejected;
+        List<Map<String, Object>> guestPrepared;
+        List<Map<String, Object>> guestRejected;
         try {
             var all = new ArrayList<Admission>(children.size());
             var allRejected = new ArrayList<Admission>(children.size());
+            var allGuest = new ArrayList<Map<String, Object>>(children.size());
+            var allGuestRejected = new ArrayList<Map<String, Object>>(children.size());
             for (int i = 0; i < children.size(); i++) {
                 var child = children.get(i);
                 int edgeIndex = edges.get(out.get(i));
-                all.add(new Admission(edgeIndex, child.receiver(),
-                        child.flowId(), child.routeId(), true, null));
+                var accepted = new Admission(edgeIndex, child.receiver(),
+                        child.flowId(), child.routeId(), true, null);
+                all.add(accepted);
+                allGuest.add(guestReceipt(accepted));
                 // Even failure receipts must be allocated BEFORE the first
                 // irreversible mailbox admission. The original rejection
                 // becomes this preallocated exception's cause, without
                 // creating a fresh receipt after an earlier send succeeded.
-                allRejected.add(new Admission(edgeIndex, child.receiver(),
+                var rejectedReceipt = new Admission(edgeIndex, child.receiver(),
                         child.flowId(), child.routeId(), false,
                         new IllegalStateException(
-                                "pipeline mailbox admission rejected for " + child.receiver())));
+                                "pipeline mailbox admission rejected for " + child.receiver()));
+                allRejected.add(rejectedReceipt);
+                allGuestRejected.add(guestReceipt(rejectedReceipt));
             }
             prepared = all;
             rejected = allRejected;
+            guestPrepared = allGuest;
+            guestRejected = allGuestRejected;
         } catch (RuntimeException | Error preflight) {
             for (var unpublished : children)
                 ActorPipelineRouteSession.retireDelivered(unpublished);
@@ -274,17 +307,19 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
                     // No allocation: ArrayList was pre-sized and the success
                     // receipt was created before any branch publication.
                     result.add(prepared.get(next));
+                    guestResult.add(guestPrepared.get(next));
                 } catch (RuntimeException failure) {
                     ActorPipelineRouteSession.retireDelivered(child);
                     var denied = rejected.get(next);
                     denied.failure().initCause(failure);
                     result.add(denied);
+                    guestResult.add(guestRejected.get(next));
                 }
             }
             // A completed fan-out attempt consumes the authenticated source
             // frame. Reusing it would permit duplicate/hidden fan-out batches.
             ActorPipelineRouteSession.retireDelivered(frame);
-            return completed;
+            return reports;
         } catch (RuntimeException | Error failure) {
             // Previously published branches retain their independent frames.
             // The current and later frames have not been published if the
@@ -357,6 +392,12 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     @SuppressWarnings("unchecked")
     public void routeForwardByKey(String key, Object value) {
         forwardByKey(key, (M) value);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> routeForwardAll(Object value) {
+        return forwardAllGuest((M) value);
     }
 
     @Override
