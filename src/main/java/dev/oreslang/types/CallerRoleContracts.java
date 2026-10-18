@@ -82,6 +82,11 @@ public final class CallerRoleContracts {
             rejectOtherTargets(module.annotations(), "module '" + module.name() + "'");
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) {
+                    if (has(fn.annotations(), "CallableBy")
+                            && (fn.name().equals("main") || fn.name().equals("init")
+                                || fn.actorKind() != Ast.ActorKind.NONE)) {
+                        throw new IllegalArgumentException("@CallableBy cannot restrict host/runtime entry point '" + fn.name() + "'");
+                    }
                     put(index, fn, fn.annotations(), module.name(), enums,
                             "function/routine '" + module.name() + "." + fn.name() + "'");
                 } else if (declaration instanceof Ast.ClassDecl klass) {
@@ -93,6 +98,16 @@ public final class CallerRoleContracts {
                         rejectOtherTargets(field.annotations(), "field '" + klass.name() + "." + field.name() + "'");
                     }
                     for (Ast.MethodDecl method : klass.methods()) {
+                        if (has(method.annotations(), "CallableBy")
+                                && (method.isAbstract()
+                                    || (klass.actorKind() != Ast.ActorKind.NONE
+                                        && (method.name().equals("receive")
+                                            || method.name().equals("on_start")
+                                            || method.name().equals("on_panic")
+                                            || method.name().equals("on_raise")
+                                            || method.name().equals("on_throw"))))) {
+                            throw new IllegalArgumentException("@CallableBy cannot restrict abstract or runtime-dispatched hook '" + klass.name() + "." + method.name() + "'");
+                        }
                         put(index, method, method.annotations(), module.name(), enums,
                                 "method '" + klass.name() + "." + method.name() + "'");
                     }
@@ -102,6 +117,10 @@ public final class CallerRoleContracts {
             }
         }
         return index;
+    }
+
+    private static boolean has(List<Ast.Annotation> annotations, String name) {
+        return annotations.stream().anyMatch(annotation -> annotation.name().equals(name));
     }
 
     private static void rejectOtherTargets(List<Ast.Annotation> annotations, String target) {
