@@ -155,7 +155,11 @@ public final class ConcurrencyTestProbe {
     }
 
     public static List<String> readTrace(Path trace) throws IOException {
-        List<String> lines = Files.readAllLines(Objects.requireNonNull(trace), StandardCharsets.UTF_8);
+        Objects.requireNonNull(trace, "trace");
+        if (Files.size(trace) > 8L * 1024 * 1024) {
+            throw new IllegalArgumentException("concurrency replay trace exceeds 8 MiB admission limit");
+        }
+        List<String> lines = Files.readAllLines(trace, StandardCharsets.UTF_8);
         if (lines.isEmpty() || !lines.get(0).matches("ORES_CONCURRENCY_TRACE_V1\\|seed=-?[0-9]+")) {
             throw new IllegalArgumentException("not an Oreslang concurrency trace");
         }
