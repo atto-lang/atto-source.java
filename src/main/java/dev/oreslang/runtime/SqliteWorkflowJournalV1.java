@@ -157,6 +157,23 @@ public final class SqliteWorkflowJournalV1
     }
 
     @Override
+    public synchronized DurableDevLoopV1.Transition completeAndAppend(
+            String effectKey,
+            String claimToken,
+            String receiptRef,
+            long nowMillis,
+            String eventId,
+            DurableDevLoopV1.Event event) {
+        return mutate(store -> store.completeAndAppend(
+                effectKey,
+                claimToken,
+                receiptRef,
+                nowMillis,
+                eventId,
+                event));
+    }
+
+    @Override
     public synchronized int expireClaims(long nowMillis) {
         return mutate(store -> store.expireClaims(nowMillis));
     }
