@@ -121,6 +121,51 @@ final class ArgumentsTupleSpreadTest {
     }
 
     @Test
+    void recordCannotBeSilentlyExplodedIntoPositionalArguments() {
+        String program = """
+                fnc add(int left, int right): int {
+                  return left + right;
+                }
+
+                fnc bad(): int {
+                  const point = struct{x: int, y: int}{x: 19, y: 23};
+                  return add(...point);
+                }
+                """;
+        var parsed = Parser.parse(program);
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+        assertTrue(error.getMessage().contains("statically known tuple"),
+                "record field order must never become argument order: " + error.getMessage());
+    }
+
+    @Test
+    void groupedExplicitTupleCanSpreadAndMixedArgumentOrderIsPreserved() throws Exception {
+        String program = """
+                fnc mark(String text, int value): int {
+                  stdio.stdout.write(text);
+                  return value;
+                }
+
+                fnc sum(int a, int b, int c, int d): int {
+                  return a + b + c + d;
+                }
+
+                pub routine main(): void {
+                  stdio.stdout.write(sum(
+                    mark("A", 1),
+                    ...(tuple(mark("B", 2), mark("C", 3))),
+                    mark("D", 4)
+                  ));
+                  return;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(program));
+        assertDoesNotThrow(() -> OwnershipChecker.check(typed));
+        assertEquals("ABCD10", run(program));
+    }
+
+    @Test
     void runtimeLengthCollectionsCannotSpreadIntoFixedArityCallables() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
