@@ -329,9 +329,7 @@ public final class ActorRuntime implements AutoCloseable {
         public DispatcherPressure {
             if (startedCarriers < 0 || activeCarriers < 0 || queuedTasks < 0
                     || queueCapacity < 0 || maximumCarriers < 0
-                    || activeCarriers > startedCarriers
-                    || queuedTasks > queueCapacity
-                    || startedCarriers > maximumCarriers) {
+                    || queuedTasks > queueCapacity) {
                 throw new IllegalArgumentException("invalid actor dispatcher pressure");
             }
         }
