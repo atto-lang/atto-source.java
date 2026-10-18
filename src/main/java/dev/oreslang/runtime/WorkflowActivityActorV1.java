@@ -1,5 +1,11 @@
 package dev.oreslang.runtime;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -159,51 +165,83 @@ public final class WorkflowActivityActorV1 {
         };
     }
 
+    private static final int PRIVATE_STATE_BYTES = 1_048_576;
+
+    private record PrivateState(
+            String workerId,
+            WorkflowActivityProtocolV1.Kind kind,
+            Set<WorkflowActivityProtocolV1.Capability> capabilities,
+            LinkedHashMap<String, WorkflowJournalV1.Claim> inFlight) {
+
+        private static PrivateState empty() {
+            return new PrivateState(
+                    null, null, Set.of(), new LinkedHashMap<>());
+        }
+
+        private boolean configured() {
+            return workerId != null;
+        }
+    }
+
     private static ActorRuntime.Behavior<Object> createBehavior(
-            ActorRuntime.ActorContext<Object> ignored) {
-        return new Behavior();
+            ActorRuntime.ActorContext<Object> context) {
+        ActorRuntime.PrivateMemoryBlock state =
+                context.privateMemory()
+                        .orElseThrow(() -> new IllegalStateException(
+                                "workflow activity actor requires private memory"))
+                        .allocatePrivateBytes(PRIVATE_STATE_BYTES);
+        return new Behavior(state);
     }
 
     private static final class Behavior
             implements ActorRuntime.Behavior<Object> {
-        private String workerId;
-        private WorkflowActivityProtocolV1.Kind kind;
-        private Set<WorkflowActivityProtocolV1.Capability> capabilities;
-        private final Map<String, WorkflowJournalV1.Claim> inFlight =
-                new LinkedHashMap<>();
+        private final ActorRuntime.PrivateMemoryBlock stateBlock;
+
+        private Behavior(ActorRuntime.PrivateMemoryBlock stateBlock) {
+            this.stateBlock = Objects.requireNonNull(
+                    stateBlock, "stateBlock");
+        }
 
         @Override
         public void onMessage(
                 Object wire,
                 ActorRuntime.ActorContext<Object> context) {
             Message message = decodeMessage(wire);
+            PrivateState state = readState();
 
             if (message instanceof Configure configure) {
-                if (workerId != null) {
+                if (state.configured()) {
                     throw new IllegalStateException(
                             "workflow activity actor is already configured");
                 }
-                workerId = configure.workerId();
-                kind = configure.kind();
-                capabilities = configure.capabilities();
-                emit(context, new Ready(workerId, kind));
+                PrivateState configured = new PrivateState(
+                        configure.workerId(),
+                        configure.kind(),
+                        configure.capabilities(),
+                        new LinkedHashMap<>());
+                writeState(configured);
+                emit(
+                        context,
+                        new Ready(
+                                configured.workerId(),
+                                configured.kind()));
                 return;
             }
 
-            requireConfigured();
+            requireConfigured(state);
 
             if (message instanceof Dispatch dispatch) {
                 WorkflowJournalV1.Claim claim = dispatch.claim();
                 if (claim.workerId() != null
-                        && !workerId.equals(claim.workerId())) {
+                        && !state.workerId().equals(claim.workerId())) {
                     throw new SecurityException(
                             "activity worker "
-                                    + workerId
+                                    + state.workerId()
                                     + " cannot execute claim leased to "
                                     + claim.workerId());
                 }
                 WorkflowJournalV1.Claim existing =
-                        inFlight.get(claim.effectKey());
+                        state.inFlight().get(claim.effectKey());
                 if (existing != null) {
                     if (existing.claimToken().equals(
                             claim.claimToken())) {
@@ -219,9 +257,16 @@ public final class WorkflowActivityActorV1 {
                 var request = new WorkflowActivityProtocolV1.Request(
                         dispatch.runId(),
                         claim,
-                        kind,
-                        capabilities);
-                inFlight.put(claim.effectKey(), claim);
+                        state.kind(),
+                        state.capabilities());
+                LinkedHashMap<String, WorkflowJournalV1.Claim> next =
+                        new LinkedHashMap<>(state.inFlight());
+                next.put(claim.effectKey(), claim);
+                writeState(new PrivateState(
+                        state.workerId(),
+                        state.kind(),
+                        state.capabilities(),
+                        next));
                 emit(context, new Authorized(request));
                 return;
             }
@@ -231,7 +276,7 @@ public final class WorkflowActivityActorV1 {
                         report.outcome();
                 String effectKey = effectKey(outcome);
                 WorkflowJournalV1.Claim claim =
-                        inFlight.get(effectKey);
+                        state.inFlight().get(effectKey);
                 if (claim == null) {
                     throw new IllegalStateException(
                             "activity outcome has no in-flight claim: "
@@ -240,14 +285,21 @@ public final class WorkflowActivityActorV1 {
 
                 WorkflowActivityProtocolV1.validateOutcome(
                         claim, outcome);
-                inFlight.remove(effectKey);
+                LinkedHashMap<String, WorkflowJournalV1.Claim> next =
+                        new LinkedHashMap<>(state.inFlight());
+                next.remove(effectKey);
+                writeState(new PrivateState(
+                        state.workerId(),
+                        state.kind(),
+                        state.capabilities(),
+                        next));
                 emit(context, new OutcomeAccepted(outcome));
                 return;
             }
 
             if (message instanceof CancelAttempt cancel) {
                 WorkflowJournalV1.Claim claim =
-                        inFlight.get(cancel.effectKey());
+                        state.inFlight().get(cancel.effectKey());
                 if (claim == null) {
                     throw new IllegalStateException(
                             "activity cancellation has no in-flight claim: "
@@ -258,7 +310,14 @@ public final class WorkflowActivityActorV1 {
                     throw new IllegalStateException(
                             "activity cancellation claim token is stale");
                 }
-                inFlight.remove(cancel.effectKey());
+                LinkedHashMap<String, WorkflowJournalV1.Claim> next =
+                        new LinkedHashMap<>(state.inFlight());
+                next.remove(cancel.effectKey());
+                writeState(new PrivateState(
+                        state.workerId(),
+                        state.kind(),
+                        state.capabilities(),
+                        next));
                 emit(
                         context,
                         new AttemptCancelled(
@@ -269,12 +328,14 @@ public final class WorkflowActivityActorV1 {
             }
 
             if (message instanceof Shutdown) {
-                if (!inFlight.isEmpty()) {
+                if (!state.inFlight().isEmpty()) {
                     throw new IllegalStateException(
                             "activity actor cannot stop with unresolved "
-                                    + "external effects " + inFlight.keySet());
+                                    + "external effects "
+                                    + state.inFlight().keySet());
                 }
-                emit(context, new Stopping(workerId));
+                emit(context, new Stopping(state.workerId()));
+                stateBlock.close();
                 context.runtime().endCurrentActor();
                 return;
             }
@@ -284,8 +345,105 @@ public final class WorkflowActivityActorV1 {
                             + message.getClass().getName());
         }
 
-        private void requireConfigured() {
-            if (workerId == null) {
+        private PrivateState readState() {
+            byte[] payload =
+                    WorkflowPrivateActorStateV1.read(stateBlock);
+            if (payload.length == 0) {
+                return PrivateState.empty();
+            }
+            try (DataInputStream input = new DataInputStream(
+                    new ByteArrayInputStream(payload))) {
+                int version = input.readInt();
+                if (version != 1) {
+                    throw new IllegalStateException(
+                            "unsupported activity private-state version "
+                                    + version);
+                }
+                String workerId = readString(input);
+                WorkflowActivityProtocolV1.Kind kind =
+                        WorkflowActivityProtocolV1.Kind.valueOf(
+                                readString(input));
+                int capabilityCount = input.readInt();
+                if (capabilityCount < 0
+                        || capabilityCount
+                                > WorkflowActivityProtocolV1.Capability
+                                        .values().length) {
+                    throw new IllegalStateException(
+                            "invalid activity capability count");
+                }
+                java.util.LinkedHashSet<
+                        WorkflowActivityProtocolV1.Capability> capabilities =
+                        new java.util.LinkedHashSet<>();
+                for (int i = 0; i < capabilityCount; i++) {
+                    capabilities.add(
+                            WorkflowActivityProtocolV1.Capability.valueOf(
+                                    readString(input)));
+                }
+                int inFlightCount = input.readInt();
+                if (inFlightCount < 0 || inFlightCount > 10_000) {
+                    throw new IllegalStateException(
+                            "invalid activity in-flight count");
+                }
+                LinkedHashMap<String, WorkflowJournalV1.Claim> inFlight =
+                        new LinkedHashMap<>();
+                for (int i = 0; i < inFlightCount; i++) {
+                    WorkflowJournalV1.Claim claim = readClaim(input);
+                    if (inFlight.putIfAbsent(
+                            claim.effectKey(), claim) != null) {
+                        throw new IllegalStateException(
+                                "duplicate in-flight effect key");
+                    }
+                }
+                if (input.available() != 0) {
+                    throw new IllegalStateException(
+                            "trailing bytes in activity private state");
+                }
+                return new PrivateState(
+                        workerId,
+                        kind,
+                        Set.copyOf(capabilities),
+                        inFlight);
+            } catch (IOException | RuntimeException failure) {
+                if (failure instanceof IllegalStateException stateFailure) {
+                    throw stateFailure;
+                }
+                throw new IllegalStateException(
+                        "invalid activity private state", failure);
+            }
+        }
+
+        private void writeState(PrivateState state) {
+            try {
+                ByteArrayOutputStream bytes =
+                        new ByteArrayOutputStream();
+                try (DataOutputStream output =
+                        new DataOutputStream(bytes)) {
+                    output.writeInt(1);
+                    writeString(output, state.workerId());
+                    writeString(output, state.kind().name());
+                    output.writeInt(state.capabilities().size());
+                    state.capabilities().stream()
+                            .map(Enum::name)
+                            .sorted()
+                            .forEach(name -> writeStringUnchecked(
+                                    output, name));
+                    output.writeInt(state.inFlight().size());
+                    for (WorkflowJournalV1.Claim claim
+                            : state.inFlight().values()) {
+                        writeClaim(output, claim);
+                    }
+                }
+                WorkflowPrivateActorStateV1.write(
+                        stateBlock, bytes.toByteArray());
+            } catch (IOException failure) {
+                throw new IllegalStateException(
+                        "failed to encode activity private state",
+                        failure);
+            }
+        }
+
+        private static void requireConfigured(PrivateState state) {
+            if (!state.configured()) {
                 throw new IllegalStateException(
                         "Configure must be the first activity actor message");
             }
@@ -311,6 +469,123 @@ public final class WorkflowActivityActorV1 {
             context.runtime().emitCurrentActorOutput(
                     encodeOutput(output));
         }
+    }
+
+    private static void writeClaim(
+            DataOutputStream output,
+            WorkflowJournalV1.Claim claim) throws IOException {
+        writeString(output, claim.effectKey());
+        WorkflowSqlCodecV1.Encoded encoded =
+                WorkflowSqlCodecV1.encodeCommand(claim.command());
+        writeEncoded(output, encoded);
+        writeString(output, claim.claimToken());
+        output.writeInt(claim.attempt());
+        output.writeLong(claim.leaseUntilMillis());
+        writeNullableString(output, claim.workerId());
+    }
+
+    private static WorkflowJournalV1.Claim readClaim(
+            DataInputStream input) throws IOException {
+        String effectKey = readString(input);
+        DurableDevLoopV1.Command command =
+                WorkflowSqlCodecV1.decodeCommand(
+                        readEncoded(input));
+        String claimToken = readString(input);
+        int attempt = input.readInt();
+        long leaseUntilMillis = input.readLong();
+        String workerId = readNullableString(input);
+        if (!effectKey.equals(command.effectKey())) {
+            throw new IllegalStateException(
+                    "activity claim effect key disagrees with command");
+        }
+        return new WorkflowJournalV1.Claim(
+                effectKey,
+                command,
+                claimToken,
+                attempt,
+                leaseUntilMillis,
+                workerId);
+    }
+
+    private static void writeEncoded(
+            DataOutputStream output,
+            WorkflowSqlCodecV1.Encoded encoded) throws IOException {
+        writeString(output, encoded.type());
+        output.writeBoolean(encoded.int1() != null);
+        if (encoded.int1() != null) {
+            output.writeInt(encoded.int1());
+        }
+        writeNullableString(output, encoded.text1());
+        writeNullableString(output, encoded.text2());
+        writeNullableString(output, encoded.text3());
+        writeNullableString(output, encoded.text4());
+    }
+
+    private static WorkflowSqlCodecV1.Encoded readEncoded(
+            DataInputStream input) throws IOException {
+        String type = readString(input);
+        Integer int1 = input.readBoolean()
+                ? input.readInt()
+                : null;
+        return new WorkflowSqlCodecV1.Encoded(
+                type,
+                int1,
+                readNullableString(input),
+                readNullableString(input),
+                readNullableString(input),
+                readNullableString(input));
+    }
+
+    private static void writeStringUnchecked(
+            DataOutputStream output,
+            String value) {
+        try {
+            writeString(output, value);
+        } catch (IOException failure) {
+            throw new IllegalStateException(
+                    "failed to encode activity private state",
+                    failure);
+        }
+    }
+
+    private static void writeString(
+            DataOutputStream output,
+            String value) throws IOException {
+        byte[] bytes = requireText(value, "private-state string")
+                .getBytes(StandardCharsets.UTF_8);
+        output.writeInt(bytes.length);
+        output.write(bytes);
+    }
+
+    private static String readString(
+            DataInputStream input) throws IOException {
+        int length = input.readInt();
+        if (length <= 0 || length > PRIVATE_STATE_BYTES) {
+            throw new IllegalStateException(
+                    "invalid private-state string length");
+        }
+        byte[] bytes = input.readNBytes(length);
+        if (bytes.length != length) {
+            throw new IllegalStateException(
+                    "truncated private-state string");
+        }
+        return new String(bytes, StandardCharsets.UTF_8);
+    }
+
+    private static void writeNullableString(
+            DataOutputStream output,
+            String value) throws IOException {
+        output.writeBoolean(value != null);
+        if (value != null) {
+            writeString(output, value);
+        }
+    }
+
+    private static String readNullableString(
+            DataInputStream input) throws IOException {
+        return input.readBoolean()
+                ? readString(input)
+                : null;
     }
 
     private static Map<String, Object> encodeMessage(Message message) {
