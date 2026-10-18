@@ -25,6 +25,96 @@ final class ActorTaskTerminationCascadeTest {
     }
 
     @Test
+    void exitHookCannotHoldActorLifecycleMonitorWhileBlocked() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch exitHookEntered = new CountDownLatch(1);
+            CountDownLatch releaseHook = new CountDownLatch(1);
+            runtime.setActorExitHook(ignored -> {
+                exitHookEntered.countDown();
+                awaitUninterruptibly(releaseHook);
+            });
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> context.self().stop());
+            actor.send(1);
+            assertTrue(exitHookEntered.await(5, TimeUnit.SECONDS));
+
+            // awaitTermination must acquire the lifecycle monitor to wait
+            // with a bounded timeout. Before the finalizer refactor, a
+            // blocked host exit hook held that monitor indefinitely.
+            AtomicReference<Boolean> probeResult = new AtomicReference<>();
+            AtomicReference<Throwable> probeFailure = new AtomicReference<>();
+            Thread probe = new Thread(() -> {
+                try {
+                    probeResult.set(actor.awaitTermination(50, TimeUnit.MILLISECONDS));
+                } catch (Throwable failure) {
+                    probeFailure.set(failure);
+                }
+            });
+            probe.start();
+            try {
+                probe.join(1000);
+                assertFalse(probe.isAlive(),
+                        "a blocked exit hook must not pin lifecycleLock");
+                assertNull(probeFailure.get());
+                assertEquals(Boolean.FALSE, probeResult.get());
+                assertFalse(actor.done().isDone());
+            } finally {
+                releaseHook.countDown();
+            }
+            probe.join(5000);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertNull(actor.done().get(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void oneFinalizerForConcurrentActorStopRequests() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            java.util.concurrent.atomic.AtomicInteger exitHookCount =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            CountDownLatch hookEntered = new CountDownLatch(1);
+            CountDownLatch releaseHook = new CountDownLatch(1);
+            runtime.setActorExitHook(ignored -> {
+                exitHookCount.incrementAndGet();
+                hookEntered.countDown();
+                awaitUninterruptibly(releaseHook);
+            });
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            assertNull(actor.ready().get(5, TimeUnit.SECONDS));
+            java.util.concurrent.atomic.AtomicReference<Throwable> failures =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            Thread a = new Thread(() -> {
+                try { actor.stop(); }
+                catch (Throwable failure) { failures.compareAndSet(null, failure); }
+            });
+            Thread b = new Thread(() -> {
+                try { actor.stop(); }
+                catch (Throwable failure) { failures.compareAndSet(null, failure); }
+            });
+            a.start();
+            b.start();
+            try {
+                assertTrue(hookEntered.await(5, TimeUnit.SECONDS));
+                assertFalse(actor.done().isDone());
+                assertEquals(1, exitHookCount.get(),
+                        "only one teardown may claim the terminal actor state");
+            } finally {
+                releaseHook.countDown();
+            }
+            a.join(5000);
+            b.join(5000);
+            assertFalse(a.isAlive());
+            assertFalse(b.isAlive());
+            assertNull(failures.get());
+            assertEquals(1, exitHookCount.get());
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void actorDoneWaitsForOwnedFutureCancellationCallbacksAfterTaskScopeJoin()
             throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
