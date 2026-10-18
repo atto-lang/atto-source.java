@@ -45,8 +45,8 @@ constructor is rejected before overload analysis.
 
 ## ConstructionState
 
-Each blank constructor-initialized immutable field carries a saturated
-assignment interval:
+Each declaration-uninitialized instance field carries a saturated
+assignment interval (for both immutable `val` and mutable `let`):
 
 ```text
 AssignmentCount {
@@ -69,8 +69,13 @@ The useful states are:
 A direct write maps `[a,b]` to
 `[min(2+,a+1), min(2+,b+1)]`.
 
-For a blank `val`, a write is admitted only from `[0,0]`. A normal
-constructor completion requires `[1,1]` for every required field.
+For a blank immutable `val`, a write is admitted only from `[0,0]`
+and normal construction requires `[1,1]`. A blank mutable `let` must
+have been assigned on every normal path but can be reassigned; its lower
+interval bound must be at least `1` and its upper bound may be `2+`.
+A construction region therefore carries the set of immutable tracked fields
+separately from its assignment intervals. Joining states with different
+immutable-field contracts is forbidden.
 
 Control-flow join is:
 
@@ -88,6 +93,7 @@ ConstructionState {
   region: ConstructionRegionId
   phase: ALLOCATED | INITIALIZING | INITIALIZED | CONSTRUCTED
   fields: Map<FieldId, AssignmentCount>
+  fixed_fields: Set<FieldId>  // val fields requiring exactly one write
   pending_cleanups: CleanupEdge[]
 }
 ```
