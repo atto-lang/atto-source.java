@@ -25,6 +25,30 @@ final class ActorTaskTerminationCascadeTest {
     }
 
     @Test
+    void exitHookCanRequestOwnActorStopWithoutWaitingOnItself() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicReference<ActorRuntime.ActorRef<Integer>> owned =
+                    new AtomicReference<>();
+            java.util.concurrent.atomic.AtomicInteger callbacks =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            runtime.setActorExitHook(ignored -> {
+                callbacks.incrementAndGet();
+                // The hook executes on the actor's terminal host finalizer.
+                // stop() must not wait for this same finalizer's done witness.
+                owned.get().stop();
+            });
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> context.self().stop());
+            owned.set(actor);
+            actor.send(1);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertNull(actor.done().get(3, TimeUnit.SECONDS));
+            assertEquals(1, callbacks.get());
+        }
+    }
+
+    @Test
     void exitHookCannotHoldActorLifecycleMonitorWhileBlocked() throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
