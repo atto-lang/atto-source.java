@@ -209,9 +209,13 @@ public final class OresTaskScope implements AutoCloseable {
             final List<OresTask<?>> owned;
             final List<OresCancellationToken.Registration> inbound;
             synchronized (scope.gate) {
-                if (scope.cancelled) continue;
+                // A concurrent cancellation may have claimed this node but
+                // not yet finished walking its descendants. Skipping it would
+                // let parent close() overlook live Tasks while that other
+                // cancellation is delayed in a hook or host callback.
+                boolean firstClaim = !scope.cancelled;
                 scope.cancelled = true;
-                if (scope == this) wonRoot = true;
+                if (scope == this && firstClaim) wonRoot = true;
                 children = new ArrayList<>(scope.childScopes);
                 owned = new ArrayList<>(scope.tasks);
                 inbound = new ArrayList<>(scope.externalCancellation);
