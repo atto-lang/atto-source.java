@@ -21,6 +21,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          # Never validate GitHub's synthetic pull_request merge commit as
+          # evidence for the independently reviewed PR-head source tree.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Require exact PR head source tree
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
       - uses: graalvm/setup-graalvm@v1
         with:
           version: '25.3'
@@ -33,6 +40,35 @@ jobs:
           mvn -B -ntp
           -Dtest=SourceActorSpawnExecutionTest,IsolationHotReloadTest,SharedUntrustedIsolatePoolTest,UntrustedSourceIdentityTest,UntrustedSourceImageCacheTest,SharedTruffleCallTargetIsolationTest,SharedUntrustedActorSupervisorTest,SharedUntrustedActorSupervisorNoImageTest,ActorStrictHeapAdmissionTest,VerifiedCloseFenceTest,GuestAdmissionDeadlineTest
           test
+      - name: Emit source-free host test summary
+        if: always()
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, xml.etree.ElementTree as ET
+          observed = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True,
+                                    text=True, check=False).stdout.strip()
+          reports = list(pathlib.Path('target/surefire-reports').glob('TEST-*.xml'))
+          totals = {'tests': 0, 'failures': 0, 'errors': 0, 'skipped': 0}
+          for path in reports:
+              root = ET.parse(path).getroot()
+              for name in totals:
+                  totals[name] += int(root.get(name, '0'))
+          evidence = {'expected_sha': os.environ['EXPECTED_SOURCE_SHA'],
+                      'checkout_matches_head': observed == os.environ['EXPECTED_SOURCE_SHA'],
+                      'report_count': len(reports), **totals}
+          out = pathlib.Path('target/ci-evidence/host.json')
+          out.parent.mkdir(parents=True, exist_ok=True)
+          out.write_text(json.dumps(evidence, sort_keys=True) + '\\n', encoding='utf-8')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: untrusted-host-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/ci-evidence/host.json
+          retention-days: 7
+          if-no-files-found: error
 
   native-isolate-e2e:
     name: Real shared language isolate
@@ -42,6 +78,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          # Never validate GitHub's synthetic pull_request merge commit as
+          # evidence for the independently reviewed PR-head source tree.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Require exact PR head source tree
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
       - uses: graalvm/setup-graalvm@v1
         with:
           version: '25.3'
@@ -93,3 +136,33 @@ jobs:
           if executed < 12 or skipped:
               raise SystemExit('isolate E2E must execute all required tests without skip')
           PY
+      - name: Emit source-free native-isolate test summary
+        if: always()
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, xml.etree.ElementTree as ET
+          observed = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True,
+                                    text=True, check=False).stdout.strip()
+          reports = list(pathlib.Path('target/surefire-reports').glob('TEST-*.xml'))
+          totals = {'tests': 0, 'failures': 0, 'errors': 0, 'skipped': 0}
+          for path in reports:
+              root = ET.parse(path).getroot()
+              for name in totals:
+                  totals[name] += int(root.get(name, '0'))
+          evidence = {'expected_sha': os.environ['EXPECTED_SOURCE_SHA'],
+                      'checkout_matches_head': observed == os.environ['EXPECTED_SOURCE_SHA'],
+                      'native_image_exists': pathlib.Path('target/liboresvm.so').is_file(),
+                      'report_count': len(reports), **totals}
+          out = pathlib.Path('target/ci-evidence/native.json')
+          out.parent.mkdir(parents=True, exist_ok=True)
+          out.write_text(json.dumps(evidence, sort_keys=True) + '\\n', encoding='utf-8')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: untrusted-native-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/ci-evidence/native.json
+          retention-days: 7
+          if-no-files-found: error
