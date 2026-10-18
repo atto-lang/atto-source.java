@@ -439,6 +439,21 @@ final class BooleanIntrinsicsTest {
     }
 
     @Test
+    void reservedPackagedCoreUnitIdCannotBeSpoofedBySourceName() {
+        PolyglotException failure = assertThrows(
+                PolyglotException.class,
+                () -> run("""
+                        pub fnc main(): void {
+                          stdio.println(And([true, true]));
+                          return;
+                        }
+                        """, "@std/core.ores"));
+        assertTrue(
+                failure.getMessage().contains("compiler-owned std/core source"),
+                failure.getMessage());
+    }
+
+    @Test
     void runtimeUsesLogicalIdentitiesParityAndScalarShortCircuiting() throws Exception {
         String program = """
                 pub fnc main(): void {
