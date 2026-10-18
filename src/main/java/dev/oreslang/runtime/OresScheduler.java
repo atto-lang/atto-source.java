@@ -472,6 +472,7 @@ public final class OresScheduler implements AutoCloseable {
                 failTerminal(rejected);
                 inFlightDispatches.decrementAndGet();
                 publishPhysicalRetirementIfReady();
+                publishTerminalIfReady();
                 throw rejected;
             }
         }
@@ -559,7 +560,13 @@ public final class OresScheduler implements AutoCloseable {
         private void publishPhysicalRetirementIfReady() {
             if (phase.get() != TERMINAL || inFlightDispatches.get() != 0) return;
             if (!physicalRetirementPublished.compareAndSet(false, true)) return;
-            onPhysicallyRetired.run();
+            try {
+                onPhysicallyRetired.run();
+            } catch (RuntimeException | Error cleanupFailure) {
+                // Cleanup failure must not publish a successful terminal result
+                // while protected state may still need recovery.
+                terminalOutcome.set(new TerminalFailure<>(cleanupFailure));
+            }
         }
 
         private void armCooperate() {
