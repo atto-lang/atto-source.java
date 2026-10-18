@@ -35,7 +35,10 @@ public final class TaskHandle<T> {
     }
 
     private final TaskCancellation cancellation = new TaskCancellation();
-    private final OresFuture<TaskOutcome<T>> done = new OresFuture<>();
+    // Observation only: cancelling getDone() must never forge a quiescence
+    // witness or suppress the scheduler's eventual terminal outcome.
+    private final OresFuture<TaskOutcome<T>> done =
+            new OresFuture<>(() -> false, () -> { });
     private final AtomicReference<OresFuture<T>> result = new AtomicReference<>();
     private final AtomicReference<TaskOutcome<T>> settledOutcome = new AtomicReference<>();
     private final AtomicBoolean quiescent = new AtomicBoolean();
