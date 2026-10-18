@@ -125,6 +125,13 @@ public final class PostgresDurableWorkflowGate {
                 key(p,1,authorizedAddress);
                 try(ResultSet r=p.executeQuery()){r.next();version=r.getLong(1);}
             }
+            // The exact delivery identity is idempotent even after an expectation
+            // has advanced from waiting_webhook to done.
+            try(PreparedStatement p=c.prepareStatement(
+                "SELECT 1 FROM ores_durable_inbox WHERE "+KEY+" AND delivery_id=?")){
+                key(p,1,authorizedAddress);p.setString(5,event.deliveryId());
+                try(ResultSet r=p.executeQuery()){if(r.next())return Admission.DUPLICATE;}
+            }
             try(PreparedStatement p=c.prepareStatement(
                 "SELECT 1 FROM ores_durable_webhook_wait WHERE "+KEY+
                 " AND installation_id=? AND repository_id=? AND expected_ref=? AND expected_sha=?"+
@@ -133,11 +140,6 @@ public final class PostgresDurableWorkflowGate {
                 p.setLong(6,event.repositoryId());p.setString(7,event.ref());
                 p.setString(8,event.sha());p.setLong(9,version);
                 try(ResultSet r=p.executeQuery()){if(!r.next())return Admission.STALE;}
-            }
-            try(PreparedStatement p=c.prepareStatement(
-                "SELECT 1 FROM ores_durable_inbox WHERE "+KEY+" AND delivery_id=?")){
-                key(p,1,authorizedAddress);p.setString(5,event.deliveryId());
-                try(ResultSet r=p.executeQuery()){if(r.next())return Admission.DUPLICATE;}
             }
             try(PreparedStatement p=c.prepareStatement(
                 "SELECT COUNT(*),COALESCE(SUM(OCTET_LENGTH(payload)),0)"+
@@ -155,8 +157,17 @@ public final class PostgresDurableWorkflowGate {
                 " VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING")){
                 key(p,1,authorizedAddress);p.setString(5,event.deliveryId());
                 p.setBytes(6,event.encodedEvent());
-                return p.executeUpdate()==1?Admission.ACCEPTED:Admission.DUPLICATE;
+                if(p.executeUpdate()!=1)return Admission.DUPLICATE;
             }
+            // Logical event consumed once, not merely once per GitHub delivery ID.
+            // State transition and inbox insert commit atomically.
+            try(PreparedStatement p=c.prepareStatement(
+                "UPDATE ores_durable_webhook_wait SET stage='done' WHERE "+KEY+
+                " AND stage='waiting_webhook' AND state_version=?")){
+                key(p,1,authorizedAddress);p.setLong(5,version);
+                if(p.executeUpdate()!=1)throw new IllegalStateException("webhook wait changed");
+            }
+            return Admission.ACCEPTED;
         });
     }
 
