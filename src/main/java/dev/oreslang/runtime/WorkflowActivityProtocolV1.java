@@ -68,7 +68,7 @@ public final class WorkflowActivityProtocolV1 {
         }
     }
 
-    public sealed interface Outcome permits Succeeded,
+    public sealed interface Outcome permits Succeeded, Completed,
             KnownUnexecuted, Ambiguous { }
 
     public record Succeeded(
@@ -82,6 +82,17 @@ public final class WorkflowActivityProtocolV1 {
             receiptRef = requireText(receiptRef, "receiptRef");
             resultingEvent = Objects.requireNonNull(
                     resultingEvent, "resultingEvent");
+        }
+    }
+
+    public record Completed(
+            String effectKey,
+            String claimToken,
+            String receiptRef) implements Outcome {
+        public Completed {
+            effectKey = requireText(effectKey, "effectKey");
+            claimToken = requireText(claimToken, "claimToken");
+            receiptRef = requireText(receiptRef, "receiptRef");
         }
     }
 
@@ -178,11 +189,13 @@ public final class WorkflowActivityProtocolV1 {
 
         String key = switch (outcome) {
             case Succeeded value -> value.effectKey();
+            case Completed value -> value.effectKey();
             case KnownUnexecuted value -> value.effectKey();
             case Ambiguous value -> value.effectKey();
         };
         String token = switch (outcome) {
             case Succeeded value -> value.claimToken();
+            case Completed value -> value.claimToken();
             case KnownUnexecuted value -> value.claimToken();
             case Ambiguous value -> value.claimToken();
         };
@@ -196,10 +209,35 @@ public final class WorkflowActivityProtocolV1 {
         }
 
         if (outcome instanceof Succeeded succeeded) {
+            if (!requiresResultingEvent(claim.command())) {
+                throw new IllegalArgumentException(
+                        "activity command "
+                                + claim.command().getClass().getSimpleName()
+                                + " completes without a workflow event");
+            }
             validateResultingEvent(
                     claim.command(),
                     succeeded.resultingEvent());
         }
+        if (outcome instanceof Completed) {
+            if (requiresResultingEvent(claim.command())) {
+                throw new IllegalArgumentException(
+                        "activity command "
+                                + claim.command().getClass().getSimpleName()
+                                + " requires a causal workflow event");
+            }
+        }
+    }
+
+    public static boolean requiresResultingEvent(
+            DurableDevLoopV1.Command command) {
+        Objects.requireNonNull(command, "command");
+        return command instanceof DurableDevLoopV1.RequestCode
+                || command instanceof DurableDevLoopV1.PushCode
+                || command instanceof DurableDevLoopV1.AwaitCi
+                || command instanceof DurableDevLoopV1.Evaluate
+                || command instanceof DurableDevLoopV1.CreateBugReport
+                || command instanceof DurableDevLoopV1.RequestApproval;
     }
 
     private static void validateResultingEvent(
@@ -222,9 +260,7 @@ public final class WorkflowActivityProtocolV1 {
                                 instanceof DurableDevLoopV1.BugReportCreated
                 || command instanceof DurableDevLoopV1.RequestApproval
                         && event
-                                instanceof DurableDevLoopV1.ApprovalGranted
-                || command instanceof DurableDevLoopV1.CancelWork
-                        && event instanceof DurableDevLoopV1.Cancel;
+                                instanceof DurableDevLoopV1.ApprovalGranted;
 
         if (!valid) {
             throw new IllegalArgumentException(
