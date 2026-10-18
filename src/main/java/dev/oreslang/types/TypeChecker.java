@@ -2664,6 +2664,25 @@ public final class TypeChecker {
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
 
+                // Nested extraction has no user-visible generic or value
+                // arguments. Diagnose at the built-in boundary instead of
+                // reporting an opaque first-class "call arity mismatch".
+                if (receiver instanceof Named builtin
+                        && ((builtin.name().equals("Future")
+                                && member.member().equals("flatten"))
+                            || (builtin.name().equals("Option")
+                                && (member.member().equals("flatten")
+                                    || member.member().equals("unwrap_all"))))) {
+                    String operator = builtin.name() + "." + member.member();
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                operator + " does not accept call-site type arguments");
+                    }
+                    if (!call.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(operator + " expects no arguments");
+                    }
+                }
+
                 boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
                         && member.receiver() instanceof Ast.NameExpr selfName
                         && selfName.name().equals("self");
