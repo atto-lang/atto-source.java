@@ -1214,29 +1214,48 @@ public final class NativeHttp implements AutoCloseable {
             ExecutorService... executors) {
         if (timeoutNanos < 0) throw new IllegalArgumentException("negative HTTP shutdown timeout");
         Objects.requireNonNull(executors, "executors");
+        // Validate the whole sibling set before mutating any executor.
         for (ExecutorService executor : executors) {
             Objects.requireNonNull(executor, "executor");
-            executor.shutdownNow();
         }
-        long deadline = System.nanoTime() + timeoutNanos;
+
+        Throwable failure = null;
         for (ExecutorService executor : executors) {
-            long remaining = deadline - System.nanoTime();
-            if (remaining <= 0) {
-                throw new IllegalStateException(
-                        "HTTP host executor did not physically terminate before close deadline");
+            try {
+                executor.shutdownNow();
+            } catch (RuntimeException | Error shutdownFailure) {
+                failure = mergeCleanupFailure(failure, shutdownFailure);
             }
+        }
+
+        final long started = System.nanoTime();
+        boolean restoreInterrupt = false;
+        for (ExecutorService executor : executors) {
+            long elapsed = System.nanoTime() - started;
+            long remaining = elapsed >= timeoutNanos ? 0L : timeoutNanos - elapsed;
             try {
                 if (!executor.awaitTermination(remaining, TimeUnit.NANOSECONDS)) {
-                    throw new IllegalStateException(
-                            "HTTP host executor did not physically terminate before close deadline");
+                    failure = mergeCleanupFailure(
+                            failure,
+                            new IllegalStateException(
+                                    "HTTP host executor did not physically terminate before close deadline"));
                 }
             } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException(
-                        "interrupted before HTTP host executor physical exit",
-                        interrupted);
+                restoreInterrupt = true;
+                failure = mergeCleanupFailure(
+                        failure,
+                        new IllegalStateException(
+                                "interrupted before HTTP host executor physical exit",
+                                interrupted));
+                // Clear temporarily so sibling physical-exit observations are
+                // still attempted; restore the caller's interrupt at the end.
+                Thread.interrupted();
+            } catch (RuntimeException | Error awaitFailure) {
+                failure = mergeCleanupFailure(failure, awaitFailure);
             }
         }
+        if (restoreInterrupt) Thread.currentThread().interrupt();
+        rethrowCleanupFailure(failure);
     }
 
     @Override public void close() {
