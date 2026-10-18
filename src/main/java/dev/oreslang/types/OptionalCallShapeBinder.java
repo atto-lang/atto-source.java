@@ -123,12 +123,7 @@ public final class OptionalCallShapeBinder {
                 if (decl instanceof Ast.FunctionDecl function) {
                     requireNoUnloweredOptionalFormals(function.parameters());
                 } else if (decl instanceof Ast.ClassDecl klass) {
-                    if (klass.constructor() != null) {
-                        requireNoUnloweredOptionalFormals(klass.constructor().parameters());
-                    }
-                    for (Ast.MethodDecl method : klass.methods()) {
-                        requireNoUnloweredOptionalFormals(method.parameters());
-                    }
+                    requireNoUnloweredOptionalFormals(klass);
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
                     for (Ast.InterfaceMember member : iface.members()) {
                         if (member instanceof Ast.InterfaceFunctionDecl function) {
@@ -137,6 +132,17 @@ public final class OptionalCallShapeBinder {
                     }
                 }
             }
+        }
+    }
+
+    /** Reject optional formals from linked class signatures as well. */
+    public static void requireNoUnloweredOptionalFormals(Ast.ClassDecl klass) {
+        Objects.requireNonNull(klass, "class declaration");
+        if (klass.constructor() != null) {
+            requireNoUnloweredOptionalFormals(klass.constructor().parameters());
+        }
+        for (Ast.MethodDecl method : klass.methods()) {
+            requireNoUnloweredOptionalFormals(method.parameters());
         }
     }
 
