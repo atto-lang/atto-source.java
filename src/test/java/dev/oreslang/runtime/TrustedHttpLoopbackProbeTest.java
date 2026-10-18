@@ -137,9 +137,8 @@ final class TrustedHttpLoopbackProbeTest {
                             admitted.status());
                     Thread.sleep(10);
                 }
-                assertTrue(settled, "host cancellation must settle a lease");
-                assertTrue(pending.isCompletedExceptionally(),
-                        "cancelled underlying HTTP must settle dependent caller");
+                assertTrue(settled);
+                assertTrue(pending.isCompletedExceptionally());
             } finally {
                 releaseServer.countDown();
                 server.join(4000);
