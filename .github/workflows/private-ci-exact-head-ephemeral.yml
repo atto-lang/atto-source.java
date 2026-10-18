@@ -1,0 +1,243 @@
+name: Private exact-head ephemeral Java security and compiler validation
+
+# No PR events, no source-export refs, no cross-org checkout, and no secrets.
+on:
+  push:
+    branches:
+      - security/review-pinned-private-ci-dispatcher-v2-20261017
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oreslang-private-exact-head-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deny-unapproved-runner:
+    # Hosted-only denial: no source checkout. Never interpret skipped as passing.
+    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.event.repository.private != true || github.ref != 'refs/heads/security/review-pinned-private-ci-dispatcher-v2-20261017' || github.ref_protected != true || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == '' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != github.sha || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE == '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Deny unapproved source runner admission
+        run: |
+          echo "Approval, exact protected ref, SHA and tree are mandatory" >&2
+          exit 1
+
+  approved-source-validation:
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/security/review-pinned-private-ci-dispatcher-v2-20261017' && github.ref_protected == true && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}
+    runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
+    timeout-minutes: 120
+    env:
+      APPROVED_SHA: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA }}
+      APPROVED_TREE: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE }}
+      APPROVED_RUNNER: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER }}
+    steps:
+      - name: Verify protected source authorization before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          test "$GITHUB_EVENT_NAME" = "push"
+          test "$GITHUB_REF" = "refs/heads/security/review-pinned-private-ci-dispatcher-v2-20261017"
+          test "$GITHUB_REF_PROTECTED" = "true"
+          test "$APPROVED_RUNNER" = "true"
+          test "$APPROVED_SHA" = "$GITHUB_SHA"
+          [[ "$APPROVED_TREE" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Syntax-check every private CI authorization entrypoint
+        run: |
+          set -euo pipefail
+          bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
+          python3 -I -m py_compile \
+            scripts/publish-private-ci-source.py \
+            scripts/test-publish-private-ci-source.py \
+            scripts/ci_private_mirror_preflight.py \
+            tests/test_ci_private_mirror_preflight.py \
+            scripts/verify-review-pinned-private-ci.py \
+            tests/test_review_pinned_private_ci.py \
+            scripts/dispatch-review-pinned-private-ci.py \
+            tests/test_review_pinned_dispatcher.py
+      - name: Execute destination-policy fail-closed Bash suite
+        run: |
+          set -euo pipefail
+          bash scripts/test-private-ci-destination.sh
+      - name: Execute mirror preflight adversarial suite three complete rounds
+        run: |
+          set -euo pipefail
+          for round in 1 2 3; do
+            echo "PRIVATE_MIRROR_PREFLIGHT_ROUND=$round"
+            python3 -I - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import unittest
+
+          path = Path("tests/test_ci_private_mirror_preflight.py")
+          spec = importlib.util.spec_from_file_location("private_mirror_preflight_tests", path)
+          if spec is None or spec.loader is None:
+              raise SystemExit("Private mirror preflight unittest module missing")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+          count = suite.countTestCases()
+          if count < 18:
+              raise SystemExit(f"Mirror preflight suite unexpectedly shrank below 18: {count} tests")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if (result.testsRun != count or not result.wasSuccessful()
+                  or result.skipped or result.expectedFailures
+                  or result.unexpectedSuccesses):
+              raise SystemExit("Mirror preflight tests failed, skipped, or did not fully execute")
+          print(f"VERIFIED_PRIVATE_MIRROR_PREFLIGHT_TESTS={result.testsRun}")
+          PY
+          done
+      - name: Execute review-pinned admission verifier suite three complete rounds
+        run: |
+          set -euo pipefail
+          for round in 1 2 3; do
+            echo "PRIVATE_REVIEW_PINNED_ROUND=$round"
+            python3 -I - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import unittest
+
+          path = Path("tests/test_review_pinned_private_ci.py")
+          spec = importlib.util.spec_from_file_location("review_pinned_private_ci_tests", path)
+          if spec is None or spec.loader is None:
+              raise SystemExit("Review-pinned admission unittest module missing")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+          count = suite.countTestCases()
+          if count < 49:
+              raise SystemExit(f"Review-pinned suite unexpectedly shrank below 49: {count} tests")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if (result.testsRun != count or not result.wasSuccessful()
+                  or result.skipped or result.expectedFailures
+                  or result.unexpectedSuccesses):
+              raise SystemExit("Review-pinned tests failed, skipped, or did not fully execute")
+          print(f"VERIFIED_REVIEW_PINNED_TESTS={result.testsRun}")
+          PY
+          done
+      - name: Execute review-pinned dispatcher adversarial suite three complete rounds
+        run: |
+          set -euo pipefail
+          for round in 1 2 3; do
+            echo "PRIVATE_REVIEW_PINNED_DISPATCHER_ROUND=$round"
+            python3 -I - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import unittest
+
+          path = Path("tests/test_review_pinned_dispatcher.py")
+          spec = importlib.util.spec_from_file_location("review_pinned_dispatcher_tests", path)
+          if spec is None or spec.loader is None:
+              raise SystemExit("Review-pinned dispatcher unittest module missing")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+          count = suite.countTestCases()
+          if count < 50:
+              raise SystemExit(f"Review-pinned dispatcher suite unexpectedly shrank below 50: {count} tests")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if (result.testsRun != count or not result.wasSuccessful()
+                  or result.skipped or result.expectedFailures
+                  or result.unexpectedSuccesses):
+              raise SystemExit("Review-pinned dispatcher tests failed, skipped, or did not fully execute")
+          print(f"VERIFIED_REVIEW_PINNED_DISPATCHER_TESTS={result.testsRun}")
+          PY
+          done
+      - name: Execute publisher adversarial suite three complete rounds
+        run: |
+          set -euo pipefail
+          for round in 1 2 3; do
+            echo "PRIVATE_PUBLISHER_REGRESSION_ROUND=$round"
+            python3 -I - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import unittest
+
+          path = Path("scripts/test-publish-private-ci-source.py")
+          spec = importlib.util.spec_from_file_location("private_ci_publisher_tests", path)
+          if spec is None or spec.loader is None:
+              raise SystemExit("Private publisher unittest module missing")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+          count = suite.countTestCases()
+          if count < 174:
+              raise SystemExit(f"Publisher suite unexpectedly shrank to {count} tests")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if (result.testsRun != count or not result.wasSuccessful()
+                  or result.skipped or result.expectedFailures
+                  or result.unexpectedSuccesses):
+              raise SystemExit("Publisher tests failed, skipped, or did not fully execute")
+          print(f"VERIFIED_PUBLISHER_TESTS={result.testsRun}")
+          PY
+          done
+
+      - name: Check exact source commit and tree before execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APPROVED_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$APPROVED_TREE"
+          test -z "$(git diff --name-only)"
+          test -z "$(git diff --cached --name-only)"
+
+      - name: Install pinned GraalVM JDK 25 without shared caches
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          distribution: graalvm
+          version: '25.3'
+
+      - name: Run full private Java compiler and actor-runtime Maven verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native clean verify
+          test "$(git rev-parse HEAD)" = "$APPROVED_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$APPROVED_TREE"
+
+      - name: Create private same-repository security and compiler receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PY'
+          import json, os, pathlib, subprocess
+          def git(*args):
+              return subprocess.check_output(["git",*args],text=True).strip()
+          assert git("rev-parse","HEAD")==os.environ["APPROVED_SHA"]
+          assert git("rev-parse","HEAD^{tree}")==os.environ["APPROVED_TREE"]
+          data={
+            "schema":"oreslang.source_private_ephemeral_validation.v1",
+            "repository":"ores-truffle-oreslang/oreslang-source.java",
+            "sha":os.environ["GITHUB_SHA"],
+            "tree":os.environ["APPROVED_TREE"],
+            "run_id":os.environ["GITHUB_RUN_ID"],
+            "run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+            "security_rounds_passed":3,
+            "minimum_security_case_executions":873,
+            "maven_clean_verify_passed":True,
+            "native_image_certified":False,
+            "source_export_authorized":False,
+            "private_source_transferred":False,
+            "release_ready":False
+          }
+          target=pathlib.Path(os.environ["RUNNER_TEMP"])/"oreslang-exact-head-verification.json"
+          with target.open("x",encoding="utf-8") as stream:
+              json.dump(data,stream,sort_keys=True,indent=2)
+              stream.write("\n")
+          print("SOURCE_LOCAL_EXACT_HEAD_VALIDATION_PASS")
+          PY
+
+      - name: Upload only minimal private receipt (no source, workspace, or cache)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: oreslang-source-private-security-receipt
+          if-no-files-found: error
+          retention-days: 7
+          path: ${{ runner.temp }}/oreslang-exact-head-verification.json
