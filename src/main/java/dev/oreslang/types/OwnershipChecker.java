@@ -2505,6 +2505,20 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.AssignExpr assignment) {
             scanExpr(assignment.target(), locals, outer, recursiveBinding, captures, true);
             scanExpr(assignment.value(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.MatchExpr e) {
+            // Value-match arms introduce branch-local pattern names.
+            // Their guards and returned expressions can transitively capture
+            // owner values through a lexical lambda; skipping them lets the
+            // evaluator retain a Slot the ownership checker never validated.
+            scanExpr(e.subject(), locals, outer, recursiveBinding, captures, false);
+            for (Ast.MatchValueArm arm : e.arms()) {
+                Set<String> armLocals = new HashSet<>(locals);
+                collectPatternBindingNames(arm.pattern(), armLocals);
+                if (arm.guard() != null) {
+                    scanExpr(arm.guard(), armLocals, outer, recursiveBinding, captures, false);
+                }
+                scanExpr(arm.value(), armLocals, outer, recursiveBinding, captures, false);
+            }
         } else if (expr instanceof Ast.TypeTestExpr e) {
             scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.PatternTestExpr e) {
