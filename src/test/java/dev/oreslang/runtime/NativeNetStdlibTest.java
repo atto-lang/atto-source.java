@@ -193,9 +193,9 @@ final class NativeNetStdlibTest {
             }
             program.get(20, TimeUnit.SECONDS);
             String remainder = outputReader.get(5, TimeUnit.SECONDS);
-            assertTrue(remainder.contains("2"), "both guest writes must complete");
-            assertTrue(remainder.contains("4242"),
-                    "both source-level close Futures must finish before main returns");
+            assertArrayEquals(new String[]{"2", "4242"},
+                    remainder.lines().toArray(String[]::new),
+                    "both guest writes and both awaited closes must finish in order");
         } finally {
             try { output.close(); } catch (IOException ignored) { }
             try { stream.close(); } catch (IOException ignored) { }
