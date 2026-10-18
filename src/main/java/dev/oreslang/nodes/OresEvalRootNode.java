@@ -5073,6 +5073,10 @@ public final class OresEvalRootNode extends RootNode {
             if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
                 context.schedulerSafepoint();
             }
+            if (stmt instanceof Ast.ConstructorDelegateStmt) {
+                throw new IllegalArgumentException(
+                        "constructor(...) may execute only as a constructor's first delegation statement");
+            }
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
@@ -7697,6 +7701,40 @@ public final class OresEvalRootNode extends RootNode {
                                 + constructor.arity() + " argument(s), got " + args.size());
             }
 
+            // Resolve the same-object constructor chain BEFORE allocating or
+            // initializing fields. Delegation expressions have no self binding
+            // and are statically restricted to pure scalar parameter expressions.
+            // The first constructor is the only externally visible entrypoint;
+            // subsequent sibling constructor visibility is intentionally ignored.
+            dev.oreslang.types.ConstructorDelegation.validate(klass);
+            List<Ast.ConstructorDecl> constructorChain = new ArrayList<>();
+            List<List<Object>> constructorArguments = new ArrayList<>();
+            Ast.ConstructorDecl selected = constructor;
+            List<Object> selectedArgs = args;
+            while (true) {
+                constructorChain.add(selected);
+                constructorArguments.add(selectedArgs);
+                Ast.ConstructorDelegateStmt delegation =
+                        dev.oreslang.types.ConstructorDelegation.first(selected);
+                if (delegation == null) break;
+                Env delegationEnv = new Env(null, false, klass);
+                bindCallableArguments(
+                        delegationEnv, selected.parameters(), selectedArgs,
+                        "constructor delegation " + klass.name());
+                List<Object> nextArgs = new ArrayList<>(delegation.arguments().size());
+                for (Ast.Expr argument : delegation.arguments()) {
+                    nextArgs.add(eval(argument, delegationEnv));
+                }
+                selected = klass.constructorForArity(nextArgs.size());
+                if (selected == null) {
+                    throw new IllegalArgumentException("missing constructor delegation target "
+                            + klass.name() + "/" + nextArgs.size());
+                }
+                selectedArgs = nextArgs;
+            }
+            Ast.ConstructorDecl initializingConstructor = selected;
+            List<Object> initializingArgs = selectedArgs;
+
             List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
             for (Ast.FieldDecl field : classFields) {
@@ -7704,17 +7742,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             OresObject object = new OresObject(this, klass, fields);
 
-            // Bind constructor parameters before evaluating field initializers.
-            // The object is not returned or published until all initializers
-            // and constructor-body validation have completed.
-            Env constructorEnv = new Env(null, false, klass, object);
-            constructorEnv.define("self", object, Ast.BindingKind.VAL);
-            bindCallableArguments(
-                    constructorEnv,
-                    constructor.parameters(),
-                    args,
-                    "constructor " + klass.name());
-
+            // Only the terminal initializing constructor supplies parameter
+            // bindings for declaration-site field initialization.
             // Deliberately narrower than the constructor-body environment.
             // A reference, borrow or move-only parameter cannot be injected
             // into a declaration initializer without a checked transfer
@@ -7722,8 +7751,8 @@ public final class OresEvalRootNode extends RootNode {
             // Initializer parameter frames carry no constructor authority:
             // they cannot authorize a write to an uninitialized object slot.
             Env scalarInitializerArgs = new Env(null, false, klass);
-            for (int i = 0; i < constructor.parameters().size(); i++) {
-                Ast.Param param = constructor.parameters().get(i);
+            for (int i = 0; i < initializingConstructor.parameters().size(); i++) {
+                Ast.Param param = initializingConstructor.parameters().get(i);
                 Ast.TypeRef parameterType = param.type();
                 String typeName = parameterType.name();
                 if (!parameterType.isBorrow()
@@ -7732,7 +7761,7 @@ public final class OresEvalRootNode extends RootNode {
                         && (typeName.equals("int") || typeName.equals("bool")
                                 || typeName.equals("float") || typeName.equals("string"))) {
                     scalarInitializerArgs.define(
-                            param.name(), args.get(i),
+                            param.name(), initializingArgs.get(i),
                             param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
                 }
             }
@@ -7753,16 +7782,31 @@ public final class OresEvalRootNode extends RootNode {
                 fields.put(field.name(), eval(field.initializer(), initializerEnv));
             }
 
-            try {
-                executeBlock(constructor.body(), constructorEnv);
-            } catch (ReturnSignal signal) {
-                if (signal.value != null) {
-                    throw new IllegalArgumentException(
-                            "constructor for " + klass.name() + " cannot return a value");
+            // Execute terminal constructor first, then unwind delegating
+            // constructor tails in reverse order on the SAME object. A bare
+            // return exits its current constructor frame only.
+            for (int frame = constructorChain.size() - 1; frame >= 0; frame--) {
+                Ast.ConstructorDecl active = constructorChain.get(frame);
+                Env activeEnv = new Env(null, false, klass, object);
+                activeEnv.define("self", object, Ast.BindingKind.VAL);
+                bindCallableArguments(
+                        activeEnv,
+                        active.parameters(),
+                        constructorArguments.get(frame),
+                        "constructor " + klass.name());
+                try {
+                    executeBlock(
+                            dev.oreslang.types.ConstructorDelegation.tail(active),
+                            activeEnv);
+                } catch (ReturnSignal signal) {
+                    if (signal.value != null) {
+                        throw new IllegalArgumentException(
+                                "constructor for " + klass.name() + " cannot return a value");
+                    }
+                } catch (BreakSignal | ContinueSignal signal) {
+                    throw new IllegalStateException(
+                            "loop control cannot cross a constructor boundary", signal);
                 }
-            } catch (BreakSignal | ContinueSignal signal) {
-                throw new IllegalStateException(
-                        "loop control cannot cross a constructor boundary", signal);
             }
 
             for (Map.Entry<String, Object> field : fields.entrySet()) {

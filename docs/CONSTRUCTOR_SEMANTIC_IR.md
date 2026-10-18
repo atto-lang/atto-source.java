@@ -17,8 +17,7 @@ ConstructorDecl {
   effective_arity: u32
   body: CheckedBody
 
-  // reserved for delegation work
-  delegates_to: ConstructorKey?
+  delegates_to: ConstructorKey? // same owner, chosen by effective arity
 }
 ```
 
@@ -42,6 +41,55 @@ Constructors are not ordinary callable values and are never subtypes of
 
 Actor declarations have no constructor semantic object at all. A parsed actor
 constructor is rejected before overload analysis.
+
+
+## Sibling constructor delegation (Java implementation slice)
+
+An ordinary-class constructor may delegate to exactly one sibling constructor
+using an unconditional `constructor(expr, ...);` statement. This is a dedicated
+`ConstructorDelegateStmt` AST node, **not** a callable expression and not an
+allocation. The statement must be the first top-level statement of the
+constructor body; it is illegal in functions, actor constructors, conditional
+arms, lambda bodies and after any executable statement.
+
+The called sibling is chosen by effective user-argument arity only. The optional
+leading `self` receiver binder contributes zero arguments. Access control is
+checked at the caller's original `new Foo(...)` entrypoint; private sibling
+constructors may be delegation targets. The delegation graph must be acyclic,
+and every chain must end in a terminal (non-delegating) constructor.
+
+Before publication:
+
+1. Evaluate delegation arguments from outer to inner in their source order,
+   in argument-only environments **without** a `self` binding.
+2. Allocate exactly one object.
+3. Evaluate declaration field initializers exactly once using only scalar
+   parameters of the terminal constructor.
+4. Execute the terminal constructor body.
+5. Execute the remaining statements of each delegating constructor in reverse
+   chain order using the same construction object; an explicit bare return exits
+   only the current frame.
+6. Check all fields initialized, then publish once.
+
+Until a checked constructor effect-summary system exists, delegation arguments
+are restricted to literals, scalar parameters, permitted arithmetic, unary
+operations, and pure conditional composition. Calls, allocations, casts, field
+reads, `self`, `await`, channel/actor operations and mutations are rejected.
+The type checker also checks every argument against the selected sibling's
+parameter type. The runtime revalidates delegation placement and cycles on
+unchecked/linked entrypoints.
+
+A terminal initializing constructor must establish exactly-once assignment
+of every blank `val` on every successful completion path. A delegating frame
+begins its tail at the proven complete state and may mutate only mutable fields;
+it cannot reinitialize a `val`. Constructor chains share one construction
+region, not independent partially initialized objects.
+
+This slice does not implement `super(...)` chaining or constructor references.
+Actor constructors remain prohibited. Java/Graal is the only backend modified,
+and parity is not claimed until all native frontends implement the same
+conformance fixtures.
+
 
 ## ConstructionState
 

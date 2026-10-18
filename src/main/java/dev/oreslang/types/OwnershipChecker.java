@@ -174,7 +174,9 @@ public final class OwnershipChecker {
         // Actor state uses a distinct initialization/capability protocol and
         // is not included in this ordinary-class migration.
         if (klass.actorKind() == Ast.ActorKind.NONE) {
-            List<Ast.ConstructorDecl> initializerVariants = new ArrayList<>(klass.constructors());
+            List<Ast.ConstructorDecl> initializerVariants = klass.constructors().stream()
+                    .filter(candidate -> !ConstructorDelegation.isDelegating(candidate))
+                    .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
             if (initializerVariants.isEmpty()) initializerVariants.add(null);
             for (Ast.ConstructorDecl declaringConstructor : initializerVariants) {
             Scope initializerScope = new Scope(null);
@@ -223,7 +225,13 @@ public final class OwnershipChecker {
             Ast.ClassDecl previousInitializingClass = initializingClass;
             initializingClass = klass;
             try {
-                checkBlock(constructor.body(), scope, Ast.TypeRef.simple("void"));
+                Ast.ConstructorDelegateStmt delegation = ConstructorDelegation.first(constructor);
+                if (delegation != null) {
+                    for (Ast.Expr argument : delegation.arguments()) {
+                        checkExpr(argument, scope, true);
+                    }
+                }
+                checkBlock(ConstructorDelegation.tail(constructor), scope, Ast.TypeRef.simple("void"));
             } finally {
                 initializingClass = previousInitializingClass;
             }
@@ -333,6 +341,10 @@ public final class OwnershipChecker {
     private boolean discardingSelectReturn;
 
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
+        if (stmt instanceof Ast.ConstructorDelegateStmt) {
+            throw error("constructor(...) delegation is only permitted as the first "
+                    + "top-level statement of an ordinary-class constructor");
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             checkBinding(binding, scope);
             return;
