@@ -38,25 +38,36 @@ final class ActorPipelineRoutingAdmissionTest {
     }
 
     @Test
-    void fanoutReceiptsRemainFailClosed() {
-        String[] calls = {
-            "self.forward_all(mail.value);"
-        };
-        for (String call : calls) {
-            String program = """
-                    define actor Worker as
-                      receive(ActorMail<int> mail): void {
-                        %s
-                        return;
-                      }
-                    end
-                    """.formatted(call);
-            IllegalArgumentException error = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(program)), call);
-            assertTrue(error.getMessage().contains("source lowering remains fail-closed"),
-                    call + ": " + error.getMessage());
-        }
+    void authenticatedFanoutReturnsTypedImmutableBranchReports() {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<int> mail): void {
+                    const reports = self.forward_all(mail.value);
+                    const first = reports[0];
+                    const admitted: bool = first.admitted;
+                    const target: string = first.target;
+                    return;
+                  }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+    }
+
+    @Test
+    void guestFanoutRejectsUnsafeCollectionReplicationAtCompileTime() {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<int> mail): void {
+                    self.forward_all([mail.value]);
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(error.getMessage().contains("requires immutable int/bool/string DATA"),
+                error.getMessage());
     }
 
     @Test
