@@ -38,3 +38,23 @@ Current Java `AsyncRuntime.submitTask` and `OresTask<T>` can provide the Task co
 **Release limitations:** The Oreslang parser/type checker still rejects source `task {}`, `nb {}` and `async task` execution because no general-purpose source AST-to-continuation-frame compiler exists yet. Task scopes cannot be exposed to guest code until actual captured values are moved/copied/shared into heap-owned frames and return/error/defer/finally are lowered correctly. Actor-affine child supervision/cancellation and untrusted fuel/deadline inheritance remain fail-closed. These new JUnit tests are committed but not yet verified in full GraalVM CI.
 
 **Do not mistake a successfully scheduled host frame for executable guest source lowering** or a cancelled result Future for a physically quiescent Task.
+
+
+## October 18 CI carrier / security audit
+
+The exact runtime draft must be tested using Java 21/GraalVM, on the **exact checked PR commit**, before source lowering can be enabled. Run the following in an authorized *private* clone with no production secrets:
+
+```sh
+mvn -B -ntp -Dtest=OresTaskTest,OresTaskScopeTest,OresTaskScopeFrameTest,OresTaskCooperativeSchedulerTest test
+git rev-parse HEAD
+```
+
+A private GitHub test carrier may host a temporary source-tree mirror when its owning organization explicitly authorizes cross-org access, has a usable private runner/budget, and the exact source head, destination visibility and file scope have been verified. A foreign `GITHUB_TOKEN` cannot directly checkout a private source repository. Do not use PATs, deploy keys, or cross-org secrets as a workaround. Mirror only the needed, reviewed code; do **not** copy credentials, binary blobs or CI workflow files implicitly. Require SHA/manifest equality, run explicit local-only test commands and delete temporary refs once the audit is complete.
+
+As of October 18, the source PR GitHub Actions jobs and inspected alternate-carrier recent jobs **failed with zero steps**. One alternate private carrier had executed steps days earlier, but no current funded runner was established. A source-free carrier probe was blocked, so no private source transfer was performed and no executable CI result is claimed.
+
+### Additional hardening after inspection
+
+`OresContext.startCompilerTaskFrame` now rejects a launch while any `OresScheduler` task turn is current, preventing nested child Tasks from silently becoming context-owned siblings. Correct parent/child Task scope propagation must be introduced before relaxing that restriction. A regression test asserts that a scoped child cancelled while waiting on a Future cannot resume if that Future settles after quiescence.
+
+**Do not remove the TypeChecker Task execution gate yet**: capture/frame lifetimes, actor-affine child shutdown and untrusted deadlines remain unimplemented in compiled guest source.
