@@ -4391,6 +4391,11 @@ public final class ActorRuntime implements AutoCloseable {
                             inherited.managedWorkers.remove(cell.ref.id(), cell.ref);
                         }
                     }
+                    try {
+                        cell.abortUnregisteredConstruction();
+                    } catch (RuntimeException cleanupFailure) {
+                        failure.addSuppressed(cleanupFailure);
+                    }
                 }
                 actorCount.decrementAndGet();
                 throw failure;
@@ -7524,6 +7529,19 @@ public final class ActorRuntime implements AutoCloseable {
             this.memorySlice = isPrivateKind(kind)
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
+        }
+
+        /**
+         * Roll back resources allocated by the constructor before this cell was
+         * ever published into actors. No guest turn can race this path.
+         */
+        private void abortUnregisteredConstruction() {
+            mailbox.close();
+            continuationMailbox.close();
+            drainMailboxReservations();
+            outputStream.closeAndDrainFromRuntime();
+            codeActorState = null;
+            if (memorySlice != null) memorySlice.close();
         }
 
         @SuppressWarnings("unchecked")
