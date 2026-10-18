@@ -90,10 +90,10 @@ public final class Parser {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 consume(DEFINE, "compatibility contract declaration requires both 'contract' and 'define'");
                 modifiers = mergeModifiers(modifiers, parseModifiers());
-                validateOnlyVisibilityModifiers(modifiers, "contracts");
+                validateContractModifiers(modifiers);
                 rejectCallableStructuralAnnotation(annotations, "contract declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
-                rootDeclarations.add(parseContract(modifiers.visibility));
+                rootDeclarations.add(parseContract(modifiers.visibility, modifiers.isStatic));
                 continue;
             }
 
@@ -129,10 +129,10 @@ public final class Parser {
                 }
                 if (match(CONTRACT)) {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
-                    validateOnlyVisibilityModifiers(modifiers, "contracts");
+                    validateContractModifiers(modifiers);
                     rejectCallableStructuralAnnotation(annotations, "contract declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
-                    rootDeclarations.add(parseContract(modifiers.visibility));
+                    rootDeclarations.add(parseContract(modifiers.visibility, modifiers.isStatic));
                     continue;
                 }
                 if (match(CLASS)) {
@@ -285,10 +285,10 @@ public final class Parser {
             modifiers = mergeModifiers(modifiers, parseModifiers());
             consume(DEFINE, "compatibility contract declaration requires both 'contract' and 'define'");
             modifiers = mergeModifiers(modifiers, parseModifiers());
-            validateOnlyVisibilityModifiers(modifiers, "contracts");
+            validateContractModifiers(modifiers);
             rejectCallableStructuralAnnotation(annotations, "contract declarations");
             rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
-            return parseContract(modifiers.visibility);
+            return parseContract(modifiers.visibility, modifiers.isStatic);
         }
 
         if (check(INTERFACE) && defineFollowsAfterVisibilityModifiers()) {
@@ -312,10 +312,10 @@ public final class Parser {
             }
             if (match(CONTRACT)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
-                validateOnlyVisibilityModifiers(modifiers, "contracts");
+                validateContractModifiers(modifiers);
                 rejectCallableStructuralAnnotation(annotations, "contract declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
-                return parseContract(modifiers.visibility);
+                return parseContract(modifiers.visibility, modifiers.isStatic);
             }
             if (match(CLASS)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -408,10 +408,10 @@ public final class Parser {
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         }
         if (match(CONTRACT)) {
-            validateOnlyVisibilityModifiers(modifiers, "contracts");
+            validateContractModifiers(modifiers);
             rejectCallableStructuralAnnotation(annotations, "contract declarations");
             rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
-            return parseContract(modifiers.visibility);
+            return parseContract(modifiers.visibility, modifiers.isStatic);
         }
         if (match(INTERFACE, TRAIT)) {
             validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
@@ -664,6 +664,15 @@ public final class Parser {
         }
     }
 
+    private void validateContractModifiers(Modifiers modifiers) {
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
+                || modifiers.nonLexical || modifiers.trapped || modifiers.isAbstract
+                || modifiers.shared || modifiers.untrusted) {
+            throw error(previous(),
+                    "contracts accept only private/pub visibility and optional static target");
+        }
+    }
+
     private void validateInterfaceCallableModifiers(Modifiers modifiers) {
         if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.trapped
                 || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
@@ -822,14 +831,20 @@ public final class Parser {
         }
     }
 
-    private Ast.InterfaceDecl parseContract(Ast.Visibility visibility) {
-        Ast.InterfaceDecl iface = parseInterface(visibility, true);
-        return new Ast.InterfaceDecl(iface.name(), iface.visibility(), iface.genericParameters(), iface.parents(), iface.members(), true);
+    private Ast.InterfaceDecl parseContract(
+            Ast.Visibility visibility,
+            boolean staticContract) {
+        return parseInterface(visibility, true, staticContract);
     }
 
-    private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) { return parseInterface(visibility, false); }
+    private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) {
+        return parseInterface(visibility, false, false);
+    }
 
-    private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility, boolean moduleContract) {
+    private Ast.InterfaceDecl parseInterface(
+            Ast.Visibility visibility,
+            boolean moduleContract,
+            boolean staticContract) {
         String name = consume(IDENT, "expected interface name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -896,7 +911,8 @@ public final class Parser {
         }
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
-        return new Ast.InterfaceDecl(name, visibility, generics, parents, members, moduleContract);
+        return new Ast.InterfaceDecl(
+                name, visibility, generics, parents, members, moduleContract, staticContract);
     }
 
     private List<Ast.TypeRef> parseTypeRefList() {
