@@ -168,7 +168,7 @@ final class NativeNetStdlibTest {
                     StringBuilder rest = new StringBuilder();
                     String line;
                     while ((line = reader.readLine()) != null)
-                        rest.append(line).append('\\n');
+                        rest.append(line).append(System.lineSeparator());
                     return rest.toString();
                 } catch (Throwable failure) {
                     publishedPorts.completeExceptionally(failure);
