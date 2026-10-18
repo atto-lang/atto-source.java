@@ -7,6 +7,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 /** Parent cancellation and join barriers for explicit host Task scopes. */
@@ -153,6 +154,7 @@ public class TaskScopeTest {
                 TaskScope scope = scheduler.newTaskScope();
                 CountDownLatch go = new CountDownLatch(1);
                 AtomicInteger accepted = new AtomicInteger();
+                AtomicReference<Throwable> backgroundFailure = new AtomicReference<>();
                 Thread starter = new Thread(() -> {
                     awaitUninterruptibly(go);
                     try {
@@ -162,8 +164,8 @@ public class TaskScopeTest {
                                 h.getDone().get(3, TimeUnit.SECONDS));
                     } catch (RejectedExecutionException ignored) {
                         // Seal won admission race.
-                    } catch (Exception error) {
-                        throw new AssertionError(error);
+                    } catch (Throwable error) {
+                        backgroundFailure.compareAndSet(null, error);
                     }
                 });
                 Thread sealer = new Thread(() -> {
@@ -177,6 +179,10 @@ public class TaskScopeTest {
                 sealer.join(3000);
                 assertFalse(starter.isAlive());
                 assertFalse(sealer.isAlive());
+                if (backgroundFailure.get() != null) {
+                    throw new AssertionError("background admission failed",
+                            backgroundFailure.get());
+                }
                 scope.getDone().get(3, TimeUnit.SECONDS);
                 assertTrue(accepted.get() == 0 || accepted.get() == 1);
             }
