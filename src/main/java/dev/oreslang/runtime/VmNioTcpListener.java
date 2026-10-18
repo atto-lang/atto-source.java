@@ -198,6 +198,9 @@ public final class VmNioTcpListener implements AutoCloseable {
     public final class Connection implements AutoCloseable {
         private final SocketChannel channel;
         private boolean terminated;
+        // Guarded by listener gate. terminal callbacks cannot publish
+        // connectionClosed until physical socket close has returned.
+        private boolean descriptorRetired;
         private int activeOperations;
         private final OresFuture<Void> connectionClosed = new OresFuture<>();
         // Only terminal-exported operations are retained; each removes itself
@@ -243,7 +246,7 @@ public final class VmNioTcpListener implements AutoCloseable {
                 if (activeOperations <= 0)
                     throw new IllegalStateException("TCP socket operation reservation underflow");
                 --activeOperations;
-                quiesced = terminated && activeOperations == 0;
+                quiesced = terminated && descriptorRetired && activeOperations == 0;
             }
             releaseOperation();
             if (quiesced) connectionClosed.completeFromRuntime(null);
@@ -329,7 +332,6 @@ public final class VmNioTcpListener implements AutoCloseable {
 
         @Override public void close() {
             final List<OresFuture<?>> snapshot;
-            final boolean quiesced;
             synchronized (gate) {
                 if (terminated) return;
                 // Keep the connection in the listener's ownership set until
@@ -337,13 +339,18 @@ public final class VmNioTcpListener implements AutoCloseable {
                 // thread observe listenerClosed while the socket is still open.
                 terminated = true;
                 snapshot = new ArrayList<>(outstanding);
-                quiesced = activeOperations == 0;
             }
             // Retire the descriptor BEFORE allowing listener-wide quiescence
             // or terminal operation notifications to become visible.
             try { channel.close(); } catch (IOException ignored) { }
+            final boolean quiesced;
             synchronized (gate) {
+                descriptorRetired = true;
                 connections.remove(this);
+                // An I/O completion might have drained the last credit while
+                // channel.close() was in progress. Recompute after the fence:
+                // neither side may miss the zero-credit terminal transition.
+                quiesced = activeOperations == 0;
             }
             // Revoke only still-cancellable operations. An already committed
             // kernel write may instead fail after descriptor close, but must
