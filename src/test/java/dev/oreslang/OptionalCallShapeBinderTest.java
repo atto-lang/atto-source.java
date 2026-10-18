@@ -21,6 +21,49 @@ final class OptionalCallShapeBinderTest {
             Parameter.required("c"));
 
     @Test
+    void callItemCountAndOmissionOriginsDistinguishAbsentSyntaxFromNoneValue() {
+        Plan omitted = OptionalCallShapeBinder.bind(FOO, List.of(
+                Argument.positional(), Argument.underscore(), Argument.positional()));
+        assertEquals(3, omitted.callItemCount());
+        assertEquals(2, omitted.suppliedArgumentCount());
+        assertEquals(List.of(1), omitted.omittedCallItemIndices());
+
+        Plan suppliedNone = OptionalCallShapeBinder.bind(FOO, List.of(
+                Argument.positional(), Argument.positional(), Argument.positional()));
+        assertEquals(3, suppliedNone.callItemCount());
+        assertEquals(3, suppliedNone.suppliedArgumentCount());
+        assertEquals(List.of(), suppliedNone.omittedCallItemIndices());
+
+        Plan implicit = OptionalCallShapeBinder.bind(FOO, List.of(
+                Argument.named("a"), Argument.named("c")));
+        assertEquals(2, implicit.callItemCount());
+        assertEquals(List.of(), implicit.omittedCallItemIndices());
+    }
+
+    @Test
+    void multipleExplicitOmissionsKeepOriginalSourceIndexes() {
+        List<Parameter> params = List.of(
+                Parameter.optional("a"), Parameter.optional("b"),
+                Parameter.required("c"), Parameter.variadic("rest"));
+        Plan named = OptionalCallShapeBinder.bind(params, List.of(
+                Argument.namedOmission("b"),
+                Argument.named("c"),
+                Argument.namedOmission("a")));
+        assertEquals(List.of(1), named.callItemIndexByEvaluatedSource());
+        assertEquals(List.of(0, 2), named.omittedCallItemIndices());
+        assertEquals(3, named.callItemCount());
+        assertEquals(List.of(2, 0), named.explicitlyOmittedParameterIndices());
+
+        Plan positional = OptionalCallShapeBinder.bind(params, List.of(
+                Argument.underscore(), Argument.positionalOmission(),
+                Argument.positional(), Argument.positional()));
+        assertEquals(List.of(2, 3), positional.callItemIndexByEvaluatedSource());
+        assertEquals(List.of(0, 1), positional.omittedCallItemIndices());
+        assertEquals(List.of(2, 3), positional.variadicSourceIndices().stream()
+                .map(positional::callItemIndex).toList());
+    }
+
+    @Test
     void rawArgumentOriginsMustBeWithinCallItemCount() {
         assertThrows(IllegalArgumentException.class,
                 () -> new Plan(List.of(0, -1, 1), -1, List.of(),
