@@ -19,6 +19,29 @@ the private-carrier incident
 and the runner-admission blocker
 [Java #963](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/963).
 
+## Exact-head review-pinned CI branch admission
+
+The source-local `.github/workflows/private-ci-exact-head-ephemeral.yml`
+permits only **two** literal source-repository push refs:
+`security/review-pinned-private-ci-dispatcher-v2-20261017` (canonical #1217)
+and `hardening/canonical-review-pinned-ledger-20261017` (stacked #1317).
+Neither branch is approved by its name alone. Both use identical repository ID
+`1400792274`, private/non-fork, `github.ref_protected == true`, exact approved
+Git commit SHA, exact tree, and isolated self-hosted runner gates. They must
+both be protected by *enforced* GitHub branch/ruleset controls before running
+source. The current `protected: false` state is a deliberate execution block.
+
+For a one-time approved #1317 candidate, the administrator must independently
+review and approve that **specific branch and immutable SHA/tree** and provision
+a fresh repository-scoped single-job runner. Reusing the #1217 SHA variable,
+allowing `pull_request`/wildcard refs, or weakening any protection guard is
+not a valid substitute. The workflow requires at least **94 admission-verifier,
+50 dispatcher, 18 mirror-preflight, and 174 publisher tests** in each of three
+no-skip rounds, followed by full JDK25 Maven verification; the receipt's
+minimum security case executions is **1,008**. Static regression checks alone
+do not certify the compiler or authorize code transfer. Both incidents #22
+and #77 and all private-source export approval gates remain independent holds.
+
 ## Safe fallback configuration (repository admins only)
 
 1. Provision a **fresh disposable Linux x86-64 VM or isolated worker**
