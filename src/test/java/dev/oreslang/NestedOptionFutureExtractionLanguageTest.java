@@ -150,6 +150,27 @@ final class NestedOptionFutureExtractionLanguageTest {
     }
 
     @Test
+    void futureFlattenConsumesItsAffineOwner() {
+        String program = """
+                async fnc base(): int {
+                  return 42;
+                }
+                pub fnc main(): void {
+                  val Future<Future<int>> owner = base().map(|int n| -> {
+                    return base();
+                  });
+                  val first = owner.flatten();
+                  val duplicate = owner.flatten();
+                  return;
+                }
+                """;
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(rejected.getMessage().contains("moved"),
+                "Future.flatten must not duplicate an affine future owner: " + rejected);
+    }
+
+    @Test
     void futureFlattenRejectsNonNestedFuture() {
         String program = """
                 async fnc leaf(): int {
