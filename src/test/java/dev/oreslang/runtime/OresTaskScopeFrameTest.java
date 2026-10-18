@@ -335,4 +335,39 @@ final class OresTaskScopeFrameTest {
         }
     }
 
+
+    @Test
+    void parentRewalkOfClaimedChildStillReleasesRejectedGrandchildCodePinOnce()
+            throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope root = new OresTaskScope(runtime)) {
+            OresTaskScope child = root.childScope();
+            OresTaskScope grandchild = child.childScope();
+
+            // Reproduce the state between another canceller claiming the
+            // child admission gate and visiting the grandchild. Parent close
+            // must not skip this subtree simply because its flag is set.
+            java.lang.reflect.Field claim =
+                    OresTaskScope.class.getDeclaredField("cancelled");
+            claim.setAccessible(true);
+            claim.setBoolean(child, true);
+            assertFalse(grandchild.isCancelRequested());
+            assertTrue(root.cancel());
+            assertTrue(grandchild.isCancelRequested());
+
+            AtomicInteger releases = new AtomicInteger();
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> grandchild.startCompilerFrame(scheduler,
+                            resume -> new OresScheduler.Done<>(17),
+                            releases::incrementAndGet));
+            assertEquals(1, releases.get(),
+                    "rejected grandchild admission must release its new code pin");
+            assertDoesNotThrow(root::close);
+            assertEquals(1, releases.get(),
+                    "parent shutdown must not release an unadmitted pin again");
+        }
+    }
+
+
 }
