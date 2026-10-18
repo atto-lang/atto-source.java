@@ -18,3 +18,12 @@ The **proposed source** `(|int a, string b| -> nb { return a; })(5, "xyz")` retu
 For consumers requiring a `Future<int>`, write `let Future<int> f = (|int a, string b| -> nb { return a; })(5, "xyz").asFuture();` after syntax/typing is enabled. Host-side `OresTask<T>.asFuture()` now returns the same completion future as `getAwaited()`, without creating a second computation or changing Task ownership. This is **not yet guest-source lowering** and must preserve move-only result rules.
 
 **Capability audit:** `OresTask<T>.asFuture()` currently returns the *same cancelable `OresFuture<T>`*. The projection therefore carries cancellation authority, not a read-only observation right. A future source-facing conversion must not leak it across actors, tenants, or trust domains unless authorized; adding a truly read-only Future view requires a distinct capability/interface and cancellation-independent subscription. No extra task is created by this current projection.
+
+
+## Async Task lambda integration (parser draft #1377)
+
+The new source syntax `(async task |int a, string b| -> { return compute(a, b); })(5, "xyz")` intends one `Task<int>`. The compiler must lower the *entire lambda body* as the Task invocation, **not** wrap a second Future or call an ordinary synchronous lambda and then schedule its return. Argument evaluations and capture transfers happen once, before the Task becomes runnable.
+
+An ordinary `(async |int a, string b| -> nb { return compute(a, b); })(5, "xyz")` instead intends a `Future<Task<int>>`. Distinct completion/cancellation scopes remain visible and require separate joins; do not flatten them.
+
+Current Java `AsyncRuntime.submitTask` and `OresTask<T>` can provide the Task completion primitive, but the frontend in #1377 still rejects execution. Any backend wiring must verify nonparking `await`, lexical return/finally cleanup, actor-private memory isolation, ownership of ephemeral lambda arguments, and child task cancellation on context/actor teardown. `asFuture()` exposes cancellation authority; its current host implementation is not an actor-safe read-only Future view.
