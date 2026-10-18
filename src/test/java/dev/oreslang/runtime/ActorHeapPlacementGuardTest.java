@@ -81,6 +81,40 @@ final class ActorHeapPlacementGuardTest {
     }
 
     @Test
+    void actorTurnCannotSelfCertifyPhysicalHeapOrInspectSupervisorBacking() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var observed = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var completed = new java.util.concurrent.CountDownLatch(1);
+            var actor = runtime.<String>spawnPrivate(ctx -> (mail, context) -> {
+                try {
+                    assertThrows(SecurityException.class,
+                            () -> context.runtime().heapStatusFor(context.self()));
+                    assertThrows(SecurityException.class,
+                            () -> context.runtime().requireIndependentGcHeap(context.self()));
+                    assertThrows(SecurityException.class,
+                            () -> context.runtime().requireActorHeapBacking(
+                                    context.self(),
+                                    ActorRuntime.ActorHeapBacking.OWNER_CHECKED_REGION));
+                    assertThrows(SecurityException.class,
+                            () -> context.runtime().<String>spawnWithHeapPlacement(
+                                    ActorRuntime.ActorKind.PRIVATE,
+                                    runtime.policyCeiling(),
+                                    ActorRuntime.ActorHeapPlacement.ACTOR_ARENA,
+                                    child -> (input, next) -> {}));
+                } catch (Throwable failure) {
+                    observed.set(failure);
+                } finally {
+                    completed.countDown();
+                }
+            });
+            actor.send("verify");
+            assertTrue(completed.await(5, java.util.concurrent.TimeUnit.SECONDS),
+                    "actor should execute the supervisor-boundary test");
+            assertNull(observed.get(), "actor must not obtain supervisor heap authority");
+        }
+    }
+
+    @Test
     void inspectionRejectsForeignRuntimeAndImpossiblePhysicalGcClaim() {
         assertThrows(IllegalArgumentException.class,
                 () -> new ActorRuntime.ActorHeapStatus(
