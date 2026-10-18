@@ -145,9 +145,15 @@ public final class SameModuleLiteralInvocation {
             }
             if (value == call) {
                 siteOccurrences++;
-            } else if (value != null && !(value instanceof Ast.LiteralExpr)) {
-                throw new IllegalArgumentException(
-                        "other expression requires lexical/effect and nested callsite proof");
+            } else if (value != null) {
+                if (!(value instanceof Ast.LiteralExpr scalar)) {
+                    throw new IllegalArgumentException(
+                            "other expression requires lexical/effect and nested callsite proof");
+                }
+                // AST construction is public and LiteralExpr accepts Object.
+                // A fabricated object, null or opaque guest literal is not
+                // independently known to be a pure scalar expression.
+                OptionalCallLiteralStage.exactScalarLiteralType(scalar);
             }
             if (statement instanceof Ast.ReturnStmt) {
                 terminated = true;
