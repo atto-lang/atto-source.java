@@ -2426,7 +2426,8 @@ public final class Parser {
                     || !type.arguments().isEmpty() || type.inferArguments()) {
                 throw error(previous(), "binding type must match infer<T> exactly");
             }
-            if (match(STRUCT)) {
+            if (match(STRUCT) || matchContextualIdentifier("record")) {
+                // Records are closed readonly row schemas; no dynamic Map.
                 initializer = parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
             } else if (matchContextualKeyword("tuple")) {
                 consume(LPAREN, "expected '(' after infer<T> tuple");
@@ -2437,7 +2438,7 @@ public final class Parser {
                 }
                 initializer = new Ast.TupleExpr(items);
             } else {
-                throw error(peek(), "infer<T> requires a struct {...} or tuple (...) literal");
+                throw error(peek(), "infer<T> requires a struct {...}, record {...}, or tuple (...) literal");
             }
         } else {
             initializer = parseExpression();
@@ -3569,9 +3570,14 @@ public final class Parser {
                 && reservedCallableNameFollowedByInvocation(current)) {
             return new Ast.NameExpr(advance().lexeme());
         }
-        if (isContextualIdentifier("infer") && checkNext(STRUCT)) {
+        if (isContextualIdentifier("infer")
+                && (checkNext(STRUCT)
+                    || (checkNext(IDENT) && current + 1 < tokens.size()
+                        && tokens.get(current + 1).lexeme().equals("record")))) {
             advance(); // contextual infer
-            consume(STRUCT, "expected 'struct' after infer");
+            if (!match(STRUCT)) {
+                consumeContextualIdentifier("record", "expected 'record' after infer");
+            }
             return parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
         }
         if (isContextualIdentifier("tuple") && checkNext(LPAREN)) {
