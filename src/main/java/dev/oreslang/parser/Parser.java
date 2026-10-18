@@ -3772,11 +3772,22 @@ public final class Parser {
         return false;
     }
 
+    private void rejectUnloweredOmissionItem(Token.Type terminator) {
+        if (check(IDENT) && checkNext(COLON)) {
+            throw error(peek(), "named call argument lowering is not yet enabled");
+        }
+        if (check(IDENT) && (peek().lexeme().equals("_") || peek().lexeme().equals("omit"))
+                && (checkNext(COMMA) || checkNext(terminator))) {
+            throw error(peek(), "optional call omission lowering is not yet enabled");
+        }
+    }
+
     private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
         if (check(terminator)) return List.of();
         List<Ast.Expr> args = new ArrayList<>();
         do {
             boolean spread = match(ELLIPSIS);
+            rejectUnloweredOmissionItem(terminator);
             Ast.Expr argument = parseExpression();
             args.add(spread ? new Ast.SpreadExpr(argument) : argument);
         } while (match(COMMA));
