@@ -108,6 +108,125 @@ final class WorkflowJournalV1Test {
     }
 
     @Test
+    void completeAndAppendAtomicallyAdvancesWorkflowAndCompletesEffect() {
+        var loop = new DurableDevLoopV1("run-atomic-outcome", 3);
+        var store = started(loop);
+        var claim = store.claimNext(
+                "worker-a", 100L, 100L).orElseThrow();
+
+        var transition = store.completeAndAppend(
+                claim.effectKey(),
+                claim.claimToken(),
+                "receipt://code/1",
+                150L,
+                "code-1",
+                new DurableDevLoopV1.CodeChanged(
+                        1, "patch://one"));
+
+        assertEquals(
+                DurableDevLoopV1.Disposition.APPLIED,
+                transition.journalEntry().disposition());
+        assertEquals(
+                DurableDevLoopV1.Phase.WAITING_FOR_PUSH,
+                store.replayDevLoop().machine().snapshot().phase());
+        assertEquals(
+                WorkflowJournalV1.EffectState.COMPLETED,
+                store.effect(claim.effectKey()).orElseThrow().state());
+        assertEquals(2, store.journal().size());
+        assertEquals(1, store.snapshot().pendingEffects());
+    }
+
+    @Test
+    void completeAndAppendCausationMismatchIsFailAtomic() {
+        var loop = new DurableDevLoopV1("run-atomic-mismatch", 3);
+        var store = started(loop);
+        var claim = store.claimNext(
+                "worker-a", 100L, 100L).orElseThrow();
+        var before = store.persistentState();
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> store.completeAndAppend(
+                        claim.effectKey(),
+                        claim.claimToken(),
+                        "receipt://wrong",
+                        150L,
+                        "cancel-1",
+                        new DurableDevLoopV1.Cancel("wrong outcome")));
+
+        assertEquals(before, store.persistentState());
+        assertEquals(
+                WorkflowJournalV1.EffectState.CLAIMED,
+                store.effect(claim.effectKey()).orElseThrow().state());
+    }
+
+    @Test
+    void completeAndAppendRetryAfterCommitIsIdempotent() {
+        var loop = new DurableDevLoopV1("run-atomic-retry", 3);
+        var store = started(loop);
+        var claim = store.claimNext(
+                "worker-a", 100L, 100L).orElseThrow();
+        var event = new DurableDevLoopV1.CodeChanged(
+                1, "patch://one");
+
+        var first = store.completeAndAppend(
+                claim.effectKey(),
+                claim.claimToken(),
+                "receipt://code/1",
+                150L,
+                "code-1",
+                event);
+        int journalSize = store.journal().size();
+
+        var retry = store.completeAndAppend(
+                claim.effectKey(),
+                claim.claimToken(),
+                "receipt://code/1",
+                151L,
+                "code-1",
+                event);
+
+        assertEquals(first, retry);
+        assertEquals(journalSize, store.journal().size());
+        assertEquals(
+                WorkflowJournalV1.EffectState.COMPLETED,
+                store.effect(claim.effectKey()).orElseThrow().state());
+    }
+
+    @Test
+    void completeAndAppendRepairsEventFirstLegacySplitWithoutDuplicateJournal() {
+        var loop = new DurableDevLoopV1("run-atomic-repair", 3);
+        var store = started(loop);
+        var claim = store.claimNext(
+                "worker-a", 100L, 100L).orElseThrow();
+        var event = new DurableDevLoopV1.CodeChanged(
+                1, "patch://legacy");
+
+        var machine = store.replayDevLoop().machine();
+        store.append(machine.accept("code-legacy", event));
+        assertEquals(2, store.journal().size());
+        assertEquals(
+                WorkflowJournalV1.EffectState.CLAIMED,
+                store.effect(claim.effectKey()).orElseThrow().state());
+
+        var repaired = store.completeAndAppend(
+                claim.effectKey(),
+                claim.claimToken(),
+                "receipt://legacy",
+                150L,
+                "code-legacy",
+                event);
+
+        assertEquals(
+                DurableDevLoopV1.Disposition.APPLIED,
+                repaired.journalEntry().disposition());
+        assertEquals(2, store.journal().size());
+        assertEquals(
+                WorkflowJournalV1.EffectState.COMPLETED,
+                store.effect(claim.effectKey()).orElseThrow().state());
+    }
+
+    @Test
     void expiredClaimBecomesAmbiguousAndNeverBlindlyRetries() {
         var loop = new DurableDevLoopV1("run-ambiguous", 3);
         var store = started(loop);
