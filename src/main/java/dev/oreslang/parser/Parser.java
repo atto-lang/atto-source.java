@@ -1355,6 +1355,16 @@ public final class Parser {
         return names;
     }
 
+    /**
+     * The postfix '?' is a property of a callable formal, NOT a globally
+     * optional type or a default argument. Retain the source element type
+     * until explicit checked Option<T> lowering is available.
+     */
+    private Ast.TypeRef parseFormalTypeRef() {
+        Ast.TypeRef valueType = parseTypeRef();
+        return match(QUESTION) ? Ast.TypeRef.omittableFormal(valueType) : valueType;
+    }
+
     private List<Ast.Param> parseParametersUntil(Token.Type terminator) {
         return parseParametersUntil(terminator, java.util.Set.of());
     }
@@ -1367,7 +1377,7 @@ public final class Parser {
 
             // Canonical type-first structural spelling: structural Foo y
             if (structural) {
-                Ast.TypeRef type = parseTypeRef();
+                Ast.TypeRef type = parseFormalTypeRef();
                 boolean mutable = match(MUT);
                 String name = consume(IDENT, "expected parameter name").lexeme();
                 if (mutable) {
@@ -1382,7 +1392,7 @@ public final class Parser {
                 String name = advance().lexeme();
                 Token marker = consume(IDENT, "expected structural");
                 if (!marker.lexeme().equals("structural")) throw error(marker, "expected structural");
-                Ast.TypeRef type = parseTypeRef();
+                Ast.TypeRef type = parseFormalTypeRef();
                 boolean mutable = match(MUT);
                 if (mutable) {
                     throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
@@ -1394,7 +1404,7 @@ public final class Parser {
             // Function annotation spelling: @AllowStructural(y) fnc x(y Foo)
             if (check(IDENT) && annotationStructuralNames.contains(peek().lexeme()) && checkNext(IDENT)) {
                 String name = advance().lexeme();
-                Ast.TypeRef type = parseTypeRef();
+                Ast.TypeRef type = parseFormalTypeRef();
                 boolean mutable = match(MUT);
                 if (mutable) {
                     throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
@@ -1415,13 +1425,13 @@ public final class Parser {
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
                 consume(COLON, "expected ':' after compatibility parameter name");
-                Ast.TypeRef type = parseTypeRef();
+                Ast.TypeRef type = parseFormalTypeRef();
                 boolean mutable = match(MUT);
                 params.add(new Ast.Param(type, name, false, mutable));
                 continue;
             }
 
-            Ast.TypeRef type = parseTypeRef();
+            Ast.TypeRef type = parseFormalTypeRef();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "expected parameter name after type").lexeme();
             if (structural && mutable) {
