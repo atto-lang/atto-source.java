@@ -214,6 +214,15 @@ public final class TypeChecker {
             }
             localNamesByModule.put(module.name(), localNames);
         }
+        // A file-level import belongs to the synthetic root even when the file
+        // contains only named modules and therefore has no root declarations.
+        // It remains a valid (possibly unused) root dependency, but it never
+        // leaks into those named modules.
+        localNamesByModule.computeIfAbsent(Parser.ROOT_MODULE, ignored -> {
+            Set<String> rootNames = new HashSet<>(builtinNames);
+            rootNames.addAll(moduleNames);
+            return rootNames;
+        });
 
         Map<String, Set<String>> exposedByModule = new LinkedHashMap<>();
         for (Ast.ImportDecl imported : program.imports()) {
