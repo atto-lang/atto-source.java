@@ -3,6 +3,9 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.lang.reflect.Field;
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(10)
@@ -41,8 +44,12 @@ final class GroupPhysicalTurnPermitsTest {
         assertEquals(GroupPhysicalTurnPermits.Cancellation.CANCELLED, gate.tryCancelQueued(actor(2)));
         assertEquals(GroupPhysicalTurnPermits.Cancellation.ABSENT, gate.tryCancelQueued(actor(2)));
         assertEquals(GroupPhysicalTurnPermits.Admission.QUEUED, gate.tryRequest(actor(3)).status());
-        assertEquals(GroupPhysicalTurnPermits.Seal.SEALED, gate.trySeal());
-        assertEquals(GroupPhysicalTurnPermits.Seal.ALREADY_SEALED, gate.trySeal());
+        var seal = gate.trySeal();
+        assertEquals(GroupPhysicalTurnPermits.SealStatus.SEALED, seal.status());
+        assertEquals(List.of(actor(3)), seal.cancelled());
+        var sealedAgain = gate.trySeal();
+        assertEquals(GroupPhysicalTurnPermits.SealStatus.ALREADY_SEALED, sealedAgain.status());
+        assertTrue(sealedAgain.cancelled().isEmpty());
         assertEquals(GroupPhysicalTurnPermits.Admission.CLOSED, gate.tryRequest(actor(4)).status());
         assertEquals(new GroupPhysicalTurnPermits.Snapshot(1, 0, true), gate.trySnapshot());
         assertNull(gate.tryRelease(first).successor());
@@ -72,6 +79,27 @@ final class GroupPhysicalTurnPermitsTest {
         assertEquals(new GroupPhysicalTurnPermits.Actor(1, 2), newer.actor());
         assertNull(gate.tryRelease(next).successor());
         assertNull(gate.tryRelease(newer).successor());
+    }
+
+    @Test
+    void ticketExhaustionReturnsEveryQueuedActorToLifecycleOwner() throws Exception {
+        var gate = new GroupPhysicalTurnPermits(1, 3);
+        var first = gate.tryRequest(actor(1)).grant();
+        assertEquals(GroupPhysicalTurnPermits.Admission.QUEUED, gate.tryRequest(actor(2)).status());
+        assertEquals(GroupPhysicalTurnPermits.Admission.QUEUED, gate.tryRequest(actor(3)).status());
+
+        Field nextTicket = GroupPhysicalTurnPermits.class.getDeclaredField("nextTicket");
+        nextTicket.setAccessible(true);
+        nextTicket.setLong(gate, Long.MAX_VALUE);
+
+        var released = gate.tryRelease(first);
+        assertTrue(released.released());
+        assertFalse(released.retry());
+        assertNull(released.successor());
+        assertEquals(List.of(actor(2), actor(3)), released.cancelled(),
+                "ticket exhaustion must return every dropped waiter for cancellation/reschedule");
+        assertEquals(new GroupPhysicalTurnPermits.Snapshot(0, 0, true), gate.trySnapshot());
+        assertEquals(GroupPhysicalTurnPermits.Admission.CLOSED, gate.tryRequest(actor(4)).status());
     }
 
     @Test
