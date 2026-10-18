@@ -37,13 +37,22 @@ public final class EnumCaseSourceBindings {
         }
     }
 
-    public record Proof(Map<Key, List<Candidate>> families, Map<String, EnumInfo> enums) {
-        public Proof {
+    public static final class Proof {
+        private final Map<Key, List<Candidate>> families;
+        private final Map<String, EnumInfo> enums;
+
+        // Keep the compiler-verified proof unforgeable by ordinary callers.
+        // A public record constructor would let a host bypass lexical binding.
+        private Proof(Map<Key, List<Candidate>> families,
+                      Map<String, EnumInfo> enums) {
             Map<Key, List<Candidate>> immutable = new LinkedHashMap<>();
             families.forEach((key, candidates) -> immutable.put(key, List.copyOf(candidates)));
-            families = Map.copyOf(immutable);
-            enums = Map.copyOf(enums);
+            this.families = Map.copyOf(immutable);
+            this.enums = Map.copyOf(enums);
         }
+
+        public Map<Key, List<Candidate>> families() { return families; }
+        public Map<String, EnumInfo> enums() { return enums; }
 
         /**
          * Resolves types ONLY from compiler-proven local qualified parameter
@@ -115,16 +124,37 @@ public final class EnumCaseSourceBindings {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     if (fn.actorKind() != Ast.ActorKind.NONE
-                            || !fn.genericParameters().isEmpty()) continue;
+                            || !fn.genericParameters().isEmpty()) {
+                        if (fn.parameters().stream().anyMatch(p ->
+                                isLocalEnumRef(p.type(), visible))) {
+                            throw new IllegalArgumentException(
+                                    "actor/generic source enum overload requires dedicated binding proof");
+                        }
+                        continue;
+                    }
                     Key key = new Key(Domain.MODULE, owner, fn.name(), fn.parameters().size());
                     pending.computeIfAbsent(key, ignored -> new ArrayList<>())
                             .add(new Pending(fn.parameters(), fn, null, visible));
                 } else if (decl instanceof Ast.ClassDecl cls) {
                     if (cls.actorKind() != Ast.ActorKind.NONE
-                            || !cls.genericParameters().isEmpty() || !cls.parents().isEmpty()) continue;
+                            || !cls.genericParameters().isEmpty() || !cls.parents().isEmpty()) {
+                        if (cls.methods().stream().anyMatch(m -> m.parameters().stream()
+                                .anyMatch(p -> isLocalEnumRef(p.type(), visible)))) {
+                            throw new IllegalArgumentException(
+                                    "inherited/generic/actor enum methods require explicit slot proof");
+                        }
+                        continue;
+                    }
                     String methodOwner = owner + "." + cls.name();
                     for (Ast.MethodDecl method : cls.methods()) {
-                        if (!method.genericParameters().isEmpty()) continue;
+                        if (!method.genericParameters().isEmpty()) {
+                            if (method.parameters().stream().anyMatch(p ->
+                                    isLocalEnumRef(p.type(), visible))) {
+                                throw new IllegalArgumentException(
+                                        "generic method enum specialization lacks type substitution proof");
+                            }
+                            continue;
+                        }
                         Domain domain = method.isStatic() ? Domain.STATIC : Domain.INSTANCE;
                         Key key = new Key(domain, methodOwner,
                                 method.name(), method.parameters().size());
