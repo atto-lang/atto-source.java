@@ -239,8 +239,10 @@ public final class BoundInvocation {
             List<Ast.TypeRef> assertedSourceTypes) {
         requireSimpleClass(owner);
         Objects.requireNonNull(call, "call");
-        if (!(call.callee() instanceof Ast.MemberExpr member)) {
-            throw new IllegalArgumentException("method call must have a member callee");
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || member.receiver() == null) {
+            throw new IllegalArgumentException(
+                    "method call requires a non-null member receiver expression");
         }
         List<Ast.MethodDecl> candidates = new ArrayList<>();
         List<Integer> ordinals = new ArrayList<>();
