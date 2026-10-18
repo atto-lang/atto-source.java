@@ -4586,6 +4586,12 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
+            if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
+                if (created.type().inferArguments() || !created.type().arguments().isEmpty() || args.size() > 1)
+                    throw new IllegalArgumentException("HttpResponse requires zero or one string body");
+                return args.isEmpty() ? HttpResponseDraft.empty()
+                        : HttpResponseDraft.text(requireString(args.getFirst(), "HttpResponse body"));
+            }
             if (created.type().name().equals("Array")
                     || created.type().name().equals("List")) {
                 if (!args.isEmpty()) {
@@ -6410,6 +6416,10 @@ public final class OresEvalRootNode extends RootNode {
                 return indexValue(eval(indexed.receiver(), env), eval(indexed.index(), env));
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
+                    List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    return instantiateEvaluated(created, args, env);
+                }
                 if (created.type().name().equals("Array")
                         || created.type().name().equals("List")) {
                     if (!created.arguments().isEmpty()) {
