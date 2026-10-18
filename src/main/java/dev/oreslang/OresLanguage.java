@@ -39,6 +39,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
      * already be entered on the calling thread. Guest Oreslang code has no
      * Java reference to this language object or internal context.
      */
+    @SuppressWarnings("deprecation")
     static OresContext currentEnteredContextForHost() {
         return getCurrentContext(OresLanguage.class);
     }
