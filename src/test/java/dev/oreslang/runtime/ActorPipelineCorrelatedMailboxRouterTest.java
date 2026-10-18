@@ -363,10 +363,13 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             try {
                 assertTrue(sinkEntered.await(6, TimeUnit.SECONDS));
                 worker.stop();
-                worker.getDone().get(5, TimeUnit.SECONDS);
+                // Do NOT await finalization while another SHARED actor
+                // deliberately occupies a carrier on releaseSink. A
+                // single-carrier executor could otherwise deadlock the test.
             } finally {
                 releaseSink.countDown();
             }
+            worker.getDone().get(5, TimeUnit.SECONDS);
             assertTrue(sourceReplied.await(8, TimeUnit.SECONDS),
                     "failed backward should permit authenticated alternate reply");
             assertNotNull(rejected.get(),
