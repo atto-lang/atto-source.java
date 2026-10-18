@@ -162,6 +162,44 @@ final class SharedUntrustedIsolatePoolTest {
     }
 
     @Test
+    @EnabledIfEnvironmentVariable(named = "ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches = "true")
+    void poolCloseFencesExistingGroupAccessBeforeContextRetirement() throws Exception {
+        // Hold the separate admission monitor while shutdown starts. The pool
+        // has set its global close flag but Group.close() cannot yet take the
+        // monitor to fence/release the specific Context's images.
+        try (SharedUntrustedIsolatePool pool = new SharedUntrustedIsolatePool(
+                256L * 1024 * 1024, 1);
+             SharedUntrustedIsolatePool.Group group = pool.createGroup();
+             var workers = java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            var field = SharedUntrustedIsolatePool.Group.class
+                    .getDeclaredField("imageAdmissionLock");
+            field.setAccessible(true);
+            Object admissionLock = field.get(group);
+            java.util.concurrent.Future<?> retiring;
+            synchronized (admissionLock) {
+                retiring = workers.submit(pool::close);
+                long until = System.nanoTime()
+                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+                while (!pool.shutdownRequestedForSupervisor()
+                        && System.nanoTime() < until) {
+                    Thread.sleep(1);
+                }
+                assertTrue(pool.shutdownRequestedForSupervisor(),
+                        "pool close request must become visible before group teardown");
+                assertThrows(IllegalStateException.class, group::contextForSupervisor,
+                        "pool close must fence stale guest Context adapters");
+                assertThrows(IllegalStateException.class,
+                        () -> group.sourceImageForSupervisor("late.ores",
+                                "pub routine main(): void { return; }"),
+                        "pool close must fence any late source-image admission");
+            }
+            retiring.get(20, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(0, pool.activeGroups());
+            assertEquals(0, pool.liveCodeImagesForSupervisor());
+        }
+    }
+
+    @Test
     void closedUntrustedLoaderRejectsNewGenerationsBeforeIsolateAllocation() {
         HotReloadManager loader = HotReloadManager.forUntrustedActors(
                 IsolatePolicy.developer(), ExecutionProfile.serverJit());
