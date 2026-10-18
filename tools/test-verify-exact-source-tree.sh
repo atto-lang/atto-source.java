@@ -26,6 +26,17 @@ assert_status() {
     cat "$work/output" >&2
     exit 1
   fi
+  if [[ "$code" == 0 ]]; then
+    if ! grep -q '^SOURCE_TREE_VERIFIED ' "$work/output"; then
+      printf '%s: success without source-tree receipt\n' "$label" >&2
+      cat "$work/output" >&2
+      exit 1
+    fi
+  elif grep -q '^SOURCE_TREE_VERIFIED ' "$work/output"; then
+    printf '%s: failed verifier emitted a false success receipt\n' "$label" >&2
+    cat "$work/output" >&2
+    exit 1
+  fi
   printf 'PASS %s (exit %s)\n' "$label" "$actual"
 }
 assert_status 0 'clean exact subtree' "$expected" source
