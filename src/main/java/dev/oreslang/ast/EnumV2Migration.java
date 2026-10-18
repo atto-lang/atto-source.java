@@ -23,8 +23,9 @@ public final class EnumV2Migration {
     /** Mimics the older #907 declaration shape without depending on old AST. */
     public record LegacyVariant(String name, Ast.TypeRef closedRecordPayload, long wireTag) {
         public LegacyVariant {
-            if (name == null || name.isBlank() || wireTag <= 0L) {
-                throw new IllegalArgumentException("invalid legacy enum case or tag");
+            EnumAstIdentity.requireSimple(name);
+            if (wireTag <= 0L) {
+                throw new IllegalArgumentException("invalid legacy enum case wire tag");
             }
             validateLegacyRecordPayload(closedRecordPayload);
         }
@@ -34,8 +35,8 @@ public final class EnumV2Migration {
     public record LegacyEnum(
             String name, Ast.Visibility visibility, List<LegacyVariant> variants) {
         public LegacyEnum {
-            if (name == null || name.isBlank() || visibility == null
-                    || variants == null || variants.isEmpty()
+            EnumAstIdentity.requireSimple(name);
+            if (visibility == null || variants == null || variants.isEmpty()
                     || variants.size() > MAX_CASES) {
                 throw new IllegalArgumentException("invalid legacy nominal enum descriptor");
             }
