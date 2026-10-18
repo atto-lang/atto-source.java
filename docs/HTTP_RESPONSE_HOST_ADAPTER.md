@@ -81,7 +81,8 @@ end
 
 - The typechecker recognizes `http.response(int, string, string): HttpResponse`,
   `new HttpResponse()`, `new HttpResponse(string)`, and
-  `HttpExchange.respond_response(HttpResponse): Future<void>`. These are
+  `http.response_empty(int status): HttpResponse` for 204/205/304 and other
+  bodyless statuses, and `HttpExchange.respond_response(HttpResponse): Future<void>`. These are
   compile-time **nominal** `HttpResponse` values backed by the private
   `HttpResponseDraft` Java transport class.
 - The interpreter routes the guest response through the **same**
