@@ -144,6 +144,10 @@ final class EnumCaseOverloadPolicyTest {
         assertThrows(IllegalArgumentException.class, () -> enumCase("root.Foo", ""));
         assertThrows(IllegalArgumentException.class, () -> enumType("Foo"));
         assertThrows(IllegalArgumentException.class, () -> enumType("root. Foo"));
+        assertThrows(IllegalArgumentException.class, () ->
+                enumType("root." + (char) 0x202e + "Foo"));
+        assertThrows(IllegalArgumentException.class, () ->
+                enumCase("root.Foo", "A" + (char) 0x200d));
         assertThrows(IllegalArgumentException.class, () -> enumType("root.\u0000Foo"));
         assertThrows(IllegalArgumentException.class, () -> enumType("root.\uD800"));
         assertThrows(IllegalArgumentException.class, () ->
