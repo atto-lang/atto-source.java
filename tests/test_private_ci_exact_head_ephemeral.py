@@ -21,6 +21,12 @@ class SourceLocalEphemeralWorkflowTests(unittest.TestCase):
                   "      - "+BRANCH+"\n"
                   "      - "+HARDENING_BRANCH+"\n")
         self.assertIn(expected,self.text)
+        push_branches=self.text.split("on:\n  push:\n    branches:\n",1)[1].split(
+            "\npermissions:",1)[0]
+        actual=[line.strip()[2:] for line in push_branches.splitlines()
+                if line.strip().startswith("- ")]
+        self.assertEqual(actual,[BRANCH,HARDENING_BRANCH],
+                         "No additional branch, glob or third-party ref may schedule source tests")
         for disallowed in ("pull_request:", "pull_request_target:", "workflow_dispatch:"):
             self.assertNotIn(disallowed,self.text)
         self.assertNotIn("      - '*'\n",self.text)
