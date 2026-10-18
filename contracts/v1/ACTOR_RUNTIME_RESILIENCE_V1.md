@@ -143,6 +143,14 @@ depth, accepted/processed sequence counts, active/scheduled state, children,
 pending operations, suspension/fence state, placement and bounded memory usage.
 They never expose mutable guest heap by reference or execute guest code.
 
+Actor message causality uses fixed-size one-hop metadata, never recursive trace
+baggage: an actor-originated admitted message may identify the sender actor
+incarnation and the sender's current input sequence. The receiver's own mailbox
+sequence remains its local ordering identity. Structured child failure retains
+the spawning supervisor incarnation/input sequence plus at most that spawning
+message's one-hop upstream origin. No causal record retains guest payloads, and
+causal metadata size must not grow with actor/message-chain depth.
+
 Runtime counters distinguish at minimum:
 - accepted and processed user messages;
 - mailbox-full, sealed, terminated, invalid-ref and lifecycle-fenced sends;
@@ -236,7 +244,9 @@ reserve diagnostic capacity and then die before publishing the record.
 24. concurrent failed children produce exactly one retained supervisor signal
     per incarnation, with no duplicates or silent loss;
 25. concurrent failure publication, drain and pressure sampling never exposes
-    torn supervisor CONTROL accounting (queued <= reserved <= capacity).
+    torn supervisor CONTROL accounting (queued <= reserved <= capacity);
+26. host -> actor -> actor -> child-failure chains retain exact actor generation
+    and input-sequence edges with fixed-size one-hop causal metadata only.
 
 ## Backend status - 2026-10-17
 
