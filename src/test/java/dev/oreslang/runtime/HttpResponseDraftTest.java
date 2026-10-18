@@ -80,6 +80,12 @@ class HttpResponseDraftTest {
         assertArrayEquals(new byte[]{1, 2, 3}, response.openBody().readAllBytes());
     }
 
+    @Test void actorMailboxCannotFreezeAnHttpResponseDraft() {
+        HttpResponseDraft draft = HttpResponseDraft.text("hello");
+        assertThrows(SecurityException.class, () -> ActorRuntime.freeze(draft));
+        assertThrows(SecurityException.class, () -> ActorRuntime.freeze(List.of(List.of(draft))));
+    }
+
     @Test void streamProducerIsLazyAndSingleUse() throws Exception {
         AtomicInteger opened = new AtomicInteger();
         HttpResponseDraft response = HttpResponseDraft.streaming(() -> {
