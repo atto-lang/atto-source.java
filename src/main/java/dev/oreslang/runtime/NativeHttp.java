@@ -568,9 +568,11 @@ public final class NativeHttp implements AutoCloseable {
                 }
                 draft.writeClaimedTo(state.raw, () -> state.terminal,
                         input -> state.activeResponseInput = input,
-                        () -> state.server.bodyOpenGate.open(draft, () -> state.terminal,
+                        () -> draft.streaming()
+                                ? state.server.bodyOpenGate.open(draft, () -> state.terminal,
                                 TimeUnit.MILLISECONDS.toNanos(state.server.deadlineMillis)
-                                        - (System.nanoTime() - state.admittedNanos)));
+                                        - (System.nanoTime() - state.admittedNanos))
+                                : draft.openBody());
                 state.finish();
                 return null;
             });
