@@ -81,7 +81,21 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
 
     private static ThreadFactory guardedTrackedFactory(
             ThreadFactory delegate, AtomicInteger startedWorkers) {
-        return workerLoop -> {
+        return new TrackingThreadFactory(delegate, startedWorkers);
+    }
+
+    private static final class TrackingThreadFactory
+            implements OresCarrierPermitPool.ReconciliableThreadFactory {
+        private final ThreadFactory delegate;
+        private final AtomicInteger startedWorkers;
+
+        private TrackingThreadFactory(ThreadFactory delegate, AtomicInteger startedWorkers) {
+            this.delegate = delegate;
+            this.startedWorkers = startedWorkers;
+        }
+
+        @Override
+        public Thread newThread(Runnable workerLoop) {
             if (Boolean.TRUE.equals(FORBID_WORKER_START.get()))
                 throw new RejectedExecutionException(
                         "carrier creation forbidden for no-growth admission");
@@ -99,7 +113,16 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
                 }
             };
             return delegate.newThread(trackedLoop);
-        };
+        }
+
+        @Override
+        public void reconcileCreatedThreads() {
+            OresCarrierPermitPool.reconcile(delegate);
+        }
+    }
+
+    private void reconcileCreatedThreads() {
+        OresCarrierPermitPool.reconcile(getThreadFactory());
     }
 
     /**
@@ -136,6 +159,7 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
                 getQueue().remove(queued);
                 throw rejected;
             } finally {
+                reconcileCreatedThreads();
                 if (previous) FORBID_WORKER_START.set(Boolean.TRUE);
                 else FORBID_WORKER_START.remove();
             }
@@ -161,7 +185,12 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
     @Override public List<Runnable> shutdownNow() {
         admission.lock();
         try {
-            List<Runnable> drained = super.shutdownNow();
+            List<Runnable> drained;
+            try {
+                drained = super.shutdownNow();
+            } finally {
+                reconcileCreatedThreads();
+            }
             if (drained.size() > admittedTurns)
                 throw new IllegalStateException("carrier runnable credit underflow during shutdown");
             admittedTurns -= drained.size();
@@ -194,13 +223,53 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
             try {
                 super.execute(task);
                 admittedTurns = demand;
-            } catch (RuntimeException rejected) {
+            } catch (RuntimeException | Error rejected) {
                 int priorTarget = Math.min(getMaximumPoolSize(),
                         Math.max(minimum, admittedTurns));
                 if (!isShutdown() && getCorePoolSize() > priorTarget)
                     setCorePoolSize(priorTarget);
                 throw rejected;
+            } finally {
+                reconcileCreatedThreads();
             }
+        } finally {
+            admission.unlock();
+        }
+    }
+
+    @Override
+    public void setCorePoolSize(int value) {
+        try {
+            super.setCorePoolSize(value);
+        } finally {
+            reconcileCreatedThreads();
+        }
+    }
+
+    @Override
+    public boolean prestartCoreThread() {
+        try {
+            return super.prestartCoreThread();
+        } finally {
+            reconcileCreatedThreads();
+        }
+    }
+
+    @Override
+    public int prestartAllCoreThreads() {
+        try {
+            return super.prestartAllCoreThreads();
+        } finally {
+            reconcileCreatedThreads();
+        }
+    }
+
+    @Override
+    public void shutdown() {
+        admission.lock();
+        try {
+            super.shutdown();
+            reconcileCreatedThreads();
         } finally {
             admission.unlock();
         }
