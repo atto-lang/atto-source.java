@@ -37,9 +37,9 @@ public final class Types {
     public record ClassNamespace(String className) implements Type { }
 
     /**
-     * Closed structural record type. readOnly is a value capability, not a
-     * structural compatibility dimension: it prevents mutation from being
-     * regained through aliases while preserving ordinary shape matching.
+     * Closed structural record type. readOnly is a write capability boundary:
+     * readonly targets permit covariant field views; writable targets require
+     * invariant field types and cannot be built from readonly sources.
      */
     public record Record(Map<String, Type> members, boolean readOnly) implements Type {
         public Record { members = Map.copyOf(members); }
@@ -231,9 +231,25 @@ public final class Types {
         }
 
         if (from instanceof Record source && to instanceof Record target) {
+            // A readonly structural view has no setter, so safe width/covariant
+            // reads remain admissible. A writable view may replace the member:
+            // it must never widen int to float/Unknown/Any, or recover write
+            // authority from a permanently readonly source.
+            if (!target.readOnly() && source.readOnly()) return false;
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
                 Type actual = source.members().get(required.getKey());
-                if (actual == null || !isAssignable(actual, required.getValue())) return false;
+                if (actual == null) return false;
+                if (target.readOnly()) {
+                    // An unresolved source type is not a proof that callers
+                    // may read a concrete target type. Keep exact generic
+                    // identity, but fail closed on Unknown or generic holes
+                    // before allowing covariant structural field reads.
+                    if (!actual.equals(required.getValue())
+                            && (containsUncertainType(actual)
+                                    || !isAssignable(actual, required.getValue()))) return false;
+                } else if (!actual.equals(required.getValue())) {
+                    return false;
+                }
             }
             return true;
         }
