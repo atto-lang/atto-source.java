@@ -130,6 +130,12 @@ final class ActorCounterUpgradeProof {
                         throw new IllegalStateException("counter actor checkpoint must contain one int64");
                     long candidateValue = restore.applyAsLong(
                             ByteBuffer.wrap(restored).order(ByteOrder.BIG_ENDIAN).getLong());
+                    // V1 explicitly excludes schema migrations. Even a trusted
+                    // restorer must reproduce the exact counter value, not
+                    // silently reinterpret or rewrite checkpointed state.
+                    if (candidateValue != current.value())
+                        throw new SecurityException(
+                                "same-schema counter restore changed persistent actor state");
                     Version next = new Version(proposed,
                             new VersionedActorCell(candidateValue), replacement);
 
