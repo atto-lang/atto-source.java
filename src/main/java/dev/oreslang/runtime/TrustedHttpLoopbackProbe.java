@@ -11,6 +11,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -26,6 +28,9 @@ final class TrustedHttpLoopbackProbe implements AutoCloseable {
     private final TrustedHierarchicalNetworkGate.Scope tenant;
     private final HttpClient client;
     private final URI destination;
+    // Host-owned pending transports, never caller-controlled futures.
+    private final Set<CompletableFuture<HttpResponse<Void>>> active =
+            ConcurrentHashMap.newKeySet();
     private boolean closed;
 
     TrustedHttpLoopbackProbe(TrustedHierarchicalNetworkGate gate,
@@ -76,7 +81,9 @@ final class TrustedHttpLoopbackProbe implements AutoCloseable {
             // An isolated caller future must not own or cancel the host I/O.
             // The host completion alone releases the in-flight permit.
             CompletableFuture<Integer> caller = new CompletableFuture<>();
+            active.add(host);
             host.whenComplete((result, failure) -> {
+                active.remove(host);
                 lease.close();
                 if (failure != null) caller.completeExceptionally(failure);
                 else caller.complete(result.statusCode());
@@ -88,8 +95,15 @@ final class TrustedHttpLoopbackProbe implements AutoCloseable {
         }
     }
 
+    /** Fences new dispatch and asks the JDK to abort outstanding transport. */
     @Override public synchronized void close() {
-        closed = true; // no false early refund of in-flight OS work
+        requireHost();
+        if (closed) return;
+        closed = true;
+        for (var host : active) host.cancel(true);
+        client.shutdownNow();
+        // Do not release leases here. Each active host completion owns
+        // settlement. Physical transport quiescence is NOT guaranteed here.
     }
 
     private static void requireHost() {
