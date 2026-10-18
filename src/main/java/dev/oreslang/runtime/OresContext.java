@@ -32,6 +32,8 @@ public final class OresContext implements AutoCloseable {
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
     private final AsyncRuntime asyncRuntime;
+    /** Context-owned child-Task lifetime; physically joined before VM teardown. */
+    private final OresTaskScope compilerTaskScope;
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
     public AsyncNativeIo nativeIo() { return nativeIo; }
@@ -118,6 +120,7 @@ public final class OresContext implements AutoCloseable {
             this.vm = vm;
             this.actors = actors;
             this.asyncRuntime = async;
+            this.compilerTaskScope = new OresTaskScope(async);
             this.garbageCollector = gc;
         } catch (RuntimeException | Error failure) {
             if (async != null) {
@@ -167,7 +170,9 @@ public final class OresContext implements AutoCloseable {
             throw new SecurityException(
                     "untrusted Task continuations require inherited wall deadline and fuel budget");
         }
-        return new OresTask<>(vm.rootScheduler().start(frame));
+        // Structured lifetime is owned by the context, not by a caller-held
+        // Future that might settle before the physical Task frame exits.
+        return compilerTaskScope.startCompilerFrame(vm.rootScheduler(), frame);
     }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
@@ -458,9 +463,17 @@ public final class OresContext implements AutoCloseable {
         http.close();
         RuntimeException failure = null;
         try {
+            // Cancel and physically join source frames before VM root
+            // scheduler/carriers or shared code images can be reclaimed.
+            compilerTaskScope.close();
+        } catch (RuntimeException scopeFailure) {
+            failure = scopeFailure;
+        }
+        try {
             asyncRuntime.close();
         } catch (RuntimeException asyncFailure) {
-            failure = asyncFailure;
+            if (failure == null) failure = asyncFailure;
+            else failure.addSuppressed(asyncFailure);
         }
         try {
             actors.close();
