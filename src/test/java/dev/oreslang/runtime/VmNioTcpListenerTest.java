@@ -282,6 +282,46 @@ final class VmNioTcpListenerTest {
         }
     }
 
+    @Test void concurrentListenerAndConnectionCloseAlwaysQuiesce() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        try {
+            for (int round = 0; round < 24; round++) {
+                try (var listener = VmNioTcpListener.loopback(
+                        vm.nioReadiness(), 0, 8, 1, 8)) {
+                    var accepting = listener.acceptAsync();
+                    try (var peer = new Socket(
+                            InetAddress.getByName("127.0.0.1"), listener.localPort())) {
+                        var connection = accepting.get(3, TimeUnit.SECONDS);
+                        var go = new java.util.concurrent.CountDownLatch(1);
+                        var failures = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                        Thread a = Thread.ofPlatform().start(() -> {
+                            try { go.await(); connection.close(); }
+                            catch (Throwable t) { failures.compareAndSet(null, t); }
+                        });
+                        Thread b = Thread.ofPlatform().start(() -> {
+                            try { go.await(); listener.close(); }
+                            catch (Throwable t) { failures.compareAndSet(null, t); }
+                        });
+                        go.countDown();
+                        try {
+                            listener.closeAsync().get(3, TimeUnit.SECONDS);
+                        } finally {
+                            a.join(3000);
+                            b.join(3000);
+                        }
+                        assertFalse(a.isAlive(), "connection closer blocked");
+                        assertFalse(b.isAlive(), "listener closer blocked");
+                        assertNull(failures.get(), "parallel close failed");
+                        assertTrue(listener.isTerminated());
+                        assertEquals(0, listener.pendingOperations());
+                    }
+                }
+            }
+        } finally {
+            vm.close();
+        }
+    }
+
     @Test void completedAndClosedConnectionFailClosedForSubsequentOperations() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try (var listener = VmNioTcpListener.loopback(vm.nioReadiness(), 0, 16, 1, 16)) {
