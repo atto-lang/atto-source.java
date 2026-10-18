@@ -31,70 +31,70 @@ define actor VersionedScalarStage as
     // sole actor state. This *scalar* reference computes in the short state
     // transaction; real tensor kernels must compute from a frozen pinned
     // storage snapshot OUTSIDE the loan.
-    private eval_affine(int expected_step, int expected_version, int microbatch, int x): int
+    private eval_affine(int expected_step, int expected_version, int microbatch, int x): Result<int, String>
         with state.read, state.write
     {
         return using state.write(critical |s| -> {
             if s.version != expected_version; do
-                return -1;
+                return Err("STALE_VERSION");
             fi
             if s.step != expected_step; do
-                return -5;
+                return Err("STALE_STEP");
             fi
             // Conservative 32-bit-safe domain: |weight| and |x| <= 10000.
             // Forward multiplication is therefore <= 1e8, with no mutation
-            // on invalid input. The future typed Result API can replace -8.
+            // on invalid input. This method returns a typed error instead of a numerical sentinel.
             if x < -10000 || x > 10000 || s.weight < -10000 || s.weight > 10000; do
-                return -8;
+                return Err("INVALID_INPUT");
             fi
             if microbatch == 1; do
                 if s.issued_first; do
-                    return -7;
+                    return Err("DUPLICATE_FORWARD");
                 fi
                 s.issued_first = true;
                 s.input_first = x;
-                return s.weight * x;
+                return Ok(s.weight * x);
             fi
             if microbatch == 2; do
                 if s.issued_second; do
-                    return -7;
+                    return Err("DUPLICATE_FORWARD");
                 fi
                 s.issued_second = true;
                 s.input_second = x;
-                return s.weight * x;
+                return Ok(s.weight * x);
             fi
-            return -3;
+            return Err("INVALID_MICROBATCH");
         });
     }
 
     // The input comes from the *saved forward context*, never the untrusted
     // backward message. No gradient can be accepted without a prior matching
     // forward, and no microbatch can contribute twice.
-    private accumulate(int expected_step, int expected_version, int microbatch, int upstream): int
+    private accumulate(int expected_step, int expected_version, int microbatch, int upstream): Result<int, String>
         with state.read, state.write
     {
         return using state.write(critical |s| -> {
             if s.version != expected_version; do
-                return -1;
+                return Err("STALE_VERSION");
             fi
             if s.step != expected_step; do
-                return -5;
+                return Err("STALE_STEP");
             fi
             if microbatch != 1 && microbatch != 2; do
-                return -3;
+                return Err("INVALID_MICROBATCH");
             fi
             // Both inputs were bounded during forward. Each contribution is
             // <= 1e8; two contributions cannot overflow a signed 32-bit int.
             // Reject first so neither seen bit nor gradient is consumed.
             if upstream < -10000 || upstream > 10000; do
-                return -8;
+                return Err("INVALID_GRADIENT");
             fi
             if microbatch == 1; do
                 if !s.issued_first; do
-                    return -6;
+                    return Err("ORPHAN_GRADIENT");
                 fi
                 if s.seen_first; do
-                    return -4;
+                    return Err("DUPLICATE_GRADIENT");
                 fi
                 s.seen_first = true;
                 s.accumulated_gradient = s.accumulated_gradient
@@ -102,17 +102,17 @@ define actor VersionedScalarStage as
             fi
             if microbatch == 2; do
                 if !s.issued_second; do
-                    return -6;
+                    return Err("ORPHAN_GRADIENT");
                 fi
                 if s.seen_second; do
-                    return -4;
+                    return Err("DUPLICATE_GRADIENT");
                 fi
                 s.seen_second = true;
                 s.accumulated_gradient = s.accumulated_gradient
                     + (s.input_second * upstream);
             fi
             s.pending_gradients = s.pending_gradients + 1;
-            return s.accumulated_gradient;
+            return Ok(s.accumulated_gradient);
         });
     }
 
@@ -120,26 +120,26 @@ define actor VersionedScalarStage as
     // two uniquely identified backward contributions, update weight and version together.
     // Real tensor-backed ML must prepare independent frozen parameter buffers
     // before entering this critical write scope.
-    private commit(int expected_step, int expected_version): int with state.read, state.write {
+    private commit(int expected_step, int expected_version): Result<int, String> with state.read, state.write {
         return self.handle_state(critical write |s| -> {
             if s.version != expected_version; do
-                return -1;
+                return Err("STALE_VERSION");
             fi
             if s.step != expected_step; do
-                return -5;
+                return Err("STALE_STEP");
             fi
             if s.pending_gradients != 2 || !s.issued_first || !s.issued_second || !s.seen_first || !s.seen_second; do
-                return -2;
+                return Err("INCOMPLETE_FANIN");
             fi
             // Version/step cannot wrap and create a stale-message ABA.
             // Bound them before the write. Both gradients sum to <= 2e8,
             // making candidate arithmetic safe for signed 32-bit int.
             if s.step >= 1000000 || s.version >= 1000000; do
-                return -9;
+                return Err("COUNTER_EXHAUSTED");
             fi
             val int candidate_weight = s.weight - s.accumulated_gradient;
             if candidate_weight < -10000 || candidate_weight > 10000; do
-                return -8;
+                return Err("UNSAFE_CANDIDATE");
             fi
             // All checks complete: one exclusive state transaction publishes
             // candidate weight, version, step, and cleared gradient receipts.
@@ -154,7 +154,7 @@ define actor VersionedScalarStage as
             s.seen_second = false;
             s.step = s.step + 1;
             s.version = s.version + 1;
-            return s.weight;
+            return Ok(s.weight);
         });
     }
 
@@ -196,6 +196,19 @@ define actor VersionedScalarStage as
         });
     }
 
+    // Presentation belongs outside the state loan. A negative successful
+    // mathematical result (for example Ok(-10)) is never an error sentinel.
+    // The CLI chooses a stable marker rather than relying on an unverified
+    // Result.unwrap_err() API. The typed error value remains in the Result.
+    private print_outcome(Result<int, String> outcome): void {
+        if outcome.is_err(); do
+            stdio.println("REJECTED");
+            return;
+        fi
+        stdio.println(outcome.unwrap());
+        return;
+    }
+
     private weight_snapshot(): int with state.read {
         return using state.read(|s| -> s.weight);
     }
@@ -207,75 +220,75 @@ define actor VersionedScalarStage as
     // ActorRef callers ONLY send messages; they never invoke actor user methods.
     receive(ActorMail<String> mail): void {
         if mail.value == "orphan"; do
-            stdio.println(self.accumulate(1, 1, 2, 1));
+            self.print_outcome(self.accumulate(1, 1, 2, 1));
             return;
         fi
         if mail.value == "unsafe_forward"; do
-            stdio.println(self.eval_affine(1, 1, 1, 10001));
+            self.print_outcome(self.eval_affine(1, 1, 1, 10001));
             return;
         fi
         if mail.value == "forward1"; do
-            stdio.println(self.eval_affine(1, 1, 1, 2));
+            self.print_outcome(self.eval_affine(1, 1, 1, 2));
             return;
         fi
         if mail.value == "forward_duplicate"; do
-            stdio.println(self.eval_affine(1, 1, 1, 2));
+            self.print_outcome(self.eval_affine(1, 1, 1, 2));
             return;
         fi
         if mail.value == "forward2"; do
-            stdio.println(self.eval_affine(1, 1, 2, 3));
+            self.print_outcome(self.eval_affine(1, 1, 2, 3));
             return;
         fi
         if mail.value == "unsafe_upstream"; do
-            stdio.println(self.accumulate(1, 1, 1, 10001));
+            self.print_outcome(self.accumulate(1, 1, 1, 10001));
             return;
         fi
         if mail.value == "grad1"; do
-            stdio.println(self.accumulate(1, 1, 1, 1));
+            self.print_outcome(self.accumulate(1, 1, 1, 1));
             return;
         fi
         if mail.value == "duplicate"; do
-            stdio.println(self.accumulate(1, 1, 1, 1));
+            self.print_outcome(self.accumulate(1, 1, 1, 1));
             return;
         fi
         if mail.value == "early"; do
-            stdio.println(self.commit(1, 1));
+            self.print_outcome(self.commit(1, 1));
             return;
         fi
         if mail.value == "grad2"; do
-            stdio.println(self.accumulate(1, 1, 2, 1));
+            self.print_outcome(self.accumulate(1, 1, 2, 1));
             return;
         fi
         if mail.value == "commit"; do
-            stdio.println(self.commit(1, 1));
+            self.print_outcome(self.commit(1, 1));
             stdio.println(self.version());
             return;
         fi
         if mail.value == "stale"; do
-            stdio.println(self.accumulate(1, 1, 1, 1));
+            self.print_outcome(self.accumulate(1, 1, 1, 1));
             return;
         fi
         // A second step has mathematically valid individual contributions,
         // but its candidate weight would exceed the bounded safe domain.
         // Rejection must leave weight/version unchanged.
         if mail.value == "high_forward1"; do
-            stdio.println(self.eval_affine(2, 2, 1, 10000));
+            self.print_outcome(self.eval_affine(2, 2, 1, 10000));
             return;
         fi
         if mail.value == "high_forward2"; do
-            stdio.println(self.eval_affine(2, 2, 2, 10000));
+            self.print_outcome(self.eval_affine(2, 2, 2, 10000));
             return;
         fi
         if mail.value == "high_grad1"; do
-            stdio.println(self.accumulate(2, 2, 1, 10000));
+            self.print_outcome(self.accumulate(2, 2, 1, 10000));
             return;
         fi
         if mail.value == "high_grad2"; do
-            stdio.println(self.accumulate(2, 2, 2, 10000));
+            self.print_outcome(self.accumulate(2, 2, 2, 10000));
             return;
         fi
         if mail.value == "high_commit"; do
-            stdio.println(self.commit(2, 2));
+            self.print_outcome(self.commit(2, 2));
             stdio.println(self.version());
             return;
         fi
@@ -289,11 +302,15 @@ define actor VersionedScalarStage as
             return;
         fi
         if mail.value == "stale_after_cancel"; do
-            stdio.println(self.accumulate(2, 2, 1, 1));
+            self.print_outcome(self.accumulate(2, 2, 1, 1));
             return;
         fi
         if mail.value == "new_forward"; do
-            stdio.println(self.eval_affine(3, 3, 1, 2));
+            self.print_outcome(self.eval_affine(3, 3, 1, 2));
+            return;
+        fi
+        if mail.value == "new_negative_forward"; do
+            self.print_outcome(self.eval_affine(3, 3, 2, -2));
             return;
         fi
         if mail.value == "after"; do
@@ -328,6 +345,7 @@ pub async routine main(): void {
     worker.send("cancel_failed");
     worker.send("stale_after_cancel");
     worker.send("new_forward");
+    worker.send("new_negative_forward");
     worker.send("after");
     await worker.get_done();
     return;
