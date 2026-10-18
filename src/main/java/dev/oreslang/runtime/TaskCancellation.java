@@ -11,18 +11,19 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Runtime-only structured cancellation authority for Oreslang Tasks.
- *
- * <p>Ownership forms an acyclic, single-parent tree. A cancellation request
- * atomically marks an entire currently owned subtree under the graph lock,
- * before running any revokers or observers. Callback execution is outside that
- * lock: guest code must never be called from these hooks. Source-language
- * access to cancellation remains subject to actor/tenant capability checks.
- * This class does not itself stop executing code or witness physical teardown.
+ * Runtime-private cancellation-request authority; NOT a termination barrier.
+ * The owning scheduler must separately confirm physical task quiescence.
+ * Ownership changes and cancellation decisions linearize under GRAPH_LOCK.
+ * Callbacks never run under GRAPH_LOCK and must be trusted host-only code.
  */
-public final class TaskCancellation {
+final class TaskCancellation {
     private static final Object GRAPH_LOCK = new Object();
     private static final String DEFAULT_REASON = "cancelled";
+    private static final int MAX_REASON_LENGTH = 256;
+    // A linked chain may contain thousands of cancellation edges. Drain events
+    // iteratively rather than recursively calling another cancellation hook.
+    private static final ThreadLocal<ArrayDeque<Runnable>> DISPATCH = new ThreadLocal<>();
+
     private final Set<TaskCancellation> children =
             Collections.newSetFromMap(new IdentityHashMap<>());
     private final Set<Registration> revokers = new LinkedHashSet<>();
@@ -30,55 +31,51 @@ public final class TaskCancellation {
     private TaskCancellation owner;
     private volatile boolean cancelled;
     private volatile String cancellationReason;
+    // Protected by GRAPH_LOCK: observers registered after the cancel decision
+    // wait until all revokers admitted before that decision have finished.
+    private boolean revocationComplete;
 
-    /** Create a root cancellation authority, owned by the runtime or actor. */
-    public TaskCancellation() { }
+    TaskCancellation() { }
 
-    /** Create a structurally owned child. A cancelled parent yields a cancelled child. */
-    public TaskCancellation child() {
+    TaskCancellation child() {
         synchronized (GRAPH_LOCK) {
             TaskCancellation child = new TaskCancellation();
-            child.owner = this;
             if (cancelled) {
-                child.cancelled = true;
                 child.cancellationReason = cancellationReason;
+                child.cancelled = true;
+                child.revocationComplete = true;
             } else {
+                child.owner = this;
                 children.add(child);
             }
             return child;
         }
     }
 
-    public boolean isCancelled() {
+    boolean isCancelled() {
         return cancelled;
     }
 
-    /** Null until cancellation was requested. The first reason wins. */
-    public String cancellationReason() {
+    /** Null until cancellation; writing reason precedes volatile cancelled. */
+    String cancellationReason() {
         return cancellationReason;
     }
 
-    public boolean isOwnedBy(TaskCancellation expectedOwner) {
+    boolean isOwnedBy(TaskCancellation expectedOwner) {
         synchronized (GRAPH_LOCK) {
             return owner == expectedOwner;
         }
     }
 
-    /**
-     * Atomic ownership transfer. Never changes a cancellation decision already
-     * made, never permits cycles, and never leaves an orphaned active child.
-     * A source-language transfer must separately prove authority for BOTH owners.
-     */
-    public void adoptInto(TaskCancellation newOwner) {
+    /** Atomic reparent, never a detach. Caller must separately prove authority. */
+    void adoptInto(TaskCancellation newOwner) {
         Objects.requireNonNull(newOwner, "newOwner");
         synchronized (GRAPH_LOCK) {
             if (cancelled) throw new IllegalStateException("cannot transfer cancelled task");
             if (newOwner.cancelled) throw new IllegalStateException("cannot adopt into cancelled owner");
             if (owner == null) throw new IllegalStateException("cannot transfer a root authority");
-            TaskCancellation cursor = newOwner;
-            while (cursor != null) {
+            for (TaskCancellation cursor = newOwner; cursor != null; cursor = cursor.owner) {
                 if (cursor == this) throw new IllegalArgumentException("ownership cycle");
-                cursor = cursor.owner;
             }
             if (owner == newOwner) return;
             owner.children.remove(this);
@@ -88,87 +85,115 @@ public final class TaskCancellation {
     }
 
     /**
-     * Idempotently request cancellation. First reason wins. All owned
-     * descendants are revoked in the same atomic graph transition. Runtime
-     * revokers run before observers, outside the lock. No completion/cleanup
-     * guarantee is implied; callers must await a separate teardown barrier.
+     * Marks the entire live subtree before delivering any callback. A second
+     * request never changes its first reason. This is not a join/cleanup proof.
      */
-    public boolean cancel(String reason) {
+    boolean cancel(String reason) {
         Objects.requireNonNull(reason, "reason");
-        if (reason.isBlank()) throw new IllegalArgumentException("reason must not be blank");
+        if (reason.isBlank() || reason.length() > MAX_REASON_LENGTH) {
+            throw new IllegalArgumentException("reason must contain 1..256 nonblank characters");
+        }
+        List<TaskCancellation> marked = new ArrayList<>();
         List<Registration> revoke = new ArrayList<>();
-        List<Registration> notify = new ArrayList<>();
         synchronized (GRAPH_LOCK) {
             if (cancelled) return false;
             ArrayDeque<TaskCancellation> queue = new ArrayDeque<>();
-            queue.add(this);
+            queue.addLast(this);
             while (!queue.isEmpty()) {
                 TaskCancellation node = queue.removeFirst();
                 if (node.cancelled) continue;
-                node.cancelled = true;
                 node.cancellationReason = reason;
+                node.cancelled = true;
                 queue.addAll(node.children);
                 node.children.clear();
                 if (node.owner != null) node.owner.children.remove(node);
+                node.owner = null; // terminal token cannot retain old owner tree
                 revoke.addAll(node.revokers);
-                notify.addAll(node.observers);
                 node.revokers.clear();
-                node.observers.clear();
+                marked.add(node);
             }
         }
-        for (Registration hook : revoke) hook.deliver();
-        for (Registration hook : notify) hook.deliver();
+        dispatch(() -> {
+            // Marked before any callback; observer delivery is buffered until
+            // this entire admission batch has completed revocation callbacks.
+            for (Registration hook : revoke) hook.deliver();
+            List<Registration> notify = new ArrayList<>();
+            synchronized (GRAPH_LOCK) {
+                for (TaskCancellation node : marked) {
+                    node.revocationComplete = true;
+                    notify.addAll(node.observers);
+                    node.observers.clear();
+                }
+            }
+            for (Registration hook : notify) hook.deliver();
+        });
         return true;
     }
 
-    public boolean cancel() {
+    boolean cancel() {
         return cancel(DEFAULT_REASON);
     }
 
-    /** Runtime-only nonblocking revocation hook, such as a scheduler cancel. */
-    public Subscription onRevoke(Runnable revoker) {
-        return register(revoker, true);
+    Subscription onRevoke(Runnable hook) {
+        return register(hook, true);
     }
 
-    /** Runtime-only observation hook, never a guest continuation callback. */
-    public Subscription onCancel(Runnable observer) {
-        return register(observer, false);
+    Subscription onCancel(Runnable hook) {
+        return register(hook, false);
     }
 
-    /**
-     * Directional link: cancelling source requests cancellation here. This does
-     * NOT transfer ownership and does NOT create a bidirectional Erlang link.
-     * Closing the returned subscription unlinks future notifications, never
-     * reverses cancellation which has already been requested.
-     */
-    public Subscription linkCancellationFrom(TaskCancellation source) {
+    /** A link observes cancellation; it never grants ownership. */
+    Subscription linkCancellationFrom(TaskCancellation source) {
         Objects.requireNonNull(source, "source");
         if (source == this) throw new IllegalArgumentException("self cancellation link");
-        return source.onCancel(() -> cancel("linked:" +
-                Objects.requireNonNullElse(source.cancellationReason(), DEFAULT_REASON)));
+        return source.onCancel(() -> {
+            String from = Objects.requireNonNullElse(
+                    source.cancellationReason(), DEFAULT_REASON);
+            String linked = from.startsWith("linked:") ? from : "linked:" + from;
+            if (linked.length() > MAX_REASON_LENGTH) {
+                linked = linked.substring(0, MAX_REASON_LENGTH);
+            }
+            cancel(linked);
+        });
     }
 
     private Subscription register(Runnable hook, boolean revoke) {
         Objects.requireNonNull(hook, "hook");
         Registration registration = new Registration(this, hook, revoke);
-        boolean alreadyCancelled;
+        boolean deliver;
         synchronized (GRAPH_LOCK) {
-            alreadyCancelled = cancelled;
-            if (!alreadyCancelled) {
-                (revoke ? revokers : observers).add(registration);
-            }
+            // During cancellation, new revokers execute immediately; new
+            // observers wait until the initial revoker batch completes.
+            deliver = cancelled && (revoke || revocationComplete);
+            if (!deliver) (revoke ? revokers : observers).add(registration);
         }
-        if (alreadyCancelled) registration.deliver();
+        if (deliver) dispatch(registration::deliver);
         return registration;
     }
 
-    public interface Subscription extends AutoCloseable {
+    private static void dispatch(Runnable action) {
+        ArrayDeque<Runnable> current = DISPATCH.get();
+        if (current != null) {
+            current.addLast(action);
+            return;
+        }
+        ArrayDeque<Runnable> queue = new ArrayDeque<>();
+        DISPATCH.set(queue);
+        try {
+            queue.addLast(action);
+            while (!queue.isEmpty()) queue.removeFirst().run();
+        } finally {
+            DISPATCH.remove();
+        }
+    }
+
+    interface Subscription extends AutoCloseable {
         @Override void close();
     }
 
     private static final class Registration implements Subscription {
-        private final TaskCancellation owner;
-        private final Runnable hook;
+        private TaskCancellation owner;
+        private Runnable hook;
         private final boolean revoke;
         private final AtomicBoolean active = new AtomicBoolean(true);
 
@@ -180,19 +205,29 @@ public final class TaskCancellation {
 
         private void deliver() {
             if (!active.compareAndSet(true, false)) return;
+            Runnable call = hook;
+            owner = null;
+            hook = null; // a retained Subscription cannot pin the source graph
             try {
-                hook.run();
-            } catch (RuntimeException | Error ignored) {
-                // Cancellation is irreversible, including with faulty callbacks.
-                // Callbacks are trusted runtime hooks; diagnostics are handled
-                // by their owning runtime component.
+                call.run();
+            } catch (RuntimeException | Error failure) {
+                if (failure instanceof VirtualMachineError fatal) throw fatal;
+                if (failure instanceof ThreadDeath fatal) throw fatal;
+                if (failure instanceof LinkageError fatal) throw fatal;
+                // Other trusted host-hook errors cannot roll cancellation back
+                // or prevent delivery of the remaining revokers/observers.
             }
         }
 
         @Override public void close() {
             if (!active.compareAndSet(true, false)) return;
+            TaskCancellation previousOwner = owner;
+            owner = null;
+            hook = null;
             synchronized (GRAPH_LOCK) {
-                (revoke ? owner.revokers : owner.observers).remove(this);
+                if (previousOwner != null) {
+                    (revoke ? previousOwner.revokers : previousOwner.observers).remove(this);
+                }
             }
         }
     }
