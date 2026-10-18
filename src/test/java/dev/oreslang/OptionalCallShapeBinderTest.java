@@ -51,6 +51,10 @@ final class OptionalCallShapeBinderTest {
                 Argument.namedOmission("a")));
         assertEquals(List.of(1), named.callItemIndexByEvaluatedSource());
         assertEquals(List.of(0, 2), named.omittedCallItemIndices());
+        assertEquals(List.of(
+                new OptionalCallShapeBinder.OmittedCallItem(0, 1),
+                new OptionalCallShapeBinder.OmittedCallItem(2, 0)),
+                named.omittedCallItemBindings());
         assertEquals(3, named.callItemCount());
         assertEquals(List.of(1, 0), named.explicitlyOmittedParameterIndices());
 
@@ -59,6 +63,10 @@ final class OptionalCallShapeBinderTest {
                 Argument.positional(), Argument.positional()));
         assertEquals(List.of(2, 3), positional.callItemIndexByEvaluatedSource());
         assertEquals(List.of(0, 1), positional.omittedCallItemIndices());
+        assertEquals(List.of(
+                new OptionalCallShapeBinder.OmittedCallItem(0, 0),
+                new OptionalCallShapeBinder.OmittedCallItem(1, 1)),
+                positional.omittedCallItemBindings());
         assertEquals(List.of(3), positional.variadicSourceIndices().stream()
                 .map(positional::callItemIndex).toList());
     }
