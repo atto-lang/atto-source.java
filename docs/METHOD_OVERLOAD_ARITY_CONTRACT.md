@@ -94,3 +94,11 @@ proves the same contract; see the LLVM parity issue.
 Future default parameters or variadic callables must not introduce a
 second method matching a source-call arity. A future desugaring into
 explicit arity slots must check collision before code generation.
+
+Proposed non-trailing optional slots and named calls require compile-time
+*call-shape* disambiguation, not raw supplied-argument-count dispatch. An
+omitted optional must retain the declaration's full ABI arity; competing
+eligible shapes, even across distinct declared arities, fail closed instead
+of preferring exact arity or matching runtime types. See
+[OPTIONAL_NAMED_ARGUMENTS_CONTRACT.md](OPTIONAL_NAMED_ARGUMENTS_CONTRACT.md).
+This extension is not enabled in the current compiler.
