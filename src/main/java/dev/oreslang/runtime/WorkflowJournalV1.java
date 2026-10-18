@@ -222,6 +222,8 @@ public final class WorkflowJournalV1 {
                     "leaseMillis must be in (0, "
                             + MAX_LEASE_MILLIS + "]");
         }
+        long leaseUntil =
+                Math.addExact(nowMillis, leaseMillis);
         observeClockLocked(nowMillis);
 
         expireClaimsLocked(nowMillis);
@@ -233,8 +235,6 @@ public final class WorkflowJournalV1 {
             long claimNumber = nextClaimNumber;
             long followingClaimNumber =
                     Math.addExact(nextClaimNumber, 1L);
-            long leaseUntil =
-                    Math.addExact(nowMillis, leaseMillis);
             String token =
                     "workflow/" + runId
                             + "/claim/" + claimNumber;
