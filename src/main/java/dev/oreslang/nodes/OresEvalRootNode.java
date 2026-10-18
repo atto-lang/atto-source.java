@@ -1259,7 +1259,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "detached source block task requires actor execution");
             }
-            task.initialBlockEnv = env.snapshotCaptures(
+            task.initialBlockEnv = env.snapshotDetachedCaptures(
                     LambdaCapturePlanner.capturesBlock(body));
             OresFuture<Object> future = context.actors().startActorTask(task);
             context.actors().ownCurrentActorFuture(future);
@@ -2552,7 +2552,7 @@ public final class OresEvalRootNode extends RootNode {
                 // Actor admission was checked before buildStaticSelectSet.
                 ActorRuntime.ContinuationTarget target =
                         context.actors().captureCurrentContinuationTarget();
-                Env captured = env.snapshotCaptures(
+                Env captured = env.snapshotDetachedCaptures(
                         LambdaCapturePlanner.capturesSelect(select));
                 context.actors().enqueueOnCompletion(
                         future,
@@ -3993,7 +3993,7 @@ public final class OresEvalRootNode extends RootNode {
                                             ActorRuntime.ContinuationTarget target =
                                                     context.actors()
                                                             .captureCurrentContinuationTarget();
-                                            Env callbackEnv = env.snapshotCaptures(
+                                            Env callbackEnv = env.snapshotDetachedCaptures(
                                                     LambdaCapturePlanner.capturesBlock(
                                                             operation.callbackBody()));
                                             context.actors().enqueueOnCompletion(
@@ -5450,7 +5450,7 @@ public final class OresEvalRootNode extends RootNode {
                 // Execution-domain admission occurred before selectAsync().
                 ActorRuntime.ContinuationTarget target =
                         context.actors().captureCurrentContinuationTarget();
-                Env captured = env.snapshotCaptures(
+                Env captured = env.snapshotDetachedCaptures(
                         LambdaCapturePlanner.capturesSelect(selected));
                 context.actors().enqueueOnCompletion(
                         future,
@@ -5596,7 +5596,7 @@ public final class OresEvalRootNode extends RootNode {
                 OresFuture<Void> completion = channel.writeAsync(value);
                 ActorRuntime.ContinuationTarget target =
                         context.actors().captureCurrentContinuationTarget();
-                Env callbackEnv = env.snapshotCaptures(
+                Env callbackEnv = env.snapshotDetachedCaptures(
                                                     LambdaCapturePlanner.capturesBlock(
                                                             operation.callbackBody()));
                 context.actors().enqueueOnCompletion(
@@ -9061,6 +9061,30 @@ public final class OresEvalRootNode extends RootNode {
                     Slot slot = cursor.slots.get(name);
                     if (slot != null) {
                         cp.slots.put(name, slot);
+                        break;
+                    }
+                }
+            }
+            return cp;
+        }
+
+        /**
+         * Detached continuations cross an actor-turn boundary. They retain the
+         * captured value as it existed at registration, not a live alias to an
+         * outer rebindable Slot. This also avoids keeping a hidden write path
+         * back into an activation that ownership checking has already left.
+         *
+         * Object identity inside the value is preserved: this is a Slot
+         * projection/copy, not rt copy/deep-copy or Sendable evidence.
+         */
+        private Env snapshotDetachedCaptures(java.util.Set<String> names) {
+            Env cp = new Env(null, descendantsNonLexical, accessClass, null,
+                    lexicalModule, lexicalContainerClass);
+            for (String name : names) {
+                for (Env cursor = this; cursor != null; cursor = cursor.parent) {
+                    Slot slot = cursor.slots.get(name);
+                    if (slot != null) {
+                        cp.slots.put(name, new Slot(slot.value, slot.kind));
                         break;
                     }
                 }
