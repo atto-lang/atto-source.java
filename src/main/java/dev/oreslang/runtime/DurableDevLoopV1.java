@@ -283,16 +283,20 @@ public final class DurableDevLoopV1 {
                 Math.addExact(nextSequence, 1L);
 
         final ApplyResult result;
-        Event prior = seenEvents.get(eventId);
-        if (prior != null) {
+        DeliveryRecord prior = seenEvents.get(eventId);
+        if (prior != null && !prior.event().equals(event)) {
             result = new ApplyResult(
-                    prior.equals(event)
-                            ? Disposition.DUPLICATE
-                            : Disposition.CONFLICT,
-                    List.of());
+                    Disposition.CONFLICT, List.of());
+        } else if (prior != null && prior.sealed()) {
+            result = new ApplyResult(
+                    Disposition.DUPLICATE, List.of());
         } else {
             result = applyFresh(event);
-            seenEvents.put(eventId, event);
+            boolean sealed =
+                    result.disposition() != Disposition.REJECTED;
+            seenEvents.put(
+                    eventId,
+                    new DeliveryRecord(event, sealed));
         }
 
         assertInvariants();
