@@ -39,7 +39,7 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
     private final ConcurrentHashMap<Long, AtomicReference<Poll>> tickets =
             new ConcurrentHashMap<>();
     private final AtomicLong nextTicket = new AtomicLong();
-    private boolean closed;
+    private volatile boolean closed;
 
     TrustedActorLoopbackEgressBridge(
             ActorRuntime runtime,
@@ -64,6 +64,9 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
             broker.close();
             throw new IllegalStateException("untrusted actor already has a host egress binding");
         }
+        // Runtime-owned completion notification: never execute network
+        // teardown under an actor finalization lock or guest execution turn.
+        actor.done().whenCompleteRuntime((ignored, failure) -> revokeAfterTermination());
     }
 
     /**
@@ -152,6 +155,15 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
                 slot.set(new Poll(State.FAILED, 0));
             }
         }
+    }
+
+    private void revokeAfterTermination() {
+        closed = true;
+        HOST_BINDINGS.remove(bindingKey, this);
+        tickets.clear();
+        // Actor completion listeners can run under ActorRuntime lifecycle
+        // locks. Real HTTP client shutdown must happen on a host thread.
+        java.util.concurrent.CompletableFuture.runAsync(() -> broker.close());
     }
 
     private void requireBoundActorTurn() {
