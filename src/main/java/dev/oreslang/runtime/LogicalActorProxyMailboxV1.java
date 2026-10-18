@@ -5,7 +5,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeSet;
-import java.util.UUID;
 
 /**
  * Bounded immutable logical-mailbox core for a route-stable actor proxy.
@@ -53,16 +52,13 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             boolean closed) { }
 
     public final class FreezeTicket implements AutoCloseable {
-        private final UUID id;
         private final long routeEpoch;
         private final long dispatchWatermark;
         private boolean consumed;
 
         private FreezeTicket(
-                UUID id,
                 long routeEpoch,
                 long dispatchWatermark) {
-            this.id = id;
             this.routeEpoch = routeEpoch;
             this.dispatchWatermark = dispatchWatermark;
         }
@@ -235,8 +231,11 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                         "duplicate outstanding logical message sequence");
             }
 
-            queued.removeFirst();
+            // Reserve the outstanding slot before removing the queued head.
+            // HashMap growth may throw OOME; a failed reservation must not
+            // silently lose the envelope or leak its retained credits.
             outstanding.put(envelope.messageSequence(), envelope);
+            queued.removeFirst();
             highestDispatchedSequence = envelope.messageSequence();
             checkStructuralInvariantsLocked();
             return envelope;
@@ -270,9 +269,13 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                 throw new IllegalStateException(
                         "physical dispatch rollback requires the latest outstanding sequence");
             }
-            Envelope envelope = outstanding.remove(messageSequence);
-            highestDispatchedSequence--;
+            Envelope envelope = outstanding.get(messageSequence);
+            // ArrayDeque may grow here. Enqueue before mutating outstanding
+            // state so allocation failure leaves the delivery authoritative
+            // and its credits intact, never half-requeued.
             queued.addFirst(envelope);
+            outstanding.remove(messageSequence);
+            highestDispatchedSequence--;
             // This is not logical completion: retain all message/byte credits
             // and preserve the original admission sequence for the next send.
             checkStructuralInvariantsLocked();
@@ -360,13 +363,12 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                 throw new IllegalStateException(
                         "logical proxy dispatch is already frozen");
             }
-            dispatchFrozen = true;
+            // Construct first. Allocation failure must never strand ingress
+            // in a frozen state with no valid rollback ticket.
             FreezeTicket ticket =
-                    new FreezeTicket(
-                            UUID.randomUUID(),
-                            routeEpoch,
-                            highestDispatchedSequence);
+                    new FreezeTicket(routeEpoch, highestDispatchedSequence);
             activeFreeze = ticket;
+            dispatchFrozen = true;
             checkStructuralInvariantsLocked();
             return ticket;
         }
