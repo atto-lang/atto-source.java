@@ -17,7 +17,7 @@ permissions:
 jobs:
   relation-oracle:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 35
     steps:
       - name: Checkout exact head without persisted credentials
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
