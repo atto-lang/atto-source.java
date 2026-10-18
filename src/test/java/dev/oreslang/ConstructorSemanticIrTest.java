@@ -56,6 +56,36 @@ final class ConstructorSemanticIrTest {
     }
 
     @Test
+    void semanticConstructorRejectsSwappedOrForgedSourceParameters() {
+        Ast.ClassDecl original = (Ast.ClassDecl) Parser.parse("""
+                define class Foo as
+                  constructor(int x) { return; }
+                end
+                """).modules().getFirst().declarations().getFirst();
+        Ast.ClassDecl forged = (Ast.ClassDecl) Parser.parse("""
+                define class Foo as
+                  constructor(int y) { return; }
+                end
+                """).modules().getFirst().declarations().getFirst();
+        var key = new ConstructorSemanticIr.ConstructorKey("Foo", 1);
+        assertThrows(IllegalArgumentException.class, () ->
+                new ConstructorSemanticIr.ConstructorDecl(key,
+                        ConstructorSemanticIr.ReceiverBinding.IMPLICIT,
+                        forged.constructor().parameters(), original.constructor(), null));
+        assertThrows(IllegalArgumentException.class, () ->
+                new ConstructorSemanticIr.ConstructorDecl(
+                        new ConstructorSemanticIr.ConstructorKey("Foo", 0),
+                        ConstructorSemanticIr.ReceiverBinding.IMPLICIT,
+                        original.constructor().parameters(), original.constructor(), null));
+        var legitimate = ConstructorSemanticIr.ConstructorDecl.of(
+                "Foo", ConstructorSemanticIr.ReceiverBinding.IMPLICIT, original.constructor());
+        assertEquals(key, legitimate.key());
+        assertThrows(IllegalArgumentException.class, () ->
+                legitimate.withDelegation(key),
+                "immediate recursive constructor delegation must be rejected");
+    }
+
+    @Test
     void constructionStateJoinPreservesRegionAndFieldIntervals() {
         ConstructorSemanticIr.ConstructionRegionId region =
                 new ConstructorSemanticIr.ConstructionRegionId("Foo", 1, 0);
