@@ -189,6 +189,32 @@ final class ActorPipelineRouteSession {
         return child(current, options.get(cursor));
     }
 
+    /** Group-backed round robin cycles over the COMPLETE immutable DAG edge
+     * order, skipping inactive group members. A membership change therefore
+     * never causes a cursor to point at an unverified actor instance. The
+     * attempt consumes its selected turn even if admission subsequently fails.
+     * Group snapshots are host-owned selector inputs, not new route authority.
+     */
+    synchronized MailFrame forwardRoundRobinEligible(
+            MailFrame current, java.util.Set<String> eligible) {
+        requireForward(current);
+        Objects.requireNonNull(eligible, "eligible targets");
+        List<ActorPipelineRoutePlan.Edge> options = graph.forwardAll(current.receiver());
+        Integer cursor = roundRobin.get(current.receiver());
+        if (cursor == null) throw new IllegalStateException("round-robin cursor missing");
+        for (int offset = 0; offset < options.size(); offset++) {
+            int index = (cursor + offset) % options.size();
+            var edge = options.get(index);
+            if (eligible.contains(edge.target())) {
+                roundRobin.put(current.receiver(),
+                        index + 1 == options.size() ? 0 : index + 1);
+                return child(current, edge);
+            }
+        }
+        throw new IllegalStateException(
+                "no connected ActorGroup member is eligible for round robin");
+    }
+
     public synchronized MailFrame forwardTo(MailFrame current, String target) {
         requireForward(current);
         return child(current, graph.forwardTo(current.receiver(), target));
@@ -226,6 +252,44 @@ final class ActorPipelineRouteSession {
         }
         nextRouteId = routeId;
         return result;
+    }
+
+    /** Atomic allocation of a *subsequence* of graph edges. A dynamic
+     * ActorGroup may remove candidates, but may not add edges, reorder
+     * recipients, repeat a branch, or silently select an empty set. */
+    synchronized List<MailFrame> forwardSelected(
+            MailFrame current, List<ActorPipelineRoutePlan.Edge> selected) {
+        requireForward(current);
+        Objects.requireNonNull(selected, "selected graph edges");
+        var allowed = graph.forwardAll(current.receiver());
+        if (selected.isEmpty())
+            throw new IllegalStateException("no eligible actor pipeline recipients");
+        int cursor = 0;
+        for (var edge : selected) {
+            Objects.requireNonNull(edge, "selected edge");
+            while (cursor < allowed.size() && !allowed.get(cursor).equals(edge)) cursor++;
+            if (cursor == allowed.size())
+                throw new SecurityException(
+                        "selected ActorGroup recipient is not an ordered graph edge");
+            cursor++;
+        }
+        reserve(selected.size());
+        reserveRouteIds(selected.size());
+        var prepared = new ArrayList<MailFrame>(selected.size());
+        long routeId = nextRouteId;
+        for (var edge : selected) {
+            prepared.add(new MailFrame(this, generation, current.flowId,
+                    routeId++, extend(current.actorPath, edge.target())));
+        }
+        var ready = List.copyOf(prepared);
+        try {
+            for (var child : ready) active.put(child, Boolean.TRUE);
+        } catch (RuntimeException | Error failed) {
+            for (var child : ready) active.remove(child);
+            throw failed;
+        }
+        nextRouteId = routeId;
+        return ready;
     }
 
     /** VM-only actual reverse DATA hop. The original trusted path is carried
