@@ -253,7 +253,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private static String importKey(String scope, String name) {
-            return scope + "\u0000" + name;
+            return scope + "::" + name;
         }
 
         private void indexHostImport(String scope, Ast.ImportDecl imported) {
