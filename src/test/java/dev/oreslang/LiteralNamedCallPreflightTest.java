@@ -217,4 +217,18 @@ final class LiteralNamedCallPreflightTest {
                 """);
         assertThrows(IllegalArgumentException.class, () -> inspect(p));
     }
+
+    @Test
+    void mutableReferentEvenUnderConstNeedsOwnershipAndLoanChecking() {
+        Ast.Program p = Parser.parse("""
+                define module app as
+                    pub fnc work(int a, bool c): int { return a; }
+                    pub fnc caller(): void {
+                        const mut result = work(c: true, a: 7);
+                        return;
+                    }
+                end
+                """);
+        assertThrows(IllegalArgumentException.class, () -> inspect(p));
+    }
 }

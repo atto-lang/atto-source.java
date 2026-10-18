@@ -92,6 +92,7 @@ public final class LiteralNamedCallPreflight {
                 || !(caller.body().getFirst() instanceof Ast.BindingStmt binding)
                 || binding.initializer() != call
                 || binding.kind() != Ast.BindingKind.CONST
+                || binding.mutableReferent()
                 || binding.declaredType() != null
                 || binding.inferredTypeName() != null) {
             throw new IllegalArgumentException("staged call not the original first caller binding");
