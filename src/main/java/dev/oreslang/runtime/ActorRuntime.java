@@ -847,6 +847,21 @@ public final class ActorRuntime implements AutoCloseable {
         return watchdogNoticesDropped.get();
     }
 
+    /** Number of currently created lifecycle-observer host workers.
+     * Zero at cold start. These are bounded host callback workers, not actor,
+     * CONTROL or selector carriers, and are currently outside OresCarrierBudget.
+     */
+    public int lifecycleObserverCarrierCount() {
+        requireSupervisorContext("inspect lifecycle observer carriers");
+        return lifecycleObserverDispatcher.getPoolSize();
+    }
+
+    /** Terminal observer bundles waiting behind the bounded lifecycle domain. */
+    public int lifecycleObserverBacklog() {
+        requireSupervisorContext("inspect lifecycle observer backlog");
+        return lifecycleObserverDispatcher.getQueue().size();
+    }
+
     /** Aggregate actor-runtime telemetry. Reading it never mutates actors. */
     public ActorRuntimeStats runtimeStats() {
         requireSupervisorContext("inspect actor runtime statistics");
