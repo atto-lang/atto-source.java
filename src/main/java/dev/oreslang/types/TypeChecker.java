@@ -5951,6 +5951,17 @@ public final class TypeChecker {
                             && inner.arguments().size() == 1) {
                         innermost = inner.arguments().getFirst();
                     }
+                    // The runtime currently carries OptionValue tags but not a
+                    // reified generic nesting depth. Fail closed rather than
+                    // recursively extracting past an erased static boundary.
+                    if (innermost == Unknown.INSTANCE
+                            || innermost instanceof Generic
+                            || innermost instanceof Union
+                            || innermost instanceof SelfType) {
+                        throw new IllegalArgumentException(
+                                "Option.unwrap_all requires a concrete innermost payload type; "
+                                        + "use explicit unwrap() at erased/generic boundaries");
+                    }
                     yield new Function(List.of(), innermost);
                 }
                 case "flatten" -> {
