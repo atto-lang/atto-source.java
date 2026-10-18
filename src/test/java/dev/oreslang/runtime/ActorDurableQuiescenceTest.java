@@ -105,6 +105,40 @@ final class ActorDurableQuiescenceTest {
     }
 
     @Test
+    void proofWaitsForHostTurnExecutorToLeave() throws Exception {
+        CountDownLatch callbackExited = new CountDownLatch(1);
+        CountDownLatch releaseHostBoundary = new CountDownLatch(1);
+        AtomicInteger guestTurns = new AtomicInteger();
+        ActorRuntime.TurnExecutor executor = turn -> {
+            turn.run();
+            callbackExited.countDown();
+            if (!releaseHostBoundary.await(5, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("host test boundary timed out");
+            }
+        };
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 1, 32), executor)) {
+            var actor = runtime.<Integer>spawnShared(() -> (msg, ctx) ->
+                    guestTurns.incrementAndGet());
+            try {
+                actor.send(1);
+                assertTrue(callbackExited.await(3, TimeUnit.SECONDS));
+                var pending = runtime.requestDurableQuiescence(actor);
+                assertFalse(pending.isDone(),
+                        "guest return is not the physical TurnExecutor leave boundary");
+                releaseHostBoundary.countDown();
+                var proof = pending.get(5, TimeUnit.SECONDS);
+                assertTrue(proof.valid());
+                assertEquals(1, guestTurns.get());
+                proof.close();
+            } finally {
+                releaseHostBoundary.countDown();
+                actor.cancel();
+            }
+        }
+    }
+
+    @Test
     void hostCallbacksRunOffCarrierAfterFreezeCompletion() throws Exception {
         try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(2, 2, 1, 32))) {
