@@ -59,7 +59,7 @@ final class TaskBlockSyntaxTest {
                             return;
                         }
                         """));
-        assertTrue(failure.getMessage().contains("do nb"), failure::getMessage);
+        assertTrue(failure.getMessage().contains("do task"), failure::getMessage);
     }
 
     @Test
