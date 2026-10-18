@@ -69,6 +69,20 @@ final class AsyncChannelBoundaryTest {
     }
 
     @Test
+    void channelCapabilityCannotBeHiddenInsideAsyncDataContainers() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                async fnc bad(Option<Channel<int>> hidden): void {
+                  return;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                async fnc bad(Result<int, Channel<int>> hidden): void {
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void actorBoundariesStillRejectChannelHandles() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 actor fnc bad(Channel<int> input): void {
