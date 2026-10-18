@@ -1340,13 +1340,14 @@ public final class OwnershipChecker {
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.TaskExpr task) return checkTaskBody(task.body(), scope);
-        if (expr instanceof Ast.TaskLambdaExpr taskLambda) {
-            rejectBorrowedScheduledParameters(taskLambda.lambda());
-            return checkLambda(taskLambda.lambda(), scope, null);
-        }
-        if (expr instanceof Ast.AsyncLambdaExpr asyncLambda) {
-            rejectBorrowedScheduledParameters(asyncLambda.lambda());
-            return checkLambda(asyncLambda.lambda(), scope, null);
+        if (expr instanceof Ast.TaskLambdaExpr || expr instanceof Ast.AsyncLambdaExpr) {
+            // An indirect/dynamically invoked scheduled lambda has no
+            // verified parameter-to-capture type/ownership metadata yet.
+            // Allow only immediate invocation through checkScheduledLambdaCall;
+            // otherwise a stored lambda followed by f(rt borrow x) could
+            // circumvent spawn-time borrow validation.
+            throw error("scheduled lambda values require typed callable ownership metadata; "
+                    + "invoke async/task lambdas immediately until indirect lowering is implemented");
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
