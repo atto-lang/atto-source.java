@@ -190,6 +190,16 @@ public final class HttpResponseDraft {
         if (!handedOff.compareAndSet(false, true))
             throw new IllegalStateException("HttpResponseDraft already handed off");
     }
+    private static final class CloseOnceInputStream extends FilterInputStream {
+        private final AtomicBoolean closed = new AtomicBoolean();
+
+        CloseOnceInputStream(InputStream input) { super(input); }
+
+        @Override public void close() throws IOException {
+            if (closed.compareAndSet(false, true)) super.close();
+        }
+    }
+
     InputStream openBody() {
         if (!handedOff.get()) throw new IllegalStateException("response not handed off");
         if (!bodyPresent) throw new IllegalStateException("bodyless response");
