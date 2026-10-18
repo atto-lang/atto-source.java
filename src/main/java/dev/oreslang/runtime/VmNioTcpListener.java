@@ -183,9 +183,11 @@ public final class VmNioTcpListener implements AutoCloseable {
         final List<Connection> snapshot;
         synchronized (gate) {
             if (closed) return;
-            closed = true;
-            pending = pendingAccept;
+            // Snapshot before making shutdown irreversible. Allocation failure
+            // must not leave a closed facade with live, unclosed descriptors.
             snapshot = new ArrayList<>(connections);
+            pending = pendingAccept;
+            closed = true;
         }
         // Closing the caller-owned listener revokes the readiness registration.
         // NIO terminal notification will settle any pending source Future.
@@ -337,8 +339,10 @@ public final class VmNioTcpListener implements AutoCloseable {
                 // Keep the connection in the listener's ownership set until
                 // descriptor close finishes. Removing it here lets another
                 // thread observe listenerClosed while the socket is still open.
-                terminated = true;
+                // Construct the revocation snapshot before making this
+                // connection terminal. Failure must leave it retryable.
                 snapshot = new ArrayList<>(outstanding);
+                terminated = true;
             }
             // Retire the descriptor BEFORE allowing listener-wide quiescence
             // or terminal operation notifications to become visible.
