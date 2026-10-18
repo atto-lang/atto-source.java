@@ -227,6 +227,108 @@ final class SqliteWorkflowJournalV1Test {
     }
 
     @Test
+    void completeAndAppendIsAtomicAcrossEveryPreCommitFault() {
+        EnumSet<SqliteWorkflowJournalV1.FaultPoint> points =
+                EnumSet.of(
+                        SqliteWorkflowJournalV1.FaultPoint.AFTER_BEGIN,
+                        SqliteWorkflowJournalV1.FaultPoint.AFTER_META_WRITE,
+                        SqliteWorkflowJournalV1.FaultPoint.AFTER_JOURNAL_WRITE,
+                        SqliteWorkflowJournalV1.FaultPoint.AFTER_EFFECT_WRITE,
+                        SqliteWorkflowJournalV1.FaultPoint.BEFORE_COMMIT);
+
+        for (var point : points) {
+            Path db = tempDir.resolve(
+                    "complete-append-" + point.name() + ".db");
+            WorkflowJournalV1.Claim claim =
+                    seedClaimedCode(db, "run-ca-" + point.name());
+
+            try (var store = SqliteWorkflowJournalV1.open(
+                    db,
+                    actual -> {
+                        if (actual == point) {
+                            throw new SimulatedCrash(point);
+                        }
+                    })) {
+                assertThrows(
+                        SimulatedCrash.class,
+                        () -> store.completeAndAppend(
+                                claim.effectKey(),
+                                claim.claimToken(),
+                                "receipt://code",
+                                150L,
+                                "code",
+                                new DurableDevLoopV1.CodeChanged(
+                                        1, "patch://one")));
+            }
+
+            try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+                assertEquals(1, reopened.journal().size(), point::name);
+                var code = reopened.effect(
+                        claim.effectKey()).orElseThrow();
+                assertEquals(
+                        WorkflowJournalV1.EffectState.CLAIMED,
+                        code.state(),
+                        point::name);
+                assertNull(code.receiptRef(), point::name);
+                assertEquals(
+                        DurableDevLoopV1.Phase.CODING,
+                        reopened.replayDevLoop().machine()
+                                .snapshot().phase(),
+                        point::name);
+                assertEquals(1, reopened.effects().size(), point::name);
+            }
+        }
+    }
+
+    @Test
+    void completeAndAppendSurvivesCrashAfterCommitAsOneDurableUnit() {
+        Path db = tempDir.resolve("complete-append-after.db");
+        WorkflowJournalV1.Claim claim =
+                seedClaimedCode(db, "run-ca-after");
+
+        try (var store = SqliteWorkflowJournalV1.open(
+                db,
+                point -> {
+                    if (point
+                            == SqliteWorkflowJournalV1.FaultPoint.AFTER_COMMIT) {
+                        throw new SimulatedCrash(point);
+                    }
+                })) {
+            assertThrows(
+                    SimulatedCrash.class,
+                    () -> store.completeAndAppend(
+                            claim.effectKey(),
+                            claim.claimToken(),
+                            "receipt://code",
+                            150L,
+                            "code",
+                            new DurableDevLoopV1.CodeChanged(
+                                    1, "patch://one")));
+        }
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            assertEquals(2, reopened.journal().size());
+            assertEquals(
+                    DurableDevLoopV1.Phase.WAITING_FOR_PUSH,
+                    reopened.replayDevLoop().machine().snapshot().phase());
+
+            var code = reopened.effect(
+                    claim.effectKey()).orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.COMPLETED,
+                    code.state());
+            assertEquals("receipt://code", code.receiptRef());
+
+            assertEquals(
+                    WorkflowJournalV1.EffectState.PENDING,
+                    reopened.effect(
+                            "devloop/run-ca-after/iteration/1/push")
+                            .orElseThrow()
+                            .state());
+        }
+    }
+
+    @Test
     void separateConnectionsHaveSingleWinnerForOnePendingEffect()
             throws Exception {
         Path db = tempDir.resolve("two-connections.db");
@@ -352,6 +454,19 @@ final class SqliteWorkflowJournalV1Test {
             fail("crash worker did not terminate");
         }
         return process.exitValue();
+    }
+
+    private static WorkflowJournalV1.Claim seedClaimedCode(
+            Path db,
+            String runId) {
+        var loop = new DurableDevLoopV1(runId, 3);
+        try (var store = SqliteWorkflowJournalV1.open(db)) {
+            store.append(loop.accept(
+                    "start",
+                    new DurableDevLoopV1.Start("goal")));
+            return store.claimNext(
+                    "coder", 100L, 100L).orElseThrow();
+        }
     }
 
     private static void seedStarted(Path db, String runId) {
