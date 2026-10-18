@@ -77,6 +77,11 @@ if [ "${FAKE_NO_REPORTS:-0}" != 1 ]; then
     for suite in VmNioTcpListenerTest NativeNetStdlibTest NioReadinessGroupTest NativeNioFutureReactorTest OresSchedulerTest OresCarrierPermitPoolTest OresFuturesTest OresFutureCallbackTest; do
       printf '<testsuite tests="1" skipped="0" failures="0" errors="0"><testcase classname="dev.oreslang.%s" name="synthetic"/></testsuite>\n' "$suite" > "target/surefire-reports/TEST-dev.oreslang.$suite.xml"
     done
+    if [ "${FAKE_FUTURE_TARGETED_REPORTS:-0}" = 1 ]; then
+      case " $* " in
+        *" test "*) touch -t 203501010101 target/surefire-reports/TEST-*.xml ;;
+      esac
+    fi
   fi
 fi
 printf 'SIMULATED MAVEN %s\\n' "$*"
@@ -258,6 +263,19 @@ exit 0
         self.assertEqual(76, result.returncode, result.stderr)
         self.assertIn("stage=targeted-report-audit", self.receipt())
         self.assertIn("result=FAIL", self.receipt())
+
+    def test_future_dated_targeted_reports_cannot_certify_full_verify(self):
+        # Reproduces a real bypass in timestamp-only freshness checking.
+        # Targeted reports have dates in 2035; full Maven does not run tests.
+        environment = self.env.copy()
+        environment["FAKE_FUTURE_TARGETED_REPORTS"] = "1"
+        environment["FAKE_NO_VERIFY_REPORTS"] = "1"
+        result = self.gate(env=environment)
+        self.assertEqual(76, result.returncode, result.stderr)
+        self.assertIn("stage=full-report-audit", self.receipt())
+        self.assertIn("result=FAIL", self.receipt())
+        archive = self.root / "target" / "nio-exact-tree-gate" / "targeted-surefire-reports"
+        self.assertEqual(8, len(list(archive.glob("TEST-*.xml"))))
 
     def test_full_verify_must_generate_new_junit_reports(self):
         environment = self.env.copy()

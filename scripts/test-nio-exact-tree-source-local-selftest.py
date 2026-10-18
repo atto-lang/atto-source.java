@@ -42,7 +42,9 @@ elif name == 'mvn':
         elif step == 'package':
             if '-Pnative-aot' not in args: sys.exit(99)
         else: sys.exit(98)
-        if step in ('test', 'verify'):
+        if step in ('test', 'verify') and not (
+            step == 'verify' and os.environ.get('NIO_TEST_FAIL') == 'future-targeted'
+        ):
             suites = ('VmNioTcpListenerTest', 'NativeNetStdlibTest',
                       'NioReadinessGroupTest', 'NativeNioFutureReactorTest',
                       'OresSchedulerTest', 'OresCarrierPermitPoolTest',
@@ -53,6 +55,9 @@ elif name == 'mvn':
                 (reports / ('TEST-dev.oreslang.' + suite + '.xml')).write_text(
                     '<testsuite tests="1" skipped="0" failures="0" errors="0"><testcase classname="dev.oreslang.' + suite +
                     '" name="synthetic"/></testsuite>\\n')
+                if step == 'test' and os.environ.get('NIO_TEST_FAIL') == 'future-targeted':
+                    os.utime(reports / ('TEST-dev.oreslang.' + suite + '.xml'),
+                             (2051222400, 2051222400))
 else: sys.exit(98)
 '''
 
@@ -97,7 +102,7 @@ def scenario(name, code, setup=None, *, aot=False):
             (repo / 'target').mkdir()
             (repo / 'target/stale.class').write_text('stale build')
         elif setup == 'wrong-jdk': env['NIO_TEST_JDK'] = '21'
-        elif setup in ('clean', 'test', 'verify', 'mutate'): env['NIO_TEST_FAIL'] = setup
+        elif setup in ('clean', 'test', 'verify', 'mutate', 'future-targeted'): env['NIO_TEST_FAIL'] = setup
         if aot: cmd.append('--native-aot')
         result = invoke(cmd, repo, env, check=False)
         assert result.returncode == code, (name, result.returncode, result.stderr)
@@ -109,9 +114,10 @@ def scenario(name, code, setup=None, *, aot=False):
             body = receipt.read_text()
             assert f'exit_code={code}\n' in body, (name, body)
             assert ('result=PASS' in body) == (code == 0), name
-            if setup in ('clean', 'test', 'verify', 'mutate'):
+            if setup in ('clean', 'test', 'verify', 'mutate', 'future-targeted'):
                 stage = dict(clean='clean-stale-build', test='targeted-junit',
-                             verify='full-maven-verify', mutate='postflight-source-identity')[setup]
+                             verify='full-maven-verify', mutate='postflight-source-identity',
+                             **{'future-targeted': 'full-report-audit'})[setup]
                 assert f'stage={stage}\n' in body, (name, body)
         trace = root / 'trace'
         calls = [row.split()[0] for row in trace.read_text().splitlines()] if trace.exists() else []
@@ -138,6 +144,7 @@ if __name__ == '__main__':
              ('clean-failure', 88, 'clean', False),
              ('targeted-failure', 89, 'test', False),
              ('verify-failure', 90, 'verify', False),
+             ('future-dated-targeted-reports', 76, 'future-targeted', False),
              ('postflight-mutation', 70, 'mutate', False)]
     for name, code, fixture, aot in tests:
         scenario(name, code, fixture, aot=aot)

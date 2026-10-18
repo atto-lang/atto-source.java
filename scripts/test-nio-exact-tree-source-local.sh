@@ -152,6 +152,18 @@ mvn -B -ntp -Dores.runtime.carriers=native \
 stage=targeted-report-audit
 python3 scripts/nio_verify_surefire_evidence.py "$EVIDENCE_DIR/targeted-start.marker" targeted
 
+# The targeted suite may emit reports with arbitrarily future-dated mtimes.
+# Timestamp comparisons alone cannot prove Maven verify produced new tests.
+# Preserve phase-one XML for review, but physically remove it from Surefire's
+# input/output directory before full verify. Full verification must repopulate
+# the directory and produce its own required suites.
+stage=isolate-targeted-reports
+if [[ -e "$EVIDENCE_DIR/targeted-surefire-reports" || -L "$EVIDENCE_DIR/targeted-surefire-reports" ]]; then
+  printf 'ERROR: targeted evidence archive already exists; refusing qualification.\n' >&2
+  exit 76
+fi
+mv -- "$root/target/surefire-reports" "$EVIDENCE_DIR/targeted-surefire-reports"
+
 stage=full-maven-verify
 touch "$EVIDENCE_DIR/full-start.marker"
 mvn -B -ntp -Dores.runtime.carriers=native verify 2>&1 \

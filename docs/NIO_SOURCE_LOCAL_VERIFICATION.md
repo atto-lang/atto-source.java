@@ -118,7 +118,12 @@ four-socket 64-KiB partial-write/rearm integrity test, and native reactor /
 Future callback regressions. Each Maven phase must produce **fresh Surefire XML** newer than its own
 pre-execution marker; `scripts/nio_verify_surefire_evidence.py` requires
 non-skipped testcases and checks all eight named targeted suites, including
-for the subsequent full `verify` phase. Maven exit code zero without a new
+for the subsequent full `verify` phase. Targeted XML is moved into
+`target/nio-exact-tree-gate/targeted-surefire-reports/` before full Maven verify:
+this prevents even deliberately future-dated targeted XML from proving full
+verify executed tests when Maven silently skips them. Full verify must create
+its own reports in the newly empty `target/surefire-reports/`.
+Maven exit code zero without a new
 JUnit report, missing test classes, malformed XML, or skipped-only suites
 fails the source-local gate (exit 76). The report parser also rejects symlinked
 reports, contradictory `tests`/`skipped`/`failures`/`errors` counters, and
