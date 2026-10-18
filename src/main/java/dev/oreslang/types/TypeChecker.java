@@ -5957,7 +5957,10 @@ public final class TypeChecker {
                     if (innermost == Unknown.INSTANCE
                             || innermost instanceof Generic
                             || innermost instanceof Union
-                            || innermost instanceof SelfType) {
+                            || innermost instanceof SelfType
+                            || (innermost instanceof Named unresolved
+                                    && (unresolved.name().equals("Any")
+                                            || unresolved.name().equals("Unknown")))) {
                         throw new IllegalArgumentException(
                                 "Option.unwrap_all requires a concrete innermost payload type; "
                                         + "use explicit unwrap() at erased/generic boundaries");
