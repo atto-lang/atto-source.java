@@ -25,7 +25,8 @@ final class StaticModuleNamespaceGuestTest {
     @Test
     void qualifiedModuleMembersAndCallableExtractionRemainExecutable() throws Exception {
         String output = evaluate(MODULE + """
-                pub routine main(): void {
+                define module app as
+                  pub fnc main(): void {
                   const f = Catalog.get;
                   stdio.stdout.write(Catalog.version);
                   stdio.stdout.write("|");
@@ -33,7 +34,8 @@ final class StaticModuleNamespaceGuestTest {
                   stdio.stdout.write("|");
                   stdio.stdout.write(f());
                   return;
-                }
+                  }
+                end
                 """);
         assertEquals("4|4|4", output);
     }
@@ -41,22 +43,26 @@ final class StaticModuleNamespaceGuestTest {
     @Test
     void directNamespaceValueFailsBeforeGuestExecution() {
         assertThrows(Exception.class, () -> evaluate(MODULE + """
-                pub routine main(): void {
+                define module app as
+                  pub fnc main(): void {
                   const escaped = Catalog;
                   stdio.stdout.write("should-not-execute");
                   return;
-                }
+                  }
+                end
                 """));
     }
 
     @Test
     void immutableModuleMemberAssignmentFailsBeforeGuestExecution() {
         assertThrows(Exception.class, () -> evaluate(MODULE + """
-                pub routine main(): void {
+                define module app as
+                  pub fnc main(): void {
                   Catalog.version = 5;
                   stdio.stdout.write("should-not-execute");
                   return;
-                }
+                  }
+                end
                 """));
     }
 
