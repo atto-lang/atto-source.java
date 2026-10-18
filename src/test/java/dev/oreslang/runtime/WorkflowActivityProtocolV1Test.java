@@ -14,7 +14,7 @@ final class WorkflowActivityProtocolV1Test {
                 1,
                 "goal",
                 null,
-                "effect/code"));
+                "devloop/run/iteration/1/code"));
 
         assertThrows(
                 SecurityException.class,
@@ -44,7 +44,7 @@ final class WorkflowActivityProtocolV1Test {
         var claim = claim(new DurableDevLoopV1.PushCode(
                 1,
                 "patch://one",
-                "effect/push"));
+                "devloop/run/iteration/1/push"));
 
         assertThrows(
                 IllegalArgumentException.class,
@@ -56,6 +56,24 @@ final class WorkflowActivityProtocolV1Test {
                                 WorkflowActivityProtocolV1
                                         .requiredCapabilities(
                                                 claim.command()))));
+    }
+
+    @Test
+    void activityClaimCannotBeRelabeledToDifferentRun() {
+        var claim = claim(new DurableDevLoopV1.RequestCode(
+                1,
+                "goal",
+                null,
+                "devloop/run-a/iteration/1/code"));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorkflowActivityProtocolV1.Request(
+                        "run-b",
+                        claim,
+                        WorkflowActivityProtocolV1.Kind.CODING,
+                        WorkflowActivityProtocolV1.requiredCapabilities(
+                                claim.command())));
     }
 
     @Test
@@ -127,11 +145,11 @@ final class WorkflowActivityProtocolV1Test {
     void terminalActivityUsesCompletionWithoutInventingWorkflowEvent() {
         var cancelClaim = claim(new DurableDevLoopV1.CancelWork(
                 "operator",
-                "effect/cancel"));
+                "devloop/run/cancel"));
         var escalationClaim = claim(new DurableDevLoopV1.Escalate(
                 3,
                 "budget exhausted",
-                "effect/escalate"));
+                "devloop/run/iteration/3/escalate"));
 
         assertDoesNotThrow(
                 () -> WorkflowActivityProtocolV1.validateOutcome(
