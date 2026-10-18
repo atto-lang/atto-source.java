@@ -7658,7 +7658,22 @@ public final class TypeChecker {
     }
 
     private boolean containsDynTypeRef(Ast.TypeRef ref) {
-        return ref.isDyn() || ref.arguments().stream().anyMatch(this::containsDynTypeRef);
+        return containsDynTypeRef(ref, new LinkedHashSet<>());
+    }
+
+    private boolean containsDynTypeRef(
+            Ast.TypeRef ref, Set<Ast.TypeAliasDecl> visitedAliases) {
+        if (ref.isDyn()) return true;
+        for (Ast.TypeRef argument : ref.arguments()) {
+            if (containsDynTypeRef(argument, visitedAliases)) return true;
+        }
+        // A zero-argument alias can hide the marker, e.g.
+        //   type Erased = dyn I; Channel<Erased>
+        // Generic aliases are visited as well; explicit type arguments above
+        // cover T=dyn I even if the alias body itself is a bare T.
+        Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
+        return alias != null && visitedAliases.add(alias)
+                && containsDynTypeRef(alias.target(), visitedAliases);
     }
 
     private List<Ast.TypeRef> positionalTypeArguments(Ast.TypeRef ref) {
