@@ -65,11 +65,11 @@ echo 'PASS non-JDK25 blocks Maven execution'
 mkdir -p "$work/java-home-21/bin" "$work/java-home-25/bin"
 cat > "$work/java-home-21/bin/java" <<'BADHOMEJAVA'
 #!/usr/bin/env bash
-printf '    java.specification.version = 21\\n' >&2
+printf '    java.specification.version = 21\n' >&2
 BADHOMEJAVA
 cat > "$work/java-home-25/bin/java" <<'GOODHOMEJAVA'
 #!/usr/bin/env bash
-printf '    java.specification.version = 25\\n' >&2
+printf '    java.specification.version = 25\n' >&2
 GOODHOMEJAVA
 chmod +x "$work/java-home-21/bin/java" "$work/java-home-25/bin/java"
 export JAVA_HOME="$work/java-home-21"
