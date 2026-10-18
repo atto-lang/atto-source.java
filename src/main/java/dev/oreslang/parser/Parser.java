@@ -1022,7 +1022,9 @@ public final class Parser {
         Ast.BindingKind kind = hasAnnotation(annotations, "FromJson") ? Ast.BindingKind.LET : Ast.BindingKind.VAL;
         type = applyTypeMetadataAnnotations(type, annotations, false);
         consumeExpressionClassFieldTerminator(initializer, "field declaration should end with ';'");
-        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
+        return new Ast.FieldDecl(
+                name, visibility, kind, type, annotations, initializer,
+                kind == Ast.BindingKind.VAL, isStatic);
     }
 
     /** Actor-state 'final name: Type' is a const/immutable field spelling. */
