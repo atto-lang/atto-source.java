@@ -34,6 +34,12 @@ public final class HttpResponsePreflightCheck {
                 exchange.getResponseHeaders().clear();
                 response.preflight(exchange);
                 response.writeTo(exchange, () -> false, input -> {});
+                try {
+                    response.writeClaimedTo(exchange, () -> false, input -> {});
+                    throw new AssertionError("second wire emission accepted");
+                } catch (IllegalStateException expected) {
+                    // One emission even though the response was already claimed.
+                }
                 successfulRetries.incrementAndGet();
             } finally {
                 exchange.close();
