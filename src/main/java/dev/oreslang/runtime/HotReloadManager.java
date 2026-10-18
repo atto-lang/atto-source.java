@@ -261,8 +261,14 @@ public final class HotReloadManager implements AutoCloseable {
     public void retire(long generationId) {
         final Generation generation;
         synchronized (this) {
-            generation = generations.remove(generationId);
+            generation = generations.get(generationId);
+            if (generation != null && generation.actorRoutePins() != 0) {
+                throw new IllegalStateException(
+                        "cannot retire hot-reload generation " + generationId
+                                + " while a logical actor route pins it");
+            }
             if (generation != null) {
+                generations.remove(generationId, generation);
                 boolean removed = active.compareAndSet(generation, null);
                 removed |= activeByCodeUnit.remove(generation.codeUnitId(), generation);
                 if (removed) advanceRoutingEpoch();
@@ -306,7 +312,7 @@ public final class HotReloadManager implements AutoCloseable {
         Throwable failure = null;
         for (Generation generation : toClose) {
             try {
-                generation.close();
+                generation.forceCloseFromManager();
             } catch (RuntimeException | Error closingFailure) {
                 if (failure == null) {
                     failure = closingFailure;
@@ -366,6 +372,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final ExecutionProfile executionProfile;
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
+        private int actorRoutePins;
         private boolean actorLinked;
         private OresContext linkedActorContext;
 
@@ -377,6 +384,41 @@ public final class HotReloadManager implements AutoCloseable {
             this.context = context;
             this.source = source;
             this.executionProfile = executionProfile;
+        }
+
+        /**
+         * Generation lifetime pin owned by one logical actor route. Ordinary
+         * retire()/close() cannot invalidate a live route behind its holder.
+         */
+        public final class ActorRouteLease implements AutoCloseable {
+            private final AtomicBoolean released = new AtomicBoolean();
+
+            private ActorRouteLease() { }
+
+            public Generation generation() { return Generation.this; }
+
+            @Override public void close() {
+                synchronized (Generation.this) {
+                    if (!released.compareAndSet(false, true)) return;
+                    if (actorRoutePins <= 0)
+                        throw new IllegalStateException(
+                                "hot-reload generation route-pin underflow");
+                    actorRoutePins--;
+                }
+            }
+        }
+
+        public synchronized ActorRouteLease pinActorRoute() {
+            if (closed.get())
+                throw new IllegalStateException("generation is closed");
+            if (actorRoutePins == Integer.MAX_VALUE)
+                throw new IllegalStateException("generation route-pin budget exhausted");
+            actorRoutePins++;
+            return new ActorRouteLease();
+        }
+
+        private synchronized int actorRoutePins() {
+            return actorRoutePins;
         }
 
         public long id() { return id; }
@@ -449,15 +491,29 @@ public final class HotReloadManager implements AutoCloseable {
 
         @Override
         public void close() {
-            if (closed.compareAndSet(false, true)) {
-                try {
-                    context.close(true);
-                } finally {
-                    HotReloadManager manager = owner.get();
-                    if (manager != null) {
-                        manager.onGenerationClosed(this);
-                    }
+            closeInternal(false);
+        }
+
+        private void forceCloseFromManager() {
+            closeInternal(true);
+        }
+
+        private void closeInternal(boolean force) {
+            synchronized (this) {
+                if (closed.get()) return;
+                if (!force && actorRoutePins != 0) {
+                    throw new IllegalStateException(
+                            "cannot close generation while "
+                                    + actorRoutePins
+                                    + " logical actor route(s) pin it");
                 }
+                closed.set(true);
+            }
+            try {
+                context.close(true);
+            } finally {
+                HotReloadManager manager = owner.get();
+                if (manager != null) manager.onGenerationClosed(this);
             }
         }
     }
