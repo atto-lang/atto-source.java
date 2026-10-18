@@ -293,7 +293,8 @@ public final class EnumCaseOverloadPolicy {
         }
         for (int i = 0; i < value.length(); i++) {
             char c = value.charAt(i);
-            if (Character.isISOControl(c) || Character.isWhitespace(c)) {
+            if (Character.isISOControl(c) || Character.isWhitespace(c)
+                    || Character.isSpaceChar(c)) {
                 throw new IllegalArgumentException("control/whitespace in canonical identity");
             }
             if (Character.isHighSurrogate(c)) {
