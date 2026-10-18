@@ -461,6 +461,33 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             self.root, self.baseline_source_tree, 1286, A)
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_trusted_cli_rejects_unsafe_executable_metadata(self):
+        import stat
+        from types import SimpleNamespace
+        valid = {
+            "/": (stat.S_IFDIR | 0o755, 0),
+            "/usr": (stat.S_IFDIR | 0o755, 0),
+            "/usr/bin": (stat.S_IFDIR | 0o755, 0),
+            "/usr/bin/gh": (stat.S_IFREG | 0o755, 0)}
+        def metadata(path):
+            mode, uid = valid[path]
+            return SimpleNamespace(st_mode=mode, st_uid=uid)
+        with patch.object(pub.os, "lstat", side_effect=metadata):
+            self.assertEqual(pub.trusted_github_cli(), "/usr/bin/gh")
+            for path, attrs in (
+                ("/usr/bin/gh", (stat.S_IFLNK | 0o777, 0)),
+                ("/usr/bin/gh", (stat.S_IFREG | 0o777, 0)),
+                ("/usr/bin/gh", (stat.S_IFREG | 0o755, 1000)),
+                ("/usr/bin/gh", (stat.S_IFREG | 0o644, 0)),
+                ("/usr/bin", (stat.S_IFDIR | 0o777, 0)),
+                ("/usr", (stat.S_IFDIR | 0o755, 1000))):
+                with self.subTest(path=path, metadata=attrs):
+                    old = valid[path]
+                    valid[path] = attrs
+                    with self.assertRaises(pub.Denied):
+                        pub.trusted_github_cli()
+                    valid[path] = old
+
     def test_real_github_reviews_list_parser(self):
         with patch.object(pub, 'trusted_github_cli', return_value='/usr/bin/gh'):
             from unittest.mock import Mock
