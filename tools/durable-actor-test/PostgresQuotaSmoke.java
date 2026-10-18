@@ -57,7 +57,9 @@ public final class PostgresQuotaSmoke {
             p.setString(1,address.tenantId());p.setString(2,address.workflowId());
             p.setString(3,address.runId());p.setString(4,address.nodeId());p.executeUpdate();
         }
-        var rebooted = new PostgresDurableActorStore(ds,2,1).activate(address);
+        var rebootedOwner=UUID.randomUUID();
+        var rebooted = new PostgresDurableActorStore(ds,2,1)
+            .acquireLease(address,rebootedOwner).activation();
         ok(rebooted.snapshot().stateVersion()==1 && rebooted.inbox().size()==2 &&
             rebooted.pendingOutbox().size()==1,"outbox limit rolls back state and consumption");
         ok(store.acknowledge(address,rebooted.epoch(),"o1","receipt-1"),"clear pending outbox");
