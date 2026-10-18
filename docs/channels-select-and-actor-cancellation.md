@@ -332,7 +332,11 @@ lifetime rules as static `nb select` arms:
 - only the canonical actor `self` mailbox capability has the special
   actor-turn lifetime;
 - nested channel callbacks are included in outer deferred-capture scanning,
-  so callback nesting cannot revive a moved owner or conceal an alias.
+  so callback nesting cannot revive a moved owner or conceal an alias;
+- a pre-built lexical callable cannot itself be captured across the actor-turn
+  boundary yet: its hidden closure environment may contain live Slot aliases.
+  Construct such a lambda inside the deferred body instead, so the deferred
+  body's own resolved/snapshotted data captures are authoritative.
 
 A nonblocking write with **no callback** does not detach a source-language arm;
 it transfers its outbound payload but does not capture unrelated locals.
@@ -384,6 +388,10 @@ detached `void` continuation scope:
 - move-only owned locals referenced by any arm transfer into the armed
   selection, so the continuing outer code cannot use them afterward;
 - mutable captures transfer exclusively into the continuation;
+- pre-built Fnc/Function/AnyCallable values are rejected as detached captures
+  until semantic capture plans can recursively transfer/freeze their hidden
+  environments; lambdas constructed inside the selected arm are safe because
+  the arm's own captures were already admitted at registration;
 - ordinary borrowed locals and MutexGuard-bearing values cannot outlive the
   current turn through an `nb select` arm;
 - actor `self` is the deliberate borrowed exception because the arm can only
