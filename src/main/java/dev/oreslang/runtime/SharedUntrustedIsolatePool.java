@@ -138,10 +138,14 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
      */
     public final class Group implements AutoCloseable {
         private final Context context;
-        // One lease per logical module, never one lease per repeated import.
-        // Separate hot-reload generations require separate guest Contexts.
-        private final Map<String, PinnedCodeImage> codeUnits = new HashMap<>();
-        private record PinnedCodeImage(String text, UntrustedSourceImageCache.Lease lease) {}
+        // Image admission must not use the guest execution monitor (this):
+        // forceCancel/close must be able to fence new acquisitions even when
+        // malicious guest execution owns the group monitor indefinitely.
+        private final Object imageAdmissionLock = new Object();
+        // Exactly one code-image lease per logical module in this Context.
+        // Reimported code is compared against the immutable Source contents,
+        // not retained as an extra per-actor source-string copy.
+        private final Map<String, UntrustedSourceImageCache.Lease> codeUnits = new HashMap<>();
         private volatile boolean groupClosed;
         // Exactly-once close task: contenders cannot return a false success
         // while another thread still executes Context.close(true).
@@ -153,8 +157,8 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
                     this.context.close(true);
                     // Keep code pinned through confirmed Context.close, not merely
                     // until the supervisor has issued a cancellation request.
-                    synchronized (this) {
-                        for (PinnedCodeImage image : codeUnits.values()) image.lease().close();
+                    synchronized (imageAdmissionLock) {
+                        for (UntrustedSourceImageCache.Lease lease : codeUnits.values()) lease.close();
                         codeUnits.clear();
                     }
                     // Only a verified Context.close may release group capacity.
@@ -174,34 +178,40 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
          * may still be executing, even during failed retirement or hot reload.
          * This does not expose an AST, JVM object, or function pointer to guests.
          */
-        public synchronized Source sourceImageForSupervisor(String codeUnitId, String sourceText) {
-            if (groupClosed) throw new IllegalStateException("untrusted group is closed");
+        public Source sourceImageForSupervisor(String codeUnitId, String sourceText) {
             Objects.requireNonNull(codeUnitId, "codeUnitId");
             Objects.requireNonNull(sourceText, "sourceText");
-            PinnedCodeImage existing = codeUnits.get(codeUnitId);
-            if (existing != null) {
-                if (!existing.text().equals(sourceText)) {
-                    throw new IllegalStateException(
-                            "a code unit cannot be replaced within one guest Context; "
-                            + "open a new hot-reload generation");
+            synchronized (imageAdmissionLock) {
+                if (groupClosed) throw new IllegalStateException("untrusted group is closed");
+                UntrustedSourceImageCache.Lease existing = codeUnits.get(codeUnitId);
+                if (existing != null) {
+                    if (!existing.source().getCharacters().toString().equals(sourceText)) {
+                        throw new IllegalStateException(
+                                "a code unit cannot be replaced within one guest Context; "
+                                + "open a new hot-reload generation");
+                    }
+                    return existing.source();
                 }
-                return existing.lease().source();
-            }
-            if (codeUnits.size() >= MAX_CODE_UNITS_PER_CONTEXT) {
-                throw new IllegalStateException("untrusted Context code-unit quota exceeded");
-            }
-            UntrustedSourceImageCache.Lease lease = codeImages.acquire(codeUnitId, sourceText);
-            // Even if insertion fails, a newly acquired lease is always closed.
-            try {
-                codeUnits.put(codeUnitId, new PinnedCodeImage(sourceText, lease));
-                return lease.source();
-            } catch (RuntimeException | Error failure) {
-                lease.close();
-                throw failure;
+                if (codeUnits.size() >= MAX_CODE_UNITS_PER_CONTEXT) {
+                    throw new IllegalStateException("untrusted Context code-unit quota exceeded");
+                }
+                UntrustedSourceImageCache.Lease lease = codeImages.acquire(codeUnitId, sourceText);
+                // Every new image admission is atomic with the close fence.
+                // Exceptions cannot leave an untracked lease after shutdown.
+                try {
+                    Source image = lease.source();
+                    codeUnits.put(codeUnitId, lease);
+                    return image;
+                } catch (RuntimeException | Error failure) {
+                    lease.close();
+                    throw failure;
+                }
             }
         }
 
-        synchronized int distinctCodeUnitsForSupervisor() { return codeUnits.size(); }
+        int distinctCodeUnitsForSupervisor() {
+            synchronized (imageAdmissionLock) { return codeUnits.size(); }
+        }
 
         /** Host adapter entrypoint; actual actor routing must be supplied separately. */
         public synchronized Context contextForSupervisor() {
@@ -214,7 +224,9 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
             // Fence admission immediately, without acquiring the execution
             // monitor held by a possibly stuck guest. FutureTask serializes
             // closing; every concurrent caller awaits the same completion.
-            groupClosed = true;
+            synchronized (imageAdmissionLock) {
+                groupClosed = true;
+            }
             closeFence.awaitConfirmedClose("untrusted Context");
         }
     }
