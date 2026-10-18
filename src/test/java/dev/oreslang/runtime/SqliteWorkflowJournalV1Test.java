@@ -597,9 +597,6 @@ final class SqliteWorkflowJournalV1Test {
             Path database,
             SqliteWorkflowJournalV1.FaultPoint point)
             throws Exception {
-        String classPath = System.getProperty(
-                "surefire.test.class.path",
-                System.getProperty("java.class.path"));
         return runCrashWorker(
                 database,
                 point,
