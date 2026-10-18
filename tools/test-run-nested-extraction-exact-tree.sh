@@ -19,6 +19,9 @@ printf '%s\n' "$*" >> "$MOCK_MAVEN_LOG"
 MOCKMVN
 chmod +x "$work/bin/java" "$work/bin/mvn"
 export PATH="$work/bin:$PATH" MOCK_MAVEN_LOG="$work/calls"
+# The mock PATH Java must control the baseline; inherited runner JAVA_HOME
+# cannot be allowed to change this source-free self-test's meaning.
+unset JAVA_HOME
 cd "$work/checkout"
 git init -q
 git config user.email ci-test@example.invalid
@@ -59,6 +62,25 @@ attempt 69 "$expected" . targeted
 [[ ! -s "$MOCK_MAVEN_LOG" ]]
 unset MOCK_JAVA_MAJOR
 echo 'PASS non-JDK25 blocks Maven execution'
+mkdir -p "$work/java-home-21/bin" "$work/java-home-25/bin"
+cat > "$work/java-home-21/bin/java" <<'BADHOMEJAVA'
+#!/usr/bin/env bash
+printf '    java.specification.version = 21\\n' >&2
+BADHOMEJAVA
+cat > "$work/java-home-25/bin/java" <<'GOODHOMEJAVA'
+#!/usr/bin/env bash
+printf '    java.specification.version = 25\\n' >&2
+GOODHOMEJAVA
+chmod +x "$work/java-home-21/bin/java" "$work/java-home-25/bin/java"
+export JAVA_HOME="$work/java-home-21"
+attempt 69 "$expected" . targeted
+[[ ! -s "$MOCK_MAVEN_LOG" ]]
+echo 'PASS mismatched JAVA_HOME rejects Maven despite PATH JDK25'
+export JAVA_HOME="$work/java-home-25"
+attempt 0 "$expected" . targeted
+grep -q -- '-DfailIfNoTests=true test' "$MOCK_MAVEN_LOG"
+echo 'PASS matching JAVA_HOME JDK25 invokes Maven'
+unset JAVA_HOME
 attempt 64 "$expected" . '../../outside' targeted
 [[ ! -s "$MOCK_MAVEN_LOG" ]]
 echo 'PASS source path traversal blocked'
