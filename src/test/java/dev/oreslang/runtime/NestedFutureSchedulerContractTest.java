@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -41,6 +42,65 @@ final class NestedFutureSchedulerContractTest {
             assertFalse(inner.isCancelled());
             assertTrue(inner.completeFromRuntime(42));
             assertTrue(derived.isCancelled());
+        }
+    }
+
+    @Test
+    void twoFutureCycleAcrossDistinctSchedulersFailsAndDetaches() throws Exception {
+        assertCycleFailsAndDetaches(2);
+    }
+
+    @Test
+    void threeFutureCycleAcrossDistinctSchedulersFailsAndDetaches() throws Exception {
+        assertCycleFailsAndDetaches(3);
+    }
+
+    private static void assertCycleFailsAndDetaches(int length) throws Exception {
+        AtomicReferenceArray<OresFuture<Integer>> completions =
+                new AtomicReferenceArray<>(length);
+        java.util.List<OresFuture<Void>> gates = new java.util.ArrayList<>();
+        java.util.List<OresScheduler> schedulers = new java.util.ArrayList<>();
+        try {
+            for (int i = 0; i < length; i++) {
+                gates.add(new OresFuture<>());
+                schedulers.add(new OresScheduler(1));
+            }
+            for (int i = 0; i < length; i++) {
+                final int position = i;
+                OresFuture<Integer> task = schedulers.get(i).start(
+                        new OresScheduler.Task<>() {
+                            int step;
+                            @Override
+                            public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
+                                if (resume.failure() != null) {
+                                    throw new IllegalStateException("upstream await failed",
+                                            resume.failure());
+                                }
+                                if (step++ == 0) return OresScheduler.await(gates.get(position));
+                                if (step == 2) return OresScheduler.await(
+                                        completions.get((position + 1) % length));
+                                return OresScheduler.done((Integer) resume.value());
+                            }
+                        });
+                completions.set(i, task);
+            }
+            for (OresFuture<Void> gate : gates) {
+                awaitWaiters(gate, 1);
+            }
+            for (OresFuture<Void> gate : gates) {
+                assertTrue(gate.completeFromRuntime(null));
+            }
+            for (int i = 0; i < length; i++) {
+                OresFuture<Integer> completion = completions.get(i);
+                assertThrows(ExecutionException.class,
+                        () -> completion.get(3, TimeUnit.SECONDS));
+                assertFalse(OresScheduler.hasAwaitDependency(completion),
+                        "cycle graph retained task " + i);
+                assertEquals(0, completion.pendingRuntimeWaiterCount(),
+                        "cyclic task retained a completion waiter");
+            }
+        } finally {
+            for (OresScheduler scheduler : schedulers) scheduler.close();
         }
     }
 
