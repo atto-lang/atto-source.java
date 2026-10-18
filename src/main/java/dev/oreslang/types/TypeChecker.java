@@ -3576,6 +3576,12 @@ public final class TypeChecker {
             if (receiver instanceof ClassNamespace classNamespace) {
                 Ast.ClassDecl klass = findClass(classNamespace.className());
                 if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
+                Ast.FieldDecl staticField = findLocalStaticField(klass, member.member());
+                if (staticField != null) {
+                    requireClassMemberVisible(
+                            staticField.visibility(), klass, "static field", staticField.name());
+                    return classFieldType(klass, staticField);
+                }
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass, member.member(), new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
@@ -4984,6 +4990,26 @@ public final class TypeChecker {
             Type result = record.members().get(member.member());
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
             return result;
+        }
+        if (receiver instanceof ClassNamespace classNamespace) {
+            Ast.ClassDecl klass = findClass(classNamespace.className());
+            if (klass == null) {
+                throw new IllegalArgumentException(
+                        "unknown class namespace '" + classNamespace.className() + "'");
+            }
+            Ast.FieldDecl field = findLocalStaticField(klass, member.member());
+            if (field == null) {
+                throw new IllegalArgumentException(
+                        "unknown static field '" + klass.name() + "." + member.member() + "'");
+            }
+            requireClassMemberVisible(
+                    field.visibility(), klass, "static field", field.name());
+            if (writing && field.bindingKind() != Ast.BindingKind.LET) {
+                throw new IllegalArgumentException(
+                        "static field '" + klass.name() + "." + field.name()
+                                + "' is immutable");
+            }
+            return classFieldType(klass, field);
         }
         if (receiver instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
