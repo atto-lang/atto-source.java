@@ -937,12 +937,23 @@ public final class Parser {
     }
 
     private Ast.FieldDecl parseField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        return parseField(annotations, visibility, false);
+    }
+
+    private Ast.FieldDecl parseField(
+            List<Ast.Annotation> annotations,
+            Ast.Visibility visibility,
+            boolean isStatic) {
         rejectCallableStructuralAnnotation(annotations, "fields");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(EQUAL)) {
+        if (check(IDENT) && checkNext(COLON)) {
+            name = advance().lexeme();
+            consume(COLON, "expected ':' after field name");
+            type = parseTypeRef();
+        } else if (check(IDENT) && checkNext(EQUAL)) {
             name = advance().lexeme();
         } else {
             type = parseTypeRef();
@@ -954,7 +965,8 @@ public final class Parser {
         }
         consumeExpressionStatementTerminator(initializer, "field declaration should end with ';'");
         if (type != null) type = applyTypeMetadataAnnotations(type, annotations, false);
-        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
+        return new Ast.FieldDecl(
+                name, visibility, kind, type, annotations, initializer, mutableReferent, isStatic);
     }
 
     private boolean looksLikeTypeFirstClassField() {
