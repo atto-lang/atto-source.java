@@ -98,8 +98,7 @@ final class TrustedHttpLoopbackProbe implements AutoCloseable {
     /** Fences new dispatch and asks the JDK to abort outstanding transport. */
     @Override public synchronized void close() {
         requireHost();
-        if (closed) return;
-        closed = true;
+        closed = true; // repeat cancellation for host exchanges not yet settled
         for (var host : active) host.cancel(true);
         client.shutdownNow();
         // Do not release leases here. Each active host completion owns
