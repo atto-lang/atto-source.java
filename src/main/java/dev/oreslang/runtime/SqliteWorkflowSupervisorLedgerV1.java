@@ -99,12 +99,9 @@ public final class SqliteWorkflowSupervisorLedgerV1
                             currentAmbiguousEffects,
                             protectedWrite);
 
-            // ALLOW consumes the estimated budget. CANCEL is terminal and must
-            // also persist. REQUIRE_HUMAN intentionally consumes nothing.
-            if (admission.decision()
-                    != WorkflowSupervisorPolicyV1.Decision.REQUIRE_HUMAN) {
-                writeUsage(admission.usage());
-            }
+            // Policy returns unchanged token/spend counters for human gates,
+            // but observed ambiguity state still needs durable persistence.
+            writeUsage(admission.usage());
             execute("COMMIT");
             committed = true;
             return admission;
