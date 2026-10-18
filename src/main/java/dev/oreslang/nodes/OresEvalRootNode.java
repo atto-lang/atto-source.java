@@ -1319,6 +1319,11 @@ public final class OresEvalRootNode extends RootNode {
                     }
 
                     if (pc == 1) {
+                        if (resume.failure() instanceof java.util.concurrent.CancellationException) {
+                            // A cancelled outer/inner stage cancels the composed Future;
+                            // it must not become an ordinary failed Future.
+                            return OresScheduler.cancelled();
+                        }
                         if (resume.failure() != null) {
                             throw sourceFailure(resume.failure());
                         }
@@ -1349,6 +1354,11 @@ public final class OresEvalRootNode extends RootNode {
                     }
 
                     if (pc == 2) {
+                        if (resume.failure() instanceof java.util.concurrent.CancellationException) {
+                            // A cancelled outer/inner stage cancels the composed Future;
+                            // it must not become an ordinary failed Future.
+                            return OresScheduler.cancelled();
+                        }
                         if (resume.failure() != null) {
                             throw sourceFailure(resume.failure());
                         }
