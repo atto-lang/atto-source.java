@@ -36,6 +36,9 @@ final class HttpResponseBodyOpenGate {
     InputStream open(HttpResponseDraft draft, BooleanSupplier cancelled, long waitNanos) throws IOException {
         Objects.requireNonNull(draft, "response");
         Objects.requireNonNull(cancelled, "cancelled");
+        // Dispatch/queue delay consumes the same deadline as supplier startup.
+        // Never restart the timer after Executor.execute() returns.
+        long started = System.nanoTime();
         if (cancelled.getAsBoolean()) throw new IOException("HTTP response body opening cancelled");
         if (waitNanos <= 0) throw new IOException("HTTP response body opening deadline expired");
         if (!slots.tryAcquire()) throw new IOException("HTTP response body opener admission exhausted");
@@ -68,7 +71,6 @@ final class HttpResponseBodyOpenGate {
         }
 
         boolean delivered = false;
-        long started = System.nanoTime();
         try {
             while (true) {
                 if (cancelled.getAsBoolean())
