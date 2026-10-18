@@ -135,7 +135,8 @@ final class ImportGraph {
                 || imported.kind() == Ast.ImportKind.ALL
                 || imported.kind() == Ast.ImportKind.MODULE;
         boolean classes = imported.kind() == Ast.ImportKind.CLASS
-                || imported.kind() == Ast.ImportKind.ALL;
+                || imported.kind() == Ast.ImportKind.ALL
+                || imported.kind() == Ast.ImportKind.MODULE;
         if (!functions && !classes) return;
         for (Ast.ModuleDecl module : target.modules()) {
             // import module Selected restricts the namespace to Selected;
