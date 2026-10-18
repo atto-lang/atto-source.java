@@ -88,7 +88,10 @@ final class ActorPipelineRouteSession {
     private final Map<String, ?> runtimeRecipients;
     private final IdentityHashMap<MailFrame, Boolean> active = new IdentityHashMap<>();
     // Cursor is scoped to this trusted graph session / generation.
-    private final Map<String, Integer> roundRobin = new HashMap<>();
+    // Mutable one-element slots are preallocated once per graph source.
+    // Generation changes reset values, NEVER erase selectors. Avoids the
+    // post-reconfiguration missing-cursor bug and per-turn Integer boxing.
+    private final Map<String, int[]> roundRobin = new HashMap<>();
     private long generation;
     private long nextFlowId = 1;
     private long nextRouteId = 1;
@@ -123,7 +126,7 @@ final class ActorPipelineRouteSession {
         // Updating an existing HashMap entry during a turn must not allocate a
         // first-use selector node; this matches the other native/host backends.
         for (ActorPipelineRoutePlan.Edge edge : graph.edges()) {
-            roundRobin.putIfAbsent(edge.source(), 0);
+            roundRobin.computeIfAbsent(edge.source(), ignored -> new int[1]);
         }
     }
 
@@ -182,9 +185,10 @@ final class ActorPipelineRouteSession {
     public synchronized MailFrame forwardRoundRobin(MailFrame current) {
         requireForward(current);
         List<ActorPipelineRoutePlan.Edge> options = graph.forwardAll(current.receiver());
-        Integer cursor = roundRobin.get(current.receiver());
-        if (cursor == null) throw new IllegalStateException("round-robin cursor missing");
-        roundRobin.put(current.receiver(), cursor + 1 == options.size() ? 0 : cursor + 1);
+        int[] position = roundRobin.get(current.receiver());
+        if (position == null) throw new IllegalStateException("round-robin cursor missing");
+        int cursor = position[0];
+        position[0] = cursor + 1 == options.size() ? 0 : cursor + 1;
         // Attempt consumes a turn even when subsequent capacity admission fails.
         return child(current, options.get(cursor));
     }
@@ -200,14 +204,14 @@ final class ActorPipelineRouteSession {
         requireForward(current);
         Objects.requireNonNull(eligible, "eligible targets");
         List<ActorPipelineRoutePlan.Edge> options = graph.forwardAll(current.receiver());
-        Integer cursor = roundRobin.get(current.receiver());
-        if (cursor == null) throw new IllegalStateException("round-robin cursor missing");
+        int[] position = roundRobin.get(current.receiver());
+        if (position == null) throw new IllegalStateException("round-robin cursor missing");
+        int cursor = position[0];
         for (int offset = 0; offset < options.size(); offset++) {
             int index = (cursor + offset) % options.size();
             var edge = options.get(index);
             if (eligible.contains(edge.target())) {
-                roundRobin.put(current.receiver(),
-                        index + 1 == options.size() ? 0 : index + 1);
+                position[0] = index + 1 == options.size() ? 0 : index + 1;
                 return child(current, edge);
             }
         }
@@ -428,7 +432,7 @@ final class ActorPipelineRouteSession {
             throw new IllegalStateException(
                     "pipeline reconfiguration requires a quiescent message barrier");
         }
-        roundRobin.clear();
+        for (int[] cursor : roundRobin.values()) cursor[0] = 0;
         generation = successor;
     }
 
@@ -440,7 +444,7 @@ final class ActorPipelineRouteSession {
         validateSuccessor(successor);
         int cancelled = active.size();
         active.clear();
-        roundRobin.clear();
+        for (int[] cursor : roundRobin.values()) cursor[0] = 0;
         generation = successor;
         return cancelled;
     }
