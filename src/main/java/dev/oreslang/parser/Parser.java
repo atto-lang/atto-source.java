@@ -3385,13 +3385,17 @@ public final class Parser {
             if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
-                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+                List<Ast.CallArgument> args = parseCheckedCallArgumentsUntil(RPAREN, true);
                 consume(RPAREN, "expected ')' after arguments");
-                expr = new Ast.CallExpr(expr, typeArguments, args);
+                expr = hasStagedCallItems(args)
+                        ? new Ast.StagedCallExpr(expr, typeArguments, true, args)
+                        : new Ast.CallExpr(expr, typeArguments, legacyCallArguments(args));
             } else if (match(LPAREN)) {
-                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+                List<Ast.CallArgument> args = parseCheckedCallArgumentsUntil(RPAREN, true);
                 consume(RPAREN, "expected ')' after arguments");
-                expr = new Ast.CallExpr(expr, args);
+                expr = hasStagedCallItems(args)
+                        ? new Ast.StagedCallExpr(expr, List.of(), false, args)
+                        : new Ast.CallExpr(expr, legacyCallArguments(args));
             } else if (match(DOT, DOUBLE_COLON)) {
                 // Two explicit qualified-member spellings, one binding and
                 // evaluation path; no dynamic symbol lookup or macro rewrite.
@@ -3587,19 +3591,23 @@ public final class Parser {
         if (match(SPAWN)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after actor type");
-            List<Ast.Expr> args = parseConstructorArgumentsUntil(RPAREN);
+            List<Ast.CallArgument> args = parseCheckedCallArgumentsUntil(RPAREN, false);
             consume(RPAREN, "expected ')' after actor spawn arguments");
             // Keep actor creation semantically distinct from ordinary class construction.
             // RuntimeCallExpr is an internal intrinsic encoding; source syntax is only
             // `spawn ActorType(...)`, never `rt spawn` or `new ActorType(...)`.
-            return new Ast.RuntimeCallExpr("spawn", List.of(new Ast.NewExpr(type, args)));
+            return hasStagedCallItems(args)
+                    ? new Ast.StagedNewExpr(type, args, true)
+                    : new Ast.RuntimeCallExpr("spawn", List.of(new Ast.NewExpr(type, legacyCallArguments(args))));
         }
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after new type");
-            List<Ast.Expr> args = parseConstructorArgumentsUntil(RPAREN);
+            List<Ast.CallArgument> args = parseCheckedCallArgumentsUntil(RPAREN, false);
             consume(RPAREN, "expected ')' after constructor arguments");
-            return new Ast.NewExpr(type, args);
+            return hasStagedCallItems(args)
+                    ? new Ast.StagedNewExpr(type, args, false)
+                    : new Ast.NewExpr(type, legacyCallArguments(args));
         }
         if (match(OBJ)) {
             throw error(previous(),
@@ -3772,36 +3780,61 @@ public final class Parser {
         return false;
     }
 
-    private void rejectUnloweredOmissionItem(Token.Type terminator) {
-        if (check(IDENT) && checkNext(COLON)) {
-            throw error(peek(), "named call argument lowering is not yet enabled");
-        }
-        if (check(IDENT) && (peek().lexeme().equals("_") || peek().lexeme().equals("omit"))
-                && (checkNext(COMMA) || checkNext(terminator))) {
-            throw error(peek(), "optional call omission lowering is not yet enabled");
-        }
+    private static boolean hasStagedCallItems(List<Ast.CallArgument> arguments) {
+        return arguments.stream().anyMatch(item -> item.label() != null || item.omitted());
     }
 
-    private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
-        if (check(terminator)) return List.of();
-        List<Ast.Expr> args = new ArrayList<>();
-        do {
-            boolean spread = match(ELLIPSIS);
-            rejectUnloweredOmissionItem(terminator);
-            Ast.Expr argument = parseExpression();
-            args.add(spread ? new Ast.SpreadExpr(argument) : argument);
-        } while (match(COMMA));
-        return args;
+    private static List<Ast.Expr> legacyCallArguments(List<Ast.CallArgument> arguments) {
+        List<Ast.Expr> values = new ArrayList<>(arguments.size());
+        for (Ast.CallArgument argument : arguments) {
+            if (argument.label() != null || argument.omitted()) {
+                throw new IllegalArgumentException(
+                        "named or omitted call items cannot enter an ordinary CallExpr");
+            }
+            values.add(argument.spread()
+                    ? new Ast.SpreadExpr(argument.value()) : argument.value());
+        }
+        return List.copyOf(values);
     }
 
-    private List<Ast.Expr> parseConstructorArgumentsUntil(Token.Type terminator) {
+    /**
+     * Source-order call-item grammar. A bare '_' or 'omit' is an omission item,
+     * never an Expr. Ordinary calls retain their historic AST/ABI; staged calls
+     * are rejected by the type checker until typed Option lowering is proved.
+     */
+    private List<Ast.CallArgument> parseCheckedCallArgumentsUntil(
+            Token.Type terminator, boolean allowSpread) {
         if (check(terminator)) return List.of();
-        List<Ast.Expr> args = new ArrayList<>();
+        List<Ast.CallArgument> items = new ArrayList<>();
+        boolean seenNamed = false;
         do {
-            rejectUnloweredOmissionItem(terminator);
-            args.add(parseExpression());
+            String label = null;
+            if (check(IDENT) && checkNext(COLON)) {
+                label = advance().lexeme();
+                consume(COLON, "expected ':' after named call argument");
+                seenNamed = true;
+            } else if (seenNamed) {
+                throw error(peek(), "positional call argument after named argument");
+            }
+            boolean spread = allowSpread && match(ELLIPSIS);
+            if (check(IDENT)
+                    && (peek().lexeme().equals("_") || peek().lexeme().equals("omit"))
+                    && (checkNext(COMMA) || checkNext(terminator))) {
+                if (spread) throw error(peek(), "rest elements cannot be omitted");
+                advance();
+                items.add(Ast.CallArgument.omit(label));
+            } else {
+                if (spread && label != null) {
+                    throw error(peek(), "named rest packs require typed collection lowering");
+                }
+                Ast.Expr value = parseExpression();
+                items.add(spread
+                        ? Ast.CallArgument.spread(value)
+                        : label == null ? Ast.CallArgument.value(value)
+                        : Ast.CallArgument.named(label, value));
+            }
         } while (match(COMMA));
-        return args;
+        return List.copyOf(items);
     }
 
     private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {
