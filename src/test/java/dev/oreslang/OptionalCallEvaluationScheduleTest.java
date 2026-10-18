@@ -131,4 +131,94 @@ final class OptionalCallEvaluationScheduleTest {
         assertThrows(NullPointerException.class,
                 () -> OptionalCallEvaluationSchedule.from(null));
     }
+
+    @Test
+    void sourceBindingsPreserveRawOriginsThroughReorderedExplicitOmission() {
+        var c = new Ast.CallExpr(new Ast.NameExpr("effectC"), List.of());
+        var a = new Ast.CallExpr(new Ast.NameExpr("effectA"), List.of());
+        var staged = new Ast.StagedCallExpr(new Ast.NameExpr("target"), List.of(), false,
+                List.of(Ast.CallArgument.named("c", c),
+                        Ast.CallArgument.omit("b"),
+                        Ast.CallArgument.named("a", a)));
+        var schedule = OptionalCallEvaluationSchedule.from(
+                OptionalCallAbiPreview.prepareStagedCallExact(
+                        staged, formals(), List.of(BOOL, INT)));
+        assertEquals(List.of(
+                new OptionalCallEvaluationSchedule.SourceBinding(
+                        0, 0, 2, OptionalCallAbiPreview.Action.PASS_REQUIRED),
+                new OptionalCallEvaluationSchedule.SourceBinding(
+                        1, 2, 0, OptionalCallAbiPreview.Action.PASS_REQUIRED)),
+                schedule.sourceBindings());
+        assertThrows(UnsupportedOperationException.class,
+                () -> schedule.sourceBindings().clear());
+    }
+
+    @Test
+    void sameExpressionObjectAtTwoSourcePositionsMustNotDeduplicateEvaluation() {
+        Ast.Expr shared = new Ast.CallExpr(new Ast.NameExpr("sideEffect"), List.of());
+        var two = List.of(new Ast.Param(INT, "left"), new Ast.Param(INT, "right"));
+        var staged = new Ast.StagedCallExpr(new Ast.NameExpr("target"),
+                List.of(), false, List.of(
+                        Ast.CallArgument.named("right", shared),
+                        Ast.CallArgument.named("left", shared)));
+        var schedule = OptionalCallEvaluationSchedule.from(
+                OptionalCallAbiPreview.prepareStagedCallExact(staged, two, List.of(INT, INT)));
+        assertSame(shared, schedule.evaluationOrder().get(1));
+        assertSame(shared, schedule.evaluationOrder().get(2));
+        assertEquals(List.of(
+                new OptionalCallEvaluationSchedule.SourceBinding(
+                        0, 0, 1, OptionalCallAbiPreview.Action.PASS_REQUIRED),
+                new OptionalCallEvaluationSchedule.SourceBinding(
+                        1, 1, 0, OptionalCallAbiPreview.Action.PASS_REQUIRED)),
+                schedule.sourceBindings());
+        assertEquals(2, schedule.steps().stream()
+                .filter(s -> s.operation()
+                        == OptionalCallEvaluationSchedule.Operation.EVALUATE_ARGUMENT)
+                .count());
+    }
+
+    @Test
+    void omissionsProduceNoSourceBindingAndTypedNoneRemainsASuppliedExpression() {
+        var only = List.of(new Ast.Param(Ast.TypeRef.omittableFormal(STRING), "label"));
+        var omission = new Ast.StagedCallExpr(new Ast.NameExpr("f"), List.of(), false,
+                List.of(Ast.CallArgument.omit("label")));
+        var absentSchedule = OptionalCallEvaluationSchedule.from(
+                OptionalCallAbiPreview.prepareStagedCallExact(
+                        omission, only, List.of()));
+        assertTrue(absentSchedule.sourceBindings().isEmpty());
+        assertEquals(OptionalCallAbiPreview.Action.INJECT_NONE,
+                absentSchedule.abiSlots().getFirst().action());
+        var option = new Ast.TypeRef("Option", List.of(STRING), false);
+        var explicit = new Ast.StagedCallExpr(new Ast.NameExpr("f"), List.of(), false,
+                List.of(Ast.CallArgument.named("label", new Ast.NameExpr("None"))));
+        var valueSchedule = OptionalCallEvaluationSchedule.from(
+                OptionalCallAbiPreview.prepareStagedCallExact(
+                        explicit, only, List.of(option)));
+        assertEquals(List.of(new OptionalCallEvaluationSchedule.SourceBinding(
+                        0, 0, 0, OptionalCallAbiPreview.Action.PASS_OPTION)),
+                valueSchedule.sourceBindings());
+        assertThrows(IllegalArgumentException.class,
+                () -> new OptionalCallEvaluationSchedule.SourceBinding(
+                        0, 0, 0, OptionalCallAbiPreview.Action.INJECT_NONE));
+    }
+
+    @Test
+    void constructionNamedSourceBindingsRetainLexicalOrderIndependentlyOfAbi() {
+        var c = new Ast.NameExpr("cValue");
+        var a = new Ast.NameExpr("aValue");
+        var construction = new Ast.StagedNewExpr(
+                Ast.TypeRef.simple("Worker"), List.of(
+                        Ast.CallArgument.named("c", c),
+                        Ast.CallArgument.omit("b"),
+                        Ast.CallArgument.named("a", a)), false);
+        var schedule = OptionalCallEvaluationSchedule.from(
+                OptionalCallAbiPreview.prepareStagedConstructionExact(
+                        construction, formals(), List.of(BOOL, INT)));
+        assertEquals(2, schedule.sourceBindings().size());
+        assertEquals(2, schedule.sourceBindings().getFirst().formalIndex());
+        assertEquals(0, schedule.sourceBindings().getFirst().originalCallItemIndex());
+        assertEquals(0, schedule.sourceBindings().getLast().formalIndex());
+        assertEquals(2, schedule.sourceBindings().getLast().originalCallItemIndex());
+    }
+
 }
