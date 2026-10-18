@@ -27,6 +27,7 @@ final class VerifiedCloseFence {
     }
 
     /** A fatal host-VM error is not a guest exception and must retain its type. */
+    @SuppressWarnings("removal") // ThreadDeath remains VM-fatal on supported JDKs.
     static boolean isVmFatal(Throwable failure) {
         return failure instanceof VirtualMachineError
                 || failure instanceof ThreadDeath
