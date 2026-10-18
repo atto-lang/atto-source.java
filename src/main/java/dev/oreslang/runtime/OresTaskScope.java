@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -127,7 +128,7 @@ public final class OresTaskScope implements AutoCloseable {
         // Future cancellation notifies arbitrary synchronous host waiters;
         // notifying one child before revoking its siblings can otherwise
         // indefinitely delay their cancellation.
-        boolean won = cancelTree(notifications);
+        boolean won = cancelTreeIterative(notifications);
         Throwable firstFailure = null;
         for (Runnable notification : notifications) {
             try {
@@ -142,24 +143,31 @@ public final class OresTaskScope implements AutoCloseable {
         return won;
     }
 
-    private boolean cancelTree(List<Runnable> notifications) {
-        final List<OresTaskScope> scopes;
-        final List<OresTask<?>> owned;
-        synchronized (gate) {
-            if (cancelled) return false;
-            cancelled = true;
-            scopes = new ArrayList<>(childScopes);
-            owned = new ArrayList<>(tasks);
+    private boolean cancelTreeIterative(List<Runnable> notifications) {
+        ArrayDeque<OresTaskScope> pending = new ArrayDeque<>();
+        pending.add(this);
+        boolean wonRoot = false;
+        while (!pending.isEmpty()) {
+            OresTaskScope scope = pending.removeLast();
+            final List<OresTaskScope> children;
+            final List<OresTask<?>> owned;
+            synchronized (scope.gate) {
+                if (scope.cancelled) continue;
+                scope.cancelled = true;
+                if (scope == this) wonRoot = true;
+                children = new ArrayList<>(scope.childScopes);
+                owned = new ArrayList<>(scope.tasks);
+            }
+            // Iterative traversal avoids recursive stack exhaustion with
+            // deeply nested scope trees. Closure of the admission gate is
+            // ordered before task revocation and callback delivery.
+            pending.addAll(children);
+            for (OresTask<?> task : owned) {
+                Runnable notification = task.cancelDeferredNotification();
+                if (notification != null) notifications.add(notification);
+            }
         }
-        // Lock-free recursion: no parent/child monitor is held while a child
-        // is revoked, and no callback may run before the full cancellation
-        // tree has had its revocation opportunity.
-        for (OresTaskScope scope : scopes) scope.cancelTree(notifications);
-        for (OresTask<?> task : owned) {
-            Runnable notification = task.cancelDeferredNotification();
-            if (notification != null) notifications.add(notification);
-        }
-        return true;
+        return wonRoot;
     }
 
     /** Cancel and join all descendants before releasing the scope owner. */
