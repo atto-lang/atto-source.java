@@ -140,6 +140,18 @@ final class DynInterfaceViewTest {
     }
 
     @Test
+    void erasedTypeAliasCannotBypassTransportRejection() {
+        String source = PRELUDE + """
+                define type Erased = dyn Deployable;
+                define type Indirect = Erased;
+                fnc invalid(Channel<Indirect> c): void { return; }
+                """;
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("transport/ownership ABI"), failure::getMessage);
+    }
+
+    @Test
     void dynCannotBeConstructedOrSpawned() {
         for (String code : new String[] {
                 "new dyn Deployable()",
