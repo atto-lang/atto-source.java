@@ -154,6 +154,25 @@ final class ExternalActorBoundaryCompilerTest {
     }
 
     @Test
+    void foreignCallsFailClosedBeforeExecutorLowering() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define ffi actor NativeWorker as
+                          extern suspends fnc native_call(i32 value): i64;
+
+                          receive(ActorMail<String> mail): void {
+                            native_call(1);
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("bounded foreign executor"),
+                failure::getMessage);
+    }
+
+    @Test
     void astTransformsPreserveExternalActorBoundary() {
         String source = """
                 define pub ipc actor Worker as
