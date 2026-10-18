@@ -127,9 +127,18 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             // Waiting is deliberately outside routeLock. Completion callbacks
             // and actor lifecycle work must never execute under the logical
             // route publication monitor.
-            return pending.get(
-                    toNanosSaturated(timeout),
-                    TimeUnit.NANOSECONDS);
+            try {
+                return pending.get(
+                        toNanosSaturated(timeout),
+                        TimeUnit.NANOSECONDS);
+            } catch (InterruptedException | TimeoutException abandonedRead) {
+                // The physical output channel owns the pending subscription.
+                // A timed-out/interrupted host reader must revoke that
+                // subscription before the router can safely migrate actors.
+                // Cancellation is best-effort if completion already won.
+                pending.cancel(false);
+                throw abandonedRead;
+            }
         }
     }
 
