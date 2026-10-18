@@ -32,6 +32,14 @@ public interface WorkflowJournalStoreV1 extends AutoCloseable {
             String receiptRef,
             long nowMillis);
 
+    DurableDevLoopV1.Transition completeAndAppend(
+            String effectKey,
+            String claimToken,
+            String receiptRef,
+            long nowMillis,
+            String eventId,
+            DurableDevLoopV1.Event event);
+
     int expireClaims(long nowMillis);
 
     void resolveAmbiguousAsCompleted(
