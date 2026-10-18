@@ -142,6 +142,35 @@ class DispatcherTest(unittest.TestCase):
             "wrapped",1024)
         self.assertEqual(out,raw); self.assertEqual(got,sha)
 
+    def test_crlf_wrapped_binary_contents_roundtrip_uses_git_blob_nul(self):
+        import base64, hashlib
+        # Binary payload + normal GitHub Contents line wrapping.
+        raw=bytes(range(256))
+        encoded=base64.b64encode(raw).decode("ascii")
+        wrapped="\r\n".join(encoded[i:i+64] for i in range(0,len(encoded),64))+"\n"
+        sha=hashlib.sha1(b"blob "+str(len(raw)).encode("ascii")+b"\0"+raw).hexdigest()
+        result=MOD.decode_contents_api_file({
+            "type":"file","encoding":"base64","content":wrapped,
+            "size":len(raw),"sha":sha
+        },"binary-wrapped",1024)
+        self.assertEqual(result,(raw,sha))
+
+    def test_contents_api_rejects_backslash_newline_and_wrong_separator_sha(self):
+        import base64, hashlib
+        raw=b"binary\\0payload"
+        encoded=base64.b64encode(raw).decode("ascii")
+        good_sha=hashlib.sha1(b"blob "+str(len(raw)).encode("ascii")+b"\0"+raw).hexdigest()
+        wrong_sha=hashlib.sha1(b"blob "+str(len(raw)).encode("ascii")+b"\\0"+raw).hexdigest()
+        self.assertNotEqual(good_sha,wrong_sha)
+        for content,sha in ((encoded,wrong_sha),(encoded+"\\n",good_sha),
+                            (encoded+"\\r\\n",good_sha),(encoded+"=",good_sha)):
+            with self.subTest(content=content,sha=sha):
+                with self.assertRaises(MOD.Denied):
+                    MOD.decode_contents_api_file({
+                        "type":"file","encoding":"base64","content":content,
+                        "size":len(raw),"sha":sha
+                    },"noncanonical",1024)
+
     def test_non_crlf_base64_whitespace_is_denied(self):
         import base64, hashlib
         raw=b"hello"; encoded=base64.b64encode(raw).decode()+"\t"
