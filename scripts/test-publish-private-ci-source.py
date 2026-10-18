@@ -1240,6 +1240,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             {"sha": B, "tree": [{"path": "README.md", "type": "blob",
                                  "mode": "100644", "sha": "invalid"}],
              "truncated": False},
+            {"sha": B, "tree": [{"path": "README.md", "type": [],
+                                 "mode": "100644", "sha": D}],
+             "truncated": False},
+            {"sha": B, "tree": [{"path": "README.md", "type": "blob",
+                                 "mode": [], "sha": D}],
+             "truncated": False},
         ]
         for forged in malformed:
             with self.subTest(forged=forged):
