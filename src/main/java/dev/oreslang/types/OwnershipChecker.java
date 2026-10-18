@@ -39,9 +39,11 @@ public final class OwnershipChecker {
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -92,6 +94,9 @@ public final class OwnershipChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
+                }
             }
         }
     }
@@ -3162,6 +3167,11 @@ public final class OwnershipChecker {
         return classes.get(name);
     }
 
+    private Ast.TypeAliasDecl findTypeAlias(String name) {
+        if (ambiguousTypeAliases.contains(name)) return null;
+        return typeAliases.get(name);
+    }
+
     private VarState ownershipRoot(VarState state) {
         VarState current = state;
         Set<VarState> seen = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -3651,15 +3661,19 @@ public final class OwnershipChecker {
     }
 
     private boolean containsCallableCaptureType(Ast.TypeRef type) {
-        return containsCallableCaptureType(type, new LinkedHashSet<>());
+        return containsCallableCaptureType(
+                type,
+                new LinkedHashSet<>(),
+                java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
     }
 
     private boolean containsCallableCaptureType(
             Ast.TypeRef type,
-            Set<Ast.ClassDecl> seenClasses) {
+            Set<Ast.ClassDecl> seenClasses,
+            Set<Ast.TypeAliasDecl> seenAliases) {
         if (type == null) return false;
         if (type.isBorrow()) {
-            return containsCallableCaptureType(type.borrowedTarget(), seenClasses);
+            return containsCallableCaptureType(type.borrowedTarget(), seenClasses, seenAliases);
         }
         if (type.name().equals("Fnc")
                 || type.name().equals("Function")
@@ -3668,11 +3682,25 @@ public final class OwnershipChecker {
         }
         if (type.isRecordType()) {
             for (Ast.TypeRef member : type.recordMembers().values()) {
-                if (containsCallableCaptureType(member, seenClasses)) return true;
+                if (containsCallableCaptureType(member, seenClasses, seenAliases)) return true;
             }
         }
         for (Ast.TypeRef argument : type.arguments()) {
-            if (containsCallableCaptureType(argument, seenClasses)) return true;
+            if (containsCallableCaptureType(argument, seenClasses, seenAliases)) return true;
+        }
+
+        Ast.TypeAliasDecl alias = findTypeAlias(type.name());
+        if (alias != null) {
+            if (!seenAliases.add(alias)) return false;
+            try {
+                Ast.TypeRef expanded = substituteType(
+                        alias.target(),
+                        genericBindings(alias.genericParameters(), type.arguments()));
+                return containsCallableCaptureType(
+                        expanded, seenClasses, seenAliases);
+            } finally {
+                seenAliases.remove(alias);
+            }
         }
 
         Ast.ClassDecl klass = findClass(type.name());
@@ -3685,7 +3713,7 @@ public final class OwnershipChecker {
                         genericBindings(
                                 field.owner().genericParameters(),
                                 field.ownerType().arguments()));
-                if (containsCallableCaptureType(fieldType, seenClasses)) return true;
+                if (containsCallableCaptureType(fieldType, seenClasses, seenAliases)) return true;
             }
             return false;
         } finally {
