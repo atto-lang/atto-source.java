@@ -104,6 +104,40 @@ final class ModuleLocalImportTest {
     }
 
     @Test
+    void linkedClassesWithSameNameAreScopedPerModule() {
+        Map<String, String> files = new LinkedHashMap<>();
+        files.put("src/alpha.ores", """
+                pub define class Box as
+                  pub val int value;
+                end
+                """);
+        files.put("src/beta.ores", """
+                pub define class Box as
+                  pub val bool value;
+                end
+                """);
+        files.put("src/main.ores", """
+                define module Alpha as
+                  import class Box from "./alpha";
+                  pub fnc read(Box box): int {
+                    return box.value;
+                  }
+                end
+
+                define module Beta as
+                  import class Box from "./beta";
+                  pub fnc read(Box box): bool {
+                    return box.value;
+                  }
+                end
+                """);
+
+        IncrementalCompiler.BuildResult build = assertDoesNotThrow(
+                () -> new IncrementalCompiler().compile(files));
+        assertEquals(3, build.units().size());
+    }
+
+    @Test
     void runtimeResolvesIdenticalAliasesByLexicalModule() throws Exception {
         Path alpha = temp.resolve("alpha.ores");
         Path beta = temp.resolve("beta.ores");
