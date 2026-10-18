@@ -137,10 +137,10 @@ final class ConstructorSemanticIrTest {
                         List.of(Types.Primitive.INT),
                         Types.Primitive.STRING,
                         Set.of(),
-                        Set.of(ConstructorSemanticIr.CallableCapability.SERIALIZABLE));
+                        Set.of(ConstructorSemanticIr.CallableCapability.CAPTURES_SERIALIZABLE_DATA));
 
         assertTrue(callable.captureCapabilities().contains(
-                ConstructorSemanticIr.CallableCapability.SERIALIZABLE));
+                ConstructorSemanticIr.CallableCapability.CAPTURES_SERIALIZABLE_DATA));
         assertEquals(Types.AnyCallable.INSTANCE, callable.erasedCallableTop());
         assertFalse(callable.serializableExecutableValue());
         assertFalse(callable.actorDataAdmissible());
