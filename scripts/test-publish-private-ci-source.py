@@ -28,6 +28,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
         self.visibility = ["private"] * 100
+        self.repository_ids = [123456] * 100
+        self.archived = False
+        self.disabled = False
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
@@ -36,7 +39,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
             return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
-                        private=True, default_branch="main")
+                        private=True, default_branch="main",
+                        id=self.repository_ids.pop(0), archived=self.archived,
+                        disabled=self.disabled)
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
@@ -75,6 +80,32 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[2][2]["base_tree"], B)
         self.assertEqual(writes[3][2]["tree"], E)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
+
+    def test_archived_or_disabled_destination_rejected_before_writes(self):
+        for state in ("archived", "disabled"):
+            with self.subTest(state=state):
+                setattr(self, state, True)
+                try:
+                    with self.assertRaisesRegex(pub.Denied, "active status"):
+                        self.publish()
+                    self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+                finally:
+                    setattr(self, state, False)
+
+    def test_missing_or_malformed_numeric_destination_identity_denied(self):
+        for bad_id in (None, False, "123456", 0):
+            with self.subTest(bad_id=bad_id):
+                self.repository_ids = [bad_id] + [123456] * 100
+                self.route_calls = []
+                with self.assertRaisesRegex(pub.Denied, "identity"):
+                    self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_repository_identity_swap_denied_before_blob_creation(self):
+        self.repository_ids = [123456, 789999] + [789999] * 100
+        with self.assertRaisesRegex(pub.Denied, "numeric identity changed"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
         # Assume base_tree contains a stale private-oreslang-source/secret.ores.
