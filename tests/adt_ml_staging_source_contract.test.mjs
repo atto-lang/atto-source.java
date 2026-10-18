@@ -22,5 +22,5 @@ test("documentation must retain noncertification gates",()=>{
   assert.match(s,/INTEGRATION=BLOCKED/);
   assert.match(s,/JAVA_GUEST=NOT_EXECUTED/);
   assert.match(s,/DO NOT MERGE/);
-  assert.match(s,/17 overlapping/);
+  assert.match(s,/17 (?:original )?overlapping/);
 });
