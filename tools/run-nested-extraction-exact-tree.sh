@@ -23,6 +23,13 @@ command -v java >/dev/null || die 'Java unavailable' 69
 command -v mvn >/dev/null || die 'Maven unavailable' 69
 java_major="$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.specification.version = //p' | head -n 1)"
 [[ "$java_major" == '25' ]] || die 'GraalVM JDK 25 required' 69
+# Maven may ignore PATH's java and use JAVA_HOME instead. Never certify a
+# JDK 25 run if the Maven JVM is pointed at an older/different installation.
+if [[ -n "${JAVA_HOME:-}" ]]; then
+    [[ -x "$JAVA_HOME/bin/java" ]] || die 'JAVA_HOME does not contain executable java' 69
+    home_major="$("$JAVA_HOME/bin/java" -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.specification.version = //p' | head -n 1)"
+    [[ "$home_major" == '25' ]] || die 'JAVA_HOME JVM must be JDK 25 for Maven' 69
+fi
 if [[ "$phase" == native-* || "$phase" == all ]]; then
     [[ "$(uname -s)" == Linux ]] || die 'native smoke phase requires Linux' 69
     command -v native-image >/dev/null || die 'GraalVM native-image unavailable' 69
