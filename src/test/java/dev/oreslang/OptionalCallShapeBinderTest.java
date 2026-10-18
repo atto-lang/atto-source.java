@@ -86,6 +86,27 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void callItemOriginAndOmissionComplementStayConsistent() {
+        Plan plan = OptionalCallShapeBinder.bind(FOO, List.of(
+                Argument.positional(), Argument.underscore(), Argument.positional()));
+        assertEquals(3, plan.callItemCount());
+        assertEquals(List.of(1), plan.omittedCallItemIndices());
+        assertEquals(List.of(0, 2), plan.callItemIndexByEvaluatedSource());
+
+        Plan named = OptionalCallShapeBinder.bind(FOO, List.of(
+                Argument.named("c"), Argument.namedUnderscore("b"), Argument.named("a")));
+        assertEquals(List.of(1), named.omittedCallItemIndices());
+        assertEquals(List.of(0, 2), named.callItemIndexByEvaluatedSource());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new Plan(List.of(0, -1, 1), -1,
+                        List.of(), List.of(1), List.of(0, 3)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Plan(List.of(0, -1, 1), -1,
+                        List.of(), List.of(1), List.of(0, 0)));
+    }
+
+    @Test
     void fullPositionalInvocationHasIdentityPermutation() {
         Plan plan = OptionalCallShapeBinder.bind(FOO, List.of(
                 Argument.positional(), Argument.positional(), Argument.positional()));
