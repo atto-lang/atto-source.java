@@ -105,6 +105,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
 
     private final Object routeLock = new Object();
     private final UUID logicalId = UUID.randomUUID();
+    private final HotReloadManager manager;
     private final ActorRuntime.ActorKind kind;
     private final String actorTypeName;
     private final LogicalActorRef logicalRef = new LogicalActorRef();
@@ -120,6 +121,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         this.kind = Objects.requireNonNull(kind);
         this.actorTypeName = Objects.requireNonNull(actorTypeName);
         this.active = Objects.requireNonNull(initial);
+        this.manager = initial.generation.ownerForActorRouting();
     }
 
     /**
@@ -197,6 +199,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         if (readyTimeout.isNegative() || readyTimeout.isZero())
             throw new IllegalArgumentException("ready timeout must be positive");
         requireBlockingHostSurface("upgrade a logical source actor");
+
+        if (candidateGeneration.ownerForActorRouting() != manager) {
+            throw new SecurityException(
+                    "cross-context logical actor upgrade v1 requires generations "
+                            + "from the same HotReloadManager");
+        }
 
         // Link/compile and pin the candidate context before pausing message route
         // admission. Failure here has zero effect on the active logical route.
