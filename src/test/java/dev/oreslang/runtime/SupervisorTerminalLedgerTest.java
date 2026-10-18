@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.lang.reflect.Array;
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
@@ -155,6 +157,58 @@ final class SupervisorTerminalLedgerTest {
         }
         assertEquals(8, ledger.stats().ready());
         assertEquals(8, ledger.stats().published());
+    }
+
+    @Test
+    void exhaustedFreeEpochIsRetiredWithoutPoisoningOtherCapacity() throws Exception {
+        var ledger = new SupervisorTerminalLedger(2);
+        setSlotEpoch(ledger, 0, Long.MAX_VALUE);
+
+        var reservation = ledger.reserve(ActorRuntime.ActorId.create(), 1);
+        var afterAdmission = ledger.stats();
+        assertEquals(1, afterAdmission.retiredEpochSlots());
+        assertEquals(1, afterAdmission.inUse());
+        assertEquals(0, afterAdmission.ready());
+
+        assertThrows(IllegalStateException.class,
+                () -> ledger.reserve(ActorRuntime.ActorId.create(), 2),
+                "one retired slot plus one active slot must exhaust effective capacity");
+
+        ledger.releaseUnstarted(reservation);
+        var replacement = ledger.reserve(ActorRuntime.ActorId.create(), 3);
+        assertNotNull(replacement,
+                "retiring one poisoned epoch must not brick unrelated reusable slots");
+        assertEquals(1, ledger.stats().retiredEpochSlots());
+    }
+
+    @Test
+    void slotThatUsesFinalEpochRetiresWhenItsReservationIsReleased() throws Exception {
+        var ledger = new SupervisorTerminalLedger(2);
+        setSlotEpoch(ledger, 0, Long.MAX_VALUE - 1L);
+
+        var finalEpoch = ledger.reserve(ActorRuntime.ActorId.create(), 1);
+        ledger.releaseUnstarted(finalEpoch);
+
+        assertEquals(1, ledger.stats().retiredEpochSlots());
+        assertEquals(0, ledger.stats().inUse());
+
+        var other = ledger.reserve(ActorRuntime.ActorId.create(), 2);
+        assertNotNull(other);
+        assertEquals(1, ledger.stats().inUse());
+        assertEquals(1, ledger.stats().retiredEpochSlots());
+    }
+
+    private static void setSlotEpoch(
+            SupervisorTerminalLedger ledger,
+            int index,
+            long epoch) throws Exception {
+        Field slotsField = SupervisorTerminalLedger.class.getDeclaredField("slots");
+        slotsField.setAccessible(true);
+        Object slots = slotsField.get(ledger);
+        Object slot = Array.get(slots, index);
+        Field epochField = slot.getClass().getDeclaredField("epoch");
+        epochField.setAccessible(true);
+        epochField.setLong(slot, epoch);
     }
 
     @Test
