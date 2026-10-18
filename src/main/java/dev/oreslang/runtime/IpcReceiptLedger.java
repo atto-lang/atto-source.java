@@ -75,7 +75,7 @@ public final class IpcReceiptLedger {
         this.capacity = capacity;
     }
 
-    public synchronized void admit(ReceiptKey key) {
+    synchronized void admit(ReceiptKey key) {
         Objects.requireNonNull(key, "receipt key");
         StreamIdentity candidate = new StreamIdentity(key.domain(), key.sender(),
                 key.destination(), key.senderIncarnation(), key.destinationIncarnation());
@@ -102,10 +102,10 @@ public final class IpcReceiptLedger {
     }
 
     /**
-     * The caller MUST authenticate the full envelope and peer outside this
-     * method. A public host reference to this class is not an auth capability.
+     * Only trusted runtime-package code may authenticate and supply the peer outside this
+     * method. A host reference to this object is never itself an auth capability.
      */
-    public synchronized void advanceVerified(ReceiptKey key, Stage next) {
+    synchronized void advanceVerified(ReceiptKey key, Stage next) {
         Objects.requireNonNull(key, "receipt key");
         Objects.requireNonNull(next, "stage");
         Entry entry = entries.get(key.messageSequence());
@@ -134,7 +134,7 @@ public final class IpcReceiptLedger {
     }
 
     /** An unresolved transport outcome cannot become a definitive failure. */
-    public synchronized int markTransportLost() {
+    synchronized int markTransportLost() {
         int unknown = entries.size();
         entries.clear();
         transportCredits = 0;
