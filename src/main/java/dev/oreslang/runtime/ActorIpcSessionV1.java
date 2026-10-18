@@ -849,10 +849,8 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
             payload = payload.clone();
         }
 
-        @Override
         public byte[] messageAbiSha256() { return messageAbiSha256.clone(); }
 
-        @Override
         public byte[] payload() { return payload.clone(); }
     }
 }
