@@ -34,15 +34,18 @@ final class TrustedHierarchicalNetworkGate {
     }
 
     static final class Lease implements AutoCloseable {
+        private final TrustedHierarchicalNetworkGate gate;
         private final TrustedUntrustedNetworkQuota.Lease child;
         private final TrustedUntrustedNetworkQuota.Lease supervisor;
         private final TrustedUntrustedNetworkQuota.Lease tenant;
         // Reserved=0; dispatched=1; settled=2.
         private final AtomicInteger state = new AtomicInteger();
 
-        private Lease(TrustedUntrustedNetworkQuota.Lease child,
+        private Lease(TrustedHierarchicalNetworkGate gate,
+                      TrustedUntrustedNetworkQuota.Lease child,
                       TrustedUntrustedNetworkQuota.Lease supervisor,
                       TrustedUntrustedNetworkQuota.Lease tenant) {
+            this.gate = gate;
             this.child = child;
             this.supervisor = supervisor;
             this.tenant = tenant;
@@ -50,30 +53,36 @@ final class TrustedHierarchicalNetworkGate {
 
         /** Must be called by the trusted broker just before I/O submission. */
         boolean commitDispatch() {
-            if (!state.compareAndSet(0, 1)) return false;
-            if (!child.commitDispatch() || !supervisor.commitDispatch()
-                    || !tenant.commitDispatch()) {
-                throw new IllegalStateException("hierarchical lease corrupted");
+            synchronized (gate.lock) {
+                if (!state.compareAndSet(0, 1)) return false;
+                if (!child.commitDispatch() || !supervisor.commitDispatch()
+                        || !tenant.commitDispatch()) {
+                    throw new IllegalStateException("hierarchical lease corrupted");
+                }
+                return true;
             }
-            return true;
         }
 
         /** Cancel before dispatch and refund all three scopes exactly once. */
         boolean abortBeforeDispatch() {
-            if (!state.compareAndSet(0, 2)) return false;
-            if (!child.abortBeforeDispatch()
-                    || !supervisor.abortBeforeDispatch()
-                    || !tenant.abortBeforeDispatch()) {
-                throw new IllegalStateException("hierarchical rollback corrupted");
+            synchronized (gate.lock) {
+                if (!state.compareAndSet(0, 2)) return false;
+                if (!child.abortBeforeDispatch()
+                        || !supervisor.abortBeforeDispatch()
+                        || !tenant.abortBeforeDispatch()) {
+                    throw new IllegalStateException("hierarchical rollback corrupted");
+                }
+                return true;
             }
-            return true;
         }
 
         @Override public void close() {
-            if (state.getAndSet(2) == 2) return;
-            child.close();
-            supervisor.close();
-            tenant.close();
+            synchronized (gate.lock) {
+                if (state.getAndSet(2) == 2) return;
+                child.close();
+                supervisor.close();
+                tenant.close();
+            }
         }
     }
 
@@ -128,7 +137,7 @@ final class TrustedHierarchicalNetworkGate {
                 if (second.lease() == null) return Admission.denied(second.status());
                 third = attempt(tenant, http);
                 if (third.lease() == null) return Admission.denied(third.status());
-                Lease lease = new Lease(first.lease(), second.lease(), third.lease());
+                Lease lease = new Lease(this, first.lease(), second.lease(), third.lease());
                 Admission admitted = new Admission(
                         TrustedUntrustedNetworkQuota.Status.ADMITTED, lease);
                 completed = true;
