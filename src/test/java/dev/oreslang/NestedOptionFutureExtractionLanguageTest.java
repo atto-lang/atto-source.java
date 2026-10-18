@@ -83,14 +83,16 @@ final class NestedOptionFutureExtractionLanguageTest {
     @Test
     void futureFlattenAwaitsOuterThenInnerViaScheduler() throws Exception {
         String program = """
-                async fnc leaf(): int {
-                  return 42;
+                async fnc base(): int {
+                  return 41;
                 }
-                async fnc nested(): Future<int> {
-                  return leaf();
+                async fnc leaf(int value): int {
+                  return value + 1;
                 }
                 pub fnc main(): void {
-                  val Future<Future<int>> outer = nested();
+                  val Future<Future<int>> outer = base().map(|int value| -> {
+                    return leaf(value);
+                  });
                   val Future<int> one = await outer;
                   val Future<int> flattened = outer.flatten();
                   stdio.stdout.write(await one);
