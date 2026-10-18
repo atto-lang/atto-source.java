@@ -42,12 +42,45 @@ def valid_sha(value):
     return value
 
 
+def trusted_github_cli():
+    """Only execute the root-owned GitHub CLI and its root-owned path.
+
+    GitHub credentials must never be handed to an executable found through
+    a caller-controlled PATH (including a writable symlink or parent dir).
+    The privileged publishing host needs the OS-packaged /usr/bin/gh.
+    """
+    target = "/usr/bin/gh"
+    for directory in ("/", "/usr", "/usr/bin"):
+        try:
+            info = os.lstat(directory)
+        except OSError as exc:
+            raise Denied("trusted GitHub CLI directory is unavailable") from exc
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
+                or info.st_mode & 0o022):
+            raise Denied("trusted GitHub CLI directory is not root-controlled")
+    try:
+        info = os.lstat(target)
+    except OSError as exc:
+        raise Denied("trusted GitHub CLI is unavailable") from exc
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+            or info.st_mode & 0o022 or not info.st_mode & 0o111):
+        raise Denied("trusted GitHub CLI executable is not root-controlled")
+    return target
+
+
 def gh_api(route, method="GET", payload=None):
-    argv = ["gh", "api", "--method", method, route,
+    argv = [trusted_github_cli(), "api", "--method", method, route,
             "--header", "Accept: application/vnd.github+json"]
     if payload is not None:
         argv.extend(["--input", "-"])
-    env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
+    # Preserve GitHub auth, but do not forward loader hooks or executable
+    # lookup controlled by the calling checkout/process environment.
+    env = {key: value for key, value in os.environ.items()
+           if key not in ("LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT",
+                          "LD_DEBUG", "LD_PROFILE", "BASH_ENV", "ENV")
+           and not key.startswith("DYLD_")}
+    env.update(GH_HOST="github.com", GH_PROMPT_DISABLED="1",
+               PATH="/usr/bin:/bin")
     try:
         p = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
                            capture_output=True, text=True, env=env, timeout=45, check=False)
