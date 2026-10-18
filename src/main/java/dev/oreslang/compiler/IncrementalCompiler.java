@@ -208,7 +208,7 @@ public final class IncrementalCompiler {
     static String abiDigest(Ast.Program program) {
         // Version bump invalidates older cache entries whose ABI omitted
         // the authorization annotations on exported declarations.
-        StringBuilder abi = new StringBuilder("ores-abi-v5-precise-role-enum-dependencies\n");
+        StringBuilder abi = new StringBuilder("ores-abi-v6-inherited-role-contracts\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
         for (Ast.ModuleDecl module : program.modules()) {
