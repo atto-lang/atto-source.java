@@ -66,7 +66,11 @@ final class ActorPipelineRouteSession {
         // active-frame membership, this flag is monotonic and survives
         // normal delivery/STOP frame retirement. Published DATA can NEVER
         // be restored to its source even after a later runtime failure.
-        private boolean mailboxPublished;
+        // 0=free, 1=reserved for one send, 2=irrevocably enqueued.
+        // CAS prevents two concurrent host publishers from enqueueing the
+        // same sealed frame; only the transition to 2 is irreversible.
+        private final java.util.concurrent.atomic.AtomicInteger publicationState =
+                new java.util.concurrent.atomic.AtomicInteger();
         private MailFrame(ActorPipelineRouteSession session, long generation,
                           long flowId, long routeId, List<String> actorPath) {
             this(session, generation, flowId, routeId, actorPath,
@@ -158,24 +162,32 @@ final class ActorPipelineRouteSession {
         requireActive(frame);
     }
 
-    /** Called only after a successful bounded mailbox tryWrite, while the
-     * recipient lifecycle lock still serializes STOP and envelope cleanup. */
-    static void markMailboxPublished(MailFrame frame) {
-        if (frame != null) frame.session.markPublished(frame);
+    /** Reserve exclusive host publication authority BEFORE any DATA
+     * freezing/copying, quotas or mailbox write. A failure prior to actual
+     * enqueue releases this claim and leaves the frame retryable. */
+    static void claimMailboxAdmission(MailFrame frame) {
+        if (frame == null) return;
+        frame.session.requireLive(frame);
+        if (!frame.publicationState.compareAndSet(0, 1))
+            throw new IllegalStateException(
+                    "routed DATA already admitted or being published");
     }
 
-    private synchronized void markPublished(MailFrame frame) {
-        requireActive(frame);
-        if (frame.mailboxPublished)
-            throw new IllegalStateException("route frame already published");
-        frame.mailboxPublished = true;
+    /** Only called when the final mailbox enqueue did NOT succeed. */
+    static void abortMailboxAdmission(MailFrame frame) {
+        if (frame != null) frame.publicationState.compareAndSet(1, 0);
+    }
+
+    /** Exactly the successful bounded mailbox tryWrite linearization:
+     * cannot allocate, acquire a session lock or throw after enqueue.
+     * claimMailboxAdmission already validated and reserved the token. */
+    static void markMailboxPublished(MailFrame frame) {
+        if (frame != null) frame.publicationState.set(2);
     }
 
     static boolean wasMailboxPublished(MailFrame frame) {
         Objects.requireNonNull(frame, "route frame");
-        synchronized (frame.session) {
-            return frame.mailboxPublished;
-        }
+        return frame.publicationState.get() == 2;
     }
 
     /** Final DATA admission guard independent of the high-level router.
@@ -387,7 +399,7 @@ final class ActorPipelineRouteSession {
                 || !rejected.returning
                 || rejected.returnParent != original
                 || rejected.rollbackConsumed
-                || rejected.mailboxPublished
+                || rejected.publicationState.get() == 2
                 || original.flowId != rejected.flowId
                 || !original.actorPath.equals(rejected.actorPath)
                 || active.containsKey(original)) {
