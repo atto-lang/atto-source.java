@@ -157,9 +157,10 @@ public final class OptionalCallShapeBinder {
                 throw new IllegalArgumentException(
                         "evaluated-source to original-call-item index map has incorrect size");
             }
+            int rawCallItems = supplied + explicitlyOmittedParameterIndices.size();
             int priorCallItemIndex = -1;
             for (int callItemIndex : callItemIndexByEvaluatedSource) {
-                if (callItemIndex <= priorCallItemIndex) {
+                if (callItemIndex <= priorCallItemIndex || callItemIndex >= rawCallItems) {
                     throw new IllegalArgumentException(
                             "evaluated call-item indexes must be strictly increasing");
                 }
