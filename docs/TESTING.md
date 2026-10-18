@@ -98,6 +98,11 @@ deterministic guest scheduler:
   not promise bit-for-bit physical thread scheduling.
 - `--trace-output=path` writes `ORES_CONCURRENCY_TRACE_V1` (bounded to 100,000
   events per run); failures save a trace under `.oreslang/failures` by default.
+- A bounded host-only `ConcurrencyRaceAnalyzer` already supports vector-clock
+  read/write conflict checking and happens-before edges for lock release/acquire
+  and uniquely identified actor messages, with regression tests. It requires a
+  **complete trusted stream of memory-access events**; no guest instrumentation
+  feeds it yet, so it cannot certify a program as race-free.
 - `--race` and `--model-check` are reserved and intentionally return exit 2
   until guest memory-access/happens-before instrumentation and bounded guest
   transition modeling exist. No successful race-free or model-checked verdict
