@@ -37,6 +37,23 @@ public final class CoreLibrarySources {
         return importPath != null && importPath.startsWith(IMPORT_PREFIX);
     }
 
+    /**
+     * Reserve future freestanding library import roots before any filesystem
+     * or ORESLANG_PATH lookup. A project file under core/ must never be
+     * mistaken for compiler-owned, heap-free core source.
+     *
+     * Only bare package paths are reserved; explicitly relative imports such
+     * as "./core/utility" remain ordinary application filesystem imports.
+     * This is an admission guard, not yet a freestanding module resolver.
+     */
+    public static boolean isReservedFreestandingImport(String importPath) {
+        return importPath != null
+                && (importPath.startsWith("core/")
+                        || importPath.startsWith("alloc/")
+                        || importPath.startsWith("actor/")
+                        || importPath.startsWith("otp/"));
+    }
+
     public static Set<String> packagedSourcePaths() {
         return PACKAGED_SOURCES;
     }
