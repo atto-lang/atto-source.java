@@ -2307,6 +2307,7 @@ public final class OwnershipChecker {
             String recursiveBinding,
             boolean allowActorSelfCapture,
             boolean deferredCleanup) {
+        OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(lambda.parameters());
         boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
         Scope closure = new Scope(null, nonLexical);
