@@ -71,6 +71,82 @@ final class LogicalActorProxyMailboxV1Test {
     }
 
     @Test
+    void transportRejectionRequeuesLatestUnsentWithoutRefundingCredits() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(2, 16, 32)) {
+            var first = mailbox.admit(bytes("first"));
+            var second = mailbox.admit(bytes("second"));
+            assertEquals(first.messageSequence(),
+                    mailbox.pollDispatch().messageSequence());
+            assertEquals(second.messageSequence(),
+                    mailbox.pollDispatch().messageSequence());
+            var before = mailbox.snapshot();
+            mailbox.requeueProvenUnsent(second.messageSequence());
+            var after = mailbox.snapshot();
+            assertEquals(before.retainedMessages(), after.retainedMessages());
+            assertEquals(before.retainedBytes(), after.retainedBytes());
+            assertEquals(1, after.queuedMessages());
+            assertEquals(1, after.outstandingMessages());
+            assertEquals(1L, after.highestDispatchedSequence());
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.admit(new byte[] {3}),
+                    "an unsent rollback is not completion and cannot refund capacity");
+            assertEquals(second.messageSequence(),
+                    mailbox.pollDispatch().messageSequence());
+            mailbox.complete(first.messageSequence());
+            mailbox.complete(second.messageSequence());
+            assertEquals(0, mailbox.snapshot().retainedMessages());
+        }
+    }
+
+    @Test
+    void rollbackOfDispatchedMessageRequiresLatestOutstandingAndNoFreeze() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(4, 16, 64)) {
+            var first = mailbox.admit(bytes("one"));
+            var second = mailbox.admit(bytes("two"));
+            mailbox.pollDispatch();
+            mailbox.pollDispatch();
+            var before = mailbox.snapshot();
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.requeueProvenUnsent(first.messageSequence()));
+            assertEquals(before, mailbox.snapshot(),
+                    "rejected older rollback cannot change queue or credits");
+
+            var freeze = mailbox.freezeDispatchForUpgrade();
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.requeueProvenUnsent(second.messageSequence()));
+            freeze.rollback();
+            mailbox.complete(second.messageSequence());
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.requeueProvenUnsent(second.messageSequence()),
+                    "completed sends must never be admitted again");
+            mailbox.complete(first.messageSequence());
+            assertEquals(0, mailbox.snapshot().retainedMessages());
+        }
+    }
+
+    @Test
+    void sparseEarlierCompletionDoesNotPermitReplayingAnAcceptedSend() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(4, 16, 64)) {
+            for (int i = 0; i < 3; i++) mailbox.admit(new byte[] {(byte) i});
+            mailbox.pollDispatch();
+            mailbox.pollDispatch();
+            var last = mailbox.pollDispatch();
+            mailbox.complete(2L);
+            var before = mailbox.snapshot();
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.requeueProvenUnsent(2L));
+            assertEquals(before, mailbox.snapshot());
+            mailbox.requeueProvenUnsent(last.messageSequence());
+            assertEquals(2L, mailbox.snapshot().highestDispatchedSequence());
+            assertEquals(1L, mailbox.snapshot().queuedMessages());
+            assertEquals(3L, mailbox.pollDispatch().messageSequence());
+            mailbox.complete(1L);
+            mailbox.complete(3L);
+            assertEquals(3L, mailbox.snapshot().completionWatermark());
+        }
+    }
+
+    @Test
     void capacityCoversQueuedAndCheckedOutUntilLogicalCompletion() {
         try (var mailbox = new LogicalActorProxyMailboxV1(
                 2, 16, 16)) {
