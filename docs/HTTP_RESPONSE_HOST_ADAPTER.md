@@ -181,8 +181,13 @@ A new standalone real-HTTP regression tests an over-budget staged header map,
 a rejected preflight, correction, and successful emission from the **same**
 response instance. Its exact committed Git blobs were independently matched
 against JDK21-compiled local source:
-- `HttpResponseDraft.java`: `f8d0d3779496a7b83c5c0ee9447e400ee3098849`.
-- `HttpResponsePreflightCheck.java`: `ff30e8244e9dc58ae3cff6c5c5982795291f4d00`.
+- `HttpResponseDraft.java`: `a60ddd6cb408664b1d0c1a36959651f5411def34`.
+- `HttpResponsePreflightCheck.java`: `b595672e59315964d191bdd457243c226bbee796`.
+
+A one-time `emissionStarted` CAS additionally prevents a second wire
+emission through the trusted `writeClaimedTo` path, even if the caller
+already holds a claimed response. The independent regression now asserts
+that replay is rejected after a successful response.
 
 Five consecutive local preflight regression runs passed. The test is
 reproducible via `bash scripts/test-http-response-preflight.sh`.
