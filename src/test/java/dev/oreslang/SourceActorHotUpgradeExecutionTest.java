@@ -159,6 +159,80 @@ final class SourceActorHotUpgradeExecutionTest {
     }
 
     @Test
+    void v1RejectsCandidateEvaluatorFromForeignOresContext() throws Exception {
+        String firstSource = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 1; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { return; }
+                """;
+        String foreignSource = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 999; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count - mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { val version = 2; return; }
+                """;
+
+        try (Context left = IsolatePolicy.developer()
+                    .restrictedContextBuilder(ExecutionProfile.serverJit()).build();
+             Context right = IsolatePolicy.developer()
+                    .restrictedContextBuilder(ExecutionProfile.serverJit()).build()) {
+            left.eval(source("left-counter.ores", firstSource));
+            right.eval(source("right-counter.ores", foreignSource));
+
+            OresContext leftOres;
+            OresContext rightOres;
+            left.enter();
+            try {
+                leftOres = OresLanguage.currentEnteredContextForHost();
+            } finally {
+                left.leave();
+            }
+            right.enter();
+            try {
+                rightOres = OresLanguage.currentEnteredContextForHost();
+            } finally {
+                right.leave();
+            }
+
+            ActorRuntime.ActorCodeExecutor active = (ActorRuntime.ActorCodeExecutor)
+                    leftOres.linkedCodeUnit("left-counter.ores");
+            ActorRuntime.ActorCodeExecutor foreign = (ActorRuntime.ActorCodeExecutor)
+                    rightOres.linkedCodeUnit("right-counter.ores");
+            ActorRuntime.ActorRef<Object> ref = leftOres.actors().spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED,
+                    leftOres.isolatePolicy(),
+                    active,
+                    "Counter");
+            ref.getReady().get(5, TimeUnit.SECONDS);
+
+            eventuallyUpgradeThrows(
+                    SecurityException.class,
+                    leftOres.actors(),
+                    ref,
+                    foreign);
+
+            ref.send(1L);
+            assertEquals(2L, nextLong(ref),
+                    "foreign candidate must not change old evaluator/state");
+            ref.stop();
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void realEvaluatorRejectsStateWireKindAndIdenticalCodeDrift() throws Exception {
         String base = """
                 define actor Counter as
