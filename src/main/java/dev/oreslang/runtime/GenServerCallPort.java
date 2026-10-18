@@ -20,7 +20,7 @@ final class GenServerCallPort<T> {
 
     private final Object gate = new Object();
     private final GenServerReplyLedger ledger;
-    private final Map<GenServerReplyLedger.Ticket, OresFuture<T>> futures = new HashMap<>();
+    private Map<GenServerReplyLedger.Ticket, OresFuture<T>> futures = new HashMap<>();
 
     GenServerCallPort(int capacity) {
         ledger = new GenServerReplyLedger(capacity);
@@ -96,11 +96,18 @@ final class GenServerCallPort<T> {
         Objects.requireNonNull(failure, "failure");
         ArrayList<OresFuture<T>> affected = new ArrayList<>();
         synchronized (gate) {
-            for (var entry : new ArrayList<>(futures.entrySet())) {
-                if (entry.getKey().matchesTarget(target) && ledger.retire(entry.getKey())) {
-                    futures.remove(entry.getKey());
-                    affected.add(entry.getValue());
+            // Walk the live map in-place: duplicating ALL pending entries at
+            // crash time amplifies heap pressure and stalls unrelated calls.
+            // Only allocate storage for the failed generation's own futures.
+            var iterator = futures.entrySet().iterator();
+            while (iterator.hasNext()) {
+                var entry = iterator.next();
+                if (!entry.getKey().matchesTarget(target)) continue;
+                if (!ledger.retire(entry.getKey())) {
+                    throw new IllegalStateException("call port/ledger retirement mismatch");
                 }
+                affected.add(entry.getValue());
+                iterator.remove();
             }
         }
         for (var future : affected) {
@@ -113,17 +120,20 @@ final class GenServerCallPort<T> {
 
     /** Close claims all remaining calls before invoking any callbacks. */
     int close() {
-        ArrayList<OresFuture<T>> discarded;
+        Map<GenServerReplyLedger.Ticket, OresFuture<T>> discarded;
         synchronized (gate) {
             int count = ledger.close();
             if (count == 0) return 0;
-            discarded = new ArrayList<>(futures.values());
-            if (discarded.size() != count) {
+            if (futures.size() != count) {
                 throw new IllegalStateException("call port/ledger size mismatch");
             }
-            futures.clear();
+            // The ledger is terminal now: transfer the old map rather than
+            // allocate a second O(n) list of futures during shutdown. Do not
+            // invoke callbacks under the port lock.
+            discarded = futures;
+            futures = Map.of();
         }
-        for (var future : discarded) {
+        for (var future : discarded.values()) {
             if (!future.failFromRuntime(new IllegalStateException("GenServer call port closed"))) {
                 throw new IllegalStateException("close/future settlement mismatch");
             }
