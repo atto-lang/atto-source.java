@@ -73,6 +73,34 @@ final class EnumCaseAstBoundaryAuditTest {
     }
 
     @Test
+    void oversizedDirectAstListsFailBeforeTraversingUntrustedContents() {
+        java.util.List<Ast.EnumCase> hugeEnum =
+                new java.util.AbstractList<>() {
+                    @Override public Ast.EnumCase get(int index) {
+                        throw new AssertionError("unbounded enum list accessed before cap");
+                    }
+                    @Override public int size() { return 4097; }
+                };
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.EnumDecl("Foo", hugeEnum));
+        java.util.List<String> hugePattern =
+                new java.util.AbstractList<>() {
+                    @Override public String get(int index) {
+                        throw new AssertionError("unbounded pattern list accessed before cap");
+                    }
+                    @Override public int size() { return 4097; }
+                };
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.PatternDecl("P", hugePattern));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.PatternDecl("P", List.of("Foo.A", "Foo.A")));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.PatternDecl("P", List.of()));
+        assertDoesNotThrow(() ->
+                new Ast.PatternDecl("P", List.of("Foo.A", "...Foo")));
+    }
+
+    @Test
     void unrelatedLegacyProgramsStillPassOptimizerAndOwnership() {
         Ast.Program ordinary = Parser.parse("fnc main(): int { return 42; }");
         assertDoesNotThrow(() -> OwnershipChecker.check(ordinary));
