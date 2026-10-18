@@ -132,8 +132,9 @@ the trusted HTTP/1.1 response writer. Both were fixed and tested:
 - **Cancellation during streaming:** an already-open producer is closed
   exactly once and not read once cancellation has been observed.
 - **Socket regressions:** a real loopback HTTP/1.1 client confirms that
-  cancelled and over-budget responses close without transmitting headers,
-  and that valid buffered/streamed requests continue to work.
+  pre-header-cancelled and over-budget responses close without transmitting
+  headers, and that valid buffered/streamed requests continue to work.
+  Cancellation after headers commit instead aborts the active body stream.
 
 The committed Java source blob SHA is
 `12795f73da01f5423a95756d72176c43277addba`; the committed standalone
