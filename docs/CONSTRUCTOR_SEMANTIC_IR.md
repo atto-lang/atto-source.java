@@ -184,6 +184,16 @@ ordinary values and therefore may widen to `AnyCallable` or `Any`.
 Erasing to `AnyCallable` never erases capture, borrow, actor-isolation,
 serialization, sharing or construction-region restrictions.
 
+A callable's capture metadata is descriptive of the values retained by its
+environment; it is **not transport authorization**. In particular,
+`CallableCapability.SERIALIZABLE` means captured data satisfies an
+independent serialization property. It never means the executable callable,
+closure environment, code pointer, `AnyCallable` erasure, or callback ABI may
+be encoded by `NetworkCodec`/`ActorMessageCodec`, admitted as actor DATA, or
+used to construct supervisor CONTROL. The semantic IR therefore exposes
+`serializableExecutableValue() == false` and
+`actorDataAdmissible() == false` for every `CallableType`.
+
 ### Borrowed callable parameters
 
 An immutable borrow of a concrete callable type is a non-escaping call-boundary
