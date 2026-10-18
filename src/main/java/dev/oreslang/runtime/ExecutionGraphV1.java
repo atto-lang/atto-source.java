@@ -277,6 +277,7 @@ public final class ExecutionGraphV1 {
                         try {
                             if (!schedulerAdmitted.await(30,
                                     java.util.concurrent.TimeUnit.SECONDS)) {
+                                cancelled.set(true);
                                 result.failFromRuntime(
                                         new java.util.concurrent.RejectedExecutionException(
                                                 "trusted CPU executor admission timed out"));
@@ -284,6 +285,7 @@ public final class ExecutionGraphV1 {
                             }
                         } catch (InterruptedException interrupted) {
                             Thread.currentThread().interrupt();
+                            cancelled.set(true);
                             result.failFromRuntime(interrupted);
                             return;
                         }
