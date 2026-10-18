@@ -948,6 +948,67 @@ public final class Ast {
         }
     }
 
+    /**
+     * Compiler-verified static Option depth attached to an AST call by
+     * identity, never by structurally-equal source text. Weak keys prevent
+     * cached type metadata from retaining abandoned compilation units.
+     * Runtime reads fail closed for ASTs that never passed type checking.
+     */
+    public static final class CheckedOptionDepth {
+        private CheckedOptionDepth() { }
+
+        private static final java.lang.ref.ReferenceQueue<CallExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, Integer> DEPTHS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<CallExpr> {
+            private final int hash;
+            private IdentityKey(
+                    CallExpr call, java.lang.ref.ReferenceQueue<CallExpr> queue) {
+                super(call, queue);
+                hash = System.identityHashCode(call);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                CallExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends CallExpr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                DEPTHS.remove(collected);
+            }
+        }
+
+        public static synchronized void record(CallExpr call, int depth) {
+            java.util.Objects.requireNonNull(call, "call");
+            if (depth < 1) throw new IllegalArgumentException("Option depth must be positive");
+            expunge();
+            IdentityKey key = new IdentityKey(call, CLEARED);
+            Integer old = DEPTHS.putIfAbsent(key, depth);
+            if (old != null && old != depth) {
+                throw new IllegalStateException(
+                        "same Option call site received inconsistent checked depths");
+            }
+        }
+
+        public static synchronized int require(CallExpr call) {
+            java.util.Objects.requireNonNull(call, "call");
+            expunge();
+            Integer depth = DEPTHS.get(new IdentityKey(call, null));
+            if (depth == null) {
+                throw new IllegalStateException(
+                        "Option.unwrap_all requires a statically checked call site");
+            }
+            return depth;
+        }
+    }
+
     public record MemberExpr(Expr receiver, String member) implements Expr { }
     public record IndexExpr(Expr receiver, Expr index) implements Expr { }
 

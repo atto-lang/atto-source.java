@@ -2663,6 +2663,45 @@ public final class TypeChecker {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
+                if (member.member().equals("unwrap_all")
+                        && receiver instanceof Named outer
+                        && outer.name().equals("Option")
+                        && outer.arguments().size() == 1) {
+                    int depth = 0;
+                    Type current = receiver;
+                    while (current instanceof Named layer
+                            && layer.name().equals("Option")
+                            && layer.arguments().size() == 1) {
+                        if (++depth > 4096) {
+                            throw new IllegalArgumentException(
+                                    "Option.unwrap_all static depth exceeds 4096");
+                        }
+                        current = layer.arguments().getFirst();
+                    }
+                    // The compiler has already resolved the receiver's
+                    // lexical type. Store an immutable call-site proof; the
+                    // evaluator must not infer depth from OptionValue tags.
+                    Ast.CheckedOptionDepth.record(call, depth);
+                }
+
+                // Nested extraction has no user-visible generic or value
+                // arguments. Diagnose at the built-in boundary instead of
+                // reporting an opaque first-class "call arity mismatch".
+                if (receiver instanceof Named builtin
+                        && ((builtin.name().equals("Future")
+                                && member.member().equals("flatten"))
+                            || (builtin.name().equals("Option")
+                                && (member.member().equals("flatten")
+                                    || member.member().equals("unwrap_all"))))) {
+                    String operator = builtin.name() + "." + member.member();
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                operator + " does not accept call-site type arguments");
+                    }
+                    if (!call.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(operator + " expects no arguments");
+                    }
+                }
 
                 boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
                         && member.receiver() instanceof Ast.NameExpr selfName
@@ -5924,6 +5963,15 @@ public final class TypeChecker {
             case "onSuccess" -> new Function(
                     List.of(new Function(List.of(element), Primitive.VOID)),
                     named);
+            case "flatten" -> {
+                if (!(element instanceof Named inner)
+                        || !inner.name().equals("Future")
+                        || inner.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Future.flatten requires Future<Future<T>>, got " + named);
+                }
+                yield new Function(List.of(), element);
+            }
             default -> null;
         };
     }
@@ -5935,6 +5983,38 @@ public final class TypeChecker {
             return switch (member) {
                 case "is_some", "is_none" -> new Function(List.of(), Primitive.BOOL);
                 case "unwrap" -> new Function(List.of(), element);
+                case "unwrap_all" -> {
+                    Type innermost = element;
+                    while (innermost instanceof Named inner
+                            && inner.name().equals("Option")
+                            && inner.arguments().size() == 1) {
+                        innermost = inner.arguments().getFirst();
+                    }
+                    // The runtime currently carries OptionValue tags but not a
+                    // reified generic nesting depth. Fail closed rather than
+                    // recursively extracting past an erased static boundary.
+                    if (innermost == Unknown.INSTANCE
+                            || innermost instanceof Generic
+                            || innermost instanceof Union
+                            || innermost instanceof SelfType
+                            || (innermost instanceof Named unresolved
+                                    && (unresolved.name().equals("Any")
+                                            || unresolved.name().equals("Unknown")))) {
+                        throw new IllegalArgumentException(
+                                "Option.unwrap_all requires a concrete innermost payload type; "
+                                        + "use explicit unwrap() at erased/generic boundaries");
+                    }
+                    yield new Function(List.of(), innermost);
+                }
+                case "flatten" -> {
+                    if (!(element instanceof Named inner)
+                            || !inner.name().equals("Option")
+                            || inner.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "Option.flatten requires Option<Option<T>>, got " + named);
+                    }
+                    yield new Function(List.of(), element);
+                }
                 case "unwrap_safe" -> new Function(
                         List.of(),
                         new Named("Result", List.of(element, new Named("OptionUnwrapError", List.of()))));
