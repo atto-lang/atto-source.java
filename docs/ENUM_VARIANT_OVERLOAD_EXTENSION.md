@@ -102,6 +102,44 @@ the *whole* selected signature, including other params, ownership, effects,
 visibility and generic substitution. Return type, expected contextual type
 and conversions cannot change the selected overload.
 
+## Staged compiler binding implementation (2026-10-17 audit follow-through)
+
+Java draft #1242 now has a **host-only immutable prepared family** that proves
+same-arity relationships at declaration time and can bind repeated static calls
+without re-running quadratic candidate admission at every call site.
+`EnumVariantOverloadPolicy.prepare(...).bind(staticArgumentTypes)` produces a
+`BoundTarget` containing the chosen declaration signature and deterministic
+slot symbol. A bound target is tied by **object identity** to its prepared
+compilation-image family; `requireLinkedTo(otherFamily)` rejects stale/hot-
+reloaded plan substitution even if structural signatures appear equal.
+
+The family also exposes a stable SHA-256 **schema fingerprint** built from
+sorted canonical slot tokens and every used enum's sorted full case/payload
+descriptor. This is strictly an **invalidation hint**: the digest is never an
+overload selector or proof of owner/case identity by itself. Any eventual
+serialization/linker must compare authoritative declaration metadata rather
+than trusting the hash alone. The compiler currently does **not** attach the
+binding to an AST call node or consume it in the evaluator/ownership checker.
+
+Complex ADTs remain legal elsewhere. Only enums used as overload
+discriminators must have eligible payloads. Java/LLVM host policy work is
+bounded at 64 visible arguments, 128 candidates per arity, 1024 enum cases
+and 8320 candidates across independent arities. The Java smoke suite
+includes an independently defined finite cartesian-product pair oracle,
+stale-image/schema regression checks, and an exact ABI slot-token golden
+shared with native LLVM draft #577.
+
+The LLVM companion implements the same static subset relation and
+symbol token for an **ASCII-only ID subset**; full canonical UTF-8 module,
+enum and case identity parity remains an explicit future gate. The LLVM
+native policy currently rechecks admission on each selection and must not
+be used for an unbounded runtime lookup. Both policy implementations are
+compiler-reference components, not enabled source-language dispatch.
+
+A source-owned, exact-revision Java host workflow is installed in draft
+#1242. A check counts as qualified only if a runner actually executes the
+steps and the checked-out commit/tree corresponds to the reviewed PR head.
+
 ## ABI / dynamic dispatch / safety gates
 
 - Store immutable target declaration/slot identity on every statically
