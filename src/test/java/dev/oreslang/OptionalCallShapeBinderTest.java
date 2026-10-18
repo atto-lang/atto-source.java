@@ -252,6 +252,47 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void onlyBareUnderscoreOrOmitAreRecognizedAsOmissionTokens() {
+        for (String token : List.of("_", "omit")) {
+            assertEquals(Argument.positionalOmission(),
+                    Argument.omittedCallItemToken(token, null));
+            assertEquals(Argument.namedOmission("b"),
+                    Argument.omittedCallItemToken(token, "b"));
+        }
+        for (String invalid : List.of("None", "void", "null", "__", "_x",
+                "x_", "(_)", "_ + 1", "..._", "", " omit ", "_()")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Argument.omittedCallItemToken(invalid, null), invalid);
+        }
+    }
+
+    @Test
+    void tokenLevelUnderscoreFollowsSameConstructorAndCallRules() {
+        List<Parameter> constructorFormals = List.of(
+                Parameter.required("id"), Parameter.optional("label"),
+                Parameter.required("active"));
+        Plan ctor = OptionalCallShapeBinder.bind(constructorFormals, List.of(
+                Argument.positional(),
+                Argument.omittedCallItemToken("_", null),
+                Argument.positional()));
+        Plan routine = OptionalCallShapeBinder.bind(constructorFormals, List.of(
+                Argument.positional(),
+                Argument.omittedCallItemToken("omit", null),
+                Argument.positional()));
+        assertEquals(routine, ctor);
+        assertEquals(List.of(0, 2), ctor.callItemIndexByEvaluatedSource());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.bind(constructorFormals, List.of(
+                        Argument.omittedCallItemToken("_", "id"),
+                        Argument.named("active"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.bind(constructorFormals, List.of(
+                        Argument.positional(), Argument.omittedCallItemToken("_", "label"),
+                        Argument.named("label"), Argument.named("active"))));
+    }
+
+    @Test
     void omittedCallItemIsSkippedWithoutLosingOriginalExpressionIdentity() {
         Plan positional = OptionalCallShapeBinder.bind(FOO, List.of(
                 Argument.positional(), Argument.underscore(), Argument.positional()));
