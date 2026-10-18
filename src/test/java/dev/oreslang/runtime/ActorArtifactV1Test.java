@@ -180,6 +180,7 @@ final class ActorArtifactV1Test {
                 unsigned.compilerGitCommit(),
                 unsigned.targetTriple(),
                 unsigned.abi(),
+                unsigned.builderId(),
                 unsigned.artifactSha256(),
                 unsigned.messageAbiSha256(),
                 unsigned.stateSchemaSha256(),
@@ -205,6 +206,7 @@ final class ActorArtifactV1Test {
                 unsigned.compilerGitCommit(),
                 unsigned.targetTriple(),
                 unsigned.abi(),
+                unsigned.builderId(),
                 unsigned.artifactSha256(),
                 wrongMessageAbi,
                 unsigned.stateSchemaSha256(),
@@ -230,6 +232,7 @@ final class ActorArtifactV1Test {
                 unsigned.compilerGitCommit(),
                 unsigned.targetTriple(),
                 unsigned.abi(),
+                unsigned.builderId(),
                 wrongArtifact,
                 unsigned.messageAbiSha256(),
                 unsigned.stateSchemaSha256(),
@@ -241,6 +244,45 @@ final class ActorArtifactV1Test {
                         artifact,
                         trusted(pair, "release"),
                         wrongArtifactContract,
+                        supervisor));
+    }
+
+    @Test
+    void rejectsSignedArtifactFromUnexpectedBuilder() throws Exception {
+        byte[] artifact = "trusted-worker".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        KeyPair pair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        var unsigned = receipt(
+                artifact,
+                Ast.ActorKind.PRIVATE,
+                Ast.ActorBoundary.IPC,
+                Set.of());
+        var signed = signed(pair, unsigned, "release");
+        var expected = new ActorArtifactV1.ExpectedActorContract(
+                unsigned.actorTypeName(),
+                unsigned.actorKind(),
+                unsigned.actorBoundary(),
+                unsigned.artifactFormat(),
+                unsigned.compilerBackend(),
+                unsigned.compilerVersion(),
+                unsigned.compilerGitCommit(),
+                unsigned.targetTriple(),
+                unsigned.abi(),
+                "different-builder",
+                unsigned.artifactSha256(),
+                unsigned.messageAbiSha256(),
+                unsigned.stateSchemaSha256(),
+                unsigned.capabilityPolicySha256());
+        IsolatePolicy supervisor = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.IPC,
+                IsolatePolicy.Capability.CHILD_PROCESS);
+
+        assertThrows(
+                SecurityException.class,
+                () -> ActorArtifactV1.admit(
+                        signed,
+                        artifact,
+                        trusted(pair, "release"),
+                        expected,
                         supervisor));
     }
 
@@ -472,6 +514,7 @@ final class ActorArtifactV1Test {
                 receipt.compilerGitCommit(),
                 receipt.targetTriple(),
                 receipt.abi(),
+                receipt.builderId(),
                 receipt.artifactSha256(),
                 receipt.messageAbiSha256(),
                 receipt.stateSchemaSha256(),
