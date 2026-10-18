@@ -3,6 +3,9 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -539,6 +542,46 @@ final class WorkflowJournalV1Test {
         assertEquals(1, store.snapshot().journalEntries());
     }
 
+
+    @Test
+    void concurrentClaimOfSinglePendingEffectHasOneWinner() throws Exception {
+        var loop = new DurableDevLoopV1("run-concurrent-claim", 3);
+        var store = started(loop);
+        int callers = 32;
+
+        try (var pool = Executors.newFixedThreadPool(8)) {
+            var start = new CountDownLatch(1);
+            var futures = new java.util.ArrayList<
+                    java.util.concurrent.Future<
+                            java.util.Optional<WorkflowJournalV1.Claim>>>();
+
+            for (int i = 0; i < callers; i++) {
+                final int worker = i;
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    return store.claimNext(
+                            "worker-" + worker, 100L, 100L);
+                }));
+            }
+            start.countDown();
+
+            int winners = 0;
+            WorkflowJournalV1.Claim winner = null;
+            for (var future : futures) {
+                var claim = future.get(5, TimeUnit.SECONDS);
+                if (claim.isPresent()) {
+                    winners++;
+                    winner = claim.orElseThrow();
+                }
+            }
+
+            assertEquals(1, winners);
+            assertNotNull(winner);
+            assertEquals(1, winner.attempt());
+            assertEquals(1, store.snapshot().claimedEffects());
+            assertEquals(0, store.snapshot().pendingEffects());
+        }
+    }
 
     @Test
     void leaseOverflowFailsBeforeTrustedClockMutation() {
