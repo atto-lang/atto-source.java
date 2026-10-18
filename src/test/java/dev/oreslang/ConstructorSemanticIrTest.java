@@ -176,7 +176,8 @@ final class ConstructorSemanticIrTest {
                         new ConstructorSemanticIr.ConstructionRegionId("Pair", 0, 0),
                         ConstructorSemanticIr.ConstructionPhase.INITIALIZING,
                         complete,
-                        List.of()).withFixedFields(Set.of("fixed"));
+                        List.of(),
+                        Set.of("fixed"));
         assertFalse(state.publishable());
         assertTrue(state.transitionTo(ConstructorSemanticIr.ConstructionPhase.CONSTRUCTED).publishable());
         assertFalse(new ConstructorSemanticIr.ConstructionState(
@@ -194,7 +195,8 @@ final class ConstructorSemanticIrTest {
                         new ConstructorSemanticIr.ConstructionRegionId("Pair", 0, 0),
                         ConstructorSemanticIr.ConstructionPhase.CONSTRUCTED,
                         incomplete,
-                        List.of()).withFixedFields(Set.of("fixed"));
+                        List.of(),
+                        Set.of("fixed"));
         assertFalse(state.publishable());
     }
 
@@ -206,12 +208,56 @@ final class ConstructorSemanticIrTest {
                         new ConstructorSemanticIr.ConstructionRegionId("Box", 0, 0),
                         ConstructorSemanticIr.ConstructionPhase.INITIALIZING,
                         state, List.of());
-        ConstructorSemanticIr.ConstructionState allMutable = baseline.withFixedFields(Set.of());
+        ConstructorSemanticIr.ConstructionState allMutable =
+                new ConstructorSemanticIr.ConstructionState(
+                        baseline.region(), baseline.phase(), baseline.fields(),
+                        baseline.pendingCleanups(), Set.of());
         assertThrows(IllegalArgumentException.class, () -> baseline.join(allMutable));
         assertThrows(IllegalArgumentException.class,
-                () -> baseline.withFixedFields(Set.of("notDeclared")));
+                () -> new ConstructorSemanticIr.ConstructionState(
+                        baseline.region(), baseline.phase(), baseline.fields(),
+                        baseline.pendingCleanups(), Set.of("notDeclared")));
         assertThrows(IllegalArgumentException.class,
                 () -> state.completeWithFixedFields(Set.of("notDeclared")));
+    }
+
+    @Test
+    void constructorCannotPublishWithPendingCleanupOrIncompleteFields() {
+        ConstructorFlowState complete = ConstructorFlowState.blank(List.of("x")).write("x");
+        ConstructorSemanticIr.ConstructionState entry =
+                new ConstructorSemanticIr.ConstructionState(
+                        new ConstructorSemanticIr.ConstructionRegionId("Example", 0, 0),
+                        ConstructorSemanticIr.ConstructionPhase.INITIALIZING,
+                        complete, List.of());
+        var pending = entry.withCleanup(
+                new ConstructorSemanticIr.CleanupEdge(
+                        ConstructorSemanticIr.CleanupKind.DEFER, "release"));
+        assertThrows(IllegalArgumentException.class,
+                () -> pending.transitionTo(ConstructorSemanticIr.ConstructionPhase.CONSTRUCTED));
+        var constructed = entry.transitionTo(ConstructorSemanticIr.ConstructionPhase.CONSTRUCTED);
+        assertTrue(constructed.publishable());
+        assertThrows(IllegalArgumentException.class,
+                () -> constructed.withCleanup(
+                        new ConstructorSemanticIr.CleanupEdge(
+                                ConstructorSemanticIr.CleanupKind.FIELD_DROP, "x")));
+        assertThrows(IllegalArgumentException.class,
+                () -> constructed.withFields(complete));
+        var missing = entry.withFields(ConstructorFlowState.blank(List.of("x")));
+        assertThrows(IllegalArgumentException.class,
+                () -> missing.transitionTo(ConstructorSemanticIr.ConstructionPhase.CONSTRUCTED));
+    }
+
+    @Test
+    void constructorFieldSetCannotExpandOrShrinkDuringAnalysis() {
+        ConstructorSemanticIr.ConstructionState entry =
+                new ConstructorSemanticIr.ConstructionState(
+                        new ConstructorSemanticIr.ConstructionRegionId("Example", 0, 0),
+                        ConstructorSemanticIr.ConstructionPhase.INITIALIZING,
+                        ConstructorFlowState.blank(List.of("x")), List.of());
+        assertThrows(IllegalArgumentException.class,
+                () -> entry.withFields(ConstructorFlowState.blank(List.of("x", "y"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> entry.withFields(ConstructorFlowState.blank(List.of())));
     }
 
 }
