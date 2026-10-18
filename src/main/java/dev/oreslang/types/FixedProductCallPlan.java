@@ -20,8 +20,12 @@ import java.util.Set;
  * expression, ownership, effect, borrow, and suspension checkers must prove
  * every input before consuming this mapping.</p>
  */
-public record FixedProductCallPlan(List<FixedProductCallPlan.BoundSlot> sourceOrder,
-                                   List<Integer> abiToSource) {
+public final class FixedProductCallPlan {
+    private final List<BoundSlot> sourceOrder;
+    private final List<Integer> abiToSource;
+
+    public List<BoundSlot> sourceOrder() { return sourceOrder; }
+    public List<Integer> abiToSource() { return abiToSource; }
     /** A flattened scalar slot; null label means positional. */
     public record InputSlot(String label) {
         public InputSlot {
@@ -38,16 +42,17 @@ public record FixedProductCallPlan(List<FixedProductCallPlan.BoundSlot> sourceOr
     /** Mapping retains scalar source index for evaluation/move tracking. */
     public record BoundSlot(int sourceIndex, int parameterIndex, String label) { }
 
-    public FixedProductCallPlan {
+    // Only bind() has the selected declaration's parameter names. A public
+    // constructor cannot authenticate that a label maps to its true ABI slot.
+    private FixedProductCallPlan(List<BoundSlot> sourceOrder, List<Integer> abiToSource) {
         sourceOrder = List.copyOf(sourceOrder);
         abiToSource = List.copyOf(abiToSource);
         int arity = sourceOrder.size();
         if (arity != abiToSource.size()) {
             throw new IllegalArgumentException("product call plan must be a total permutation");
         }
-        // Records have a public canonical constructor. Validate *every* path,
-        // not just the bind() factory, so a forged permutation never reaches
-        // JVM/AOT/native invocation code.
+        // The factory validates declaration labels; the private constructor
+        // additionally defends against accidental inconsistent internal plans.
         boolean[] claimedTargets = new boolean[arity];
         boolean[] claimedSources = new boolean[arity];
         boolean namedStarted = false;
@@ -56,10 +61,8 @@ public record FixedProductCallPlan(List<FixedProductCallPlan.BoundSlot> sourceOr
             BoundSlot slot = Objects.requireNonNull(sourceOrder.get(i), "bound slot");
             int source = slot.sourceIndex();
             int target = slot.parameterIndex();
-            // The public record constructor must enforce the same source-slot
-            // grammar as bind(). A total ABI permutation alone is insufficient:
-            // otherwise callers can forge repeated labels or a positional
-            // argument after named binding without going through bind().
+            // This internal check is not a substitute for label-to-formal
+            // identity checking performed by bind().
             String label = slot.label();
             if (label == null) {
                 if (namedStarted) {
@@ -88,6 +91,23 @@ public record FixedProductCallPlan(List<FixedProductCallPlan.BoundSlot> sourceOr
                         "product call plan disagrees with lexical evaluation order or ABI mapping");
             }
         }
+        this.sourceOrder = sourceOrder;
+        this.abiToSource = abiToSource;
+    }
+
+    @Override public boolean equals(Object other) {
+        return other instanceof FixedProductCallPlan plan
+                && sourceOrder.equals(plan.sourceOrder)
+                && abiToSource.equals(plan.abiToSource);
+    }
+
+    @Override public int hashCode() {
+        return Objects.hash(sourceOrder, abiToSource);
+    }
+
+    @Override public String toString() {
+        return "FixedProductCallPlan[sourceOrder=" + sourceOrder
+                + ", abiToSource=" + abiToSource + "]";
     }
 
     /**
@@ -95,8 +115,10 @@ public record FixedProductCallPlan(List<FixedProductCallPlan.BoundSlot> sourceOr
      * callable's stable parameter names. All inputs are fixed/closed products.
      */
     public static FixedProductCallPlan bind(List<String> parameterNames, List<InputSlot> inputs) {
-        Objects.requireNonNull(parameterNames, "parameterNames");
-        Objects.requireNonNull(inputs, "inputs");
+        // Freeze the shape exactly once before building the ABI map. A mutable
+        // List must not supply different slots on successive traversals.
+        parameterNames = List.copyOf(Objects.requireNonNull(parameterNames, "parameterNames"));
+        inputs = List.copyOf(Objects.requireNonNull(inputs, "inputs"));
         Map<String, Integer> parameterIndexByName = new HashMap<>();
         for (int i = 0; i < parameterNames.size(); i++) {
             String name = Objects.requireNonNull(parameterNames.get(i), "parameter name");
