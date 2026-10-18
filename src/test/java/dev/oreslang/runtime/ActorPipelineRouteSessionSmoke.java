@@ -342,6 +342,57 @@ public final class ActorPipelineRouteSessionSmoke {
         reusable.complete(producer);
         check(reusable.outstanding() == 0, "fan-out producer not released");
 
+        // 8,000 concurrent group-filtered RR selections with alternating
+        // membership subsets must never choose an ineligible DAG target,
+        // duplicate a correlation ID, or leak per-message frame credits.
+        var groupParallel = new ActorPipelineRouteSession(plan, 76, 64);
+        var groupParent = groupParallel.ingress("source");
+        var groupReady = new CountDownLatch(8);
+        var groupGo = new CountDownLatch(1);
+        var groupErrors = new AtomicInteger();
+        var groupAccepted = new AtomicInteger();
+        var groupIds = java.util.concurrent.ConcurrentHashMap.<Long>newKeySet();
+        var groupThreads = new Thread[8];
+        for (int t = 0; t < groupThreads.length; t++) {
+            final int shard = t;
+            groupThreads[t] = new Thread(() -> {
+                groupReady.countDown();
+                try {
+                    groupGo.await();
+                    for (int i = 0; i < 1000; i++) {
+                        var members = (i + shard) % 3 == 0
+                                ? java.util.Set.of("worker-b")
+                                : (i + shard) % 3 == 1
+                                        ? java.util.Set.of("worker-a")
+                                        : java.util.Set.of("worker-a", "worker-b");
+                        var child = groupParallel.forwardRoundRobinEligible(
+                                groupParent, members);
+                        try {
+                            if (!members.contains(child.receiver())
+                                    || !groupIds.add(child.routeId())) {
+                                throw new IllegalStateException(
+                                        "RR chose ineligible actor or repeated route identity");
+                            }
+                            groupAccepted.incrementAndGet();
+                        } finally {
+                            groupParallel.complete(child);
+                        }
+                    }
+                } catch (Throwable failure) {
+                    groupErrors.incrementAndGet();
+                }
+            }, "group-rr-stress-" + t);
+            groupThreads[t].start();
+        }
+        groupReady.await();
+        groupGo.countDown();
+        for (var thread : groupThreads) thread.join();
+        check(groupErrors.get() == 0 && groupAccepted.get() == 8000
+                        && groupIds.size() == 8000
+                        && groupParallel.outstanding() == 1,
+                "concurrent dynamic group RR selection leaked/spoofed frames");
+        groupParallel.complete(groupParent);
+
         var parallel = new ActorPipelineRouteSession(plan, 10, 8192);
         var r = parallel.ingress("source");
         int threads = 4, iterations = 500;
@@ -367,6 +418,6 @@ public final class ActorPipelineRouteSessionSmoke {
         check(errors.get() == 0 && parallel.outstanding() == 1,
                 "concurrent branches raced or leaked");
         parallel.complete(r);
-        System.out.println("ORES_ACTOR_REPLY_CORRELATION_OK cases=20 concurrent_branches=2000");
+        System.out.println("ORES_ACTOR_REPLY_CORRELATION_OK cases=21 concurrent_branches=10000");
     }
 }
