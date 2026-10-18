@@ -147,6 +147,101 @@ final class NestedOptionFutureUnwrapTest {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(program));
     }
 
+    @Test
+    void threeLayerOptionFlattenIsExplicitAndAssociative() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val Option<Option<Option<int>>> full = Some(Some(Some(17)));
+                  val Option<Option<int>> outer = full.flatten();
+                  val Option<int> inner = outer.flatten();
+                  stdio.stdout.write(inner.unwrap());
+                  stdio.stdout.write(":");
+
+                  val Option<Option<Option<int>>> missing_middle = Some(None);
+                  stdio.stdout.write(missing_middle.is_some());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(missing_middle.flatten().is_none());
+                  stdio.stdout.write(":");
+
+                  val Option<Option<Option<int>>> missing_inner = Some(Some(None));
+                  stdio.stdout.write(missing_inner.flatten().is_some());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(missing_inner.flatten().flatten().is_none());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("17:true:true:true:true", run(program));
+    }
+
+    @Test
+    void threeLayerFutureRequiresTwoExplicitFlattenCalls() throws Exception {
+        String program = """
+                async fnc answer(): int {
+                  return 17;
+                }
+
+                pub fnc main(): void {
+                  val Future<Future<Future<int>>> three = answer().map(|int n| -> {
+                    return answer().map(|int value| -> {
+                      return answer();
+                    });
+                  });
+                  val Future<int> one = three.flatten().flatten();
+                  stdio.stdout.write(await one);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("17", run(program));
+    }
+
+    @Test
+    void innerFutureFailureMustNotResolveFlattenedFutureSuccessfully() throws Exception {
+        String program = """
+                async fnc answer(): int {
+                  return 17;
+                }
+                async fnc fail_inner(): int {
+                  throw "inner-stage failure";
+                }
+
+                pub fnc main(): void {
+                  val Future<Future<int>> nested = answer().map(|int value| -> {
+                    return fail_inner();
+                  });
+                  val int value = await nested.flatten();
+                  stdio.stdout.write(value);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertThrows(PolyglotException.class, () -> run(program));
+    }
+
+    @Test
+    void outerFutureFailureMustNotInvokeInnerFlattenStage() throws Exception {
+        String program = """
+                async fnc fail_outer(): int {
+                  throw "outer-stage failure";
+                }
+                async fnc answer(): int {
+                  return 17;
+                }
+
+                pub fnc main(): void {
+                  val Future<Future<int>> nested = fail_outer().map(|int value| -> {
+                    return answer();
+                  });
+                  val int value = await nested.flatten();
+                  stdio.stdout.write(value);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertThrows(PolyglotException.class, () -> run(program));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "nested-option-future.ores")
