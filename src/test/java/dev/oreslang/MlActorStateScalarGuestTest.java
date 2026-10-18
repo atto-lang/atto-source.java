@@ -13,6 +13,7 @@ import java.util.HexFormat;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
@@ -171,6 +172,67 @@ final class MlActorStateScalarGuestTest {
                     }
                 end
                 """);
+    }
+
+    @Test void actualGuestRejectsSealedStateViolationsBeforeRunningMain() throws Exception {
+        // Host-only static assertRejected() is not enough: context.eval must
+        // itself enforce the same seal and effect checks before guest code
+        // executes, or an embedding application could bypass the helper.
+        assertGuestRejectedBeforeMain("""
+                define actor Stage as
+                  state { weight: int = 10; }
+                  invalid(): int with state.read {
+                    return self.state.weight;
+                  }
+                end
+                pub routine main(): void {
+                  stdio.println("UNSAFE_MAIN_EXECUTED");
+                  return;
+                }
+                """);
+        assertGuestRejectedBeforeMain("""
+                define actor Stage as
+                  state { weight: int = 10; }
+                  invalid(): int with state.read {
+                    return using state.read(|s| -> {
+                      s.weight = 13;
+                      return s.weight;
+                    });
+                  }
+                end
+                pub routine main(): void {
+                  stdio.println("UNSAFE_MAIN_EXECUTED");
+                  return;
+                }
+                """);
+        assertGuestRejectedBeforeMain("""
+                define actor Stage as
+                  state { weight: int = 10; }
+                  invalid(): int with state.read {
+                    return using state.read(|s| -> {
+                      return s;
+                    });
+                  }
+                end
+                pub routine main(): void {
+                  stdio.println("UNSAFE_MAIN_EXECUTED");
+                  return;
+                }
+                """);
+    }
+
+    private static void assertGuestRejectedBeforeMain(String invalidSource) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            Source executable = Source.newBuilder(OresLanguage.ID, invalidSource,
+                    "ml-invalid-actor-state.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            assertThrows(PolyglotException.class, () -> context.eval(executable),
+                    "context.eval must enforce actor ownership/effect checks");
+        }
+        assertEquals("", output.toString(StandardCharsets.UTF_8),
+                "illegal actor-state program must not execute its main routine");
     }
 
     private static String gitBlobSha(String text) throws Exception {
