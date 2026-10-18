@@ -203,4 +203,58 @@ final class EnumCaseSourceBindingsTest {
         assertThrows(IllegalArgumentException.class,
                 () -> EnumCaseSourceBindings.compileLocalProof(parsed));
     }
+    @Test
+    void nullaryAotValueTagsAreDerivedFromRealSourceWithSchemaInvalidation() {
+        Ast.Program program = Parser.parse("""
+                define enum Foo as A = 5, B = 17, C = 31 end
+                fnc use(Foo.A v): void {}
+                fnc use(Foo.B v): void {}
+                """);
+        var proof = EnumCaseSourceBindings.compileLocalProof(program);
+        var layout = proof.nullaryTagLayouts().get("local_unit.__root__.Foo");
+        assertNotNull(layout);
+        assertEquals(3, layout.caseCount());
+        assertEquals(5, layout.constantTag("A"));
+        assertEquals(17, layout.constantTag("B"));
+        assertEquals(31, layout.constantTag("C"));
+        assertTrue(layout.containsWireTag(17));
+        assertFalse(layout.containsWireTag(16));
+        assertFalse(layout.containsWireTag(-1));
+        assertThrows(IllegalArgumentException.class, () -> layout.constantTag("Unknown"));
+        assertEquals(64, layout.schemaFingerprint().length());
+        assertDoesNotThrow(() -> layout.requireExactSchema(layout.schemaFingerprint()));
+        assertThrows(IllegalArgumentException.class, () -> layout.requireExactSchema("0".repeat(64)));
+
+        Ast.Program retagged = Parser.parse("""
+                define enum Foo as A = 5, B = 18, C = 31 end
+                fnc use(Foo.A v): void {}
+                fnc use(Foo.B v): void {}
+                """);
+        var replacement = EnumCaseSourceBindings.compileLocalProof(retagged)
+                .nullaryTagLayouts().get("local_unit.__root__.Foo");
+        assertNotEquals(layout.schemaFingerprint(), replacement.schemaFingerprint());
+        assertThrows(IllegalArgumentException.class,
+                () -> replacement.requireExactSchema(layout.schemaFingerprint()));
+    }
+
+    @Test
+    void aotNullaryTagsNeverAuthorizeUnsafePayloadOrForgedValueDispatch() {
+        Ast.Program payload = Parser.parse("""
+                define enum Foo as A, B: int end
+                fnc use(Foo.A value): void {}
+                """);
+        assertFalse(EnumCaseSourceBindings.compileLocalProof(payload)
+                .nullaryTagLayouts().containsKey("local_unit.__root__.Foo"));
+        Ast.Program ordinary = Parser.parse("fnc main(): int { return 42; }");
+        assertTrue(EnumCaseSourceBindings.compileLocalProof(ordinary).nullaryTagLayouts().isEmpty());
+        assertThrows(IllegalArgumentException.class,
+                () -> new dev.oreslang.types.EnumTag32Plan(
+                        "unqualified", List.of(
+                                new dev.oreslang.types.EnumTag32Plan.CaseTag("A", 1))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new dev.oreslang.types.EnumTag32Plan("unit.Foo", List.of(
+                        new dev.oreslang.types.EnumTag32Plan.CaseTag("A", 2),
+                        new dev.oreslang.types.EnumTag32Plan.CaseTag("B", 1))));
+    }
+
 }
