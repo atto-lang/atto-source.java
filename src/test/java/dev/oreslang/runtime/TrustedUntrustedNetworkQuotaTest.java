@@ -142,7 +142,7 @@ final class TrustedUntrustedNetworkQuotaTest {
     }
 
     @Test
-    void failedPreDispatchMayRefundOnlyOnce() {
+    void publishedCancellationNeverMintsRateTokens() {
         AtomicLong clock = new AtomicLong();
         var quota = new TrustedUntrustedNetworkQuota(
                 TrustedUntrustedNetworkQuota.Policy.initialDefault(), clock::get);
@@ -154,22 +154,61 @@ final class TrustedUntrustedNetworkQuotaTest {
         first.lease().close();
         assertEquals(0, quota.httpInFlight());
 
-        // The single refunded token is usable, not two new tokens.
+        // One cancelled reservation still spends a start-rate token.
         var second = quota.tryStartHttp();
-        var third = quota.tryStartHttp();
         assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, second.status());
-        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, third.status());
         assertEquals(TrustedUntrustedNetworkQuota.Status.RATE_LIMITED,
                 quota.tryStartHttp().status());
         assertTrue(second.lease().commitDispatch());
         assertFalse(second.lease().abortBeforeDispatch());
         second.lease().close();
-        third.lease().close();
 
         var tcp = quota.tryOpenTcp();
         assertTrue(tcp.lease().abortBeforeDispatch());
         assertFalse(tcp.lease().abortBeforeDispatch());
         assertEquals(0, quota.tcpConnections());
+    }
+
+    @Test
+    void delayedPublishedCancellationsCannotCreateAnOversizedBurst() {
+        AtomicLong clock = new AtomicLong();
+        var quota = new TrustedUntrustedNetworkQuota(
+                TrustedUntrustedNetworkQuota.Policy.initialDefault(), clock::get);
+        var a = quota.tryStartHttp();
+        var b = quota.tryStartHttp();
+        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, a.status());
+        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, b.status());
+        clock.set(1_000_000_000L);
+        var c = quota.tryStartHttp();
+        var d = quota.tryStartHttp();
+        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, c.status());
+        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, d.status());
+        assertTrue(a.lease().abortBeforeDispatch());
+        assertTrue(b.lease().abortBeforeDispatch());
+        assertEquals(TrustedUntrustedNetworkQuota.Status.RATE_LIMITED,
+                quota.tryStartHttp().status()); // old cancellations created no t=1s tokens
+        c.lease().close();
+        d.lease().close();
+        assertEquals(0, quota.httpInFlight());
+
+        var tcp = new TrustedUntrustedNetworkQuota(
+                TrustedUntrustedNetworkQuota.Policy.initialDefault(), clock::get);
+        var t1 = tcp.tryOpenTcp();
+        var t2 = tcp.tryOpenTcp();
+        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, t1.status());
+        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, t2.status());
+        clock.set(2_000_000_000L);
+        var t3 = tcp.tryOpenTcp();
+        var t4 = tcp.tryOpenTcp();
+        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, t3.status());
+        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, t4.status());
+        t1.lease().abortBeforeDispatch();
+        t2.lease().abortBeforeDispatch();
+        assertEquals(TrustedUntrustedNetworkQuota.Status.RATE_LIMITED,
+                tcp.tryOpenTcp().status());
+        t3.lease().close();
+        t4.lease().close();
+        assertEquals(0, tcp.tcpConnections());
     }
 
     @Test
