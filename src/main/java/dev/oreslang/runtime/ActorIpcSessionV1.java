@@ -297,8 +297,20 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
                     "IPC worker frame arrived before bootstrap material was claimed");
         }
         requireNotTerminal("accept IPC worker frame");
+        wire = Objects.requireNonNull(wire, "wire");
+        if (wire.length < MIN_FRAME_BYTES
+                || wire.length > HEADER_BYTES + MAX_PAYLOAD_BYTES + HMAC_BYTES) {
+            poison();
+            throw new ProtocolException(
+                    Reason.MALFORMED,
+                    "IPC frame size is outside protocol bounds");
+        }
+        // Authenticate and parse one immutable entry snapshot. A transport
+        // buffer owner must not be able to race identity/payload mutation
+        // between MAC verification and decode.
+        byte[] admittedWire = wire.clone();
         try {
-            DecodedFrame decoded = decodeAndAuthenticate(wire);
+            DecodedFrame decoded = decodeAndAuthenticate(admittedWire);
             validateCommonIdentity(decoded);
             validateWorkerSequence(decoded);
             validateWorkerState(decoded);
@@ -422,14 +434,6 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     }
 
     private DecodedFrame decodeAndAuthenticate(byte[] wire) {
-        wire = Objects.requireNonNull(wire, "wire");
-        if (wire.length < MIN_FRAME_BYTES
-                || wire.length > HEADER_BYTES + MAX_PAYLOAD_BYTES + HMAC_BYTES) {
-            throw new ProtocolException(
-                    Reason.MALFORMED,
-                    "IPC frame size is outside protocol bounds");
-        }
-
         Lane lane = Lane.fromCode(Byte.toUnsignedInt(wire[LANE_OFFSET]));
         byte[] key = lane == Lane.DATA ? dataKey : controlKey;
         int bodyLength = wire.length - HMAC_BYTES;
@@ -704,9 +708,10 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         if (payload.length > MAX_PAYLOAD_BYTES) {
             throw new IllegalArgumentException("IPC frame payload exceeds maximum size");
         }
+        byte[] admittedPayload = payload.clone();
 
         ByteBuffer out = ByteBuffer.allocate(
-                HEADER_BYTES + payload.length + HMAC_BYTES)
+                HEADER_BYTES + admittedPayload.length + HMAC_BYTES)
                 .order(ByteOrder.BIG_ENDIAN);
         out.put(MAGIC);
         out.putShort((short) PROTOCOL_MAJOR);
@@ -721,8 +726,8 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         out.putLong(frameSequence);
         out.putLong(messageSequence);
         out.put(digestBytes(messageAbiSha256));
-        out.putInt(payload.length);
-        out.put(payload);
+        out.putInt(admittedPayload.length);
+        out.put(admittedPayload);
 
         int bodyLength = out.position();
         byte[] body = out.array();
