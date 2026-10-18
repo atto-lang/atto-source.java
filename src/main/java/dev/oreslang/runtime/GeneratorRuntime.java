@@ -110,7 +110,12 @@ public final class GeneratorRuntime {
             // for a pull that cannot resume guest code.
             if (engine.isTerminal()) {
                 engine.awaitProducerExit();
-                return OresFuture.completed(Step.doneStep());
+                // A producer admission denial remains an exceptional async
+                // result across repeated pulls; never launder it into DONE.
+                Throwable rejected = engine.terminalFailure();
+                return rejected == null
+                        ? OresFuture.completed(Step.doneStep())
+                        : OresFuture.failed(rejected);
             }
             // An async pull always returns an OresFuture, including when
             // scheduler admission itself rejects before any guest work starts.
@@ -153,6 +158,10 @@ public final class GeneratorRuntime {
 
         private boolean isTerminal() {
             return done || closed.get();
+        }
+
+        private Throwable terminalFailure() {
+            return closed.get() ? null : backingFailure;
         }
 
         private synchronized Step<T> next() {
