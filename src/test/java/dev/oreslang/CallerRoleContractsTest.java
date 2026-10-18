@@ -163,12 +163,12 @@ final class CallerRoleContractsTest {
     }
 
     @Test
-    void acceptsMethodAndStaticFunctionMetadataOnDeclarationIdentity() {
+    void roleAnnotatedMethodMayCallProtectedStaticFunction() {
         Ast.Program program = Parser.parse(ROLES + """
                 define class Worker as
-                    @CallableBy(Callers.A)
-                    pub work(): void {}
                     @CallerRole(Callers.A)
+                    pub work(): void {}
+                    @CallableBy(Callers.A)
                     pub static fnc run(): void {}
                 end
                 """);
@@ -180,8 +180,18 @@ final class CallerRoleContractsTest {
         var work = klass.methods().stream().filter(m -> m.name().equals("work")).findFirst().orElseThrow();
         var run = klass.methods().stream().filter(m -> m.name().equals("run")).findFirst().orElseThrow();
         assertThrows(IllegalArgumentException.class,
-                () -> policy.requireDirectCall(work, null, "work"));
-        assertDoesNotThrow(() -> policy.requireDirectCall(work, run, "work"));
+                () -> policy.requireDirectCall(run, null, "run"));
+        assertDoesNotThrow(() -> policy.requireDirectCall(run, work, "run"));
+    }
+
+    @Test
+    void failClosedOnPotentialVirtualOverridePolicyBypass() {
+        assertTrue(failure(ROLES + """
+                define class Worker as
+                    @CallableBy(Callers.A)
+                    pub run(): void {}
+                end
+                """).contains("sealed virtual dispatch"));
     }
 
     @Test
