@@ -82,6 +82,29 @@ final class ActorThreadsLegacyCompatibilityTest {
     }
 
     @Test
+    void legacyMaxOnlyProjectionCannotEraseModernMinimum() {
+        var original = actor("define actor Worker as end");
+        var modern = new Ast.ClassDecl(original.name(), original.visibility(),
+                original.isAbstract(), original.actorKind(), original.genericParameters(),
+                original.parents(), original.interfaces(), original.fields(),
+                original.constructor(), original.methods(), new Ast.ActorThreadPolicy(2, 3));
+        assertEquals(new Ast.ActorThreadPolicy(2, 3), modern.actorThreads());
+        var failure = assertThrows(IllegalStateException.class, modern::maxActorThreads);
+        assertTrue(failure.getMessage().contains("full ActorThreadPolicy"));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.ActorThreadAdmission.requireExclusiveBackend(modern));
+
+        // The historical enum remains a faithful projection only for min=1.
+        var bounded = new Ast.ClassDecl(original.name(), original.visibility(),
+                original.isAbstract(), original.actorKind(), original.genericParameters(),
+                original.parents(), original.interfaces(), original.fields(),
+                original.constructor(), original.methods(), new Ast.ActorThreadPolicy(1, 3));
+        assertEquals(Ast.MaxActorThreads.HIGH, bounded.maxActorThreads());
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.ActorThreadAdmission.requireExclusiveBackend(bounded));
+    }
+
+    @Test
     void newAndOldSpellingAreMutuallyExclusiveIncludingEquivalentValues() {
         String[] invalid = {
                 "@ActorMaxThreads(MaxActorThreads.LOW) @ActorThreads(max = 1) define actor Worker as end",
