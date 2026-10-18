@@ -108,6 +108,23 @@ final class GeneratorRuntimeTest {
     }
 
     @Test
+    void terminalPullRemainsCompletedAfterSchedulerShutdown() throws Exception {
+        AsyncRuntime runtime = new AsyncRuntime();
+        try (var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(42))) {
+            assertEquals(42, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+            runtime.close();
+            for (int i = 0; i < 3; i++) {
+                OresFuture<GeneratorRuntime.Step<Integer>> terminal = generator.nextStep();
+                assertEquals(OresFuture.class, terminal.getClass());
+                assertTrue(terminal.get(2, TimeUnit.SECONDS).done());
+            }
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
     void asyncPullsUseOresFutureIncludingTerminalPulls() throws Exception {
         try (AsyncRuntime runtime = new AsyncRuntime();
              var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(42))) {
