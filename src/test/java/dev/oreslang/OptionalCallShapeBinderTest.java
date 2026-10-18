@@ -117,6 +117,16 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void equalArityDeclarationsCannotBeDisambiguatedByLabels() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.bindUnique(List.of(
+                        List.of(Parameter.required("left")),
+                        List.of(Parameter.required("right"))),
+                        List.of(Argument.named("left"))));
+        assertTrue(error.getMessage().contains("same-arity overloads"));
+    }
+
+    @Test
     void optionalArgumentsCannotOverrideOrDisambiguateByParameterType() {
         // foo(int a) and foo(int a, bool? b) are structurally ambiguous for foo(3).
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
