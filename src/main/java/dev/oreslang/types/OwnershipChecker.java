@@ -787,7 +787,7 @@ public final class OwnershipChecker {
             BorrowPlace place = borrowPlace(runtime.arguments().getFirst(), scope);
             beginPersistentBorrow(place.owner(), false);
             value = new ValueInfo(
-                    Ast.TypeRef.borrowed(place.type(), false),
+                    loanType(place.type(), false),
                     ValueKind.IMM_BORROW,
                     ownershipRoot(place.owner()),
                     true);
@@ -800,7 +800,7 @@ public final class OwnershipChecker {
             }
             beginPersistentBorrow(place.owner(), mutableBorrow);
             value = new ValueInfo(
-                    Ast.TypeRef.borrowed(place.type(), mutableBorrow),
+                    loanType(place.type(), mutableBorrow),
                     mutableBorrow ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW,
                     ownershipRoot(place.owner()),
                     true);
@@ -939,7 +939,7 @@ public final class OwnershipChecker {
                     throw error("mutable projected borrows need path-exclusive loan tracking");
                 }
                 validateBorrow(place.owner(), mutable);
-                return new ValueInfo(Ast.TypeRef.borrowed(place.type(), mutable), mutable ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW, ownershipRoot(place.owner()));
+                return new ValueInfo(loanType(place.type(), mutable), mutable ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW, ownershipRoot(place.owner()));
             }
             return checkExpr(unary.operand(), scope, false);
         }
@@ -988,7 +988,7 @@ public final class OwnershipChecker {
                     BorrowPlace place = borrowPlace(argument, scope);
                     validateBorrow(place.owner(), false);
                     yield new ValueInfo(
-                            Ast.TypeRef.borrowed(place.type(), false),
+                            loanType(place.type(), false),
                             ValueKind.IMM_BORROW,
                             ownershipRoot(place.owner()));
                 }
@@ -1726,6 +1726,24 @@ public final class OwnershipChecker {
                             root.immutableBorrows--;
                         }
                     }
+                } else if (member.receiver() instanceof Ast.MemberExpr
+                        || member.receiver() instanceof Ast.IndexExpr) {
+                    // The implicit receiver is a live loan even when its place
+                    // is projected. Reserve the containing owner for the whole
+                    // argument evaluation; root tracking conservatively prevents
+                    // sibling writes too, until path-exclusive loans are proven.
+                    BorrowPlace place = borrowPlace(member.receiver(), scope);
+                    boolean exclusive = method.explicitReceiverType() != null
+                            && method.explicitReceiverType().isBorrow()
+                            && method.explicitReceiverType().mutableBorrow();
+                    beginPersistentBorrow(place.owner(), exclusive);
+                    VarState root = ownershipRoot(place.owner());
+                    try {
+                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                    } finally {
+                        if (exclusive) root.mutableBorrowed = false;
+                        else root.immutableBorrows--;
+                    }
                 } else {
                     checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
                 }
@@ -2248,6 +2266,13 @@ public final class OwnershipChecker {
      * Mutable projections stay fail-closed until path-exclusive loans land.
      */
     private record BorrowPlace(VarState owner, Ast.TypeRef type) { }
+
+    private static Ast.TypeRef loanType(Ast.TypeRef source, boolean mutable) {
+        // A reborrow refers to the same storage, not to a borrow wrapper.
+        // validateBorrow enforces privileges and provenance stays on its root.
+        return Ast.TypeRef.borrowed(source.isBorrow() ? source.borrowedTarget() : source, mutable);
+    }
+
 
     private BorrowPlace borrowPlace(Ast.Expr operand, Scope scope) {
         if (operand instanceof Ast.NameExpr name) {

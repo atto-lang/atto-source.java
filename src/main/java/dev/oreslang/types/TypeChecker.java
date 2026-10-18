@@ -2375,7 +2375,8 @@ public final class TypeChecker {
                 return Primitive.VOID;
             }
             return switch (runtime.operation()) {
-                case "borrow" -> new Borrow(operand, false);
+                case "borrow" -> new Borrow(operand instanceof Borrow existing
+                        ? existing.target() : operand, false);
                 // A copied primitive is a detached value, not a retained loan.
                 // Keep nominal/container capabilities intact: their deep-copy
                 // and lifetime contracts require separate proofs.
