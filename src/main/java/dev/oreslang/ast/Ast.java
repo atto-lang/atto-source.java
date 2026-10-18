@@ -532,7 +532,7 @@ public final class Ast {
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
-            ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
+            ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt, TaskBlockStmt { }
 
     /**
      * Binding rebinding and mutable access to the referent are independent capabilities.
@@ -618,6 +618,11 @@ public final class Ast {
     }
     public record ExprStmt(Expr expression) implements Stmt { }
     public record DeferStmt(Expr expression) implements Stmt { }
+
+    /** Explicit fire-and-continue `do nb { ... }`. No task handle escapes to the caller. */
+    public record TaskBlockStmt(List<Stmt> body) implements Stmt {
+        public TaskBlockStmt { body = List.copyOf(body); }
+    }
 
     public record BlockStmt(List<Stmt> body) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
@@ -868,7 +873,7 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, TaskExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -1017,6 +1022,11 @@ public final class Ast {
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
+
+    /** Expression-form `nb { ... }` produces an awaitable Task<T> once lowering is enabled. */
+    public record TaskExpr(List<Stmt> body) implements Expr {
+        public TaskExpr { body = List.copyOf(body); }
+    }
     /** Evaluate one expression into Option<T>; only ordinary guest failures become None. */
     public record TrapExpr(Expr expression) implements Expr { }
 
