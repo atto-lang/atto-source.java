@@ -462,17 +462,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_real_github_reviews_list_parser(self):
-        from unittest.mock import Mock
-        route = (f"repos/{pub.TRUSTED_SOURCE_REPOSITORY}/pulls/1286/"
-                 "reviews?per_page=100")
-        payload = '{"id":9,"state":"APPROVED"}'
-        with patch.object(pub.subprocess, "run", return_value=Mock(
-                returncode=0, stdout="[" + payload + "]")):
-            self.assertEqual(pub.gh_api(route)["reviews"][0]["id"], 9)
-        with patch.object(pub.subprocess, "run", return_value=Mock(
-                returncode=0, stdout='{"reviews":[]}')):
-            with self.assertRaisesRegex(pub.Denied, "review response shape"):
-                pub.gh_api(route)
+        with patch.object(pub, 'trusted_github_cli', return_value='/usr/bin/gh'):
+            from unittest.mock import Mock
+            route = (f"repos/{pub.TRUSTED_SOURCE_REPOSITORY}/pulls/1286/"
+                     "reviews?per_page=100")
+            payload = '{"id":9,"state":"APPROVED"}'
+            with patch.object(pub.subprocess, "run", return_value=Mock(
+                    returncode=0, stdout="[" + payload + "]")):
+                self.assertEqual(pub.gh_api(route)["reviews"][0]["id"], 9)
+            with patch.object(pub.subprocess, "run", return_value=Mock(
+                    returncode=0, stdout='{"reviews":[]}')):
+                with self.assertRaisesRegex(pub.Denied, "review response shape"):
+                    pub.gh_api(route)
 
     def test_invalid_source_proof_rejected_before_any_source_access(self):
         with patch.object(pub, "collect_source", side_effect=AssertionError(
