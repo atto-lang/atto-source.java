@@ -143,6 +143,32 @@ final class ActorProtocolDeclarationGateTest {
     }
 
     @Test
+    void manuallyConstructedMailboxAstCannotClaimRemoteDirection() {
+        Ast.Program parsed = Parser.parse("define actor Ordinary as end");
+        Ast.ModuleDecl module = parsed.modules().getFirst();
+        Ast.ClassDecl ordinary = (Ast.ClassDecl) module.declarations().getFirst();
+        for (Ast.ActorDirection direction : List.of(
+                Ast.ActorDirection.INBOUND, Ast.ActorDirection.OUTBOUND,
+                Ast.ActorDirection.DUPLEX)) {
+            Ast.ActorSpecialization invalid = new Ast.ActorSpecialization(
+                    Ast.ActorReplyRole.STREAM, Ast.ActorTransport.MAIL, direction,
+                    false, List.of(), List.of(), List.of());
+            Ast.ClassDecl forged = new Ast.ClassDecl(
+                    ordinary.name(), ordinary.visibility(), ordinary.isAbstract(),
+                    ordinary.actorKind(), ordinary.genericParameters(), ordinary.parents(),
+                    ordinary.interfaces(), ordinary.fields(), ordinary.constructor(),
+                    ordinary.methods(), invalid);
+            Ast.ModuleDecl forgedModule = new Ast.ModuleDecl(
+                    module.name(), module.annotations(), module.contracts(), List.of(forged));
+            Ast.Program injected = new Ast.Program(
+                    parsed.namespace(), parsed.imports(), List.of(forgedModule));
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(injected), direction.toString());
+            assertTrue(error.getMessage().contains("non-local routing"), error.getMessage());
+        }
+    }
+
+    @Test
     void legacyActorsRemainUnspecializedAndContextualNamesRemainIdentifiers() {
         Ast.ClassDecl klass = actor("define actor Worker as end");
         assertEquals(Ast.ActorSpecialization.defaultSpec(), klass.actorSpecialization());
