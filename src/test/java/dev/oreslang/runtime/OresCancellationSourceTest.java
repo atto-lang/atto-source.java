@@ -1,0 +1,111 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class OresCancellationSourceTest {
+    @Test
+    void linkedCancellationIsOneWayAndOrComposed() {
+        try (OresCancellationSource first = new OresCancellationSource();
+             OresCancellationSource second = new OresCancellationSource();
+             OresCancellationSource linked =
+                     OresCancellationSource.linked(first.token(), second.token())) {
+            AtomicInteger callbacks = new AtomicInteger();
+            linked.token().onCancellationRequested(callbacks::incrementAndGet);
+            assertFalse(linked.isCancellationRequested());
+            assertTrue(second.cancel());
+            assertTrue(linked.isCancellationRequested());
+            assertFalse(first.isCancellationRequested());
+            assertEquals(1, callbacks.get());
+            assertFalse(linked.cancel());
+            assertEquals(1, callbacks.get());
+        }
+    }
+
+    @Test
+    void cancellingChildDetachesParentObserversWithoutCancellingParent() {
+        try (OresCancellationSource parent = new OresCancellationSource();
+             OresCancellationSource linked =
+                     OresCancellationSource.linked(parent.token())) {
+            assertEquals(1, parent.notification().pendingRuntimeWaiterCount());
+            assertTrue(linked.cancel());
+            assertEquals(0, parent.notification().pendingRuntimeWaiterCount());
+            assertFalse(parent.isCancellationRequested());
+        }
+    }
+
+    @Test
+    void observerDetachDoesNotCancelSourceAndLateObserversFireOnce() {
+        try (OresCancellationSource source = new OresCancellationSource()) {
+            AtomicInteger detached = new AtomicInteger();
+            OresCancellationToken.Registration subscription =
+                    source.token().onCancellationRequested(detached::incrementAndGet);
+            subscription.close();
+            subscription.close();
+            assertTrue(source.cancel());
+            assertEquals(0, detached.get());
+
+            AtomicInteger late = new AtomicInteger();
+            source.token().onCancellationRequested(late::incrementAndGet);
+            assertEquals(1, late.get());
+            assertFalse(source.cancel());
+            assertEquals(1, late.get());
+        }
+    }
+
+    @Test
+    void externalTokenCancelsOwningScopeAndDescendantsNotItsSource() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresCancellationSource external = new OresCancellationSource();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            scope.cancelWhen(external.token());
+            OresTaskScope childScope = scope.childScope();
+            CountDownLatch entered = new CountDownLatch(1);
+            OresTask<Void> child = childScope.submit(() -> {
+                entered.countDown();
+                Thread.sleep(30_000);
+                return null;
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            assertTrue(external.cancel());
+            scope.close();
+            assertTrue(scope.isCancelRequested());
+            assertTrue(childScope.isCancelRequested());
+            assertTrue(child.isCancelled());
+            assertTrue(child.isQuiescent());
+        }
+    }
+
+    @Test
+    void cancellingScopeNeverCancelsUpstreamSourceAndDetachesIt() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresCancellationSource upstream = new OresCancellationSource();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            scope.cancelWhen(upstream.token());
+            assertEquals(1, upstream.notification().pendingRuntimeWaiterCount());
+            assertTrue(scope.cancel());
+            assertFalse(upstream.isCancellationRequested());
+            assertEquals(0, upstream.notification().pendingRuntimeWaiterCount());
+            assertThrows(RejectedExecutionException.class,
+                    () -> scope.cancelWhen(upstream.token()));
+        }
+    }
+
+    @Test
+    void alreadyCancelledSourceCancelsNewScopeImmediately() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresCancellationSource upstream = new OresCancellationSource();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            assertTrue(upstream.cancel());
+            scope.cancelWhen(upstream.token());
+            assertTrue(scope.isCancelRequested());
+            assertEquals(0, upstream.notification().pendingRuntimeWaiterCount());
+        }
+    }
+}
