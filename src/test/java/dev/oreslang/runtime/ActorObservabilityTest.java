@@ -104,6 +104,41 @@ final class ActorObservabilityTest {
     }
 
     @Test
+    void terminalJournalStatsAccountPublishedRecordsWithoutMutatingDrainOrder()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var first = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            var second = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            first.stop();
+            second.stop();
+            assertTrue(first.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(second.awaitTermination(5, TimeUnit.SECONDS));
+
+            var before = runtime.terminalJournalStats();
+            assertEquals(2L, before.published());
+            assertEquals(2, before.backlog());
+            assertEquals(0L, before.nextSequence());
+            assertEquals(0L, before.droppedTotal());
+
+            assertEquals(0L, runtime.pollTerminationEvent().orElseThrow().sequence());
+            var middle = runtime.terminalJournalStats();
+            assertEquals(2L, middle.published(),
+                    "published count is lifetime admission, not current backlog");
+            assertEquals(1, middle.backlog());
+            assertEquals(1L, middle.nextSequence());
+
+            assertEquals(1L, runtime.pollTerminationEvent().orElseThrow().sequence());
+            var after = runtime.terminalJournalStats();
+            assertEquals(0, after.backlog());
+            assertEquals(2L, after.nextSequence());
+            assertEquals(2L, after.published());
+            assertEquals(0L, after.droppedTotal());
+        }
+    }
+
+    @Test
     void sendRejectionTelemetrySeparatesSealedTerminatedAndForeignRefs()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();
@@ -342,6 +377,13 @@ final class ActorObservabilityTest {
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
                     "diagnostics backpressure must never become lifecycle backpressure");
             assertEquals(1L, runtime.supervisionEventsDropped());
+            var journal = runtime.terminalJournalStats();
+            assertEquals(4_096, journal.backlog());
+            assertEquals(4_096, journal.capacity());
+            assertEquals(1L, journal.droppedCapacity());
+            assertEquals(0L, journal.droppedContention());
+            assertEquals(0L, journal.droppedSequenceExhaustion());
+            assertEquals(journal.droppedTotal(), runtime.supervisionEventsDropped());
             assertEquals(2L, runtime.runtimeStats().normalTerminations(),
                     "termination accounting is authoritative even if its journal record is dropped");
             ActorRuntime.ActorTerminalState retained =
@@ -629,6 +671,12 @@ final class ActorObservabilityTest {
                 assertEquals(1L, runtime.runtimeStats().normalTerminations());
                 assertTrue(runtime.supervisionEventsDropped() >= 1L,
                         "contended diagnostic publication must be counted as a drop");
+                var journal = runtime.terminalJournalStats();
+                assertTrue(journal.droppedContention() >= 1L,
+                        "operators must be able to distinguish producer contention from capacity pressure");
+                assertEquals(0L, journal.droppedCapacity());
+                assertEquals(0L, journal.droppedSequenceExhaustion());
+                assertEquals(journal.droppedTotal(), runtime.supervisionEventsDropped());
             } finally {
                 release.countDown();
                 holder.join(3_000L);
@@ -655,6 +703,12 @@ final class ActorObservabilityTest {
             actor.stop();
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             assertEquals(1L, runtime.supervisionEventsDropped());
+            var journal = runtime.terminalJournalStats();
+            assertEquals(Long.MAX_VALUE, journal.nextSequence());
+            assertEquals(1L, journal.droppedSequenceExhaustion());
+            assertEquals(0L, journal.droppedContention());
+            assertEquals(0L, journal.droppedCapacity());
+            assertEquals(1L, journal.droppedTotal());
             assertTrue(runtime.pollTerminationEvent().isEmpty(),
                     "sequence exhaustion must drop rather than wrap into negative ordering");
             assertEquals(1L, runtime.runtimeStats().normalTerminations());
