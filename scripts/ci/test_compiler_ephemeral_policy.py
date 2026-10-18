@@ -2,7 +2,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import ast
+import os
 import re
+import subprocess
+import sys
+import tempfile
+import textwrap
 import unittest
 
 PATH = Path(__file__).resolve().parents[2] / '.github/workflows/compiler-bundle-private-ephemeral.yml'
@@ -98,6 +104,56 @@ class BundleEphemeralPolicyTests(unittest.TestCase):
             with self.subTest(key=key):
                 state = dict(self.valid, **{key: changed})
                 self.assertFalse(allowed(state))
+
+    def test_real_cli_gate_disables_ambient_imports_and_assert_optimization(self):
+        """Parse the actual embedded runner program, not a pasted equivalent."""
+        m = re.search(r"          python3 -I - <<'PY'\n(.*?)\n          PY\n",
+                      self.source, re.S)
+        self.assertIsNotNone(m)
+        program = textwrap.dedent(m.group(1))
+        syntax = ast.parse(program)
+        self.assertFalse(any(isinstance(node, ast.Assert)
+                             for node in ast.walk(syntax)),
+                         'optimized Python removes assert-based CI gates')
+        self.assertIn('raise SystemExit', program)
+        self.assertIn('negative compiler diagnostic check failed', program)
+        self.assertIn('positive compiler check failed', program)
+
+    def test_real_cli_rejects_fake_compiler_success_and_failure_under_python_o(self):
+        """A fake CLI always exiting 0 or 1 must not pass optimized CI."""
+        m = re.search(r"          python3 -I - <<'PY'\n(.*?)\n          PY\n",
+                      self.source, re.S)
+        self.assertIsNotNone(m)
+        code = textwrap.dedent(m.group(1))
+        with tempfile.TemporaryDirectory(prefix='sourcefree-ephemeral-oracle-') as td:
+            root = Path(td)
+            (root / 'examples').mkdir()
+            (root / 'examples' / 'together.ores').write_text('source-free fixture')
+            (root / 'jdk' / 'bin').mkdir(parents=True)
+            (root / 'jdk' / 'bin' / 'java').write_text('synthetic not executed')
+            bundle = root / 'oreslang-compiler-bundle'
+            bundle.mkdir()
+            exe = bundle / 'run-oreslang'
+            env = {
+                'PATH': os.defpath, 'JAVA_HOME': str(root / 'jdk'),
+                'GITHUB_WORKSPACE': str(root), 'RUNNER_TEMP': str(root),
+                'PYTHONOPTIMIZE': '2',
+            }
+            for exit_code, expected in (
+                (1, 'positive compiler check failed'),
+                (0, 'negative compiler diagnostic check failed'),
+            ):
+                with self.subTest(always_returns=exit_code):
+                    exe.write_text(f'#!/bin/sh\nexit {exit_code}\n')
+                    exe.chmod(0o700)
+                    result = subprocess.run(
+                        [sys.executable, '-O', '-I', '-c', code],
+                        cwd=root, env=env, text=True, capture_output=True,
+                        timeout=20,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(expected, result.stderr)
+
 
     def test_trust_fields_present_in_both_gates(self):
         deny = self.source.split('  deny-unapproved:\n', 1)[1].split('  approved-compiler-build:\n')[0]

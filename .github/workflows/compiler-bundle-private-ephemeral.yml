@@ -107,7 +107,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           import os, pathlib, re, subprocess, tempfile
           root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
           exe = pathlib.Path(os.environ['RUNNER_TEMP']) / 'oreslang-compiler-bundle/run-oreslang'
@@ -117,17 +117,20 @@ jobs:
           env = {'PATH': str(java_home / 'bin') + os.pathsep + os.defpath,
                  'LC_ALL': 'C', 'LANG': 'C', 'TZ': 'UTC'}
           pos = root / 'examples/together.ores'
-          assert pos.is_file() and not pos.is_symlink()
+          if not pos.is_file() or pos.is_symlink():
+              raise SystemExit('pinned positive .ores file absent or symlinked')
           good = subprocess.run([str(exe), '--check', str(pos)], cwd=root, env=env,
                                 capture_output=True, timeout=90)
-          assert good.returncode == 0 and good.stdout == b'', 'positive check failed'
+          if good.returncode != 0 or good.stdout != b'':
+              raise SystemExit('positive compiler check failed')
           with tempfile.TemporaryDirectory(prefix='oreslang-negative-') as tmp:
               bad_source = pathlib.Path(tmp) / 'parse-negative.ores'
               bad_source.write_bytes(b'pub routine main( {\n')
               bad = subprocess.run([str(exe), '--check', str(bad_source)],
                                    cwd=root, env=env, capture_output=True, timeout=90)
               pattern = rb'^' + re.escape(os.fsencode(bad_source)) + rb':[1-9][0-9]*:[1-9][0-9]*: error: '
-              assert bad.returncode == 1 and not bad.stdout and re.search(pattern, bad.stderr, re.M), 'negative diagnostic check failed'
+              if bad.returncode != 1 or bad.stdout or not re.search(pattern, bad.stderr, re.M):
+                  raise SystemExit('negative compiler diagnostic check failed')
           print('REAL_JAVA_CLI_POSITIVE_NEGATIVE_PASS; ml_guest_executed=false')
           PY
       - name: Verify immutable source tree after all tests
