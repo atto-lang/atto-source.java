@@ -195,6 +195,28 @@ public final class OptionalCallShapeBinder {
         return List.copyOf(evaluated);
     }
 
+    /**
+     * Stateless compile-time selection for a family of parsed declaration
+     * signatures. This does not choose by argument type, label alone, or
+     * runtime value. Overlapping admitted arities fail closed.
+     *
+     * The caller must first establish the lexical/qualified declaration family,
+     * accessibility, actor isolation and any explicit type arguments.
+     */
+    public static Selection selectParsed(
+            List<List<Ast.Param>> declarationSignatures,
+            List<Ast.CallArgument> sourceItems) {
+        Objects.requireNonNull(declarationSignatures, "declarationSignatures");
+        List<List<Parameter>> shapes = new ArrayList<>(declarationSignatures.size());
+        for (List<Ast.Param> signature : declarationSignatures) {
+            shapes.add(declaredParameterShapes(signature));
+        }
+        Selection selected = bindUnique(shapes, parsedArgumentShapes(sourceItems));
+        verifyPlanAgainstSource(shapes.get(selected.signatureIndex()),
+                sourceItems, selected.plan());
+        return selected;
+    }
+
     public record Parameter(String name, boolean optional, boolean variadic) {
         public Parameter {
             if (name == null || name.isBlank()) {
