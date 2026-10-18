@@ -39,7 +39,7 @@ final class HotReloadTransactionalPublicationTest {
     void successfulReplacementPublishesOnlyStartedCandidateAndPinsPriorVersion() {
         try (var manager = new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
             var previous = manager.loadAndStart("worker.ores", GOOD);
-            var current = manager.reloadAndStart("worker.ores", GOOD + "\nconst int newVersion = 2;");
+            var current = manager.reloadAndStart("worker.ores", "pub routine main(): void { val newVersion = 2; return; }");
             assertTrue(current.started());
             assertSame(current, manager.active("worker.ores"));
             assertSame(current, manager.active());
