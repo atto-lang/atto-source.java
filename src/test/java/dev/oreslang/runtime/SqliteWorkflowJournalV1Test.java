@@ -606,18 +606,16 @@ final class SqliteWorkflowJournalV1Test {
             var readFuture = pool.submit(() -> {
                 start.await();
                 for (int i = 0; i < 200; i++) {
-                    var snapshot = reader.snapshot();
-                    var journal = reader.journal();
+                    var view = reader.readView();
                     assertEquals(
-                            snapshot.journalEntries(),
-                            journal.size());
+                            view.storeSnapshot().journalEntries(),
+                            view.journal().size());
                     assertEquals(
-                            snapshot.nextSequence(),
-                            journal.size() + 1L);
-                    var replay = reader.replayDevLoop();
+                            view.storeSnapshot().nextSequence(),
+                            view.journal().size() + 1L);
                     assertEquals(
-                            journal,
-                            replay.machine().journal());
+                            view.journal(),
+                            view.replay().machine().journal());
                 }
                 return null;
             });
