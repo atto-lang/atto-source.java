@@ -153,6 +153,8 @@ final class ActorArtifactAdmissionTest {
         var good = attestation("ImageWorker", manifest);
         var substituted = new ActorArtifactAdmission.TrustedBuildAttestation(
                 "OtherWorker",
+                good.actorKind(),
+                good.actorBoundary(),
                 good.backend(),
                 good.compilerVersion(),
                 good.compilerGitCommit(),
@@ -281,6 +283,49 @@ final class ActorArtifactAdmissionTest {
     }
 
     @Test
+    void runtimeAdmissionUsesActualSupervisorAuthorityAndBindsRuntime()
+            throws Exception {
+        byte[] executable = "ELF-runtime-bound".getBytes(StandardCharsets.UTF_8);
+        KeyPair keys = keyPair();
+        var manifest = sign(manifest(executable, List.of()), keys);
+        var attestation = attestation("ImageWorker", manifest);
+
+        try (ActorRuntime insufficient = new ActorRuntime(IsolatePolicy.developer())) {
+            SecurityException denied = assertThrows(
+                    SecurityException.class,
+                    () -> insufficient.admitIpcActorArtifact(
+                            "ImageWorker",
+                            Ast.ActorKind.PRIVATE,
+                            manifest,
+                            executable,
+                            attestation,
+                            (builder, keyId) -> keys.getPublic(),
+                            targetPolicy(),
+                            IsolatePolicy.developer()));
+            assertTrue(
+                    denied.getMessage().contains("IPC")
+                            || denied.getMessage().contains("CHILD_PROCESS"),
+                    denied.getMessage());
+        }
+
+        IsolatePolicy supervisor = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.IPC,
+                IsolatePolicy.Capability.CHILD_PROCESS);
+        try (ActorRuntime runtime = new ActorRuntime(supervisor)) {
+            ActorArtifact<Object> artifact = runtime.admitIpcActorArtifact(
+                    "ImageWorker",
+                    Ast.ActorKind.PRIVATE,
+                    manifest,
+                    executable,
+                    attestation,
+                    (builder, keyId) -> keys.getPublic(),
+                    targetPolicy(),
+                    IsolatePolicy.developer());
+            assertTrue(artifact.admittedForRuntime(runtimeInstanceId(runtime)));
+        }
+    }
+
+    @Test
     void canonicalUnsignedManifestHasDeterministicSortedObjectKeys() throws Exception {
         byte[] executable = "ELF-canonical".getBytes(StandardCharsets.UTF_8);
         var manifest = manifest(executable, List.of("filesystem.read", "stdout"));
@@ -362,8 +407,17 @@ final class ActorArtifactAdmissionTest {
     private static ActorArtifactAdmission.TrustedBuildAttestation attestation(
             String actorTypeName,
             ActorArtifactAdmission.Manifest manifest) {
+        return attestation(actorTypeName, Ast.ActorKind.PRIVATE, manifest);
+    }
+
+    private static ActorArtifactAdmission.TrustedBuildAttestation attestation(
+            String actorTypeName,
+            Ast.ActorKind actorKind,
+            ActorArtifactAdmission.Manifest manifest) {
         return new ActorArtifactAdmission.TrustedBuildAttestation(
                 actorTypeName,
+                actorKind,
+                Ast.ActorBoundary.IPC,
                 manifest.compiler().backend(),
                 manifest.compiler().version(),
                 manifest.compiler().gitCommit(),
@@ -379,6 +433,16 @@ final class ActorArtifactAdmissionTest {
                 MESSAGE_ABI,
                 STATE_SCHEMA,
                 WIRE_CODEC);
+    }
+
+    private static java.util.UUID runtimeInstanceId(ActorRuntime runtime) {
+        try {
+            var field = ActorRuntime.class.getDeclaredField("runtimeInstanceId");
+            field.setAccessible(true);
+            return (java.util.UUID) field.get(runtime);
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError(failure);
+        }
     }
 
     private static KeyPair keyPair() throws Exception {
