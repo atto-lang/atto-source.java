@@ -255,6 +255,33 @@ final class LogicalSourceActorCrossContextUpgradeTest {
     }
 
     @Test
+    void protectedActorKindsCannotDowngradeToSameJvmHotReload() throws Exception {
+        String source = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 1; return; }
+                  receive(ActorMail<int> mail): void { return; }
+                end
+                pub routine main(): void { return; }
+                """;
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var generation = manager.stageActorGeneration("protected-v1.ores", source);
+            for (var kind : java.util.List.of(
+                    ActorRuntime.ActorKind.PRIVATE,
+                    ActorRuntime.ActorKind.UNTRUSTED)) {
+                var failure = assertThrows(SecurityException.class,
+                        () -> LogicalSourceActorRouterV1.spawn(
+                                generation, kind, "Counter", WAIT));
+                assertTrue(failure.getMessage().contains("protected worker/isolate"),
+                        failure::getMessage);
+            }
+            assertEquals(0, generation.actorRoutePins(),
+                    "refused physical isolation cannot pin or create an actor");
+        }
+    }
+
+    @Test
     void timedOutLogicalOutputReadDoesNotStrandHotUpgrade() throws Exception {
         String v1 = """
                 define actor Counter as
