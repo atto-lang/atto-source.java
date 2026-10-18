@@ -676,6 +676,7 @@ public final class OresEvalRootNode extends RootNode {
             // as mailbox actors or mint their capabilities through generic spawn.
             Ast.ActorSpecialization spec = klass.actorSpecialization();
             if (spec.transport() != Ast.ActorTransport.MAIL
+                    || spec.serial()
                     || spec.replyRole() != Ast.ActorReplyRole.STREAM
                     || !spec.requirements().isEmpty() || !spec.effects().isEmpty()
                     || !spec.annotations().isEmpty()) {
