@@ -38,6 +38,28 @@ public final class EnumVariantOverloadPolicySmoke {
         Signature unrelated = sig(g, n);
         List<Signature> family = List.of(general, specializedA, specializedB, unrelated);
         EnumVariantOverloadPolicy.admit(family);
+        var compiled = EnumVariantOverloadPolicy.prepare(family);
+        var target = compiled.bind(List.of(a, n));
+        eq(specializedA, target.signature());
+        eq(EnumVariantOverloadPolicy.symbol(specializedA), target.slotSymbol());
+        eq(compiled.schemaFingerprint(), target.schemaFingerprint());
+        target.requireLinkedTo(compiled);
+        rejected(() -> target.requireLinkedTo(EnumVariantOverloadPolicy.prepare(family)));
+        List<Signature> permuted = new ArrayList<>(family);
+        Collections.reverse(permuted);
+        eq(compiled.schemaFingerprint(), EnumVariantOverloadPolicy.prepare(permuted).schemaFingerprint());
+        eq(compiled.schemaFingerprint(), EnumVariantOverloadPolicy.prepare(List.of(
+                general, specializedB, unrelated, specializedA)).schemaFingerprint());
+        EnumInfo changedPayload = new EnumInfo("file::Foo", Map.of("A", Payload.PRIMITIVE,
+                "B", Payload.NULLARY, "C", Payload.PRIMITIVE));
+        check(!compiled.schemaFingerprint().equals(EnumVariantOverloadPolicy.prepare(List.of(
+                sig(EnumParameter.whole(changedPayload), n))).schemaFingerprint()));
+        EnumInfo changedCaseSet = new EnumInfo("file::Foo", Map.of("A", Payload.NULLARY,
+                "B", Payload.NULLARY, "C", Payload.PRIMITIVE, "D", Payload.NULLARY));
+        check(!compiled.schemaFingerprint().equals(EnumVariantOverloadPolicy.prepare(List.of(
+                sig(EnumParameter.whole(changedCaseSet), n))).schemaFingerprint()));
+        rejected(() -> compiled.bind(List.of(EnumParameter.whole(changedCaseSet), n)));
+        eq(unrelated, compiled.bind(List.of(g, n)).signature());
         eq(specializedA, EnumVariantOverloadPolicy.select(family, List.of(a, n)));
         eq(specializedB, EnumVariantOverloadPolicy.select(family, List.of(b, n)));
         eq(general, EnumVariantOverloadPolicy.select(family, List.of(c, n)));
@@ -56,6 +78,13 @@ public final class EnumVariantOverloadPolicySmoke {
         rejected(() -> new EnumInfo("Foo", Map.of("A", Payload.NULLARY)));
         rejected(() -> new EnumInfo("file::\uD800", Map.of("A", Payload.NULLARY)));
         rejected(() -> EnumParameter.whole(new EnumInfo("file::Foo", Map.of("A", Payload.COMPLEX))));
+        Map<String, Payload> tooManyCases = new java.util.HashMap<>();
+        for (int i = 0; i < EnumVariantOverloadPolicy.MAX_CASES + 1; i++) {
+            tooManyCases.put("Case" + i, Payload.NULLARY);
+        }
+        rejected(() -> new EnumInfo("file::TooMany", tooManyCases));
+        rejected(() -> EnumVariantOverloadPolicy.prepare(Collections.nCopies(
+                EnumVariantOverloadPolicy.MAX_TOTAL_CANDIDATES + 1, sig(n))));
         rejected(() -> EnumVariantOverloadPolicy.admit(List.of(sig(f), sig(EnumParameter.whole(
                 new EnumInfo("file::Foo", Map.of("A", Payload.NULLARY)))))));
         rejected(() -> EnumVariantOverloadPolicy.select(List.of(general), List.of(
