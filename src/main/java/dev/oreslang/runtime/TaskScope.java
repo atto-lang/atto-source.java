@@ -71,6 +71,9 @@ public final class TaskScope implements AutoCloseable {
     /** Cancel owned children and seal admission. Does not wait for execution. */
     public boolean cancel(String reason) {
         Objects.requireNonNull(reason, "reason");
+        if (reason.isBlank() || reason.length() > 256) {
+            throw new IllegalArgumentException("reason must contain 1..256 nonblank characters");
+        }
         synchronized (admissionLock) {
             sealed = true;
         }
@@ -97,7 +100,7 @@ public final class TaskScope implements AutoCloseable {
         return done;
     }
 
-    /** Nonparking cancellation request, not a synchronous join. */
+    /** Requests cancellation without joining; notification hooks may still take time. */
     @Override
     public void close() {
         cancel("scope closed");
