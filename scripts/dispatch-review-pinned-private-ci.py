@@ -85,7 +85,10 @@ def api_list(route):
     return parse_json_bytes(p.stdout,"GitHub list response",list)
 
 def permission_at_least(actual,minimum):
-    return actual in PERMISSION_RANK and PERMISSION_RANK[actual]>=PERMISSION_RANK[minimum]
+    # Unhashable JSON values must deny, not escape as TypeError.
+    return (type(actual) is str and type(minimum) is str
+            and actual in PERMISSION_RANK and minimum in PERMISSION_RANK
+            and PERMISSION_RANK[actual]>=PERMISSION_RANK[minimum])
 
 RECEIPT_KEYS={
  "schema","source_repository","source_repository_id","source_commit_sha","source_tree_sha",
@@ -100,7 +103,7 @@ RECEIPT_KEYS={
 }
 
 def validate_receipt(r):
-    if type(r) is not dict or set(r)!=RECEIPT_KEYS or r.get("schema")!=3:
+    if type(r) is not dict or set(r)!=RECEIPT_KEYS or type(r.get("schema")) is not int or r["schema"]!=3:
         raise Denied("unexpected review-pinned receipt schema")
     fixed={
       "source_repository":SOURCE_REPO,"source_repository_id":SOURCE_REPO_ID,
@@ -109,7 +112,8 @@ def validate_receipt(r):
       "snapshot_approval_pr":SNAPSHOT_PR,"carrier_policy_pr":CARRIER_PR,
     }
     for k,v in fixed.items():
-        if r.get(k)!=v: raise Denied("unexpected receipt field: "+k)
+        if type(r.get(k)) is not type(v) or r[k]!=v:
+            raise Denied("unexpected receipt field: "+k)
     for k in ("source_commit_sha","source_tree_sha","carrier_base_sha","carrier_workflow_blob_sha",
               "independent_reviewer_policy_blob_sha","publisher_policy_head_sha",
               "destination_approval_head_sha","snapshot_approval_head_sha","carrier_policy_head_sha"):
@@ -204,17 +208,26 @@ def require_live_reviewer_policy(r):
         raise Denied("source/carrier reviewer policy mismatch")
     policy=parse_json_bytes(source_raw,"reviewer policy",dict)
     if (set(policy)!={"schema","enabled","minimumPermission","disallowedReviewerIds","reviewer"}
-            or policy.get("schema")!=2 or policy.get("enabled") is not True):
+            or type(policy.get("schema")) is not int or policy["schema"]!=2
+            or policy.get("enabled") is not True):
         raise Denied("independent reviewer policy is not enabled")
-    if set(policy.get("disallowedReviewerIds") or [])!=DISALLOWED_REVIEWER_IDS:
+    blocked=policy.get("disallowedReviewerIds")
+    if (type(blocked) is not list or len(blocked)!=len(DISALLOWED_REVIEWER_IDS)
+            or any(type(item) is not int or item<=0 for item in blocked)
+            or len(set(blocked))!=len(blocked)
+            or set(blocked)!=DISALLOWED_REVIEWER_IDS):
         raise Denied("independent reviewer denylist changed")
     reviewer=policy.get("reviewer")
     if (type(reviewer) is not dict or set(reviewer)!={"login","id"}
-            or reviewer.get("login")!=r["independent_reviewer_login"]
-            or reviewer.get("id")!=r["independent_reviewer_id"]):
+            or type(reviewer.get("login")) is not str
+            or not LOGIN.fullmatch(reviewer["login"])
+            or type(reviewer.get("id")) is not int or reviewer["id"]<=0
+            or reviewer["id"] in DISALLOWED_REVIEWER_IDS
+            or reviewer["login"]!=r["independent_reviewer_login"]
+            or reviewer["id"]!=r["independent_reviewer_id"]):
         raise Denied("receipt reviewer does not match live reviewer policy")
     minimum=policy.get("minimumPermission")
-    if minimum not in ("write","maintain","admin"):
+    if type(minimum) is not str or minimum not in ("write","maintain","admin"):
         raise Denied("invalid reviewer minimum permission")
     for key in ("independent_reviewer_source_permission","independent_reviewer_carrier_permission"):
         if not permission_at_least(r[key],minimum):
