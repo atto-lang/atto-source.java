@@ -34,6 +34,9 @@
 #ifndef F_ADD_SEALS
 #define F_ADD_SEALS 1033
 #endif
+#ifndef F_GET_SEALS
+#define F_GET_SEALS 1034
+#endif
 #ifndef F_SEAL_SEAL
 #define F_SEAL_SEAL 0x0001
 #endif
@@ -197,7 +200,11 @@ static int64_t monotonic_millis(void) {
     return (int64_t)now.tv_sec * 1000LL + now.tv_nsec / 1000000LL;
 }
 
-/* Returns 0 on success, 1 on timeout, -1 on I/O failure. */
+/*
+ * Returns 0 on success, 1 on timeout before consuming any byte, 2 on timeout
+ * after a partial read, and -1 on I/O failure. A partial-frame timeout is not
+ * recoverable because retrying would start in the middle of the same frame.
+ */
 static int read_exact_until(
         int fd,
         unsigned char *bytes,
@@ -208,7 +215,7 @@ static int read_exact_until(
         int64_t now = monotonic_millis();
         if (now < 0) return -1;
         int64_t remaining = deadline_millis - now;
-        if (remaining <= 0) return 1;
+        if (remaining <= 0) return offset == 0 ? 1 : 2;
         int timeout = remaining > INT32_MAX ? INT32_MAX : (int)remaining;
 
         struct pollfd descriptor;
@@ -219,7 +226,7 @@ static int read_exact_until(
         do {
             polled = poll(&descriptor, 1, timeout);
         } while (polled < 0 && errno == EINTR);
-        if (polled == 0) return 1;
+        if (polled == 0) return offset == 0 ? 1 : 2;
         if (polled < 0) return -1;
         if ((descriptor.revents & POLLIN) == 0) {
             errno = EPIPE;
@@ -310,15 +317,19 @@ static int make_sealed_executable(
         return -1;
     }
 
-    if (fcntl(
-                fd,
-                F_ADD_SEALS,
-                F_SEAL_WRITE
-                        | F_SEAL_GROW
-                        | F_SEAL_SHRINK
-                        | F_SEAL_SEAL) != 0
-            || lseek(fd, 0, SEEK_SET) < 0) {
+    const int required_seals =
+            F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL;
+    if (fcntl(fd, F_ADD_SEALS, required_seals) != 0) {
         int saved = errno;
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+    int actual_seals = fcntl(fd, F_GET_SEALS);
+    if (actual_seals < 0
+            || (actual_seals & required_seals) != required_seals
+            || lseek(fd, 0, SEEK_SET) < 0) {
+        int saved = errno == 0 ? EPERM : errno;
         close(fd);
         errno = saved;
         return -1;
@@ -885,6 +896,12 @@ Java_dev_oreslang_runtime_NativeActorIpcTransportV1_nativeReadFrame(
         int saved = errno;
         pthread_mutex_unlock(lock);
         if (prefix_result == 1) return NULL;
+        if (prefix_result == 2) {
+            throw_illegal_state(
+                    env,
+                    "IPC frame prefix timed out after partial consumption");
+            return NULL;
+        }
         char message[192];
         snprintf(
                 message,
@@ -921,7 +938,12 @@ Java_dev_oreslang_runtime_NativeActorIpcTransportV1_nativeReadFrame(
     pthread_mutex_unlock(lock);
     if (body_result != 0) {
         free(frame);
-        if (body_result == 1) return NULL;
+        if (body_result == 1 || body_result == 2) {
+            throw_illegal_state(
+                    env,
+                    "IPC frame body timed out after length admission");
+            return NULL;
+        }
         char message[192];
         snprintf(
                 message,
