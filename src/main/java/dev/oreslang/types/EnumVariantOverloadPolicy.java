@@ -250,6 +250,94 @@ public final class EnumVariantOverloadPolicy {
         }
     }
 
+
+    /**
+     * Host-only closed-world AOT linker proof. A compiler supplies one exact
+     * implementation digest per previously admitted declaration. This cannot
+     * compile an Oreslang guest: it verifies static relocation identity only.
+     *
+     * An image is tied to one PreparedFamily instance, not just its digest.
+     * Publishing a name/arity dispatcher as an escape hatch is forbidden.
+     */
+    public static final class AotImage {
+        private final PreparedFamily family;
+        private final Map<String, String> implementations;
+
+        private AotImage(PreparedFamily family, Map<String, String> implementations) {
+            this.family = Objects.requireNonNull(family, "prepared compiler family");
+            Objects.requireNonNull(implementations, "compiled implementations");
+            Map<String, String> expected = new HashMap<>();
+            for (List<Signature> arityGroup : family.byArity.values()) {
+                for (Signature slot : arityGroup) {
+                    String name = symbol(slot);
+                    if (expected.putIfAbsent(name, "") != null) {
+                        throw new IllegalArgumentException("AOT symbol collision");
+                    }
+                }
+            }
+            if (!implementations.keySet().equals(expected.keySet())) {
+                throw new IllegalArgumentException("AOT link missing or extraneous definition");
+            }
+            // Snapshot both the key set and digests. Reject noncanonical hashes
+            // before any relocation is published, including for unused slots.
+            Map<String, String> snapshot = Map.copyOf(implementations);
+            for (String digest : snapshot.values()) {
+                if (!isCanonicalSha256(digest)) {
+                    throw new IllegalArgumentException("AOT definition requires lowercase SHA-256");
+                }
+            }
+            this.implementations = snapshot;
+        }
+
+        public DirectRelocation relocate(BoundTarget target) {
+            Objects.requireNonNull(target, "bound compiler target");
+            target.requireLinkedTo(family);
+            String body = implementations.get(target.slotSymbol());
+            if (body == null) {
+                throw new IllegalArgumentException("unresolved AOT relocation");
+            }
+            return new DirectRelocation(this, target.slotSymbol(), body);
+        }
+
+        public void requireImage(DirectRelocation call) {
+            if (call == null || call.image != this) {
+                throw new IllegalArgumentException("relocation from another AOT image");
+            }
+        }
+
+        public int definitionCount() { return implementations.size(); }
+    }
+
+    public static AotImage sealAotImage(PreparedFamily family, Map<String, String> compiledDefinitions) {
+        return new AotImage(family, compiledDefinitions);
+    }
+
+    /** Opaque host compiler relocation; not constructible by source-language guests. */
+    public static final class DirectRelocation {
+        private final AotImage image;
+        private final String targetSymbol;
+        private final String exactBodyDigest;
+
+        private DirectRelocation(AotImage image, String targetSymbol, String exactBodyDigest) {
+            this.image = image;
+            this.targetSymbol = targetSymbol;
+            this.exactBodyDigest = exactBodyDigest;
+        }
+
+        public String targetSymbol() { return targetSymbol; }
+        public String exactBodyDigest() { return exactBodyDigest; }
+        public String schemaFingerprint() { return image.family.schemaFingerprint(); }
+    }
+
+    private static boolean isCanonicalSha256(String digest) {
+        if (digest == null || digest.length() != 64) return false;
+        for (int i = 0; i < digest.length(); i++) {
+            char c = digest.charAt(i);
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+        }
+        return true;
+    }
+
     private static String fingerprint(List<Signature> declarations, Map<String, EnumInfo> enums) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
