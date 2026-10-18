@@ -50,9 +50,12 @@ def verify(directory: Path) -> tuple[int, int]:
             skipped + failures + errors > cases
         ):
             raise ValueError(f"inconsistent Surefire counters for {name}")
-        actual = len(root.findall("testcase"))
-        if actual != cases:
+        testcase_nodes = root.findall("testcase")
+        if len(testcase_nodes) != cases:
             raise ValueError(f"Surefire testcase count mismatch for {name}")
+        actual_skipped = sum(bool(case.findall("skipped")) for case in testcase_nodes)
+        if actual_skipped != skipped:
+            raise ValueError(f"Surefire skipped-case count mismatch for {name}")
         if failures or errors or root.findall(".//failure") or root.findall(".//error"):
             raise ValueError(f"failing Surefire test suite: {name}")
         ran = cases - skipped
