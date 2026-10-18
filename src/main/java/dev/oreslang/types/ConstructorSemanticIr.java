@@ -264,6 +264,42 @@ public final class ConstructorSemanticIr {
         CAPTURES_SERIALIZABLE_DATA
     }
 
+    public enum CaptureOrigin {
+        /** A lexically resolved binding owned outside the closure activation. */
+        EXTERNAL_BINDING,
+        /**
+         * The pre-reserved slot used to tie a recursive lambda's runtime
+         * fixpoint. This is required for invocation but is not an external
+         * ownership capture and can never become portable DATA.
+         */
+        RECURSIVE_SELF
+    }
+
+    public record CaptureBinding(
+            String bindingId,
+            CaptureOrigin origin,
+            boolean write) {
+        public CaptureBinding {
+            if (bindingId == null || bindingId.isBlank()) {
+                throw new IllegalArgumentException("capture binding id cannot be blank");
+            }
+            Objects.requireNonNull(origin, "capture origin");
+            if (origin == CaptureOrigin.RECURSIVE_SELF && write) {
+                throw new IllegalArgumentException(
+                        "recursive callable self slot cannot be classified as an outer mutable capture");
+            }
+        }
+
+        public boolean participatesInExternalOwnership() {
+            return origin == CaptureOrigin.EXTERNAL_BINDING;
+        }
+
+        /** Executable capture cells never authorize actor/network DATA. */
+        public boolean actorDataAdmissible() {
+            return false;
+        }
+    }
+
     /**
      * Concrete callable semantic type. Parameter names never participate in
      * identity; ownership/effect metadata does.
