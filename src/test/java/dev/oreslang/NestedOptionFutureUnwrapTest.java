@@ -67,11 +67,14 @@ final class NestedOptionFutureUnwrapTest {
                 }
 
                 pub fnc main(): void {
-                  val Future<Future<int>> nested = answer().map(|int n| -> {
+                  val Future<Future<int>> nested_for_flatten = answer().map(|int n| -> {
                     return answer();
                   });
-                  val int explicit_flatten = await nested.flatten();
-                  val int two_awaits = await await nested;
+                  val Future<Future<int>> nested_for_await = answer().map(|int n| -> {
+                    return answer();
+                  });
+                  val int explicit_flatten = await nested_for_flatten.flatten();
+                  val int two_awaits = await await nested_for_await;
                   stdio.stdout.write(explicit_flatten);
                   stdio.stdout.write(two_awaits);
                   return;
