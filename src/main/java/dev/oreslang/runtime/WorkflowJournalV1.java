@@ -334,6 +334,98 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
     }
 
     /**
+     * Atomically bind a successful effect receipt to its causal workflow event.
+     *
+     * <p>This closes the crash window between effect completion and event
+     * delivery. The operation is fail-atomic in the in-memory reference model:
+     * all validation/mutation occurs on a verified clone and this store adopts
+     * the clone only after both lifecycle operations succeed.</p>
+     *
+     * <p>If the event was already durably applied and this effect is still
+     * claimed, the operation repairs the inverse legacy split by completing the
+     * effect without appending another event. If both effect and event are
+     * already durable, it is an idempotent no-op that returns the original
+     * applied transition.</p>
+     */
+    public synchronized DurableDevLoopV1.Transition completeAndAppend(
+            String effectKey,
+            String claimToken,
+            String receiptRef,
+            long nowMillis,
+            String eventId,
+            DurableDevLoopV1.Event event) {
+        effectKey = requireText(effectKey, "effectKey", 2_048);
+        claimToken = requireText(claimToken, "claimToken", 2_048);
+        receiptRef = requireText(receiptRef, "receiptRef", 8_192);
+        eventId = requireText(eventId, "eventId", 512);
+        event = Objects.requireNonNull(event, "event");
+
+        WorkflowJournalV1 candidate = restore(persistentState());
+        MutableEffect effect = candidate.effects.get(effectKey);
+        if (effect == null) {
+            throw new IllegalArgumentException(
+                    "unknown effect key " + effectKey);
+        }
+
+        DurableDevLoopV1.Transition existing =
+                candidate.findAppliedTransition(eventId, event);
+        if (effect.state == EffectState.COMPLETED) {
+            if (!Objects.equals(effect.receiptRef, receiptRef)) {
+                throw new IllegalStateException(
+                        "completed effect receipt does not match retry");
+            }
+            if (existing == null) {
+                throw new IllegalStateException(
+                        "completed effect lacks durable causal outcome");
+            }
+            candidate.requireMatchingCausalEffect(
+                    effectKey, existing);
+            return existing;
+        }
+
+        DurableDevLoopV1 machine =
+                candidate.replayDevLoop().machine();
+        DurableDevLoopV1.Transition transition =
+                machine.accept(eventId, event);
+
+        if (transition.journalEntry().disposition()
+                == DurableDevLoopV1.Disposition.DUPLICATE) {
+            if (existing == null) {
+                throw new IllegalStateException(
+                        "duplicate outcome lacks original applied transition");
+            }
+            candidate.requireMatchingCausalEffect(
+                    effectKey, existing);
+            candidate.complete(
+                    effectKey,
+                    claimToken,
+                    receiptRef,
+                    nowMillis);
+            replaceWith(candidate);
+            return existing;
+        }
+
+        if (transition.journalEntry().disposition()
+                != DurableDevLoopV1.Disposition.APPLIED) {
+            throw new IllegalStateException(
+                    "successful effect outcome did not produce an applied "
+                            + "workflow transition: "
+                            + transition.journalEntry().disposition());
+        }
+
+        candidate.requireMatchingCausalEffect(
+                effectKey, transition);
+        candidate.complete(
+                effectKey,
+                claimToken,
+                receiptRef,
+                nowMillis);
+        candidate.append(transition);
+        replaceWith(candidate);
+        return transition;
+    }
+
+    /**
      * Run expiry processing without claiming another effect.
      *
      * <p>This is useful for a supervisor/timer actor. Expiry never means retry:
@@ -755,6 +847,79 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
                 runId, maxIterations, List.copyOf(journal));
     }
 
+
+    private void replaceWith(WorkflowJournalV1 source) {
+        this.runId = source.runId;
+        this.maxIterations = source.maxIterations;
+        this.nextSequence = source.nextSequence;
+        this.nextClaimNumber = source.nextClaimNumber;
+        this.lastObservedMillis = source.lastObservedMillis;
+
+        this.journal.clear();
+        this.journal.addAll(source.journal);
+
+        this.effects.clear();
+        for (Map.Entry<String, MutableEffect> entry
+                : source.effects.entrySet()) {
+            MutableEffect original = entry.getValue();
+            MutableEffect copy = new MutableEffect(
+                    original.effectKey,
+                    original.command);
+            copy.state = original.state;
+            copy.attempts = original.attempts;
+            copy.workerId = original.workerId;
+            copy.claimToken = original.claimToken;
+            copy.leaseUntilMillis = original.leaseUntilMillis;
+            copy.receiptRef = original.receiptRef;
+            copy.reconciliationRef = original.reconciliationRef;
+            copy.retryAllowed = original.retryAllowed;
+            this.effects.put(entry.getKey(), copy);
+        }
+    }
+
+    private DurableDevLoopV1.Transition findAppliedTransition(
+            String eventId,
+            DurableDevLoopV1.Event event) {
+        if (runId == null || maxIterations == null) {
+            return null;
+        }
+        DurableDevLoopV1 machine =
+                new DurableDevLoopV1(runId, maxIterations);
+        DurableDevLoopV1.Transition applied = null;
+        for (DurableDevLoopV1.JournalEntry recorded : journal) {
+            DurableDevLoopV1.Transition transition =
+                    machine.accept(
+                            recorded.eventId(),
+                            recorded.event());
+            if (!transition.journalEntry().equals(recorded)) {
+                throw new IllegalStateException(
+                        "journal failed replay while locating outcome");
+            }
+            if (recorded.eventId().equals(eventId)
+                    && recorded.event().equals(event)
+                    && recorded.disposition()
+                            == DurableDevLoopV1.Disposition.APPLIED) {
+                applied = transition;
+            }
+        }
+        return applied;
+    }
+
+    private void requireMatchingCausalEffect(
+            String effectKey,
+            DurableDevLoopV1.Transition transition) {
+        String causal = causalEffectKey(
+                transition.journalEntry().event(),
+                transition.snapshot().runId(),
+                transition.snapshot().iteration());
+        if (causal == null || !causal.equals(effectKey)) {
+            throw new IllegalStateException(
+                    "effect/outcome causation mismatch: expected "
+                            + effectKey
+                            + " but workflow event resolves to "
+                            + causal);
+        }
+    }
 
     private void verifyReducerTransitionLocked(
             DurableDevLoopV1.Transition supplied,
