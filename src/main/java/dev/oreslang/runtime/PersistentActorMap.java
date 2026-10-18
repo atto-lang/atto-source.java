@@ -67,6 +67,19 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
                         + "mutable containers, foreign references, and capabilities are forbidden");
     }
 
+    /**
+     * Different immutable persistent roots are not equal-update shortcuts:
+     * recursive Map.equals can traverse thousands of nested descendants.
+     * Preserve referential O(1) no-ops while bounding mutation work to a
+     * HAMT path copy. Ordinary immutable scalars still compare by value.
+     */
+    private static boolean sameUpdateValue(Object left, Object right) {
+        if (left == right) return true;
+        if (left instanceof PersistentActorMap || right instanceof PersistentActorMap)
+            return false;
+        return Objects.equals(left, right);
+    }
+
     private static int hash(String key) {
         int h = key.hashCode();
         return h ^ (h >>> 16);
@@ -187,7 +200,7 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
         }
         if (node instanceof Leaf leaf) {
             if (leaf.hash == entry.hash && leaf.key.equals(entry.key)) {
-                return Objects.equals(leaf.value, entry.value) ? node : entry;
+                return sameUpdateValue(leaf.value, entry.value) ? node : entry;
             }
             added.set = true;
             if (leaf.hash == entry.hash) {
@@ -203,7 +216,7 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
             for (int i = 0; i < collision.leaves.length; i++) {
                 Leaf old = collision.leaves[i];
                 if (old.key.equals(entry.key)) {
-                    if (Objects.equals(old.value, entry.value)) return node;
+                    if (sameUpdateValue(old.value, entry.value)) return node;
                     Leaf[] copy = collision.leaves.clone();
                     copy[i] = entry;
                     return new Collision(collision.hash, copy);
