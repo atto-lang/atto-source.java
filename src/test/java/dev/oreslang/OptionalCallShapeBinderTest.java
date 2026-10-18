@@ -150,6 +150,26 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void distinctOptionalNamesStillMakeUnlabeledOmissionAmbiguous() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.bindUnique(List.of(
+                        List.of(Parameter.required("a"), Parameter.optional("b")),
+                        List.of(Parameter.required("a"), Parameter.optional("c"))),
+                        List.of(Argument.named("a"))));
+        assertTrue(error.getMessage().contains("ambiguous optional/named"));
+    }
+
+    @Test
+    void malformedOverloadCannotBeQuietlySkippedByCandidateFiltering() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.bindUnique(List.of(
+                        List.of(Parameter.required("a")),
+                        List.of(Parameter.required("x"), Parameter.optional("x"))),
+                        List.of(Argument.named("a"))));
+        assertTrue(error.getMessage().contains("duplicate parameter name"));
+    }
+
+    @Test
     void emptyCallAndConstructorReceiverErasureAreSimpleArityCases() {
         assertEquals(List.of(),
                 OptionalCallShapeBinder.bind(List.of(), List.of()).sourceIndexByParameter());
