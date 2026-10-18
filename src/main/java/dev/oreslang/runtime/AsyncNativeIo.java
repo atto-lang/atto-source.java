@@ -135,8 +135,8 @@ public final class AsyncNativeIo implements AutoCloseable {
                     closing = new HashSet<>(resources);
                     failing = new HashSet<>(pending);
                     failing.addAll(controls);
-                    controls.clear();
-                    pending.clear();
+                    // Keep unsettled futures tracked until their terminal state
+                    // is observed; a publication failure must remain retryable.
                 }
                 IllegalStateException releaseFailure = null;
                 Error fatalFailure = null;
@@ -178,6 +178,17 @@ public final class AsyncNativeIo implements AutoCloseable {
                                 || failure instanceof LinkageError) {
                             if (fatalFailure == null) fatalFailure = (Error) failure;
                             else if (fatalFailure != failure) fatalFailure.addSuppressed(failure);
+                        }
+                    } finally {
+                        // OresFuture publishes its terminal state by CAS before
+                        // draining callbacks. Even if callback publication
+                        // throws, an already terminal future must not be retried.
+                        // A still-pending future stays registered for retry.
+                        if (future.isDone()) {
+                            synchronized (this) {
+                                pending.remove(future);
+                                controls.remove(future);
+                            }
                         }
                     }
                 }
