@@ -13,6 +13,7 @@ being confused with a later retry.
 *)
 
 CONSTANT MaxAttempts
+ASSUME /\\ MaxAttempts \\in Nat /\\ MaxAttempts > 0
 
 Phases == {"ACTIVE", "TERMINAL"}
 EffectStates == {"PENDING", "CLAIMED", "AMBIGUOUS", "COMPLETED", "ABANDONED"}
