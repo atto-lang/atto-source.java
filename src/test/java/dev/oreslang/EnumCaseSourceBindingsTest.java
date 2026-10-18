@@ -159,6 +159,41 @@ final class EnumCaseSourceBindingsTest {
     }
 
     @Test
+    void lexicalNominalCollisionAndUnprovenFixedTypesFailClosed() {
+        for (String declaration : List.of(
+                "define class Foo as end",
+                "define type Foo = int;")) {
+            Ast.Program parsed = Parser.parse(
+                    "define enum Foo as A end\n" + declaration
+                    + "\nfnc f(Foo.A a): void {}");
+            assertThrows(IllegalArgumentException.class,
+                    () -> EnumCaseSourceBindings.compileLocalProof(parsed));
+        }
+        Ast.Program unsafe = Parser.parse("""
+                define enum Foo as A, B end
+                fnc f(Foo.A a, User u): void {}
+                fnc f(Foo.B a, User u): void {}
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> EnumCaseSourceBindings.compileLocalProof(unsafe));
+    }
+
+    @Test
+    void scalarAliasesAreCanonicalizedBeforeSelection() {
+        Ast.Program parsed = Parser.parse("""
+                define enum Foo as A, B end
+                fnc f(Foo.A a, String s): void {}
+                fnc f(Foo.B a, string s): void {}
+                """);
+        var proof = EnumCaseSourceBindings.compileLocalProof(parsed);
+        Key key = new Key(MODULE, "local_unit.__root__", "f", 2);
+        assertEquals("Foo.A",
+                proof.selectStagedTypeRefs(key, List.of(
+                        Ast.TypeRef.simple("Foo.A"), Ast.TypeRef.simple("string")))
+                        .function().parameters().getFirst().type().name());
+    }
+
+    @Test
     void unsafeEnumPayloadDisqualifiesTheWholeFamily() {
         Ast.Program parsed = Parser.parse("""
                 define enum Foo as A, B: List<int> end
