@@ -114,24 +114,33 @@ public final class SameModuleLiteralInvocation {
 
         int siteOccurrences = 0;
         for (Ast.Stmt statement : caller.body()) {
-            if (statement instanceof Ast.ExprStmt expression && expression.expression() == call
-                    || statement instanceof Ast.BindingStmt binding && binding.initializer() == call
-                    || statement instanceof Ast.ReturnStmt returned && returned.value() == call) {
-                siteOccurrences++;
-            }
-            if (statement instanceof Ast.BindingStmt binding
-                    && (binding.name().equals(targetName)
-                        || binding.name().equals(declaringModule.name()))) {
-                throw new IllegalArgumentException("local binding could shadow target or module namespace");
-            }
-            if (statement instanceof Ast.DestructureStmt destructure) {
-                for (Ast.DestructureBinding binding : destructure.bindings()) {
-                    if (binding.name().equals(targetName)
-                            || binding.name().equals(declaringModule.name())) {
-                        throw new IllegalArgumentException(
-                                "destructure binding could shadow target or module namespace");
-                    }
+            // This tiny preview has no recursive lexical CFG/effect checker.
+            // Do not let an unrelated nested expression, lambda, defer, or
+            // branch hide a second use of the same AST node or a conflicting
+            // side effect. Normal semantic/ownership checking must be used
+            // before accepting any richer calling body.
+            Ast.Expr value;
+            if (statement instanceof Ast.ExprStmt expression) {
+                value = expression.expression();
+            } else if (statement instanceof Ast.BindingStmt binding) {
+                if (binding.name().equals(targetName)
+                        || binding.name().equals(declaringModule.name())
+                        || binding.inferredTypeName() != null) {
+                    throw new IllegalArgumentException(
+                            "local binding or inferred type can shadow selected target");
                 }
+                value = binding.initializer();
+            } else if (statement instanceof Ast.ReturnStmt returned) {
+                value = returned.value();
+            } else {
+                throw new IllegalArgumentException(
+                        "complex statement requires trusted recursive lexical/effect analysis");
+            }
+            if (value == call) {
+                siteOccurrences++;
+            } else if (value != null && !(value instanceof Ast.LiteralExpr)) {
+                throw new IllegalArgumentException(
+                        "other expression requires lexical/effect and nested callsite proof");
             }
         }
         if (siteOccurrences != 1) {
