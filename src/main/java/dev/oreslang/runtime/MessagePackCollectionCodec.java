@@ -1,9 +1,7 @@
 package dev.oreslang.runtime;
 
-import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Array;
 import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
@@ -49,11 +47,52 @@ public final class MessagePackCollectionCodec {
      * compiler lowering (or by explicitly trusted host integration tests).
      * The sender supplies values, NEVER this descriptor from wire bytes.
      */
+    /**
+     * Runtime-owned transient allocation budget used while constructing a
+     * mailbox frame. Implementations must charge before variable-size
+     * allocation and release temporary capacity after it becomes unreachable.
+     */
+    public interface ScratchBudget {
+        void reserve(long bytes);
+        void release(long bytes);
+
+        ScratchBudget NONE = new ScratchBudget() {
+            @Override public void reserve(long bytes) {
+                if (bytes < 0) throw new IllegalArgumentException("negative scratch reservation");
+            }
+            @Override public void release(long bytes) {
+                if (bytes < 0) throw new IllegalArgumentException("negative scratch release");
+            }
+        };
+    }
+
+    /**
+     * Encoding proof returned to ActorRuntime. decodedBytes is a conservative
+     * logical upper bound for the recipient-side decoded graph and short-lived
+     * decode containers; it is reserved before mailbox publication.
+     */
+    public record EncodedMailboxFrame(byte[] bytes, long decodedBytes) {
+        public EncodedMailboxFrame {
+            Objects.requireNonNull(bytes, "mailbox frame");
+            if (bytes.length > MAX_BYTES)
+                throw new IllegalArgumentException("message exceeds maximum byte size");
+            if (decodedBytes < 0)
+                throw new IllegalArgumentException("decoded mailbox footprint cannot be negative");
+        }
+    }
+
     /** Compiler-trusted, runtime-bound binary mailbox. Implementations cannot
      * be chosen by untrusted wire bytes; the actor binds one before admission. */
-    public interface MailboxWireCodec {
+    public sealed interface MailboxWireCodec permits MailboxSchema, TaggedMessageCodec {
         byte[] encode(Object value);
         Object decode(byte[] bytes);
+
+        /**
+         * Encode while charging transient storage before allocation. The
+         * returned decodedBytes is trusted because this interface is sealed to
+         * compiler/runtime codecs.
+         */
+        EncodedMailboxFrame encodeForMailbox(Object value, ScratchBudget scratch);
     }
 
     public record MailboxSchema(String schemaId, Shape shape) implements MailboxWireCodec {
@@ -66,6 +105,14 @@ public final class MessagePackCollectionCodec {
 
         public byte[] encode(Object value) {
             return MessagePackCollectionCodec.encode(schemaId, shape, value);
+        }
+
+        @Override
+        public EncodedMailboxFrame encodeForMailbox(
+                Object value,
+                ScratchBudget scratch) {
+            return MessagePackCollectionCodec.encodeForMailbox(
+                    schemaId, shape, value, scratch);
         }
 
         public Object decode(byte[] bytes) {
@@ -177,16 +224,37 @@ public final class MessagePackCollectionCodec {
     }
 
     public static byte[] encode(String schemaId, Shape shape, Object value) {
+        return encodeForMailbox(
+                schemaId,
+                shape,
+                value,
+                ScratchBudget.NONE).bytes();
+    }
+
+    public static EncodedMailboxFrame encodeForMailbox(
+            String schemaId,
+            Shape shape,
+            Object value,
+            ScratchBudget scratch) {
         checkSchemaId(schemaId);
         Objects.requireNonNull(shape, "shape");
-        Writer writer = new Writer();
-        byte[] descriptorHash = shapeDigest(shape);
-        writer.arrayHeader(4);
-        writer.signedInt(VERSION);
-        writer.string(schemaId);
-        writer.binaryDigest(descriptorHash);
-        writer.value(shape, value, 0);
-        return writer.result();
+        Objects.requireNonNull(scratch, "scratch budget");
+        Writer writer = new Writer(scratch);
+        try {
+            byte[] descriptorHash = shapeDigest(shape);
+            writer.addDecodedBytes(
+                    Math.addExact(128L, Math.multiplyExact(2L, schemaId.length())));
+            writer.arrayHeader(4);
+            writer.signedInt(VERSION);
+            writer.string(schemaId);
+            writer.binaryDigest(descriptorHash);
+            writer.value(shape, value, 0);
+            return new EncodedMailboxFrame(
+                    writer.result(),
+                    writer.decodedBytes());
+        } finally {
+            writer.releaseTraversalScratch();
+        }
     }
 
     /**
@@ -322,36 +390,106 @@ public final class MessagePackCollectionCodec {
     }
 
     private static final class Writer {
-        private final ByteArrayOutputStream stream = new ByteArrayOutputStream();
-        private final IdentityHashMap<Object, Boolean> visiting = new IdentityHashMap<>();
+        private static final long VISITING_SCRATCH_BYTES = 8_192L;
+
+        private final ScratchBudget scratch;
+        private final IdentityHashMap<Object, Boolean> visiting;
+        private byte[] buffer = new byte[0];
+        private int size;
         private int nodes;
+        private long decodedBytes;
+        private boolean traversalScratchReleased;
+
+        Writer(ScratchBudget scratch) {
+            this.scratch = Objects.requireNonNull(scratch, "scratch budget");
+            // Reserve before allocating the cycle-detection table. Its live
+            // entry count is bounded by MAX_DEPTH because entries are removed
+            // after each recursive subtree.
+            scratch.reserve(VISITING_SCRATCH_BYTES);
+            this.visiting = new IdentityHashMap<>();
+        }
+
+        void releaseTraversalScratch() {
+            if (!traversalScratchReleased) {
+                traversalScratchReleased = true;
+                scratch.release(VISITING_SCRATCH_BYTES);
+            }
+        }
+
+        long decodedBytes() { return decodedBytes; }
+
+        void addDecodedBytes(long bytes) {
+            if (bytes < 0)
+                throw new IllegalArgumentException("negative decoded mailbox footprint");
+            try {
+                decodedBytes = Math.addExact(decodedBytes, bytes);
+            } catch (ArithmeticException overflow) {
+                throw new IllegalArgumentException(
+                        "decoded mailbox footprint accounting overflow", overflow);
+            }
+        }
+
+        void ensureCapacity(int required) {
+            if (required < 0 || required > MAX_BYTES) {
+                throw new IllegalArgumentException("message exceeds maximum byte size");
+            }
+            if (required <= buffer.length) return;
+            int next = Math.max(64, buffer.length);
+            while (next < required) {
+                int grown = next > MAX_BYTES / 2 ? MAX_BYTES : next * 2;
+                if (grown <= next) {
+                    next = MAX_BYTES;
+                    break;
+                }
+                next = grown;
+            }
+            if (next < required) {
+                throw new IllegalArgumentException("message exceeds maximum byte size");
+            }
+
+            // During growth both old and new arrays coexist. Charge the full
+            // replacement before allocation, then release the old capacity.
+            scratch.reserve(next);
+            byte[] replacement = Arrays.copyOf(buffer, next);
+            scratch.release(buffer.length);
+            buffer = replacement;
+        }
 
         void add(int b) {
-            if (stream.size() >= MAX_BYTES) throw new IllegalArgumentException("message exceeds maximum byte size");
-            stream.write(b);
+            if (size >= MAX_BYTES)
+                throw new IllegalArgumentException("message exceeds maximum byte size");
+            ensureCapacity(size + 1);
+            buffer[size++] = (byte) b;
         }
 
         void bytes(byte[] data) {
-            if ((long) stream.size() + data.length > MAX_BYTES) {
+            Objects.requireNonNull(data, "encoded bytes");
+            long required = (long) size + data.length;
+            if (required > MAX_BYTES) {
                 throw new IllegalArgumentException("message exceeds maximum byte size");
             }
-            stream.writeBytes(data);
+            ensureCapacity((int) required);
+            System.arraycopy(data, 0, buffer, size, data.length);
+            size += data.length;
         }
 
         void uint(int size, long value) {
-            for (int shift = (size - 1) * 8; shift >= 0; shift -= 8) add((int) (value >>> shift) & 0xff);
+            for (int shift = (size - 1) * 8; shift >= 0; shift -= 8)
+                add((int) (value >>> shift) & 0xff);
         }
 
         void arrayHeader(int n) {
-            if (n < 0 || n > MAX_ELEMENTS) throw new IllegalArgumentException("sequence exceeds maximum elements");
+            if (n < 0 || n > MAX_ELEMENTS)
+                throw new IllegalArgumentException("sequence exceeds maximum elements");
             if (n <= 15) add(0x90 | n);
             else if (n <= 65535) { add(0xdc); uint(2, n); }
             else { add(0xdd); uint(4, n); }
         }
 
         void binaryDigest(byte[] digest) {
-            if (digest.length != 32) throw new IllegalArgumentException("expected 32-byte schema digest");
-            add(0xc4); // MessagePack bin8
+            if (digest.length != 32)
+                throw new IllegalArgumentException("expected 32-byte schema digest");
+            add(0xc4);
             add(32);
             bytes(digest);
         }
@@ -369,35 +507,69 @@ public final class MessagePackCollectionCodec {
             else { add(0xd3); uint(8, n); }
         }
 
-        void string(String s) {
-            if (s.length() > MAX_BYTES) throw new IllegalArgumentException("string exceeds byte budget");
-            byte[] bytes;
-            try {
-                ByteBuffer utf8 = StandardCharsets.UTF_8.newEncoder()
-                        .onMalformedInput(CodingErrorAction.REPORT)
-                        .onUnmappableCharacter(CodingErrorAction.REPORT)
-                        .encode(CharBuffer.wrap(s));
-                bytes = new byte[utf8.remaining()];
-                utf8.get(bytes);
-            } catch (CharacterCodingException malformed) {
-                throw new IllegalArgumentException("malformed UTF-16 input string", malformed);
+        private static int utf8Length(String s) {
+            long bytes = 0;
+            for (int i = 0; i < s.length(); i++) {
+                char c = s.charAt(i);
+                if (c <= 0x7f) {
+                    bytes++;
+                } else if (c <= 0x7ff) {
+                    bytes += 2;
+                } else if (Character.isHighSurrogate(c)) {
+                    if (i + 1 >= s.length()
+                            || !Character.isLowSurrogate(s.charAt(i + 1))) {
+                        throw new IllegalArgumentException(
+                                "malformed UTF-16 input string");
+                    }
+                    i++;
+                    bytes += 4;
+                } else if (Character.isLowSurrogate(c)) {
+                    throw new IllegalArgumentException(
+                            "malformed UTF-16 input string");
+                } else {
+                    bytes += 3;
+                }
+                if (bytes > MAX_BYTES)
+                    throw new IllegalArgumentException("string exceeds byte budget");
             }
-            int n = bytes.length;
-            if (n <= 31) add(0xa0 | n);
-            else if (n <= 255) { add(0xd9); uint(1, n); }
-            else if (n <= 65535) { add(0xda); uint(2, n); }
-            else { add(0xdb); uint(4, n); }
-            bytes(bytes);
+            return (int) bytes;
+        }
+
+        void string(String s) {
+            Objects.requireNonNull(s, "string");
+            int n = utf8Length(s);
+            // String.getBytes creates one n-byte temporary. Reserve it before
+            // allocation and release it immediately after copying into the
+            // runtime-owned output buffer.
+            scratch.reserve(n);
+            byte[] encoded;
+            try {
+                encoded = s.getBytes(StandardCharsets.UTF_8);
+                if (encoded.length != n) {
+                    throw new IllegalStateException(
+                            "UTF-8 sizing and encoding disagreed");
+                }
+                if (n <= 31) add(0xa0 | n);
+                else if (n <= 255) { add(0xd9); uint(1, n); }
+                else if (n <= 65535) { add(0xda); uint(2, n); }
+                else { add(0xdb); uint(4, n); }
+                bytes(encoded);
+            } finally {
+                scratch.release(n);
+            }
         }
 
         void value(Shape shape, Object value, int depth) {
             if (depth > MAX_DEPTH || ++nodes > MAX_NODES) {
-                throw new IllegalArgumentException("message shape exceeds depth/node quota");
+                throw new IllegalArgumentException(
+                        "message shape exceeds depth/node quota");
             }
             if (shape instanceof Scalar scalar) {
                 switch (scalar.kind()) {
                     case BOOL -> {
-                        if (!(value instanceof Boolean b)) throw new IllegalArgumentException("expected bool");
+                        if (!(value instanceof Boolean b))
+                            throw new IllegalArgumentException("expected bool");
+                        addDecodedBytes(16L);
                         add(b ? 0xc3 : 0xc2);
                     }
                     case INT64 -> {
@@ -405,6 +577,7 @@ public final class MessagePackCollectionCodec {
                                 || value instanceof Integer || value instanceof Long)) {
                             throw new IllegalArgumentException("expected signed i64");
                         }
+                        addDecodedBytes(24L);
                         signedInt(((Number) value).longValue());
                     }
                     case FLOAT64 -> {
@@ -412,13 +585,19 @@ public final class MessagePackCollectionCodec {
                             throw new IllegalArgumentException("expected float64");
                         }
                         double n = ((Number) value).doubleValue();
-                        if (!Double.isFinite(n)) throw new IllegalArgumentException("nonfinite floats not allowed");
+                        if (!Double.isFinite(n))
+                            throw new IllegalArgumentException("nonfinite floats not allowed");
+                        addDecodedBytes(24L);
                         add(0xcb);
                         uint(8, Double.doubleToRawLongBits(n));
                     }
                     case STRING -> {
-                        if (!(value instanceof String s)) throw new IllegalArgumentException("expected string");
-                        string(s);
+                        if (!(value instanceof String string))
+                            throw new IllegalArgumentException("expected string");
+                        addDecodedBytes(Math.addExact(
+                                40L,
+                                Math.multiplyExact(2L, string.length())));
+                        string(string);
                     }
                 }
                 return;
@@ -427,28 +606,38 @@ public final class MessagePackCollectionCodec {
             if (shape instanceof NestedEnum nested) {
                 if (!(value instanceof TaggedMessageCodec.TaggedValue tagged)
                         || !nested.name().equals(tagged.enumName()))
-                    throw new IllegalArgumentException("nested enum nominal owner mismatch");
+                    throw new IllegalArgumentException(
+                            "nested enum nominal owner mismatch");
                 EnumCaseShape selected = null;
                 for (EnumCaseShape member : nested.cases()) {
-                    if (member.tag() == tagged.tag() && member.name().equals(tagged.variant())) {
+                    if (member.tag() == tagged.tag()
+                            && member.name().equals(tagged.variant())) {
                         selected = member;
                         break;
                     }
                 }
                 if (selected == null)
-                    throw new IllegalArgumentException("unknown nested enum tag/variant");
+                    throw new IllegalArgumentException(
+                            "unknown nested enum tag/variant");
                 if (visiting.put(value, Boolean.TRUE) != null)
-                    throw new IllegalArgumentException("cyclic nested enum value");
+                    throw new IllegalArgumentException(
+                            "cyclic nested enum value");
                 try {
+                    addDecodedBytes(64L);
+                    addDecodedBytes(Math.addExact(
+                            40L,
+                            Math.multiplyExact(2L, nested.name().length())));
                     if (selected.payload() == null) {
                         if (tagged.payload() != null)
-                            throw new IllegalArgumentException("nullary nested enum carries payload");
+                            throw new IllegalArgumentException(
+                                    "nullary nested enum carries payload");
                         arrayHeader(2);
                         string(nested.name());
                         signedInt(tagged.tag());
                     } else {
                         if (tagged.payload() == null)
-                            throw new IllegalArgumentException("nested enum payload is missing");
+                            throw new IllegalArgumentException(
+                                    "nested enum payload is missing");
                         arrayHeader(3);
                         string(nested.name());
                         signedInt(tagged.tag());
@@ -461,13 +650,15 @@ public final class MessagePackCollectionCodec {
             }
 
             Sequence sequence = (Sequence) shape;
-            if (value == null) throw new IllegalArgumentException("sequence cannot be null");
+            if (value == null)
+                throw new IllegalArgumentException("sequence cannot be null");
             int n;
             boolean list = value instanceof List<?>;
             if (list) n = ((List<?>) value).size();
             else if (value.getClass().isArray()) n = Array.getLength(value);
             else throw new IllegalArgumentException("expected sequence data");
-            if (n > MAX_ELEMENTS) throw new IllegalArgumentException("sequence exceeds maximum elements");
+            if (n > MAX_ELEMENTS)
+                throw new IllegalArgumentException("sequence exceeds maximum elements");
             if (isFixed(sequence.kind()) && sequence.slots().size() != n) {
                 throw new IllegalArgumentException("wrong fixed sequence arity");
             }
@@ -475,10 +666,19 @@ public final class MessagePackCollectionCodec {
                 throw new IllegalArgumentException("cyclic actor collection");
             }
             try {
+                // Decoder currently builds an ArrayList and then an immutable
+                // list. Reserve a conservative two-container peak.
+                addDecodedBytes(Math.addExact(
+                        64L,
+                        Math.multiplyExact(16L, n)));
                 arrayHeader(n);
                 for (int i = 0; i < n; i++) {
-                    Object item = list ? ((List<?>) value).get(i) : Array.get(value, i);
-                    Shape member = isFixed(sequence.kind()) ? sequence.slots().get(i) : sequence.element();
+                    Object item = list
+                            ? ((List<?>) value).get(i)
+                            : Array.get(value, i);
+                    Shape member = isFixed(sequence.kind())
+                            ? sequence.slots().get(i)
+                            : sequence.element();
                     value(member, item, depth + 1);
                 }
             } finally {
@@ -486,7 +686,22 @@ public final class MessagePackCollectionCodec {
             }
         }
 
-        byte[] result() { return stream.toByteArray(); }
+        byte[] result() {
+            if (size == 0) return new byte[0];
+            if (size == buffer.length) {
+                byte[] result = buffer;
+                buffer = new byte[0];
+                return result;
+            }
+            // Exact-size result allocation coexists briefly with the growth
+            // buffer, so reserve it before copying and release old capacity
+            // only afterward.
+            scratch.reserve(size);
+            byte[] result = Arrays.copyOf(buffer, size);
+            scratch.release(buffer.length);
+            buffer = new byte[0];
+            return result;
+        }
     }
 
     private static final class Reader {
