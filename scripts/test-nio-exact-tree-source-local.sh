@@ -106,7 +106,7 @@ if [[ -n "$(git -c core.fileMode=true -c core.fsmonitor=false status --porcelain
 fi
 
 stage=toolchain
-for tool in java javac mvn; do
+for tool in java javac mvn python3; do
   command -v "$tool" >/dev/null || { printf 'ERROR: required tool missing: %s\n' "$tool" >&2; exit 69; }
 done
 java_version="$(java -version 2>&1 | head -n 1)"
@@ -144,13 +144,19 @@ if [[ -e "$root/target" || -L "$root/target" ]]; then
 fi
 mkdir -p "$EVIDENCE_DIR"
 stage=targeted-junit
+touch "$EVIDENCE_DIR/targeted-start.marker"
 mvn -B -ntp -Dores.runtime.carriers=native \
   '-Dtest=VmNioTcpListenerTest,NativeNetStdlibTest,NioReadinessGroupTest,NativeNioFutureReactorTest,OresSchedulerTest,OresCarrierPermitPoolTest,OresFuturesTest,OresFutureCallbackTest' \
   test 2>&1 | tee "$EVIDENCE_DIR/targeted-junit.log"
+stage=targeted-report-audit
+python3 scripts/nio_verify_surefire_evidence.py "$EVIDENCE_DIR/targeted-start.marker" targeted
 
 stage=full-maven-verify
+touch "$EVIDENCE_DIR/full-start.marker"
 mvn -B -ntp -Dores.runtime.carriers=native verify 2>&1 \
   | tee "$EVIDENCE_DIR/full-maven-verify.log"
+stage=full-report-audit
+python3 scripts/nio_verify_surefire_evidence.py "$EVIDENCE_DIR/full-start.marker" full
 
 if $NATIVE_AOT; then
   stage=graal-native-aot

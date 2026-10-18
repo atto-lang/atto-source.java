@@ -69,6 +69,14 @@ case " $* " in
       printf '%s\n' '-DskipTests' > .mvn/maven.config
     fi ;;
 esac
+if [ "${FAKE_NO_REPORTS:-0}" != 1 ]; then
+  if [ "${FAKE_NO_VERIFY_REPORTS:-0}" != 1 ] || [ "$*" != "-B -ntp -Dores.runtime.carriers=native verify" ]; then
+    mkdir -p target/surefire-reports
+    for suite in VmNioTcpListenerTest NativeNetStdlibTest NioReadinessGroupTest NativeNioFutureReactorTest OresSchedulerTest OresCarrierPermitPoolTest OresFuturesTest OresFutureCallbackTest; do
+      printf '<testsuite><testcase classname="dev.oreslang.%s" name="synthetic"/></testsuite>\n' "$suite" > "target/surefire-reports/TEST-dev.oreslang.$suite.xml"
+    done
+  fi
+fi
 printf 'SIMULATED MAVEN %s\\n' "$*"
 exit 0
 """,
@@ -240,6 +248,22 @@ exit 0
         ordinary = run("git", "status", "--porcelain", "--untracked-files=all",
                        cwd=self.root)
         self.assertEqual("", ordinary.stdout.strip())
+
+    def test_targeted_maven_success_without_junit_reports_fails(self):
+        environment = self.env.copy()
+        environment["FAKE_NO_REPORTS"] = "1"
+        result = self.gate(env=environment)
+        self.assertEqual(76, result.returncode, result.stderr)
+        self.assertIn("stage=targeted-report-audit", self.receipt())
+        self.assertIn("result=FAIL", self.receipt())
+
+    def test_full_verify_must_generate_new_junit_reports(self):
+        environment = self.env.copy()
+        environment["FAKE_NO_VERIFY_REPORTS"] = "1"
+        result = self.gate(env=environment)
+        self.assertEqual(76, result.returncode, result.stderr)
+        self.assertIn("stage=full-report-audit", self.receipt())
+        self.assertIn("result=FAIL", self.receipt())
 
     def test_nonzero_maven_exit_survives_tee_and_receipt(self):
         environment = self.env.copy()

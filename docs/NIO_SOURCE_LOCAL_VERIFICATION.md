@@ -28,7 +28,8 @@ workflow, change branch protection, or authorize a private-code mirror.
 3. The runner checks out exactly that commit **from the same private source
    repository**, with no cross-org Git object transfer and no persistent
    checkout credentials. The tracked/untracked checkout is clean.
-4. JDK **25**, matching `javac` and Maven using JDK 25, are installed.
+4. JDK **25**, matching `javac` and Maven using JDK 25, plus `python3`
+   for parsing actual JUnit XML evidence, are installed.
    Optionally install a GraalVM `native-image` toolchain for the native-aot
    package step. This helper is a runner command, not a runner provisioning
    script.
@@ -44,7 +45,7 @@ disposable **local** Git repositories and simulated `java`, `javac`, and
 python3 -m unittest discover -s tests -p test_nio_source_local_gate.py -v
 ```
 
-The six test methods cover exact commit/tree mismatches, dirty checkouts,
+The source-free test methods cover exact commit/tree mismatches, dirty checkouts,
 unsafe `target/` and receipt symlinks, a clean pinned checkout with a
 simulated passing toolchain, and propagation of a simulated Maven failure
 through `tee` and the receipt. This is a **source-free simulation**, not real
@@ -114,7 +115,13 @@ mvn -B -ntp -Dores.runtime.carriers=native \
 This includes deterministic listener **and connection** descriptor-close
 failure regressions, guest dual-listener Future-to-`await` coverage, the
 four-socket 64-KiB partial-write/rearm integrity test, and native reactor /
-Future callback regressions. It then
+Future callback regressions. Each Maven phase must produce **fresh Surefire XML** newer than its own
+pre-execution marker; `scripts/nio_verify_surefire_evidence.py` requires
+non-skipped testcases and checks all eight named targeted suites, including
+for the subsequent full `verify` phase. Maven exit code zero without a new
+JUnit report, missing test classes, malformed XML, or skipped-only suites
+fails the source-local gate (exit 76). The full suite has not been executed
+on a real runner; this is an evidence safeguard, not certification. It then
 runs `mvn -B -ntp -Dores.runtime.carriers=native verify`. An explicitly
 requested `--native-aot` also runs
 `mvn -B -ntp -Pnative-aot -DskipTests package`.

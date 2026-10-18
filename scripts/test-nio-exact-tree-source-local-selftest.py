@@ -41,6 +41,17 @@ elif name == 'mvn':
         elif step == 'package':
             if '-Pnative-aot' not in args: sys.exit(99)
         else: sys.exit(98)
+        if step in ('test', 'verify'):
+            suites = ('VmNioTcpListenerTest', 'NativeNetStdlibTest',
+                      'NioReadinessGroupTest', 'NativeNioFutureReactorTest',
+                      'OresSchedulerTest', 'OresCarrierPermitPoolTest',
+                      'OresFuturesTest', 'OresFutureCallbackTest')
+            reports = pathlib.Path('target/surefire-reports')
+            reports.mkdir(parents=True, exist_ok=True)
+            for suite in suites:
+                (reports / ('TEST-dev.oreslang.' + suite + '.xml')).write_text(
+                    '<testsuite><testcase classname="dev.oreslang.' + suite +
+                    '" name="synthetic"/></testsuite>\\n')
 else: sys.exit(98)
 '''
 
