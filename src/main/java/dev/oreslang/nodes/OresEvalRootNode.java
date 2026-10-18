@@ -634,10 +634,10 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
+            // Mailbox delivery alone can enter this trusted dispatch slot.
             Object result =
-                    invoke(methodInvocation(
-                            state.object(),
-                            receive,
+                    invoke(new Invocation(
+                            this, InvocationKind.METHOD, state.object(), receive,
                             List.of(mail)));
             if (result != null) {
                 throw new IllegalStateException(
@@ -804,6 +804,12 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation methodInvocation(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            if (receiver.klass.actorKind() != Ast.ActorKind.NONE
+                    && (method.name().equals("receive") || method.name().equals("on_start"))) {
+                throw new SecurityException(
+                        "actor lifecycle method '" + method.name()
+                                + "' can only be invoked by the trusted actor runtime");
+            }
             return new Invocation(this, InvocationKind.METHOD, receiver, method, objectArguments(args));
         }
 
@@ -2770,8 +2776,8 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MethodDecl iterator = findMethod(object.klass,
                         CallableSelector.instance("Symbol.asyncIterator", 0));
                 if (iterator != null) {
-                    object.owner.requireClassMemberVisible(iterator.visibility(),
-                            object.owner.declaringClass(iterator), env.accessClass(), "method", iterator.name());
+                    object.owner.requireInstanceMethodCallable(
+                            object, iterator, env.accessClass());
                     return sourceAsyncGenerator(callMethod(object, iterator, List.of()), env);
                 }
             }
@@ -4378,12 +4384,8 @@ public final class OresEvalRootNode extends RootNode {
                                 object.klass,
                                 CallableSelector.instance(member.member(), args.size()));
                 if (method != null) {
-                    object.owner.requireClassMemberVisible(
-                            method.visibility(),
-                            object.owner.declaringClass(method),
-                            env.accessClass(),
-                            "method",
-                            method.name());
+                    object.owner.requireInstanceMethodCallable(
+                            object, method, env.accessClass());
                     return object.owner.methodInvocation(
                             object,
                             method,
@@ -5827,12 +5829,8 @@ public final class OresEvalRootNode extends RootNode {
                     Ast.MethodDecl method = object.owner.findMethod(
                             object.klass, CallableSelector.instance(methodCall.member(), args.size()));
                     if (method != null) {
-                        object.owner.requireClassMemberVisible(
-                                method.visibility(),
-                                object.owner.declaringClass(method),
-                                env.accessClass(),
-                                "method",
-                                method.name());
+                        object.owner.requireInstanceMethodCallable(
+                                object, method, env.accessClass());
                         return object.owner.methodInvocation(object, method, args);
                     }
 
@@ -5894,12 +5892,8 @@ public final class OresEvalRootNode extends RootNode {
                     Ast.MethodDecl method = object.owner.findMethod(
                             object.klass, CallableSelector.instance(methodCall.member(), args.size()));
                     if (method != null) {
-                        object.owner.requireClassMemberVisible(
-                                method.visibility(),
-                                object.owner.declaringClass(method),
-                                env.accessClass(),
-                                "method",
-                                method.name());
+                        object.owner.requireInstanceMethodCallable(
+                                object, method, env.accessClass());
                         return object.owner.methodInvocation(object, method, args);
                     }
                 }
@@ -7117,6 +7111,15 @@ public final class OresEvalRootNode extends RootNode {
                     return value;
                 }
                 if (object.owner.hasInstanceMethodNamed(object.klass, name, new LinkedHashSet<>())) {
+                    if (object.klass.actorKind() != Ast.ActorKind.NONE
+                            && (name.equals("receive") || name.equals("on_start"))) {
+                        throw new SecurityException(
+                                "actor lifecycle method '" + name + "' cannot be referenced by user code");
+                    }
+                    if (object.owner.hasPrivateAbstractSlotNamed(
+                            object.klass, name, new LinkedHashSet<>())) {
+                        throw new SecurityException("private abstract method cannot be captured as a method value");
+                    }
                     return new BoundMethod(object, name, env == null ? null : env.accessClass());
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
@@ -7365,7 +7368,7 @@ public final class OresEvalRootNode extends RootNode {
             CallableSelector selector = CallableSelector.instance(name, args.size());
             Ast.MethodDecl method = findMethod(receiver.klass, selector);
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
-            requireClassMemberVisible(method.visibility(), declaringClass(method), accessClass, "method", name);
+            requireInstanceMethodCallable(receiver, method, accessClass);
             if (!method.genericParameters().isEmpty()) throw new IllegalArgumentException("generic method values require direct-call specialization");
             return methodInvocation(receiver, method, args);
         }
@@ -7884,6 +7887,72 @@ public final class OresEvalRootNode extends RootNode {
             return owner;
         }
 
+        private Ast.ClassDecl privateAbstractSlotOwner(
+                Ast.ClassDecl klass, CallableSelector selector, Set<Ast.ClassDecl> visited) {
+            if (!visited.add(klass)) return null;
+            // Search ancestors first: the original declaring superclass owns call authority.
+            // A redeclaration in a descendant must never grant that descendant access.
+            Ast.ClassDecl origin = null;
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = dispatchParent(klass, parentRef);
+                if (parent == null) continue;
+                Ast.ClassDecl candidate = privateAbstractSlotOwner(parent, selector, visited);
+                if (candidate == null) continue;
+                if (origin != null && origin != candidate) {
+                    throw new SecurityException(
+                            "ambiguous private abstract slot authority in " + klass.name());
+                }
+                origin = candidate;
+            }
+            if (origin != null) return origin;
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (!method.isStatic() && method.isAbstract()
+                        && method.visibility() == Ast.Visibility.PRIVATE
+                        && selector.matches(method)) return klass;
+            }
+            return null;
+        }
+
+        private boolean hasPrivateAbstractSlotNamed(
+                Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> visited) {
+            if (!visited.add(klass)) return false;
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (!method.isStatic() && method.isAbstract()
+                        && method.visibility() == Ast.Visibility.PRIVATE
+                        && method.name().equals(name)) return true;
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = dispatchParent(klass, parentRef);
+                if (parent != null && hasPrivateAbstractSlotNamed(parent, name, visited)) return true;
+            }
+            return false;
+        }
+
+        private void requireInstanceMethodCallable(
+                OresObject receiver, Ast.MethodDecl method, Ast.ClassDecl accessClass) {
+            if (receiver.klass.actorKind() != Ast.ActorKind.NONE
+                    && (method.name().equals("receive") || method.name().equals("on_start"))) {
+                throw new SecurityException(
+                        "actor lifecycle method '" + method.name()
+                                + "' can only be invoked by the trusted actor runtime");
+            }
+            Ast.ClassDecl origin = privateAbstractSlotOwner(
+                    receiver.klass,
+                    CallableSelector.instance(method.name(), method.arity()),
+                    new LinkedHashSet<>());
+            if (origin != null) {
+                if (accessClass != origin) {
+                    throw new SecurityException("private abstract method '"
+                            + origin.name() + "." + method.name()
+                            + "' is callable only by its declaring superclass");
+                }
+            } else {
+                requireClassMemberVisible(
+                        method.visibility(), declaringClass(method), accessClass,
+                        "method", method.name());
+            }
+        }
+
         private void requireClassMemberVisible(
                 Ast.Visibility visibility,
                 Ast.ClassDecl owner,
@@ -7979,12 +8048,8 @@ public final class OresEvalRootNode extends RootNode {
                         object.klass,
                         CallableSelector.instance("Symbol.iterator", 0));
                 if (iterator == null) throw new IllegalArgumentException("value has no [Symbol.iterator]()");
-                object.owner.requireClassMemberVisible(
-                        iterator.visibility(),
-                        object.owner.declaringClass(iterator),
-                        env == null ? null : env.accessClass(),
-                        "method",
-                        iterator.name());
+                object.owner.requireInstanceMethodCallable(
+                        object, iterator, env == null ? null : env.accessClass());
                 Object produced = callMethod(object, iterator, List.of());
                 return iterableValues(produced, env);
             }
@@ -7998,12 +8063,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (iterator == null) {
                     return asyncSynchronousIterableValues(value, env);
                 }
-                object.owner.requireClassMemberVisible(
-                        iterator.visibility(),
-                        object.owner.declaringClass(iterator),
-                        env == null ? null : env.accessClass(),
-                        "method",
-                        iterator.name());
+                object.owner.requireInstanceMethodCallable(
+                        object, iterator, env == null ? null : env.accessClass());
                 return asyncIterableValues(callMethod(object, iterator, List.of()), env);
             }
             if (!(value instanceof GeneratorRuntime.AsyncGenerator<?> generator)) {
