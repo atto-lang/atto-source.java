@@ -1462,7 +1462,6 @@ public final class OwnershipChecker {
         if (call.callee() instanceof Ast.MemberExpr member) {
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
-
             // Native collection mutations are effects on the receiver, not
             // harmless reads. TypeChecker validates method availability/arity.
             // A const/let read-only view must not gain mutation via .add/.set.
@@ -1799,19 +1798,108 @@ public final class OwnershipChecker {
         boolean query = member.member().equals("is_some") || member.member().equals("is_none")
                 || member.member().equals("is_ok") || member.member().equals("is_err");
         boolean extracting = member.member().equals("unwrap") || member.member().equals("unwrap_safe")
+                || member.member().equals("unwrap_all") || member.member().equals("flatten")
                 || member.member().equals("expect") || member.member().equals("unwrap_or");
         if (!query && !extracting) return null;
+        // A nested call has no reliably resolved result type in this checker
+        // until TypeChecker supplies its typed IR. Do not inspect it here and
+        // then again in generic method dispatch: that double-checks affine
+        // lambda captures, and can manufacture spurious use-after-move errors.
+        // TypeChecker still verifies the exact flatten receiver/result type.
+        if (member.member().equals("flatten")
+                && member.receiver() instanceof Ast.CallExpr) {
+            return null;
+        }
+        // New nested-only names must not cause a non-Option member receiver
+        // to be ownership-checked twice on the ordinary method-call path.
+        if (member.member().equals("flatten") || member.member().equals("unwrap_all")) {
+            Ast.TypeRef hint = receiverType(member.receiver(), scope);
+            if (hint != null
+                    && !(hint.name().equals("Option") && hint.arguments().size() == 1)
+                    && !(member.member().equals("flatten")
+                            && hint.name().equals("Future")
+                            && hint.arguments().size() == 1)) {
+                return null;
+            }
+        }
 
         ValueInfo receiver = checkExpr(member.receiver(), scope, false);
         Ast.TypeRef receiverType = receiver.type;
+        // Dereferencing an Option/Result borrow must never transfer its affine
+        // payload. The type checker resolves member return types after deref,
+        // so the ownership checker must enforce this independently; otherwise
+        // (&Option<Box>).unwrap() could duplicate the borrowed Box owner.
+        // Read-only queries and extraction from a wholly copyable sum remain
+        // valid, since neither transfers any owned state.
+        if (receiverType != null && receiverType.isBorrow()) {
+            Ast.TypeRef target = receiverType.borrowedTarget();
+            if (member.member().equals("flatten")
+                    && target.name().equals("Future")
+                    && target.arguments().size() == 1) {
+                throw error("Future.flatten cannot consume a borrowed Future");
+            }
+            boolean borrowedSum = (target.name().equals("Option")
+                    && target.arguments().size() == 1)
+                    || (target.name().equals("Result")
+                    && target.arguments().size() == 2);
+            if (borrowedSum && extracting && !isCopyType(target)) {
+                throw error(member.member()
+                        + " cannot consume an affine Option/Result through a borrow");
+            }
+            return null;
+        }
+        // Analyze each receiver exactly once. Previously a Future returned
+        // from a call was checked here and again on the ordinary call path,
+        // potentially consuming affine captures twice during compilation.
+        if (member.member().equals("flatten") && receiverType != null) {
+            Ast.TypeRef concrete = receiverType.isBorrow()
+                    ? receiverType.borrowedTarget() : receiverType;
+            if (concrete.name().equals("Future") && concrete.arguments().size() == 1) {
+                if (receiverType.isBorrow()) {
+                    throw error("Future.flatten cannot consume a borrowed Future");
+                }
+                Ast.TypeRef inner = concrete.arguments().getFirst();
+                if (!inner.name().equals("Future") || inner.arguments().size() != 1) {
+                    throw error("Future.flatten requires Future<Future<T>>");
+                }
+                if (!arguments.isEmpty()) {
+                    throw error("Future.flatten expects no arguments");
+                }
+                if (member.receiver() instanceof Ast.NameExpr name) {
+                    VarState owner = scope.lookup(name.name());
+                    if (owner != null && owner.kind == ValueKind.MOVE_ONLY) {
+                        move(owner, name.name());
+                    }
+                } else if (receiver.kind == ValueKind.MOVE_ONLY
+                        && (member.receiver() instanceof Ast.MemberExpr
+                            || member.receiver() instanceof Ast.IndexExpr)) {
+                    throw error("Future.flatten cannot consume an owned Future projection; "
+                            + "move the Future into a named local first");
+                }
+                return new ValueInfo(inner, kindOfType(inner), null);
+            }
+        }
         if (receiverType == null || receiverType.isBorrow()) return null;
         boolean option = receiverType.name().equals("Option") && receiverType.arguments().size() == 1;
         boolean result = receiverType.name().equals("Result") && receiverType.arguments().size() == 2;
         if (!option && !result) return null;
+        if (member.member().equals("flatten") && !option) return null;
 
         if (query) {
             for (Ast.Expr argument : arguments) checkExpr(argument, scope, true);
             return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+        }
+
+        // An affine sum payload cannot be taken from a projected field/index
+        // until projection-level move tracking is available. A read-only check
+        // of holder.option would otherwise allow repeated extraction.
+        // Copyable Option/Result projections remain safe to observe/extract.
+        if (receiver.kind == ValueKind.MOVE_ONLY
+                && (member.receiver() instanceof Ast.MemberExpr
+                    || member.receiver() instanceof Ast.IndexExpr)) {
+            throw error(member.member()
+                    + " cannot consume an affine Option/Result projection; "
+                    + "move the owned value into a named local first");
         }
 
         if (member.receiver() instanceof Ast.NameExpr receiverName) {
@@ -1823,6 +1911,23 @@ public final class OwnershipChecker {
         if (okType.isBorrow()) {
             throw error(member.member()
                     + " cannot extract a borrow from an owned Option/Result until explicit lifetime parameters are supported");
+        }
+
+        if (member.member().equals("unwrap_all")) {
+            // Every nested Option is consumed by extraction; do not return an
+            // intermediate wrapper or permit a borrowed leaf to escape.
+            while (okType.name().equals("Option") && okType.arguments().size() == 1) {
+                okType = okType.arguments().getFirst();
+            }
+            if (okType.isBorrow()) {
+                throw error("unwrap_all cannot extract a borrow from an owned nested Option");
+            }
+        }
+
+        if (member.member().equals("flatten")) {
+            if (!okType.name().equals("Option") || okType.arguments().size() != 1) {
+                throw error("Option.flatten requires Option<Option<T>>");
+            }
         }
 
         if (member.member().equals("unwrap_or") && containsMutexGuardType(okType)) {
