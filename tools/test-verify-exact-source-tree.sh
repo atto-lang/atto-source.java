@@ -74,6 +74,47 @@ chmod +x source/main.ores
 assert_status 67 'executable mode drift rejected' "$expected" source
 chmod -x source/main.ores
 assert_status 0 'clean checkout recovers after hidden changes' "$expected" source
+# Hardlinks to the same inode outside the source directory must be denied even
+# when the tracked content and Git mode are unchanged.
+ln source/main.ores "$work/outside-source-hardlink.ores"
+assert_status 67 'hardlinked source cannot masquerade as exact tree' "$expected" source
+rm "$work/outside-source-hardlink.ores"
+assert_status 0 'single-linked file recovers' "$expected" source
+# Defense-in-depth: a symlinked *parent* must also be rejected. Mock Git
+# diff/untracked enumeration to be clean to exercise the raw path audit,
+# rather than merely relying on Git's normal dirty-worktree checks.
+mkdir -p source/nested
+printf 'nested fixture\n' > source/nested/child.ores
+git add source/nested/child.ores
+git commit -qm nested-fixture
+nested_tree="$(git rev-parse 'HEAD:source')"
+assert_status 0 'nested directory baseline verified' "$nested_tree" source
+mkdir "$work/redirected-directory"
+cp source/nested/child.ores "$work/redirected-directory/child.ores"
+rm -rf source/nested
+ln -s ../redirected-directory source/nested
+real_git="$(command -v git)"
+mkdir -p "$work/hidden-parent-bin"
+cat > "$work/hidden-parent-bin/git" <<'MOCK_HIDDEN_PARENT'
+#!/usr/bin/env bash
+if [[ "${1:-}" == diff ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == ls-files && "${2:-}" == --others ]]; then
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+MOCK_HIDDEN_PARENT
+chmod +x "$work/hidden-parent-bin/git"
+export REAL_GIT="$real_git"
+(
+  export PATH="$work/hidden-parent-bin:$PATH"
+  assert_status 67 'symlinked parent denied despite matching external bytes' "$nested_tree" source
+)
+rm source/nested
+mkdir -p source/nested
+cp "$work/redirected-directory/child.ores" source/nested/child.ores
+assert_status 0 'restored nested directory verified' "$nested_tree" source
 # A tree can contain untrusted symlink and submodule entries.
 ln -s main.ores source/shortcut.ores
 git add source/shortcut.ores
