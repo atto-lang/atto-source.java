@@ -74,7 +74,8 @@ final class DurableDevLoopEndToEndV1Test {
                             50_000_000L,
                             2,
                             false),
-                    100L));
+                    100L,
+                    database.toString()));
             assertInstanceOf(
                     WorkflowSupervisorActorV1.Ready.class,
                     nextSupervisor(supervisorOut));
