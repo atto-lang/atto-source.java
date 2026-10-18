@@ -214,6 +214,26 @@ public final class ActorPipelineRouteSessionSmoke {
         retry.restoreRejectedReturn(retrySink, rejectedReply);
         check(retry.outstanding() == 3,
                 "already-retired envelope prevented original frame rollback");
+        // Same flow AND identical route path is insufficient for rollback:
+        // only the exact predecessor frame consumed by this return may
+        // be restored. A sibling can have the same path and still have a
+        // different one-shot publication authority.
+        var siblingA = retry.forwardTo(retryRoot, "worker-a");
+        var siblingB = retry.forwardTo(retryRoot, "worker-a");
+        // At this point both siblings have identical actor path and flow.
+        var siblingBack = retry.returnOneHop(siblingA);
+        try {
+            retry.restoreRejectedReturn(siblingB, siblingBack);
+            throw new AssertionError("same-path sibling forged rollback");
+        } catch (IllegalStateException expected) { }
+        retry.restoreRejectedReturn(siblingA, siblingBack);
+        retry.complete(siblingA);
+        try {
+            retry.restoreRejectedReturn(siblingA, siblingBack);
+            throw new AssertionError("spent reverse rollback was replayed");
+        } catch (IllegalStateException expected) { }
+        retry.complete(siblingB);
+
         var successfulReply = retry.returnToOrigin(retrySink);
         check(successfulReply.receiver().equals("source")
                         && successfulReply.routeId() > rejectedReply.routeId(),
