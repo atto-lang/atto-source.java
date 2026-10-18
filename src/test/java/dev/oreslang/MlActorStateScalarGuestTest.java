@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * GUEST execution gate for the actual Oreslang ML scalar actor-state fixture.
  *
  * The .ores fixture was copied byte-for-byte from oreslang-ml's stacked
- * actor-state PR #7 (Git blob 4ae673f093a16538da784d15819debbef439b0db).
+ * actor-state PR #7 (Git blob 26a3cb34b126185d56f5d2c7ff370cab953b0b4b).
  * This JUnit class requires an actual GraalVM Oreslang context evaluation;
  * pure host-side arithmetic is explicitly NOT accepted as execution evidence.
  *
@@ -47,7 +47,7 @@ final class MlActorStateScalarGuestTest {
 
     @Test void compiledActorStageHasOneStateSchemaAndDeclaredEffects() throws Exception {
         String text = source();
-        assertEquals("4ae673f093a16538da784d15819debbef439b0db",
+        assertEquals("26a3cb34b126185d56f5d2c7ff370cab953b0b4b",
                 gitBlobSha(text), "ML fixture drifted from pinned source Git blob");
         assertDoesNotThrow(() -> verify(text));
         assertEquals(1, count(text, "    state {"));
@@ -60,6 +60,11 @@ final class MlActorStateScalarGuestTest {
         assertTrue(text.contains("with state.read, state.write"));
         assertTrue(text.contains("using state.read("));
         assertTrue(text.contains("private eval_affine("));
+        assertTrue(text.contains("private print_outcome(Result<int, String> outcome): void"));
+        assertTrue(text.contains("return Err(\"INVALID_INPUT\")"));
+        assertTrue(text.contains("return Err(\"INVALID_GRADIENT\")"));
+        assertTrue(text.contains("return Err(\"UNSAFE_CANDIDATE\")"));
+        assertTrue(text.contains("self.eval_affine(3, 3, 2, -2)"));
         assertTrue(text.contains("issued_first: bool"));
         assertTrue(text.contains("issued_second: bool"));
         assertTrue(text.contains("input_first: int"));
@@ -93,7 +98,7 @@ final class MlActorStateScalarGuestTest {
         }
         String expected = Files.readString(Path.of("tests", "golden",
                 "ml-actor-state-scalar.stdout"));
-        assertEquals("9921f755979832f6b20e20923cc94f6f3bf6e05b",
+        assertEquals("867f4ca71a20b58b1f35e239d4bef160f7ef5342",
                 gitBlobSha(expected), "scalar training output golden drifted");
         assertEquals(expected, stdout.toString(StandardCharsets.UTF_8));
     }
