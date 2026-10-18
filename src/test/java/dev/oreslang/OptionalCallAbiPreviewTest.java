@@ -181,6 +181,36 @@ final class OptionalCallAbiPreviewTest {
     }
 
     @Test
+    void forgedPreviewCannotInventGapsOrReorderSourceOrigins() {
+        Ast.Expr first = new Ast.NameExpr("firstEffect");
+        Ast.Expr second = new Ast.NameExpr("secondEffect");
+        var source0 = new OptionalCallAbiPreview.Slot(
+                0, "a", INT, OptionalCallAbiPreview.Action.PASS_REQUIRED, 0, 0);
+        var source1Gap = new OptionalCallAbiPreview.Slot(
+                1, "b", INT, OptionalCallAbiPreview.Action.PASS_REQUIRED, 1, 3);
+        assertThrows(IllegalArgumentException.class,
+                () -> new OptionalCallAbiPreview.Preview(
+                        List.of(first, second), List.of(source0, source1Gap)));
+
+        var source0Later = new OptionalCallAbiPreview.Slot(
+                0, "a", INT, OptionalCallAbiPreview.Action.PASS_REQUIRED, 0, 1);
+        var source1Earlier = new OptionalCallAbiPreview.Slot(
+                1, "b", INT, OptionalCallAbiPreview.Action.PASS_REQUIRED, 1, 0);
+        assertThrows(IllegalArgumentException.class,
+                () -> new OptionalCallAbiPreview.Preview(
+                        List.of(first, second), List.of(source0Later, source1Earlier)));
+
+        // Declaration order may differ from lexical order, but raw source
+        // origins must still increase when ordered by evaluated source index.
+        var formal0FromSecond = new OptionalCallAbiPreview.Slot(
+                0, "a", INT, OptionalCallAbiPreview.Action.PASS_REQUIRED, 1, 1);
+        var formal1FromFirst = new OptionalCallAbiPreview.Slot(
+                1, "b", INT, OptionalCallAbiPreview.Action.PASS_REQUIRED, 0, 0);
+        assertDoesNotThrow(() -> new OptionalCallAbiPreview.Preview(
+                List.of(first, second), List.of(formal0FromSecond, formal1FromFirst)));
+    }
+
+    @Test
     void sourceAndAbiTablesAreImmutableAndVariadicIsNotSilentlyLowered() {
         var source = List.of(Ast.CallArgument.named("c", new Ast.LiteralExpr(true)),
                 Ast.CallArgument.named("a", new Ast.LiteralExpr(3L)));
