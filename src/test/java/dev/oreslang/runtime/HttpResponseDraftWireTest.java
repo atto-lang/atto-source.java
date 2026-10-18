@@ -61,6 +61,11 @@ final class HttpResponseDraftWireTest {
     }
 
     @Test @Timeout(20)
+    void boundedSupplierAdmissionPreservesHealthyHttpRequests() throws Exception {
+        HttpResponseBodyOpenWireCheck.main(new String[0]);
+    }
+
+    @Test @Timeout(20)
     void actualHttp11ResponseFramesAndLazyStream() throws Exception {
         AtomicInteger streamOpens = new AtomicInteger();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 8);
