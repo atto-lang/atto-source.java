@@ -91,7 +91,7 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /** Result of one resumable task turn. */
-    public sealed interface Step<T> permits Done, Await, Cooperate { }
+    public sealed interface Step<T> permits Done, Await, Cooperate, Cancelled { }
 
     /** The async task has produced its final value. */
     public record Done<T>(T value) implements Step<T> { }
@@ -111,6 +111,9 @@ public final class OresScheduler implements AutoCloseable {
      * resumes the same task only after the current carrier turn has unwound.
      */
     public record Cooperate<T>() implements Step<T> { }
+
+    /** Explicit cancelled completion, not an ordinary thrown task failure. */
+    public record Cancelled<T>() implements Step<T> { }
 
     /**
      * Input delivered to a compiler-generated state machine when it starts or
@@ -333,6 +336,11 @@ public final class OresScheduler implements AutoCloseable {
     /** Lowering target for source-level `rt cooperate`. */
     public static <T> Step<T> cooperate() {
         return new Cooperate<>();
+    }
+
+    /** Preserve cancellation identity across trusted composed Future stages. */
+    public static <T> Step<T> cancelled() {
+        return new Cancelled<>();
     }
 
     /**
@@ -737,6 +745,11 @@ public final class OresScheduler implements AutoCloseable {
                     return;
                 }
 
+                if (step instanceof Cancelled<?>) {
+                    finishCancelled();
+                    return;
+                }
+
                 failTerminal(new IllegalStateException(
                         "unknown OresScheduler task step " + step.getClass().getName()));
             } finally {
@@ -899,6 +912,13 @@ public final class OresScheduler implements AutoCloseable {
             // unwound runBound(...).
         }
 
+        private void finishCancelled() {
+            detachActiveAwaitRegistration();
+            if (!phase.compareAndSet(RUNNING, TERMINAL)) return;
+            terminalOutcome.set(new TerminalCancelled<>());
+            // Do not publish callbacks until physical carrier quiescence.
+        }
+
         /**
          * A host deadline must not depend on a runnable guest continuation.
          * Revoke task authority and retire only quiescent resources on the
@@ -978,6 +998,8 @@ public final class OresScheduler implements AutoCloseable {
                 completion.completeFromRuntime(value);
             } else if (outcome instanceof TerminalFailure<?> failure) {
                 completion.failFromRuntime(failure.failure());
+            } else if (outcome instanceof TerminalCancelled<?>) {
+                completion.cancel(false);
             }
         }
 
@@ -1011,9 +1033,11 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     private sealed interface TerminalOutcome<T>
-            permits TerminalSuccess, TerminalFailure { }
+            permits TerminalSuccess, TerminalFailure, TerminalCancelled { }
 
     private record TerminalSuccess<T>(T value) implements TerminalOutcome<T> { }
+
+    private record TerminalCancelled<T>() implements TerminalOutcome<T> { }
 
     private record TerminalFailure<T>(Throwable failure)
             implements TerminalOutcome<T> {
