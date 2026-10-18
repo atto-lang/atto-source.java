@@ -15,6 +15,75 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
     @Test
+    void optionalFormalSyntaxPreservesUnderlyingAndCalleeOptionType() {
+        Ast.Program parsed = Parser.parse("""
+                pub fnc staged(string? label, Option<int> required, int count): void {
+                    return;
+                }
+                """);
+        Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        Ast.Param first = fn.parameters().getFirst();
+        assertTrue(first.optional());
+        assertEquals(Ast.TypeRef.simple("string"), first.valueType());
+        assertEquals(new Ast.TypeRef("Option",
+                List.of(Ast.TypeRef.simple("string")), false), first.calleeType());
+        assertFalse(fn.parameters().get(1).optional(),
+                "required Option<int> is distinct from an omittable T?");
+        assertEquals("Option", fn.parameters().get(1).type().name());
+        assertFalse(fn.parameters().get(2).optional());
+        assertEquals(List.of("label", "required", "count"),
+                fn.parameters().stream().map(Ast.Param::name).toList());
+        IllegalArgumentException rejection = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+        assertTrue(rejection.getMessage().contains("Option<T> ABI"), rejection::toString);
+    }
+
+    @Test
+    void optionalFormalsAreRecognizedButNotExecutedInMethodsConstructorsOrLambdas() {
+        for (String source : List.of(
+                """
+                define module app as
+                  define class Box as
+                    pub fnc run(string? label): void { return; }
+                  end
+                end
+                """,
+                """
+                define module app as
+                  define class Box as
+                    constructor(string? title) { return; }
+                  end
+                end
+                """,
+                """
+                pub fnc test(): void {
+                    const callback = (|string? label| -> label);
+                    return;
+                }
+                """)) {
+            Ast.Program parsed = assertDoesNotThrow(() -> Parser.parse(source));
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+            assertTrue(rejected.getMessage().contains("Option<T> ABI"), rejected::toString);
+        }
+    }
+
+    @Test
+    void optionalFormalRejectsVoidAndStructuralBorrowWithoutLowering() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "pub fnc f(void? value): void { return; }"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub fnc f(structural string? label): void { return; }
+                """));
+        Ast.Program valid = assertDoesNotThrow(() -> Parser.parse(
+                "pub fnc f(Option<string> required): void { return; }"));
+        assertFalse(((Ast.FunctionDecl)
+                valid.modules().getFirst().declarations().getFirst())
+                .parameters().getFirst().optional());
+    }
+
+    @Test
     void noneCallItemIsNotAnOmissionMarker() {
         assertDoesNotThrow(() -> Parser.parse(
                 "pub fnc test(): void { const v = f(3, None, true); return; }"));
