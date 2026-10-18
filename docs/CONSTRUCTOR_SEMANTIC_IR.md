@@ -277,6 +277,7 @@ ResolvedCaptureBinding {
   binding_id: CaptureBindingId   // declaration identity, never source spelling
   debug_name: String
   type: Type
+  origin: EXTERNAL_BINDING | RECURSIVE_SELF
   access: READ | WRITE
   transfer: LEXICAL_SLOT_ALIAS
           | DETACHED_VALUE_SNAPSHOT
@@ -289,6 +290,14 @@ ResolvedCaptureBinding {
 A source name is diagnostic metadata only. Two shadowed locals with the same
 spelling have distinct `CaptureBindingId` values. Reusing one binding id with a
 different name or type is an invalid compiler state.
+
+`RECURSIVE_SELF` is the pre-reserved lexical fixpoint cell for a recursive
+lambda. It remains in the runtime capture plan so recursive invocation can find
+the initialized slot, but it does not participate in external ownership
+accounting. It is READ-only, must use `LEXICAL_SLOT_ALIAS`, and carries no
+borrow/serialization/construction capability metadata. Reclassifying the same
+binding identity between `RECURSIVE_SELF` and `EXTERNAL_BINDING` is an invalid
+compiler state.
 
 Joining control-flow/deferred alternatives merges captures by binding id. WRITE
 dominates READ, detached ownership-move dominates detached value-snapshot, and
