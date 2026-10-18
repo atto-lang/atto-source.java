@@ -1481,6 +1481,36 @@ public final class OwnershipChecker {
                 }
             }
 
+            // A field/index projection of an affine Future has no owned
+            // extraction operation yet. Reading it as an ordinary member call
+            // would allow repeated flattening of the same task capability.
+            // Temporaries returned by a call are fresh and can be transferred
+            // directly; projected owners must be moved into a named binding.
+            if (member.member().equals("flatten")
+                    && !(member.receiver() instanceof Ast.NameExpr)) {
+                ValueInfo candidate = checkExpr(member.receiver(), scope, false);
+                Ast.TypeRef candidateType = candidate.type;
+                if (candidateType != null
+                        && candidateType.name().equals("Future")
+                        && candidateType.arguments().size() == 1) {
+                    if (candidateType.isBorrow()) {
+                        throw error("Future.flatten cannot consume a borrowed Future");
+                    }
+                    Ast.TypeRef nested = candidateType.arguments().getFirst();
+                    if (!nested.name().equals("Future") || nested.arguments().size() != 1) {
+                        throw error("Future.flatten requires Future<Future<T>>");
+                    }
+                    if (!call.arguments().isEmpty()) {
+                        throw error("Future.flatten expects no arguments");
+                    }
+                    if (!(member.receiver() instanceof Ast.CallExpr)) {
+                        throw error("Future.flatten cannot consume an owned Future projection; "
+                                + "move the Future into a named local first");
+                    }
+                    return new ValueInfo(nested, kindOfType(nested), null);
+                }
+            }
+
             // Native collection mutations are effects on the receiver, not
             // harmless reads. TypeChecker validates method availability/arity.
             // A const/let read-only view must not gain mutation via .add/.set.
