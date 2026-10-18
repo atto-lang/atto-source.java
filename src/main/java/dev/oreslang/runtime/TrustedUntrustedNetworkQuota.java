@@ -166,8 +166,8 @@ final class TrustedUntrustedNetworkQuota implements AutoCloseable {
 
     private synchronized void refundUnsent(boolean http) {
         release(http);
-        if (http) httpStarts.refundFailedSend(1);
-        else tcpStarts.refundFailedSend(1);
+        if (http) httpStarts.rollbackUnpublished(1);
+        else tcpStarts.rollbackUnpublished(1);
     }
 
     private synchronized void release(boolean http) {
