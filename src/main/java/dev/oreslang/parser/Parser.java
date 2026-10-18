@@ -3558,13 +3558,18 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
-        // Creating a Task is already asynchronous. Do not accept the
-        // unimplemented "async |...|" lambda spelling and silently flatten
-        // Future<Task<T>> into Task<T>. Plain lambdas can return Task<T>
-        // directly: (|T arg| -> nb { ... })(value).
-        if (check(ASYNC) && (checkNext(PIPE) || checkNext(LPAREN))) {
-            throw error(peek(), "async lambdas are not enabled; nb already produces Task<T>. "
-                    + "Use (|Type arg| -> nb { ... })(value) without async or an outer await");
+        // Keep `async` lambda identity explicit in the AST. Ordinary async
+        // lambdas yield Future<R>; `async task` means the whole body is a
+        // single scheduled Task<R>, not Future<Task<R>>.
+        if (match(ASYNC)) {
+            boolean task = matchContextualKeyword("task");
+            Ast.LambdaExpr body;
+            if (check(PIPE)) body = parsePipeLambda(false);
+            else if (check(LPAREN) && looksLikeLambda()) body = parseLambda(false);
+            else throw error(peek(), task
+                    ? "'async task' must prefix a lambda parameter list"
+                    : "'async' in expression position must prefix a lambda parameter list");
+            return task ? new Ast.TaskLambdaExpr(body) : new Ast.AsyncLambdaExpr(body);
         }
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
