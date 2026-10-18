@@ -9,6 +9,9 @@ make_fixture() {
   rm -rf "$fixture"
   mkdir -p "$fixture"
   cp "$runner" "$fixture/run-private-ci-regressions-local.sh"
+  cp "$(dirname "$runner")/test-run-private-ci-regressions-local.sh" \
+    "$fixture/test-run-private-ci-regressions-local.sh"
+  printf 'def dummy(): return True\n' > "$fixture/test-private-ci-review-coverage.py"
   printf 'def dummy(): return True\n' > "$fixture/publish-private-ci-source.py"
   printf 'def dummy(): return True\n' > "$fixture/test-private-ci-merged-main.py"
   cat > "$fixture/test-publish-private-ci-source.py" <<'PY'
@@ -67,4 +70,24 @@ rm "$fixture/test-private-ci-merged-main.py"
 if bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
 grep -q PRIVATE_CI_MISSING_OR_SYMLINKED_FILE "$root/out"
 echo 'PASS: missing merged-main production tests fail closed'
-echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=6'
+make_fixture
+cat >> "$fixture/test-private-ci-destination.sh" <<'SH'
+printf '\n# tampered runner\n' >> "$(dirname "$0")/run-private-ci-regressions-local.sh"
+SH
+if PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
+grep -q PRIVATE_CI_FILES_CHANGED_DURING_TEST "$root/out"
+echo 'PASS: mutation of executing offline runner is detected'
+make_fixture
+cat >> "$fixture/test-private-ci-destination.sh" <<'SH'
+printf '\n# tampered coverage\n' >> "$(dirname "$0")/test-private-ci-review-coverage.py"
+SH
+if PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
+grep -q PRIVATE_CI_FILES_CHANGED_DURING_TEST "$root/out"
+echo 'PASS: mutation of review-coverage verifier is detected'
+make_fixture
+mv "$fixture/test-private-ci-review-coverage.py" "$root/coverage"
+ln -s "$root/coverage" "$fixture/test-private-ci-review-coverage.py"
+if bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
+grep -q PRIVATE_CI_MISSING_OR_SYMLINKED_FILE "$root/out"
+echo 'PASS: symlinked review-coverage verifier fails closed'
+echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=9' 
