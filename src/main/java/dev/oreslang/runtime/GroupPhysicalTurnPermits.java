@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -36,9 +37,18 @@ final class GroupPhysicalTurnPermits {
 
     enum Admission { GRANTED, QUEUED, DUPLICATE, QUEUE_FULL, RETRY, CLOSED }
     record Request(Admission status, Grant grant) { }
-    record Release(boolean released, boolean retry, Grant successor) { }
+    record Release(boolean released, boolean retry, Grant successor, List<Actor> cancelled) {
+        Release {
+            cancelled = List.copyOf(Objects.requireNonNull(cancelled, "cancelled"));
+        }
+    }
     enum Cancellation { CANCELLED, ACTIVE, ABSENT, RETRY }
-    enum Seal { SEALED, ALREADY_SEALED, RETRY }
+    enum SealStatus { SEALED, ALREADY_SEALED, RETRY }
+    record Seal(SealStatus status, List<Actor> cancelled) {
+        Seal {
+            cancelled = List.copyOf(Objects.requireNonNull(cancelled, "cancelled"));
+        }
+    }
     record Snapshot(int active, int queued, boolean sealed) { }
 
     private final ReentrantLock lock = new ReentrantLock();
@@ -90,22 +100,26 @@ final class GroupPhysicalTurnPermits {
      */
     Release tryRelease(Grant grant) {
         Objects.requireNonNull(grant);
-        if (!lock.tryLock()) return new Release(false, true, null);
+        if (!lock.tryLock()) return new Release(false, true, null, List.of());
         try {
             Grant held = active.get(grant.actor());
             // Tokens are capabilities, not matching numeric tuples. Never
             // let a forged copy or another group's identical ticket release
             // this group's physical carrier credit.
             if (held != grant)
-                return new Release(false, false, null);
+                return new Release(false, false, null, List.of());
             active.remove(grant.actor());
             if (!sealed && !queue.isEmpty()) {
+                if (nextTicket == Long.MAX_VALUE) {
+                    List<Actor> cancelled = sealUnderLock();
+                    return new Release(true, false, null, cancelled);
+                }
                 Actor successor = queue.removeFirst();
                 queued.remove(successor);
                 Grant next = grantUnderLock(successor);
-                return new Release(true, false, next);
+                return new Release(true, false, next, List.of());
             }
-            return new Release(true, false, null);
+            return new Release(true, false, null, List.of());
         } finally {
             lock.unlock();
         }
@@ -128,11 +142,10 @@ final class GroupPhysicalTurnPermits {
 
     /** Seals future admission and drops pending (not running) reservations. */
     Seal trySeal() {
-        if (!lock.tryLock()) return Seal.RETRY;
+        if (!lock.tryLock()) return new Seal(SealStatus.RETRY, List.of());
         try {
-            if (sealed) return Seal.ALREADY_SEALED;
-            sealUnderLock();
-            return Seal.SEALED;
+            if (sealed) return new Seal(SealStatus.ALREADY_SEALED, List.of());
+            return new Seal(SealStatus.SEALED, sealUnderLock());
         } finally {
             lock.unlock();
         }
@@ -149,9 +162,10 @@ final class GroupPhysicalTurnPermits {
 
     private Grant grantUnderLock(Actor actor) {
         if (nextTicket == Long.MAX_VALUE) {
-            // Never recycle a ticket: fail-closed while retaining running
-            // credits for their eventual physical exit.
-            sealUnderLock();
+            // Never recycle a ticket. An immediate request can fail closed
+            // without a waiter; release-to-successor handles queued actors
+            // explicitly so lifecycle owners can cancel/reschedule them.
+            sealed = true;
             return null;
         }
         Grant grant = new Grant(actor, nextTicket++);
@@ -159,9 +173,11 @@ final class GroupPhysicalTurnPermits {
         return grant;
     }
 
-    private void sealUnderLock() {
+    private List<Actor> sealUnderLock() {
         sealed = true;
+        List<Actor> cancelled = List.copyOf(queue);
         queue.clear();
         queued.clear();
+        return cancelled;
     }
 }
