@@ -58,9 +58,16 @@ actor_decl      = { annotation } visibility [ "shared" ] ( "actor" | "define" "a
                   [ actor_threads_config ] actor_body ;
 actor_threads_config = "with" "threads" "(" [ actor_thread_limit { "," actor_thread_limit } ] ")" ;
 actor_thread_limit = ( "min" | "max" ) ":" INTEGER_LITERAL ;
-(* @ActorThreads(min = 1, max = 1) is accepted on actor declarations only.
-   The physical scheduler currently supports max == 1; max > 1 is a
-   future v2 execution capability and is rejected at compile time. *)
+(* @ActorThreads(min = 1, max = 1) is the canonical annotation on
+   actor declarations. The earlier @ActorMaxThreads(MaxActorThreads.LOW)
+   is a frozen compatibility spelling, normalized to min=1/max=1.
+   Its MEDIUM/HIGH values are recognized but rejected until actual
+   parallel guest execution is supported; mixing either annotation with
+   another policy form is an error.
+   A stand-alone 'define enum MaxActorThreads as LOW int = 1;
+   MEDIUM int = 2; HIGH int = 3 end' is accepted only as a fixed
+   compatibility declaration, NOT general enum lowering.
+   Limits require 1 <= min <= max <= 3; current scheduler max == 1. *)
 actor_body      = "{" { actor_member } "}"
                 | { actor_member } "end" ;
 actor_member    = field_decl
