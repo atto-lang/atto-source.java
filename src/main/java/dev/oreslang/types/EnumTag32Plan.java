@@ -32,11 +32,18 @@ public final class EnumTag32Plan {
     }
 
     private final String qualifiedEnumId;
+    private final boolean exported;
     private final Map<String, Integer> tagsByCase;
     private final Set<Integer> validTags;
     private final String schemaFingerprint;
 
+    /** Compatibility-only private layout; source exports must be passed explicitly. */
     public EnumTag32Plan(String qualifiedEnumId, List<CaseTag> declaredCases) {
+        this(qualifiedEnumId, declaredCases, false);
+    }
+
+    public EnumTag32Plan(String qualifiedEnumId, List<CaseTag> declaredCases,
+                         boolean exported) {
         requireQualifiedId(qualifiedEnumId);
         Objects.requireNonNull(declaredCases, "declaredCases");
         if (declaredCases.isEmpty() || declaredCases.size() > MAX_CASES) {
@@ -52,12 +59,14 @@ public final class EnumTag32Plan {
             prior = caseTag.tag();
         }
         this.qualifiedEnumId = qualifiedEnumId;
+        this.exported = exported;
         this.tagsByCase = java.util.Collections.unmodifiableMap(tags);
         this.validTags = Set.copyOf(tags.values());
-        this.schemaFingerprint = fingerprint(qualifiedEnumId, cases);
+        this.schemaFingerprint = fingerprint(qualifiedEnumId, exported, cases);
     }
 
     public String qualifiedEnumId() { return qualifiedEnumId; }
+    public boolean exported() { return exported; }
     public String schemaFingerprint() { return schemaFingerprint; }
     public int caseCount() { return tagsByCase.size(); }
 
@@ -97,11 +106,13 @@ public final class EnumTag32Plan {
         for (String part : segments) EnumAstIdentity.requireSimple(part);
     }
 
-    private static String fingerprint(String identity, List<CaseTag> cases) {
+    private static String fingerprint(String identity, boolean exported,
+                                      List<CaseTag> cases) {
         try {
             MessageDigest hash = MessageDigest.getInstance("SHA-256");
-            addField(hash, "ores-nullary-enum-tag32-schema-v1");
+            addField(hash, "ores-nullary-enum-tag32-schema-v2");
             addField(hash, identity);
+            addField(hash, exported ? "public" : "private");
             addField(hash, Integer.toString(cases.size()));
             for (CaseTag entry : cases) {
                 addField(hash, entry.name());
