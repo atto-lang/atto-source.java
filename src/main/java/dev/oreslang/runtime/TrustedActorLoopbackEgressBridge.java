@@ -73,7 +73,7 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
         var slot = new AtomicReference<>(new Poll(State.PENDING, 0));
         tickets.put(id, slot);
         try {
-            hostDispatcher.execute(() -> dispatchHost(id, slot));
+            hostDispatcher.execute(() -> dispatchHost(slot));
         } catch (RuntimeException rejected) {
             tickets.remove(id, slot);
             throw new IllegalStateException("host dispatcher rejected egress request", rejected);
@@ -90,17 +90,18 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
         AtomicReference<Poll> slot = tickets.get(id);
         if (slot == null) throw new SecurityException("invalid egress ticket");
         Poll result = slot.get();
-        if (result.state() != State.PENDING) tickets.remove(id, slot);
+        if (result.state() != State.PENDING && !tickets.remove(id, slot)) {
+            throw new SecurityException("egress ticket has already been consumed");
+        }
         return result;
     }
 
-    private void dispatchHost(long id, AtomicReference<Poll> slot) {
+    private void dispatchHost(AtomicReference<Poll> slot) {
         // An inline executor has inherited the untrusted actor turn:
         // fail closed rather than granting host authority.
         if (ActorRuntime.inActorExecution() ||
                 ActorRuntime.inActorGroupMailmanExecution()) {
-            slot.compareAndSet(new Poll(State.PENDING, 0),
-                    new Poll(State.FAILED, 0));
+            slot.set(new Poll(State.FAILED, 0));
             return;
         }
         synchronized (this) {
