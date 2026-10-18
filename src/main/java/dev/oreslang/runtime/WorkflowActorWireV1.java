@@ -42,7 +42,8 @@ final class WorkflowActorWireV1 {
                 "command", command(claim.command()),
                 "claimToken", claim.claimToken(),
                 "attempt", claim.attempt(),
-                "leaseUntilMillis", claim.leaseUntilMillis());
+                "leaseUntilMillis", claim.leaseUntilMillis(),
+                "workerId", claim.workerId());
     }
 
     static WorkflowJournalV1.Claim claim(Object value) {
@@ -52,7 +53,8 @@ final class WorkflowActorWireV1 {
                 command(map.get("command")),
                 string(map, "claimToken"),
                 integer(map, "attempt"),
-                longValue(map, "leaseUntilMillis"));
+                longValue(map, "leaseUntilMillis"),
+                nullableString(map, "workerId"));
     }
 
     static Map<String, Object> journalEntry(
