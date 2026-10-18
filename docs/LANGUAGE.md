@@ -530,6 +530,20 @@ stdio.println(user.name);
 ```
 
 Whitespace before the initializer is optional: `infer struct {...}`.
+
+A closed structural record can also be constructed with `infer record{...}`.
+Both inferred spellings currently use the same readonly closed-aggregate backing
+and field-name-based structural type identity; records are not dynamic maps.
+`const T value = infer<T> record{...};` introduces a scoped structural type
+alias without creating nominal identity or a runtime type object. Quoted
+field names, including spaces and punctuation, are statically checked.
+
+The shorter `const T value = infer record{...}` is **not enabled** yet:
+it must be disambiguated from `const ExistingType value = infer record{...}`
+without silently redefining an existing type or weakening forward-reference,
+generic, and lexical-scope checks. AoS/SoA columnar inversion likewise requires
+a distinct verified storage and ownership contract.
+
 An inferred struct is permanently readonly: its field set and field values
 cannot be mutated through aliases or mutable bindings.
 
