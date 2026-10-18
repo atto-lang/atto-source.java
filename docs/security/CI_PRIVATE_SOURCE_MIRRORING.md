@@ -215,6 +215,25 @@ Do not derive the source PR number and expected source commit from an
 unreviewed workflow input; the authorized CI operator must independently
 choose and attest them. It reconstructs the canonical Git tree from the complete collected paths, modes and bytes and refuses a mismatched snapshot. It then requires GitHub's fresh isolated destination subtree SHA to match that same source tree before creating any commit/ref. A digest supplied by unreviewed PR policy is not independent authorization.
 
+Before a destination commit is created, the publisher now independently
+GETs both the pinned destination base root tree and the newly created
+destination root tree. Both responses must name the exact requested tree
+object, be **complete** (`truncated: false`), and contain unique, valid
+root entries. The stored new root must be byte-for-byte equivalent at
+the Git-entry identity level (path, mode, object type and SHA) to the
+pinned old root, with exactly one intentional replacement:
+`private-oreslang-source/` must point to the separately attested source
+subtree. Missing/replaced `.github` entries, unexpected workflow changes,
+extra files, deleted unrelated entries, duplicate names and ambiguous
+or incomplete tree responses fail before commit/ref creation. This guards
+against blindly trusting a tree-creation response and protects the pinned
+destination workflow baseline; it does not authorize export or eliminate
+the usual remote API check-to-write window.
+
+The corresponding three additional offline publisher regression methods
+were committed on 2026-10-18 and **are not yet verified by a hosted Python
+suite**. The funded source-free Git-tree oracle remains separate evidence.
+
 Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated.
 
