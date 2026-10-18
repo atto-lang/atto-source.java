@@ -46,8 +46,12 @@ final class ActorUpgradeEpochGate implements AutoCloseable {
 
         long epoch() { return epoch; }
 
-        @Override public void close() {
-            if (released.compareAndSet(false, true)) owner.release();
+        @Override public synchronized void close() {
+            if (released.get()) return;
+            // An accounting failure must not permanently discard the only
+            // lifetime token while the actor still needs to drain it.
+            owner.release();
+            released.set(true);
         }
     }
 
