@@ -1,0 +1,29 @@
+import class TestCase, TestSuite, TestOptions, RunSummary, TestOutcome from '../stdlib/testing';
+import fnc check_fuzz_int_cases, expect_true, run_suite, require_success from '../stdlib/testing';
+
+fnc within_bounds(int value): TestOutcome {
+  return expect_true(value >= -100000 && value <= 100000,
+    "generated integer must stay in bounded range");
+}
+
+fnc seeded_property_one(): TestOutcome {
+  return check_fuzz_int_cases("range-seed-42", 42, 100, within_bounds);
+}
+
+fnc seeded_property_two(): TestOutcome {
+  return check_fuzz_int_cases("range-seed-93", 93, 100, within_bounds);
+}
+
+pub routine main(): void {
+  val TestSuite suite = new TestSuite(
+    "fuzz",
+    arr[
+      new TestCase("seeded/42", seeded_property_one, false, ""),
+      new TestCase("seeded/93", seeded_property_two, false, "")
+    ]
+  );
+  val TestOptions options = new TestOptions("", false, true);
+  val RunSummary summary = run_suite(&suite, &options);
+  require_success(&summary);
+  return;
+}
