@@ -321,7 +321,14 @@ final class ActorArtifactAdmissionTest {
                     (builder, keyId) -> keys.getPublic(),
                     targetPolicy(),
                     IsolatePolicy.developer());
-            assertTrue(artifact.admittedForRuntime(runtimeInstanceId(runtime)));
+            assertTrue(runtime.ownsActorArtifact(artifact));
+            assertEquals(
+                    ActorArtifactAdmission.workerPolicyDigest(IsolatePolicy.developer()),
+                    artifact.workerPolicySha256());
+            try (ActorRuntime other = new ActorRuntime(supervisor)) {
+                assertFalse(other.ownsActorArtifact(artifact),
+                        "artifact capability must not migrate across actor runtimes");
+            }
         }
     }
 
@@ -433,16 +440,6 @@ final class ActorArtifactAdmissionTest {
                 MESSAGE_ABI,
                 STATE_SCHEMA,
                 WIRE_CODEC);
-    }
-
-    private static java.util.UUID runtimeInstanceId(ActorRuntime runtime) {
-        try {
-            var field = ActorRuntime.class.getDeclaredField("runtimeInstanceId");
-            field.setAccessible(true);
-            return (java.util.UUID) field.get(runtime);
-        } catch (ReflectiveOperationException failure) {
-            throw new AssertionError(failure);
-        }
     }
 
     private static KeyPair keyPair() throws Exception {
