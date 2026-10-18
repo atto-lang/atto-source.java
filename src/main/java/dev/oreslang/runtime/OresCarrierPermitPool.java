@@ -20,9 +20,36 @@ import java.util.function.UnaryOperator;
 final class OresCarrierPermitPool {
     enum Domain { CONTROL, PRIVATE, SHARED, UNTRUSTED, LIFECYCLE }
 
+    record Snapshot(
+            int maximum,
+            int totalHeld,
+            int free,
+            int controlHeld,
+            int privateHeld,
+            int sharedHeld,
+            int untrustedHeld,
+            int lifecycleHeld,
+            long deniedCapacity,
+            long deniedReserveProtection) {
+        Snapshot {
+            if (maximum < Domain.values().length || maximum > 256
+                    || totalHeld < 0 || totalHeld > maximum
+                    || free != maximum - totalHeld
+                    || controlHeld < 0 || privateHeld < 0 || sharedHeld < 0
+                    || untrustedHeld < 0 || lifecycleHeld < 0
+                    || (long) controlHeld + privateHeld + sharedHeld
+                            + untrustedHeld + lifecycleHeld != totalHeld
+                    || deniedCapacity < 0 || deniedReserveProtection < 0) {
+                throw new IllegalArgumentException("invalid physical carrier permit snapshot");
+            }
+        }
+    }
+
     private final int maximum;
     private final EnumMap<Domain, Integer> held = new EnumMap<>(Domain.class);
     private int total;
+    private long deniedCapacity;
+    private long deniedReserveProtection;
 
     OresCarrierPermitPool(int maximum) {
         if (maximum < Domain.values().length || maximum > 256)
@@ -41,7 +68,10 @@ final class OresCarrierPermitPool {
 
     synchronized Permit tryAcquire(Domain domain) {
         Objects.requireNonNull(domain, "domain");
-        if (total >= maximum) return null;
+        if (total >= maximum) {
+            deniedCapacity = saturatingIncrement(deniedCapacity);
+            return null;
+        }
 
         int current = held.get(domain);
         if (current >= 1) {
@@ -52,7 +82,10 @@ final class OresCarrierPermitPool {
                 if (other == domain) count++;
                 if (count < 1) unmetAfter++;
             }
-            if (freeAfter < unmetAfter) return null;
+            if (freeAfter < unmetAfter) {
+                deniedReserveProtection = saturatingIncrement(deniedReserveProtection);
+                return null;
+            }
         }
 
         held.put(domain, current + 1);
@@ -83,6 +116,24 @@ final class OresCarrierPermitPool {
             permits[i] = permit;
         }
         return permits;
+    }
+
+    synchronized Snapshot snapshot() {
+        return new Snapshot(
+                maximum,
+                total,
+                maximum - total,
+                held.get(Domain.CONTROL),
+                held.get(Domain.PRIVATE),
+                held.get(Domain.SHARED),
+                held.get(Domain.UNTRUSTED),
+                held.get(Domain.LIFECYCLE),
+                deniedCapacity,
+                deniedReserveProtection);
+    }
+
+    private static long saturatingIncrement(long value) {
+        return value == Long.MAX_VALUE ? Long.MAX_VALUE : value + 1L;
     }
 
     private synchronized void release(Domain domain) {
