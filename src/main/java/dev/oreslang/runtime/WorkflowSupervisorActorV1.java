@@ -14,7 +14,8 @@ public final class WorkflowSupervisorActorV1 {
             String databasePath,
             String runId,
             WorkflowSupervisorPolicyV1.Policy policy,
-            long startedAtMillis) implements Message {
+            long startedAtMillis,
+            String workflowDatabasePath) implements Message {
         public Configure {
             databasePath = requireText(databasePath, "databasePath");
             runId = requireText(runId, "runId");
@@ -23,6 +24,24 @@ public final class WorkflowSupervisorActorV1 {
                 throw new IllegalArgumentException(
                         "startedAtMillis cannot be negative");
             }
+            if (workflowDatabasePath != null) {
+                workflowDatabasePath = requireText(
+                        workflowDatabasePath,
+                        "workflowDatabasePath");
+            }
+        }
+
+        public Configure(
+                String databasePath,
+                String runId,
+                WorkflowSupervisorPolicyV1.Policy policy,
+                long startedAtMillis) {
+            this(
+                    databasePath,
+                    runId,
+                    policy,
+                    startedAtMillis,
+                    null);
         }
     }
 
@@ -138,6 +157,7 @@ public final class WorkflowSupervisorActorV1 {
     private static final class Behavior
             implements ActorRuntime.Behavior<Object> {
         private SqliteWorkflowSupervisorLedgerV1 ledger;
+        private SqliteWorkflowJournalV1 workflowStore;
         private String runId;
 
         @Override
@@ -157,11 +177,37 @@ public final class WorkflowSupervisorActorV1 {
                                 configure.runId(),
                                 configure.policy(),
                                 configure.startedAtMillis());
-                this.ledger = opened;
-                this.runId = configure.runId();
-                emit(
-                        context,
-                        new Ready(runId, ledger.usage()));
+                SqliteWorkflowJournalV1 workflowOpened = null;
+                boolean accepted = false;
+                try {
+                    if (configure.workflowDatabasePath() != null) {
+                        workflowOpened = SqliteWorkflowJournalV1.open(
+                                Path.of(configure.workflowDatabasePath()));
+                        WorkflowJournalV1.StoreSnapshot snapshot =
+                                workflowOpened.snapshot();
+                        if (snapshot.runId() != null
+                                && !configure.runId().equals(
+                                        snapshot.runId())) {
+                            throw new IllegalStateException(
+                                    "supervisor workflow database run id "
+                                            + "does not match configuration");
+                        }
+                    }
+                    this.ledger = opened;
+                    this.workflowStore = workflowOpened;
+                    this.runId = configure.runId();
+                    accepted = true;
+                    emit(
+                            context,
+                            new Ready(runId, ledger.usage()));
+                } finally {
+                    if (!accepted) {
+                        opened.close();
+                        if (workflowOpened != null) {
+                            workflowOpened.close();
+                        }
+                    }
+                }
                 return;
             }
 
@@ -176,7 +222,10 @@ public final class WorkflowSupervisorActorV1 {
                                         admit.nowMillis(),
                                         admit.additionalModelTokens(),
                                         admit.additionalSpendMicros(),
-                                        admit.currentAmbiguousEffects(),
+                                        workflowStore == null
+                                                ? admit.currentAmbiguousEffects()
+                                                : workflowStore.snapshot()
+                                                        .ambiguousEffects(),
                                         admit.protectedWrite())));
                 return;
             }
@@ -199,9 +248,32 @@ public final class WorkflowSupervisorActorV1 {
             if (message instanceof Shutdown) {
                 emit(context, new Stopping(runId));
                 SqliteWorkflowSupervisorLedgerV1 closing = ledger;
+                SqliteWorkflowJournalV1 closingWorkflow =
+                        workflowStore;
                 ledger = null;
-                context.runtime().endCurrentActorWithCleanup(
-                        closing::close);
+                workflowStore = null;
+                context.runtime().endCurrentActorWithCleanup(() -> {
+                    RuntimeException failure = null;
+                    try {
+                        closing.close();
+                    } catch (RuntimeException e) {
+                        failure = e;
+                    }
+                    if (closingWorkflow != null) {
+                        try {
+                            closingWorkflow.close();
+                        } catch (RuntimeException e) {
+                            if (failure == null) {
+                                failure = e;
+                            } else {
+                                failure.addSuppressed(e);
+                            }
+                        }
+                    }
+                    if (failure != null) {
+                        throw failure;
+                    }
+                });
                 return;
             }
 
@@ -232,7 +304,9 @@ public final class WorkflowSupervisorActorV1 {
                     "databasePath", value.databasePath(),
                     "runId", value.runId(),
                     "policy", encodePolicy(value.policy()),
-                    "startedAtMillis", value.startedAtMillis());
+                    "startedAtMillis", value.startedAtMillis(),
+                    "workflowDatabasePath",
+                            value.workflowDatabasePath());
         }
         if (message instanceof Admit value) {
             return WorkflowActorWireV1.map(
@@ -272,7 +346,9 @@ public final class WorkflowSupervisorActorV1 {
                     WorkflowActorWireV1.string(map, "runId"),
                     decodePolicy(map.get("policy")),
                     WorkflowActorWireV1.longValue(
-                            map, "startedAtMillis"));
+                            map, "startedAtMillis"),
+                    WorkflowActorWireV1.nullableString(
+                            map, "workflowDatabasePath"));
             case "admit" -> new Admit(
                     WorkflowActivityProtocolV1.Kind.valueOf(
                             WorkflowActorWireV1.string(
