@@ -1799,6 +1799,7 @@ public final class OwnershipChecker {
         boolean query = member.member().equals("is_some") || member.member().equals("is_none")
                 || member.member().equals("is_ok") || member.member().equals("is_err");
         boolean extracting = member.member().equals("unwrap") || member.member().equals("unwrap_safe")
+                || member.member().equals("unwrap_all") || member.member().equals("flatten")
                 || member.member().equals("expect") || member.member().equals("unwrap_or");
         if (!query && !extracting) return null;
 
@@ -1808,6 +1809,7 @@ public final class OwnershipChecker {
         boolean option = receiverType.name().equals("Option") && receiverType.arguments().size() == 1;
         boolean result = receiverType.name().equals("Result") && receiverType.arguments().size() == 2;
         if (!option && !result) return null;
+        if (member.member().equals("flatten") && !option) return null;
 
         if (query) {
             for (Ast.Expr argument : arguments) checkExpr(argument, scope, true);
@@ -1823,6 +1825,23 @@ public final class OwnershipChecker {
         if (okType.isBorrow()) {
             throw error(member.member()
                     + " cannot extract a borrow from an owned Option/Result until explicit lifetime parameters are supported");
+        }
+
+        if (member.member().equals("unwrap_all")) {
+            // Every nested Option is consumed by extraction; do not return an
+            // intermediate wrapper or permit a borrowed leaf to escape.
+            while (okType.name().equals("Option") && okType.arguments().size() == 1) {
+                okType = okType.arguments().getFirst();
+            }
+            if (okType.isBorrow()) {
+                throw error("unwrap_all cannot extract a borrow from an owned nested Option");
+            }
+        }
+
+        if (member.member().equals("flatten")) {
+            if (!okType.name().equals("Option") || okType.arguments().size() != 1) {
+                throw error("Option.flatten requires Option<Option<T>>");
+            }
         }
 
         if (member.member().equals("unwrap_or") && containsMutexGuardType(okType)) {
