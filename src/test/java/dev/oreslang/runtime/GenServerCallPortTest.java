@@ -117,6 +117,36 @@ final class GenServerCallPortTest {
         assertThrows(IllegalStateException.class, () -> port.register(actor(1)));
     }
 
+    @Test void actorFailureAndReplyRacesHaveExactlyOneWinner() throws Exception {
+        for (int i = 0; i < 128; i++) {
+            var port = new GenServerCallPort<Integer>(1);
+            var call = port.register(actor(1));
+            CountDownLatch ready = new CountDownLatch(1);
+            AtomicInteger wins = new AtomicInteger();
+            try (var executor = Executors.newFixedThreadPool(2)) {
+                var sender = executor.submit(() -> {
+                    ready.await();
+                    if (port.reply(call.ticket(), actor(1), 1)) wins.incrementAndGet();
+                    return null;
+                });
+                var crash = executor.submit(() -> {
+                    ready.await();
+                    if (port.failActor(actor(1), new IllegalStateException("crash")) == 1) {
+                        wins.incrementAndGet();
+                    }
+                    return null;
+                });
+                ready.countDown();
+                sender.get();
+                crash.get();
+            }
+            assertEquals(1, wins.get());
+            assertTrue(call.future().isDone());
+            assertEquals(0, port.pendingCount());
+            assertFalse(port.reply(call.ticket(), actor(1), 9));
+        }
+    }
+
     @Test void replyCancellationRacesHaveExactlyOneWinner() throws Exception {
         for (int i = 0; i < 250; i++) {
             var port = new GenServerCallPort<Integer>(1);
