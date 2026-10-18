@@ -61,7 +61,10 @@ def gh_api(route, method="GET", payload=None):
 
 def checked_repo(repository):
     result = gh_api("repos/" + repository)
-    if (not isinstance(result.get("full_name"), str)
+    identity = result.get("id")
+    if (not isinstance(identity, int) or isinstance(identity, bool)
+            or identity <= 0
+            or not isinstance(result.get("full_name"), str)
             or result["full_name"].casefold() != repository.casefold()
             or result.get("visibility") != "private"
             or result.get("private") is not True):
@@ -359,6 +362,7 @@ def publish(repository, source, branch, trusted_root):
     if git_tree_digest(files) != expected_source_tree:
         raise Denied("collected source does not match committed Git tree")
     base = checked_repo(repository)
+    destination_repo_id = base["id"]
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
         raise Denied("destination default branch is invalid")
@@ -369,7 +373,9 @@ def publish(repository, source, branch, trusted_root):
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
-        checked_repo(repository)
+        current = checked_repo(repository)
+        if current["id"] != destination_repo_id:
+            raise Denied("destination repository identity changed during transfer")
 
     elements = []
     for rel, data, mode in files:
