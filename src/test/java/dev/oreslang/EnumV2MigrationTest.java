@@ -79,6 +79,22 @@ final class EnumV2MigrationTest {
     }
 
     @Test
+    void rejectReadonlyRecordOwnershipDowngradeAndMalformedRecordShape() {
+        Ast.TypeRef readonly = Ast.TypeRef.readonlyRecordType(
+                Map.of("delta", Ast.TypeRef.simple("int")));
+        assertThrows(IllegalArgumentException.class, () ->
+                new EnumV2Migration.LegacyVariant("A", readonly, 1));
+        Ast.EnumDecl modern = new Ast.EnumDecl("E", Ast.Visibility.PUBLIC,
+                List.of(new Ast.EnumCase("A", readonly, 1)));
+        assertThrows(IllegalArgumentException.class,
+                () -> EnumV2Migration.toLegacyRecordSubset(modern));
+        Ast.TypeRef forged = new Ast.TypeRef("$record$",
+                List.of(Ast.TypeRef.simple("malformed")), false);
+        assertThrows(IllegalArgumentException.class, () ->
+                new EnumV2Migration.LegacyVariant("A", forged, 1));
+    }
+
+    @Test
     void payloadAndVisibilityDriftInvalidateDescriptorEquivalence() {
         var old = new EnumV2Migration.LegacyEnum(
                 "Event", Ast.Visibility.PUBLIC, List.of(
