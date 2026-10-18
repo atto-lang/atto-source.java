@@ -402,6 +402,14 @@ public final class LinkedProgramRunner {
                 continue;
             }
 
+            if (CoreLibrarySources.isFreestandingCoreImport(imported.path())) {
+                String targetId = CoreLibrarySources.freestandingCoreUnitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectFreestandingCoreImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+                continue;
+            }
+
             if (CoreLibrarySources.isReservedFreestandingImport(imported.path())) {
                 throw new IllegalArgumentException(
                         "reserved freestanding library import '" + imported.path()
@@ -434,6 +442,51 @@ public final class LinkedProgramRunner {
         }
     }
 
+
+    /**
+     * Collects the exact pinned core/* registry. This is a compiler-owned
+     * source identity proof for hosted compilation, NOT no-OS codegen proof.
+     * Freestanding build profiles remain rejected before this method.
+     */
+    private static void collectFreestandingCoreImportClosure(
+            String importPath,
+            Map<String, MixedSourceUnit> units,
+            Map<String, Map<String, String>> importResolutions,
+            SourceAdmissionBudget budget,
+            int depth) throws IOException {
+        String id = CoreLibrarySources.freestandingCoreUnitId(importPath);
+        if (units.containsKey(id)) return;
+        budget.checkCanAdmitUnit(depth);
+
+        String source = CoreLibrarySources.freestandingCoreSource(importPath);
+        budget.admit(source.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, depth);
+        MixedSourceUnit mixed = MixedSourceUnit.parse(
+                id, CoreLibrarySources.freestandingCoreFileName(importPath), source);
+        if (!mixed.hasOresSource() || mixed.hasJavaSource()) {
+            throw new SecurityException("core/* must be pure Oreslang source: " + importPath);
+        }
+
+        Ast.Program program = Parser.parse(mixed.oresSource());
+        for (Ast.ImportDecl imported : program.imports()) {
+            ImportRules.validate(imported);
+            if (!CoreLibrarySources.isFreestandingCoreImport(imported.path())) {
+                throw new SecurityException("core/* cannot import higher-layer, Java or project modules: "
+                        + importPath + " -> " + imported.path());
+            }
+            // A canonical import path may only resolve to the exact closed
+            // compiler-owned registry: never to any project source.
+            CoreLibrarySources.freestandingCoreUnitId(imported.path());
+            CoreLibrarySources.freestandingCoreSource(imported.path());
+        }
+
+        units.put(id, mixed);
+        for (Ast.ImportDecl imported : program.imports()) {
+            String dependencyId = CoreLibrarySources.freestandingCoreUnitId(imported.path());
+            recordImportResolution(importResolutions, id, imported.path(), dependencyId);
+            collectFreestandingCoreImportClosure(imported.path(), units, importResolutions,
+                    budget, depth + 1);
+        }
+    }
 
     /**
      * Collects only compiler-owned Oreslang sources under the reserved std/
