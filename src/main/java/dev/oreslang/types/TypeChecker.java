@@ -1193,6 +1193,27 @@ public final class TypeChecker {
         // child to declare an explicit local override/hide for that slot.
         effectiveCallableTargets(klass, new LinkedHashSet<>());
 
+        if (klass.actorKind() != Ast.ActorKind.NONE && !klass.staticContracts().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "actor '" + klass.name()
+                            + "' cannot implement static class contracts; actor authority is mailbox-scoped");
+        }
+
+        Set<String> localStaticFieldNames = new LinkedHashSet<>();
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.isStatic() && !localStaticFieldNames.add(field.name())) {
+                throw new IllegalArgumentException(
+                        "duplicate static field '" + klass.name() + "." + field.name() + "'");
+            }
+        }
+        for (String name : localStaticFieldNames) {
+            if (!findStaticFunctionsByName(klass, name, new LinkedHashSet<>()).isEmpty()) {
+                throw new IllegalArgumentException(
+                        "class static member '" + klass.name() + "." + name
+                                + "' cannot be both a field and a static function");
+            }
+        }
+
         // Declaration-site initialization may read constructor arguments in
         // the declaring class. Unlike constructor-body assignment, the
         // initialized final slot becomes immutable before any body executes.
