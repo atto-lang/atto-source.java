@@ -238,6 +238,60 @@ public final class ActorPipelineRouteSessionSmoke {
         siblings.complete(sharedRoot);
         check(siblings.outstanding() == 0, "sibling return rollback leaked credits");
 
+        // Failed prepublication send attempts release the exclusive claim,
+        // preserving the route for a later safe retry. Once published, the
+        // same frame cannot be used for a second mailbox envelope.
+        var claimLedger = new ActorPipelineRouteSession(plan, 24, 4);
+        var claimFrame = claimLedger.ingress("source");
+        ActorPipelineRouteSession.claimMailboxAdmission(claimFrame);
+        reject(() -> ActorPipelineRouteSession.claimMailboxAdmission(claimFrame),
+                "concurrent mailbox publishers claimed the same route frame");
+        ActorPipelineRouteSession.abortMailboxAdmission(claimFrame);
+        check(!ActorPipelineRouteSession.wasMailboxPublished(claimFrame),
+                "failed prepublication attempt reported accepted DATA");
+        ActorPipelineRouteSession.claimMailboxAdmission(claimFrame);
+        ActorPipelineRouteSession.markMailboxPublished(claimFrame);
+        reject(() -> ActorPipelineRouteSession.claimMailboxAdmission(claimFrame),
+                "already-published route frame was reused in a second mailbox");
+        ActorPipelineRouteSession.abortMailboxAdmission(claimFrame);
+        check(ActorPipelineRouteSession.wasMailboxPublished(claimFrame),
+                "abort of a published frame erased monotonic publication");
+        claimLedger.complete(claimFrame);
+
+        // Eight concurrent racing host admission attempts MUST grant exactly
+        // one winner until that winner releases its reservation. Do not
+        // require a physical carrier or a dedicated actor to prove CAS.
+        var race = new ActorPipelineRouteSession(plan, 25, 4);
+        var raceFrame = race.ingress("source");
+        var claimReady = new CountDownLatch(8);
+        var claimGo = new CountDownLatch(1);
+        var claimWins = new AtomicInteger();
+        var claimRejected = new AtomicInteger();
+        var claimThreads = new Thread[8];
+        for (int i = 0; i < claimThreads.length; i++) {
+            claimThreads[i] = new Thread(() -> {
+                claimReady.countDown();
+                try {
+                    claimGo.await();
+                    ActorPipelineRouteSession.claimMailboxAdmission(raceFrame);
+                    claimWins.incrementAndGet();
+                } catch (IllegalStateException expected) {
+                    claimRejected.incrementAndGet();
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(error);
+                }
+            });
+            claimThreads[i].start();
+        }
+        claimReady.await();
+        claimGo.countDown();
+        for (var contender : claimThreads) contender.join();
+        check(claimWins.get() == 1 && claimRejected.get() == 7,
+                "route-frame exclusive CAS admitted more than one publisher");
+        ActorPipelineRouteSession.abortMailboxAdmission(raceFrame);
+        race.complete(raceFrame);
+
         // Publication is a monotonic VM fact, distinct from the current
         // active-credit state. A return already enqueued in a real mailbox
         // cannot be relabeled a rejection even after its envelope retires.
@@ -246,6 +300,7 @@ public final class ActorPipelineRouteSessionSmoke {
         var publishedWorker = published.forwardTo(publishedRoot, "worker-a");
         var publishedSink = published.forward(publishedWorker);
         var publishedReply = published.returnToOrigin(publishedSink);
+        ActorPipelineRouteSession.claimMailboxAdmission(publishedReply);
         ActorPipelineRouteSession.markMailboxPublished(publishedReply);
         check(ActorPipelineRouteSession.wasMailboxPublished(publishedReply),
                 "published reply lost monotonic mailbox marker");
