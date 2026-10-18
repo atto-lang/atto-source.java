@@ -2553,7 +2553,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             Ast.SelectArm arm = select.arms().get(selected.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
+            if ((arm.operation() == Ast.ChannelOperation.READ
+                    || arm.operation() == Ast.ChannelOperation.AWAIT)
                     && arm.bindingName() != null) {
                 armEnv.define(arm.bindingName(), selected.value(), arm.bindingKind());
             }
@@ -2614,7 +2615,8 @@ public final class OresEvalRootNode extends RootNode {
                             }
                             Ast.SelectArm arm = select.arms().get(selected.index());
                             Env armEnv = new Env(captured);
-                            if (arm.operation() == Ast.ChannelOperation.READ
+                            if ((arm.operation() == Ast.ChannelOperation.READ
+                                    || arm.operation() == Ast.ChannelOperation.AWAIT)
                                     && arm.bindingName() != null) {
                                 armEnv.define(
                                         arm.bindingName(),
@@ -2741,7 +2743,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             Ast.SelectArm arm = select.arms().get(chosen.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
+            if ((arm.operation() == Ast.ChannelOperation.READ
+                    || arm.operation() == Ast.ChannelOperation.AWAIT)
                     && arm.bindingName() != null) {
                 armEnv.define(arm.bindingName(), chosen.value(), arm.bindingKind());
             }
@@ -5672,7 +5675,8 @@ public final class OresEvalRootNode extends RootNode {
 
             Ast.SelectArm arm = selected.arms().get(result.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
+            if ((arm.operation() == Ast.ChannelOperation.READ
+                    || arm.operation() == Ast.ChannelOperation.AWAIT)
                     && arm.bindingName() != null) {
                 armEnv.define(
                         arm.bindingName(),
@@ -6612,7 +6616,8 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 Ast.SelectArm arm = select.arms().get(result.index());
                 Env armEnv = new Env(env);
-                if (arm.operation() == Ast.ChannelOperation.READ
+                if ((arm.operation() == Ast.ChannelOperation.READ
+                        || arm.operation() == Ast.ChannelOperation.AWAIT)
                         && arm.bindingName() != null) {
                     armEnv.define(arm.bindingName(), result.value(), arm.bindingKind());
                 }
