@@ -91,7 +91,7 @@ public final class EnumCaseSourceBindings {
         public Map<String, EnumTag32Plan> nullaryTagLayouts() { return nullaryTagLayouts; }
 
         /**
-         * Source-AST nullary-literal selector, **offline only**. This is
+         * Source-AST nullary-case and scalar-literal selector, **offline only**. This is
          * intentionally narrower than actual expression resolution: module
          * free-function calls; no imports, method dispatch, parameters,
          * variable aliases, lexical shadowing, captured values or transforms.
@@ -118,19 +118,34 @@ public final class EnumCaseSourceBindings {
             }
             List<Parameter> staticArgs = new ArrayList<>();
             for (Ast.Expr argument : call.arguments()) {
-                if (!(argument instanceof Ast.MemberExpr member)
-                        || !(member.receiver() instanceof Ast.NameExpr sourceOwner)) {
+                if (argument instanceof Ast.MemberExpr member
+                        && member.receiver() instanceof Ast.NameExpr sourceOwner) {
+                    String enumId = key.owner() + "." + sourceOwner.name();
+                    EnumTag32Plan layout = nullaryTagLayouts.get(enumId);
+                    if (layout == null) {
+                        throw new IllegalArgumentException(
+                                "missing certified local nullary AOT case layout");
+                    }
+                    layout.constantTag(member.member()); // no dynamic dispatch
+                    staticArgs.add(Parameter.enumCase(enumId, member.member()));
+                } else if (argument instanceof Ast.LiteralExpr literal) {
+                    // The existing parser produces Long/Double/Boolean/String
+                    // literals. Treating a variable or arbitrary expression
+                    // as such a type would require real checker evidence.
+                    Object value = literal.value();
+                    if (value instanceof Long) staticArgs.add(Parameter.fixed("int"));
+                    else if (value instanceof String) staticArgs.add(Parameter.fixed("string"));
+                    else if (value instanceof Boolean) staticArgs.add(Parameter.fixed("bool"));
+                    else if (value instanceof Double n && Double.isFinite(n)) {
+                        staticArgs.add(Parameter.fixed("float"));
+                    } else {
+                        throw new IllegalArgumentException(
+                                "unsupported or forged scalar literal type");
+                    }
+                } else {
                     throw new IllegalArgumentException(
-                            "offline selector requires direct syntactic nullary enum cases");
+                            "offline selector accepts only direct enum cases or scalar literals");
                 }
-                String enumId = key.owner() + "." + sourceOwner.name();
-                EnumTag32Plan layout = nullaryTagLayouts.get(enumId);
-                if (layout == null) {
-                    throw new IllegalArgumentException(
-                            "missing certified local nullary AOT case layout");
-                }
-                layout.constantTag(member.member()); // case presence; no dynamic dispatch
-                staticArgs.add(Parameter.enumCase(enumId, member.member()));
             }
             Signature chosen = EnumCaseOverloadPolicy.selectStatic(
                     candidates.stream().map(Candidate::signature).toList(),
