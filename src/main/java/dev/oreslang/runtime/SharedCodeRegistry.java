@@ -36,7 +36,61 @@ public final class SharedCodeRegistry {
     private static final SharedCodeRegistry PROCESS = new SharedCodeRegistry();
 
     private final Map<Key, Entry> images = new HashMap<>();
-    private final Set<Key> adversarialShareAllowlist = new HashSet<>();
+    private record ScopedApproval(SharingScope scope, Key image) { }
+    // A tenant's approval MUST NOT permit another supervisor to share its
+    // private/adversarial code merely because module names and bytes match.
+    private final Set<ScopedApproval> adversarialShareAllowlist = new HashSet<>();
+
+    /**
+     * Opaque, supervisor-owned authority for EXACT adversarial code sharing.
+     * This capability cannot be derived from an attacker-controlled module ID,
+     * tenant label or byte hash, and is not exposed to guest values.
+     */
+    public static final class SharingScope implements AutoCloseable {
+        private final SharedCodeRegistry owner;
+        private final IsolatePolicy supervisorPolicy;
+        private boolean closed;
+
+        private SharingScope(SharedCodeRegistry owner, IsolatePolicy supervisorPolicy) {
+            this.owner = owner;
+            this.supervisorPolicy = supervisorPolicy;
+        }
+
+        @Override
+        public void close() {
+            synchronized (owner) {
+                if (closed) return;
+                closed = true;
+                owner.adversarialShareAllowlist.removeIf(grant -> grant.scope() == this);
+            }
+        }
+    }
+
+    public synchronized SharingScope newSupervisorScope(IsolatePolicy policy) {
+        Objects.requireNonNull(policy, "policy");
+        if (policy.adversarial()) {
+            throw new SecurityException("adversarial guest cannot mint a sharing scope");
+        }
+        policy.require(IsolatePolicy.Capability.HOT_CODE_LOAD, "mint code sharing authority");
+        return new SharingScope(this, policy);
+    }
+
+    private void requireSupervisorScope(SharingScope scope, IsolatePolicy policy) {
+        Objects.requireNonNull(scope, "scope");
+        Objects.requireNonNull(policy, "policy");
+        if (scope.owner != this || scope.supervisorPolicy != policy || scope.closed
+                || policy.adversarial()) {
+            throw new SecurityException("code sharing requires a live matching supervisor authority");
+        }
+        policy.require(IsolatePolicy.Capability.HOT_CODE_LOAD, "modify adversarial shared code");
+    }
+
+    private void requireLiveScope(SharingScope scope) {
+        Objects.requireNonNull(scope, "scope");
+        if (scope.owner != this || scope.closed) {
+            throw new SecurityException("code sharing authority is foreign or retired");
+        }
+    }
 
     /** This registry is owned by the supervisor, never exposed to guest code. */
     public static SharedCodeRegistry process() {
@@ -48,39 +102,54 @@ public final class SharedCodeRegistry {
      * adversarial actors. Every code unit/import is approved independently.
      */
     public synchronized void approveForAdversarialSharing(
-            IsolatePolicy supervisorPolicy, String codeUnitId, String sourceText) {
+            SharingScope scope, IsolatePolicy supervisorPolicy,
+            String codeUnitId, String sourceText) {
         requireIdentity(codeUnitId, sourceText);
-        Objects.requireNonNull(supervisorPolicy, "supervisorPolicy");
-        if (supervisorPolicy.adversarial()) {
-            throw new SecurityException("adversarial policy cannot approve shared code");
-        }
-        supervisorPolicy.require(
-                IsolatePolicy.Capability.HOT_CODE_LOAD,
-                "approve adversarial shared code");
+        requireSupervisorScope(scope, supervisorPolicy);
         CapabilityChecker.check(
                 OresCompiler.parseAndTypeCheck(sourceText),
                 IsolatePolicy.untrustedActor());
-        adversarialShareAllowlist.add(new Key(codeUnitId, digest(sourceText)));
+        adversarialShareAllowlist.add(new ScopedApproval(
+                scope, new Key(codeUnitId, digest(sourceText))));
     }
 
     public synchronized void revokeForAdversarialSharing(
-            IsolatePolicy supervisorPolicy, String codeUnitId, String sourceText) {
+            SharingScope scope, IsolatePolicy supervisorPolicy,
+            String codeUnitId, String sourceText) {
         requireIdentity(codeUnitId, sourceText);
-        Objects.requireNonNull(supervisorPolicy, "supervisorPolicy");
-        if (supervisorPolicy.adversarial()) {
-            throw new SecurityException("adversarial policy cannot revoke shared code");
-        }
-        supervisorPolicy.require(
-                IsolatePolicy.Capability.HOT_CODE_LOAD,
-                "revoke adversarial shared code");
-        adversarialShareAllowlist.remove(new Key(codeUnitId, digest(sourceText)));
+        requireSupervisorScope(scope, supervisorPolicy);
+        adversarialShareAllowlist.remove(new ScopedApproval(
+                scope, new Key(codeUnitId, digest(sourceText))));
     }
 
     public synchronized boolean approvedForAdversarialSharing(
-            String codeUnitId, String sourceText) {
+            SharingScope scope, String codeUnitId, String sourceText) {
+        requireLiveScope(scope);
         requireIdentity(codeUnitId, sourceText);
         return adversarialShareAllowlist.contains(
-                new Key(codeUnitId, digest(sourceText)));
+                new ScopedApproval(scope, new Key(codeUnitId, digest(sourceText))));
+    }
+
+    /**
+     * Legacy unscoped APIs fail closed. Keeping them as explicit denials avoids
+     * a silent security regression in previously compiled integration callers.
+     */
+    @Deprecated
+    public void approveForAdversarialSharing(
+            IsolatePolicy supervisorPolicy, String codeUnitId, String sourceText) {
+        throw new SecurityException("explicit supervisor sharing scope required");
+    }
+
+    @Deprecated
+    public void revokeForAdversarialSharing(
+            IsolatePolicy supervisorPolicy, String codeUnitId, String sourceText) {
+        throw new SecurityException("explicit supervisor sharing scope required");
+    }
+
+    @Deprecated
+    public boolean approvedForAdversarialSharing(String codeUnitId, String sourceText) {
+        requireIdentity(codeUnitId, sourceText);
+        return false;
     }
 
     private static void requireIdentity(String codeUnitId, String sourceText) {
