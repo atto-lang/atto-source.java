@@ -4042,8 +4042,10 @@ public final class Parser {
      */
     private void rejectActorThreadAnnotation(List<Ast.Annotation> annotations, String target) {
         for (Ast.Annotation annotation : annotations) {
-            if (annotation.name().equals("ActorThreads")) {
-                throw error(previous(), "@ActorThreads is only valid on actor class declarations, not " + target);
+            if (annotation.name().equals("ActorThreads")
+                    || annotation.name().equals("ActorMaxThreads")) {
+                throw error(previous(), "@" + annotation.name()
+                        + " is only valid on actor class declarations, not " + target);
             }
         }
     }
