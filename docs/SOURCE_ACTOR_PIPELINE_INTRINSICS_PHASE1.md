@@ -153,6 +153,19 @@ Supported Java host selection:
   and fails closed if its designated recipient has left the group;
   it deliberately does NOT silently rehash keys on membership changes.
 
+**Hot-path and generation hardening:** the router caches the derived
+graph-bound eligible names by immutable membership snapshot identity.
+Normal steady-state ActorGroup selection does not reallocate that set
+on each message. Ungrouped full fanout retains its existing static
+graph-edge fast path. The session RR cursor is now a preallocated mutable
+integer slot per DAG source, instead of a repeatedly boxed `Integer`;
+a clean or aborted generation change resets cursor values but **never
+clears the selector table**. That fixes an audit-discovered
+missing-cursor failure on the first route after reconfiguration.
+Standalone tests cover group expansion, empty memberships, quiescent
+generation resets, abort resets, stable edge indexes, and one-shot
+credit accounting.
+
 **Guest authority remains distinct:** the current Oreslang source
 `self.forward_all` is still rejected pending a typed per-edge receipt
 ABI; `forwardSelected` is currently a trusted Java host interface,
