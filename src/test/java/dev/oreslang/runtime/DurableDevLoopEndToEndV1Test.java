@@ -105,9 +105,10 @@ final class DurableDevLoopEndToEndV1Test {
             assertInstanceOf(
                     DurableDevLoopV1.RequestCode.class,
                     code1.command());
-            admit(
+            reserve(
                     supervisor,
                     supervisorOut,
+                    code1,
                     WorkflowActivityProtocolV1.Kind.CODING,
                     210L,
                     1_000L,
@@ -119,6 +120,12 @@ final class DurableDevLoopEndToEndV1Test {
                     code1,
                     "receipt://code/1",
                     code1Event);
+            settle(
+                    supervisor,
+                    supervisorOut,
+                    code1,
+                    900L,
+                    90_000L);
             completeAndDeliver(
                     workflow,
                     workflowOut,
@@ -136,9 +143,10 @@ final class DurableDevLoopEndToEndV1Test {
             assertInstanceOf(
                     DurableDevLoopV1.PushCode.class,
                     push1.command());
-            admit(
+            reserve(
                     supervisor,
                     supervisorOut,
+                    push1,
                     WorkflowActivityProtocolV1.Kind.GIT,
                     240L,
                     0L,
@@ -150,6 +158,12 @@ final class DurableDevLoopEndToEndV1Test {
                     push1,
                     "github://push/1",
                     push1Event);
+            settle(
+                    supervisor,
+                    supervisorOut,
+                    push1,
+                    0L,
+                    0L);
             completeAndDeliver(
                     workflow,
                     workflowOut,
@@ -165,9 +179,10 @@ final class DurableDevLoopEndToEndV1Test {
             assertInstanceOf(
                     DurableDevLoopV1.AwaitCi.class,
                     ci1.command());
-            admit(
+            reserve(
                     supervisor,
                     supervisorOut,
+                    ci1,
                     WorkflowActivityProtocolV1.Kind.CI,
                     270L,
                     0L,
@@ -208,6 +223,12 @@ final class DurableDevLoopEndToEndV1Test {
                             ci1.claimToken(),
                             "github://workflow/1001",
                             ci1Matched.event()));
+            settle(
+                    supervisor,
+                    supervisorOut,
+                    ci1,
+                    0L,
+                    0L);
             completeAndDeliver(
                     workflow,
                     workflowOut,
@@ -223,9 +244,10 @@ final class DurableDevLoopEndToEndV1Test {
             assertInstanceOf(
                     DurableDevLoopV1.CreateBugReport.class,
                     bug1.command());
-            admit(
+            reserve(
                     supervisor,
                     supervisorOut,
+                    bug1,
                     WorkflowActivityProtocolV1.Kind.BUG_REPORT,
                     300L,
                     500L,
@@ -240,6 +262,12 @@ final class DurableDevLoopEndToEndV1Test {
                     bug1,
                     "github://issues/42",
                     bug1Event);
+            settle(
+                    supervisor,
+                    supervisorOut,
+                    bug1,
+                    400L,
+                    40_000L);
             completeAndDeliver(
                     workflow,
                     workflowOut,
@@ -252,6 +280,14 @@ final class DurableDevLoopEndToEndV1Test {
 
             // Iteration 2 code + push.
             var code2 = claim(workflow, workflowOut, "coding-worker", 320L);
+            reserve(
+                    supervisor,
+                    supervisorOut,
+                    code2,
+                    WorkflowActivityProtocolV1.Kind.CODING,
+                    325L,
+                    1_000L,
+                    100_000L);
             var code2Event = new DurableDevLoopV1.CodeChanged(
                     2, "patch://iteration-2");
             executeActivity(
@@ -259,6 +295,12 @@ final class DurableDevLoopEndToEndV1Test {
                     code2,
                     "receipt://code/2",
                     code2Event);
+            settle(
+                    supervisor,
+                    supervisorOut,
+                    code2,
+                    800L,
+                    80_000L);
             completeAndDeliver(
                     workflow,
                     workflowOut,
@@ -272,6 +314,14 @@ final class DurableDevLoopEndToEndV1Test {
             String commit2 = sha('c');
             String tree2 = sha('d');
             var push2 = claim(workflow, workflowOut, "git-worker", 340L);
+            reserve(
+                    supervisor,
+                    supervisorOut,
+                    push2,
+                    WorkflowActivityProtocolV1.Kind.GIT,
+                    345L,
+                    0L,
+                    0L);
             var push2Event = new DurableDevLoopV1.PushRecorded(
                     2, commit2);
             executeActivity(
@@ -279,6 +329,12 @@ final class DurableDevLoopEndToEndV1Test {
                     push2,
                     "github://push/2",
                     push2Event);
+            settle(
+                    supervisor,
+                    supervisorOut,
+                    push2,
+                    0L,
+                    0L);
             completeAndDeliver(
                     workflow,
                     workflowOut,
@@ -303,6 +359,14 @@ final class DurableDevLoopEndToEndV1Test {
             nextWebhook(webhookOut);
 
             var ci2 = claim(workflow, workflowOut, "ci-worker", 360L);
+            reserve(
+                    supervisor,
+                    supervisorOut,
+                    ci2,
+                    WorkflowActivityProtocolV1.Kind.CI,
+                    365L,
+                    0L,
+                    0L);
             dispatch(ci, ci2);
             byte[] successBody = workflowRunBody(
                     "org/repo",
@@ -328,6 +392,12 @@ final class DurableDevLoopEndToEndV1Test {
                             ci2.claimToken(),
                             "github://workflow/1002",
                             ci2Matched.event()));
+            settle(
+                    supervisor,
+                    supervisorOut,
+                    ci2,
+                    0L,
+                    0L);
             completeAndDeliver(
                     workflow,
                     workflowOut,
@@ -340,9 +410,10 @@ final class DurableDevLoopEndToEndV1Test {
 
             // Evaluation passes.
             var eval2 = claim(workflow, workflowOut, "evaluation-worker", 380L);
-            admit(
+            reserve(
                     supervisor,
                     supervisorOut,
+                    eval2,
                     WorkflowActivityProtocolV1.Kind.EVALUATION,
                     390L,
                     500L,
@@ -354,6 +425,12 @@ final class DurableDevLoopEndToEndV1Test {
                     eval2,
                     "receipt://evaluation/2",
                     pass);
+            settle(
+                    supervisor,
+                    supervisorOut,
+                    eval2,
+                    450L,
+                    45_000L);
             completeAndDeliver(
                     workflow,
                     workflowOut,
@@ -367,6 +444,14 @@ final class DurableDevLoopEndToEndV1Test {
             // Approval is itself a durable activity/effect.
             var approve = claim(
                     workflow, workflowOut, "approval-worker", 410L);
+            reserve(
+                    supervisor,
+                    supervisorOut,
+                    approve,
+                    WorkflowActivityProtocolV1.Kind.APPROVAL,
+                    415L,
+                    0L,
+                    0L);
             var approved =
                     new DurableDevLoopV1.ApprovalGranted(commit2);
             executeActivity(
@@ -374,6 +459,12 @@ final class DurableDevLoopEndToEndV1Test {
                     approve,
                     "approval://human/7",
                     approved);
+            settle(
+                    supervisor,
+                    supervisorOut,
+                    approve,
+                    0L,
+                    0L);
             completeAndDeliver(
                     workflow,
                     workflowOut,
@@ -659,14 +750,16 @@ final class DurableDevLoopEndToEndV1Test {
                 nextActivity(actor.outputs()));
     }
 
-    private static void admit(
+    private static void reserve(
             WorkflowSupervisorActorV1.Ref supervisor,
             ActorRuntime.ActorOutputStream<Object> outputs,
+            WorkflowJournalV1.Claim claim,
             WorkflowActivityProtocolV1.Kind kind,
             long now,
             long tokens,
             long spend) throws Exception {
-        supervisor.send(new WorkflowSupervisorActorV1.Admit(
+        supervisor.send(new WorkflowSupervisorActorV1.Reserve(
+                claim.effectKey(),
                 kind,
                 now,
                 tokens,
@@ -679,6 +772,22 @@ final class DurableDevLoopEndToEndV1Test {
         assertEquals(
                 WorkflowSupervisorPolicyV1.Decision.ALLOW,
                 result.admission().decision());
+    }
+
+    private static void settle(
+            WorkflowSupervisorActorV1.Ref supervisor,
+            ActorRuntime.ActorOutputStream<Object> outputs,
+            WorkflowJournalV1.Claim claim,
+            long actualTokens,
+            long actualSpend) throws Exception {
+        supervisor.send(new WorkflowSupervisorActorV1.SettleUsage(
+                claim.effectKey(),
+                actualTokens,
+                actualSpend));
+        var result = assertInstanceOf(
+                WorkflowSupervisorActorV1.UsagePublished.class,
+                nextSupervisor(outputs));
+        assertFalse(result.usage().cancelled());
     }
 
     private static void shutdown(
