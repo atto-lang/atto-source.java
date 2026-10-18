@@ -4,11 +4,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -83,6 +81,16 @@ final class NativeActorIpcTransportV1Test {
                 assertArrayEquals(
                         control,
                         transport.readControlFrame(2_000));
+
+                long deadline = System.nanoTime()
+                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+                while (transport.isAlive()
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(5);
+                }
+                assertFalse(
+                        transport.isAlive(),
+                        "pidfd liveness must observe worker exit");
             } finally {
                 Arrays.fill(exactExecutable, (byte) 0);
                 Arrays.fill(bootstrap, (byte) 0);
@@ -330,8 +338,7 @@ final class NativeActorIpcTransportV1Test {
                         if (write_frame(7, control, control_len) != 0) return 26;
                     }
                     free(control);
-
-                    for (;;) pause();
+                    return 0;
                 }
                 """;
     }
