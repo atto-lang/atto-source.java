@@ -1721,6 +1721,11 @@ public final class Parser {
             match(SEMICOLON);
             return statement;
         }
+        if (check(NB) && isContextualIdentifierAt(current + 1, "task")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 2).type() == LBRACE) {
+            throw error(peek(), "bare 'nb task { ... }' must be bound to Task<T>; use 'do task { ... }' to discard its handle");
+        }
         if (check(NB) && checkNext(LBRACE)) {
             throw error(peek(), "bare 'nb { ... }' must be bound to Task<T>; use 'do task { ... }' to discard its handle");
         }
@@ -3305,8 +3310,14 @@ public final class Parser {
             if (match(READCH)) return parseChannelOperation(Ast.ChannelOperation.READ, Ast.WaitMode.NONBLOCKING);
             if (match(WRITECH)) return parseChannelOperation(Ast.ChannelOperation.WRITE, Ast.WaitMode.NONBLOCKING);
             if (match(SELECT)) return parseDynamicSelect(Ast.WaitMode.NONBLOCKING);
+            // 'nb task { ... }' is a redundant but valid spelling of one
+            // Task launch, never an additional scheduling or cancellation tier.
+            if (isContextualIdentifier("task") && checkNext(LBRACE)) {
+                advance();
+                return new Ast.TaskExpr(parseBlock());
+            }
             if (check(LBRACE)) return new Ast.TaskExpr(parseBlock());
-            throw error(previous(), "'nb' must prefix a task block, readch, writech, select, or cb writech");
+            throw error(previous(), "'nb' must prefix a task block, task {}, readch, writech, select, or cb writech");
         }
 
         if (check(TRY) && current + 1 < tokens.size()) {
