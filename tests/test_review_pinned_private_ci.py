@@ -442,6 +442,63 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                 f"{MOD.CARRIER_REPO} {MOD.CARRIER_REPO_ID}\n"
                 f"other/repo {MOD.CARRIER_REPO_ID}\n")))
 
+    def test_canonical_destination_ledger_rejects_integer_aliases(self):
+        for alias in ("+1357615104", "01357615104", "1_357_615_104",
+                      "１３５７６１５１０４", "1357615104.0", "1357615104e0"):
+            with self.subTest(alias=alias):
+                path = self.write("destination-alias.txt",
+                                  f"{MOD.CARRIER_REPO} {alias}\n")
+                with self.assertRaises(MOD.Denied):
+                    MOD.parse_destination_entry(path)
+
+    def test_canonical_snapshot_ledger_rejects_integer_aliases(self):
+        for alias in ("+1357615104", "01357615104", "1_357_615_104",
+                      "１３５７６１５１０４", "1357615104.0", "1357615104e0"):
+            with self.subTest(alias=alias):
+                path = self.write("snapshot-alias.txt",
+                                  f"{SOURCE_COMMIT} {SOURCE_TREE} {alias}\n")
+                with self.assertRaises(MOD.Denied):
+                    MOD.parse_snapshot_entry(path)
+
+    def test_destination_ledger_does_not_normalize_whitespace(self):
+        canonical = f"{MOD.CARRIER_REPO} {MOD.CARRIER_REPO_ID}"
+        for row in (" " + canonical, canonical + " ", "\t" + canonical,
+                    canonical.replace(" ", "\t"), canonical.replace(" ", "  "),
+                    canonical + "\t", "   # comment"):
+            with self.subTest(row=row):
+                path = self.write("destination-whitespace.txt", row + "\n")
+                with self.assertRaises(MOD.Denied):
+                    MOD.parse_destination_entry(path)
+
+    def test_snapshot_ledger_does_not_normalize_whitespace(self):
+        canonical = f"{SOURCE_COMMIT} {SOURCE_TREE} {MOD.CARRIER_REPO_ID}"
+        for row in (" " + canonical, canonical + " ", "\t" + canonical,
+                    canonical.replace(" ", "\t"), canonical.replace(" ", "  "),
+                    canonical + "\t", "   # comment"):
+            with self.subTest(row=row):
+                path = self.write("snapshot-whitespace.txt", row + "\n")
+                with self.assertRaises(MOD.Denied):
+                    MOD.parse_snapshot_entry(path)
+
+    def test_blank_whitespace_line_cannot_hide_in_approved_ledger(self):
+        for parser, row in (
+                (MOD.parse_destination_entry, f"{MOD.CARRIER_REPO} {MOD.CARRIER_REPO_ID}"),
+                (MOD.parse_snapshot_entry,
+                 f"{SOURCE_COMMIT} {SOURCE_TREE} {MOD.CARRIER_REPO_ID}")):
+            with self.subTest(parser=parser.__name__):
+                path = self.write("ledger-whitespace-line.txt", row + "\n \n")
+                with self.assertRaises(MOD.Denied):
+                    parser(path)
+
+    def test_repository_metadata_id_must_be_real_integer(self):
+        for forged in (float(MOD.CARRIER_REPO_ID), str(MOD.CARRIER_REPO_ID)):
+            with self.subTest(forged=forged):
+                self.assertDenied(lambda fx: fx.__setitem__(
+                    "destination_repo", self.write("destination-forged-type.json", {
+                        "id": forged, "full_name": MOD.CARRIER_REPO,
+                        "private": True, "archived": False, "disabled": False
+                    })))
+
     def test_wrong_destination_id_denied(self):
         def mutate(fx):
             d = {"id": 1, "full_name": MOD.CARRIER_REPO, "private": True,
