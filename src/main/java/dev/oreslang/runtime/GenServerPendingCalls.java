@@ -46,17 +46,26 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
         }
     }
 
+    /** Closed, payload-free reason for one exact target generation ending. */
+    enum TargetTermination {
+        FAILURE,
+        CANCELLED,
+        QUOTA_EXCEEDED,
+        SHUTDOWN,
+        PROTOCOL
+    }
+
     /** Cause-free projection of one exact target incarnation terminating. */
     static final class GenServerTargetTerminatedException extends RuntimeException {
-        private final String diagnosticType;
+        private final TargetTermination termination;
 
-        private GenServerTargetTerminatedException(String diagnosticType) {
-            super("GenServer target terminated: " + diagnosticType, null, false, false);
-            this.diagnosticType = diagnosticType;
+        private GenServerTargetTerminatedException(TargetTermination termination) {
+            super("GenServer target terminated: " + termination, null, false, false);
+            this.termination = Objects.requireNonNull(termination, "termination");
         }
 
-        String diagnosticType() {
-            return diagnosticType;
+        TargetTermination termination() {
+            return termination;
         }
     }
 
@@ -379,10 +388,9 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
      */
     int failTarget(
             GenServerReplyLedger.Target target,
-            Throwable failure) {
+            TargetTermination termination) {
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(failure, "failure");
-        String diagnosticType = boundedDiagnosticType(failure);
+        Objects.requireNonNull(termination, "termination");
         List<PendingCall<R>> failed = new ArrayList<>();
 
         synchronized (active) {
@@ -400,14 +408,21 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
                     saturatingAdd(targetFailureSettlements, failed.size());
         }
 
+        ActorReliabilityKernel.FaultClass fault = switch (termination) {
+            case FAILURE -> ActorReliabilityKernel.FaultClass.HANDLER_FAILURE;
+            case CANCELLED -> ActorReliabilityKernel.FaultClass.CANCELLED;
+            case QUOTA_EXCEEDED -> ActorReliabilityKernel.FaultClass.WATCHDOG;
+            case SHUTDOWN -> ActorReliabilityKernel.FaultClass.SHUTDOWN;
+            case PROTOCOL -> ActorReliabilityKernel.FaultClass.PROTOCOL;
+        };
         for (PendingCall<R> call : failed) {
             if (!call.future.failFromRuntime(
-                    new GenServerTargetTerminatedException(diagnosticType))) {
+                    new GenServerTargetTerminatedException(termination))) {
                 throw new IllegalStateException(
                         "GenServer target failure won correlation but Future was already terminal");
             }
             record(ActorReliabilityKernel.EventKind.CALL_CLOSED, call.target,
-                    ActorReliabilityKernel.FaultClass.HANDLER_FAILURE, pendingCount());
+                    fault, pendingCount());
         }
         return failed.size();
     }
@@ -547,16 +562,6 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
 
     private boolean owns(PendingCall<R> call) {
         return call != null && call.owner == this;
-    }
-
-    private static String boundedDiagnosticType(Throwable failure) {
-        String raw = failure.getClass().getName();
-        StringBuilder out = new StringBuilder(Math.min(raw.length(), 128));
-        for (int i = 0; i < raw.length() && out.length() < 128; ++i) {
-            char ch = raw.charAt(i);
-            out.append(ch >= 0x20 && ch <= 0x7e ? ch : '?');
-        }
-        return out.length() == 0 ? "unknown" : out.toString();
     }
 
     private void record(
