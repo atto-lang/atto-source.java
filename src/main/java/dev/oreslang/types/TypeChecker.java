@@ -151,7 +151,8 @@ public final class TypeChecker {
         program = AnnotationExpander.expand(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
-        checker.callerRoleContracts = roleIndex;
+        // Bind role metadata to the post-expansion declaration objects.
+        checker.callerRoleContracts = CallerRoleContracts.validate(program);
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
@@ -176,7 +177,8 @@ public final class TypeChecker {
         }
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
-        checker.callerRoleContracts = roleIndex;
+        // Bind role metadata to the post-expansion declaration objects.
+        checker.callerRoleContracts = CallerRoleContracts.validate(program);
         checker.validateImports(program);
         checker.collect(program);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
