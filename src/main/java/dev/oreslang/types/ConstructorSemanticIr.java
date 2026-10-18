@@ -256,6 +256,11 @@ public final class ConstructorSemanticIr {
         CONSTRUCTION_SCOPED,
         ACTOR_LOCAL,
         SHAREABLE,
+        /**
+         * All captured DATA values are independently serializable. This never
+         * means the callable, its code pointer, environment or AnyCallable
+         * erasure may be serialized or admitted to actor DATA.
+         */
         SERIALIZABLE
     }
 
@@ -281,6 +286,19 @@ public final class ConstructorSemanticIr {
 
         public Types.Type erasedCallableTop() {
             return Types.AnyCallable.INSTANCE;
+        }
+
+        /**
+         * Executable callable values are never portable DATA. Capture metadata
+         * may prove properties of referenced data, but cannot mint a network
+         * codec, ActorMessageCodec, Sendable proof or supervisor authority.
+         */
+        public boolean serializableExecutableValue() {
+            return false;
+        }
+
+        public boolean actorDataAdmissible() {
+            return false;
         }
     }
 
