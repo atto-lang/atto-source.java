@@ -8,4 +8,15 @@ define module Observable as
     }
     return;
   }
+
+  // Adapt an existing native pull ReadableStream without adding a pump,
+  // prefetcher, hidden guest thread or broadcast semantics. The stream keeps
+  // its own one-consumer / EOF / backpressure behavior and is touched only
+  // when this iterator is pulled.
+  pub generator fnc from_stream<T>(ReadableStream<T> source): Iterator<T> {
+    for const item of source {
+      yield item;
+    }
+    return;
+  }
 end
