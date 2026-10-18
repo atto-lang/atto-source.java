@@ -53,6 +53,9 @@ final class SharedUntrustedActorSupervisorTest {
             assertThrows(IllegalArgumentException.class,
                     () -> host.spawn(WORKER, "../unsafe", "IsolatedWorker"));
             assertThrows(IllegalArgumentException.class,
+                    () -> host.spawn(String.valueOf((char) 0xD800), "worker", "IsolatedWorker"),
+                    "reject malformed Unicode before constructing the native isolate");
+            assertThrows(IllegalArgumentException.class,
                     () -> host.spawn(WORKER, "worker", "Bad;Actor"));
             assertEquals(0, host.activeActors());
         }
