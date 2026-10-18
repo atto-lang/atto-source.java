@@ -255,6 +255,52 @@ final class LogicalSourceActorCrossContextUpgradeTest {
     }
 
     @Test
+    void timedOutLogicalOutputReadDoesNotStrandHotUpgrade() throws Exception {
+        String v1 = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 1; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { return; }
+                """;
+        String v2 = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 900; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { return; }
+                """;
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("timeout-v1.ores", v1);
+            var second = manager.stageActorGeneration("timeout-v2.ores", v2);
+            try (LogicalSourceActorRouterV1 router =
+                         LogicalSourceActorRouterV1.spawn(
+                                 first, ActorRuntime.ActorKind.SHARED,
+                                 "Counter", WAIT)) {
+                var ref = router.ref();
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> ref.nextOutput(Duration.ofMillis(20)));
+                assertTrue(router.upgradeTo(second, WAIT),
+                        "timed-out output waiter must be cancelled before upgrading");
+                ref.send(41L);
+                assertEquals(42L, next(ref),
+                        "migrated actor must preserve state after output timeout");
+            }
+        }
+    }
+
+    @Test
     void pendingOldOutputReaderBlocksMigrationUntilCancelled() throws Exception {
         String v1 = """
                 define actor Counter as
