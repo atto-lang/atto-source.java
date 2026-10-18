@@ -5,6 +5,7 @@ import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.parser.Token;
 import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.OptionalCallShapeBinder;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
@@ -14,6 +15,50 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
+
+    @Test
+    void preflightRejectsOptionalLambdaInUnusedNestedExpressionBeforeExecution() {
+        Ast.Program parsed = Parser.parse("""
+                pub fnc neverCalled(): void {
+                    const callbacks = [ (|string? hidden| -> hidden) ];
+                    return;
+                }
+                """);
+        IllegalArgumentException preflight = assertThrows(
+                IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(parsed));
+        assertTrue(preflight.getMessage().contains("Option<T> ABI"), preflight::toString);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+        assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(parsed));
+    }
+
+    @Test
+    void syntheticNestedOptionalLambdaAndAnnotationMarkerCannotBypassPreflight() {
+        Ast.TypeRef optional = Ast.TypeRef.omittableFormal(Ast.TypeRef.simple("string"));
+        Ast.LambdaExpr closure = new Ast.LambdaExpr(
+                List.of(new Ast.Param(optional, "label")),
+                new Ast.NameExpr("label"), null);
+        Ast.Expr nested = new Ast.ObjectExpr(List.of(
+                Ast.ObjectField.named("callbacks", new Ast.ListExpr(List.of(closure)))));
+        Ast.Program fieldProgram = new Ast.Program(List.of(
+                new Ast.ModuleDecl("app", List.of(
+                        new Ast.FieldDecl("unused", Ast.Visibility.PRIVATE,
+                                Ast.BindingKind.CONST, Ast.TypeRef.inferred(), nested)))));
+        IllegalArgumentException lambdaFailure = assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(fieldProgram));
+        assertTrue(lambdaFailure.getMessage().contains("Option<T> ABI"),
+                lambdaFailure::toString);
+
+        Ast.Program annotationProgram = new Ast.Program(List.of(
+                new Ast.ModuleDecl("app",
+                        List.of(new Ast.Annotation("Audit", List.of(optional))),
+                        List.of())));
+        IllegalArgumentException annotationFailure = assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(annotationProgram));
+        assertTrue(annotationFailure.getMessage().contains("formal argument slots"),
+                annotationFailure::toString);
+    }
+
     @Test
     void ownershipOnlyAnalysisRejectsOptionalPipeLambdaFormals() {
         Ast.Program parsed = Parser.parse("""
