@@ -523,6 +523,7 @@ public final class ActorRuntime implements AutoCloseable {
             untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
                     dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-");
         } catch (RuntimeException | Error failure) {
+            CoreLog.record(CoreLog.Level.ERROR, CoreLog.ACTOR_DISPATCHER_FAILED, 1L);
             if (privatePool != null) privatePool.shutdownNow();
             if (sharedPool != null) sharedPool.shutdownNow();
             throw failure;
@@ -4670,6 +4671,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (bytes < 0) throw new IllegalArgumentException("shared memory release cannot be negative");
         if (bytes == 0 || closed.get()) return;
         synchronized (memoryBudgetLock) {
+            if (closed.get()) return;
             long current = sharedMemoryBytes.get();
             if (bytes > current) {
                 throw new IllegalStateException(

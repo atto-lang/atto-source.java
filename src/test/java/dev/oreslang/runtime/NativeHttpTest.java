@@ -17,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
     @org.junit.jupiter.api.RepeatedTest(5)
+    @org.junit.jupiter.api.Timeout(30)
     void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
         for (String kind : List.of("actor", "isoactor")) {
             String output = run("""
@@ -64,7 +65,10 @@ class NativeHttpTest {
             assertFalse(output.contains("ACCEPTED"), output);
             assertEquals(7, output.split("stale-rejected", -1).length - 1, output);
             assertEquals(8, output.split("closed-rejected", -1).length - 1, output);
-            // Capture teardown may omit the trailing newline even when all\n            // counters were emitted. Check the final values, not flush timing.\n            assertTrue(output.stripTrailing().endsWith("1\n7\n0"), output);
+            // Supervisor counters may interleave with post-response diagnostics.
+            var numbers = output.lines().filter(line -> line.matches("[0-9]+")).toList();
+            assertEquals(4, numbers.size(), output); // port plus three counters
+            assertEquals(List.of("1", "7", "0"), numbers.subList(1, 4), output);
         }
     }
 
@@ -321,6 +325,7 @@ class NativeHttpTest {
             throws Exception {
         CompletableFuture<Integer> port = new CompletableFuture<>();
         CompletableFuture<Void> diagnosticBarrier = new CompletableFuture<>();
+        CompletableFuture<Void> supervisorFooterBarrier = new CompletableFuture<>();
         ByteArrayOutputStream output = new ByteArrayOutputStream() {
             @Override public synchronized void write(byte[] b, int off, int len) {
                 super.write(b, off, len);
@@ -335,6 +340,10 @@ class NativeHttpTest {
                         && text.split("closed-rejected", -1).length - 1
                                 >= expectedPostResponseDiagnostics) {
                     diagnosticBarrier.complete(null);
+                }
+                if (expectedPostResponseDiagnostics > 0
+                        && text.lines().filter(line -> line.matches("[0-9]+")).count() >= 4) {
+                    supervisorFooterBarrier.complete(null);
                 }
             }
         };
@@ -353,11 +362,30 @@ class NativeHttpTest {
                 // If a duplicate rejection never occurs, the test fails
                 // rather than silently reducing its expected assertion count.
                 if (expectedPostResponseDiagnostics > 0) {
-                    diagnosticBarrier.get(8, TimeUnit.SECONDS);
+                    CompletableFuture.allOf(diagnosticBarrier, supervisorFooterBarrier)
+                            .get(8, TimeUnit.SECONDS);
+                    closeWhenQuiescent(context);
                 }
             } finally { clientWork.cancel(true); }
 
         }
         return output.toString(StandardCharsets.UTF_8);
+    }
+
+    private static void closeWhenQuiescent(Context context) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (true) {
+            try {
+                context.close(false);
+                return;
+            } catch (IllegalStateException busy) {
+                if (busy.getMessage() == null
+                        || !busy.getMessage().contains("currently executing on another thread")
+                        || System.nanoTime() >= deadline) {
+                    throw busy;
+                }
+                Thread.sleep(5);
+            }
+        }
     }
 }
