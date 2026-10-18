@@ -911,3 +911,23 @@ constitute a green executable test suite until real CI executes them.
 
 The stacked PR was merged with the latest parent to pick up checks rejecting
 class/interface/type-alias collisions in the parser-owned candidate preview.
+
+
+## Caller-side scalar witness hardening (2026-10-18)
+
+A scalar declaration/signature preview is not proof that its **caller** is
+type-correct. In a narrow, linear same-module literal-call preview, issuance
+must reject a non-void caller without an explicit reachable return, a bare
+return from a non-void caller, a scalar return contradicting the caller's
+declared result type, a value return from a void caller, and an unrelated
+literal binding with contradictory declared type. The issuer also checks
+caller and selected-callee formal-name uniqueness before making lexical
+type claims. These checks are intentionally scoped to the literal-only
+`CheckedScalarInvocationWitness`; ordinary recursive semantic/ownership
+analysis remains required for all richer expression and control-flow forms.
+
+The resulting witness remains `SHAPE_ONLY`. Neither a locally verified
+callee body nor these caller checks establish complete effects, borrow/move
+authority or the `Option<T>` runtime ABI. `requireExecutable()` continues
+throwing; staged guest calls remain disabled. The committed source regressions
+must not be called passing JUnit tests until a runner executes the exact tree.
