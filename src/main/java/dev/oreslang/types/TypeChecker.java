@@ -1196,6 +1196,7 @@ public final class TypeChecker {
                         + "' cannot be public; expose state through mailbox-dispatched methods");
             }
             Type fieldType = classFieldType(klass, field);
+            requireStorableType(fieldType, "class field '" + klass.name() + "." + field.name() + "'");
             if (field.initializer() != null && field.type() != null) {
                 Ast.ClassDecl previousClassOwner = currentClassOwner;
                 Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
@@ -1596,12 +1597,14 @@ public final class TypeChecker {
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
+        requireStorableType(actual, "module binding '" + field.name() + "'");
         requireMutableReferentCompatible(
                 actual,
                 field.mutableReferent(),
                 "module binding '" + field.name() + "'");
         if (field.type() != null) {
             Type expected = resolve(field.type(), Set.of(), null);
+            requireStorableType(expected, "module binding '" + field.name() + "'");
             requireReadonlyCapabilityPreserved(
                     actual,
                     expected,
@@ -4356,6 +4359,15 @@ public final class TypeChecker {
                         deref(option) instanceof Record record && record.readOnly())) {
             throw new IllegalArgumentException(
                     where + " cannot request mutable access because the value may be a readonly infer struct record");
+        }
+    }
+
+    /** A void completion is not a value. Futures, Options and Results containing void are values. */
+    private static void requireStorableType(Type type, String location) {
+        if (type == Primitive.VOID) {
+            throw new IllegalArgumentException(
+                    location + " cannot have type void: void is a completion, not a storable value; "
+                            + "use Future<void> to track completion or Option<void> to represent presence");
         }
     }
 
@@ -8491,6 +8503,7 @@ public final class TypeChecker {
                 Type type,
                 Ast.BindingKind kind,
                 Set<String> uninitializedFields) {
+            requireStorableType(type, "binding '" + name + "'");
             if (bindings.putIfAbsent(name, new Binding(type, kind, uninitializedFields)) != null) {
                 throw new IllegalArgumentException("duplicate binding '" + name + "'");
             }
@@ -8510,6 +8523,7 @@ public final class TypeChecker {
             return inherited;
         }
         private void replace(String name, Type type, Ast.BindingKind kind) {
+            requireStorableType(type, "binding '" + name + "'");
             if (!bindings.containsKey(name)) throw new IllegalArgumentException("unknown binding '" + name + "'");
             bindings.put(name, new Binding(type, kind, Set.of()));
         }
