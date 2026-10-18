@@ -42,13 +42,28 @@ public final class ActorArtifactV1<T> {
         WASM_MODULE
     }
 
+    public enum CompilerBackend {
+        JAVA_GRAALVM("java-graalvm"),
+        LLVM("llvm");
+
+        private final String manifestId;
+
+        CompilerBackend(String manifestId) {
+            this.manifestId = manifestId;
+        }
+
+        public String manifestId() {
+            return manifestId;
+        }
+    }
+
     /** Values supplied by the authenticated build/manifest pipeline. */
     public record UnsignedReceipt(
             String actorTypeName,
             Ast.ActorKind actorKind,
             Ast.ActorBoundary actorBoundary,
             ArtifactFormat artifactFormat,
-            String compilerBackend,
+            CompilerBackend compilerBackend,
             String compilerVersion,
             String compilerGitCommit,
             String targetTriple,
@@ -66,7 +81,8 @@ public final class ActorArtifactV1<T> {
             actorKind = Objects.requireNonNull(actorKind, "actorKind");
             actorBoundary = Objects.requireNonNull(actorBoundary, "actorBoundary");
             artifactFormat = Objects.requireNonNull(artifactFormat, "artifactFormat");
-            compilerBackend = requireText(compilerBackend, "compilerBackend");
+            compilerBackend =
+                    Objects.requireNonNull(compilerBackend, "compilerBackend");
             compilerVersion = requireText(compilerVersion, "compilerVersion");
             compilerGitCommit = requireGitCommit(compilerGitCommit);
             targetTriple = requireText(targetTriple, "targetTriple");
@@ -94,6 +110,16 @@ public final class ActorArtifactV1<T> {
             if (actorBoundary == Ast.ActorBoundary.LOCAL) {
                 throw new IllegalArgumentException(
                         "ActorArtifactV1 is only for IPC/FFI external boundaries");
+            }
+            if (actorBoundary == Ast.ActorBoundary.IPC
+                    && artifactFormat != ArtifactFormat.NATIVE_EXECUTABLE) {
+                throw new IllegalArgumentException(
+                        "ipc actor artifact v1 must be a native executable");
+            }
+            if (actorBoundary == Ast.ActorBoundary.FFI
+                    && artifactFormat != ArtifactFormat.STATIC_LIBRARY) {
+                throw new IllegalArgumentException(
+                        "ffi actor artifact v1 must be a static library");
             }
             if (actorBoundary == Ast.ActorBoundary.FFI
                     && actorKind == Ast.ActorKind.UNTRUSTED) {
@@ -139,21 +165,35 @@ public final class ActorArtifactV1<T> {
             Ast.ActorKind actorKind,
             Ast.ActorBoundary actorBoundary,
             ArtifactFormat artifactFormat,
-            String compilerBackend,
+            CompilerBackend compilerBackend,
+            String compilerVersion,
+            String compilerGitCommit,
             String targetTriple,
             String abi,
+            byte[] artifactSha256,
             byte[] messageAbiSha256,
-            byte[] stateSchemaSha256) {
+            byte[] stateSchemaSha256,
+            byte[] capabilityPolicySha256) {
         public ExpectedActorContract {
             actorTypeName = requireText(actorTypeName, "actorTypeName");
             actorKind = Objects.requireNonNull(actorKind, "actorKind");
             actorBoundary = Objects.requireNonNull(actorBoundary, "actorBoundary");
             artifactFormat = Objects.requireNonNull(artifactFormat, "artifactFormat");
-            compilerBackend = requireText(compilerBackend, "compilerBackend");
+            compilerBackend =
+                    Objects.requireNonNull(compilerBackend, "compilerBackend");
+            compilerVersion = requireText(compilerVersion, "compilerVersion");
+            compilerGitCommit = requireGitCommit(compilerGitCommit);
             targetTriple = requireText(targetTriple, "targetTriple");
             abi = requireText(abi, "abi");
+            artifactSha256 = digestCopy(artifactSha256, "artifactSha256");
             messageAbiSha256 = digestCopy(messageAbiSha256, "messageAbiSha256");
             stateSchemaSha256 = digestCopy(stateSchemaSha256, "stateSchemaSha256");
+            capabilityPolicySha256 =
+                    digestCopy(capabilityPolicySha256, "capabilityPolicySha256");
+        }
+
+        @Override public byte[] artifactSha256() {
+            return artifactSha256.clone();
         }
 
         @Override public byte[] messageAbiSha256() {
@@ -162,6 +202,10 @@ public final class ActorArtifactV1<T> {
 
         @Override public byte[] stateSchemaSha256() {
             return stateSchemaSha256.clone();
+        }
+
+        @Override public byte[] capabilityPolicySha256() {
+            return capabilityPolicySha256.clone();
         }
     }
 
@@ -278,7 +322,7 @@ public final class ActorArtifactV1<T> {
             out.writeInt(receipt.actorKind().ordinal());
             out.writeInt(receipt.actorBoundary().ordinal());
             out.writeInt(receipt.artifactFormat().ordinal());
-            writeText(out, receipt.compilerBackend());
+            writeText(out, receipt.compilerBackend().manifestId());
             writeText(out, receipt.compilerVersion());
             writeText(out, receipt.compilerGitCommit());
             writeText(out, receipt.targetTriple());
@@ -338,13 +382,20 @@ public final class ActorArtifactV1<T> {
                 || receipt.actorKind() != expected.actorKind()
                 || receipt.actorBoundary() != expected.actorBoundary()
                 || receipt.artifactFormat() != expected.artifactFormat()
-                || !receipt.compilerBackend().equals(expected.compilerBackend())
+                || receipt.compilerBackend() != expected.compilerBackend()
+                || !receipt.compilerVersion().equals(expected.compilerVersion())
+                || !receipt.compilerGitCommit().equals(expected.compilerGitCommit())
                 || !receipt.targetTriple().equals(expected.targetTriple())
                 || !receipt.abi().equals(expected.abi())
                 || !MessageDigest.isEqual(
+                        receipt.artifactSha256(), expected.artifactSha256())
+                || !MessageDigest.isEqual(
                         receipt.messageAbiSha256(), expected.messageAbiSha256())
                 || !MessageDigest.isEqual(
-                        receipt.stateSchemaSha256(), expected.stateSchemaSha256())) {
+                        receipt.stateSchemaSha256(), expected.stateSchemaSha256())
+                || !MessageDigest.isEqual(
+                        receipt.capabilityPolicySha256(),
+                        expected.capabilityPolicySha256())) {
             throw new SecurityException(
                     "actor artifact receipt does not match expected actor/ABI contract");
         }
