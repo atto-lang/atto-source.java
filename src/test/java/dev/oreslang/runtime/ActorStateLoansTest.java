@@ -78,6 +78,43 @@ final class ActorStateLoansTest {
         loans.close();
     }
 
+    @Test
+    void finalEpochRemainsValidButFailsEveryLaterQueuedHandler() throws Exception {
+        try (var loans = new ActorStateLoans(4)) {
+            Object activeOwner = new Object();
+            Object lastOwner = new Object();
+            Object strandedOne = new Object();
+            Object strandedTwo = new Object();
+
+            var active = loans.acquireAsync(activeOwner).join();
+            var last = loans.acquireAsync(lastOwner);
+            var one = loans.acquireAsync(strandedOne);
+            var two = loans.acquireAsync(strandedTwo);
+
+            var nextEpoch = ActorStateLoans.class.getDeclaredField("nextEpoch");
+            nextEpoch.setAccessible(true);
+            nextEpoch.setLong(loans, Long.MAX_VALUE - 1);
+
+            active.close();
+
+            var finalLoan = last.join();
+            assertEquals(Long.MAX_VALUE, finalLoan.epoch());
+            assertTrue(finalLoan.heldBy(lastOwner),
+                    "the final representable epoch must remain valid for its current handler");
+            assertTrue(loans.epochExhausted());
+            assertTrue(one.isCompletedExceptionally());
+            assertTrue(two.isCompletedExceptionally());
+            assertEquals(0, loans.pendingCount());
+
+            assertTrue(loans.acquireAsync(new Object()).isCompletedExceptionally(),
+                    "no handler may queue behind exhausted monotonic identity space");
+            assertTrue(finalLoan.heldBy(lastOwner),
+                    "admission exhaustion must not revoke the already-running final handler");
+            finalLoan.close();
+            assertEquals(0, loans.activeCount());
+        }
+    }
+
     @Test void completionCallbacksArePublishedOutsideTheLoanMonitor() throws Exception {
         try (var loans = new ActorStateLoans(1)) {
             var first = loans.acquireAsync(new Object()).join();
