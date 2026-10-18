@@ -85,6 +85,18 @@ if [[ -n "$unsafe_index_entries" ]]; then
   printf 'ERROR: Git index contains hidden/sparse tracked entries; refusing exact-tree qualification.\n' >&2
   exit 72
 fi
+# Ordinary porcelain status excludes ignored files. Those files may still
+# affect Maven execution (for example .mvn/maven.config with -DskipTests).
+# Only root target/ is allowed, and it is wiped before any test runs.
+# The check also catches local/global excludes, not merely .gitignore.
+unexpected_ignored_files() {
+  git -c core.fsmonitor=false ls-files --others --ignored --exclude-standard |
+    LC_ALL=C awk 'index($0, "target/") != 1 { print }'
+}
+if [[ -n "$(unexpected_ignored_files)" ]]; then
+  printf 'ERROR: ignored non-build files can affect exact-tree qualification.\n' >&2
+  exit 74
+fi
 # Ignore repository-local overrides that can hide a tracked executable-bit
 # mutation, even though HEAD/tree and default git status appear unchanged.
 # Disable filesystem monitor caching for identity verification as well.
@@ -156,6 +168,10 @@ stage=postflight-source-identity
 [[ -z "$(git -c core.fileMode=true -c core.fsmonitor=false status --porcelain --untracked-files=all)" ]] || {
   printf 'ERROR: tracked or untracked source changed during qualification.\n' >&2
   exit 70
+}
+[[ -z "$(unexpected_ignored_files)" ]] || {
+  printf 'ERROR: ignored non-build files appeared during qualification.\n' >&2
+  exit 74
 }
 stage=complete
 printf 'PASS: source-local NIO suite, full Maven verify%s\n' "$( $NATIVE_AOT && printf ', native-aot' || true)"

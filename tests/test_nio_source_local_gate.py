@@ -63,6 +63,10 @@ case " $* " in
     if [ "${FAKE_FAIL_VERIFY:-0}" = 1 ]; then exit 9; fi
     if [ "${FAKE_CHANGE_INDEX:-0}" = 1 ]; then
       git update-index --assume-unchanged .gitignore
+    fi
+    if [ "${FAKE_WRITE_IGNORED_CONFIG:-0}" = 1 ]; then
+      mkdir -p .mvn
+      printf '%s\n' '-DskipTests' > .mvn/maven.config
     fi ;;
 esac
 printf 'SIMULATED MAVEN %s\\n' "$*"
@@ -206,6 +210,36 @@ exit 0
         self.assertEqual(70, result.returncode, result.stderr)
         self.assertIn("result=FAIL", self.receipt())
         self.assertIn("stage=postflight-source-identity", self.receipt())
+
+    def test_ignored_maven_config_fails_before_build(self):
+        # Git excludes this untracked file from ordinary porcelain status,
+        # but Maven reads it and could silently skip the requested suite.
+        subprocess.run(["git", "config", "--local", "core.fileMode", "false"],
+                       cwd=self.root, check=True)
+        (self.root / ".git" / "info" / "exclude").write_text(".mvn/\n")
+        config = self.root / ".mvn" / "maven.config"
+        config.parent.mkdir()
+        config.write_text("-DskipTests\n")
+        ordinary = run("git", "status", "--porcelain", "--untracked-files=all",
+                       cwd=self.root)
+        self.assertEqual("", ordinary.stdout.strip())
+        result = self.gate()
+        self.assertEqual(74, result.returncode, result.stderr)
+        self.assertIn("stage=source-identity", self.receipt())
+        self.assertFalse((self.root / "target" / "nio-exact-tree-gate" /
+                          "targeted-junit.log").exists())
+
+    def test_ignored_maven_config_added_during_verify_fails_postflight(self):
+        (self.root / ".git" / "info" / "exclude").write_text(".mvn/\n")
+        environment = self.env.copy()
+        environment["FAKE_WRITE_IGNORED_CONFIG"] = "1"
+        result = self.gate(env=environment)
+        self.assertEqual(74, result.returncode, result.stderr)
+        self.assertIn("stage=postflight-source-identity", self.receipt())
+        self.assertIn("result=FAIL", self.receipt())
+        ordinary = run("git", "status", "--porcelain", "--untracked-files=all",
+                       cwd=self.root)
+        self.assertEqual("", ordinary.stdout.strip())
 
     def test_nonzero_maven_exit_survives_tee_and_receipt(self):
         environment = self.env.copy()

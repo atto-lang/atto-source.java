@@ -84,6 +84,16 @@ monitor caching during both identity checks. A source-free regression
 reproduced the original false-positive PASS, and the hardened script now
 rejects the same attack with exit 67 before Maven or exit 70 after Maven.
 
+**Ignored-file fence:** Ordinary `git status` does not report ignored files,
+including an untracked `.mvn/maven.config` deliberately concealed through
+`.git/info/exclude`. That file can change Maven flags without changing Git
+commit/tree identity, including introducing `-DskipTests`. The gate therefore
+rejects any ignored non-build files before running Maven and after testing
+(exit 74). Only ignored paths under the root `target/` build-output directory
+are permitted; the initial `mvn clean` must remove that directory. This
+strict policy may require clearing developer-local ignored files before a
+source-local qualification. It does not make the unsigned receipt tamperproof.
+
 **Clean-build fence:** Even an otherwise clean Git checkout may contain ignored
 `target/` compiler outputs. After checking source identity and JDK 25, the
 helper runs `mvn -B -ntp clean` **before** any targeted JUnit command.
