@@ -319,6 +319,23 @@ public class TaskHandleTest {
         }
     }
 
+    @Test void retiredAuthorityDoesNotRetainOrInvokeOldSubscriptions() {
+        TaskCancellation parent = new TaskCancellation();
+        TaskCancellation child = parent.child();
+        AtomicInteger callbacks = new AtomicInteger();
+        TaskCancellation.Subscription subscription =
+                child.onCancel(callbacks::incrementAndGet);
+        assertEquals(1, parent.ownedChildCount());
+        child.retire(); // simulates a scheduler-confirmed completed task
+        assertEquals(0, parent.ownedChildCount());
+        assertFalse(child.isOwnedBy(parent));
+        assertTrue(parent.cancel("parent stopped"));
+        assertFalse(child.isCancelled());
+        assertTrue(child.cancel("late direct cancellation"));
+        assertEquals(0, callbacks.get());
+        subscription.close();
+    }
+
     @Test void guestCancellationExceptionWithoutRequestIsFailure() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskHandle<Integer> h = scheduler.startTracked(r -> {
