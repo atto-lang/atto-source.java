@@ -93,6 +93,20 @@ review; establish independently reviewed authorization via a protected
 source policy and suitable reviewed source snapshot instead. No destination
 is approved in the current `main` allowlist.
 
+## Preflight command-execution boundary
+
+The private publisher does **not** execute
+`scripts/check-private-ci-destination.sh` from a source checkout as a
+preflight. Before protected-main authorization, checkout scripts may be
+unreviewed. Running their Bash code would execute arbitrary commands with
+the operator's credentials even if the transfer were later rejected.
+Instead, the publisher's `require_preflight` performs data-only validation
+of the local allowlist through descriptor-relative, no-follow policy reads
+and authenticated GitHub checks that the destination repository is private.
+Protected-source branch-policy and authorizing blob checks remain mandatory
+separate gates. The shell guard remains available for standalone diagnostics
+and its own test suite; it is not an export authorization authority.
+
 ## Destination-bound source snapshot publisher
 
 The only supported transfer entry point is **not an arbitrary command
