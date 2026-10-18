@@ -297,6 +297,7 @@ class NativeHttpTest {
                             response.headers().firstValue("Content-Type").orElseThrow());
                 });
             assertFalse(output.contains("DUPLICATE RESPONSE ACCEPTED"), output);
+            assertTrue(output.contains("duplicate-response-rejected"), output);
             assertTrue(output.contains("201"), output);
         }
     }
