@@ -101,4 +101,20 @@ make_fixture
 if PYTHON=/bin/true bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
 grep -q PRIVATE_CI_UNSAFE_PYTHON_OVERRIDE "$root/out"
 echo 'PASS: /bin/true cannot masquerade as a passing Python interpreter'
-echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=11' 
+make_fixture
+mkdir -p "$root/injected"
+cat > "$root/injected/sitecustomize.py" <<'PY_SITE'
+import os
+with open(os.environ['PYTHON_SITE_MARKER'], 'w') as handle:
+    handle.write('unexpected Python startup injection')
+PY_SITE
+if ! PYTHONPATH="$root/injected" PYTHON_SITE_MARKER="$root/startup-marker" \
+      PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" \
+      > "$root/out" 2>&1; then
+  cat "$root/out" >&2
+  exit 1
+fi
+test ! -e "$root/startup-marker"
+grep -q '^PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1$' "$root/out"
+echo 'PASS: injected sitecustomize and PYTHONPATH cannot execute'
+echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=12' 
