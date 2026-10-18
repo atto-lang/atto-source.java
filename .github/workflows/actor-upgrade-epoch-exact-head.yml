@@ -7,6 +7,7 @@ on:
       - 'pom.xml'
       - 'src/main/java/dev/oreslang/runtime/ActorUpgradeEpochGate.java'
       - 'src/test/java/dev/oreslang/runtime/ActorUpgradeEpochGateTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorHotReloadPlacementAndTaskPinTest.java'
   workflow_dispatch:
 
 permissions:
@@ -34,7 +35,7 @@ jobs:
           distribution: graalvm
           cache: maven
       - name: Run focused actor JUnit regression
-        run: mvn -B -ntp -Dtest=ActorUpgradeEpochGateTest -DfailIfNoTests=true test
+        run: mvn -B -ntp -Dtest=ActorUpgradeEpochGateTest,ActorHotReloadPlacementAndTaskPinTest -DfailIfNoTests=true test
       - name: Record exact-tree JUnit receipt (not a Graal isolate proof)
         if: always()
         env:
@@ -55,31 +56,44 @@ jobs:
           expected = os.environ["EXPECTED_SHA"]
           observed = git("rev-parse", "HEAD")
           tree = git("rev-parse", "HEAD^{tree}")
-          report = Path("target/surefire-reports/TEST-dev.oreslang.runtime.ActorUpgradeEpochGateTest.xml")
-          counts = {"tests": 0, "errors": 0, "failures": 0, "skipped": 0}
-          parsed = False
-          if report.is_file():
-              try:
-                  result = ET.parse(report).getroot()
-                  for key in counts:
-                      counts[key] = int(result.get(key, "0"))
-                  parsed = True
-              except (ET.ParseError, ValueError):
-                  pass
+          required = {
+              "ActorUpgradeEpochGateTest": 7,
+              "ActorHotReloadPlacementAndTaskPinTest": 7,
+          }
+          total = {"tests": 0, "errors": 0, "failures": 0, "skipped": 0}
+          per_class = {}
+          complete = True
+          for classname, minimum in required.items():
+              report = Path(
+                  f"target/surefire-reports/TEST-dev.oreslang.runtime.{classname}.xml")
+              counts = {"tests": 0, "errors": 0, "failures": 0, "skipped": 0}
+              parsed = False
+              if report.is_file():
+                  try:
+                      root = ET.parse(report).getroot()
+                      for key in counts:
+                          counts[key] = int(root.get(key, "0"))
+                          total[key] += counts[key]
+                      parsed = True
+                  except (ET.ParseError, ValueError):
+                      pass
+              complete &= (parsed and counts["tests"] >= minimum
+                           and not (counts["errors"] or counts["failures"]
+                                    or counts["skipped"]))
+              per_class[classname] = {"xml_parsed": parsed, **counts}
           verified = (len(expected) == 40 and observed == expected
-                      and len(tree) == 40 and parsed
-                      and counts["tests"] >= 7
-                      and not (counts["errors"] or counts["failures"]
-                               or counts["skipped"]))
+                      and len(tree) == 40 and complete)
           receipt = {
-              "test_class": "ActorUpgradeEpochGateTest",
+              "test_classes": list(required.keys()),
+              "per_class": per_class,
               "expected_head": expected,
               "observed_head": observed,
               "git_tree_sha": tree,
-              "junit_xml_parsed": parsed,
+              "junit_xml_parsed": complete,
               "host_junit_verified": verified,
               "native_untrusted_isolate_verified": False,
-              **counts,
+              "source_actor_hot_reload_verified": False,
+              **total,
           }
           out = Path("target/ci-evidence/actor-epoch-junit.json")
           out.parent.mkdir(parents=True, exist_ok=True)
