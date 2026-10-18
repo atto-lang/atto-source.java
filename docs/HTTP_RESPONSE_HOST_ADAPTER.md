@@ -79,8 +79,11 @@ define actor Hello as
 end
 ```
 
-- The typechecker recognizes `http.response(int, string, string): HttpResponseDraft`
-  and `HttpExchange.respond_response(HttpResponseDraft): Future<void>`.
+- The typechecker recognizes `http.response(int, string, string): HttpResponse`,
+  `new HttpResponse()`, `new HttpResponse(string)`, and
+  `HttpExchange.respond_response(HttpResponse): Future<void>`. These are
+  compile-time **nominal** `HttpResponse` values backed by the private
+  `HttpResponseDraft` Java transport class.
 - The interpreter routes the guest response through the **same**
   `NativeHttp.Exchange.respond(HttpResponseDraft)` adapter and its
   generation-fenced exchange authority.
@@ -92,10 +95,20 @@ end
   exercises source compilation and a real HTTP request for both shared and
   isolated actors. Its CI result is pending an authorized runner.
 
+The minimal Fetch-like spelling also compiles through an existing handler:
+```ores
+val reply = new HttpResponse("hello from Oreslang");
+await request.respond_response(reply);
+```
+A zero-argument constructor creates a bodyless 200 response; the one-argument
+constructor creates UTF-8 text with default text/plain content type.
+**The two-argument Fetch options initializer is explicitly rejected** until
+its status/header semantics and frozen ownership are implemented.
+
 This transitional adapter is intentionally **not** the final
 `define unary http actor … run(HttpMessage): HttpResponse` grammar and
-does not support structured headers, JSON helpers, guest readable streams,
-or trailers. It must not be used as evidence that the marketing syntax is
+does not support guest-owned streamed bodies, arbitrary structured headers,
+JSON helpers, or trailers. It must not be used as evidence that the marketing syntax is
 shipping.
 
 ## Next implementation gates
