@@ -94,7 +94,7 @@ public final class OptionalCallLiteralStage {
         }
     }
 
-    private static Ast.TypeRef exactScalarLiteralType(Ast.LiteralExpr literal) {
+    static Ast.TypeRef exactScalarLiteralType(Ast.LiteralExpr literal) {
         Object value = literal.value();
         if (value instanceof Long) return Ast.TypeRef.simple("int");
         if (value instanceof Double) return Ast.TypeRef.simple("float");
