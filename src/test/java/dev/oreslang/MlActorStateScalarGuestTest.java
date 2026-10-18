@@ -260,6 +260,36 @@ final class MlActorStateScalarGuestTest {
                   return;
                 }
                 """);
+        assertGuestRejectedBeforeMain("""
+                define actor Stage as
+                  state { weight: int = 10; }
+                  private invalid(): int with state.read {
+                    return self.handle_state(critical write |s| -> {
+                      s.weight = s.weight + 1;
+                      return s.weight;
+                    });
+                  }
+                end
+                pub routine main(): void {
+                  stdio.println("UNSAFE_MAIN_EXECUTED");
+                  return;
+                }
+                """);
+        assertGuestRejectedBeforeMain("""
+                define actor Stage as
+                  state { weight: int = 10; }
+                  private invalid(): int with state.read {
+                    return using state.read(|s| -> {
+                      rt cooperate;
+                      return s.weight;
+                    });
+                  }
+                end
+                pub routine main(): void {
+                  stdio.println("UNSAFE_MAIN_EXECUTED");
+                  return;
+                }
+                """);
     }
 
     @Test void validSameShapeActorCanReachMain() throws Exception {
