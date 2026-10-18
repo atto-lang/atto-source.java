@@ -107,6 +107,10 @@ final class ImportGraph {
                 String targetId = resolveImportUnitId(importer, imported, available, importResolutions);
                 if (targetId == null) continue; // package resolver owns unresolved non-relative imports.
                 Ast.Program target = programs.get(targetId);
+                // Imported functions and module/class namespaces do not yet
+                // carry authenticated caller-role policy across source units.
+                // Never silently erase @CallableBy while creating an import.
+                rejectUnverifiedCallerRoleImports(importer, imported, targetId, target);
                 if (imported.wildcard()) continue;
                 for (String name : imported.names()) {
                     int matches = exportedMatches(target, imported.kind(), name);
@@ -123,6 +127,61 @@ final class ImportGraph {
                 }
             }
         }
+    }
+
+    private static void rejectUnverifiedCallerRoleImports(
+            String importer, Ast.ImportDecl imported, String targetId, Ast.Program target) {
+        boolean functions = imported.kind() == Ast.ImportKind.FUNCTION
+                || imported.kind() == Ast.ImportKind.ALL
+                || imported.kind() == Ast.ImportKind.MODULE;
+        boolean classes = imported.kind() == Ast.ImportKind.CLASS
+                || imported.kind() == Ast.ImportKind.ALL;
+        if (!functions && !classes) return;
+        for (Ast.ModuleDecl module : target.modules()) {
+            // import module Selected restricts the namespace to Selected;
+            // import * and import fnc * select all matching exports.
+            if (imported.kind() == Ast.ImportKind.MODULE
+                    && !imported.wildcard()
+                    && !imported.names().contains(module.name())) continue;
+            for (Ast.Decl decl : module.declarations()) {
+                String symbol = null;
+                if (functions && decl instanceof Ast.FunctionDecl fn
+                        && fn.visibility() == Ast.Visibility.PUBLIC
+                        && fn.actorKind() == Ast.ActorKind.NONE
+                        && (imported.kind() != Ast.ImportKind.FUNCTION
+                            || fn.kind() == Ast.CallableKind.FNC)
+                        && (imported.kind() == Ast.ImportKind.MODULE || imported.wildcard()
+                            || imported.names().contains(fn.name()))
+                        && hasCallerPolicy(fn.annotations())) {
+                    symbol = module.name() + "." + fn.name();
+                }
+                if (classes && decl instanceof Ast.ClassDecl klass
+                        && klass.visibility() == Ast.Visibility.PUBLIC
+                        && (imported.wildcard() || imported.names().contains(klass.name()))) {
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        if (method.visibility() == Ast.Visibility.PUBLIC
+                                && hasCallerPolicy(method.annotations())) {
+                            symbol = klass.name() + "." + method.name();
+                            break;
+                        }
+                    }
+                }
+                if (symbol != null) {
+                    throw new IllegalArgumentException(
+                            "@CallableBy import of '" + symbol + "' from '" + targetId
+                                    + "' into '" + importer
+                                    + "' requires linked declaration identity and verified caller-role ABI; "
+                                    + "unlinked role-policy imports are forbidden");
+                }
+            }
+        }
+    }
+
+    private static boolean hasCallerPolicy(java.util.List<Ast.Annotation> annotations) {
+        for (Ast.Annotation annotation : annotations) {
+            if (annotation.name().equals("CallableBy")) return true;
+        }
+        return false;
     }
 
     private static int exportedMatches(Ast.Program program, Ast.ImportKind kind, String name) {
