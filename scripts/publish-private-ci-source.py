@@ -246,6 +246,96 @@ def collect_source(root, trusted_root):
     return sorted(entries, key=lambda item: item[0])
 
 
+
+def committed_source_tree(source, trusted_root):
+    """Prove HEAD subtree identity before any upload.
+
+    The trusted checkout must have a tracked source subdirectory and a
+    successful byte-level source verifier; no ad hoc copied trees qualify.
+    """
+    try:
+        trusted = trusted_root.resolve(strict=True)
+        relative = source.resolve(strict=True).relative_to(trusted)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise Denied("source directory escapes trusted checkout") from exc
+    if not relative.parts:
+        raise Denied("source must be an explicit tracked subdirectory")
+
+    def git(*args):
+        try:
+            result = subprocess.run(["git", *args], cwd=trusted,
+                                    capture_output=True, text=True,
+                                    timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise Denied("source Git attestation unavailable") from exc
+        if result.returncode:
+            raise Denied("source Git attestation failed")
+        return result.stdout.strip()
+
+    if Path(git("rev-parse", "--show-toplevel")).resolve() != trusted:
+        raise Denied("trusted root does not match source checkout")
+    expected = valid_sha(git("rev-parse", "--verify",
+                             "HEAD:" + relative.as_posix()))
+    if git("cat-file", "-t", expected) != "tree":
+        raise Denied("source is not a committed Git tree")
+    verifier = trusted / "tools" / "verify-exact-source-tree.sh"
+    if verifier.is_symlink() or not verifier.is_file():
+        raise Denied("trusted source verifier missing or symlinked")
+    try:
+        result = subprocess.run(
+            ["bash", str(verifier), expected, relative.as_posix()],
+            cwd=trusted, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=120, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Denied("source verifier execution unavailable") from exc
+    if result.returncode:
+        raise Denied("source checkout differs from its committed Git tree")
+    return expected
+
+
+def git_tree_digest(files):
+    """Compute the canonical Git tree SHA from collected descriptor-read bytes."""
+    root = {}
+    for rel, contents, mode in files:
+        if (mode not in ("100644", "100755") or not rel
+                or not isinstance(contents, bytes)):
+            raise Denied("invalid collected Git entry")
+        parts = rel.split("/")
+        if any(not name or name in (".", "..", ".git") for name in parts):
+            raise Denied("invalid collected Git path")
+        here = root
+        for name in parts[:-1]:
+            child = here.setdefault(name, {})
+            if not isinstance(child, dict):
+                raise Denied("source file/directory collision")
+            here = child
+        if parts[-1] in here:
+            raise Denied("duplicate or colliding Git path")
+        here[parts[-1]] = (mode, contents)
+
+    def digest(node):
+        data = bytearray()
+        for name, value in sorted(
+                node.items(), key=lambda item: os.fsencode(item[0])
+                + (b"/" if isinstance(item[1], dict) else b"")):
+            if isinstance(value, dict):
+                mode, oid = "40000", digest(value)
+            else:
+                mode, blob = value
+                oid = hashlib.sha1(
+                    b"blob " + str(len(blob)).encode("ascii") + b"\0" + blob
+                ).digest()
+            data.extend(mode.encode("ascii") + b" " + os.fsencode(name)
+                        + b"\0" + oid)
+        return hashlib.sha1(
+            b"tree " + str(len(data)).encode("ascii") + b"\0" + data
+        ).digest()
+
+    if not root:
+        raise Denied("source Git tree must not be empty")
+    return digest(root).hex()
+
+
 def publish(repository, source, branch, trusted_root):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
@@ -258,7 +348,10 @@ def publish(repository, source, branch, trusted_root):
         checked_source.relative_to(trusted)
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
+    expected_source_tree = committed_source_tree(source, trusted_root)
     files = collect_source(source, trusted_root)
+    if git_tree_digest(files) != expected_source_tree:
+        raise Denied("collected source does not match committed Git tree")
     base = checked_repo(repository)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
@@ -292,6 +385,8 @@ def publish(repository, source, branch, trusted_root):
     isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
                       payload={"tree": elements})
     isolated_sha = valid_sha(isolated.get("sha"))
+    if isolated_sha != expected_source_tree:
+        raise Denied("destination Git tree does not match committed source")
     # Replace the entire PREFIX subtree atomically in the new root tree.
     # Preserve unrelated destination files and CI workflows from base_tree.
     authorize_write()
