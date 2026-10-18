@@ -129,4 +129,58 @@ final class TrustedActorLoopbackEgressBridgeRuntimeTest {
             response = null;
         }
     }
+    @Test void foreignRuntimeActorCannotBeRegistered() {
+        try (var authorizedRuntime = new ActorRuntime();
+             var foreignRuntime = new ActorRuntime()) {
+            var foreign = foreignRuntime.<String>spawnUntrusted(
+                    context -> (message, turn) -> { });
+            var gate = new TrustedHierarchicalNetworkGate();
+            long start = System.nanoTime();
+            java.util.function.LongSupplier clock = () -> System.nanoTime() - start;
+            var limits = new TrustedUntrustedNetworkQuota.Policy(20, 2, 1, 1, 20, 2);
+            var child = gate.createHostScope(limits, clock);
+            var supervisor = gate.createHostScope(limits, clock);
+            var tenant = gate.createHostScope(limits, clock);
+            try {
+                assertFalse(authorizedRuntime.isAlive(foreign));
+                assertThrows(IllegalArgumentException.class, () ->
+                        new TrustedActorLoopbackEgressBridge(
+                                authorizedRuntime, foreign, gate, child, supervisor,
+                                tenant, 12345, Runnable::run));
+                assertFalse(TrustedActorLoopbackEgressBridge
+                        .isRegisteredForHost(authorizedRuntime, foreign));
+            } finally {
+                child.close(); supervisor.close(); tenant.close();
+            }
+        }
+    }
+
+    @Test void actorFinalizationRevokesHostRegisteredBinding() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnUntrusted(
+                    context -> (message, turn) -> { });
+            var gate = new TrustedHierarchicalNetworkGate();
+            long start = System.nanoTime();
+            java.util.function.LongSupplier clock = () -> System.nanoTime() - start;
+            var limits = new TrustedUntrustedNetworkQuota.Policy(20, 2, 1, 1, 20, 2);
+            var child = gate.createHostScope(limits, clock);
+            var supervisor = gate.createHostScope(limits, clock);
+            var tenant = gate.createHostScope(limits, clock);
+            try (var executor = Executors.newSingleThreadExecutor()) {
+                try (var binding = new TrustedActorLoopbackEgressBridge(
+                        runtime, actor, gate, child, supervisor, tenant,
+                        12345, executor)) {
+                    assertTrue(TrustedActorLoopbackEgressBridge
+                            .isRegisteredForHost(runtime, actor));
+                    actor.stop();
+                    assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+                    assertFalse(TrustedActorLoopbackEgressBridge
+                            .isRegisteredForHost(runtime, actor));
+                }
+            } finally {
+                child.close(); supervisor.close(); tenant.close();
+            }
+        }
+    }
+
 }
