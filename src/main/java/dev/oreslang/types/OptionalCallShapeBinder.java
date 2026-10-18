@@ -84,6 +84,33 @@ public final class OptionalCallShapeBinder {
         return List.copyOf(shapes);
     }
 
+    /**
+     * Bind a complete parsed call-site list, retaining the source AST item
+     * indexes. A caller must not use plain values after building this plan:
+     * the plan and the source AST are validated as a single snapshot.
+     */
+    public static Plan bindParsed(
+            List<Parameter> parameters, List<Ast.CallArgument> callItems) {
+        return bind(parameters, parsedArgumentShapes(callItems));
+    }
+
+    /**
+     * An untrusted/reconstructed Plan can swap the claimed formal for two
+     * omissions while preserving all dense source-index invariants.
+     * Rebinding against the actual source items detects such an exchange.
+     * All lowering consumers must check the exact selected declaration and
+     * this correspondence before evaluating/moving any expression.
+     */
+    public static void verifyPlanAgainstSource(
+            List<Parameter> parameters, List<Ast.CallArgument> callItems, Plan plan) {
+        Objects.requireNonNull(plan, "plan");
+        Plan expected = bindParsed(parameters, callItems);
+        if (!expected.equals(plan)) {
+            throw new IllegalArgumentException(
+                    "call plan does not match original argument items and formal bindings");
+        }
+    }
+
     public record Parameter(String name, boolean optional, boolean variadic) {
         public Parameter {
             if (name == null || name.isBlank()) {
