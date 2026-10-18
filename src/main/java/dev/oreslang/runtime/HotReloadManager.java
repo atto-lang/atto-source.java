@@ -81,6 +81,7 @@ public final class HotReloadManager implements AutoCloseable {
         this.supervisorPolicy.require(
                 IsolatePolicy.Capability.HOT_CODE_LOAD,
                 "HotReloadManager");
+        SharedCodeRegistry.process().requireOwnedScope(sharingScope, supervisorPolicy);
     }
 
     public static HotReloadManager forUntrustedActors(
