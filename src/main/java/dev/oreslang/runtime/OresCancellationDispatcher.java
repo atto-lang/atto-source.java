@@ -31,15 +31,12 @@ final class OresCancellationDispatcher {
 
     private OresCancellationDispatcher() { }
 
-    static void request(OresCancellationSource target) {
+    static boolean request(OresCancellationSource target) {
         Objects.requireNonNull(target, "target");
         Dispatch active = ACTIVE.get();
-        if (active != null) {
-            active.pending.addLast(target);
-            return;
-        }
+        if (active != null) return active.enqueue(target);
         Dispatch dispatch = new Dispatch();
-        dispatch.pending.addLast(target);
+        boolean won = dispatch.enqueue(target);
         ACTIVE.set(dispatch);
         try {
             while (!dispatch.pending.isEmpty()) {
@@ -58,5 +55,6 @@ final class OresCancellationDispatcher {
         if (dispatch.failure instanceof RuntimeException runtimeFailure)
             throw runtimeFailure;
         if (dispatch.failure instanceof Error error) throw error;
+        return won;
     }
 }
