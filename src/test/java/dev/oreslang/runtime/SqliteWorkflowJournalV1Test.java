@@ -656,6 +656,51 @@ final class SqliteWorkflowJournalV1Test {
     }
 
     @Test
+    void noncanonicalIgnoredEventColumnFailsClosedOnOpen() throws Exception {
+        Path db = tempDir.resolve("noncanonical-event.db");
+        seedStarted(db, "run-noncanonical-event");
+
+        try (var connection = DriverManager.getConnection(
+                "jdbc:sqlite:" + db.toAbsolutePath());
+             var statement = connection.createStatement()) {
+            assertEquals(
+                    1,
+                    statement.executeUpdate("""
+                            UPDATE workflow_journal
+                            SET event_text4 = 'ignored-but-present'
+                            WHERE event_type = 'start'
+                            """));
+        }
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> SqliteWorkflowJournalV1.open(db));
+    }
+
+    @Test
+    void noncanonicalIgnoredCommandColumnFailsClosedOnOpen()
+            throws Exception {
+        Path db = tempDir.resolve("noncanonical-command.db");
+        seedStarted(db, "run-noncanonical-command");
+
+        try (var connection = DriverManager.getConnection(
+                "jdbc:sqlite:" + db.toAbsolutePath());
+             var statement = connection.createStatement()) {
+            assertEquals(
+                    1,
+                    statement.executeUpdate("""
+                            UPDATE workflow_effects
+                            SET command_text4 = 'ignored-but-present'
+                            WHERE command_type = 'request_code'
+                            """));
+        }
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> SqliteWorkflowJournalV1.open(db));
+    }
+
+    @Test
     void realChildProcessAtomicOutcomeCrashBeforeCommitRecoversClaimOnly()
             throws Exception {
         Path db = tempDir.resolve("process-atomic-before.db");
