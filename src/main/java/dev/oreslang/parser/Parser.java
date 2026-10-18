@@ -1315,6 +1315,13 @@ public final class Parser {
             }
             List<Ast.TypeRef> args = new ArrayList<>();
             Token.Type close = null;
+            // These actor scheduler configuration annotations have a frozen,
+            // cross-backend parentheses grammar. General annotations may use
+            // type-style '<...>', but LLVM intentionally does not for policy.
+            if ((name.equals("ActorThreads") || name.equals("ActorMaxThreads"))
+                    && check(LT)) {
+                throw error(peek(), "actor thread annotations require parentheses, not '<...>'");
+            }
             if (match(LT)) close = GT;
             else if (match(LPAREN)) close = RPAREN;
             if (close != null) {
