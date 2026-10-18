@@ -110,6 +110,13 @@ printf 'Pinned checkout %s, tree %s; running JDK25 source-local tests.\n' "$actu
 # demonstrate a clean Maven build because target/ is gitignored.
 stage=clean-stale-build
 mvn -B -ntp clean
+# Maven can be configured to skip or incompletely clean ignored build
+# directories. A zero exit code alone is NOT proof of a fresh test run.
+# Refuse to run any tests if previous compiler/test artifacts survive.
+if [[ -e "$root/target" || -L "$root/target" ]]; then
+  printf 'ERROR: Maven clean left target/ present; refusing stale output.\n' >&2
+  exit 71
+fi
 mkdir -p "$EVIDENCE_DIR"
 stage=targeted-junit
 mvn -B -ntp -Dores.runtime.carriers=native \
