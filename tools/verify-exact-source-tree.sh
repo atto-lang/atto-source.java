@@ -33,7 +33,7 @@ fi
 
 if ! git diff --quiet HEAD -- "${status_path}" \
     || ! git diff --cached --quiet HEAD -- "${status_path}" \
-    || [[ -n "$(git ls-files --others --exclude-standard -- "${status_path}")" ]]; then
+    || [[ -n "$(git ls-files --others -- "${status_path}")" ]]; then
   echo "SOURCE_WORKTREE_DIRTY; do not certify a modified checkout" >&2
   exit 67
 fi
