@@ -73,10 +73,12 @@ public final class WorkflowActivityProtocolV1 {
 
     public record Succeeded(
             String effectKey,
+            String claimToken,
             String receiptRef,
             DurableDevLoopV1.Event resultingEvent) implements Outcome {
         public Succeeded {
             effectKey = requireText(effectKey, "effectKey");
+            claimToken = requireText(claimToken, "claimToken");
             receiptRef = requireText(receiptRef, "receiptRef");
             resultingEvent = Objects.requireNonNull(
                     resultingEvent, "resultingEvent");
@@ -85,18 +87,22 @@ public final class WorkflowActivityProtocolV1 {
 
     public record KnownUnexecuted(
             String effectKey,
+            String claimToken,
             String reasonRef) implements Outcome {
         public KnownUnexecuted {
             effectKey = requireText(effectKey, "effectKey");
+            claimToken = requireText(claimToken, "claimToken");
             reasonRef = requireText(reasonRef, "reasonRef");
         }
     }
 
     public record Ambiguous(
             String effectKey,
+            String claimToken,
             String reconciliationRef) implements Outcome {
         public Ambiguous {
             effectKey = requireText(effectKey, "effectKey");
+            claimToken = requireText(claimToken, "claimToken");
             reconciliationRef = requireText(
                     reconciliationRef, "reconciliationRef");
         }
@@ -175,9 +181,18 @@ public final class WorkflowActivityProtocolV1 {
             case KnownUnexecuted value -> value.effectKey();
             case Ambiguous value -> value.effectKey();
         };
+        String token = switch (outcome) {
+            case Succeeded value -> value.claimToken();
+            case KnownUnexecuted value -> value.claimToken();
+            case Ambiguous value -> value.claimToken();
+        };
         if (!claim.effectKey().equals(key)) {
             throw new IllegalArgumentException(
                     "activity outcome effect key does not match claim");
+        }
+        if (!claim.claimToken().equals(token)) {
+            throw new IllegalArgumentException(
+                    "activity outcome claim token does not match attempt");
         }
 
         if (outcome instanceof Succeeded succeeded) {
