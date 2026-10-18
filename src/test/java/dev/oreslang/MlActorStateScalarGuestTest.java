@@ -308,12 +308,6 @@ final class MlActorStateScalarGuestTest {
                 }
                 """;
         assertDoesNotThrow(() -> verify(program));
-        // The negative case must be syntactically valid. A parser failure
-        // alone must never count as evidence of state-loan enforcement.
-        assertDoesNotThrow(() -> Parser.parse(invalidSource),
-                "invalid guest case must have valid actor and routine grammar");
-        assertThrows(IllegalArgumentException.class, () -> verify(invalidSource),
-                "the explicit state/effect/ownership passes must reject it");
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false).out(output).build()) {
@@ -326,6 +320,12 @@ final class MlActorStateScalarGuestTest {
     }
 
     private static void assertGuestRejectedBeforeMain(String invalidSource) throws Exception {
+        // Reject by the state/effect/ownership admission pipeline, not merely
+        // by a parser error; malformed grammar is NOT security test evidence.
+        assertDoesNotThrow(() -> Parser.parse(invalidSource),
+                "negative fixture must be syntactically valid");
+        assertThrows(IllegalArgumentException.class, () -> verify(invalidSource),
+                "state/effect/ownership verifier must reject this valid program");
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false).out(output).build()) {
