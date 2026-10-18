@@ -86,7 +86,25 @@ jobs:
                   raise SystemExit('DOP integration contains nonpassing cases: ' + field)
           if int(root.attrib.get('tests', '0')) < len(required):
               raise SystemExit('Impossible DOP integration test count')
-          print('Verified executed DOP zero-work and scheduler-admission regressions in Surefire XML')
+
+          graph_report = pathlib.Path('target/surefire-reports/TEST-dev.oreslang.runtime.ExecutionGraphV1Test.xml')
+          if not graph_report.is_file():
+              raise SystemExit('Missing exact ExecutionGraphV1 Surefire XML')
+          graph_root = ET.parse(graph_report).getroot()
+          graph_required = {
+              'inlineExecutorIsRejectedBeforeCpuEvaluation',
+              'inlineThenThrowPreservesSchedulerRejection',
+              'startedWorkerCannotPublishIfSchedulerRejectsAfterStart',
+              'duplicateExecutorDispatchHasExactlyOneTerminalPublication',
+              'cancelledQueuedFutureNeverExecutesOrPublishes',
+          }
+          graph_methods = {node.attrib.get('name') for node in graph_root.iter('testcase')}
+          if not graph_required.issubset(graph_methods):
+              raise SystemExit('Missing executed graph admission regressions: ' + repr(sorted(graph_required - graph_methods)))
+          for field in ('failures', 'errors', 'skipped'):
+              if int(graph_root.attrib.get(field, '0')) != 0:
+                  raise SystemExit('ExecutionGraphV1 contains nonpassing cases: ' + field)
+          print('Verified executed DOP and standalone graph scheduler-admission regressions in Surefire XML')
           PY
       - name: Record passing exact-head test suite
         shell: bash
