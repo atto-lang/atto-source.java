@@ -72,6 +72,42 @@ final class EnumNullaryStagedLiteralBindingTest {
     }
 
     @Test
+    void canonicalParsedEnumAndIntLiteralPinTwoArgumentStaticTargets() {
+        Ast.Program program = Parser.parse("""
+                define enum Foo as A, B, C end
+                fnc foo(Foo.A a, int b): int { return b + 10; }
+                fnc foo(Foo.B a, int b): int { return b + 20; }
+                fnc foo(Foo a, int b): int { return b + 30; }
+                fnc main(): void { foo(Foo.A, 5); }
+                """);
+        Key two = new Key(MODULE, "local_unit.__root__", "foo", 2);
+        var proof = EnumCaseSourceBindings.compileLocalProof(program);
+        var binding = proof.bindStagedNullaryLiteralCall(two, call(program));
+        assertEquals("Foo.A",
+                binding.target().function().parameters().getFirst().type().name());
+        assertEquals(binding.target().signature().symbolId(), binding.staticSlotId());
+        var b = proof.bindStagedNullaryLiteralCall(two,
+                new Ast.CallExpr(new Ast.NameExpr("foo"),
+                        List.of(new Ast.MemberExpr(new Ast.NameExpr("Foo"), "B"),
+                                new Ast.LiteralExpr(5L))));
+        assertEquals("Foo.B", b.target().function().parameters().getFirst().type().name());
+        var c = proof.bindStagedNullaryLiteralCall(two,
+                new Ast.CallExpr(new Ast.NameExpr("foo"),
+                        List.of(new Ast.MemberExpr(new Ast.NameExpr("Foo"), "C"),
+                                new Ast.LiteralExpr(5L))));
+        assertEquals("Foo", c.target().function().parameters().getFirst().type().name());
+        assertEquals(3, java.util.Set.of(binding.staticSlotId(),
+                b.staticSlotId(), c.staticSlotId()).size());
+        assertThrows(IllegalArgumentException.class, () ->
+                proof.bindStagedNullaryLiteralCall(two, new Ast.CallExpr(
+                        new Ast.NameExpr("foo"),
+                        List.of(new Ast.MemberExpr(new Ast.NameExpr("Foo"), "A"),
+                                new Ast.NameExpr("runtimeInt")))));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypes(program));
+    }
+
+    @Test
     void rejectedShapesNeverFallbackToDynamicMultimethod() {
         Ast.Program program = Parser.parse("""
                 define enum Foo as A, B end
