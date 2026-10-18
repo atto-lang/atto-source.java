@@ -519,11 +519,34 @@ public final class Ast {
     }
 
     /** A nominal enum case. tag is a stable positive wire tag, not the case value. */
-    public record EnumCase(String name, TypeRef payload, int tag) { }
+    public record EnumCase(String name, TypeRef payload, int tag) {
+        public EnumCase {
+            if (name == null || name.isBlank() || tag < 1) {
+                throw new IllegalArgumentException("invalid enum case name or positive wire tag");
+            }
+        }
+    }
 
-    /** Enum values are tagged, constructible and carry a schema-checked payload. */
+    /** Syntax-only nominal enum. All entrypoints still require checked lowering. */
     public record EnumDecl(String name, List<EnumCase> cases) implements Decl {
-        public EnumDecl { cases = List.copyOf(cases); }
+        public EnumDecl {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("enum requires a nominal name");
+            }
+            cases = List.copyOf(cases);
+            if (cases.isEmpty() || cases.size() > 4096) {
+                throw new IllegalArgumentException("enum case count must be 1..4096");
+            }
+            HashSet<String> names = new HashSet<>();
+            int previousTag = 0;
+            for (EnumCase variant : cases) {
+                if (!names.add(variant.name()) || variant.tag() <= previousTag) {
+                    throw new IllegalArgumentException(
+                            "duplicate enum case or non-increasing wire tag");
+                }
+                previousTag = variant.tag();
+            }
+        }
     }
 
     /** Pattern is a nonconstructible, closed set of qualified enum cases. */
