@@ -152,6 +152,10 @@ public final class ReturnCleanupChecker {
                 }
             } else if (stmt instanceof Ast.ExprStmt expression) {
                 expression(expression.expression(), scope, inDefer, state);
+            } else if (stmt instanceof Ast.TaskBlockStmt task) {
+                // A fire-and-continue block owns its lexical return/cleanup
+                // scope. Its return may never escape or rebind the caller.
+                callable(task.body(), List.of(), scope);
             } else if (stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ContinueStmt) {
                 // A break/continue targeting a loop outside finally would
                 // discard a pending return just like a return in finally.
@@ -284,6 +288,11 @@ public final class ReturnCleanupChecker {
             }
             expression(assignment.target(), scope, inDefer, state);
             expression(assignment.value(), scope, inDefer, state);
+        } else if (expr instanceof Ast.TaskExpr task) {
+            // The child Task has its own return/defer/finally boundaries.
+            // Scan it independently, never treating its returned local as
+            // a returned binding of the invoking lambda/caller.
+            callable(task.body(), List.of(), scope);
         } else if (expr instanceof Ast.LambdaExpr lambda) {
             // A return inside a nested lambda returns from that lambda, not
             // from the enclosing finally or function.
