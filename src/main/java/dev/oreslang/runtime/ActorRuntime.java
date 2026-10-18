@@ -6661,7 +6661,7 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
-                new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
+                ChannelRuntime.mailbox(INTERNAL_CONTINUATION_SLOTS);
         /** True while one source receive owns actor state across suspension. */
         private boolean sourceReceiveSuspended;
         private final Object lifecycleLock = new Object();
@@ -6722,7 +6722,7 @@ public final class ActorRuntime implements AutoCloseable {
                             Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
                     ? Integer.MAX_VALUE
                     : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
-            this.mailbox = new ChannelRuntime.Channel<>(mailboxCapacity);
+            this.mailbox = ChannelRuntime.mailbox(mailboxCapacity);
             this.outputChannel = new ChannelRuntime.Channel<>(
                     Math.max(1, policy.maxMailboxMessages()));
             this.outputStream = new ActorOutputStream<>(

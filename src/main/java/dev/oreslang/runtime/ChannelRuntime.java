@@ -100,7 +100,13 @@ public final class ChannelRuntime {
      * <p>Null is deliberately rejected because Oreslang has no standalone null
      * value. Use Option<T> or an explicit signal/unit value instead.</p>
      */
+    /** Runtime-private mailbox channels never enter general multi-channel select. */
+    static <T> Channel<T> mailbox(int capacity) {
+        return new Channel<>(capacity, DEFAULT_MAX_PENDING_REGISTRATIONS, true);
+    }
+
     public static final class Channel<T> implements AutoCloseable {
+        private final boolean runtimeMailbox;
         private final int capacity;
         private final int maxPendingRegistrations;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
@@ -118,6 +124,12 @@ public final class ChannelRuntime {
          * it is admitted atomically across every participating channel.
          */
         public Channel(int capacity, int maxPendingRegistrations) {
+            this(capacity, maxPendingRegistrations, false);
+        }
+
+        private Channel(int capacity, int maxPendingRegistrations, boolean runtimeMailbox) {
+            this.runtimeMailbox = runtimeMailbox;
+            if (runtimeMailbox && capacity < 1) throw new IllegalArgumentException("mailbox must be buffered");
             if (capacity < 0) {
                 throw new IllegalArgumentException(
                         "channel capacity cannot be negative");
@@ -139,6 +151,7 @@ public final class ChannelRuntime {
         }
 
         public int pendingRegistrations() {
+            if (runtimeMailbox) return 0;
             COORDINATOR.lock();
             try {
                 return registrations.size();
@@ -148,6 +161,7 @@ public final class ChannelRuntime {
         }
 
         public int size() {
+            if (runtimeMailbox) { synchronized (this) { return buffer.size(); } }
             COORDINATOR.lock();
             try {
                 return buffer.size();
@@ -161,6 +175,7 @@ public final class ChannelRuntime {
         }
 
         public boolean isClosed() {
+            if (runtimeMailbox) { synchronized (this) { return closed; } }
             COORDINATOR.lock();
             try {
                 return closed;
@@ -174,6 +189,12 @@ public final class ChannelRuntime {
          * method returns empty.
          */
         public Optional<T> tryRead() {
+            if (runtimeMailbox) {
+                synchronized (this) {
+                    if (buffer.isEmpty() && closed) throw closedFailure();
+                    return Optional.ofNullable(buffer.pollFirst());
+                }
+            }
             Optional<SelectResult> result =
                     SelectSet.of(read(this)).trySelect(SelectPolicy.PRIORITY);
             if (result.isEmpty()) return Optional.empty();
@@ -185,6 +206,13 @@ public final class ChannelRuntime {
         /** Runtime-only drain of committed mailbox values, including after close. */
         boolean drainOne(java.util.function.Consumer<? super T> consumer) {
             Objects.requireNonNull(consumer, "consumer");
+            if (runtimeMailbox) {
+                T value;
+                synchronized (this) { value = buffer.pollFirst(); }
+                if (value == null) return false;
+                consumer.accept(value);
+                return true;
+            }
             ArrayList<Runnable> completions = new ArrayList<>();
             T value;
             COORDINATOR.lock();
@@ -222,6 +250,14 @@ public final class ChannelRuntime {
          */
         public boolean tryWrite(T value) {
             requireValue(value);
+            if (runtimeMailbox) {
+                synchronized (this) {
+                    if (closed) throw closedFailure();
+                    if (buffer.size() == capacity) return false;
+                    buffer.addLast(value);
+                    return true;
+                }
+            }
             return SelectSet.of(write(this, value))
                     .trySelect(SelectPolicy.PRIORITY)
                     .isPresent();
@@ -275,6 +311,12 @@ public final class ChannelRuntime {
          * re-arbitrate atomically across all of their cases.
          */
         public void close(Throwable cause) {
+            if (runtimeMailbox) {
+                synchronized (this) {
+                    if (!closed) { closed = true; closeCause = cause; }
+                }
+                return;
+            }
             ArrayList<Runnable> completions = new ArrayList<>();
             COORDINATOR.lock();
             try {
@@ -310,6 +352,7 @@ public final class ChannelRuntime {
     public record ReadCase<T>(Channel<T> channel) implements SelectCase {
         public ReadCase {
             Objects.requireNonNull(channel, "channel");
+            if (channel.runtimeMailbox) throw new SelectAdmissionException("runtime mailbox is not a guest select channel");
         }
     }
 
@@ -317,6 +360,7 @@ public final class ChannelRuntime {
             implements SelectCase {
         public WriteCase {
             Objects.requireNonNull(channel, "channel");
+            if (channel.runtimeMailbox) throw new SelectAdmissionException("runtime mailbox is not a guest select channel");
             Objects.requireNonNull(
                     value,
                     "Oreslang channels cannot carry null; use Option<T>");
