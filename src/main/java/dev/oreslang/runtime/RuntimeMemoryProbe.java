@@ -31,18 +31,27 @@ public final class RuntimeMemoryProbe {
 
     public static Snapshot sample() {
         OptionalLong bytes = OptionalLong.empty();
-        var threadBean = ManagementFactory.getThreadMXBean();
-        if (threadBean instanceof com.sun.management.ThreadMXBean jdk
-                && jdk.isThreadAllocatedMemorySupported()
-                && jdk.isThreadAllocatedMemoryEnabled()) {
-            long observed = jdk.getThreadAllocatedBytes(Thread.currentThread().threadId());
-            if (observed >= 0L) bytes = OptionalLong.of(observed);
+        try {
+            var threadBean = ManagementFactory.getThreadMXBean();
+            if (threadBean instanceof com.sun.management.ThreadMXBean jdk
+                    && jdk.isThreadAllocatedMemorySupported()
+                    && jdk.isThreadAllocatedMemoryEnabled()) {
+                long observed = jdk.getThreadAllocatedBytes(Thread.currentThread().threadId());
+                if (observed >= 0L) bytes = OptionalLong.of(observed);
+            }
+        } catch (UnsupportedOperationException | SecurityException unsupported) {
+            // Native Image/host monitor APIs may be absent or restricted.
+            // Unavailable is not zero allocated bytes.
         }
         long count = 0L;
         long time = 0L;
         int unknown = 0;
-        List<GarbageCollectorMXBean> collectors =
-                ManagementFactory.getGarbageCollectorMXBeans();
+        List<GarbageCollectorMXBean> collectors;
+        try {
+            collectors = ManagementFactory.getGarbageCollectorMXBeans();
+        } catch (UnsupportedOperationException | SecurityException unsupported) {
+            return new Snapshot(bytes, OptionalLong.empty(), OptionalLong.empty(), 1);
+        }
         for (GarbageCollectorMXBean collector : collectors) {
             long observedCount = collector.getCollectionCount();
             long observedMillis = collector.getCollectionTime();
