@@ -2057,6 +2057,12 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.TaskLambdaExpr) {
+            throw new IllegalArgumentException("async task lambda requires Task<T> return inference, owned argument captures, and scheduled continuation lowering; executable source is not enabled");
+        }
+        if (expr instanceof Ast.AsyncLambdaExpr) {
+            throw new IllegalArgumentException("async lambda requires Future<T> lowering; returning nb Task<T> would produce Future<Task<T>> without implicit flattening");
+        }
         if (expr instanceof Ast.TaskExpr) {
             throw new IllegalArgumentException("nb Task blocks require ownership-safe capture and scheduler lowering; source execution is not enabled");
         }
