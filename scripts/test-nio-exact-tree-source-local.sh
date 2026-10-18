@@ -124,12 +124,15 @@ fi
 # Ignore repository-local overrides that can hide a tracked executable-bit
 # mutation, even though HEAD/tree and default git status appear unchanged.
 # Disable filesystem monitor caching for identity verification as well.
-checkout_status="$(git -c core.fileMode=true -c core.fsmonitor=false status --porcelain --untracked-files=all)" || {
-  printf 'ERROR: Git status inspection failed; refusing qualification.\n' >&2
+# Do not invoke `git status` on an untrusted worktree: it can execute
+# repository-configured filter.*.clean commands. Raw hashes and HEAD/index
+# consistency are independently checked by nio_verify_raw_worktree.py.
+untracked_files="$(git -c core.fsmonitor=false ls-files --others --exclude-standard)" || {
+  printf 'ERROR: Git untracked-file inspection failed.\n' >&2
   exit 75
 }
-if [[ -n "$checkout_status" ]]; then
-  printf 'ERROR: dirty or untracked source checkout, refusing to run tests.\n' >&2
+if [[ -n "$untracked_files" ]]; then
+  printf 'ERROR: untracked source checkout, refusing to run tests.\n' >&2
   exit 67
 fi
 
@@ -230,12 +233,12 @@ unsafe_index_entries="$(git ls-files -v | LC_ALL=C awk 'substr($0,1,2) != "H " {
   printf 'ERROR: Git index flags changed during qualification.\n' >&2
   exit 72
 }
-checkout_status="$(git -c core.fileMode=true -c core.fsmonitor=false status --porcelain --untracked-files=all)" || {
-  printf 'ERROR: postflight Git status inspection failed.\n' >&2
+untracked_files="$(git -c core.fsmonitor=false ls-files --others --exclude-standard)" || {
+  printf 'ERROR: postflight Git untracked-file inspection failed.\n' >&2
   exit 75
 }
-[[ -z "$checkout_status" ]] || {
-  printf 'ERROR: tracked or untracked source changed during qualification.\n' >&2
+[[ -z "$untracked_files" ]] || {
+  printf 'ERROR: untracked source appeared during qualification.\n' >&2
   exit 70
 }
 ignored_files="$(unexpected_ignored_files)" || {

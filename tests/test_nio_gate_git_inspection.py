@@ -91,14 +91,14 @@ exit 0
             else:
                 self.assertTrue((root / 'target/nio-exact-tree-gate/full-maven-verify.log').exists())
 
-    def test_git_status_failure_before_maven_fails_closed(self):
-        self.run_fixture('status --porcelain')
+    def test_git_untracked_scan_failure_before_maven_fails_closed(self):
+        self.run_fixture('ls-files --others --exclude-standard')
 
     def test_git_ignored_scan_failure_before_maven_fails_closed(self):
         self.run_fixture('ls-files --others')
 
-    def test_git_status_failure_after_maven_fails_closed(self):
-        self.run_fixture('status --porcelain', 'postflight')
+    def test_git_untracked_scan_failure_after_maven_fails_closed(self):
+        self.run_fixture('ls-files --others --exclude-standard', 'postflight')
 
     def test_git_ignored_scan_failure_after_maven_fails_closed(self):
         self.run_fixture('ls-files --others', 'postflight')

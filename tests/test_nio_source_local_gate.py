@@ -178,6 +178,22 @@ exit 0
         self.assertIn("result=FAIL", self.receipt())
         self.assertIn("stage=source-identity", self.receipt())
 
+    def test_git_clean_filter_command_is_never_executed(self):
+        # Git status may execute locally configured clean filters on an altered
+        # source file. Source admission must be strictly non-executing.
+        marker = self.outside / "filter-was-executed"
+        (self.root / ".git" / "info" / "attributes").write_text(
+            "source.c filter=hostile\n")
+        subprocess.run(["git", "config", "filter.hostile.clean",
+                        f"sh -c 'touch {marker}; tr A-Z a-z'"],
+                       cwd=self.root, check=True)
+        source = self.root / "source.c"
+        source.write_text(source.read_text().replace("int source", "INT source"))
+        result = self.gate()
+        self.assertEqual(77, result.returncode, result.stderr)
+        self.assertFalse(marker.exists(), "source gate ran untrusted clean filter")
+        self.assertIn("stage=source-identity", self.receipt())
+
     def test_successful_clean_that_leaves_stale_target_fails_closed(self):
         target = self.root / "target"
         target.mkdir()
@@ -231,7 +247,7 @@ exit 0
         self.assertEqual("", ordinary.stdout.strip(),
                          "fixture must prove ordinary status concealed chmod")
         result = self.gate()
-        self.assertEqual(67, result.returncode, result.stderr)
+        self.assertEqual(77, result.returncode, result.stderr)
         self.assertIn("result=FAIL", self.receipt())
         self.assertIn("stage=source-identity", self.receipt())
         self.assertFalse((self.root / "target" / "nio-exact-tree-gate" /
@@ -253,7 +269,7 @@ exit 0
         environment = self.env.copy()
         environment["FAKE_CHANGE_MODE"] = "1"
         result = self.gate(env=environment)
-        self.assertEqual(70, result.returncode, result.stderr)
+        self.assertEqual(77, result.returncode, result.stderr)
         self.assertIn("result=FAIL", self.receipt())
         self.assertIn("stage=postflight-source-identity", self.receipt())
 

@@ -216,6 +216,23 @@ cases, 20 Surefire cases and 10 other verifier cases (55/55 passing),
 with all 13 standalone gate scenarios also executed in isolated repos.
 None of this constitutes JDK25/GraalVM/LLVM compiler execution.
 
+### Non-executing Git source qualification
+
+Untrusted `git status` may launch a repository-configured
+`filter.*.clean` program; a clean checkout assertion must not execute those
+programs. The source-local gate now uses an independent raw-byte file
+verification plus untracked/ignored scans via `git ls-files` instead of
+`git status`. The raw verifier separately cross-checks every staged index
+mode/object ID against recursive `HEAD` tree metadata, rejecting staged
+but uncommitted changes without invoking filters. A source-free negative
+test configures a hostile clean filter with a side-effect marker, changes
+source bytes, and proves the gate refuses admission without creating that
+marker. Tracked content/mode mutations are reported with exit 77 and the
+standalone synthetic scenario expectations were updated accordingly.
+Local checks: 20 source gate, 7 Git-failure, 20 Surefire and 10 additional
+verifier tests, plus 13 standalone scenarios all passed. These are
+source-free qualification tests, not compiler or runtime CI.
+
 ### Raw Git blob identity beyond porcelain status
 
 A local untracked `.git/info/attributes` rule can configure a clean filter

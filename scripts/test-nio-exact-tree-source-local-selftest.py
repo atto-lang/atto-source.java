@@ -139,7 +139,7 @@ if __name__ == '__main__':
              ('native-image-option', 0, None, True),
              ('wrong-commit', 66, 'wrong-commit', False),
              ('wrong-tree', 66, 'wrong-tree', False),
-             ('dirty-checkout', 67, 'dirty', False),
+             ('dirty-checkout', 77, 'dirty', False),
              ('target-symlink', 68, 'target-symlink', False),
              ('receipt-symlink', 68, 'receipt-symlink', False),
              ('wrong-jdk', 69, 'wrong-jdk', False),
@@ -147,7 +147,7 @@ if __name__ == '__main__':
              ('targeted-failure', 89, 'test', False),
              ('verify-failure', 90, 'verify', False),
              ('future-dated-targeted-reports', 76, 'future-targeted', False),
-             ('postflight-mutation', 70, 'mutate', False)]
+             ('postflight-mutation', 77, 'mutate', False)]
     for name, code, fixture, aot in tests:
         scenario(name, code, fixture, aot=aot)
     print(f'PASS: {len(tests)}/{len(tests)} source-free gate scenarios')

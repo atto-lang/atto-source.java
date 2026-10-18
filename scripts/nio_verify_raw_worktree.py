@@ -50,6 +50,20 @@ def verify(commit: str, tree: str) -> int:
                 git('rev-parse', '--verify', 'HEAD^{tree}').decode().strip())
     if observed != (commit, tree):
         raise ValueError('checkout commit/tree changed during verification')
+    # Compare HEAD tree metadata to the staged index without invoking filters.
+    # Otherwise a staged-but-uncommitted tree could be mistaken for HEAD.
+    head_entries = {}
+    for item in git('ls-tree', '-r', '-z', '--full-tree', 'HEAD').split(b'\0'):
+        if not item:
+            continue
+        metadata, tab, path = item.partition(b'\t')
+        fields = metadata.split(b' ')
+        if tab != b'\t' or not path or len(fields) != 3:
+            raise ValueError('invalid HEAD tree entry')
+        mode, kind, oid = fields
+        if kind not in (b'blob', b'commit') or path in head_entries:
+            raise ValueError('unexpected HEAD tree entry')
+        head_entries[path] = (mode, oid)
     total = 0
     for entry in git('ls-files', '--stage', '-z').split(b'\0'):
         if not entry:
@@ -59,6 +73,8 @@ def verify(commit: str, tree: str) -> int:
         if tab != b'\t' or not path or len(fields) != 3 or fields[2] != b'0':
             raise ValueError('invalid or unmerged Git index entry')
         mode, expected_blob, _stage = fields
+        if head_entries.pop(path, None) != (mode, expected_blob):
+            raise ValueError('staged index differs from HEAD tree: ' + repr(path[:120]))
         if mode in (b'100644', b'100755'):
             # Open actual worktree bytes without following the final symlink.
             fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
@@ -88,6 +104,8 @@ def verify(commit: str, tree: str) -> int:
         if actual_blob != expected_blob:
             raise ValueError('raw tracked blob mismatch: ' + repr(path[:120]))
         total += 1
+    if head_entries:
+        raise ValueError('tracked HEAD tree entries missing from index')
     if not total:
         raise ValueError('empty Git index cannot certify a source tree')
     return total
