@@ -302,6 +302,33 @@ public final class WorkflowSupervisorActorV1 {
 
             if (message instanceof Reserve reserve) {
                 if (workflowStore != null) {
+                    WorkflowJournalV1.EffectSnapshot effect =
+                            workflowStore.effect(reserve.effectKey())
+                                    .orElseThrow(() ->
+                                            new IllegalArgumentException(
+                                                    "unknown workflow effect "
+                                                            + reserve.effectKey()));
+                    WorkflowActivityProtocolV1.Kind expectedKind =
+                            WorkflowActivityProtocolV1.kindFor(
+                                    effect.command());
+                    if (expectedKind != reserve.activity()) {
+                        throw new IllegalArgumentException(
+                                "supervisor reservation activity "
+                                        + reserve.activity()
+                                        + " does not match effect command kind "
+                                        + expectedKind);
+                    }
+                    if (effect.state()
+                            == WorkflowJournalV1.EffectState.COMPLETED
+                            || effect.state()
+                            == WorkflowJournalV1.EffectState.ABANDONED) {
+                        throw new IllegalStateException(
+                                "cannot reserve budget for non-runnable effect "
+                                        + reserve.effectKey()
+                                        + " in state "
+                                        + effect.state());
+                    }
+
                     DurableDevLoopV1.Snapshot workflow =
                             workflowStore.replayDevLoop()
                                     .machine()
