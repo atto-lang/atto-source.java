@@ -631,7 +631,13 @@ public final class ActorRuntime implements AutoCloseable {
     private final ControlDispatcher controlDispatcher;
     /** Every admitted actor owns one pre-reserved root fallback generation slot. */
     private final ActorSupervisorControlLane rootSupervisionControl;
-    private final AtomicLong nextSupervisorControlSequence = new AtomicLong(1L);
+    /**
+     * Admission reserves terminal-sequence capacity; finalization claims the
+     * chronological sequence. Exhaustion can therefore reject a new actor but
+     * cannot break teardown of an already-admitted actor.
+     */
+    private final ActorSupervisorControlSequence supervisorControlSequences =
+            new ActorSupervisorControlSequence();
     private volatile Consumer<Object> actorExitHook = ignored -> { };
 
     /**
@@ -909,15 +915,6 @@ public final class ActorRuntime implements AutoCloseable {
                 lane.reservationRejected(),
                 lane.duplicatePublishRejected(),
                 fairnessYields);
-    }
-
-    private long nextSupervisorControlSequence() {
-        long sequence = nextSupervisorControlSequence.getAndIncrement();
-        if (sequence <= 0) {
-            throw new IllegalStateException(
-                    "actor supervisor CONTROL sequence exhausted");
-        }
-        return sequence;
     }
 
     /** Total overrun detections, including notices dropped from the bounded queue. */
@@ -2268,6 +2265,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId id;
         private final ActorKind kind;
         private final long generation;
+        private final ActorSupervisorControlSequence.Reservation terminalControlSequence;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
         /** Cause-free immutable cross-actor failure metadata retained after finalization. */
         private final AtomicReference<ActorFailureNotice> terminalFailureNotice =
@@ -2284,10 +2282,16 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private volatile ActorOutputStream<Object> outputStream;
 
-        private ActorRef(ActorId id, ActorKind kind, long generation) {
+        private ActorRef(
+                ActorId id,
+                ActorKind kind,
+                long generation,
+                ActorSupervisorControlSequence.Reservation terminalControlSequence) {
             this.id = id;
             this.kind = kind;
             this.generation = generation;
+            this.terminalControlSequence =
+                    Objects.requireNonNull(terminalControlSequence, "terminalControlSequence");
             readyFuture.whenCompleteRuntime((ignored, failure) -> {
                 if (failure != null) {
                     readyRefFuture.failFromRuntime(OresFuture.unwrap(failure));
@@ -4585,6 +4589,7 @@ public final class ActorRuntime implements AutoCloseable {
             boolean parentControlReserved = false;
             ActorId id = null;
             long generation = 0L;
+            ActorSupervisorControlSequence.Reservation terminalControlSequence = null;
             try {
                 // All potentially throwing incarnation construction belongs
                 // inside the same rollback boundary as actor registration.
@@ -4594,7 +4599,9 @@ public final class ActorRuntime implements AutoCloseable {
                 if (generation <= 0) {
                     throw new IllegalStateException("actor generation sequence exhausted");
                 }
-                ActorRef<M> ref = new ActorRef<>(id, kind, generation);
+                terminalControlSequence = supervisorControlSequences.reserve();
+                ActorRef<M> ref = new ActorRef<>(
+                        id, kind, generation, terminalControlSequence);
                 rootSupervisionControl.reserve(id, generation);
                 rootControlReserved = true;
                 cell = new ActorCell<>(
@@ -4675,6 +4682,13 @@ public final class ActorRuntime implements AutoCloseable {
                 if (rootControlReserved && id != null) {
                     try {
                         rootSupervisionControl.retireGracefully(id, generation);
+                    } catch (RuntimeException cleanupFailure) {
+                        failure.addSuppressed(cleanupFailure);
+                    }
+                }
+                if (terminalControlSequence != null && terminalControlSequence.pending()) {
+                    try {
+                        terminalControlSequence.release();
                     } catch (RuntimeException cleanupFailure) {
                         failure.addSuppressed(cleanupFailure);
                     }
@@ -7456,7 +7470,8 @@ public final class ActorRuntime implements AutoCloseable {
             Throwable terminalOutput = ref.terminationCause.get();
             if (memorySlice != null) memorySlice.close();
             if (terminalOutput != null && ref.terminalFailureNotice.get() == null) {
-                ref.terminalFailureNotice.compareAndSet(
+                long terminalSequence = ref.terminalControlSequence.claim();
+                if (!ref.terminalFailureNotice.compareAndSet(
                         null,
                         new ActorFailureNotice(
                                 ref.id(),
@@ -7466,8 +7481,13 @@ public final class ActorRuntime implements AutoCloseable {
                                         : Optional.of(parent.ref.id()),
                                 kind,
                                 actorFailureKind(terminalOutput),
-                                nextSupervisorControlSequence(),
-                                boundedDiagnosticType(terminalOutput)));
+                                terminalSequence,
+                                boundedDiagnosticType(terminalOutput)))) {
+                    throw new IllegalStateException(
+                            "duplicate terminal failure notice publication for " + ref.id());
+                }
+            } else if (terminalOutput == null && ref.terminalControlSequence.pending()) {
+                ref.terminalControlSequence.release();
             }
             Throwable observerFailure = ref.terminalFailureNotice.get() == null
                     ? null
