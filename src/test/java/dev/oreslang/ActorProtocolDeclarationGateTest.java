@@ -112,8 +112,34 @@ final class ActorProtocolDeclarationGateTest {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(source)), source);
             assertTrue(error.getMessage().contains("requires/with")
-                    || error.getMessage().contains("unary"), error.getMessage());
+                    || error.getMessage().contains("unary")
+                    || error.getMessage().contains("serial (1,1)"), error.getMessage());
         }
+    }
+
+    @Test
+    void serialMailAdmitsNoUnverifiedRequestOrMessageConcurrency() {
+        String source = "define serial actor Strict as end";
+        Ast.ClassDecl parsed = actor(source);
+        assertTrue(parsed.actorSpecialization().serial());
+        assertEquals(Ast.ActorTransport.MAIL, parsed.actorSpecialization().transport());
+        assertEquals(Ast.ActorReplyRole.STREAM, parsed.actorSpecialization().replyRole());
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("serial (1,1)"), error.getMessage());
+
+        Ast.Program program = Parser.parse(source);
+        Ast.ClassDecl expanded = (Ast.ClassDecl) dev.oreslang.ast.AnnotationExpander
+                .expand(program).modules().getFirst().declarations().getFirst();
+        assertEquals(parsed.actorSpecialization(), expanded.actorSpecialization());
+    }
+
+    @Test
+    void serialTransportMustNotMaskAbsentAdapterDiagnostic() {
+        String source = "define serial http actor StrictGateway as end";
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("runtime-owned binding"), error.getMessage());
     }
 
     @Test
