@@ -96,6 +96,12 @@ assert_status 67 'gitlink/submodule rejected' "$link_tree" source
 # The old process-substitution reader silently ignored an index-enumeration
 # failure. Simulate a failing git ls-files --stage while other Git commands
 # succeed, and confirm the verifier refuses to certify an incomplete audit.
+# Remove the intentionally unsupported/missing gitlink so the status checks
+# pass and the test actually reaches the index-enumeration failure.
+git update-index --force-remove source/fake-submodule
+git commit -qm remove-gitlink-for-index-test
+clean_tree="$(git rev-parse 'HEAD:source')"
+assert_status 0 'clean baseline before forced index error' "$clean_tree" source
 real_git="$(command -v git)"
 mkdir -p "$work/broken-index-bin"
 cat > "$work/broken-index-bin/git" <<'MOCK_GIT'
@@ -109,8 +115,8 @@ chmod +x "$work/broken-index-bin/git"
 export REAL_GIT="$real_git"
 (
   export PATH="$work/broken-index-bin:$PATH"
-  assert_status 68 'index enumeration failure never certifies source' "$link_tree" source
+  assert_status 68 'index enumeration failure never certifies source' "$clean_tree" source
 )
 # Verify ordinary source works after removing the adversarial Git shim.
-assert_status 67 'gitlink remains disallowed after index failure test' "$link_tree" source
+assert_status 0 'clean source remains valid after index failure test' "$clean_tree" source
 echo 'SOURCE_TREE_GATE_TESTS_PASS'
