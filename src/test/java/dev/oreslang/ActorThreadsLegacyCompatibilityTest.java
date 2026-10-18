@@ -116,6 +116,8 @@ final class ActorThreadsLegacyCompatibilityTest {
                 "@ActorMaxThreads(MaxActorThreads.UNKNOWN) define actor Worker as end",
                 "@ActorMaxThreads(1) define actor Worker as end",
                 "@ActorMaxThreads() define actor Worker as end",
+                "@ActorThreads<min = 1, max = 1> define actor Worker as end",
+                "@ActorMaxThreads<MaxActorThreads.LOW> define actor Worker as end",
                 "@ActorMaxThreads(MaxActorThreads.LOW) define class C as end",
                 "@ActorMaxThreads(MaxActorThreads.LOW) fnc work(): void { return; }",
                 "define class C as @ActorMaxThreads(MaxActorThreads.LOW) fnc work(): void { return; } end",
