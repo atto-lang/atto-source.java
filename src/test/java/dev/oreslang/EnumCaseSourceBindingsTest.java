@@ -30,16 +30,16 @@ final class EnumCaseSourceBindingsTest {
                 EnumCaseSourceBindings.compileLocalProof(program);
         Key key = new Key(MODULE, "local_unit.__root__", "foo", 2);
         assertEquals(3, proof.families().get(key).size());
-        assertEquals("Foo.A", proof.select(key,
+        assertEquals("Foo.A", proof.selectStagedTypeRefs(key,
                 List.of(Ast.TypeRef.simple("Foo.A"), Ast.TypeRef.simple("int")))
                 .function().parameters().getFirst().type().name());
-        assertEquals("Foo.B", proof.select(key,
+        assertEquals("Foo.B", proof.selectStagedTypeRefs(key,
                 List.of(Ast.TypeRef.simple("Foo.B"), Ast.TypeRef.simple("int")))
                 .function().parameters().getFirst().type().name());
-        assertEquals("Foo", proof.select(key,
+        assertEquals("Foo", proof.selectStagedTypeRefs(key,
                 List.of(Ast.TypeRef.simple("Foo"), Ast.TypeRef.simple("int")))
                 .function().parameters().getFirst().type().name());
-        assertEquals("Foo", proof.select(key,
+        assertEquals("Foo", proof.selectStagedTypeRefs(key,
                 List.of(Ast.TypeRef.simple("Foo.C"), Ast.TypeRef.simple("int")))
                 .function().parameters().getFirst().type().name());
         IllegalArgumentException blocked = assertThrows(IllegalArgumentException.class,
@@ -57,8 +57,8 @@ final class EnumCaseSourceBindingsTest {
         var proof = EnumCaseSourceBindings.compileLocalProof(parsed);
         Key key = new Key(MODULE, "local_unit.__root__", "foo", 1);
         assertThrows(IllegalArgumentException.class, () ->
-                proof.select(key, List.of(Ast.TypeRef.simple("Foo"))));
-        assertEquals("Foo.B", proof.select(key, List.of(Ast.TypeRef.simple("Foo.B")))
+                proof.selectStagedTypeRefs(key, List.of(Ast.TypeRef.simple("Foo"))));
+        assertEquals("Foo.B", proof.selectStagedTypeRefs(key, List.of(Ast.TypeRef.simple("Foo.B")))
                 .function().parameters().getFirst().type().name());
     }
 
@@ -112,9 +112,9 @@ final class EnumCaseSourceBindingsTest {
         Key statik = new Key(STATIC, "local_unit.__root__.C", "handle", 1);
         assertEquals(2, proof.families().get(instance).size());
         assertEquals(2, proof.families().get(statik).size());
-        assertNotEquals(proof.select(instance, List.of(Ast.TypeRef.simple("Foo.A")))
+        assertNotEquals(proof.selectStagedTypeRefs(instance, List.of(Ast.TypeRef.simple("Foo.A")))
                 .signature().symbolId(),
-                proof.select(statik, List.of(Ast.TypeRef.simple("Foo.A")))
+                proof.selectStagedTypeRefs(statik, List.of(Ast.TypeRef.simple("Foo.A")))
                 .signature().symbolId());
     }
 
