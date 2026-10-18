@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * GUEST execution gate for the actual Oreslang ML scalar actor-state fixture.
  *
  * The .ores fixture was copied byte-for-byte from oreslang-ml's stacked
- * actor-state PR #7 (Git blob a98d7c5282045ad147b8425ec52526a0427bbeec).
+ * actor-state PR #7 (Git blob b1f1a0748b3fabbcb8dcd4a24c32a3fdb5b2146e).
  * This JUnit class requires an actual GraalVM Oreslang context evaluation;
  * pure host-side arithmetic is explicitly NOT accepted as execution evidence.
  *
@@ -47,7 +47,7 @@ final class MlActorStateScalarGuestTest {
 
     @Test void compiledActorStageHasOneStateSchemaAndDeclaredEffects() throws Exception {
         String text = source();
-        assertEquals("a98d7c5282045ad147b8425ec52526a0427bbeec",
+        assertEquals("b1f1a0748b3fabbcb8dcd4a24c32a3fdb5b2146e",
                 gitBlobSha(text), "ML fixture drifted from pinned source Git blob");
         assertDoesNotThrow(() -> verify(text));
         assertEquals(1, count(text, "    state {"));
@@ -79,6 +79,9 @@ final class MlActorStateScalarGuestTest {
         assertTrue(text.contains("return Err(\"STALE_INCAR\")"));
         assertFalse(text.contains("mail.value == \"cancel_failed\""));
         assertTrue(text.contains("self.cancel_rejected(2, 2, 101, 1)"));
+        assertFalse(text.contains("mail.value == \"high_commit\""));
+        assertFalse(text.contains("worker.send(\"high_commit\")"));
+        assertTrue(text.contains("if !final_gradient.is_err(); do"));
         assertTrue(text.contains("worker.send(\"wrong_incarnation\")"));
         assertTrue(text.contains("Result<int, String>"));
         assertTrue(text.contains("return Err(\"STALE_STEP\")"));
