@@ -78,7 +78,7 @@ final class ConstructorSemanticIrTest {
 
     @Test
     void constructionStateCannotJoinDifferentRegionsOrMoveBackward() {
-        ConstructorFlowState fields = ConstructorFlowState.blank(List.of("x"));
+        ConstructorFlowState fields = ConstructorFlowState.blank(List.of("x")).write("x");
         ConstructorSemanticIr.ConstructionState first =
                 new ConstructorSemanticIr.ConstructionState(
                         new ConstructorSemanticIr.ConstructionRegionId("Foo", 0, 0),
@@ -164,4 +164,51 @@ final class ConstructorSemanticIrTest {
                         false);
         assertThrows(IllegalArgumentException.class, expandingGeneric::requireWellFormed);
     }
+    @Test
+    void phaseMachineRejectsSkippedStages() {
+        ConstructorSemanticIr.ConstructionRegionId region =
+                new ConstructorSemanticIr.ConstructionRegionId("Foo", 0, 0);
+        ConstructorFlowState complete = ConstructorFlowState.blank(List.of("x")).write("x");
+        ConstructorSemanticIr.ConstructionState allocated =
+                new ConstructorSemanticIr.ConstructionState(
+                        region, ConstructorSemanticIr.ConstructionPhase.ALLOCATED,
+                        complete, List.of());
+        assertThrows(IllegalArgumentException.class,
+                () -> allocated.transitionTo(ConstructorSemanticIr.ConstructionPhase.CONSTRUCTED));
+        assertThrows(IllegalArgumentException.class,
+                () -> allocated.transitionTo(ConstructorSemanticIr.ConstructionPhase.INITIALIZED));
+
+        ConstructorSemanticIr.ConstructionState initializing =
+                allocated.transitionTo(ConstructorSemanticIr.ConstructionPhase.INITIALIZING);
+        assertFalse(initializing.publishable());
+        assertTrue(initializing.transitionTo(ConstructorSemanticIr.ConstructionPhase.INITIALIZED)
+                .transitionTo(ConstructorSemanticIr.ConstructionPhase.CONSTRUCTED)
+                .publishable());
+    }
+
+    @Test
+    void unfinishedFieldInitializationCannotAdvanceToInitialized() {
+        ConstructorSemanticIr.ConstructionState incomplete =
+                new ConstructorSemanticIr.ConstructionState(
+                        new ConstructorSemanticIr.ConstructionRegionId("Foo", 0, 0),
+                        ConstructorSemanticIr.ConstructionPhase.INITIALIZING,
+                        ConstructorFlowState.blank(List.of("x")), List.of());
+        assertThrows(IllegalArgumentException.class,
+                () -> incomplete.transitionTo(ConstructorSemanticIr.ConstructionPhase.INITIALIZED));
+    }
+
+    @Test
+    void pendingCleanupObligationsPreventPublication() {
+        ConstructorSemanticIr.ConstructionState state =
+                new ConstructorSemanticIr.ConstructionState(
+                        new ConstructorSemanticIr.ConstructionRegionId("Foo", 0, 0),
+                        ConstructorSemanticIr.ConstructionPhase.INITIALIZED,
+                        ConstructorFlowState.blank(List.of("x")).write("x"),
+                        List.of(new ConstructorSemanticIr.CleanupEdge(
+                                ConstructorSemanticIr.CleanupKind.DEFER, "cleanup")));
+        assertThrows(IllegalArgumentException.class,
+                () -> state.transitionTo(ConstructorSemanticIr.ConstructionPhase.CONSTRUCTED));
+        assertFalse(state.publishable());
+    }
+
 }
