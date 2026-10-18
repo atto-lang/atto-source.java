@@ -11,6 +11,95 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** Host-level regression for the same transport called by compiled std/net. */
 final class VmNioTcpListenerTest {
+    // A real selectable channel with a test-owned close barrier: no reliance
+    // on sleeps or a lucky race against the OS's normally fast close().
+    private static final class ClosingProbeServer extends java.nio.channels.ServerSocketChannel {
+        final java.util.concurrent.CountDownLatch closeEntered =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch finishClose =
+                new java.util.concurrent.CountDownLatch(1);
+        private final boolean injectFailure;
+
+        ClosingProbeServer(boolean injectFailure) {
+            super(java.nio.channels.spi.SelectorProvider.provider());
+            this.injectFailure = injectFailure;
+        }
+
+        @Override protected void implCloseSelectableChannel() throws java.io.IOException {
+            closeEntered.countDown();
+            try {
+                if (!finishClose.await(5, TimeUnit.SECONDS))
+                    throw new java.io.IOException("test server close did not receive release");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new java.io.IOException("test server close was interrupted", interrupted);
+            }
+            if (injectFailure)
+                throw new java.io.IOException("injected server descriptor close failure");
+        }
+
+        @Override protected void implConfigureBlocking(boolean blocked) { }
+        @Override public java.nio.channels.ServerSocketChannel bind(
+                java.net.SocketAddress address, int backlog) { return this; }
+        @Override public <T> java.nio.channels.ServerSocketChannel setOption(
+                java.net.SocketOption<T> option, T value) { return this; }
+        @Override public <T> T getOption(java.net.SocketOption<T> option) { return null; }
+        @Override public java.util.Set<java.net.SocketOption<?>> supportedOptions() {
+            return java.util.Set.of();
+        }
+        @Override public java.net.ServerSocket socket() {
+            throw new UnsupportedOperationException("close-fence test server");
+        }
+        @Override public java.nio.channels.SocketChannel accept() {
+            throw new UnsupportedOperationException("close-fence test server");
+        }
+        @Override public java.net.SocketAddress getLocalAddress() {
+            return new java.net.InetSocketAddress("127.0.0.1", 12345);
+        }
+    }
+
+    private static void verifyServerDescriptorCloseFence(boolean failClose) throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        ClosingProbeServer descriptor = new ClosingProbeServer(failClose);
+        VmNioTcpListener listener = new VmNioTcpListener(
+                vm.nioReadiness(), descriptor, 1, 1);
+        Thread closer = Thread.ofPlatform().start(listener::close);
+        try {
+            assertTrue(descriptor.closeEntered.await(3, TimeUnit.SECONDS),
+                    "close never attempted to retire server FD");
+            assertFalse(listener.isTerminated(),
+                    "listener reports termination before physical server close returns");
+            var completion = listener.closeAsync();
+            assertFalse(completion.isDone(),
+                    "listener close Future crossed the descriptor-retirement barrier");
+        } finally {
+            descriptor.finishClose.countDown();
+            closer.join(3000);
+            vm.close();
+        }
+        assertFalse(closer.isAlive(), "server close thread stranded");
+        if (failClose) {
+            var failure = assertThrows(ExecutionException.class,
+                    () -> listener.closeAsync().get(3, TimeUnit.SECONDS));
+            assertInstanceOf(java.io.IOException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains("injected server descriptor"));
+            assertFalse(listener.isTerminated(),
+                    "physical descriptor error must not be reported as clean termination");
+        } else {
+            listener.closeAsync().get(3, TimeUnit.SECONDS);
+            assertTrue(listener.isTerminated(),
+                    "listener becomes quiescent after close actually returns");
+        }
+    }
+
+    @Test void listenerCloseFutureAndTerminatedWaitForPhysicalServerClose() throws Exception {
+        verifyServerDescriptorCloseFence(false);
+    }
+
+    @Test void failedServerDescriptorCloseFailsTheExportedCloseFuture() throws Exception {
+        verifyServerDescriptorCloseFence(true);
+    }
+
     @Test void twoListenersAndGuestShapeEchoShareTheSingleVmSelector() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try (var first = VmNioTcpListener.loopback(vm.nioReadiness(), 0, 16, 4, 16);
