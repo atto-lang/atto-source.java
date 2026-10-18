@@ -549,6 +549,28 @@ class WorkflowSecureInputOpenTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self.read_regular("pipe")
 
+    def test_repeated_directory_rejections_do_not_leak_descriptors(self):
+        proc = Path("/proc/self/fd")
+        if not proc.is_dir():
+            self.skipTest("Linux /proc/self/fd unavailable")
+        Path("dir").mkdir()
+        before = len(list(proc.iterdir()))
+        for _ in range(64):
+            with self.assertRaises(SystemExit):
+                self.read_regular("dir")
+        self.assertEqual(len(list(proc.iterdir())), before)
+
+    def test_bad_payload_rejections_do_not_leak_descriptors(self):
+        proc = Path("/proc/self/fd")
+        if not proc.is_dir():
+            self.skipTest("Linux /proc/self/fd unavailable")
+        Path("payload").write_bytes(b"\xef\xbb\xbf{}")
+        before = len(list(proc.iterdir()))
+        for _ in range(64):
+            with self.assertRaises(SystemExit):
+                self.read_regular("payload")
+        self.assertEqual(len(list(proc.iterdir())), before)
+
     def test_empty_oversized_or_invalid_encoding_rejected(self):
         for name, data in (("empty", b""),
                            ("huge", b"x" * 33),
