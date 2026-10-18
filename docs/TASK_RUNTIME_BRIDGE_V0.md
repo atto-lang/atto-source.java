@@ -16,3 +16,5 @@ The detached error sink is a bridge to the owner/supervisor, not permission to s
 The **proposed source** `(|int a, string b| -> nb { return a; })(5, "xyz")` returns `Task<int>`, not `Future<Task<int>>`. It is unnecessary (and currently unsupported) to prepend `async` to the lambda.
 
 For consumers requiring a `Future<int>`, write `let Future<int> f = (|int a, string b| -> nb { return a; })(5, "xyz").asFuture();` after syntax/typing is enabled. Host-side `OresTask<T>.asFuture()` now returns the same completion future as `getAwaited()`, without creating a second computation or changing Task ownership. This is **not yet guest-source lowering** and must preserve move-only result rules.
+
+**Capability audit:** `OresTask<T>.asFuture()` currently returns the *same cancelable `OresFuture<T>`*. The projection therefore carries cancellation authority, not a read-only observation right. A future source-facing conversion must not leak it across actors, tenants, or trust domains unless authorized; adding a truly read-only Future view requires a distinct capability/interface and cancellation-independent subscription. No extra task is created by this current projection.
