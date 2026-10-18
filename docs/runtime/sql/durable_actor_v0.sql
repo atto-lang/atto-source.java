@@ -58,3 +58,13 @@ CREATE TABLE IF NOT EXISTS ores_durable_webhook_wait (
 CREATE INDEX IF NOT EXISTS ores_durable_wait_repository
   ON ores_durable_webhook_wait (installation_id,repository_id,expected_sha,expected_ref)
   WHERE stage='waiting_webhook';
+
+-- Existing v0 databases predate the lease/claim columns. These additions are
+-- idempotent; apply under an operator-controlled migration before deploying
+-- the new adapter. Live lease cutover requires all old writers to be stopped.
+ALTER TABLE ores_durable_actor ADD COLUMN IF NOT EXISTS lease_owner uuid;
+ALTER TABLE ores_durable_actor ADD COLUMN IF NOT EXISTS lease_until timestamptz;
+ALTER TABLE ores_durable_outbox ADD COLUMN IF NOT EXISTS claim_token uuid;
+ALTER TABLE ores_durable_outbox ADD COLUMN IF NOT EXISTS claim_epoch bigint;
+ALTER TABLE ores_durable_outbox ADD COLUMN IF NOT EXISTS claim_until timestamptz;
+ALTER TABLE ores_durable_outbox ADD COLUMN IF NOT EXISTS attempt_count integer NOT NULL DEFAULT 0;
