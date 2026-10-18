@@ -30,6 +30,15 @@ final class EnumNullaryStagedLiteralBindingTest {
     }
 
     @Test
+    void bindingHasNoPublicForgingConstructor() {
+        for (var constructor : EnumCaseSourceBindings.StagedLiteralBinding.class
+                .getDeclaredConstructors()) {
+            assertTrue(java.lang.reflect.Modifier.isPrivate(constructor.getModifiers()),
+                    "a host caller must not be able to fabricate a static-binding receipt");
+        }
+    }
+
+    @Test
     void parsedLiteralHasExactSelectedDeclarationAndUniqueStaticSymbol() {
         Ast.Program program = Parser.parse("""
                 define enum Foo as A, B, C end
