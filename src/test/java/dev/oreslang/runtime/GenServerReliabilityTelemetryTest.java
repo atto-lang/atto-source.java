@@ -113,4 +113,37 @@ final class GenServerReliabilityTelemetryTest {
         assertEquals(iterations,
                 counters.get(ActorReliabilityKernel.EventKind.CALL_REGISTERED));
     }
+
+    @Test
+    void targetTerminationTelemetryIsTypedAndPayloadFree() throws Exception {
+        var time = new AtomicLong(1);
+        var kernel = new ActorReliabilityKernel(16, time::getAndIncrement);
+        var calls = new GenServerPendingCalls<String>(2, kernel);
+        var call = calls.register(target(9));
+
+        assertEquals(1, calls.failTarget(
+                target(9), GenServerPendingCalls.TargetTermination.QUOTA_EXCEEDED));
+
+        var failure = assertThrows(
+                java.util.concurrent.ExecutionException.class,
+                call.future()::get);
+        var projected = assertInstanceOf(
+                GenServerPendingCalls.GenServerTargetTerminatedException.class,
+                failure.getCause());
+        assertEquals(
+                GenServerPendingCalls.TargetTermination.QUOTA_EXCEEDED,
+                projected.termination());
+        assertNull(projected.getCause());
+        assertEquals(0, projected.getSuppressed().length);
+
+        var events = kernel.snapshot().recentEvents();
+        var terminal = events.stream()
+                .filter(e -> e.kind() == ActorReliabilityKernel.EventKind.CALL_CLOSED)
+                .findFirst()
+                .orElseThrow();
+        assertEquals(ActorReliabilityKernel.FaultClass.WATCHDOG, terminal.fault());
+        assertEquals(9L, terminal.actor().incarnation());
+        assertEquals(0, calls.pendingCount());
+    }
+
 }
