@@ -63,12 +63,13 @@ def require_active_security_job(workflow):
     block = workflow.split(marker, 1)[1]
     next_job = re.search(r"(?m)^  [A-Za-z_][A-Za-z_0-9-]*:\s*$", block)
     if next_job:
-        block = block[:next_job.start()]
+        raise ValueError("private-CI workflow contains an unreviewed additional job")
     fields = re.findall(r"(?m)^    ([A-Za-z_][A-Za-z_0-9-]*):", block)
     if fields != ["runs-on", "timeout-minutes", "steps"]:
         raise ValueError("private-CI security job contains an unsupported control")
     if not re.search(r"(?m)^    runs-on: ubuntu-24\.04\s*$", block):
         raise ValueError("private-CI job runner is not pinned")
+    return block
 
 
 def require_exact_publisher_execution(workflow):
@@ -139,13 +140,13 @@ def validate(codeowners, workflow):
         missing = set(SECURITY_PATHS) - set(filtered)
         if missing:
             raise ValueError(event + " does not trigger on " + sorted(missing)[0])
-    require_active_security_job(workflow)
-    require_exact_publisher_execution(workflow)
+    active_job = require_active_security_job(workflow)
+    require_exact_publisher_execution(active_job)
     require_unconditional_test_step(
-        workflow, "Validate CI security review coverage",
+        active_job, "Validate CI security review coverage",
         "python3 -I -B scripts/test-private-ci-review-coverage.py")
     require_unconditional_test_step(
-        workflow, "Validate offline regression runner",
+        active_job, "Validate offline regression runner",
         "bash scripts/test-run-private-ci-regressions-local.sh")
 
 
@@ -299,6 +300,38 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "full publisher test step"):
             validate(self.owners, damaged)
 
+
+    def test_unreviewed_second_job_is_denied(self):
+        damaged = (self.workflow
+                   + "  decoy-job:\n"
+                   + "    runs-on: ubuntu-24.04\n"
+                   + "    steps:\n"
+                   + "      - name: Unreviewed\n"
+                   + "        run: echo bypass\n")
+        with self.assertRaisesRegex(ValueError, "unreviewed additional job"):
+            validate(self.owners, damaged)
+
+    def test_spoofed_full_suite_in_second_job_is_denied(self):
+        marker = "      - name: Execute exact source-free publisher suite with isolated Python\n"
+        start = self.workflow.index(marker)
+        step = self.workflow[start:]
+        damaged = (self.workflow[:start]
+                   + "  decoy-job:\n"
+                   + "    runs-on: ubuntu-24.04\n"
+                   + "    steps:\n" + step)
+        with self.assertRaisesRegex(ValueError, "unreviewed additional job"):
+            validate(self.owners, damaged)
+
+    def test_security_review_step_placed_in_second_job_is_denied(self):
+        start = self.workflow.index("      - name: Validate CI security review coverage\n")
+        end = self.workflow.index("      - name: Validate offline regression runner\n")
+        step = self.workflow[start:end]
+        damaged = (self.workflow[:start] + self.workflow[end:]
+                   + "  decoy-job:\n"
+                   + "    runs-on: ubuntu-24.04\n"
+                   + "    steps:\n" + step)
+        with self.assertRaisesRegex(ValueError, "unreviewed additional job"):
+            validate(self.owners, damaged)
 
 
 if __name__ == "__main__":
