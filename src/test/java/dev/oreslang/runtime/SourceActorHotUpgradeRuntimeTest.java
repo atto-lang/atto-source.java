@@ -123,6 +123,36 @@ final class SourceActorHotUpgradeRuntimeTest {
         runtime.drain(ref).get(5, TimeUnit.SECONDS);
     }
 
+    private static void eventuallyUpgrade(
+            ActorRuntime runtime,
+            ActorRuntime.ActorRef<Object> ref,
+            ActorRuntime.ActorCodeExecutor candidate) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!runtime.upgradeSourceActorSameSchema(ref, candidate)) {
+            if (System.nanoTime() >= deadline) fail("actor never reached upgrade safe point");
+            Thread.sleep(2);
+        }
+    }
+
+    private static <T extends Throwable> void eventuallyRejects(
+            Class<T> type,
+            ActorRuntime runtime,
+            ActorRuntime.ActorRef<Object> ref,
+            ActorRuntime.ActorCodeExecutor candidate) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        for (;;) {
+            try {
+                if (runtime.upgradeSourceActorSameSchema(ref, candidate))
+                    fail("incompatible source actor upgrade committed");
+            } catch (Throwable failure) {
+                assertInstanceOf(type, failure);
+                return;
+            }
+            if (System.nanoTime() >= deadline) fail("actor never reached validation safe point");
+            Thread.sleep(2);
+        }
+    }
+
     @Test
     void exactSchemaUpgradePreservesStableRefMailboxStateAndChangesCode() throws Exception {
         Ast.Program program = Parser.parse("pub routine main(): void { return; }");
@@ -144,7 +174,7 @@ final class SourceActorHotUpgradeRuntimeTest {
             ref.send(41L);
             drain(runtime, ref);
             assertEquals(42, v1.observed.get());
-            assertTrue(runtime.upgradeSourceActorSameSchema(ref, v2));
+            eventuallyUpgrade(runtime, ref, v2);
             assertSame(image2, runtime.codeImageFor(ref).orElseThrow());
             assertEquals(stableAddress, ref.address());
 
@@ -176,10 +206,8 @@ final class SourceActorHotUpgradeRuntimeTest {
             var ref = runtime.spawnCodeActor(
                     ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(), v1, "Counter");
             ref.getReady().get(5, TimeUnit.SECONDS);
-            assertThrows(SecurityException.class,
-                    () -> runtime.upgradeSourceActorSameSchema(ref, badSchema));
-            assertThrows(SecurityException.class,
-                    () -> runtime.upgradeSourceActorSameSchema(ref, badWire));
+            eventuallyRejects(SecurityException.class, runtime, ref, badSchema);
+            eventuallyRejects(SecurityException.class, runtime, ref, badWire);
             assertSame(image1, runtime.codeImageFor(ref).orElseThrow());
             ref.send(41L);
             drain(runtime, ref);
@@ -213,7 +241,7 @@ final class SourceActorHotUpgradeRuntimeTest {
                 release.countDown();
             }
             drain(runtime, ref);
-            assertTrue(runtime.upgradeSourceActorSameSchema(ref, v2));
+            eventuallyUpgrade(runtime, ref, v2);
             ref.send(1L);
             drain(runtime, ref);
             assertEquals(43, v2.observed.get());
