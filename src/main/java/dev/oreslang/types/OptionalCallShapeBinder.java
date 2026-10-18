@@ -249,6 +249,34 @@ public final class OptionalCallShapeBinder {
         return selected;
     }
 
+    /**
+     * Convert checked declaration metadata, not call-site guesswork, into
+     * binder formals. A required Option<T> is not an omittable T? formal.
+     * The variadic declaration grammar must be audited independently.
+     */
+    public static List<Parameter> formalParameterShapes(List<Ast.Param> formals) {
+        Objects.requireNonNull(formals, "formals");
+        List<Parameter> result = new ArrayList<>(formals.size());
+        for (Ast.Param formal : formals) {
+            Objects.requireNonNull(formal, "formal");
+            if (formal.optional() && (formal.structural() || formal.mutable())) {
+                throw new IllegalArgumentException(
+                        "omittable formal cannot be structural or mutable");
+            }
+            result.add(formal.optional()
+                    ? Parameter.optional(formal.name())
+                    : Parameter.required(formal.name()));
+        }
+        checkedParameters(result);
+        return List.copyOf(result);
+    }
+
+    /** Structural binder proof only; executable Option<T> lowering is gated. */
+    public static Plan bindParsedFormals(
+            List<Ast.Param> formals, List<Ast.CallArgument> callItems) {
+        return bindParsed(formalParameterShapes(formals), callItems);
+    }
+
     public record Parameter(String name, boolean optional, boolean variadic) {
         public Parameter {
             if (name == null || name.isBlank()) {
