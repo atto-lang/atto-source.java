@@ -23,7 +23,12 @@ final class UntrustedSourceIdentity {
         Objects.requireNonNull(codeUnitId, "codeUnitId");
         Objects.requireNonNull(sourceText, "sourceText");
         if (codeUnitId.isBlank() || codeUnitId.length() > MAX_CODE_UNIT_CHARS
-                || codeUnitId.codePoints().anyMatch(Character::isISOControl)) {
+                || codeUnitId.codePoints().anyMatch(cp ->
+                        Character.isISOControl(cp)
+                        || Character.getType(cp) == Character.FORMAT)) {
+            // Unicode direction/zero-width formatting controls can make
+            // different immutable modules appear identical in diagnostics.
+            // Such names are never authority; reject ambiguous spelling here.
             throw new IllegalArgumentException("invalid bounded untrusted code-unit identity");
         }
         for (int i = 0; i < codeUnitId.length(); i++) {
