@@ -137,6 +137,28 @@ final class EnumCaseSourceBindingsTest {
     }
 
     @Test
+    void genericActorAndInheritedSpecializationsRequireSeparateProof() {
+        Ast.Program generic = Parser.parse("""
+                define enum Foo as A, B end
+                fnc f<T>(Foo.A a, T v): void {}
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> EnumCaseSourceBindings.compileLocalProof(generic));
+
+        Ast.Program inherited = Parser.parse("""
+                define enum Foo as A, B end
+                define class Base as
+                    pub f(int n): void {}
+                end
+                define class Derived extends Base as
+                    pub f(Foo.A a): void {}
+                end
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> EnumCaseSourceBindings.compileLocalProof(inherited));
+    }
+
+    @Test
     void unsafeEnumPayloadDisqualifiesTheWholeFamily() {
         Ast.Program parsed = Parser.parse("""
                 define enum Foo as A, B: List<int> end
