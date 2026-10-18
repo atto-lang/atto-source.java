@@ -30,12 +30,12 @@ final class WorkflowActivityActorV1Test {
                     next(outputs));
 
             var claim = new WorkflowJournalV1.Claim(
-                    "effect/code",
+                    "devloop/run-1/iteration/1/code",
                     new DurableDevLoopV1.RequestCode(
                             1,
                             "goal",
                             null,
-                            "effect/code"),
+                            "devloop/run-1/iteration/1/code"),
                     "claim/1",
                     1,
                     1000L);
@@ -51,7 +51,7 @@ final class WorkflowActivityActorV1Test {
 
             actor.send(new WorkflowActivityActorV1.ReportOutcome(
                     new WorkflowActivityProtocolV1.Succeeded(
-                            "effect/code",
+                            "devloop/run-1/iteration/1/code",
                             "claim/1",
                             "receipt://code",
                             new DurableDevLoopV1.CodeChanged(
@@ -157,7 +157,7 @@ final class WorkflowActivityActorV1Test {
             var outputs = actor.outputs();
 
             var command = new DurableDevLoopV1.PushCode(
-                    1, "patch://one", "effect/push");
+                    1, "patch://one", "devloop/run-1/iteration/1/push");
             actor.send(new WorkflowActivityActorV1.Configure(
                     "git-1",
                     WorkflowActivityProtocolV1.Kind.GIT,
