@@ -42,4 +42,23 @@ final class GenServerReplyLedgerHardeningTest {
         assertTrue(ledger.tryReply(b, current));
         assertEquals(0, ledger.pendingCount());
     }
+
+    @Test
+    void closeReturnsTicketsInDeterministicAdmissionOrder() {
+        var ledger = new GenServerReplyLedger(4);
+        var a = ledger.register(target());
+        var b = ledger.register(target());
+        var c = ledger.register(target());
+
+        var closed = ledger.closeTickets();
+        assertEquals(3, closed.size());
+        assertSame(a, closed.get(0));
+        assertSame(b, closed.get(1));
+        assertSame(c, closed.get(2));
+        assertEquals(1L, a.correlationForDiagnostics());
+        assertEquals(2L, b.correlationForDiagnostics());
+        assertEquals(3L, c.correlationForDiagnostics());
+        assertEquals(0, ledger.pendingCount());
+    }
+
 }
