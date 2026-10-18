@@ -431,6 +431,39 @@ final class SameModuleLiteralInvocationTest {
                 safe, calling, staged));
     }
 
+    @Test
+    void forgedOpaqueOrNullLiteralOutsideCallCannotEarnPureLexicalWitness() {
+        Ast.Program original = program();
+        Ast.ModuleDecl module = original.modules().getFirst();
+        Ast.FunctionDecl source = caller(original);
+        Ast.StagedCallExpr staged = call(source);
+
+        // LiteralExpr(Object) can be directly assembled with payloads the
+        // language parser never emits as pure scalar literal expressions.
+        for (Ast.LiteralExpr forged : List.of(
+                new Ast.LiteralExpr(new Object()),
+                new Ast.LiteralExpr(null),
+                new Ast.LiteralExpr(new Ast.Imaginary(2.0)))) {
+            Ast.FunctionDecl modified = withBody(source, List.of(
+                    new Ast.ExprStmt(forged),
+                    source.body().getFirst(),
+                    new Ast.ReturnStmt(null)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> SameModuleLiteralInvocation.inspect(
+                            withCaller(module, modified), modified, staged));
+        }
+
+        // Independently typed primitive scalars remain admissible when they
+        // occur outside the selected source call.
+        Ast.FunctionDecl scalar = withBody(source, List.of(
+                new Ast.ExprStmt(new Ast.LiteralExpr(13L)),
+                new Ast.ExprStmt(new Ast.LiteralExpr(true)),
+                source.body().getFirst(),
+                new Ast.ReturnStmt(null)));
+        assertDoesNotThrow(() -> SameModuleLiteralInvocation.inspect(
+                withCaller(module, scalar), scalar, staged));
+    }
+
     private static Ast.FunctionDecl withBody(Ast.FunctionDecl source, List<Ast.Stmt> body) {
         return new Ast.FunctionDecl(
                 source.name(), source.kind(), source.visibility(), source.async(),
