@@ -843,6 +843,59 @@ final class SqliteWorkflowJournalV1Test {
         }
     }
 
+    @Test
+    void separateProcessesHaveSingleDurableWinnerForOnePendingEffect()
+            throws Exception {
+        Path db = tempDir.resolve("two-process-claim.db");
+        seedStarted(db, "run-two-process-claim");
+        Path gate = tempDir.resolve("claim-start.gate");
+
+        Process first = startClaimWorker(db, "worker-a", gate);
+        Process second = startClaimWorker(db, "worker-b", gate);
+        java.nio.file.Files.writeString(gate, "go");
+
+        assertTrue(first.waitFor(20, TimeUnit.SECONDS));
+        assertTrue(second.waitFor(20, TimeUnit.SECONDS));
+
+        int firstExit = first.exitValue();
+        int secondExit = second.exitValue();
+        assertTrue(
+                (firstExit == 0 && secondExit == 3)
+                        || (firstExit == 3 && secondExit == 0),
+                () -> "expected exactly one durable claim winner, exits="
+                        + firstExit + "," + secondExit);
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            assertEquals(1, reopened.snapshot().claimedEffects());
+            assertEquals(0, reopened.snapshot().pendingEffects());
+            var effect = reopened.effects().getFirst();
+            assertEquals(1, effect.attempts());
+            assertTrue(
+                    "worker-a".equals(effect.workerId())
+                            || "worker-b".equals(effect.workerId()));
+            assertNotNull(effect.claimToken());
+        }
+    }
+
+    private static Process startClaimWorker(
+            Path database,
+            String workerId,
+            Path gate) throws Exception {
+        Path java = Path.of(
+                System.getProperty("java.home"), "bin", "java");
+        String classPath = System.getProperty("java.class.path");
+        return new ProcessBuilder(
+                java.toString(),
+                "-cp",
+                classPath,
+                SqliteWorkflowJournalClaimWorkerV1.class.getName(),
+                database.toAbsolutePath().toString(),
+                workerId,
+                gate.toAbsolutePath().toString())
+                .redirectErrorStream(true)
+                .start();
+    }
+
     private static int runCrashWorker(
             Path database,
             SqliteWorkflowJournalV1.FaultPoint point,

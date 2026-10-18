@@ -74,14 +74,31 @@ This model is deliberately smaller than `ActorRuntime`. Its purpose is to make t
 
 The companion `async-testing` proof repo contains runtime refinement checks over real channels/select/actors. A runtime change is not considered fully verified merely because the model is green: both the model and implementation-level proofs should pass.
 
+## Independent TLA+/TLC tier
+
+`DurableWorkflowV1.tla` is an independently authored specification of the
+workflow effect/delivery crash window. It does **not** call into or translate
+the Java reducer. The model carries explicit claim generations, retry
+authority, ambiguity, reconciliation, delivery sealing, cancellation, and a
+settlement counter.
+
+`DurableWorkflowV1.cfg` asks TLC to exhaustively check a finite
+`MaxAttempts = 2` instance for type safety, terminal monotonicity,
+at-most-once settlement, claim-generation/ABA safety, and the key rule that
+revoked ambiguous authority can never become runnable again.
+
+This is deliberately a second authority beside
+`FormalDurableWorkflowModelCheckTest`: disagreement between the independent
+TLA+ model and the Java bounded model is a defect to investigate, not something
+to normalize away.
+
 ## Running
 
 ```sh
 mvn -B -Dtest='Formal*ModelCheckTest' test
 ```
 
-No additional model-checking dependency is required; the finite-state explorer is implemented with ordinary Java/JUnit so it runs anywhere the existing compiler/runtime test suite runs.
-
+No additional model-checking dependency is required for the Java finite-state explorer. The independent TLA+ tier uses a pinned or locally supplied TLA2Tools jar; for example:\n\n```sh\njava -cp \"$TLA2TOOLS_JAR\" tlc2.TLC -config formal/DurableWorkflowV1.cfg formal/DurableWorkflowV1.tla\n```\n
 ## Next formal targets
 
 The next models should cover:
