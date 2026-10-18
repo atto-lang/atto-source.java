@@ -71,6 +71,29 @@ final class ActorUpgradeEpochGateTest {
     }
 
     @Test
+    void failedPinAccountingIsRetryableWithoutPrematureRelease() throws Exception {
+        try (var gate = new ActorUpgradeEpochGate(42, image('a'))) {
+            var turn = gate.pin();
+            var candidate = gate.prepare(image('b'));
+            var count = ActorUpgradeEpochGate.class.getDeclaredField("pins");
+            count.setAccessible(true);
+            try {
+                count.setInt(gate, 0); // deterministic corruption/fault injection
+                assertThrows(IllegalStateException.class, turn::close);
+                assertTrue(gate.permits(turn), "failed retirement must retain its lease");
+            } finally {
+                count.setInt(gate, 1);
+            }
+            assertFalse(gate.publish(candidate));
+            turn.close();
+            turn.close();
+            assertEquals(0, gate.livePins());
+            assertFalse(gate.permits(turn));
+            assertTrue(gate.publish(candidate));
+        }
+    }
+
+    @Test
     void closingGateRejectsPublicationButWaitsForExistingPins() {
         var gate = new ActorUpgradeEpochGate(9, image('a'));
         var turn = gate.pin();
