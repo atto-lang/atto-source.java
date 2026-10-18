@@ -63,6 +63,7 @@ public final class OresVM implements AutoCloseable {
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
 
     private final OresCarrierBudget carrierBudget;
+    private final OresCarrierPermitPool carrierPermitPool;
     private final ThreadPoolExecutor controlExecutor;
     private final OresScheduler rootScheduler;
     /** VM-owned selector domain: reactor #0 starts on first accepted watch. */
@@ -76,15 +77,27 @@ public final class OresVM implements AutoCloseable {
         // Resolve before allocating any native/JVM worker: malformed budgets
         // cannot leave a partially constructed VM with resident threads.
         this.carrierBudget = OresCarrierBudget.configured();
+        this.carrierPermitPool = carrierBudget == null
+                ? null
+                : new OresCarrierPermitPool(carrierBudget.maximum());
         AtomicInteger carrierId = new AtomicInteger();
-        ThreadFactory factory = runnable -> Thread.ofPlatform()
-                .daemon(true)
-                .name("ores-control-plane-" + carrierId.getAndIncrement())
-                .unstarted(() -> {
-                    ON_CONTROL_CARRIER.set(Boolean.TRUE);
-                    try { runnable.run(); }
-                    finally { ON_CONTROL_CARRIER.remove(); }
-                });
+        ThreadFactory factory = carrierPermitPool == null
+                ? runnable -> Thread.ofPlatform()
+                        .daemon(true)
+                        .name("ores-control-plane-" + carrierId.getAndIncrement())
+                        .unstarted(() -> {
+                            ON_CONTROL_CARRIER.set(Boolean.TRUE);
+                            try { runnable.run(); }
+                            finally { ON_CONTROL_CARRIER.remove(); }
+                        })
+                : carrierPermitPool.threadFactory(
+                        OresCarrierPermitPool.Domain.CONTROL,
+                        "ores-control-plane-",
+                        runnable -> () -> {
+                            ON_CONTROL_CARRIER.set(Boolean.TRUE);
+                            try { runnable.run(); }
+                            finally { ON_CONTROL_CARRIER.remove(); }
+                        });
 
         // CONTROL is demand-driven in the default throughput profile. A
         // configured nonzero minimum is an explicit warm-start policy. Extra
@@ -198,6 +211,8 @@ public final class OresVM implements AutoCloseable {
     int nioReactorCount() { return nioReadiness.reactorCount(); }
 
     OresCarrierBudget carrierBudget() { return carrierBudget; }
+
+    OresCarrierPermitPool carrierPermitPool() { return carrierPermitPool; }
 
     /** Test/host diagnostic for OresVM-owned runtime threads only. JVM GC,
      * JIT/JVMCI and embedder threads are intentionally outside this census.
