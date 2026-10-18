@@ -2866,7 +2866,9 @@ public final class OwnershipChecker {
             }
         }
         for (Ast.FieldDecl field : klass.fields()) {
-            fields.put(field.name(), new ResolvedField(klass, concreteType, field));
+            if (!field.isStatic()) {
+                fields.put(field.name(), new ResolvedField(klass, concreteType, field));
+            }
         }
         stack.remove(klass);
         return List.copyOf(fields.values());
@@ -2876,7 +2878,7 @@ public final class OwnershipChecker {
             Ast.ClassDecl klass, Ast.TypeRef concreteType, String name, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return null;
         for (Ast.FieldDecl field : klass.fields()) {
-            if (field.name().equals(name)) {
+            if (!field.isStatic() && field.name().equals(name)) {
                 seen.remove(klass);
                 return new ResolvedField(klass, concreteType, field);
             }
@@ -3062,7 +3064,7 @@ public final class OwnershipChecker {
     private Ast.FieldDecl findField(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return null;
         for (Ast.FieldDecl field : klass.fields()) {
-            if (field.name().equals(name)) {
+            if (!field.isStatic() && field.name().equals(name)) {
                 seen.remove(klass);
                 return field;
             }
