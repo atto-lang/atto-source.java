@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -242,6 +241,7 @@ final class WorkflowActorWireV1 {
             Set<WorkflowActivityProtocolV1.Capability> values) {
         return values.stream()
                 .map(Enum::name)
+                .sorted()
                 .map(value -> (Object) value)
                 .toList();
     }
@@ -372,9 +372,15 @@ final class WorkflowActorWireV1 {
     private static WorkflowSqlCodecV1.Encoded decoded(Object value) {
         Map<String, Object> map = objectMap(value);
         Object rawInt = map.get("int1");
-        Integer int1 = rawInt == null
-                ? null
-                : Math.toIntExact(((Number) rawInt).longValue());
+        final Integer int1;
+        if (rawInt == null) {
+            int1 = null;
+        } else if (rawInt instanceof Number number) {
+            int1 = Math.toIntExact(number.longValue());
+        } else {
+            throw new IllegalArgumentException(
+                    "wire field int1 must be numeric or null");
+        }
         return new WorkflowSqlCodecV1.Encoded(
                 string(map, "type"),
                 int1,
