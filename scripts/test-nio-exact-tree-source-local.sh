@@ -91,7 +91,7 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
 fi
 
 stage=toolchain
-for tool in java javac mvn; do
+for tool in java javac mvn python3; do
   command -v "$tool" >/dev/null || { printf 'ERROR: required tool missing: %s\n' "$tool" >&2; exit 69; }
 done
 java_version="$(java -version 2>&1 | head -n 1)"
