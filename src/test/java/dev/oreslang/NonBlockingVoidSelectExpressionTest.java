@@ -121,6 +121,37 @@ final class NonBlockingVoidSelectExpressionTest {
                         """));
     }
 
+    @Test
+    void awaitingVoidSelectNeverCreatesAStorableVoidValue() {
+        for (String declaration : new String[] {
+                "const void result", "const result"
+        }) {
+            String source = """
+                    actor fnc invalid(): void {
+                      %s = await nb select first {
+                        default: -> { stdio.stdout.write("side-effect"); }
+                      };
+                      return;
+                    }
+                    """.formatted(declaration);
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source), declaration);
+        }
+    }
+
+    @Test
+    void voidSelectStillRequiresActorExecutionDomain() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        fnc invalid(): void {
+                          const Future<void> pending = nb select first {
+                            default: -> { stdio.stdout.write("side-effect"); }
+                          };
+                          return;
+                        }
+                        """));
+    }
+
     private static String run(String code) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, code, "nb-select-void.ores")
