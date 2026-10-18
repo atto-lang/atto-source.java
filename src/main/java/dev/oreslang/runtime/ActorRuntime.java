@@ -1403,13 +1403,24 @@ public final class ActorRuntime implements AutoCloseable {
      * identity or carrier pool.
      */
     public <T> OresFuture<T> startActorTask(OresScheduler.Task<T> task) {
+        return startActorTaskWithPhysicalRetirement(task, () -> { });
+    }
+
+    /**
+     * A cancelled actor task can still be unwinding its admitted physical turn.
+     * Critical/state tickets retire only after the scheduler observes exit.
+     */
+    public <T> OresFuture<T> startActorTaskWithPhysicalRetirement(
+            OresScheduler.Task<T> task, Runnable onPhysicallyRetired) {
         Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(onPhysicallyRetired, "onPhysicallyRetired");
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        return cell.sourceScheduler().start(task);
+        return cell.sourceScheduler().startWithPhysicalRetirement(
+                task, onPhysicallyRetired);
     }
 
     private boolean ownFuture(
