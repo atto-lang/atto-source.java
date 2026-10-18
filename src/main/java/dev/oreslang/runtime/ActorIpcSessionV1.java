@@ -127,7 +127,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
      * One-shot launcher secret. Package-private byte accessors deliberately
      * keep it out of guest/public API surfaces.
      */
-    static final class BootstrapMaterial {
+    static final class BootstrapMaterial implements AutoCloseable {
         private final byte[] masterKey;
         private final byte[] challenge;
         private final UUID logicalActorId;
@@ -160,6 +160,11 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         void destroy() {
             Arrays.fill(masterKey, (byte) 0);
             Arrays.fill(challenge, (byte) 0);
+        }
+
+        @Override
+        public void close() {
+            destroy();
         }
     }
 
@@ -316,6 +321,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
             throw new IllegalArgumentException("DATA message sequence must be positive");
         }
         long sequence = nextSupervisorDataSequence;
+        long next = increment(sequence, "supervisor DATA");
         byte[] frame = encodeFrame(
                 dataKey,
                 Lane.DATA,
@@ -323,7 +329,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
                 sequence,
                 messageSequence,
                 payload);
-        nextSupervisorDataSequence = increment(sequence, "supervisor DATA");
+        nextSupervisorDataSequence = next;
         return frame;
     }
 
@@ -340,6 +346,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
             throw new IllegalArgumentException("CONTROL message sequence cannot be negative");
         }
         long sequence = nextSupervisorControlSequence;
+        long next = increment(sequence, "supervisor CONTROL");
         byte[] frame = encodeFrame(
                 controlKey,
                 Lane.CONTROL,
@@ -347,8 +354,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
                 sequence,
                 messageSequence,
                 payload);
-        nextSupervisorControlSequence =
-                increment(sequence, "supervisor CONTROL");
+        nextSupervisorControlSequence = next;
         return frame;
     }
 
@@ -367,13 +373,24 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
             byte[] payload) {
         Objects.requireNonNull(bootstrap, "bootstrap");
         Objects.requireNonNull(workerArtifact, "workerArtifact");
-        byte[] key = deriveLaneKey(
-                bootstrap.masterKey(),
-                lane == Lane.DATA ? "data" : "control");
+        byte[] master = bootstrap.masterKey();
+        byte[] challenge = null;
+        byte[] key;
         try {
-            byte[] actualPayload = kind == FrameKind.READY
-                    ? readyPayload(bootstrap.challenge(), workerArtifact)
-                    : Objects.requireNonNull(payload, "payload");
+            key = deriveLaneKey(
+                    master,
+                    lane == Lane.DATA ? "data" : "control");
+        } finally {
+            Arrays.fill(master, (byte) 0);
+        }
+        try {
+            byte[] actualPayload;
+            if (kind == FrameKind.READY) {
+                challenge = bootstrap.challenge();
+                actualPayload = readyPayload(challenge, workerArtifact);
+            } else {
+                actualPayload = Objects.requireNonNull(payload, "payload");
+            }
             return encodeFrame(
                     key,
                     lane,
@@ -388,6 +405,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
                     actualPayload);
         } finally {
             Arrays.fill(key, (byte) 0);
+            if (challenge != null) Arrays.fill(challenge, (byte) 0);
         }
     }
 
@@ -619,16 +637,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         Arrays.fill(controlKey, (byte) 0);
         Arrays.fill(bootstrapMasterKey, (byte) 0);
         Arrays.fill(bootstrapChallenge, (byte) 0);
-    }
-
-    private static byte[] encodeFrame(
-            byte[] laneKey,
-            Lane lane,
-            FrameKind kind,
-            long frameSequence,
-            long messageSequence,
-            byte[] payload) {
-        throw new AssertionError("identity-bearing overload required");
+        Arrays.fill(expectedReadyPayload, (byte) 0);
     }
 
     private byte[] encodeFrame(
