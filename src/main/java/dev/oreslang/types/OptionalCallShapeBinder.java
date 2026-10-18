@@ -22,15 +22,21 @@ public final class OptionalCallShapeBinder {
     private OptionalCallShapeBinder() { }
 
     /** The call-site label is null for a positional argument. */
-    public record Argument(String label) {
+    public record Argument(String label, boolean omission) {
         public Argument {
             if (label != null && label.isBlank()) {
                 throw new IllegalArgumentException("named argument label cannot be blank");
             }
         }
+        public Argument(String label) { this(label, false); }
         public static Argument positional() { return new Argument(null); }
         public static Argument named(String name) {
             return new Argument(Objects.requireNonNull(name, "name"));
+        }
+        /** An explicit omission is a call item with NO evaluated expression. */
+        public static Argument positionalOmission() { return new Argument(null, true); }
+        public static Argument namedOmission(String name) {
+            return new Argument(Objects.requireNonNull(name, "name"), true);
         }
     }
 
@@ -57,14 +63,31 @@ public final class OptionalCallShapeBinder {
      */
     public record Plan(List<Integer> sourceIndexByParameter,
                        int variadicParameterIndex,
-                       List<Integer> variadicSourceIndices) {
+                       List<Integer> variadicSourceIndices,
+                       List<Integer> explicitlyOmittedParameterIndices) {
         public Plan(List<Integer> sourceIndexByParameter) {
-            this(sourceIndexByParameter, -1, List.of());
+            this(sourceIndexByParameter, -1, List.of(), List.of());
+        }
+        public Plan(List<Integer> sourceIndexByParameter,
+                    int variadicParameterIndex,
+                    List<Integer> variadicSourceIndices) {
+            this(sourceIndexByParameter, variadicParameterIndex, variadicSourceIndices, List.of());
         }
 
         public Plan {
             sourceIndexByParameter = List.copyOf(sourceIndexByParameter);
             variadicSourceIndices = List.copyOf(variadicSourceIndices);
+            explicitlyOmittedParameterIndices = List.copyOf(explicitlyOmittedParameterIndices);
+            boolean[] claimedOmission = new boolean[sourceIndexByParameter.size()];
+            for (int parameterIndex : explicitlyOmittedParameterIndices) {
+                if (parameterIndex < 0 || parameterIndex >= sourceIndexByParameter.size()
+                        || parameterIndex == variadicParameterIndex
+                        || claimedOmission[parameterIndex]
+                        || sourceIndexByParameter.get(parameterIndex) != -1) {
+                    throw new IllegalArgumentException("invalid explicit omission plan slot");
+                }
+                claimedOmission[parameterIndex] = true;
+            }
             if (variadicParameterIndex != -1
                     && variadicParameterIndex != sourceIndexByParameter.size() - 1) {
                 throw new IllegalArgumentException("variadic plan slot must be final");
@@ -111,6 +134,9 @@ public final class OptionalCallShapeBinder {
         public boolean omitted(int parameterIndex) {
             return parameterIndex != variadicParameterIndex
                     && sourceIndexByParameter.get(parameterIndex) == -1;
+        }
+        public boolean explicitlyOmitted(int parameterIndex) {
+            return explicitlyOmittedParameterIndices.contains(parameterIndex);
         }
         public int sourceIndex(int parameterIndex) {
             if (parameterIndex == variadicParameterIndex) {
@@ -172,6 +198,10 @@ public final class OptionalCallShapeBinder {
      * A sole final rest parameter collects remaining positional source indexes
      * in lexical order and uses empty collection (not None) when unsupplied.
      * Passing rest by label is gated until collection and spread checking exist.
+     * An explicit positional/named omit is permitted ONLY for an optional
+     * fixed slot, consumes exactly one slot, and never evaluates an expression.
+     * A separate plan field preserves explicit vs implicit omissions without
+     * changing the callee-visible Option<T>.None representation.
      */
     public static Plan bind(List<Parameter> parameters, List<Argument> arguments) {
         Objects.requireNonNull(parameters, "parameters");
@@ -180,20 +210,28 @@ public final class OptionalCallShapeBinder {
 
         int[] binding = new int[parameters.size()];
         Arrays.fill(binding, -1);
+        boolean[] claimed = new boolean[parameters.size()];
+        List<Integer> explicitOmissions = new ArrayList<>();
         int nextPositional = 0;
+        // An explicit omit consumes a CALL SLOT but never evaluates a value.
+        // Source indices refer to evaluated expressions, not raw call items.
+        int evaluatedSourceIndex = 0;
         int restSlot = parameters.isEmpty() || !parameters.getLast().variadic()
                 ? -1 : parameters.size() - 1;
         List<Integer> restSources = new ArrayList<>();
         boolean seenNamed = false;
-        for (int sourceIndex = 0; sourceIndex < arguments.size(); sourceIndex++) {
-            Argument argument = Objects.requireNonNull(arguments.get(sourceIndex), "argument");
+        for (int itemIndex = 0; itemIndex < arguments.size(); itemIndex++) {
+            Argument argument = Objects.requireNonNull(arguments.get(itemIndex), "argument");
             int slot;
             if (argument.label() == null) {
                 if (seenNamed) {
                     throw new IllegalArgumentException("positional argument after named argument");
                 }
                 if (restSlot >= 0 && nextPositional >= restSlot) {
-                    restSources.add(sourceIndex);
+                    if (argument.omission()) {
+                        throw new IllegalArgumentException("rest tail cannot contain omit");
+                    }
+                    restSources.add(evaluatedSourceIndex++);
                     continue;
                 }
                 if (nextPositional >= parameters.size()) {
@@ -212,11 +250,20 @@ public final class OptionalCallShapeBinder {
                             "named rest argument requires an explicit collection/spread contract");
                 }
             }
-            if (binding[slot] != -1) {
+            if (claimed[slot]) {
                 throw new IllegalArgumentException(
                         "parameter '" + parameters.get(slot).name() + "' was supplied more than once");
             }
-            binding[slot] = sourceIndex;
+            claimed[slot] = true;
+            if (argument.omission()) {
+                if (!parameters.get(slot).optional()) {
+                    throw new IllegalArgumentException(
+                            "required parameter '" + parameters.get(slot).name() + "' cannot be omitted");
+                }
+                explicitOmissions.add(slot);
+            } else {
+                binding[slot] = evaluatedSourceIndex++;
+            }
         }
 
         List<Integer> permutation = new ArrayList<>(binding.length);
@@ -227,7 +274,7 @@ public final class OptionalCallShapeBinder {
             }
             permutation.add(binding[i]);
         }
-        return new Plan(permutation, restSlot, restSources);
+        return new Plan(permutation, restSlot, restSources, explicitOmissions);
     }
 
     private static Map<String, Integer> checkedParameters(List<Parameter> parameters) {
