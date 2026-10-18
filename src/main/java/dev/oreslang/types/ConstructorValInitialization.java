@@ -27,6 +27,19 @@ public final class ConstructorValInitialization {
     private ConstructorValInitialization() { }
 
     public static void check(Ast.ClassDecl klass) {
+        check(klass, false);
+    }
+
+    /**
+     * Explicit-receiver migration gate. Call before enabling strict
+     * constructor self bindings across a whole source package. Legacy
+     * executable admission still uses check(klass) until sources migrate.
+     */
+    public static void checkExplicitReceiver(Ast.ClassDecl klass) {
+        check(klass, true);
+    }
+
+    private static void check(Ast.ClassDecl klass, boolean strictReceiver) {
         // Reject nested/late delegations, missing target arities and cycles
         // before analyzing the constructor CFG. Actor constructors still fail.
         ConstructorDelegation.validate(klass);
@@ -49,7 +62,8 @@ public final class ConstructorValInitialization {
         }
         Set<Integer> checkedArities = new java.util.HashSet<>();
         for (Ast.ConstructorDecl constructor : klass.constructors()) {
-            checkConstructor(klass, constructor, required, fixed, localMethods, checkedArities);
+            checkConstructor(klass, constructor, required, fixed,
+                    localMethods, strictReceiver, checkedArities);
         }
     }
 
@@ -67,6 +81,7 @@ public final class ConstructorValInitialization {
             Set<String> required,
             Set<String> fixed,
             Set<String> localMethods,
+            boolean strictReceiver,
             Set<Integer> checkedArities) {
         List<Ast.ConstructorDecl> chain = new ArrayList<>();
         Ast.ConstructorDecl current = constructor;
@@ -78,7 +93,8 @@ public final class ConstructorValInitialization {
         }
         for (int index = chain.size() - 1; index >= 0; index--) {
             Ast.ConstructorDecl frame = chain.get(index);
-            State entry = new State(required, fixed, localMethods);
+            State entry = new State(required, fixed, localMethods,
+                    !strictReceiver || frame.bindsSelf());
             if (ConstructorDelegation.isDelegating(frame)) {
                 for (String field : required) entry.write(field);
             }
@@ -94,15 +110,20 @@ public final class ConstructorValInitialization {
         ConstructorFlowState flow;
         final Set<String> fixed;
         final Set<String> localMethods;
-        State(Set<String> required, Set<String> fixed, Set<String> localMethods) {
-            this(ConstructorFlowState.blank(required), Set.copyOf(fixed), Set.copyOf(localMethods));
+        final boolean receiverBound;
+        State(Set<String> required, Set<String> fixed,
+                Set<String> localMethods, boolean receiverBound) {
+            this(ConstructorFlowState.blank(required), Set.copyOf(fixed),
+                    Set.copyOf(localMethods), receiverBound);
         }
-        State(ConstructorFlowState flow, Set<String> fixed, Set<String> localMethods) {
+        State(ConstructorFlowState flow, Set<String> fixed,
+                Set<String> localMethods, boolean receiverBound) {
             this.flow = flow;
             this.fixed = fixed;
             this.localMethods = localMethods;
+            this.receiverBound = receiverBound;
         }
-        State copy() { return new State(flow, fixed, localMethods); }
+        State copy() { return new State(flow, fixed, localMethods, receiverBound); }
         boolean initialized(String field) { return flow.definitelyInitialized(field); }
         boolean maybeInitialized(String field) { return flow.maybeInitialized(field); }
         void write(String field) { flow = flow.write(field); }
@@ -122,6 +143,7 @@ public final class ConstructorValInitialization {
             if (expression.expression() instanceof Ast.AssignExpr assignment
                     && uninitializedFieldTarget(assignment.target(), required) != null) {
                 String field = uninitializedFieldTarget(assignment.target(), required);
+                requireReceiverBinding(state, klass);
                 // RHS executes before the slot is written: reject reads of a missing slot.
                 scan(assignment.value(), state, required, klass);
                 if (state.fixed.contains(field) && state.maybeInitialized(field)) {
@@ -265,6 +287,7 @@ public final class ConstructorValInitialization {
         if (node instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr receiver
                 && receiver.name().equals("self")) {
+            requireReceiverBinding(state, klass);
             // Method references also carry a receiver and must not turn
             // a partial object into a bound callback. Parent methods that
             // are not locally declared remain covered by the runtime guard.
@@ -280,6 +303,7 @@ public final class ConstructorValInitialization {
             return;
         }
         if (node instanceof Ast.NameExpr name && name.name().equals("self")) {
+            requireReceiverBinding(state, klass);
             // Only direct self.field projections / writes may use construction self.
             // In particular, self hidden inside a tuple, list or struct must not
             // bypass the no-publication rule.
@@ -510,6 +534,14 @@ public final class ConstructorValInitialization {
         }
         throw new IllegalArgumentException("unhandled AST node in constructor val analysis: " + node.getClass().getName());
 
+    }
+
+    private static void requireReceiverBinding(State state, String klass) {
+        if (!state.receiverBound) {
+            throw new IllegalArgumentException(
+                    "constructor for '" + klass + "' references self without a leading "
+                            + "self binder; use constructor(self, ...)");
+        }
     }
 
     private static IllegalArgumentException constructionSuspension(String klass, String operation) {
