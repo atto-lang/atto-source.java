@@ -4,6 +4,7 @@ import dev.oreslang.OresLanguage;
 
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
+import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.SandboxPolicy;
 
 import java.time.Duration;
@@ -29,6 +30,8 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
     // Do not release the slot until the engine has actually closed.
     private static final AtomicBoolean ISOLATE_SLOT = new AtomicBoolean();
     private final Engine engine;
+    // Separate from the trusted process image store; scoped to this one physical isolate.
+    private final UntrustedSourceImageCache codeImages = new UntrustedSourceImageCache();
     private final long isolateHeapBytes;
     private final int maxGroups;
     private final Set<Group> groups = new HashSet<>();
@@ -124,6 +127,7 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
 
     public synchronized int activeGroups() { return groups.size(); }
     public long isolateHeapBytes() { return isolateHeapBytes; }
+    int liveCodeImagesForSupervisor() { return codeImages.liveImages(); }
 
     /**
      * A supervisor-only lifetime lease. Never expose the raw Context or
@@ -131,6 +135,7 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
      */
     public final class Group implements AutoCloseable {
         private final Context context;
+        private final java.util.List<UntrustedSourceImageCache.Lease> codeLeases = new java.util.ArrayList<>();
         private volatile boolean groupClosed;
         // Exactly-once close task: contenders cannot return a false success
         // while another thread still executes Context.close(true).
@@ -140,6 +145,12 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
             this.closeFence = new VerifiedCloseFence(() -> {
                 try {
                     this.context.close(true);
+                    // Keep code pinned through confirmed Context.close, not merely
+                    // until the supervisor has issued a cancellation request.
+                    synchronized (this) {
+                        for (UntrustedSourceImageCache.Lease lease : codeLeases) lease.close();
+                        codeLeases.clear();
+                    }
                     // Only a verified Context.close may release group capacity.
                     synchronized (SharedUntrustedIsolatePool.this) {
                         groups.remove(this);
@@ -149,6 +160,19 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
                     throw new IllegalStateException("untrusted group retirement failed");
                 }
             });
+        }
+
+        /**
+         * The code image is shared only by Contexts in this ONE untrusted Engine.
+         * Leases belong to the Context; no caller can release source while it
+         * may still be executing, even during failed retirement or hot reload.
+         * This does not expose an AST, JVM object, or function pointer to guests.
+         */
+        public synchronized Source sourceImageForSupervisor(String codeUnitId, String sourceText) {
+            if (groupClosed) throw new IllegalStateException("untrusted group is closed");
+            UntrustedSourceImageCache.Lease lease = codeImages.acquire(codeUnitId, sourceText);
+            codeLeases.add(lease);
+            return lease.source();
         }
 
         /** Host adapter entrypoint; actual actor routing must be supplied separately. */
