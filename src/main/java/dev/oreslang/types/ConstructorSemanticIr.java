@@ -189,6 +189,26 @@ public final class ConstructorSemanticIr {
             return new ConstructionState(region, phase, fields, next, fixedFields);
         }
 
+        /**
+         * A cleanup completes in strict LIFO order. The region must discharge
+         * every pending cleanup before transitioning to CONSTRUCTED.
+         */
+        public ConstructionState completeCleanup(CleanupEdge expectedTop) {
+            Objects.requireNonNull(expectedTop, "completed cleanup");
+            if (phase == ConstructionPhase.CONSTRUCTED || pendingCleanups.isEmpty()) {
+                throw new IllegalArgumentException("no pending constructor cleanup to complete");
+            }
+            CleanupEdge top = pendingCleanups.get(pendingCleanups.size() - 1);
+            if (!top.equals(expectedTop)) {
+                throw new IllegalArgumentException("constructor cleanup must complete in LIFO order");
+            }
+            return new ConstructionState(
+                    region, phase,
+                    fields,
+                    pendingCleanups.subList(0, pendingCleanups.size() - 1),
+                    fixedFields);
+        }
+
         public ConstructionState join(ConstructionState other) {
             Objects.requireNonNull(other, "other construction state");
             if (!region.equals(other.region)) {
