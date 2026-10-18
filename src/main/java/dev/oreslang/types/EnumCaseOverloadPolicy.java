@@ -283,12 +283,27 @@ public final class EnumCaseOverloadPolicy {
                 throw new IllegalArgumentException("control/whitespace in canonical identity");
             }
             if (Character.isHighSurrogate(c)) {
-                if (i + 1 == value.length() || !Character.isLowSurrogate(value.charAt(++i))) {
+                if (i + 1 == value.length() || !Character.isLowSurrogate(value.charAt(i + 1))) {
                     throw new IllegalArgumentException("malformed UTF-16 identity");
+                }
+                int codepoint = Character.toCodePoint(c, value.charAt(++i));
+                if (bidiOrInvisible(codepoint)) {
+                    throw new IllegalArgumentException("bidi/invisible control in canonical identity");
                 }
             } else if (Character.isLowSurrogate(c)) {
                 throw new IllegalArgumentException("malformed UTF-16 identity");
+            } else if (bidiOrInvisible(c)) {
+                throw new IllegalArgumentException("bidi/invisible control in canonical identity");
             }
         }
+    }
+
+    private static boolean bidiOrInvisible(int cp) {
+        // Explicit, version-independent denylist kept byte-identical in the
+        // native companion; no host Unicode database/version disagreement.
+        return cp == 0x061c || (cp >= 0x200b && cp <= 0x200f)
+                || (cp >= 0x202a && cp <= 0x202e)
+                || cp == 0x2060 || (cp >= 0x2066 && cp <= 0x2069)
+                || cp == 0xfeff;
     }
 }
