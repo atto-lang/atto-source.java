@@ -61,6 +61,54 @@ several actors in the single shared UNTRUSTED Engine. The
 `--ores-actor-heaps=independent` CLI guard records this explicit requirement
 and rejects unsupported placement instead of silently downgrading it.
 
+## Pooled, content-addressed immutable code images (follow-up draft)
+
+`SharedUntrustedIsolatePool` owns an `UntrustedSourceImageCache`, distinct
+from the trusted process code store. Both `UntrustedJitCodeUnit` and untrusted
+`HotReloadManager.Generation` acquire their `Source` through the same pool.
+
+- Source cache identity is the exact pair (logical code-unit ID, SHA-256 of
+  UTF-8 source). Equality is rechecked against the original bytes/text on hits.
+  Random actor UUIDs are still minted for invocation/revocation fencing, but
+  are **not** part of the Source name or code cache key.
+- All matching live code units in one pooled untrusted Engine receive the
+  same immutable host-side `Source`. Different source versions and import
+  identities never alias. Different pools do not share Source references.
+- Each actor/hot-reload generation still has an independent Context and
+  mutable interpreter/module state. Nothing here promotes actor-private data
+  or pointers to cross-actor memory, or authorizes FFI/host capabilities.
+- Each Context pins the Source through a lease until **confirmed**
+  `Context.close(true)`. Failed close retains the lease and capacity;
+  successful last release evicts the Source for reclamation.
+- This prototype caps simultaneously live distinct source images at 512
+  and total pinned source text at 16 MiB (each text <= 1 MiB UTF-8).
+  Quotas are enforced before insertion. Source images do not allocate a
+  new Graal Engine, isolate, JIT, or heap for each actor.
+
+**Scope and unverified claims:** This proves reuse of immutable
+`org.graalvm.polyglot.Source` identities within the untrusted pool.
+`OresLanguage` still registers `ContextPolicy.EXCLUSIVE` in this stack,
+so identical Sources may still be parsed/compiled separately per Context.
+Compiled Truffle target or machine-code-page deduplication is **not yet
+proven**. Moving to `ContextPolicy.SHARED` requires a separate audited
+language-global/mutable-state split and exact-source native-isolate tests.
+The shared cache must never be exposed to the trusted Engine/compiled-code
+domain.
+
+This first integration covers explicit guest-source actors and untrusted
+hot-reload staging. Compiler-owned import closure resolution and
+`core/alloc/actor/std` preloading still must route individual approved
+library units through a domain-local immutable image/cache. A freestanding
+build must never pull in hosted stdlib by default. Merely sharing these
+host-side Source objects is not evidence that every stdlib function is loaded
+once as native machine code.
+
+The one untrusted Engine remains one physical trust/failure/GC domain. It is
+not hard isolation between hostile tenants. Stronger tenant or supervisor
+separation requires a policy decision; never import the process-global
+`SharedCodeRegistry` approval allowlist from historical Java #416
+(issue #493 documents its cross-tenant approval-scoping gap).
+
 ## Isolation guarantees and limits
 
 - Exactly one shared `Engine` for all untrusted actor Contexts in this
