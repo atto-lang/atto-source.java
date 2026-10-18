@@ -36,6 +36,16 @@ final class ConcurrencyTestCommandTest {
     }
 
     @Test
+    void compilerFailureStillWritesTraceReceipt() throws Exception {
+        Path invalid = tmp.resolve("invalid.ores");
+        Path trace = tmp.resolve("invalid.trace");
+        Files.writeString(invalid, "this is not valid Oreslang source !!!");
+        assertEquals(1, ConcurrencyTestCommand.run(new String[]{
+                invalid.toString(), "--schedule-fuzz", "--trace-output=" + trace}));
+        assertTrue(Files.exists(trace));
+    }
+
+    @Test
     void testCommandDoesNotCountOrdinaryProgramAsPassingTests() throws Exception {
         assertEquals(1, ConcurrencyTestCommand.run(new String[]{
                 "examples/together.ores", "--seed=11",
