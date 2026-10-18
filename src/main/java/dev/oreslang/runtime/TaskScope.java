@@ -92,6 +92,11 @@ public final class TaskScope implements AutoCloseable {
         return cancellation.isCancelled();
     }
 
+    /** Runtime diagnostics: completed child tokens must not be retained. */
+    int liveCancellationChildren() {
+        return cancellation.ownedChildCount();
+    }
+
     /**
      * True quiescence witness for the currently admitted children, once the
      * scope is sealed. Callers should await it rather than blocking carriers.
