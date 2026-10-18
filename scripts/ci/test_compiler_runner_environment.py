@@ -40,6 +40,18 @@ class CompilerRunnerEnvironmentTests(unittest.TestCase):
                                    'pipefail', '-c', policy_script()], cwd=root,
                                   env=env, capture_output=True, text=True, timeout=10)
 
+    def test_bootstrap_gate_runs_before_checkout(self):
+        workflow = WORKFLOW.read_text(encoding='utf-8')
+        start = workflow.index('      - name: Reject ambient launch overrides before checkout')
+        checkout = workflow.index('      - name: Checkout approved SHA from original private repository only')
+        check_source = workflow.index('      - name: Verify exact SHA and tree')
+        self.assertLess(start, checkout)
+        self.assertLess(checkout, check_source)
+        bootstrap = workflow[start:checkout]
+        for key in FORBIDDEN:
+            self.assertIn(key, bootstrap)
+        self.assertIn('exit 1', bootstrap)
+
     def test_clean_is_accepted(self):
         result = self.execute()
         self.assertEqual(result.returncode, 0, result.stderr)

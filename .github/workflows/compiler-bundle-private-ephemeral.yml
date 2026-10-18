@@ -48,6 +48,16 @@ jobs:
           test "$GITHUB_SHA" = "$APPROVED_SHA"
           [[ "$APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$APPROVED_TREE" =~ ^[0-9a-f]{40}$ ]]
+      - name: Reject ambient launch overrides before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          for key in MAVEN_OPTS MAVEN_ARGS JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG_COUNT PYTHONPATH PYTHONHOME; do
+            if [[ -v "$key" && -n "${!key}" ]]; then
+              printf 'DENIED: ambient pre-checkout override %s\n' "$key" >&2
+              exit 1
+            fi
+          done
       - name: Checkout approved SHA from original private repository only
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # pinned v4
         with:
