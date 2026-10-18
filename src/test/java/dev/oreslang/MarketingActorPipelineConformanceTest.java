@@ -20,7 +20,7 @@ final class MarketingActorPipelineConformanceTest {
     private static final Path FIXTURE =
             Path.of("examples/marketing-actor-pipeline-three-stage.ores");
     // Exact git blob recorded in contracts/conformance/language-motion-v1.json.
-    private static final String FIXTURE_GIT_BLOB_SHA = "87136de0c131a20ca3891d88f6b69f0d13177b3a";
+    private static final String FIXTURE_GIT_BLOB_SHA = "280c3e6ee9bf63ab1c9360bb0329651f644a72a7";
 
     private static String program() throws Exception {
         return Files.readString(FIXTURE, StandardCharsets.UTF_8);
@@ -63,6 +63,7 @@ final class MarketingActorPipelineConformanceTest {
                 StandardCharsets.UTF_8);
         assertTrue(receipt.contains("\"source_blob_sha1\": \"" + FIXTURE_GIT_BLOB_SHA + "\""));
         assertTrue(receipt.contains("\"java_status\": \"pending_ci\""));
+        assertTrue(receipt.contains("\"expected_stdout\": \"SRC_FORWARD_5|TRANSFORM_FORWARD_6|SINK_BACKWARD_7|TRANSFORM_BACKWARD_8|PIPE_3_RESULT_8\""));
         assertTrue(receipt.contains("\"not_in_main\": true"));
         assertFalse(receipt.contains("\"java_status\": \"verified\""));
         assertFalse(receipt.contains("\"llvm_status\": \"verified\""));
@@ -70,7 +71,20 @@ final class MarketingActorPipelineConformanceTest {
 
     @Test
     void infixThreeActorPipelineDeliversForwardAndBackwardAndSettlesDone() throws Exception {
-        assertEquals("PIPE_3_RESULT_8", execute(program()));
+        assertEquals("SRC_FORWARD_5|TRANSFORM_FORWARD_6|SINK_BACKWARD_7|TRANSFORM_BACKWARD_8|PIPE_3_RESULT_8", execute(program()));
+    }
+
+    @Test
+    void allThreeStagesHaveExplicitTerminalActions() throws Exception {
+        String source = program();
+        for (String stage : new String[]{"Source", "Transform", "Sink"}) {
+            String name = "define actor " + stage + " as";
+            int begin = source.indexOf(name);
+            assertTrue(begin >= 0, stage + " must exist");
+            int next = source.indexOf("\ndefine actor ", begin + name.length());
+            String body = source.substring(begin, next == -1 ? source.indexOf("\npub fnc connect()", begin) : next);
+            assertTrue(body.contains("self.end();"), stage + " must terminate for the full-route barrier");
+        }
     }
 
     @Test
@@ -79,7 +93,7 @@ final class MarketingActorPipelineConformanceTest {
                 "spawn Source() pipe spawn Transform() pipe spawn Sink()",
                 "ActorUtils::pipe(spawn Source(), spawn Transform(), spawn Sink())");
         assertNotEquals(program(), code);
-        assertEquals("PIPE_3_RESULT_8", execute(code));
+        assertEquals("SRC_FORWARD_5|TRANSFORM_FORWARD_6|SINK_BACKWARD_7|TRANSFORM_BACKWARD_8|PIPE_3_RESULT_8", execute(code));
     }
 
     @Test
