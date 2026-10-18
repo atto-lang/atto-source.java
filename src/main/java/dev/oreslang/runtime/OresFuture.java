@@ -489,13 +489,19 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 new CancellationException("OresFuture was cancelled"));
         if (!state.compareAndSet(PENDING, terminal)) return null;
         cancelAdmission = null;
-        try {
-            invokeCancelHook();
-        } finally {
-            cancelRevocationComplete.set(true);
-        }
+        // Revoke this producer now, but keep *subscriber* admission closed
+        // until the owning scope has revoked every sibling. Otherwise a
+        // listener registered between those two phases runs synchronously
+        // as soon as cancelRevocationComplete flips, bypassing the scope's
+        // revoke-all-before-notify guarantee.
+        invokeCancelHook();
+        AtomicBoolean delivered = new AtomicBoolean();
         return () -> {
+            if (!delivered.compareAndSet(false, true)) return;
             try {
+                // Late registrations published during the deferred interval
+                // are drained together with pre-existing subscribers.
+                cancelRevocationComplete.set(true);
                 RuntimeWaiterRegistration<T> waiter;
                 while ((waiter = waiters.poll()) != null) {
                     notifyWaiter(waiter, terminal);
