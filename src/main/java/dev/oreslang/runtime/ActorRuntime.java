@@ -262,7 +262,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    /** Internal payload published into the bounded ordered MPSC journal. */
+    /** Internal payload published into the bounded ordered diagnostic journal. */
     private record ActorTerminationPayload(
             ActorId actorId,
             long generation,
@@ -1144,7 +1144,12 @@ public final class ActorRuntime implements AutoCloseable {
         boolean published = false;
         if (supervisionEventQueueLock.tryLock()) {
             try {
-                if (supervisionEvents.size() < SUPERVISION_EVENT_CAPACITY) {
+                // A concurrent drain may have consumed the final representable
+                // sequence after the optimistic precheck above. Recheck while
+                // owning the queue/sequence critical section so an event that
+                // can never be sequenced does not occupy bounded capacity.
+                if (supervisionEventSequence.get() != Long.MAX_VALUE
+                        && supervisionEvents.size() < SUPERVISION_EVENT_CAPACITY) {
                     supervisionEvents.addLast(payload);
                     published = true;
                 }
@@ -1153,8 +1158,9 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
         if (!published) {
-            // Contention and capacity pressure are both explicit best-effort
-            // telemetry drops. Actor finalization never waits for diagnostics.
+            // Contention, capacity pressure and terminal sequence exhaustion
+            // are all explicit best-effort telemetry drops. Actor finalization
+            // never waits for diagnostics.
             supervisionEventsDropped.incrementAndGet();
         }
     }
