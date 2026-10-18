@@ -170,6 +170,7 @@ public final class ActorArtifactV1<T> {
             String compilerGitCommit,
             String targetTriple,
             String abi,
+            String builderId,
             byte[] artifactSha256,
             byte[] messageAbiSha256,
             byte[] stateSchemaSha256,
@@ -185,6 +186,7 @@ public final class ActorArtifactV1<T> {
             compilerGitCommit = requireGitCommit(compilerGitCommit);
             targetTriple = requireText(targetTriple, "targetTriple");
             abi = requireText(abi, "abi");
+            builderId = requireText(builderId, "builderId");
             artifactSha256 = digestCopy(artifactSha256, "artifactSha256");
             messageAbiSha256 = digestCopy(messageAbiSha256, "messageAbiSha256");
             stateSchemaSha256 = digestCopy(stateSchemaSha256, "stateSchemaSha256");
@@ -319,9 +321,12 @@ public final class ActorArtifactV1<T> {
             out.write(RECEIPT_MAGIC);
             writeText(out, keyId);
             writeText(out, receipt.actorTypeName());
-            out.writeInt(receipt.actorKind().ordinal());
-            out.writeInt(receipt.actorBoundary().ordinal());
-            out.writeInt(receipt.artifactFormat().ordinal());
+            // Never serialize enum ordinals into a signed v1 receipt: adding or
+            // reordering enum constants elsewhere must not silently redefine the
+            // authenticated wire contract.
+            writeText(out, receipt.actorKind().name());
+            writeText(out, receipt.actorBoundary().name());
+            writeText(out, receipt.artifactFormat().name());
             writeText(out, receipt.compilerBackend().manifestId());
             writeText(out, receipt.compilerVersion());
             writeText(out, receipt.compilerGitCommit());
@@ -387,6 +392,7 @@ public final class ActorArtifactV1<T> {
                 || !receipt.compilerGitCommit().equals(expected.compilerGitCommit())
                 || !receipt.targetTriple().equals(expected.targetTriple())
                 || !receipt.abi().equals(expected.abi())
+                || !receipt.builderId().equals(expected.builderId())
                 || !MessageDigest.isEqual(
                         receipt.artifactSha256(), expected.artifactSha256())
                 || !MessageDigest.isEqual(
