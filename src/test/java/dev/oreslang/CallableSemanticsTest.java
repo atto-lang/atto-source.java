@@ -150,6 +150,29 @@ final class CallableSemanticsTest {
     }
 
     @Test
+    void recursiveLambdaInsideAsyncFunctionRetainsReservedSelfSlot() throws Exception {
+        String output = run("""
+                define module AsyncRecursive
+                  pub async fnc factorial(int n): int {
+                    val Fnc<int, int> fact = |int value| -> {
+                      return value == 0 ? 1 : value * fact(value - 1);
+                    };
+                    return fact(n);
+                  }
+
+                  pub async fnc main(): void {
+                    val pending = factorial(5);
+                    val result = await pending;
+                    stdio.stdout.write(result);
+                    return;
+                  }
+                end
+                """);
+
+        assertEquals("120", output);
+    }
+
+    @Test
     void routineAndFncDifferByReifiabilityNotRecursion() throws Exception {
         assertDoesNotThrow(() ->
                 TypeChecker.check(Parser.parse("""
