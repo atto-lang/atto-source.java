@@ -205,6 +205,8 @@ final class WorkflowJournalV1Test {
         assertThrows(
                 IllegalStateException.class,
                 () -> store.append(bad));
+        assertNull(store.snapshot().runId(),
+                "failed first append must not partially bind the store");
         assertEquals(0, store.snapshot().journalEntries());
         assertTrue(store.effects().isEmpty());
     }
