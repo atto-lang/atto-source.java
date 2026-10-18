@@ -364,6 +364,69 @@ public final class IncrementalCompiler {
         cachedImportResolutionDigests.clear();
     }
 
+    private static String importResolutionDigest(
+            Map<String, String> resolutions) {
+        StringBuilder canonical =
+                new StringBuilder("ores-import-resolution-v1\n");
+        resolutions.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> {
+                    appendLengthPrefixed(canonical, entry.getKey());
+                    appendLengthPrefixed(canonical, entry.getValue());
+                });
+        return digest(canonical.toString());
+    }
+
+    private static void appendLengthPrefixed(
+            StringBuilder target,
+            String value) {
+        target.append(value.length()).append(':').append(value).append('\n');
+    }
+
+    private static String linkedAbiDigest(
+            String unitId,
+            Ast.Program program,
+            Set<String> availableUnits,
+            Map<String, Map<String, String>> importResolutions,
+            Map<String, String> sourceAbiHashes) {
+        StringBuilder canonical = new StringBuilder("ores-linked-abi-v1\n");
+        appendLengthPrefixed(
+                canonical,
+                sourceAbiHashes.getOrDefault(unitId, "<missing-self-abi>"));
+
+        List<String> importEntries = new ArrayList<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            StringBuilder entry = new StringBuilder();
+            appendLengthPrefixed(entry, imported.kind().name());
+            appendLengthPrefixed(entry, imported.path());
+            appendLengthPrefixed(entry, Boolean.toString(imported.wildcard()));
+            appendLengthPrefixed(
+                    entry,
+                    imported.namespace() == null ? "" : imported.namespace());
+            for (String name : imported.names()) {
+                appendLengthPrefixed(entry, name);
+                appendLengthPrefixed(
+                        entry, ImportRules.localName(imported, name));
+            }
+
+            String targetId = ImportGraph.resolveImportUnitId(
+                    unitId, imported, availableUnits, importResolutions);
+            appendLengthPrefixed(
+                    entry, targetId == null ? "<external>" : targetId);
+            if (targetId != null) {
+                appendLengthPrefixed(
+                        entry,
+                        sourceAbiHashes.getOrDefault(
+                                targetId, "<missing-target-abi>"));
+            }
+            importEntries.add(entry.toString());
+        }
+        importEntries.stream()
+                .sorted()
+                .forEach(entry -> appendLengthPrefixed(canonical, entry));
+        return digest(canonical.toString());
+    }
+
     private static String abiDigest(Ast.Program program) {
         StringBuilder abi = new StringBuilder("ores-abi-v4\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
