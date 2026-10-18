@@ -43,6 +43,15 @@ public final class EnumCaseSourceCallPlan {
                 throw new IllegalArgumentException("direct AOT slice rejects virtual methods");
             }
             this.exactFunction = selected.function();
+            if (exactFunction.actorKind() != Ast.ActorKind.NONE
+                    || exactFunction.async() || exactFunction.suspends()
+                    || exactFunction.generator() || exactFunction.trapped()
+                    || exactFunction.structural() || exactFunction.nonLexical()
+                    || !exactFunction.genericParameters().isEmpty()
+                    || !exactFunction.genericSpecs().isEmpty()
+                    || !exactFunction.annotations().isEmpty()) {
+                throw new IllegalArgumentException("AOT direct-call slice requires an ordinary synchronous function");
+            }
             this.exactSlot = selected.signature().symbolId();
             this.staticArgumentTypes = List.copyOf(staticArgumentTypes);
         }
@@ -75,6 +84,9 @@ public final class EnumCaseSourceCallPlan {
             throw new IllegalArgumentException("AOT literal slice requires one module");
         }
         Ast.ModuleDecl module = program.modules().get(0);
+        if (!module.annotations().isEmpty() || !module.contracts().isEmpty()) {
+            throw new IllegalArgumentException("AOT literal module contracts/annotations unsupported");
+        }
         String scope = program.namespace() == null ? "local_unit" : program.namespace();
         String owner = scope + "." + module.name();
         List<Ast.FunctionDecl> entrypoints = module.declarations().stream()
@@ -91,7 +103,8 @@ public final class EnumCaseSourceCallPlan {
                 || !main.genericSpecs().isEmpty() || !main.annotations().isEmpty()) {
             throw new IllegalArgumentException("unsupported main entrypoint effects/parameters");
         }
-        if (main.returnType() == null || !main.returnType().name().equals("int")) {
+        if (main.returnType() == null || !main.returnType().name().equals("int")
+                || !main.returnType().arguments().isEmpty() || main.returnType().inferArguments()) {
             throw new IllegalArgumentException("AOT literal main must return int");
         }
         Map<String, Ast.TypeRef> localTypes = new LinkedHashMap<>();
