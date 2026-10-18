@@ -132,6 +132,103 @@ final class GitHubWebhookActorV1Test {
     }
 
     @Test
+    void ambiguousExactCorrelationRoutesNowhere() throws Exception {
+        byte[] secret =
+                "0123456789abcdef0123456789abcdef"
+                        .getBytes(StandardCharsets.UTF_8);
+        String commit = sha('a');
+        String tree = sha('b');
+        byte[] body = workflowRunBody(
+                "org/repo",
+                commit,
+                45L,
+                "ci",
+                "success",
+                "https://github.example/actions/runs/45");
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = GitHubWebhookActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new GitHubWebhookActorV1.Configure(secret));
+            next(outputs);
+            actor.send(new GitHubWebhookActorV1.RegisterRun(
+                    new GitHubCiCorrelationV1.Expectation(
+                            "run-a", "org/repo", commit, tree, "ci")));
+            next(outputs);
+            actor.send(new GitHubWebhookActorV1.RegisterRun(
+                    new GitHubCiCorrelationV1.Expectation(
+                            "run-b", "org/repo", commit, tree, "ci")));
+            next(outputs);
+
+            actor.send(new GitHubWebhookActorV1.ReceiveCiWebhook(
+                    new GitHubWebhookSecurityV1.Headers(
+                            "sha256=" + hmac(secret, body),
+                            "delivery-ambiguous",
+                            "workflow_run"),
+                    body,
+                    new GitHubWorkflowRunPayloadV1.GitTreeProof(
+                            commit,
+                            tree,
+                            "tree-proof://45")));
+
+            var unmatched = assertInstanceOf(
+                    GitHubWebhookActorV1.Unmatched.class,
+                    next(outputs));
+            assertTrue(unmatched.reason().contains("ambiguous"));
+            assertTrue(unmatched.reason().contains("2"));
+
+            actor.send(new GitHubWebhookActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void treeProofMustBelongToAuthenticatedCommit() throws Exception {
+        byte[] secret =
+                "0123456789abcdef0123456789abcdef"
+                        .getBytes(StandardCharsets.UTF_8);
+        byte[] body = workflowRunBody(
+                "org/repo",
+                sha('a'),
+                46L,
+                "ci",
+                "success",
+                "https://github.example/actions/runs/46");
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = GitHubWebhookActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new GitHubWebhookActorV1.Configure(secret));
+            next(outputs);
+            actor.send(new GitHubWebhookActorV1.RegisterRun(
+                    new GitHubCiCorrelationV1.Expectation(
+                            "run", "org/repo", sha('a'), sha('b'), "ci")));
+            next(outputs);
+
+            actor.send(new GitHubWebhookActorV1.ReceiveCiWebhook(
+                    new GitHubWebhookSecurityV1.Headers(
+                            "sha256=" + hmac(secret, body),
+                            "delivery-wrong-proof",
+                            "workflow_run"),
+                    body,
+                    new GitHubWorkflowRunPayloadV1.GitTreeProof(
+                            sha('c'),
+                            sha('b'),
+                            "tree-proof://wrong")));
+
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> actor.raw().getDone().get(5, TimeUnit.SECONDS));
+            assertTrue(actor.raw().failure().isPresent());
+        }
+    }
+
+    @Test
     void invalidWebhookSignatureFailsIngressActor() throws Exception {
         byte[] secret =
                 "0123456789abcdef0123456789abcdef"
