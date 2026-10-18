@@ -62,3 +62,33 @@ The earlier exact-blob offline source identity/cache/fence suite also reran:
 Total host-only checks for these four components: **44,423**. The cache
 harness stubs Graal's `Source`; neither the new JUnit tests nor full Oreslang
 native runtime were executed by this host verification.
+
+
+## Unicode canonical-equivalence hardening (2026-10-18)
+
+The shared untrusted code-image cache indexes immutable source with
+`(codeUnitId, SHA-256(exact UTF-8 source))`. A malicious unit can otherwise
+submit visually identical composed and decomposed Unicode names, consuming
+separate image quotas and producing ambiguous import/diagnostic identities.
+
+`UntrustedSourceIdentity.inspect()` now **rejects non-NFC code unit IDs**
+rather than silently normalizing an authority-bearing name. The original
+NFC spelling and exact source bytes are preserved. Valid Unicode module
+identifiers (including supplementary symbols) remain accepted. Added JUnit
+regressions cover Latin accent and Hangul canonical aliases, failed-cache
+admission accounting, reuse of an identical canonical unit, and full lease
+reclamation.
+
+**Independent local strict-JDK proof:** exactly the production Git blob
+`25090e51753cf27207f3be2fad4862836d0f7cae` compiled with
+`javac -Xlint:all -Werror` on OpenJDK 21. The focused NFC test passed
+11,344 checks, including 5,000 seeded Unicode combinations and 1,000
+rejected attempts that must leave the cache accounting unchanged. Existing
+host identity/cache, Unicode fuzz, close-fence and admission deadline
+harnesses also passed in the same local audit, totaling **55,762 assertions
+actually observed** in that execution. The cache tests use a minimal Graal
+`Source` stub. This is not full Maven/JUnit or native-isolate evidence.
+
+The canonical-name rule must also be preserved by future import/loader
+resolution and compiler-owned code-image identity; otherwise caller
+normalization could inadvertently bypass the fail-closed boundary.
