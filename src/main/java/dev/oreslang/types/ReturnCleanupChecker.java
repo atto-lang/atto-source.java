@@ -318,6 +318,10 @@ public final class ReturnCleanupChecker {
             // Ordinary async lambdas also own an independent return scope;
             // an nb expression body creates a *nested* Task scope.
             inspectLambda(asyncLambda.lambda(), scope);
+        } else if (expr instanceof Ast.SuspendsLambdaExpr suspendable) {
+            // May suspend within the CALLER's Task, but its returns and
+            // finally/defer obligations are lexical to the lambda.
+            inspectLambda(suspendable.lambda(), scope);
         } else if (expr instanceof Ast.LambdaExpr lambda) {
             // A return inside a nested lambda returns from that lambda, not
             // from the enclosing finally or function.
