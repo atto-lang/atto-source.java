@@ -9,6 +9,8 @@ import org.graalvm.polyglot.SandboxPolicy;
 
 import java.time.Duration;
 import java.util.HashSet;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -25,6 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class SharedUntrustedIsolatePool implements AutoCloseable {
     private static final long MIN_ISOLATE_BYTES = 64L * 1024 * 1024;
+    private static final int MAX_CODE_UNITS_PER_CONTEXT = 128;
     // Process-local admission guard: a second pool would silently create an
     // additional native-image isolate and violate the two-domain deployment.
     // Do not release the slot until the engine has actually closed.
@@ -135,7 +138,10 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
      */
     public final class Group implements AutoCloseable {
         private final Context context;
-        private final java.util.List<UntrustedSourceImageCache.Lease> codeLeases = new java.util.ArrayList<>();
+        // One lease per logical module, never one lease per repeated import.
+        // Separate hot-reload generations require separate guest Contexts.
+        private final Map<String, PinnedCodeImage> codeUnits = new HashMap<>();
+        private record PinnedCodeImage(String text, UntrustedSourceImageCache.Lease lease) {}
         private volatile boolean groupClosed;
         // Exactly-once close task: contenders cannot return a false success
         // while another thread still executes Context.close(true).
@@ -148,8 +154,8 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
                     // Keep code pinned through confirmed Context.close, not merely
                     // until the supervisor has issued a cancellation request.
                     synchronized (this) {
-                        for (UntrustedSourceImageCache.Lease lease : codeLeases) lease.close();
-                        codeLeases.clear();
+                        for (PinnedCodeImage image : codeUnits.values()) image.lease().close();
+                        codeUnits.clear();
                     }
                     // Only a verified Context.close may release group capacity.
                     synchronized (SharedUntrustedIsolatePool.this) {
@@ -170,10 +176,32 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
          */
         public synchronized Source sourceImageForSupervisor(String codeUnitId, String sourceText) {
             if (groupClosed) throw new IllegalStateException("untrusted group is closed");
+            Objects.requireNonNull(codeUnitId, "codeUnitId");
+            Objects.requireNonNull(sourceText, "sourceText");
+            PinnedCodeImage existing = codeUnits.get(codeUnitId);
+            if (existing != null) {
+                if (!existing.text().equals(sourceText)) {
+                    throw new IllegalStateException(
+                            "a code unit cannot be replaced within one guest Context; "
+                            + "open a new hot-reload generation");
+                }
+                return existing.lease().source();
+            }
+            if (codeUnits.size() >= MAX_CODE_UNITS_PER_CONTEXT) {
+                throw new IllegalStateException("untrusted Context code-unit quota exceeded");
+            }
             UntrustedSourceImageCache.Lease lease = codeImages.acquire(codeUnitId, sourceText);
-            codeLeases.add(lease);
-            return lease.source();
+            // Even if insertion fails, a newly acquired lease is always closed.
+            try {
+                codeUnits.put(codeUnitId, new PinnedCodeImage(sourceText, lease));
+                return lease.source();
+            } catch (RuntimeException | Error failure) {
+                lease.close();
+                throw failure;
+            }
         }
+
+        synchronized int distinctCodeUnitsForSupervisor() { return codeUnits.size(); }
 
         /** Host adapter entrypoint; actual actor routing must be supplied separately. */
         public synchronized Context contextForSupervisor() {
