@@ -171,4 +171,25 @@ final class OptionalCallTempLoweringTest {
                         .map(OptionalCallTempLowering.AbiSlot::action).toList());
         assertThrows(IllegalStateException.class, recipe::requireExecutable);
     }
+
+    @Test
+    void suppliedOptionToOmittableFormalPassesThroughWithoutDoubleWrapping() {
+        Ast.ModuleDecl module = Parser.parse("""
+                define module app as
+                    pub fnc opt(int? value): int { return 1; }
+                end
+                """).modules().getFirst();
+        var optionInt = new Ast.TypeRef("Option", List.of(INT), false);
+        var call = new Ast.StagedCallExpr(new Ast.NameExpr("opt"),
+                List.of(), false, List.of(
+                        Ast.CallArgument.named("value",
+                                new Ast.NameExpr("alreadyOptional"))));
+        var recipe = OptionalCallTempLowering.from(
+                BoundInvocation.bindModuleFunction(module, call, List.of(optionInt)));
+        assertEquals(OptionalCallAbiPreview.Action.PASS_OPTION,
+                recipe.abiSlots().getFirst().action());
+        assertEquals(optionInt, recipe.abiSlots().getFirst().calleeType());
+        assertEquals(0, recipe.abiSlots().getFirst().tempIndex());
+        assertThrows(IllegalStateException.class, recipe::requireExecutable);
+    }
 }
