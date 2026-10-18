@@ -35,6 +35,8 @@ public final class OptionalCallShapeBinder {
         }
         /** An explicit omission is a call item with NO evaluated expression. */
         public static Argument positionalOmission() { return new Argument(null, true); }
+        /** The parser maps bare '_' and 'omit' call items to the same omission. */
+        public static Argument underscore() { return positionalOmission(); }
         public static Argument namedOmission(String name) {
             return new Argument(Objects.requireNonNull(name, "name"), true);
         }
