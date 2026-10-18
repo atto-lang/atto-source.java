@@ -297,6 +297,22 @@ public final class OptionalCallShapeBinder {
         Objects.requireNonNull(signatures, "signatures");
         Objects.requireNonNull(arguments, "arguments");
         requireNonOverlappingOptionalArityIntervals(signatures);
+        // The binder must never accidentally use labels to dispatch two
+        // ordinary signatures with the same arity. Exceptional nominal-enum
+        // overloads need a separately proved, already-selected declaration,
+        // not this type-agnostic family resolver.
+        for (int i = 0; i < signatures.size(); i++) {
+            for (int j = i + 1; j < signatures.size(); j++) {
+                List<Parameter> a = signatures.get(i);
+                List<Parameter> b = signatures.get(j);
+                if (a.size() == b.size()
+                        && a.stream().allMatch(p -> !p.optional() && !p.variadic())
+                        && b.stream().allMatch(p -> !p.optional() && !p.variadic())) {
+                    throw new IllegalArgumentException(
+                            "same-arity overloads cannot dispatch by argument labels");
+                }
+            }
+        }
         Selection selected = null;
         List<Integer> valid = new ArrayList<>();
         for (int i = 0; i < signatures.size(); i++) {
