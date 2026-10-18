@@ -170,3 +170,23 @@ Additional JUnit fixtures cover directed cancellation, linked-source
 OR propagation, late registration, listener detachment, and cancelling
 a linked TaskScope with a running child. These tests are checked in but
 **not verified executed** on the exact branch head.
+
+## suspends-effect runtime integration
+
+`suspends` is a callable effect of the *current* Task, not a Task producer.
+A continuation lowered from `suspends fnc` / a suspension-effect lambda
+must keep the same Task identity, owner scope, cancellation domain, quotas,
+and generation fence across `OresScheduler.Await` and resume. It must never
+create a new `OresTask<T>` simply to express the suspension.
+
+Scheduler-level host tests now model a suspends-style two-resume frame and
+prove that cancelling its owner detaches its pending waiter without cancelling
+an externally shared producer. A different Task may still await and complete
+from the same producer. Late producer settlement must never resume the
+cancelled Task.
+
+Compiler-lowered `suspends` callable values, borrow/effect safety,
+cancellation propagation through lexical cleanup, preemption safepoints,
+actor-affine admission and cross-backend execution are not yet enabled.
+A host scheduler-frame test is not evidence that Oreslang source-level
+suspends/task interop executes successfully.
