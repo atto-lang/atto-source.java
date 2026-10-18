@@ -169,11 +169,22 @@ final class ActorObservabilityTest {
                             () -> (message, context) -> { }),
                     "replacement churn must not outrun an undelivered crash decision");
 
-            var control = runtime.pollSupervisorControlEvent().orElseThrow();
+            var control = runtime.peekSupervisorControlEvent().orElseThrow();
             assertEquals(actor.id(), control.actorId());
             assertEquals(actor.generation(), control.generation());
             assertEquals(ActorFailure.Kind.RUNTIME_FAILURE, control.failureKind());
             assertEquals(IllegalStateException.class.getName(), control.failureType());
+            assertEquals(control, runtime.peekSupervisorControlEvent().orElseThrow(),
+                    "observing CONTROL must not consume the authoritative failure");
+            assertEquals(1, runtime.supervisorControlBacklog());
+            assertEquals(0L, runtime.supervisorControlAcknowledged());
+            assertFalse(runtime.acknowledgeSupervisorControlEvent(
+                            actor.id(), actor.generation() + 1),
+                    "stale generation acknowledgement must fail closed");
+            assertEquals(1, runtime.supervisorControlBacklog());
+            assertEquals(1, runtime.reservedActorSlots());
+            assertTrue(runtime.acknowledgeSupervisorControlEvent(
+                    actor.id(), actor.generation()));
             assertEquals(0, runtime.supervisorControlBacklog());
             assertEquals(1L, runtime.supervisorControlAcknowledged());
 
@@ -223,10 +234,12 @@ final class ActorObservabilityTest {
                     "best-effort diagnostic record may be dropped");
             assertEquals(1, runtime.supervisorControlBacklog(),
                     "correctness-critical CONTROL must survive diagnostic saturation");
-            var control = runtime.pollSupervisorControlEvent().orElseThrow();
+            var control = runtime.peekSupervisorControlEvent().orElseThrow();
             assertEquals(failed.id(), control.actorId());
             assertEquals(ActorFailure.Kind.PANIC, control.failureKind());
             assertEquals(ActorFailure.Panic.class.getName(), control.failureType());
+            assertTrue(runtime.acknowledgeSupervisorControlEvent(
+                    control.actorId(), control.generation()));
         }
     }
 
@@ -275,13 +288,15 @@ final class ActorObservabilityTest {
 
             var seen = new java.util.HashSet<ActorRuntime.ActorId>();
             for (int i = 0; i < count; ++i) {
-                var event = runtime.pollSupervisorControlEvent().orElseThrow();
+                var event = runtime.peekSupervisorControlEvent().orElseThrow();
                 assertTrue(seen.add(event.actorId()),
                         "one failed incarnation must publish exactly one CONTROL event");
                 assertEquals(ActorFailure.Kind.RAISE, event.failureKind());
+                assertTrue(runtime.acknowledgeSupervisorControlEvent(
+                        event.actorId(), event.generation()));
             }
             assertEquals(count, seen.size());
-            assertTrue(runtime.pollSupervisorControlEvent().isEmpty());
+            assertTrue(runtime.peekSupervisorControlEvent().isEmpty());
             assertEquals(count, runtime.supervisorControlAcknowledged());
 
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
@@ -304,7 +319,7 @@ final class ActorObservabilityTest {
             actor.done().get(5, TimeUnit.SECONDS);
             assertEquals(0, runtime.supervisorControlBacklog());
             assertEquals(0L, runtime.supervisorControlPublished());
-            assertTrue(runtime.pollSupervisorControlEvent().isEmpty());
+            assertTrue(runtime.peekSupervisorControlEvent().isEmpty());
         }
     }
 
