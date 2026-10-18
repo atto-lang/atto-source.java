@@ -85,13 +85,11 @@ public final class NioReadinessGroup implements AutoCloseable {
     private final Executor completionExecutor;
     private final ThreadPoolExecutor ownedCompletionExecutor;
     // Context-owned completion handoff: scheduler/actor carriers already in
-    // the VM budget. The first *runnable* bound completion is admitted through
-    // the existing lazy host pool only as a short-lived bootstrap submitter so
-    // native/JVM carrier creation never blocks a selector. The bootstrapper
-    // never executes the completion callback itself.
+    // the VM budget. A cold bound executor is prepared by the trusted caller
+    // during the first valid watch admission, before any selector is started.
+    // Reactor delivery may therefore use only no-growth/no-bootstrap admission.
     private volatile Executor boundCompletionExecutor;
     private volatile boolean boundColdStartOffReactor;
-    private final AtomicBoolean boundCompletionBootstrapInFlight = new AtomicBoolean();
     private volatile boolean boundCompletionBootstrapped;
     // A failed submission is not proof that an arbitrary host Executor
     // never invoked or scheduled the task. Preserve one claim token across
@@ -227,6 +225,42 @@ public final class NioReadinessGroup implements AutoCloseable {
                         "NIO completion scheduler must be bound before first I/O admission");
             boundCompletionExecutor = executor;
             boundColdStartOffReactor = coldStartOffReactor;
+            // Binding permanently retires the transitional private completion
+            // pool while it is still cold. A selector must never create a
+            // helper worker merely to bootstrap the actor completion domain.
+            if (coldStartOffReactor && ownedCompletionExecutor != null) {
+                ownedCompletionExecutor.shutdown();
+            }
+        }
+    }
+
+    /** lifecycle monitor must be held. A valid first watch may bootstrap the
+     * bound VM completion carrier on its caller/admission stack, never on a
+     * selector. Invalid/rejected watches return before reaching this method.
+     */
+    private Throwable prepareBoundCompletionForAcceptedWatchLocked() {
+        if (!boundColdStartOffReactor || boundCompletionExecutor == null
+                || boundCompletionBootstrapped) {
+            return null;
+        }
+        if (onReactorThread()) {
+            return new RejectedExecutionException(
+                    "cold VM NIO completion bootstrap is forbidden on selector thread");
+        }
+        try {
+            // Admission only: no readiness Future/subscriber exists yet.
+            // ActorRuntime may synchronously create its first physical carrier,
+            // but that work happens on this trusted watch-admission caller.
+            boundCompletionExecutor.execute(() -> { });
+            boundCompletionBootstrapped = true;
+            return null;
+        } catch (RuntimeException | Error failure) {
+            if (!(failure instanceof RejectedExecutionException)) {
+                unexpectedSubmissionFailures.incrementAndGet();
+            }
+            if (failure instanceof VirtualMachineError fatal) throw fatal;
+            if (failure instanceof ThreadDeath fatal) throw fatal;
+            return failure;
         }
     }
 
@@ -254,68 +288,6 @@ public final class NioReadinessGroup implements AutoCloseable {
         }
     }
 
-    /**
-     * Submit the first runnable completion to the bound ActorRuntime off the
-     * selector stack. The helper owns only submission; the NotificationDelivery
-     * still executes on the actor carrier. Rejection restores the exact same
-     * delivery token at the head for the next capacity signal.
-     */
-    private void requestBoundCompletionBootstrap(Executor target) {
-        if (!boundColdStartOffReactor || ownedCompletionExecutor == null
-                || boundCompletionBootstrapped
-                || liveReactors.get() == 0
-                || !boundCompletionBootstrapInFlight.compareAndSet(false, true)) {
-            return;
-        }
-        try {
-            ownedCompletionExecutor.execute(() -> {
-                boolean admitted = false;
-                try {
-                    NotificationDelivery next = stagedNotifications.pollFirst();
-                    if (next == null) return;
-                    if (next.claimed.get()) {
-                        admitted = true;
-                        return;
-                    }
-                    try {
-                        target.execute(next);
-                        admitted = true;
-                    } catch (RuntimeException | Error submissionFailure) {
-                        if (!(submissionFailure instanceof RejectedExecutionException))
-                            unexpectedSubmissionFailures.incrementAndGet();
-                        if (!next.claimed.get()) {
-                            next.mayBeQueuedAfterSubmissionFailure.set(true);
-                            stagedNotifications.addFirst(next);
-                            if (next.claimed.get()) stagedNotifications.remove(next);
-                        } else {
-                            admitted = true;
-                        }
-                        if (submissionFailure instanceof VirtualMachineError fatal) throw fatal;
-                        if (submissionFailure instanceof ThreadDeath fatal) throw fatal;
-                    }
-                } finally {
-                    if (admitted) boundCompletionBootstrapped = true;
-                    boundCompletionBootstrapInFlight.set(false);
-                    if (admitted) {
-                        // The first delivery may finish and fire its actor
-                        // capacity hook before this helper publishes the
-                        // bootstrapped flag. That concurrent retry observes
-                        // bootstrapInFlight and returns. Retry once again only
-                        // after publication so no staged tail can be stranded.
-                        ownedCompletionExecutor.shutdown();
-                        retryStagedNotifications();
-                    }
-                }
-            });
-        } catch (RuntimeException | Error submissionFailure) {
-            boundCompletionBootstrapInFlight.set(false);
-            if (!(submissionFailure instanceof RejectedExecutionException))
-                unexpectedSubmissionFailures.incrementAndGet();
-            if (submissionFailure instanceof VirtualMachineError fatal) throw fatal;
-            if (submissionFailure instanceof ThreadDeath fatal) throw fatal;
-        }
-    }
-
     /** Called after an actor turn or accepted host notification retires,
      * so a temporarily full actor queue cannot strand accepted NIO work.
      * Each dispatch pass offers at most 128 records; inline reentrant
@@ -327,14 +299,10 @@ public final class NioReadinessGroup implements AutoCloseable {
         if (target == null && ownedCompletionExecutor != null) return;
         if (target == null) target = completionExecutor;
 
-        // A cold native actor pool may synchronously wait for pthread/JNI
-        // publication in Executor.execute(). Never do that from a selector.
-        // Once the first runnable completion has bootstrapped the exact bound
-        // executor off-thread, later submissions are bounded queue operations.
+        // A bound cold executor must have been prepared during valid watch
+        // admission, before the reactor existed. Never bootstrap it here.
         if (boundCompletionExecutor != null && boundColdStartOffReactor
-                && !boundCompletionBootstrapped && liveReactors.get() > 0
-                && ownedCompletionExecutor != null) {
-            requestBoundCompletionBootstrap(target);
+                && !boundCompletionBootstrapped) {
             return;
         }
 
@@ -786,6 +754,8 @@ public final class NioReadinessGroup implements AutoCloseable {
             if (pending.get() >= maxPending || notificationReservations.get() >= maxPending)
                 return OresFuture.failed(new RejectedExecutionException(
                         "NIO readiness or completion notification capacity exhausted"));
+            Throwable bootstrapFailure = prepareBoundCompletionForAcceptedWatchLocked();
+            if (bootstrapFailure != null) return OresFuture.failed(bootstrapFailure);
             final Reactor initial;
             try {
                 initial = reactors.isEmpty() ? startReactorLocked() : null;
