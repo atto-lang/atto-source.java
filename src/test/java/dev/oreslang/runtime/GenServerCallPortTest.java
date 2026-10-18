@@ -59,6 +59,24 @@ final class GenServerCallPortTest {
         assertEquals(0, port.pendingCount());
     }
 
+    @Test void failingOneIncarnationDoesNotTouchSameNumericGenerationInOtherRuntime() throws Exception {
+        var port = new GenServerCallPort<Integer>(3);
+        var original = actor(1);
+        var differentRuntime = new GenServerReplyLedger.Target(
+                UUID.fromString("00000000-0000-0000-0000-000000000099"),
+                original.actorId(), original.incarnation());
+        var same = port.register(original);
+        var foreign = port.register(differentRuntime);
+        assertEquals(1, port.failActor(original, new IllegalStateException("exited")));
+        assertThrows(ExecutionException.class, same.future()::get);
+        assertFalse(foreign.future().isDone());
+        assertEquals(1, port.pendingCount());
+        assertFalse(port.reply(foreign.ticket(), original, 99));
+        assertTrue(port.reply(foreign.ticket(), differentRuntime, 7));
+        assertEquals(7, foreign.future().get());
+        assertEquals(0, port.pendingCount());
+    }
+
     @Test void closeSettlesAllLiveFuturesAndBlocksNewAdmissions() throws Exception {
         var port = new GenServerCallPort<Integer>(3);
         var a = port.register(actor(1));
