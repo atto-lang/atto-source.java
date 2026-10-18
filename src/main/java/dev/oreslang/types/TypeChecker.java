@@ -2707,6 +2707,19 @@ public final class TypeChecker {
                     if (!call.arguments().isEmpty()) {
                         throw new IllegalArgumentException(operator + " expects no arguments");
                     }
+                    // Direct invocation must NOT fall through to
+                    // typeOf(call.callee()): that route intentionally rejects
+                    // consuming nested extraction as a first-class member.
+                    // The call-site has already been checked for arity, and
+                    // unwrap_all has its static-depth proof attached above.
+                    Type checkedOperation = builtin.name().equals("Option")
+                            ? builtinOptionResultMember(receiver, member.member())
+                            : builtinFutureMember(receiver, member.member());
+                    if (!(checkedOperation instanceof Function checkedFunction)) {
+                        throw new IllegalArgumentException(
+                                operator + " requires a correctly typed receiver");
+                    }
+                    return checkedFunction.result();
                 }
 
                 boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
@@ -3304,6 +3317,22 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            // Nested extraction consumes the receiver. unwrap_all also
+            // requires a checked static-depth proof bound to the CallExpr's
+            // identity. A first-class method value would bypass both direct
+            // call checks, potentially duplicating an affine payload.
+            if (sumReceiver instanceof Named extractionReceiver
+                    && extractionReceiver.arguments().size() == 1
+                    && ((extractionReceiver.name().equals("Option")
+                            && (member.member().equals("unwrap_all")
+                                    || member.member().equals("flatten")))
+                        || (extractionReceiver.name().equals("Future")
+                            && member.member().equals("flatten")))) {
+                throw new IllegalArgumentException(
+                        extractionReceiver.name() + "." + member.member()
+                                + " is a consuming nested extraction operation; "
+                                + "invoke it directly rather than capturing a method value");
+            }
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
             if (sumReceiver instanceof Named channelType
