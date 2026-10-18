@@ -180,6 +180,12 @@ public final class CallerRoleContracts {
         String typeName = spelling.substring(0, lastDot);
         String caseName = spelling.substring(lastDot + 1);
         String identity = typeName.contains(".") ? typeName : module + "." + typeName;
+        // Until import/visibility-aware linker proofs exist, a role cannot
+        // claim an enum case from another lexical module by spelling its name.
+        if (!identity.startsWith(module + ".") || identity.substring(module.length() + 1).contains(".")) {
+            throw new IllegalArgumentException("@" + annotation
+                    + " cross-module enum roles require verified import and visibility linkage: '" + spelling + "'");
+        }
         Ast.EnumDecl e = enums.get(identity);
         if (e == null) {
             throw new IllegalArgumentException("@" + annotation + " refers to unknown or unlinked enum '" + identity + "'");
