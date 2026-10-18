@@ -147,17 +147,19 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
                 return actor;
             }
         } catch (RuntimeException | Error failure) {
+            Throwable report = failure;
             if (group != null) {
                 try { group.close(); }
                 catch (RuntimeException | Error cleanup) {
-                    // The pool retains the failed Group; supervisor capacity
-                    // must also remain reserved even though spawn failed.
+                    // The pool retains the failed Group and supervisor slot.
+                    // A VM-fatal cleanup must supersede an ordinary spawn
+                    // exception, but must not suppress raw guest source/cause.
                     synchronized (lifecycle) { failedRetirements++; }
-                    failure.addSuppressed(new IllegalStateException(
-                            "untrusted spawn teardown incomplete; reservation retained"));
+                    report = VerifiedCloseFence.preferFatalSpawnCleanup(failure, cleanup);
                 }
             }
             if (code != null) code.fenceAfterContextClose();
+            if (report != failure) throw (Error) report;
             throw failure;
         } finally {
             if (admission != null) admission.close();
