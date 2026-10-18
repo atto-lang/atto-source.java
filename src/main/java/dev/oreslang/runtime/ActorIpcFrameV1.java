@@ -238,7 +238,10 @@ public final class ActorIpcFrameV1 {
             }
 
             byte[] suppliedTag =
-                    Arrays.copyOfRange(frame, unsignedLength, expectedTotal);
+                    Arrays.copyOfRange(
+                            admittedFrame,
+                            unsignedLength,
+                            expectedTotal);
             byte[] actualTag = hmac(
                     authenticationKey,
                     admittedFrame,
