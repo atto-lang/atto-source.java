@@ -97,17 +97,22 @@ def capture(repo, bundle, expected_sha, expected_tree, mode):
     deny(all(x.startswith('H ') for x in index.split('\x00') if x),
          'masked Git index entry')
     deny(mode in MODES, 'unsupported expected build mode')
-    deny({p.name for p in bundle.iterdir()} == {'launcher', 'oreslang-source.jar', 'lib'},
+    deny({p.name for p in bundle.iterdir()} == {'launcher', 'oreslang-source.jar', 'lib', 'native'},
          'unexpected bundle root entries')
     launcher = bundle / 'launcher'
     jar = bundle / 'oreslang-source.jar'
     library = bundle / 'lib'
+    native = bundle / 'native' / 'liboresthread.so'
+    deny((bundle / 'native').is_dir() and not (bundle / 'native').is_symlink() and
+         {p.name for p in (bundle / 'native').iterdir()} == {'liboresthread.so'},
+         'missing or extra native runtime artifact')
     deny(library.is_dir() and not library.is_symlink(), 'missing dependency directory')
     deps = sorted(library.iterdir())
     deny(bool(deps) and all(p.suffix == '.jar' and p.name not in ('.', '..') for p in deps),
          'missing or extra dependency artifact')
     files = {'launcher': file_identity(launcher),
-             'oreslang-source.jar': file_identity(jar)}
+             'oreslang-source.jar': file_identity(jar),
+             'native/liboresthread.so': file_identity(native)}
     deny(os.access(launcher, os.X_OK), 'non-executable launcher')
     for dep in deps:
         files['lib/' + dep.name] = file_identity(dep)
