@@ -2,6 +2,10 @@ package dev.oreslang.runtime;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Objects;
 
@@ -65,7 +69,44 @@ final class WorkflowPrivateActorStateV1 {
         }
     }
 
+    static byte[] encodeUtf8(String value) {
+        Objects.requireNonNull(value, "value");
+        try {
+            ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(value));
+            byte[] bytes = new byte[encoded.remaining()];
+            encoded.get(bytes);
+            return bytes;
+        } catch (CharacterCodingException failure) {
+            throw new IllegalArgumentException(
+                    "private workflow state string is not valid Unicode",
+                    failure);
+        }
+    }
+
+    static String decodeUtf8(byte[] bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes))
+                    .toString();
+        } catch (CharacterCodingException failure) {
+            throw new IllegalStateException(
+                    "private workflow state contains malformed UTF-8",
+                    failure);
+        }
+    }
+
     static boolean empty(ActorRuntime.PrivateMemoryBlock block) {
-        return read(block).length == 0;
+        byte[] payload = read(block);
+        try {
+            return payload.length == 0;
+        } finally {
+            Arrays.fill(payload, (byte) 0);
+        }
     }
 }
