@@ -973,8 +973,8 @@ public final class Parser {
     }
 
     private Ast.ActorThreadPolicy newActorThreadPolicy(int min, int max) {
-        if (min < 1 || max < min) {
-            throw error(previous(), "actor threads require 1 <= min <= max");
+        if (min < 1 || max < min || max > 3) {
+            throw error(previous(), "actor threads require 1 <= min <= max <= 3");
         }
         return new Ast.ActorThreadPolicy(min, max);
     }
