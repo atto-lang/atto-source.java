@@ -72,7 +72,7 @@ final class CriticalCarrierNonparkingTest {
                 assertTrue(result.initial());
                 return OresScheduler.done(77);
             });
-            assertEquals(77, control.get(5, TimeUnit.SECONDS));
+            assertEquals(77, control.get(5, TimeUnit.SECONDS).intValue());
             assertEquals(0, resumed.get(), "the original owner still holds the gate");
 
             resumeOwner.completeFromRuntime(null);
@@ -113,7 +113,7 @@ final class CriticalCarrierNonparkingTest {
             }
             for (OresFuture<Void> check : checks) check.get(5, TimeUnit.SECONDS);
             assertEquals(101, scheduler.start(result -> OresScheduler.done(101))
-                    .get(5, TimeUnit.SECONDS));
+                    .get(5, TimeUnit.SECONDS).intValue());
         }
     }
 }
