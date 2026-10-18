@@ -482,4 +482,85 @@ final class ConstructorSemanticIrTest {
         assertFalse(callable.actorDataAdmissible());
     }
 
+
+    @Test
+    void recursiveSelfRemainsRuntimeFixpointButNotExternalOwnershipCapture() {
+        var recursive = new ConstructorSemanticIr.ResolvedCaptureBinding(
+                new ConstructorSemanticIr.CaptureBindingId("root::fn#fact"),
+                "fact",
+                new Types.Function(List.of(Types.Primitive.INT), Types.Primitive.INT),
+                ConstructorSemanticIr.CaptureOrigin.RECURSIVE_SELF,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
+                Set.of());
+        var external = new ConstructorSemanticIr.ResolvedCaptureBinding(
+                new ConstructorSemanticIr.CaptureBindingId("root::fn#bias"),
+                "bias",
+                Types.Primitive.INT,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
+                Set.of());
+        var plan = new ConstructorSemanticIr.CapturePlan(List.of(recursive, external));
+
+        assertFalse(recursive.participatesInExternalOwnership());
+        assertTrue(external.participatesInExternalOwnership());
+        assertEquals(List.of(external), plan.externalOwnershipBindings());
+        assertFalse(plan.capturesBorrow());
+        assertFalse(plan.capturesConstructionState());
+        assertFalse(plan.serializableExecutableValue());
+        assertFalse(plan.actorDataAdmissible());
+    }
+
+    @Test
+    void recursiveSelfRejectsWriteDetachedTransferAndCapabilityLaundering() {
+        var id = new ConstructorSemanticIr.CaptureBindingId("root::fn#self");
+        var type = new Types.Function(List.of(), Types.Primitive.VOID);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new ConstructorSemanticIr.ResolvedCaptureBinding(
+                        id, "self", type,
+                        ConstructorSemanticIr.CaptureOrigin.RECURSIVE_SELF,
+                        ConstructorSemanticIr.CaptureAccess.WRITE,
+                        ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
+                        Set.of()));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new ConstructorSemanticIr.ResolvedCaptureBinding(
+                        id, "self", type,
+                        ConstructorSemanticIr.CaptureOrigin.RECURSIVE_SELF,
+                        ConstructorSemanticIr.CaptureAccess.READ,
+                        ConstructorSemanticIr.CaptureTransfer.DETACHED_VALUE_SNAPSHOT,
+                        Set.of()));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new ConstructorSemanticIr.ResolvedCaptureBinding(
+                        id, "self", type,
+                        ConstructorSemanticIr.CaptureOrigin.RECURSIVE_SELF,
+                        ConstructorSemanticIr.CaptureAccess.READ,
+                        ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
+                        Set.of(ConstructorSemanticIr.CallableCapability.SERIALIZABLE)));
+    }
+
+    @Test
+    void sameResolvedBindingIdCannotMergeRecursiveSelfWithExternalCapture() {
+        var id = new ConstructorSemanticIr.CaptureBindingId("root::fn#slot");
+        var type = new Types.Function(List.of(), Types.Primitive.VOID);
+        var recursive = new ConstructorSemanticIr.ResolvedCaptureBinding(
+                id, "slot", type,
+                ConstructorSemanticIr.CaptureOrigin.RECURSIVE_SELF,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
+                Set.of());
+        var external = new ConstructorSemanticIr.ResolvedCaptureBinding(
+                id, "slot", type,
+                ConstructorSemanticIr.CaptureOrigin.EXTERNAL_BINDING,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
+                Set.of());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new ConstructorSemanticIr.CapturePlan(List.of(recursive))
+                        .merge(new ConstructorSemanticIr.CapturePlan(List.of(external))));
+    }
+
 }
