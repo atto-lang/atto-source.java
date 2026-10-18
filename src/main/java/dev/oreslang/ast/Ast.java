@@ -318,6 +318,18 @@ public final class Ast {
         }
     }
 
+    /**
+     * Historical source spelling `@ActorMaxThreads(MaxActorThreads.LOW)`.
+     * Keep it as a compatibility view of the canonical ActorThreadPolicy,
+     * not a second independently stored or enforced execution policy.
+     */
+    public enum MaxActorThreads {
+        LOW(1), MEDIUM(2), HIGH(3);
+        private final int value;
+        MaxActorThreads(int value) { this.value = value; }
+        public int value() { return value; }
+    }
+
     /** Execution-slot bounds, separate from in-flight messages and connections. */
     public record ActorThreadPolicy(int min, int max) {
         public ActorThreadPolicy {
@@ -350,6 +362,32 @@ public final class Ast {
             if (actorKind == ActorKind.NONE && !actorThreads.equals(ActorThreadPolicy.defaults())) {
                 throw new IllegalArgumentException("non-actor classes cannot configure actor threads");
             }
+        }
+
+        /**
+         * Existing actor-limit AST producers use the enum spelling. Convert
+         * immediately: no second field or independently mutable policy.
+         */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract, ActorKind actorKind,
+                         List<String> genericParameters, List<TypeRef> parents,
+                         List<TypeRef> interfaces, List<FieldDecl> fields,
+                         ConstructorDecl constructor, List<MethodDecl> methods,
+                         MaxActorThreads maxActorThreads) {
+            this(name, visibility, isAbstract, actorKind, genericParameters, parents,
+                    interfaces, fields, constructor, methods,
+                    new ActorThreadPolicy(1, java.util.Objects.requireNonNull(maxActorThreads).value()));
+        }
+
+        /** Compatibility accessor, representing only the maximum. */
+        public MaxActorThreads maxActorThreads() {
+            return switch (actorThreads.max()) {
+                case 1 -> MaxActorThreads.LOW;
+                case 2 -> MaxActorThreads.MEDIUM;
+                case 3 -> MaxActorThreads.HIGH;
+                default -> throw new IllegalStateException(
+                        "actor max threads cannot map to legacy LOW/MEDIUM/HIGH: "
+                                + actorThreads.max());
+            };
         }
 
         /** Compatibility constructor for existing AST producers. */
