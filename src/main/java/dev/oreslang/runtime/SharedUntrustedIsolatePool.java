@@ -38,7 +38,9 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
     private final long isolateHeapBytes;
     private final int maxGroups;
     private final Set<Group> groups = new HashSet<>();
-    private boolean closed;
+    // Host admission must observe a pool-wide close request without taking
+    // the guest's execution monitor or waiting for Context.close(true).
+    private volatile boolean closed;
 
     /**
      * Opens one native-image polyglot isolate. If Oreslang's language-isolate
@@ -128,6 +130,9 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
         return result;
     }
 
+    // Host-only observation for deterministic close/admission race tests.
+    boolean shutdownRequestedForSupervisor() { return closed; }
+
     public synchronized int activeGroups() { return groups.size(); }
     public long isolateHeapBytes() { return isolateHeapBytes; }
     int liveCodeImagesForSupervisor() { return codeImages.liveImages(); }
@@ -184,7 +189,8 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
             Objects.requireNonNull(codeUnitId, "codeUnitId");
             Objects.requireNonNull(sourceText, "sourceText");
             synchronized (imageAdmissionLock) {
-                if (groupClosed) throw new IllegalStateException("untrusted group is closed");
+                if (groupClosed || SharedUntrustedIsolatePool.this.closed)
+                    throw new IllegalStateException("untrusted group/pool is closed");
                 UntrustedSourceImageCache.Lease existing = codeUnits.get(codeUnitId);
                 if (existing != null) {
                     if (!existing.source().getCharacters().toString().equals(sourceText)) {
@@ -217,7 +223,8 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
 
         /** Host adapter entrypoint; actual actor routing must be supplied separately. */
         public synchronized Context contextForSupervisor() {
-            if (groupClosed) throw new IllegalStateException("untrusted group is closed");
+            if (groupClosed || SharedUntrustedIsolatePool.this.closed)
+                throw new IllegalStateException("untrusted group/pool is closed");
             return context;
         }
 
