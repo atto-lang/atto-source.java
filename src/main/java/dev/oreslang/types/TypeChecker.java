@@ -2153,6 +2153,11 @@ public final class TypeChecker {
                             + "' is direct-call-only and cannot be used as a first-class callable value; "
                             + "wrap the call in an explicit lambda when a callback is required");
                 }
+                if (fn.suspends()) {
+                    throw new IllegalArgumentException("suspends function '" + fn.name()
+                            + "' cannot be used as an ordinary Fnc value until callable "
+                            + "types preserve suspension effects; use an explicit direct call");
+                }
                 if (!fn.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException(
                             "generic callable '" + fn.name()
