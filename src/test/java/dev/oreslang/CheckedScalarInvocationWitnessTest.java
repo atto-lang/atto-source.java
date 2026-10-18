@@ -164,6 +164,22 @@ final class CheckedScalarInvocationWitnessTest {
                         nonliteral, effectCaller, call(effectCaller)));
     }
 
+    @Test
+    void optionalCallerFormalsDoNotEarnScalarTypeWitness() {
+        Ast.Program parsed = Parser.parse("""
+                define module app as
+                    pub fnc target(int a): int { return a; }
+                    pub fnc caller(string? input): void {
+                        const result = target(a: 5);
+                        return;
+                    }
+                end
+                """);
+        Ast.FunctionDecl calling = caller(parsed);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.inspectStagedScalarInvocation(parsed, calling, call(calling)));
+    }
+
     private static Ast.FunctionDecl withBody(Ast.FunctionDecl source, List<Ast.Stmt> body) {
         return new Ast.FunctionDecl(
                 source.name(), source.kind(), source.visibility(), source.async(),
