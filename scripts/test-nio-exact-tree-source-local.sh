@@ -32,6 +32,9 @@ finish() {
   local code=$?
   trap - EXIT
   if (( code == 0 )); then status=PASS; fi
+  # Maven clean removes target/, including preexisting evidence. Always
+  # recreate this directory so even a clean-stage failure writes a receipt.
+  mkdir -p "$EVIDENCE_DIR"
   # This receipt is unsigned and does not replace runner/job-step provenance.
   {
     printf 'gate=nio-exact-tree-source-local\n'
@@ -58,6 +61,10 @@ actual_tree="$(git rev-parse --verify 'HEAD^{tree}')"
 if [[ "$actual_commit" != "$EXPECTED_COMMIT" || "$actual_tree" != "$EXPECTED_TREE" ]]; then
   printf 'ERROR: exact source commit/tree mismatch, refusing to run tests.\n' >&2
   exit 66
+fi
+if [[ -L "$root/target" ]]; then
+  printf 'ERROR: target/ symlink is forbidden in source-local qualification.\n' >&2
+  exit 68
 fi
 if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   printf 'ERROR: dirty or untracked source checkout, refusing to run tests.\n' >&2
@@ -89,9 +96,15 @@ if $NATIVE_AOT; then
 fi
 
 printf 'Pinned checkout %s, tree %s; running JDK25 source-local tests.\n' "$actual_commit" "$actual_tree"
+# Eliminate stale ignored target/ classes, test reports and generated output
+# before the first selective JUnit run. A clean Git tree alone does not
+# demonstrate a clean Maven build because target/ is gitignored.
+stage=clean-stale-build
+mvn -B -ntp clean
+mkdir -p "$EVIDENCE_DIR"
 stage=targeted-junit
 mvn -B -ntp -Dores.runtime.carriers=native \
-  '-Dtest=VmNioTcpListenerTest,NativeNetStdlibTest,OresSchedulerTest,OresCarrierPermitPoolTest' \
+  '-Dtest=VmNioTcpListenerTest,NativeNetStdlibTest,NioReadinessGroupTest,NativeNioFutureReactorTest,OresSchedulerTest,OresCarrierPermitPoolTest,OresFuturesTest,OresFutureCallbackTest' \
   test 2>&1 | tee "$EVIDENCE_DIR/targeted-junit.log"
 
 stage=full-maven-verify
