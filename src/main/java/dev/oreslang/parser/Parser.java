@@ -47,11 +47,6 @@ public final class Parser {
         // silently skipping their bodies would violate placement semantics.
         // A token preflight also covers paths not reached by the normal parser.
         for (Token token : tokens) {
-            if (token.type() == EXTERN) {
-                throw error(token, "'extern' is reserved for compiler-owned ForeignDecl lowering; "
-                        + "foreign declarations are not enabled until ABI receipts and bounded "
-                        + "suspending FFI execution are implemented");
-            }
             if (token.type() == GPU || token.type() == CPU || token.type() == QUANTUM) {
                 throw error(token, "execution domain '" + token.lexeme()
                         + "' requires typed effect/ownership checking and explicit backend lowering;"
@@ -354,6 +349,9 @@ public final class Parser {
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
+        if (check(EXTERN)) {
+            throw error(peek(), "'extern' declarations are valid only inside an ffi actor");
+        }
         if (isLegacyFnSpelling()) {
             throw error(peek(), "functions are declared with 'fnc', not 'fn'");
         }
@@ -808,11 +806,21 @@ public final class Parser {
         if (!braceStyle) match(AS);
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
+        List<Ast.ForeignDecl> foreignDeclarations = new ArrayList<>();
+        java.util.Set<String> foreignNames = new java.util.HashSet<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (check(EXTERN)) {
+                if (actorBoundary != Ast.ActorBoundary.FFI) {
+                    throw error(peek(), "'extern' requires an ffi actor boundary");
+                }
+                foreignDeclarations.add(parseForeignDecl(
+                        annotations, mods, foreignNames));
+                continue;
+            }
             if (isLegacyFnSpelling()) {
                 if (mods.isStatic) throw error(peek(), "static actor functions use 'static fnc', not 'static fn'");
                 throw error(peek(), "actor methods omit 'fn'/'fnc'; declare the method name directly");
@@ -872,7 +880,63 @@ public final class Parser {
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, actorBoundary,
-                generics, parents, interfaces, fields, null, methods);
+                generics, parents, interfaces, fields, null,
+                foreignDeclarations, methods);
+    }
+
+    private Ast.ForeignDecl parseForeignDecl(
+            List<Ast.Annotation> annotations,
+            Modifiers prefix,
+            java.util.Set<String> foreignNames) {
+        Token externToken = consume(EXTERN, "expected 'extern'");
+        if (!annotations.isEmpty()) {
+            throw error(externToken,
+                    "ffi v1 foreign declarations do not accept source ABI annotations; "
+                            + "the compiler owns the ABI receipt");
+        }
+        if (prefix.visibilitySeen || prefix.async || prefix.generator
+                || prefix.structural || prefix.nonLexical || prefix.trapped
+                || prefix.isStatic || prefix.isAbstract || prefix.shared
+                || prefix.untrusted || prefix.ipc || prefix.ffi) {
+            throw error(externToken,
+                    "extern declarations accept only the suspends effect in ffi v1");
+        }
+
+        boolean suspends = prefix.suspends;
+        if (match(SUSPENDS) || matchContextualSuspendModifier()) {
+            if (suspends) throw error(previous(), "duplicate 'suspends' on extern declaration");
+            suspends = true;
+        }
+        if (!suspends) {
+            throw error(externToken,
+                    "ffi v1 extern calls must be 'suspends' so native work never blocks an actor carrier");
+        }
+        consume(FNC, "ffi v1 extern declaration requires 'fnc'");
+        String name = consume(IDENT, "expected foreign function name").lexeme();
+        if (!foreignNames.add(name)) {
+            throw error(previous(), "duplicate foreign declaration '" + name + "'");
+        }
+        if (check(LT)) {
+            throw error(peek(), "generic extern declarations are not supported in ffi v1");
+        }
+        consume(LPAREN, "expected '(' after foreign function name");
+        List<Ast.Param> parameters = parseParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after foreign parameters");
+        for (Ast.Param parameter : parameters) {
+            if (parameter.structural() || parameter.mutable()) {
+                throw error(previous(),
+                        "ffi v1 foreign parameters cannot use structural or mutable Ores borrows");
+            }
+        }
+        Ast.TypeRef returnType = parseReturnType(List.of());
+        consume(SEMICOLON,
+                "extern declarations have no guest body and must end with ';'");
+
+        // V1 has no user-selectable link name/calling convention. The source
+        // name is captured as the compiler-owned symbol identity and will be
+        // bound into the future authenticated ABI receipt.
+        return new Ast.ForeignDecl(
+                name, true, parameters, returnType, name);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
