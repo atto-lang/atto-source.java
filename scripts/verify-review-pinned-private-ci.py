@@ -268,6 +268,7 @@ def main():
     ap.add_argument("--source-reviewer-permission", required=True)
     ap.add_argument("--carrier-reviewer-permission", required=True)
     ap.add_argument("--incident-comments", required=True)
+    ap.add_argument("--carrier-incident-comments", required=True)
     ap.add_argument("--source-commit", required=True)
     ap.add_argument("--destination-repo", required=True)
     ap.add_argument("--destination-ledger", required=True)
@@ -295,6 +296,9 @@ def main():
     incident = load_json(args.incident_comments)
     resume_id = exact_resume_comment(
         incident, heads, source_commit, source_tree, reviewer)
+    carrier_incident = load_json(args.carrier_incident_comments)
+    carrier_resume_id = exact_resume_comment(
+        carrier_incident, heads, source_commit, source_tree, reviewer)
 
     commit = load_json(args.source_commit)
     if require_sha(commit.get("sha"), "source commit metadata") != source_commit:
@@ -327,7 +331,7 @@ def main():
     ).hexdigest()
 
     receipt = {
-        "schema": 2,
+        "schema": 3,
         "source_repository": SOURCE_REPO,
         "source_repository_id": SOURCE_REPO_ID,
         "source_commit_sha": source_commit,
@@ -354,6 +358,7 @@ def main():
         "carrier_policy_head_sha": heads["carrier"],
         "carrier_review_id": review_ids["carrier"],
         "incident_resume_comment_id": resume_id,
+        "carrier_incident_resume_comment_id": carrier_resume_id,
     }
     print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
 
