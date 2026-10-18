@@ -39,7 +39,8 @@ jobs:
             and ([.examples[] | select(.id == "three-actor-pipeline") | .source_blob_sha1] == [$blob])
             and ([.examples[] | select(.id == "three-actor-pipeline") | .java_status] == ["pending_ci"])
             and ([.examples[] | select(.id == "three-actor-pipeline") | .expected_stdout] == ["SRC_FORWARD_5|TRANSFORM_FORWARD_6|SINK_BACKWARD_7|TRANSFORM_BACKWARD_8|PIPE_3_RESULT_8"])
-            and (all(.examples[]; (.java_status | type) == "string" and (.llvm_status | type) == "string" and .java_status != "verified" and .llvm_status != "verified" and .ci_evidence_url == null))
+            and ([.examples[] | [.id, .java_status, .llvm_status]] | sort) == [["http-unary","design_only","design_only"],["ml-backprop","design_only","design_only"],["select-result-modes","partial_legacy_implementation","not_verified"],["three-actor-pipeline","pending_ci","not_verified"]]
+            and (all(.examples[]; .ci_evidence_url == null and .java_evidence == null and .llvm_evidence == null))
             and ([.examples[] | select(.id != "three-actor-pipeline") | .source_file] == [null,null,null])
           ' contracts/conformance/language-motion-v1.json
       - name: Set up GraalVM 25
