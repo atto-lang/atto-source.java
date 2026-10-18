@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.compiler.OresCompiler;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 final class NestedFutureFlattenArityTest {
@@ -20,6 +21,9 @@ final class NestedFutureFlattenArityTest {
                   return;
                 }
                 """;
+        String valid = source.replace("nested.flatten(7)", "nested.flatten()");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(valid),
+                "positive control: a nested Future must accept zero-argument flatten");
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(source));
     }
