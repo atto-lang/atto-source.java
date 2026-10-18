@@ -395,6 +395,51 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
+    void deferRunsExactlyOnceBeforeTrapAndRecoveryObservation() throws Exception {
+        String source = """
+                fnc mark(): void { stdio.stdout.write("D"); }
+
+                trap fnc throws(): int {
+                  defer mark();
+                  throw new Error("ordinary");
+                  return 1;
+                }
+
+                trap fnc raises(): int {
+                  defer mark();
+                  raise new Error("elevated");
+                  return 2;
+                }
+
+                trap fnc panics(): int {
+                  defer mark();
+                  panic new Error("fatal");
+                  return 3;
+                }
+
+                pub fnc main(): void {
+                  [const [unused], const err] = throws();
+                  stdio.stdout.write("throw|");
+                  recover {
+                    [const [unusedRaise], const errorRaise] = raises();
+                  } catch (signal) {
+                    stdio.stdout.write(signal.kind);
+                    stdio.stdout.write("|");
+                  }
+                  recover {
+                    [const [unusedPanic], const errorPanic] = panics();
+                  } catch (signal) {
+                    stdio.stdout.write(signal.kind);
+                  }
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("Dthrow|Draise|Dpanic", run(source));
+    }
+
+    @Test
     void internalOptionUnwrapPanicStillBypassesTrapButCanBeRecovered() throws Exception {
         String source = """
                 trap fnc panics(): int {
