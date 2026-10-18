@@ -5189,6 +5189,272 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Held source checkpoint for a cross-runtime/context v1 transfer.
+     *
+     * <p>While open, the old physical actor remains ingress-frozen and fully
+     * quiesced. Closing without retirement is rollback: old ingress reopens.
+     * Calling retireSourceAfterPublication() seals the old physical ref before
+     * releasing the freeze, so stale holders cannot race the new logical route.</p>
+     */
+    public final class SourceActorTransfer implements AutoCloseable {
+        private final ActorRuntime sourceRuntime = ActorRuntime.this;
+        private final ActorRef<Object> sourceRef;
+        private final HotUpgradeIngressFreeze freeze;
+        private final UUID logicalActorId;
+        private final long logicalIncarnation;
+        private final ActorKind kind;
+        private final IsolatePolicy policy;
+        private final String actorTypeName;
+        private final String oldCodeSha256;
+        private final String stateSchemaSha256;
+        private final String messageAbiSha256;
+        private final String capabilitySha256;
+        private final ActorCheckpointEnvelopeV1.Header header;
+        private final byte[] checkpointFrame;
+        private final AtomicBoolean released = new AtomicBoolean();
+
+        private SourceActorTransfer(
+                ActorRef<Object> sourceRef,
+                HotUpgradeIngressFreeze freeze,
+                UUID logicalActorId,
+                long logicalIncarnation,
+                ActorKind kind,
+                IsolatePolicy policy,
+                String actorTypeName,
+                String oldCodeSha256,
+                String stateSchemaSha256,
+                String messageAbiSha256,
+                String capabilitySha256,
+                ActorCheckpointEnvelopeV1.Header header,
+                byte[] checkpointFrame) {
+            this.sourceRef = sourceRef;
+            this.freeze = freeze;
+            this.logicalActorId = logicalActorId;
+            this.logicalIncarnation = logicalIncarnation;
+            this.kind = kind;
+            this.policy = policy;
+            this.actorTypeName = actorTypeName;
+            this.oldCodeSha256 = oldCodeSha256;
+            this.stateSchemaSha256 = stateSchemaSha256;
+            this.messageAbiSha256 = messageAbiSha256;
+            this.capabilitySha256 = capabilitySha256;
+            this.header = header;
+            this.checkpointFrame = checkpointFrame.clone();
+        }
+
+        public UUID logicalActorId() { return logicalActorId; }
+        public long logicalIncarnation() { return logicalIncarnation; }
+        public ActorKind kind() { return kind; }
+        public IsolatePolicy policy() { return policy; }
+        public String actorTypeName() { return actorTypeName; }
+        public String oldCodeSha256() { return oldCodeSha256; }
+        public String stateSchemaSha256() { return stateSchemaSha256; }
+        public String messageAbiSha256() { return messageAbiSha256; }
+        public String capabilitySha256() { return capabilitySha256; }
+        public ActorRef<Object> sourceRef() { return sourceRef; }
+        public byte[] checkpointFrame() { return checkpointFrame.clone(); }
+
+        private void requireOpen() {
+            if (released.get())
+                throw new IllegalStateException("source actor transfer is closed");
+            if (!freeze.schedulerDrained())
+                throw new IllegalStateException(
+                        "source actor transfer lost physical quiescence");
+        }
+
+        /**
+         * Commit-side old-incarnation retirement. Publication of the new
+         * logical route must happen first.
+         */
+        public void retireSourceAfterPublication() {
+            requireSupervisorContext("retire source actor after hot-upgrade publication");
+            if (!released.compareAndSet(false, true)) return;
+            try {
+                sourceRef.stop();
+            } finally {
+                freeze.close();
+            }
+        }
+
+        @Override public void close() {
+            if (released.compareAndSet(false, true)) freeze.close();
+        }
+    }
+
+    /**
+     * Try to freeze and checkpoint one initialized source actor for migration.
+     * Empty means the actor has accepted/running work and the caller should
+     * retry later. Pending parent-visible output is a hard v1 refusal because
+     * logical output-stream rebinding is not implemented yet.
+     */
+    public Optional<SourceActorTransfer> tryBeginSourceActorTransfer(
+            ActorRef<Object> ref,
+            UUID logicalActorId,
+            long logicalIncarnation) {
+        requireSupervisorContext("checkpoint source actor for cross-context upgrade");
+        policyCeiling.require(
+                IsolatePolicy.Capability.HOT_CODE_LOAD,
+                "checkpoint source actor for cross-context upgrade");
+        Objects.requireNonNull(ref, "ref");
+        Objects.requireNonNull(logicalActorId, "logicalActorId");
+        if (logicalIncarnation <= 0)
+            throw new IllegalArgumentException("logical actor incarnation must be positive");
+        if (!ref.ownedBy(this))
+            throw new ActorInvalidReferenceException(
+                    "ActorRef belongs to a different ActorRuntime");
+        ActorCell<?> raw = actors.get(ref.id());
+        if (raw == null) throw terminated(ref);
+
+        HotUpgradeIngressFreeze freeze = freezeUserIngressForHotUpgrade(ref);
+        boolean keep = false;
+        try {
+            if (!freeze.schedulerDrained()) return Optional.empty();
+            @SuppressWarnings("unchecked")
+            ActorCell<Object> cell = (ActorCell<Object>) raw;
+
+            final ActorCodeExecutor current;
+            final SharedCodeImageStore.CodeImage currentImage;
+            final ActorOwnedGuestState currentState;
+            final String actorType;
+            final long sourceEpoch;
+            final String codeDigest;
+            final String schemaDigest;
+            final String messageDigest;
+            final String capabilityDigest;
+            final ActorContext<Object> context;
+
+            synchronized (cell.lifecycleLock) {
+                if (!freeze.schedulerDrained()) return Optional.empty();
+                if (cell.outputChannel.size() != 0) {
+                    throw new IllegalStateException(
+                            "cross-context actor upgrade requires parent-visible output "
+                                    + "to be drained before route migration");
+                }
+                if (cell.codeExecutor == null || cell.codeActorState == null)
+                    throw new IllegalStateException(
+                            "cross-context upgrade requires an initialized source actor");
+                current = cell.codeExecutor;
+                currentImage = cell.codeImage;
+                currentState = cell.codeActorState;
+                actorType = cell.codeActorType;
+                sourceEpoch = cell.sourceCodeEpoch;
+                codeDigest = canonicalSha256(
+                        current.actorCodeSha256(actorType), "active code digest");
+                schemaDigest = canonicalSha256(
+                        current.actorStateSchemaSha256(actorType),
+                        "active state schema digest");
+                messageDigest = canonicalSha256(
+                        current.actorMessageAbiSha256(actorType),
+                        "active message ABI digest");
+                capabilityDigest = actorPolicySha256(cell.policy);
+                context = cell.sourceUpgradeContext(currentImage);
+            }
+
+            byte[] payload = Objects.requireNonNull(
+                    current.snapshotActorState(actorType, currentState, context),
+                    "active source actor snapshot");
+            ActorCheckpointEnvelopeV1.Header header =
+                    new ActorCheckpointEnvelopeV1.Header(
+                            logicalActorId,
+                            logicalIncarnation,
+                            codeDigest,
+                            schemaDigest,
+                            messageDigest,
+                            capabilityDigest);
+            byte[] frame = ActorCheckpointEnvelopeV1.encode(
+                    new ActorCheckpointEnvelopeV1.Snapshot(header, payload));
+            // Verify the complete frame now; target runtimes decode it again.
+            ActorCheckpointEnvelopeV1.decode(frame, header);
+
+            synchronized (cell.lifecycleLock) {
+                if (!freeze.schedulerDrained()) return Optional.empty();
+                if (cell.codeExecutor != current
+                        || cell.codeImage != currentImage
+                        || cell.codeActorState != currentState
+                        || cell.sourceCodeEpoch != sourceEpoch) {
+                    throw new IllegalStateException(
+                            "source actor changed while cross-context checkpoint was staged");
+                }
+                if (cell.outputChannel.size() != 0) {
+                    throw new IllegalStateException(
+                            "source actor emitted output while cross-context checkpoint staged");
+                }
+            }
+
+            SourceActorTransfer transfer = new SourceActorTransfer(
+                    ref,
+                    freeze,
+                    logicalActorId,
+                    logicalIncarnation,
+                    cell.kind,
+                    cell.policy,
+                    actorType,
+                    codeDigest,
+                    schemaDigest,
+                    messageDigest,
+                    capabilityDigest,
+                    header,
+                    frame);
+            keep = true;
+            return Optional.of(transfer);
+        } finally {
+            if (!keep) freeze.close();
+        }
+    }
+
+    /**
+     * Restore a transfer into a fresh physical actor in this runtime. The
+     * returned actor is not logically published; callers must await readiness
+     * and atomically switch their logical route before retiring the source.
+     */
+    public ActorRef<Object> spawnCodeActorFromTransfer(
+            SourceActorTransfer transfer,
+            ActorCodeExecutor candidate) {
+        requireSupervisorContext("restore source actor transfer");
+        policyCeiling.require(
+                IsolatePolicy.Capability.HOT_CODE_LOAD,
+                "restore source actor transfer");
+        Objects.requireNonNull(transfer, "transfer");
+        Objects.requireNonNull(candidate, "candidate");
+        transfer.requireOpen();
+
+        String nextCode = canonicalSha256(
+                candidate.actorCodeSha256(transfer.actorTypeName),
+                "candidate code digest");
+        if (nextCode.equals(transfer.oldCodeSha256))
+            throw new IllegalArgumentException(
+                    "candidate source actor code digest is identical to active code");
+        String nextSchema = canonicalSha256(
+                candidate.actorStateSchemaSha256(transfer.actorTypeName),
+                "candidate state schema digest");
+        if (!nextSchema.equals(transfer.stateSchemaSha256))
+            throw new SecurityException(
+                    "cross-context v1 upgrade cannot change persistent state schema");
+        String nextMessage = canonicalSha256(
+                candidate.actorMessageAbiSha256(transfer.actorTypeName),
+                "candidate message ABI digest");
+        if (!nextMessage.equals(transfer.messageAbiSha256))
+            throw new SecurityException(
+                    "cross-context v1 upgrade cannot change message ABI");
+        if (!actorPolicySha256(transfer.policy).equals(transfer.capabilitySha256))
+            throw new SecurityException(
+                    "source actor capability-policy receipt changed during transfer");
+
+        byte[] payload = ActorCheckpointEnvelopeV1.decode(
+                transfer.checkpointFrame,
+                transfer.header).stateBytes();
+        return spawnInternal(
+                transfer.kind,
+                transfer.policy,
+                null,
+                false,
+                Objects.requireNonNull(candidate.codeImage(), "candidate code image"),
+                candidate,
+                transfer.actorTypeName,
+                payload);
+    }
+
     private static String canonicalSha256(String digest, String label) {
         if (digest == null || digest.length() != 64) {
             throw new IllegalArgumentException(label + " must be lowercase SHA-256");
