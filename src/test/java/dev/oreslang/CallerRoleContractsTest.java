@@ -195,6 +195,44 @@ final class CallerRoleContractsTest {
     }
 
     @Test
+    void unindexedProtectedLinkedMethodCannotBeReifiedOrCalled() {
+        Ast.Program program = Parser.parse(ROLES + """
+                @CallerRole(Callers.A)
+                pub fnc authorized(): void {}
+                """);
+        var policy = CallerRoleContracts.validate(program);
+        Ast.MethodDecl external = new Ast.MethodDecl(
+                "remote", Ast.Visibility.PUBLIC, true, false,
+                false, false, false, null, java.util.List.of(),
+                java.util.List.of(), Ast.TypeRef.simple("void"),
+                java.util.List.of(new Ast.Annotation("CallableBy",
+                        java.util.List.of(Ast.TypeRef.simple("Callers.A")))),
+                java.util.List.of());
+        assertTrue(policy.isRestricted(external));
+        assertThrows(IllegalArgumentException.class,
+                () -> policy.rejectReification(external, "Linked.remote"));
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> policy.requireDirectCall(external,
+                        function(program, "authorized"), "Linked.remote"))
+                .getMessage().contains("not bound"));
+    }
+
+    @Test
+    void crossModuleRoleReferencesCannotSpoofAnImport() {
+        assertTrue(failure("""
+                define module First as
+                    define enum Roles as
+                        A
+                    end
+                end
+                define module Second as
+                    @CallerRole(First.Roles.A)
+                    pub fnc f(): void {}
+                end
+                """).contains("cross-module enum roles"));
+    }
+
+    @Test
     void protectedHostEntryPointIsRejected() {
         assertTrue(failure(ROLES + """
                 @CallableBy(Callers.A)
