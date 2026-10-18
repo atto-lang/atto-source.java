@@ -873,7 +873,7 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, TaskExpr, AsyncLambdaExpr, TaskLambdaExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, TaskExpr, AsyncLambdaExpr, TaskLambdaExpr, SuspendsLambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -1182,6 +1182,17 @@ public final class Ast {
      */
     public record TaskLambdaExpr(LambdaExpr lambda) implements Expr {
         public TaskLambdaExpr { java.util.Objects.requireNonNull(lambda, "lambda"); }
+    }
+
+    /**
+     * A suspending callable executes in its CALLER'S current Task: it does
+     * not create a Task<T> or Future<T>. A caller must itself have a
+     * suspension effect (or be the scheduler-owned root main).
+     * This preserves a separate AST boundary until effectful callable types
+     * and continuation lowering exist; never downgrade to a plain LambdaExpr.
+     */
+    public record SuspendsLambdaExpr(LambdaExpr lambda) implements Expr {
+        public SuspendsLambdaExpr { java.util.Objects.requireNonNull(lambda, "lambda"); }
     }
 
     public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
