@@ -115,6 +115,35 @@ final class NestedOptionFutureUnwrapTest {
                 """));
     }
 
+    @Test
+    void flattenConsumesMoveOnlyNestedOption() {
+        String program = """
+                define class Box as
+                  pub let int value = 1;
+                end
+
+                fnc wrong(): void {
+                  val Option<Option<Box>> nested = Some(Some(new Box()));
+                  val Option<Box> once = nested.flatten();
+                  val Option<Box> twice = nested.flatten();
+                  return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(program));
+    }
+
+    @Test
+    void flattenConsumesMoveOnlyFutureHandle() {
+        String program = """
+                fnc wrong(Future<Future<int>> nested): void {
+                  val Future<int> once = nested.flatten();
+                  val Future<int> twice = nested.flatten();
+                  return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(program));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "nested-option-future.ores")
