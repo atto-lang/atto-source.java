@@ -112,4 +112,21 @@ final class NamedCallPositionalProjectionTest {
         assertThrows(IllegalArgumentException.class, () ->
                 LiteralNamedCallPreflight.inspect(original, module, caller, forged));
     }
+
+    @Test
+    void receiptNeverExposesAnExecutableReplacementAst() {
+        for (java.lang.reflect.Method method
+                : NamedCallPositionalProjection.Result.class.getDeclaredMethods()) {
+            if (java.lang.reflect.Modifier.isPublic(method.getModifiers())) {
+                assertNotEquals(Ast.Program.class, method.getReturnType(),
+                        "projection must not expose a runnable positional program");
+                assertNotEquals(Ast.CallExpr.class, method.getReturnType(),
+                        "projection must not expose an executable ordinary call");
+            }
+        }
+        Ast.Program p = parse("int a, bool c", "c: true, a: 7", "return a;");
+        var receipt = assertDoesNotThrow(() -> NamedCallPositionalProjection.check(preview(p)));
+        assertThrows(IllegalStateException.class, receipt::requireExecutable);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(p));
+    }
 }
