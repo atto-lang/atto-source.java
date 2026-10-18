@@ -98,7 +98,7 @@ final class ActorArtifactManifestJsonV1Test {
                 unknownFailure.getMessage());
 
         String missing = validJson().replace(
-                "\"expanded_sha256\":\"" + "2".repeat(64) + "\",",
+                "\"expanded_sha256\": \"" + "2".repeat(64) + "\",",
                 "");
         IllegalArgumentException missingFailure = assertThrows(
                 IllegalArgumentException.class,
@@ -108,8 +108,8 @@ final class ActorArtifactManifestJsonV1Test {
                 missingFailure.getMessage());
 
         String wrongBoolean = validJson().replace(
-                "\"runtime_guest_compilation\":false",
-                "\"runtime_guest_compilation\":0");
+                "\"runtime_guest_compilation\": false",
+                "\"runtime_guest_compilation\": 0");
         assertThrows(
                 IllegalArgumentException.class,
                 () -> ActorArtifactManifestJsonV1.parse(
