@@ -52,6 +52,15 @@ public final class OptionalCallAbiPreview {
             if (evaluatedSourceIndex >= 0 && originalCallItemIndex < 0) {
                 throw new IllegalArgumentException("supplied value requires original call item");
             }
+            if (action == Action.INJECT_NONE || action == Action.WRAP_SOME
+                    || action == Action.PASS_OPTION) {
+                if (!calleeType.name().equals("Option")
+                        || calleeType.arguments().size() != 1
+                        || calleeType.inferArguments()) {
+                    throw new IllegalArgumentException(
+                            "optional ABI action requires exactly Option<T> callee type");
+                }
+            }
         }
     }
 
@@ -63,13 +72,31 @@ public final class OptionalCallAbiPreview {
         public Preview {
             sourceExpressions = List.copyOf(sourceExpressions);
             abiSlots = List.copyOf(abiSlots);
+            boolean[] seenSource = new boolean[sourceExpressions.size()];
+            java.util.Set<Integer> seenCallItems = new java.util.HashSet<>();
             for (int i = 0; i < abiSlots.size(); i++) {
                 Slot slot = abiSlots.get(i);
                 if (slot.formalIndex() != i) {
                     throw new IllegalArgumentException("ABI slots must retain declaration order");
                 }
-                if (slot.evaluatedSourceIndex() >= sourceExpressions.size()) {
+                int source = slot.evaluatedSourceIndex();
+                if (source >= sourceExpressions.size()) {
                     throw new IllegalArgumentException("ABI slot references missing expression");
+                }
+                if (source >= 0) {
+                    if (seenSource[source]) {
+                        throw new IllegalArgumentException("ABI plan duplicates source evaluation");
+                    }
+                    seenSource[source] = true;
+                }
+                if (slot.originalCallItemIndex() >= 0
+                        && !seenCallItems.add(slot.originalCallItemIndex())) {
+                    throw new IllegalArgumentException("ABI plan reuses a call-item origin");
+                }
+            }
+            for (boolean seen : seenSource) {
+                if (!seen) {
+                    throw new IllegalArgumentException("ABI plan drops a source expression");
                 }
             }
         }
