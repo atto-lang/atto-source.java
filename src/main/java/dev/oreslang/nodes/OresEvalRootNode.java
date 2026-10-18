@@ -1031,8 +1031,8 @@ public final class OresEvalRootNode extends RootNode {
                             this::finishSourceFlow);
             }
 
-            private void releaseCriticalOnCompletion(OresFuture<?> completion) {
-                if (criticalTicket != null) criticalTicket.releaseOnCompletion(completion);
+            private void releaseCriticalAfterPhysicalExit() {
+                if (criticalTicket != null) criticalTicket.close();
             }
 
             private void scheduleLoopContinuation(
@@ -1180,15 +1180,16 @@ public final class OresEvalRootNode extends RootNode {
             SourceTask task = new SourceTask(function, arguments);
             OresFuture<Object> future;
             if (ActorRuntime.inActorExecution()) {
-                future = context.actors().startActorTask(task);
+                future = context.actors().startActorTaskWithPhysicalRetirement(
+                        task, task::releaseCriticalAfterPhysicalExit);
                 context.actors().ownCurrentActorFuture(future);
             } else {
                 OresScheduler current = OresScheduler.current();
                 future = (current != null
                         ? current
-                        : context.vm().rootScheduler()).start(task);
+                        : context.vm().rootScheduler()).startWithPhysicalRetirement(
+                                task, task::releaseCriticalAfterPhysicalExit);
             }
-            task.releaseCriticalOnCompletion(future);
             return future;
         }
 
@@ -1213,15 +1214,16 @@ public final class OresEvalRootNode extends RootNode {
             SourceTask task = new SourceTask(method, receiver, arguments);
             OresFuture<Object> future;
             if (ActorRuntime.inActorExecution()) {
-                future = context.actors().startActorTask(task);
+                future = context.actors().startActorTaskWithPhysicalRetirement(
+                        task, task::releaseCriticalAfterPhysicalExit);
                 context.actors().ownCurrentActorFuture(future);
             } else {
                 OresScheduler current = OresScheduler.current();
                 future = (current != null
                         ? current
-                        : context.vm().rootScheduler()).start(task);
+                        : context.vm().rootScheduler()).startWithPhysicalRetirement(
+                                task, task::releaseCriticalAfterPhysicalExit);
             }
-            task.releaseCriticalOnCompletion(future);
             return future;
         }
 
