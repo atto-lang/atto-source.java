@@ -51,6 +51,28 @@ public final class Ast {
             // Both source spellings denote one primitive throughout every compiler pass.
             if (name.equals("boolean")) name = "bool";
             arguments = List.copyOf(arguments);
+            // This marker is an internal *formal slot* representation, not a
+            // general nullable type. Enforce its invariants even when another
+            // compiler pass constructs a TypeRef directly, bypassing the parser.
+            if (name.equals("$omittable_formal$")) {
+                if (inferArguments || arguments.size() != 1) {
+                    throw new IllegalArgumentException("malformed omittable formal marker");
+                }
+                TypeRef value = arguments.getFirst();
+                if (value.name().equals("void") || value.name().equals("Option")
+                        || containsUnsafeOptionalValueType(value)) {
+                    throw new IllegalArgumentException(
+                            "T? formal cannot wrap void, Option<T>, borrow or nested optional types");
+                }
+            }
+        }
+        /** No borrow or nested omittable marker may be hidden in a T? value. */
+        private static boolean containsUnsafeOptionalValueType(TypeRef type) {
+            if (type.name().equals("$omittable_formal$") || type.isBorrow()) return true;
+            for (TypeRef argument : type.arguments()) {
+                if (containsUnsafeOptionalValueType(argument)) return true;
+            }
+            return false;
         }
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
         /** Only formal-parameter syntax T? may construct this compiler-only marker. */
@@ -229,6 +251,10 @@ public final class Ast {
             if (structural && type.isOmittableFormal()) {
                 throw new IllegalArgumentException(
                         "structural borrowed formal cannot be an optional T? slot");
+            }
+            if (mutable && type.isOmittableFormal()) {
+                throw new IllegalArgumentException(
+                        "mutable formal cannot be an optional T? slot without ownership lowering");
             }
         }
         public boolean optional() { return type.isOmittableFormal(); }
