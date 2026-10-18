@@ -137,3 +137,52 @@ debug and optimized, and GCC C++17 optimized `-Werror`. Canonical fixture
 **These tests do not establish Graal JDK25 guest execution, Native Image,
 LLVM native guest execution, CTest/ASan, or Actions success.**
 
+
+
+## Source-AST exact-call / eos2 AOT closed-image bridge (draft, 2026-10-17)
+
+This branch now additionally stages `EnumCaseSourceCallPlan` and
+`EnumCaseAotSourceImage` with their focused JUnit suites. Unlike
+`selectStagedTypeRefs`, the source-call plan starts from an actual parsed
+`Ast.Program` and its **exact** `Ast.CallExpr` objects; its deliberately
+restricted compiler input is a one-module, synchronous, parameterless
+`main(): int` using nullary `Foo.A` constants, immutable explicitly
+annotated locals and direct free-function calls only. Flow-sensitive
+narrowing, imported symbols, classes/virtual calls, async, generics,
+mutable locals, structural/unknown arguments, optimizer clones and other
+program shapes remain fail-closed. A statically `Foo` local initialized
+from `Foo.A` correctly binds the `Foo` fallback, not `Foo.A`.
+A cloned but structurally identical call AST cannot borrow the original
+node's binding.
+
+The new source-image gate takes the complete admitted MODULE `eos2`
+symbol set from that plan, requires an exact matching map of canonical
+lowercase SHA-256 body-digest strings, and binds the original call node to
+that symbol in the same image. Missing/extra slots, stale source/image,
+virtual method domains, invalid body fingerprints and unbound calls fail
+closed. This is **not executable guest AOT**, an authenticated typechecker,
+or proof that a digest matches actual emitted machine code. It deliberately
+does NOT modify TypeChecker's syntax-only rejection, ownership semantics,
+Graal runtime dispatch or LLVM's production source parser/IR emitter.
+A trusted code generator and linker must ultimately prove the object
+bytes and source provenance.
+
+LLVM PR #575 separately stages the `EnumCaseAotLinkPlan.hpp` matching
+closed-world eos2 contract, with `native_enum_case_eos2_closed_aot_link`
+CTest. The side proof PRs #1242/#577 use a different host-only symbol
+encoding and must not be silently mixed into the canonical `eos2` ABI.
+
+**Testing and carrier provenance:** The exact-source Java JDK25 JUnit
+and full LLVM CTest/Clang suites are configured but unverified while
+source-org GitHub Actions jobs fail before runner steps. Clang/GCC
+C++17 local isolated link-plan smokes used a **stubbed selector**, not
+the private repository's exact linked production policy. An independently
+authored source-free mathematical model ran on the funded `sagitta-stack`
+private test organization at
+https://github.com/sagitta-stack/sagitta-infra/actions/runs/39098238358,
+commit `7d176c4c8c42a40aabef953cc3f29334e7bb34ee`: 6/6 tests
+in each of three Python modes, confirmed by actual runner job logs
+(18 executions, 1,296 two-position comparisons and 5,000 randomized
+permutation checks). No private compiler source/Git tree was mirrored.
+Private source transfer is still barred by the empty approved-carrier
+allowlist and open security preflight blockers. Release PRs stay draft.
