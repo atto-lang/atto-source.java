@@ -5,6 +5,7 @@ import java.util.EnumMap;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.function.UnaryOperator;
 
 /**
@@ -56,6 +57,14 @@ final class OresCarrierPermitPool {
          * that are still NEW after its synchronous executor operation returns.
          */
         void reconcileCreatedThreads();
+
+        /**
+         * ThreadPoolExecutor termination can publish before the outer
+         * ThreadFactory wrapper has returned its physical permit. Fence that
+         * final wrapper exit separately.
+         */
+        boolean awaitPhysicalTermination(long timeout, TimeUnit unit)
+                throws InterruptedException;
     }
 
     private final int maximum;
@@ -189,6 +198,14 @@ final class OresCarrierPermitPool {
             reconciliable.reconcileCreatedThreads();
     }
 
+    static boolean awaitPhysicalTermination(
+            ThreadFactory factory, long timeout, TimeUnit unit)
+            throws InterruptedException {
+        if (!(factory instanceof ReconciliableThreadFactory reconciliable))
+            return true;
+        return reconciliable.awaitPhysicalTermination(timeout, unit);
+    }
+
     static final class Permit implements AutoCloseable {
         private final OresCarrierPermitPool owner;
         private final Domain domain;
@@ -217,6 +234,7 @@ final class OresCarrierPermitPool {
         private final java.util.concurrent.atomic.AtomicInteger next =
                 new java.util.concurrent.atomic.AtomicInteger();
         private final ConcurrentHashMap<Thread, Permit> live = new ConcurrentHashMap<>();
+        private final Object physicalDrain = new Object();
         private final ThreadLocal<ArrayList<Thread>> createdByCaller =
                 ThreadLocal.withInitial(ArrayList::new);
 
@@ -268,6 +286,7 @@ final class OresCarrierPermitPool {
                                 "physical carrier permit missing at JVM worker exit");
                     }
                     owned.close();
+                    signalPhysicalDrain();
                 }
             };
 
@@ -284,6 +303,31 @@ final class OresCarrierPermitPool {
             }
         }
 
+        private void signalPhysicalDrain() {
+            synchronized (physicalDrain) {
+                physicalDrain.notifyAll();
+            }
+        }
+
+        @Override
+        public boolean awaitPhysicalTermination(long timeout, TimeUnit unit)
+                throws InterruptedException {
+            Objects.requireNonNull(unit, "unit");
+            if (timeout < 0L)
+                throw new IllegalArgumentException("timeout must be non-negative");
+            long nanos = unit.toNanos(timeout);
+            long started = System.nanoTime();
+            synchronized (physicalDrain) {
+                while (!live.isEmpty()) {
+                    if (nanos <= 0L) return false;
+                    TimeUnit.NANOSECONDS.timedWait(physicalDrain, nanos);
+                    long elapsed = System.nanoTime() - started;
+                    nanos = Math.max(0L, unit.toNanos(timeout) - elapsed);
+                }
+            }
+            return true;
+        }
+
         @Override
         public void reconcileCreatedThreads() {
             ArrayList<Thread> created = createdByCaller.get();
@@ -295,7 +339,10 @@ final class OresCarrierPermitPool {
                 for (Thread thread : created) {
                     if (thread.getState() != Thread.State.NEW) continue;
                     Permit abandoned = live.remove(thread);
-                    if (abandoned != null) abandoned.close();
+                    if (abandoned != null) {
+                        abandoned.close();
+                        signalPhysicalDrain();
+                    }
                 }
             } finally {
                 created.clear();
