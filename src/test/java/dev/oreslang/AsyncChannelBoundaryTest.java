@@ -55,6 +55,34 @@ final class AsyncChannelBoundaryTest {
     }
 
     @Test
+    void asyncChannelBoundaryRejectsNestedRuntimeCapabilities() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                async fnc bad(Channel<Option<Future<int>>> input): void {
+                  return;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                async fnc bad(Channel<Channel<int>> input): void {
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void actorBoundariesStillRejectChannelHandles() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                actor fnc bad(Channel<int> input): void {
+                  return;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                isoactor fnc bad(Channel<Option<int>> input): void {
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void unrelatedUnsafeAsyncTypesStillFail() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 async fnc bad(Future<int> pending): int {
