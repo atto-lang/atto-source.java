@@ -1,6 +1,6 @@
 # Durable actor development loops
 
-Status: **v1 runtime kernel implemented; actor/tool adapters are follow-up work.**
+Status: **v1 reducer plus journal/outbox reference model implemented; persistent adapters and actor/tool wiring are follow-up work.**
 
 This document defines the first Oreslang architecture for long-running actor
 workflows whose execution can be projected into UI nodes while surviving
@@ -45,6 +45,13 @@ One development run should eventually use the following actor roles:
 The Java reference backend now contains DurableDevLoopV1, a deterministic
 state-machine kernel intended to sit inside DevLoopActor. It deliberately
 does not perform side effects.
+
+WorkflowJournalV1 is the executable reference for the journal/outbox boundary.
+It atomically records reducer transitions and effect origins, leases pending
+effects to workers, marks expired claims AMBIGUOUS rather than blindly retrying,
+requires explicit reconciliation, pins maxIterations as durable run policy, and
+rejects backwards clock observations or reused effect origins. It is currently
+an in-memory semantics model, not a persistence backend.
 
 ## State ownership
 
@@ -249,8 +256,8 @@ DurableDevLoopV1Test covers:
 
 ## Next implementation slices
 
-1. Add a durable WorkflowJournal / outbox interface with an in-memory reference
-   adapter and crash-window tests.
+1. Add persistent WorkflowJournalV1 adapters (initially SQLite/PostgreSQL) with
+   atomic journal+outbox transactions and recovery fixtures.
 2. Wrap DurableDevLoopV1 in a real Oreslang DevLoopActor using the single actor
    state schema and verified state-loan API.
 3. Add authenticated GitHub webhook ingress with delivery-id dedupe and
@@ -260,4 +267,5 @@ DurableDevLoopV1Test covers:
    sandboxing and spend/iteration policy.
 6. Add WorkflowRunProjection and subscription messages for a UI node/timeline.
 7. Add Java/LLVM conformance fixtures for the same journal/state-machine traces.
-8. Add crash/fault-injection tests around every transition/effect boundary.
+8. Add process-crash/fault-injection tests against the persistent adapters at
+   every transition/effect boundary.
