@@ -11,6 +11,7 @@ module dev.oreslang {
     requires org.graalvm.truffle;
     requires org.tomlj;
     requires org.xerial.sqlitejdbc;
+    requires com.fasterxml.jackson.core;
 
     exports dev.oreslang.launcher;
     exports dev.oreslang.compiler;
