@@ -400,7 +400,54 @@ final class ActorSharedLocalMemoryTest {
         }
     }
 
+
     @Test
+    void sharedActorTransportCounterOverflowFailsClosedBeforeLocalReservation() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch checked = new CountDownLatch(1);
+            var owner = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var memory = turn.localMemory().orElseThrow();
+                var currentActorField = ActorRuntime.class.getDeclaredField("currentActor");
+                currentActorField.setAccessible(true);
+                var current = (ThreadLocal<?>) currentActorField.get(runtime);
+                Object cell = current.get();
+                assertNotNull(cell);
+
+                var mailboxField = cell.getClass().getDeclaredField("sharedMailboxBytes");
+                var outputField = cell.getClass().getDeclaredField("outputBytes");
+                mailboxField.setAccessible(true);
+                outputField.setAccessible(true);
+                var mailbox = (AtomicLong) mailboxField.get(cell);
+                var output = (AtomicLong) outputField.get(cell);
+                long oldMailbox = mailbox.get();
+                long oldOutput = output.get();
+                try {
+                    mailbox.set(Long.MAX_VALUE);
+                    output.set(Long.MAX_VALUE);
+                    long before = memory.usedBytes();
+                    IllegalStateException rejected = assertThrows(
+                            IllegalStateException.class, () -> memory.reserveHeap(1));
+                    assertTrue(rejected.getMessage().contains("transport accounting overflow"),
+                            () -> "unexpected rejection: " + rejected.getMessage());
+                    assertEquals(before, memory.usedBytes(),
+                            "overflowed transport accounting must not admit local bytes");
+                } finally {
+                    mailbox.set(oldMailbox);
+                    output.set(oldOutput);
+                }
+                checked.countDown();
+                turn.self().stop();
+            });
+            owner.ready().get(5, TimeUnit.SECONDS);
+            owner.send("overflow");
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertTrue(owner.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(owner.failure().isEmpty(), () -> owner.failure().toString());
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+        }
+    }
+
+@Test
     void sharedActorLocalArenaAndConcurrentMailboxAdmissionShareOneActorQuota() throws Exception {
         long actorLimit = 16L * 1024 * 1024;
         IsolatePolicy actorPolicy = new IsolatePolicy(
