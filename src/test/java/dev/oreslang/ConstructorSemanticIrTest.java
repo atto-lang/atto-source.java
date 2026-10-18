@@ -395,4 +395,27 @@ final class ConstructorSemanticIrTest {
                         .merge(new ConstructorSemanticIr.CapturePlan(List.of(wrongType))));
     }
 
+
+    @Test
+    void serializableCapturesNeverAuthorizeExecutableOrAnyCallableTransport() {
+        var capture = new ConstructorSemanticIr.CaptureBinding(
+                new ConstructorSemanticIr.CaptureBindingId("root::fn#payload"),
+                "payload",
+                Types.Primitive.STRING,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                Set.of(ConstructorSemanticIr.CallableCapability.SERIALIZABLE));
+        var plan = new ConstructorSemanticIr.CapturePlan(List.of(capture));
+        assertFalse(plan.serializableExecutableValue());
+        assertFalse(plan.actorDataAdmissible());
+
+        var callable = new ConstructorSemanticIr.CallableType(
+                List.of(),
+                Types.Primitive.VOID,
+                Set.of(),
+                Set.of(ConstructorSemanticIr.CallableCapability.SERIALIZABLE));
+        assertEquals(Types.AnyCallable.INSTANCE, callable.erasedCallableTop());
+        assertFalse(callable.serializableExecutableValue());
+        assertFalse(callable.actorDataAdmissible());
+    }
+
 }
