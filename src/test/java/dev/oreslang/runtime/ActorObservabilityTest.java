@@ -314,16 +314,27 @@ final class ActorObservabilityTest {
     void fullDiagnosticJournalDropsRecordWithoutDelayingActorFinalization()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
-            Field headField =
-                    ActorRuntime.class.getDeclaredField("supervisionEventHead");
-            Field tailField =
-                    ActorRuntime.class.getDeclaredField("supervisionEventTail");
-            headField.setAccessible(true);
-            tailField.setAccessible(true);
-            var head = (java.util.concurrent.atomic.AtomicLong) headField.get(runtime);
-            var tail = (java.util.concurrent.atomic.AtomicLong) tailField.get(runtime);
-            head.set(0L);
-            tail.set(4_096L); // reserve the complete bounded ring
+            // Publish one real immutable payload, then use the exact same
+            // object as inert filler. ArrayBlockingQueue capacity admission is
+            // atomic with publication, so there is no producer-reservation
+            // state to forge.
+            var seed = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            seed.stop();
+            assertTrue(seed.awaitTermination(5, TimeUnit.SECONDS));
+
+            Field eventsField =
+                    ActorRuntime.class.getDeclaredField("supervisionEvents");
+            eventsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            var events = (java.util.concurrent.ArrayBlockingQueue<Object>)
+                    eventsField.get(runtime);
+            Object payload = events.peek();
+            assertNotNull(payload);
+            while (events.offer(payload)) {
+                // Fill exactly to the journal's fixed capacity.
+            }
+            assertEquals(4_096, events.size());
 
             var actor = runtime.<String>spawnShared(
                     () -> (message, context) -> { });
@@ -331,7 +342,7 @@ final class ActorObservabilityTest {
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
                     "diagnostics backpressure must never become lifecycle backpressure");
             assertEquals(1L, runtime.supervisionEventsDropped());
-            assertEquals(1L, runtime.runtimeStats().normalTerminations(),
+            assertEquals(2L, runtime.runtimeStats().normalTerminations(),
                     "termination accounting is authoritative even if its journal record is dropped");
             ActorRuntime.ActorTerminalState retained =
                     actor.terminalState().orElseThrow();
@@ -393,16 +404,12 @@ final class ActorObservabilityTest {
     void exhaustedDiagnosticSequenceFailsClosedWithoutWrappingOrBlockingTermination()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
-            Field headField =
-                    ActorRuntime.class.getDeclaredField("supervisionEventHead");
-            Field tailField =
-                    ActorRuntime.class.getDeclaredField("supervisionEventTail");
-            headField.setAccessible(true);
-            tailField.setAccessible(true);
-            var head = (java.util.concurrent.atomic.AtomicLong) headField.get(runtime);
-            var tail = (java.util.concurrent.atomic.AtomicLong) tailField.get(runtime);
-            head.set(Long.MAX_VALUE);
-            tail.set(Long.MAX_VALUE);
+            Field sequenceField =
+                    ActorRuntime.class.getDeclaredField("supervisionEventSequence");
+            sequenceField.setAccessible(true);
+            var sequence = (java.util.concurrent.atomic.AtomicLong)
+                    sequenceField.get(runtime);
+            sequence.set(Long.MAX_VALUE);
 
             var actor = runtime.<String>spawnShared(
                     () -> (message, context) -> { });
@@ -412,6 +419,8 @@ final class ActorObservabilityTest {
             assertTrue(runtime.pollTerminationEvent().isEmpty(),
                     "sequence exhaustion must drop rather than wrap into negative ordering");
             assertEquals(1L, runtime.runtimeStats().normalTerminations());
+            assertTrue(actor.terminalState().isPresent(),
+                    "per-ref post-mortem survives global journal exhaustion");
         }
     }
 }
