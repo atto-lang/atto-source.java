@@ -1700,6 +1700,21 @@ public final class Parser {
             throw error(peek(), "typed exceptional effect '" + peek().lexeme()
                     + "' requires checked exception and supervision lowering; source effect is not yet enabled");
         }
+        // Standalone lightweight tasks are distinct from nonblocking select
+        // and nonblocking channel operations. Only the explicit `do nb`
+        // statement discards its handle; expression `nb {}` returns Task<T>.
+        if (check(DO) && checkNext(NB)
+                && current + 2 < tokens.size()
+                && tokens.get(current + 2).type() == LBRACE) {
+            advance(); // do
+            advance(); // nb
+            Ast.TaskBlockStmt statement = new Ast.TaskBlockStmt(parseBlock());
+            match(SEMICOLON);
+            return statement;
+        }
+        if (check(NB) && checkNext(LBRACE)) {
+            throw error(peek(), "bare 'nb { ... }' must be bound to Task<T>; use 'do nb { ... }' to discard the handle");
+        }
         // The value-producing static select expression is not lowered yet.
         // Preserve historical statement sources until expression migration
         // provides an executable replacement; do-select stays procedural.
@@ -3278,7 +3293,8 @@ public final class Parser {
             if (match(READCH)) return parseChannelOperation(Ast.ChannelOperation.READ, Ast.WaitMode.NONBLOCKING);
             if (match(WRITECH)) return parseChannelOperation(Ast.ChannelOperation.WRITE, Ast.WaitMode.NONBLOCKING);
             if (match(SELECT)) return parseDynamicSelect(Ast.WaitMode.NONBLOCKING);
-            throw error(previous(), "'nb' must prefix readch, writech, select, or cb writech");
+            if (check(LBRACE)) return new Ast.TaskExpr(parseBlock());
+            throw error(previous(), "'nb' must prefix a task block, readch, writech, select, or cb writech");
         }
 
         if (check(TRY) && current + 1 < tokens.size()) {
