@@ -54,7 +54,7 @@ N2 negative: public widening, intermediate redeclaration laundering,
 signature incompatibility, multiple conflicting origins and unresolved slot.
 N3 negative: actor direct `receive`, direct `on_start`, callback capture,
 duplicate spellings and malformed/static `self`.
-N4 negative: unsupported generic substitutions must fail closed.
+N4 negative: ambiguous, arity-mismatched, or signature-incompatible generic substitutions must fail closed. Method-generic names are alpha-equivalent by declaration position; inherited class generics are substituted through the originating slot view.
 
 ## Backend evidence gate
 - Java/Graal: real source compilation, type checker, JVM guest execution,
