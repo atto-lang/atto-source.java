@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.nodes.OresEvalRootNode;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -317,6 +318,29 @@ public final class HotReloadManager implements AutoCloseable {
         }
     }
 
+    /**
+     * Trusted host view over one linked actor source generation. This object is
+     * never returned to guest Oreslang code and does not itself authorize a
+     * route publication or state migration.
+     */
+    public record ActorGenerationView(
+            Generation generation,
+            OresContext context,
+            ActorRuntime runtime,
+            ActorRuntime.ActorCodeExecutor executor,
+            IsolatePolicy policy,
+            String actorTypeName) {
+        public ActorGenerationView {
+            java.util.Objects.requireNonNull(generation);
+            java.util.Objects.requireNonNull(context);
+            java.util.Objects.requireNonNull(runtime);
+            java.util.Objects.requireNonNull(executor);
+            java.util.Objects.requireNonNull(policy);
+            if (actorTypeName == null || actorTypeName.isBlank())
+                throw new IllegalArgumentException("actor type name cannot be blank");
+        }
+    }
+
     public static final class Generation implements AutoCloseable {
         // A retained retired Generation must not pin the manager (and all its other contexts).
         private final java.lang.ref.WeakReference<HotReloadManager> owner;
@@ -328,6 +352,8 @@ public final class HotReloadManager implements AutoCloseable {
         private final ExecutionProfile executionProfile;
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
+        private boolean actorLinked;
+        private OresContext linkedActorContext;
 
         private Generation(HotReloadManager owner, long id, String codeUnitId, String sha256, Context context, Source source, ExecutionProfile executionProfile) {
             this.owner = new java.lang.ref.WeakReference<>(owner);
@@ -347,6 +373,53 @@ public final class HotReloadManager implements AutoCloseable {
         public ExecutionProfile executionProfile() { return executionProfile; }
         public boolean started() { return started.get(); }
         public boolean closed() { return closed.get(); }
+
+        /**
+         * Links declarations without running module initialization or main and
+         * returns the compiler-private executor for one source actor type.
+         *
+         * <p>This is the staging primitive used by cross-context actor upgrade:
+         * candidate on_start/main code does not execute merely because a
+         * generation is being prepared.</p>
+         */
+        public synchronized ActorGenerationView linkActorGeneration(
+                String actorTypeName) {
+            if (actorTypeName == null || actorTypeName.isBlank())
+                throw new IllegalArgumentException("actor type name cannot be blank");
+            if (closed.get()) throw new IllegalStateException("generation is closed");
+
+            if (!actorLinked) {
+                Value parsed = context.parse(source);
+                parsed.execute(OresEvalRootNode.LINK_ONLY_COMMAND);
+                context.enter();
+                try {
+                    linkedActorContext = OresLanguage.currentEnteredContextForHost();
+                } finally {
+                    context.leave();
+                }
+                actorLinked = true;
+            }
+            OresContext ores = java.util.Objects.requireNonNull(
+                    linkedActorContext, "linked actor context");
+            Object linked = ores.linkedCodeUnit(codeUnitId);
+            if (!(linked instanceof ActorRuntime.ActorCodeExecutor executor)) {
+                throw new IllegalStateException(
+                        "linked code unit does not expose an actor executor: "
+                                + codeUnitId);
+            }
+            // Force the actor type to be resolved now, before any route is
+            // frozen. These compiler receipts fail closed for unknown types.
+            executor.actorStateSchemaSha256(actorTypeName);
+            executor.actorMessageAbiSha256(actorTypeName);
+            executor.actorCodeSha256(actorTypeName);
+            return new ActorGenerationView(
+                    this,
+                    ores,
+                    ores.actors(),
+                    executor,
+                    ores.isolatePolicy(),
+                    actorTypeName);
+        }
 
         /** Starts the staged generation exactly once. */
         public Value start() {
