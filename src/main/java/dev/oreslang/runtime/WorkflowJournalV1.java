@@ -875,6 +875,20 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
         }
     }
 
+    @Override
+    public synchronized WorkflowJournalStoreV1.ReadView readView() {
+        if (runId == null || maxIterations == null) {
+            throw new IllegalStateException(
+                    "cannot read a bound workflow view from an empty journal");
+        }
+        DurableDevLoopV1.ReplayResult replay = replayDevLoop();
+        return new WorkflowJournalStoreV1.ReadView(
+                snapshot(),
+                replay,
+                List.copyOf(journal),
+                effects());
+    }
+
     /**
      * Rebuild a dev-loop reducer from the durable journal.
      */
