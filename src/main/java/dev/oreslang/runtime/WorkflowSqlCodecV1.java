@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.Locale;
 import java.util.Objects;
 
 /** Explicit versioned row codec for durable dev-loop events and commands. */
@@ -103,6 +102,7 @@ final class WorkflowSqlCodecV1 {
 
     static DurableDevLoopV1.Event decodeEvent(Encoded encoded) {
         Objects.requireNonNull(encoded, "encoded");
+        validateEventShape(encoded);
         return switch (encoded.type()) {
             case "start" ->
                     new DurableDevLoopV1.Start(encoded.text1());
@@ -120,8 +120,7 @@ final class WorkflowSqlCodecV1 {
                             DurableDevLoopV1.CiConclusion.valueOf(
                                     requireText(
                                             encoded.text2(),
-                                            "ci conclusion")
-                                            .toUpperCase(Locale.ROOT)),
+                                            "ci conclusion")),
                             encoded.text3());
             case "evaluation_passed" ->
                     new DurableDevLoopV1.EvaluationPassed(encoded.text1());
@@ -224,6 +223,7 @@ final class WorkflowSqlCodecV1 {
 
     static DurableDevLoopV1.Command decodeCommand(Encoded encoded) {
         Objects.requireNonNull(encoded, "encoded");
+        validateCommandShape(encoded);
         return switch (encoded.type()) {
             case "request_code" ->
                     new DurableDevLoopV1.RequestCode(
@@ -271,6 +271,111 @@ final class WorkflowSqlCodecV1 {
                     "unknown persisted workflow command type "
                             + encoded.type());
         };
+    }
+
+    private static void validateEventShape(Encoded e) {
+        switch (e.type()) {
+            case "start" -> {
+                requireNull(e.int1(), "start.int1");
+                requireText(e.text1(), "start.goal");
+                requireNull(e.text2(), "start.text2");
+                requireNull(e.text3(), "start.text3");
+                requireNull(e.text4(), "start.text4");
+            }
+            case "code_changed", "push_recorded" -> {
+                requireInt(e.int1(), e.type() + ".iteration");
+                requireText(e.text1(), e.type() + ".text1");
+                requireNull(e.text2(), e.type() + ".text2");
+                requireNull(e.text3(), e.type() + ".text3");
+                requireNull(e.text4(), e.type() + ".text4");
+            }
+            case "ci_completed" -> {
+                requireNull(e.int1(), "ci_completed.int1");
+                requireText(e.text1(), "ci_completed.commit");
+                requireText(e.text2(), "ci_completed.conclusion");
+                requireText(e.text3(), "ci_completed.report");
+                requireNull(e.text4(), "ci_completed.text4");
+            }
+            case "evaluation_passed", "approval_granted", "cancel" -> {
+                requireNull(e.int1(), e.type() + ".int1");
+                requireText(e.text1(), e.type() + ".text1");
+                requireNull(e.text2(), e.type() + ".text2");
+                requireNull(e.text3(), e.type() + ".text3");
+                requireNull(e.text4(), e.type() + ".text4");
+            }
+            case "evaluation_failed" -> {
+                requireNull(e.int1(), "evaluation_failed.int1");
+                requireText(e.text1(), "evaluation_failed.commit");
+                requireText(e.text2(), "evaluation_failed.reason");
+                requireNull(e.text3(), "evaluation_failed.text3");
+                requireNull(e.text4(), "evaluation_failed.text4");
+            }
+            case "bug_report_created" -> {
+                requireInt(e.int1(), "bug_report_created.iteration");
+                requireText(e.text1(), "bug_report_created.commit");
+                requireText(e.text2(), "bug_report_created.report");
+                requireNull(e.text3(), "bug_report_created.text3");
+                requireNull(e.text4(), "bug_report_created.text4");
+            }
+            default -> throw new IllegalStateException(
+                    "unknown persisted workflow event type " + e.type());
+        }
+    }
+
+    private static void validateCommandShape(Encoded e) {
+        switch (e.type()) {
+            case "request_code" -> {
+                requireInt(e.int1(), "request_code.iteration");
+                requireText(e.text1(), "request_code.goal");
+                optionalText(e.text2(), "request_code.feedback");
+                requireText(e.text3(), "request_code.effectKey");
+                requireNull(e.text4(), "request_code.text4");
+            }
+            case "push_code", "await_ci", "request_approval", "escalate" -> {
+                requireInt(e.int1(), e.type() + ".iteration");
+                requireText(e.text1(), e.type() + ".text1");
+                requireText(e.text2(), e.type() + ".effectKey");
+                requireNull(e.text3(), e.type() + ".text3");
+                requireNull(e.text4(), e.type() + ".text4");
+            }
+            case "evaluate" -> {
+                requireInt(e.int1(), "evaluate.iteration");
+                requireText(e.text1(), "evaluate.commit");
+                requireText(e.text2(), "evaluate.report");
+                requireText(e.text3(), "evaluate.effectKey");
+                requireNull(e.text4(), "evaluate.text4");
+            }
+            case "create_bug_report" -> {
+                requireInt(e.int1(), "create_bug_report.iteration");
+                requireText(e.text1(), "create_bug_report.commit");
+                requireText(e.text2(), "create_bug_report.report");
+                requireText(e.text3(), "create_bug_report.reason");
+                requireText(e.text4(), "create_bug_report.effectKey");
+            }
+            case "cancel_work" -> {
+                requireNull(e.int1(), "cancel_work.int1");
+                requireText(e.text1(), "cancel_work.reason");
+                requireText(e.text2(), "cancel_work.effectKey");
+                requireNull(e.text3(), "cancel_work.text3");
+                requireNull(e.text4(), "cancel_work.text4");
+            }
+            default -> throw new IllegalStateException(
+                    "unknown persisted workflow command type " + e.type());
+        }
+    }
+
+    private static void requireNull(Object value, String name) {
+        if (value != null) {
+            throw new IllegalStateException(
+                    "persisted " + name + " must be null");
+        }
+    }
+
+    private static void optionalText(String value, String name) {
+        if (value != null && value.isBlank()) {
+            throw new IllegalStateException(
+                    "persisted " + name + " cannot be blank when present");
+        }
     }
 
     private static int requireInt(Integer value, String name) {
