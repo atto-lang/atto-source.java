@@ -64,6 +64,28 @@ public final class CallerRoleContracts {
                     + "': caller lacks an authorized @CallerRole enum case");
         }
 
+        /**
+         * Module namespaces are structurally represented as records in the
+         * current checker. Treating a namespace with a protected public
+         * callable as a record value would erase its declaration identity:
+         * e.g. alias = Work; alias.guarded() bypasses bound direct calls.
+         * Such namespaces may still be referenced by direct, checked
+         * Work.guarded() calls; only reification of the namespace is denied.
+         */
+        public void rejectModuleNamespaceValue(Ast.ModuleDecl module) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl function
+                        && function.visibility() == Ast.Visibility.PUBLIC
+                        && function.actorKind() == Ast.ActorKind.NONE
+                        && isRestricted(function)) {
+                    throw new IllegalArgumentException(
+                            "@CallableBy denies module namespace value '" + module.name()
+                                    + "': guarded function '" + function.name()
+                                    + "' would lose its verified callable declaration identity");
+                }
+            }
+        }
+
         /** A guarded callable must not be erased into a function value. */
         public void rejectReification(Object declaration, String displayName) {
             if (isRestricted(declaration)) {
