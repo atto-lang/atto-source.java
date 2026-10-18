@@ -225,7 +225,10 @@ define actor VersionedScalarStage as
             if s.incarnation != expected_incarnation; do
                 return Err(TrainingError.STALE_INCAR());
             fi
-            if s.step != expected_step || s.version != expected_version; do
+            if s.version != expected_version; do
+                return Err(TrainingError.STALE_VERSION());
+            fi
+            if s.step != expected_step; do
                 return Err(TrainingError.STALE_STEP());
             fi
             if s.pending_gradients != 2 || !s.seen_first || !s.seen_second

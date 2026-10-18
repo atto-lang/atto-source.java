@@ -28,7 +28,7 @@ test("every actual invalid guest uses parser-positive then semantic rejection",(
   assert.match(body,/assertEquals\("", output\.toString/);
 });
 test("guest fixture SHA and separately pinned output prevent silent drift",()=>{
-  assert.match(java,/8f056800f8955a94c48e24693af73d33ae1a4ada/);
+  assert.match(java,/d9addeb0279b3c4023665b551c487adf7405903b/);
   assert.match(java,/b602f9821817696f16499af1a74cb22d49a0ecab/);
   assert.match(java,/assertEquals\(expected, stdout\.toString/);
 });
@@ -54,7 +54,7 @@ test("guest CI source pins match actual fixture blobs and JUnit gate", () => {
   const workflow = readFileSync(new URL("../.github/workflows/ml-scalar-actor-guest.yml", import.meta.url), "utf8");
   const fixtureSha = gitBlobSha(readFileSync(new URL("./fixtures/ml-actor-state-scalar.ores", import.meta.url)));
   const goldenSha = gitBlobSha(readFileSync(new URL("./golden/ml-actor-state-scalar.stdout", import.meta.url)));
-  assert.equal(fixtureSha, "8f056800f8955a94c48e24693af73d33ae1a4ada");
+  assert.equal(fixtureSha, "d9addeb0279b3c4023665b551c487adf7405903b");
   assert.equal(goldenSha, "b602f9821817696f16499af1a74cb22d49a0ecab");
   assert.match(java, new RegExp(fixtureSha));
   assert.match(java, new RegExp(goldenSha));
