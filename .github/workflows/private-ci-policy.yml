@@ -53,13 +53,18 @@ jobs:
                       directory_fd = next_fd
                   fd = os.open(path.parts[-1], flags | os.O_NONBLOCK,
                                dir_fd=directory_fd)
-                  with os.fdopen(fd, "rb") as stream:
-                      info = os.fstat(stream.fileno())
+                  try:
+                      # Check inode before any file-wrapper construction:
+                      # fdopen() can itself fail on directories, otherwise
+                      # leaking fd on the error path.
+                      info = os.fstat(fd)
                       if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= max_bytes:
                           raise SystemExit("private CI security input must be bounded regular file: " + str(path))
-                      raw = stream.read(max_bytes + 1)
+                      raw = os.read(fd, max_bytes + 1)
                       if len(raw) != info.st_size:
                           raise SystemExit("private CI security input changed during read: " + str(path))
+                  finally:
+                      os.close(fd)
               except OSError as exc:
                   raise SystemExit("private CI security input cannot be safely opened: " + str(path)) from exc
               finally:
