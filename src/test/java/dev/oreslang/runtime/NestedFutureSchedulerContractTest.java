@@ -155,17 +155,56 @@ final class NestedFutureSchedulerContractTest {
         }
     }
 
+    @Test
+    void failedOuterFutureWithCancellationExceptionMustStayFailed() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<OresFuture<Integer>> outer = new OresFuture<>();
+            OresFuture<Integer> composed = twoStage(scheduler, outer, new AtomicInteger());
+            awaitWaiters(outer, 1);
+            java.util.concurrent.CancellationException failure =
+                    new java.util.concurrent.CancellationException("failure payload, not cancellation");
+            assertTrue(outer.failFromRuntime(failure));
+            ExecutionException observed = assertThrows(ExecutionException.class,
+                    () -> composed.get(5, TimeUnit.SECONDS));
+            assertSame(failure, observed.getCause());
+            assertFalse(composed.isCancelled());
+        }
+    }
+
+    @Test
+    void failedInnerFutureWithCancellationExceptionMustStayFailed() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<OresFuture<Integer>> outer = new OresFuture<>();
+            OresFuture<Integer> inner = new OresFuture<>();
+            OresFuture<Integer> composed = twoStage(scheduler, outer, new AtomicInteger());
+            awaitWaiters(outer, 1);
+            outer.completeFromRuntime(inner);
+            awaitWaiters(inner, 1);
+            java.util.concurrent.CancellationException failure =
+                    new java.util.concurrent.CancellationException("inner failure, not cancellation");
+            assertTrue(inner.failFromRuntime(failure));
+            ExecutionException observed = assertThrows(ExecutionException.class,
+                    () -> composed.get(5, TimeUnit.SECONDS));
+            assertSame(failure, observed.getCause());
+            assertFalse(composed.isCancelled());
+        }
+    }
+
     private static OresFuture<Integer> twoStage(
             OresScheduler scheduler,
             OresFuture<OresFuture<Integer>> outer,
             AtomicInteger turns) {
+        java.util.concurrent.atomic.AtomicReference<OresFuture<?>> adoptedInner =
+                new java.util.concurrent.atomic.AtomicReference<>();
         return scheduler.start(resume -> {
             int turn = turns.getAndIncrement();
             if (turn == 0) {
                 assertTrue(resume.initial());
                 return OresScheduler.await(outer);
             }
-            if (resume.failure() instanceof java.util.concurrent.CancellationException) {
+            if (resume.failure() != null
+                    && (turn == 1 ? outer.isCancelled()
+                    : adoptedInner.get() != null && adoptedInner.get().isCancelled())) {
                 return OresScheduler.cancelled();
             }
             if (resume.failure() != null) {
@@ -173,7 +212,9 @@ final class NestedFutureSchedulerContractTest {
                 throw new IllegalStateException(resume.failure());
             }
             if (turn == 1) {
-                return OresScheduler.await((OresFuture<?>) resume.value());
+                OresFuture<?> inner = (OresFuture<?>) resume.value();
+                adoptedInner.set(inner);
+                return OresScheduler.await(inner);
             }
             if (turn == 2) {
                 return OresScheduler.done((Integer) resume.value());
