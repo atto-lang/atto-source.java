@@ -20,7 +20,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -702,9 +701,12 @@ public final class ActorRuntime implements AutoCloseable {
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final AtomicLong watchdogOverruns = new AtomicLong();
     private final AtomicLong watchdogNoticesDropped = new AtomicLong();
-    private final AtomicInteger watchdogNoticesQueued = new AtomicInteger();
-    private final ConcurrentLinkedQueue<WatchdogNotice> watchdogNotices =
-            new ConcurrentLinkedQueue<>();
+    // Capacity admission and payload publication are one bounded queue offer.
+    // Do not split these into a separate reservation counter plus an unbounded
+    // queue: a host-fatal producer failure between those operations can leak
+    // diagnostic capacity permanently and make telemetry appear full forever.
+    private final ArrayBlockingQueue<WatchdogNotice> watchdogNotices =
+            new ArrayBlockingQueue<>(WATCHDOG_NOTICE_CAPACITY);
     private final AtomicLong userMessagesAccepted = new AtomicLong();
     private final AtomicLong userMessagesProcessed = new AtomicLong();
     private final AtomicLong mailboxFullRejections = new AtomicLong();
@@ -1013,14 +1015,7 @@ public final class ActorRuntime implements AutoCloseable {
     /** Host-only nonblocking drain: actor code cannot steal another actor's diagnostics. */
     public Optional<WatchdogNotice> pollWatchdogNotice() {
         requireSupervisorContext("drain actor watchdog notices");
-        WatchdogNotice notice = watchdogNotices.poll();
-        if (notice == null) return Optional.empty();
-        int remaining = watchdogNoticesQueued.decrementAndGet();
-        if (remaining < 0) {
-            watchdogNoticesQueued.incrementAndGet();
-            throw new IllegalStateException("watchdog diagnostic queue accounting underflow");
-        }
-        return Optional.of(notice);
+        return Optional.ofNullable(watchdogNotices.poll());
     }
 
     /** Indicates a request, not a safe or completed suspension. */
@@ -1033,29 +1028,11 @@ public final class ActorRuntime implements AutoCloseable {
     private void recordWatchdogOverrun(ActorCell<?> cell, ActorTurnWatchdog.Lease lease) {
         long now = System.nanoTime();
         watchdogOverruns.incrementAndGet();
-
-        for (;;) {
-            int queued = watchdogNoticesQueued.get();
-            if (queued >= WATCHDOG_NOTICE_CAPACITY) {
-                watchdogNoticesDropped.incrementAndGet();
-                return;
-            }
-            if (!watchdogNoticesQueued.compareAndSet(queued, queued + 1)) continue;
-            boolean published = false;
-            try {
-                watchdogNotices.add(new WatchdogNotice(
-                        cell.ref.id(), cell.kind,
-                        lease.elapsedNanos(now), lease.sinceCheckpointNanos(now)));
-                published = true;
-            } catch (Throwable diagnosticsFailure) {
-                watchdogNoticesDropped.incrementAndGet();
-            } finally {
-                if (!published) {
-                    int remaining = watchdogNoticesQueued.decrementAndGet();
-                    if (remaining < 0) watchdogNoticesQueued.set(0);
-                }
-            }
-            return;
+        WatchdogNotice notice = new WatchdogNotice(
+                cell.ref.id(), cell.kind,
+                lease.elapsedNanos(now), lease.sinceCheckpointNanos(now));
+        if (!watchdogNotices.offer(notice)) {
+            watchdogNoticesDropped.incrementAndGet();
         }
     }
 
@@ -1157,7 +1134,7 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleObserverDispatcher.getQueue().size(),
                 supervisionEvents.size(),
                 SUPERVISION_EVENT_CAPACITY,
-                watchdogNoticesQueued.get(),
+                watchdogNotices.size(),
                 WATCHDOG_NOTICE_CAPACITY,
                 actorCount.get(),
                 actorCapacityInUse.get());
