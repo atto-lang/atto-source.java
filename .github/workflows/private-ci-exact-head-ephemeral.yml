@@ -122,8 +122,8 @@ jobs:
           spec.loader.exec_module(module)
           suite = unittest.defaultTestLoader.loadTestsFromModule(module)
           count = suite.countTestCases()
-          if count < 49:
-              raise SystemExit(f"Review-pinned suite unexpectedly shrank below 49: {count} tests")
+          if count < 94:
+              raise SystemExit(f"Review-pinned suite unexpectedly shrank below 94: {count} tests")
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if (result.testsRun != count or not result.wasSuccessful()
                   or result.skipped or result.expectedFailures
@@ -222,7 +222,7 @@ jobs:
             "run_id":os.environ["GITHUB_RUN_ID"],
             "run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
             "security_rounds_passed":3,
-            "minimum_security_case_executions":873,
+            "minimum_security_case_executions":1008,
             "maven_clean_verify_passed":True,
             "native_image_certified":False,
             "source_export_authorized":False,
