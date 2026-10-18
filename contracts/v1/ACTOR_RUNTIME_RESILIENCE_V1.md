@@ -118,8 +118,14 @@ A runtime may also expose a bounded global terminal journal. That journal:
   serialized consumer-side operation, while producers remain nonblocking.
 
 Supervisor restart/escalation policy must not depend on a droppable journal.
-The future source on_panic/on_raise/on_throw path requires non-droppable typed
-CONTROL admission tied to supervision authority.
+Failed incarnations therefore retain a separate non-droppable typed supervisor
+CONTROL event bounded by actor admission capacity. Observing that event is
+non-destructive: restart/escalation policy may inspect it repeatedly or crash
+mid-decision without losing the failure. Capacity is released only after an
+explicit acknowledgement naming the exact actor id and generation; stale or
+mismatched acknowledgements fail closed. The future source
+on_panic/on_raise/on_throw path must consume this supervision-authority CONTROL
+surface rather than the diagnostic journal.
 
 ## 7. Debuggability without perturbation
 
