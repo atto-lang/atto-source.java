@@ -124,6 +124,37 @@ final class NestedFutureSchedulerContractTest {
         }
     }
 
+    @Test
+    void cancelledOuterStageRetainsCancellationIdentity() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<OresFuture<Integer>> outer = new OresFuture<>();
+            OresFuture<Integer> joined = twoStage(scheduler, outer, new AtomicInteger());
+            awaitWaiters(outer, 1);
+            assertTrue(outer.cancel(false));
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> joined.get(5, TimeUnit.SECONDS));
+            assertTrue(joined.isCancelled());
+            assertEquals(0, outer.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test
+    void cancelledInnerStageRetainsCancellationIdentity() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<OresFuture<Integer>> outer = new OresFuture<>();
+            OresFuture<Integer> inner = new OresFuture<>();
+            OresFuture<Integer> joined = twoStage(scheduler, outer, new AtomicInteger());
+            awaitWaiters(outer, 1);
+            outer.completeFromRuntime(inner);
+            awaitWaiters(inner, 1);
+            assertTrue(inner.cancel(false));
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> joined.get(5, TimeUnit.SECONDS));
+            assertTrue(joined.isCancelled());
+            assertEquals(0, inner.pendingRuntimeWaiterCount());
+        }
+    }
+
     private static OresFuture<Integer> twoStage(
             OresScheduler scheduler,
             OresFuture<OresFuture<Integer>> outer,
@@ -133,6 +164,9 @@ final class NestedFutureSchedulerContractTest {
             if (turn == 0) {
                 assertTrue(resume.initial());
                 return OresScheduler.await(outer);
+            }
+            if (resume.failure() instanceof java.util.concurrent.CancellationException) {
+                return OresScheduler.cancelled();
             }
             if (resume.failure() != null) {
                 if (resume.failure() instanceof RuntimeException runtime) throw runtime;
