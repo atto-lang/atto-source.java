@@ -86,7 +86,9 @@ public final class EnumCaseSourceCallPlan {
         Ast.FunctionDecl main = entrypoints.get(0);
         if (!main.parameters().isEmpty() || !main.genericParameters().isEmpty()
                 || main.async() || main.suspends() || main.generator()
-                || main.actorKind() != Ast.ActorKind.NONE) {
+                || main.actorKind() != Ast.ActorKind.NONE
+                || main.trapped() || main.structural() || main.nonLexical()
+                || !main.genericSpecs().isEmpty() || !main.annotations().isEmpty()) {
             throw new IllegalArgumentException("unsupported main entrypoint effects/parameters");
         }
         if (main.returnType() == null || !main.returnType().name().equals("int")) {
@@ -100,6 +102,9 @@ public final class EnumCaseSourceCallPlan {
                 throw new IllegalArgumentException("source after AOT main return");
             }
             if (stmt instanceof Ast.BindingStmt binding) {
+                if (!sites.isEmpty()) {
+                    throw new IllegalArgumentException("AOT const declarations must precede calls");
+                }
                 if (binding.kind() != Ast.BindingKind.CONST
                         || binding.mutableReferent() || binding.inferredTypeName() != null
                         || binding.declaredType() == null || binding.initializer() == null
