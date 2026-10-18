@@ -70,6 +70,9 @@ public final class OwnershipChecker {
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
+            if (declaration != null) {
+                OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(declaration);
+            }
             if (name == null || declaration == null || !name.equals(declaration.name())
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked ownership class: " + name);
