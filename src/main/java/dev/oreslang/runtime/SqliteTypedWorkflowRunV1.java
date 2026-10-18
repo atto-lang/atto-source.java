@@ -23,7 +23,7 @@ public final class SqliteTypedWorkflowRunV1 implements AutoCloseable {
     private static final int SCHEMA_VERSION = 1;
 
     private final Path databasePath;
-    private final Connection connection;
+    private Connection connection;
     private final String runId;
     private final TypedWorkflowGraphV1 graph;
     private final String graphFingerprint;
@@ -60,6 +60,7 @@ public final class SqliteTypedWorkflowRunV1 implements AutoCloseable {
             initializeSchema();
             initializeOrVerify();
         } catch (Exception failure) {
+            closeAfterFailedOpen();
             throw new IllegalStateException(
                     "failed to open typed workflow run "
                             + this.databasePath,
@@ -126,6 +127,17 @@ public final class SqliteTypedWorkflowRunV1 implements AutoCloseable {
             throw new IllegalStateException(
                     "failed to close typed workflow run",
                     failure);
+        }
+    }
+
+    private void closeAfterFailedOpen() {
+        if (connection == null) return;
+        try {
+            connection.close();
+        } catch (SQLException ignored) {
+            // Preserve the constructor failure that made this handle unusable.
+        } finally {
+            connection = null;
         }
     }
 
