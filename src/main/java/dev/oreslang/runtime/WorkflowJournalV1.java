@@ -39,7 +39,8 @@ public final class WorkflowJournalV1 {
             String claimToken,
             long leaseUntilMillis,
             String receiptRef,
-            String reconciliationRef) { }
+            String reconciliationRef,
+            boolean retryAllowed) { }
 
     public record Claim(
             String effectKey,
@@ -73,6 +74,7 @@ public final class WorkflowJournalV1 {
         private long leaseUntilMillis;
         private String receiptRef;
         private String reconciliationRef;
+        private boolean retryAllowed = true;
 
         private MutableEffect(
                 String effectKey,
@@ -91,7 +93,8 @@ public final class WorkflowJournalV1 {
                     claimToken,
                     leaseUntilMillis,
                     receiptRef,
-                    reconciliationRef);
+                    reconciliationRef,
+                    retryAllowed);
         }
     }
 
@@ -272,7 +275,9 @@ public final class WorkflowJournalV1 {
         MutableEffect effect =
                 requireLiveClaim(effectKey, claimToken, nowMillis);
         effect.reconciliationRef = reason;
-        effect.state = EffectState.PENDING;
+        effect.state = effect.retryAllowed
+                ? EffectState.PENDING
+                : EffectState.ABANDONED;
         clearClaim(effect);
     }
 
@@ -335,7 +340,9 @@ public final class WorkflowJournalV1 {
                 requireState(effectKey, EffectState.AMBIGUOUS);
         effect.reconciliationRef = requireText(
                 reconciliationRef, "reconciliationRef", 8_192);
-        effect.state = EffectState.PENDING;
+        effect.state = effect.retryAllowed
+                ? EffectState.PENDING
+                : EffectState.ABANDONED;
         clearClaim(effect);
     }
 
@@ -436,6 +443,10 @@ public final class WorkflowJournalV1 {
         for (MutableEffect effect : effects.values()) {
             if (effect.state == EffectState.PENDING) {
                 effect.state = EffectState.ABANDONED;
+                effect.retryAllowed = false;
+            } else if (effect.state == EffectState.CLAIMED
+                    || effect.state == EffectState.AMBIGUOUS) {
+                effect.retryAllowed = false;
             }
         }
     }
