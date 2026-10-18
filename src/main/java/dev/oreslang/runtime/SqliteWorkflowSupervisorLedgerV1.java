@@ -413,6 +413,8 @@ public final class SqliteWorkflowSupervisorLedgerV1
                     ambiguous_effects INTEGER NOT NULL,
                     cancelled INTEGER NOT NULL,
                     cancellation_reason TEXT
+                )
+                """);
         execute("""
                 CREATE TABLE IF NOT EXISTS workflow_supervisor_reservations (
                     run_id TEXT NOT NULL,
