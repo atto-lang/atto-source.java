@@ -501,10 +501,12 @@ public final class Parser {
             Ast.Visibility visibility,
             boolean isAbstract,
             boolean filePrivateScope) {
-        String name = consume(IDENT, "expected class name").lexeme();
+        Token declarationName = consume(IDENT, "expected class name");
+        rejectCallableNominalName(declarationName, "class");
+        String name = declarationName.lexeme();
         List<String> generics = parseGenericParameters();
-        List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
-        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+        List<Ast.TypeRef> parents = match(EXTENDS) ? parseNominalHeritage("extends") : List.of();
+        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseNominalHeritage("implements") : List.of();
         consume(AS, "expected 'as' after class header");
         boolean braceStyle = match(LBRACE);
         Token.Type classTerminator = braceStyle ? RBRACE : END;
@@ -730,10 +732,12 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
-        String name = consume(IDENT, "expected actor name").lexeme();
+        Token declarationName = consume(IDENT, "expected actor name");
+        rejectCallableNominalName(declarationName, "actor");
+        String name = declarationName.lexeme();
         List<String> generics = parseGenericParameters();
-        List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
-        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+        List<Ast.TypeRef> parents = match(EXTENDS) ? parseNominalHeritage("extends") : List.of();
+        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseNominalHeritage("implements") : List.of();
 
         boolean braceStyle = match(LBRACE);
         if (!braceStyle) match(AS);
@@ -830,9 +834,11 @@ public final class Parser {
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) { return parseInterface(visibility, false); }
 
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility, boolean moduleContract) {
-        String name = consume(IDENT, "expected interface name").lexeme();
+        Token declarationName = consume(IDENT, "expected interface name");
+        rejectCallableNominalName(declarationName, moduleContract ? "contract" : "interface/trait");
+        String name = declarationName.lexeme();
         List<String> generics = parseGenericParameters();
-        List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
+        List<Ast.TypeRef> parents = match(EXTENDS) ? parseNominalHeritage("extends") : List.of();
         boolean braceStyle = match(LBRACE);
         if (!braceStyle) match(AS);
         Token.Type terminator = braceStyle ? RBRACE : END;
@@ -897,6 +903,37 @@ public final class Parser {
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
         return new Ast.InterfaceDecl(name, visibility, generics, parents, members, moduleContract);
+    }
+
+    // Callable signatures are structural executable types, never class/interface
+    // identities. Reserve the corresponding nominal names so a user declaration
+    // cannot redefine 'Callable' and turn 'extends Callable' into inheritance.
+    private static boolean isCallableNominalName(String name) {
+        String simple = name.substring(name.lastIndexOf('.') + 1);
+        return switch (simple) {
+            case "Callable", "Fnc", "Function", "Routine", "Method" -> true;
+            default -> false;
+        };
+    }
+
+    private void rejectCallableNominalName(Token name, String kind) {
+        if (isCallableNominalName(name.lexeme())) {
+            throw error(name, "cannot declare " + kind + " '" + name.lexeme()
+                    + "': callable signatures are not classes, interfaces or traits; "
+                    + "use Fnc<...> or a named type alias for a function signature");
+        }
+    }
+
+    private List<Ast.TypeRef> parseNominalHeritage(String relation) {
+        List<Ast.TypeRef> refs = parseTypeRefList();
+        for (Ast.TypeRef ref : refs) {
+            if (isCallableNominalName(ref.name())) {
+                throw error(previous(), "'" + relation + " " + ref.name()
+                        + "' is invalid: functions and routines are not subclassable "
+                        + "and callable signatures cannot be implemented as interfaces");
+            }
+        }
+        return refs;
     }
 
     private List<Ast.TypeRef> parseTypeRefList() {
