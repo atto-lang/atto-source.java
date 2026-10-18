@@ -58,7 +58,7 @@ of optional parameters.
    No runtime label maps, lookup by parameter names, or late type matching.
 
 Example call `foo(c: effect1(), a: effect2())` must evaluate effect1 before
-effect2, then pass `(Some? no: a=effect2, b=None, c=effect1)` in declaration
+effect2, then pass `(a=effect2, b=None, c=effect1)` in declaration
 order. For `a` and `c`, use the declared required types directly. A plan
 mapping formal -> source argument indexes is `[1, -1, 0]`.
 
