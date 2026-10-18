@@ -27,7 +27,7 @@ final class GitHubWebhookActorV1Test {
 
         try (var runtime = new ActorRuntime()) {
             var actor = GitHubWebhookActorV1.spawn(runtime);
-            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
             var outputs = actor.outputs();
 
             actor.send(new GitHubWebhookActorV1.Configure(secret));
@@ -70,7 +70,7 @@ final class GitHubWebhookActorV1Test {
 
             actor.send(new GitHubWebhookActorV1.Shutdown());
             next(outputs);
-            actor.getDone().get(5, TimeUnit.SECONDS);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
         }
     }
 
@@ -84,7 +84,7 @@ final class GitHubWebhookActorV1Test {
 
         try (var runtime = new ActorRuntime()) {
             var actor = GitHubWebhookActorV1.spawn(runtime);
-            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
             var outputs = actor.outputs();
 
             actor.send(new GitHubWebhookActorV1.Configure(secret));
@@ -120,7 +120,7 @@ final class GitHubWebhookActorV1Test {
 
             actor.send(new GitHubWebhookActorV1.Shutdown());
             next(outputs);
-            actor.getDone().get(5, TimeUnit.SECONDS);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
         }
     }
 
@@ -132,7 +132,7 @@ final class GitHubWebhookActorV1Test {
 
         try (var runtime = new ActorRuntime()) {
             var actor = GitHubWebhookActorV1.spawn(runtime);
-            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
             var outputs = actor.outputs();
 
             actor.send(new GitHubWebhookActorV1.Configure(secret));
@@ -163,8 +163,8 @@ final class GitHubWebhookActorV1Test {
 
             assertThrows(
                     java.util.concurrent.ExecutionException.class,
-                    () -> actor.getDone().get(5, TimeUnit.SECONDS));
-            assertTrue(actor.failure().isPresent());
+                    () -> actor.raw().getDone().get(5, TimeUnit.SECONDS));
+            assertTrue(actor.raw().failure().isPresent());
         }
     }
 
@@ -173,7 +173,8 @@ final class GitHubWebhookActorV1Test {
             throws Exception {
         var step = outputs.next().get(5, TimeUnit.SECONDS);
         assertFalse(step.done());
-        return step.value().value();
+        return GitHubWebhookActorV1.decodeOutput(
+                step.value().value());
     }
 
     private static String hmac(byte[] secret, byte[] body)
