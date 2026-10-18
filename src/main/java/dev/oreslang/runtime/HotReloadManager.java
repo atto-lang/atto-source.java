@@ -174,9 +174,14 @@ public final class HotReloadManager implements AutoCloseable {
             context = guestPolicy.restrictedContextBuilder(executionProfile).build();
         }
         try {
-            Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
-                    .mimeType(OresLanguage.MIME_TYPE)
-                    .buildLiteral();
+            // Trusted code stays in its own execution domain. Adversarial
+            // code is interned ONLY in the separate shared untrusted Engine,
+            // with leases pinned through confirmed guest Context retirement.
+            Source source = group == null
+                    ? Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .buildLiteral()
+                    : group.sourceImageForSupervisor(codeUnitId, sourceText);
             Generation generation = new Generation(
                     id, codeUnitId, sourceDigest, context, source,
                     group == null ? executionProfile : ExecutionProfile.serverHybrid(),
