@@ -39,7 +39,7 @@ final class OwnershipMatchExpressionCaptureTest {
         Method collect = cls.getDeclaredMethod(
                 "collectCaptures", Ast.LambdaExpr.class, scopeType, String.class);
         collect.setAccessible(true);
-        Object captures = collect.invoke(checker, lambda, null);
+        Object captures = collect.invoke(checker, lambda, scope, null);
         Field values = captures.getClass().getDeclaredField("values");
         values.setAccessible(true);
         @SuppressWarnings("unchecked")
