@@ -130,6 +130,41 @@ public final class ActorArtifactV1<T> {
         }
     }
 
+    /**
+     * Supervisor/deployment expectation for the exact artifact being admitted.
+     * A valid signature for another actor or ABI is not sufficient.
+     */
+    public record ExpectedActorContract(
+            String actorTypeName,
+            Ast.ActorKind actorKind,
+            Ast.ActorBoundary actorBoundary,
+            ArtifactFormat artifactFormat,
+            String compilerBackend,
+            String targetTriple,
+            String abi,
+            byte[] messageAbiSha256,
+            byte[] stateSchemaSha256) {
+        public ExpectedActorContract {
+            actorTypeName = requireText(actorTypeName, "actorTypeName");
+            actorKind = Objects.requireNonNull(actorKind, "actorKind");
+            actorBoundary = Objects.requireNonNull(actorBoundary, "actorBoundary");
+            artifactFormat = Objects.requireNonNull(artifactFormat, "artifactFormat");
+            compilerBackend = requireText(compilerBackend, "compilerBackend");
+            targetTriple = requireText(targetTriple, "targetTriple");
+            abi = requireText(abi, "abi");
+            messageAbiSha256 = digestCopy(messageAbiSha256, "messageAbiSha256");
+            stateSchemaSha256 = digestCopy(stateSchemaSha256, "stateSchemaSha256");
+        }
+
+        @Override public byte[] messageAbiSha256() {
+            return messageAbiSha256.clone();
+        }
+
+        @Override public byte[] stateSchemaSha256() {
+            return stateSchemaSha256.clone();
+        }
+    }
+
     public record SignedReceipt(
             UnsignedReceipt receipt,
             String keyId,
@@ -182,10 +217,12 @@ public final class ActorArtifactV1<T> {
             SignedReceipt signed,
             byte[] artifactBytes,
             TrustedReleaseKey trustedReleaseKey,
+            ExpectedActorContract expected,
             IsolatePolicy supervisorPolicy) {
         Objects.requireNonNull(signed, "signed");
         Objects.requireNonNull(artifactBytes, "artifactBytes");
         Objects.requireNonNull(trustedReleaseKey, "trustedReleaseKey");
+        Objects.requireNonNull(expected, "expected");
         Objects.requireNonNull(supervisorPolicy, "supervisorPolicy");
         if (!signed.keyId().equals(trustedReleaseKey.keyId())) {
             throw new SecurityException(
@@ -193,6 +230,7 @@ public final class ActorArtifactV1<T> {
         }
 
         UnsignedReceipt receipt = signed.receipt();
+        verifyExpectedContract(receipt, expected);
         if (artifactBytes.length != receipt.artifactSizeBytes()) {
             throw new SecurityException("actor artifact byte length mismatch");
         }
@@ -290,6 +328,25 @@ public final class ActorArtifactV1<T> {
             return sha256(bytes.toByteArray());
         } catch (IOException impossible) {
             throw new AssertionError("in-memory capability encoding failed", impossible);
+        }
+    }
+
+    private static void verifyExpectedContract(
+            UnsignedReceipt receipt,
+            ExpectedActorContract expected) {
+        if (!receipt.actorTypeName().equals(expected.actorTypeName())
+                || receipt.actorKind() != expected.actorKind()
+                || receipt.actorBoundary() != expected.actorBoundary()
+                || receipt.artifactFormat() != expected.artifactFormat()
+                || !receipt.compilerBackend().equals(expected.compilerBackend())
+                || !receipt.targetTriple().equals(expected.targetTriple())
+                || !receipt.abi().equals(expected.abi())
+                || !MessageDigest.isEqual(
+                        receipt.messageAbiSha256(), expected.messageAbiSha256())
+                || !MessageDigest.isEqual(
+                        receipt.stateSchemaSha256(), expected.stateSchemaSha256())) {
+            throw new SecurityException(
+                    "actor artifact receipt does not match expected actor/ABI contract");
         }
     }
 
