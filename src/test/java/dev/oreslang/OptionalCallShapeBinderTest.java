@@ -21,6 +21,28 @@ final class OptionalCallShapeBinderTest {
             Parameter.required("c"));
 
     @Test
+    void rawArgumentOriginsMustBeWithinCallItemCount() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Plan(List.of(0, -1, 1), -1, List.of(),
+                        List.of(1), List.of(0, 3)));
+        assertDoesNotThrow(() -> new Plan(List.of(0, -1, 1), -1, List.of(),
+                List.of(1), List.of(0, 2)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Plan(List.of(0, -1, 1), -1, List.of(),
+                        List.of(1), List.of(1, 3)));
+    }
+
+    @Test
+    void explicitOmissionCannotUseLegacyIdentityOriginConstructor() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Plan(List.of(0, -1, 1), -1, List.of(), List.of(1)));
+        Plan original = OptionalCallShapeBinder.bind(FOO, List.of(
+                Argument.positional(), Argument.underscore(), Argument.positional()));
+        assertEquals(List.of(0, 2), original.callItemIndexByEvaluatedSource());
+        assertTrue(original.explicitlyOmitted(1));
+    }
+
+    @Test
     void fullPositionalInvocationHasIdentityPermutation() {
         Plan plan = OptionalCallShapeBinder.bind(FOO, List.of(
                 Argument.positional(), Argument.positional(), Argument.positional()));
