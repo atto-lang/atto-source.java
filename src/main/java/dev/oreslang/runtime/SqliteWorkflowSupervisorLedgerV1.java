@@ -24,7 +24,7 @@ public final class SqliteWorkflowSupervisorLedgerV1
     private static final int SCHEMA_VERSION = 1;
 
     private final Path databasePath;
-    private final Connection connection;
+    private Connection connection;
     private final String runId;
     private final WorkflowSupervisorPolicyV1.Policy policy;
     private boolean closed;
@@ -68,6 +68,7 @@ public final class SqliteWorkflowSupervisorLedgerV1
             initializeSchema();
             initializeOrVerify(startedAtMillis);
         } catch (Exception failure) {
+            closeAfterFailedOpen();
             throw new IllegalStateException(
                     "failed to open workflow supervisor ledger "
                             + this.databasePath,
@@ -169,6 +170,17 @@ public final class SqliteWorkflowSupervisorLedgerV1
             throw new IllegalStateException(
                     "failed to close workflow supervisor ledger",
                     failure);
+        }
+    }
+
+    private void closeAfterFailedOpen() {
+        if (connection == null) return;
+        try {
+            connection.close();
+        } catch (SQLException ignored) {
+            // Preserve the constructor failure that made this handle unusable.
+        } finally {
+            connection = null;
         }
     }
 
