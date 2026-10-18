@@ -229,6 +229,13 @@ public final class ActorRuntime implements AutoCloseable {
             failureType = failureType == null ? "" : failureType;
             failureMessage = failureMessage == null ? "" : failureMessage;
         }
+
+        /** Stable typed failure identity; never inferred from exception text. */
+        public ActorFailure.Kind failureKind() {
+            return terminationKind == ActorTerminationKind.FAILED
+                    ? ActorFailure.kindFromTypeName(failureType)
+                    : ActorFailure.Kind.NONE;
+        }
     }
 
     /**
@@ -259,6 +266,13 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("invalid actor terminal counters");
             }
             failureType = failureType == null ? "" : failureType;
+        }
+
+        /** Stable typed failure identity retained with this actor incarnation. */
+        public ActorFailure.Kind failureKind() {
+            return terminationKind == ActorTerminationKind.FAILED
+                    ? ActorFailure.kindFromTypeName(failureType)
+                    : ActorFailure.Kind.NONE;
         }
     }
 
