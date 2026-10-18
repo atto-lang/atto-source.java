@@ -22,6 +22,26 @@ public final class LambdaCapturePlanner {
         return Set.copyOf(free);
     }
 
+    public static Set<String> capturesBlock(List<Ast.Stmt> body) {
+        return capturesBlock(body, Set.of());
+    }
+
+    static Set<String> capturesBlock(List<Ast.Stmt> body, Set<String> locals) {
+        Set<String> free = new LinkedHashSet<>();
+        scan(body, new HashSet<>(locals), free);
+        return Set.copyOf(free);
+    }
+
+    public static Set<String> capturesSelect(Ast.SelectStmt selected) {
+        Set<String> free = new LinkedHashSet<>();
+        for (Ast.SelectArm arm : selected.arms()) {
+            Set<String> locals = new HashSet<>();
+            if (arm.bindingName() != null) locals.add(arm.bindingName());
+            scan(arm.body(), locals, free);
+        }
+        return Set.copyOf(free);
+    }
+
     static void scan(List<Ast.Stmt> body, Set<String> outer, Set<String> free) {
         LambdaCaptureStatements.scan(body, outer, free);
     }
