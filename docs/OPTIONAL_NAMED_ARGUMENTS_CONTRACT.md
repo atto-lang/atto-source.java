@@ -931,3 +931,30 @@ callee body nor these caller checks establish complete effects, borrow/move
 authority or the `Option<T>` runtime ABI. `requireExecutable()` continues
 throwing; staged guest calls remain disabled. The committed source regressions
 must not be called passing JUnit tests until a runner executes the exact tree.
+
+
+## Concrete scalar-literal Option ABI preview (non-executable)
+
+`CheckedLiteralOptionAbi.materialize(CheckedScalarInvocationWitness)`
+materializes an independently checked **literal-only** source capture vector
+and declaration-order typed argument vector. Its possible values are
+`RequiredValue(CapturedScalar)`, `SomeValue(T, CapturedScalar)`, and
+`NoneValue(T)`. The scalar source type is rechecked against the original
+literal AST; no guest expression is executed. Named argument permutations
+cannot permute callee ABI positions; omitted optional formals inject an
+explicitly typed `None<T>` without allocating a source temporary.
+
+The `PASS_OPTION` action is purposely **not** materialized by this preview:
+a source spelling like `None` is not proof of a real `Option<T>` value.
+It requires full nominal type and ownership analysis. Static module
+functions only; the preview does not evaluate a guest method receiver.
+`readiness()` remains `SHAPE_ONLY` and `requireExecutable()` fails.
+Do **not** feed these Java records to the Oreslang runtime as if they were
+verified guest ABI values. Full compiler-owned type/effect/borrow checking,
+runtime representation compatibility, and executable tests are still needed.
+
+Seven JUnit source tests cover positional ABI preservation under six named
+permutations, explicit/implicit omission, supplied Some wrapping,
+immutability, invalid source types and required omissions, and refusal of
+unverified existing Option values. No actual repository JUnit pass is
+established until a funded runner executes the exact Git tree.

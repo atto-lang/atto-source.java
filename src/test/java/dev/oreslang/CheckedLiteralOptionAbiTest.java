@@ -100,4 +100,37 @@ final class CheckedLiteralOptionAbiTest {
         assertThrows(IllegalArgumentException.class, () ->
                 new CheckedLiteralOptionAbi.CapturedScalar(Ast.TypeRef.simple("bool"), 7L));
     }
+
+    @Test
+    void sourcePermutationsCannotChangeFormalAbiPositions() {
+        for (String source : List.of(
+                "a: 7, label: \"Alice\", enabled: true",
+                "a: 7, enabled: true, label: \"Alice\"",
+                "label: \"Alice\", a: 7, enabled: true",
+                "label: \"Alice\", enabled: true, a: 7",
+                "enabled: true, a: 7, label: \"Alice\"",
+                "enabled: true, label: \"Alice\", a: 7")) {
+            var preview = prepare(program("target(" + source + ")"));
+            assertEquals(3, preview.sourceTemps().size(), source);
+            assertEquals(7L, ((CheckedLiteralOptionAbi.RequiredValue)
+                    preview.abiSlots().get(0)).scalar().value(), source);
+            assertEquals("Alice", ((CheckedLiteralOptionAbi.SomeValue)
+                    preview.abiSlots().get(1)).scalar().value(), source);
+            assertEquals(true, ((CheckedLiteralOptionAbi.RequiredValue)
+                    preview.abiSlots().get(2)).scalar().value(), source);
+        }
+    }
+
+    @Test
+    void wrongLiteralTypeOrOmittedRequiredFormalCannotProducePreview() {
+        for (String source : List.of(
+                "target(enabled: 42, label: _, a: 7)",
+                "target(enabled: true, label: _, a: _)",
+                "target(enabled: true, label: _, a: \"seven\")",
+                "target(enabled: true, label: _, a: 7, unknown: 2)")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> prepare(program(source)), source);
+        }
+    }
+
 }
