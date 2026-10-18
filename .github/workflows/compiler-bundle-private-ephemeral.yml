@@ -68,6 +68,24 @@ jobs:
           fi
           python3 -m unittest discover -s scripts/ci -p 'test_compiler_bundle.py' -v
           python3 -m unittest discover -s scripts/ci -p 'test_compiler_ephemeral_policy.py' -v
+          python3 -m unittest discover -s scripts/ci -p 'test_compiler_runner_environment.py' -v
+      - name: Refuse ambient compiler and Git process overrides
+        shell: bash
+        run: |
+          set -euo pipefail
+          for key in MAVEN_OPTS MAVEN_ARGS JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG_COUNT PYTHONPATH PYTHONHOME; do
+            if [[ -v "$key" && -n "${!key}" ]]; then
+              printf 'DENIED: unexpected runner environment override %s\n' "$key" >&2
+              exit 1
+            fi
+          done
+          for config in .mvn/maven.config .mvn/jvm.config .mvn/extensions.xml; do
+            if [[ -e "$config" || -L "$config" ]]; then
+              printf 'DENIED: repository Maven override %s\n' "$config" >&2
+              exit 1
+            fi
+          done
+          echo 'CLEAN_COMPILER_PROCESS_ENVIRONMENT=PASS'
       - name: Install existing GraalVM JDK25 without shared dependency cache
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # pinned setup action
         with:
