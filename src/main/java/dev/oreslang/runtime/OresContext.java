@@ -166,6 +166,15 @@ public final class OresContext implements AutoCloseable {
             throw new IllegalStateException(
                     "actor-owned Task continuations require mailbox-affine admission and termination fencing");
         }
+        // A Task launched from an existing scheduler task must belong to the
+        // active parent scope, not to a context-wide root as an accidental
+        // sibling. Until the compiler passes that parent scope explicitly,
+        // reject nested launches: otherwise cancelling the parent could leave
+        // a running orphan child with access to captured parent resources.
+        if (OresScheduler.current() != null) {
+            throw new IllegalStateException(
+                    "nested Task continuation requires structured parent scope admission");
+        }
         if (isolatePolicy.adversarial()) {
             throw new SecurityException(
                     "untrusted Task continuations require inherited wall deadline and fuel budget");
