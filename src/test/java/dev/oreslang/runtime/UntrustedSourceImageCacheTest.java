@@ -167,6 +167,27 @@ final class UntrustedSourceImageCacheTest {
     }
 
     @Test
+    void rejectedUnicodeAliasesDoNotConsumeOrEvictImageQuota() {
+        var cache = new UntrustedSourceImageCache(1, 64);
+        try (var canonical = cache.acquire("lib/é.ores", "code")) {
+            assertNotNull(canonical.source());
+            assertEquals(1, cache.liveImages());
+            assertEquals(4L, cache.pinnedBytes());
+            for (int attempt = 0; attempt < 100; attempt++) {
+                assertThrows(IllegalArgumentException.class,
+                        () -> cache.acquire("lib/e\u0301.ores", "code"));
+                assertEquals(1, cache.liveImages());
+                assertEquals(4L, cache.pinnedBytes());
+            }
+            assertSame(canonical.source(),
+                    cache.acquire("lib/é.ores", "code").source(),
+                    "canonical code image can still be reused");
+            // Extra lease above deliberately pinned until the shared
+            // Context retires; close it independently in production.
+        }
+    }
+
+    @Test
     void concurrentReadersInternOnlyOneSource() throws Exception {
         var cache = new UntrustedSourceImageCache();
         CountDownLatch begin = new CountDownLatch(1);
