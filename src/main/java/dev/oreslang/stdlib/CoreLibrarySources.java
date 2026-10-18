@@ -24,6 +24,9 @@ public final class CoreLibrarySources {
     private static final String IMPORT_PREFIX = "std/";
     private static final String UNIT_PREFIX = "@std/";
     private static final String RESOURCE_PREFIX = "dev/oreslang/std/";
+    private static final String CORE_RESOURCE_PREFIX = "dev/oreslang/core/";
+    private static final Set<String> FREESTANDING_CORE_SOURCES = Set.of("numeric.ores");
+
     private static final int MAX_SOURCE_BYTES = 1024 * 1024;
     private static final int MAX_IMPORT_PATH_CHARS = 4096;
     private static final int MAX_MODULE_SEGMENTS = 32;
@@ -61,6 +64,43 @@ public final class CoreLibrarySources {
                 || normalized.startsWith("otp/");
     }
 
+    /** A closed canonical source registry; never search project roots. */
+    public static boolean isFreestandingCoreImport(String importPath) {
+        return importPath != null
+                && (importPath.startsWith("core/") || importPath.startsWith("core\\"));
+    }
+
+    public static Set<String> packagedFreestandingCorePaths() {
+        return FREESTANDING_CORE_SOURCES;
+    }
+
+    public static String freestandingCoreUnitId(String importPath) {
+        return "@core/" + canonicalFreestandingCorePath(importPath);
+    }
+
+    public static String freestandingCoreFileName(String importPath) {
+        String relative = canonicalFreestandingCorePath(importPath);
+        return relative.substring(relative.lastIndexOf('/') + 1);
+    }
+
+    public static String freestandingCoreSource(String importPath) throws IOException {
+        String relative = canonicalFreestandingCorePath(importPath);
+        if (!FREESTANDING_CORE_SOURCES.contains(relative)) {
+            throw new IllegalArgumentException(
+                    "unknown compiler-owned core module: " + importPath);
+        }
+        return readPackagedSource(CORE_RESOURCE_PREFIX + relative, importPath);
+    }
+
+    private static String canonicalFreestandingCorePath(String importPath) {
+        Objects.requireNonNull(importPath, "importPath");
+        if (!importPath.startsWith("core/")) {
+            throw new IllegalArgumentException(
+                    "canonical core imports must start with 'core/': " + importPath);
+        }
+        return canonicalRelativePath("std/" + importPath.substring("core/".length()));
+    }
+
     public static Set<String> packagedSourcePaths() {
         return PACKAGED_SOURCES;
     }
@@ -75,7 +115,11 @@ public final class CoreLibrarySources {
             throw new IllegalArgumentException(
                     "unknown Oreslang core-library module: " + importPath);
         }
-        String resource = RESOURCE_PREFIX + relative;
+        return readPackagedSource(RESOURCE_PREFIX + relative, importPath);
+    }
+
+    /** Classpath identity and duplicate-resource protections shared by both registries. */
+    private static String readPackagedSource(String resource, String importPath) throws IOException {
         ClassLoader loader = CoreLibrarySources.class.getClassLoader();
         // Class-relative lookup retains the owning named module. A loader-wide
         // enumeration cannot see non-open module resources in modular launchers.
