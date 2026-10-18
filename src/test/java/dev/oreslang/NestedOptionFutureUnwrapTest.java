@@ -15,36 +15,42 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Deep extraction must agree between the static typechecker and both source
- * execution paths; nested values themselves are not normalized or erased.
+ * Nested wrappers retain their type identity and stage/absence semantics.
+ * Flattening must be explicit and agree between the compiler and evaluator.
  */
 final class NestedOptionFutureUnwrapTest {
 
     @Test
-    void nestedOptionRemainsThreeStateAndUnwrapReturnsInnermostPayload() throws Exception {
+    void nestedOptionRemainsThreeStateUntilExplicitFlatten() throws Exception {
         String program = """
                 pub fnc main(): void {
                   val Option<Option<int>> value = Some(Some(42));
-                  val int unwrapped = value.unwrap();
+                  val Option<int> one_layer = value.unwrap();
+                  val int unwrapped = one_layer.unwrap();
+                  val int flattened = value.flatten().unwrap();
                   stdio.stdout.write(unwrapped);
+                  stdio.stdout.write(flattened);
                   val Option<Option<int>> inner_none = Some(None);
                   val Option<Option<int>> outer_none = None;
                   stdio.stdout.write(inner_none.is_some());
                   stdio.stdout.write(outer_none.is_none());
+                  stdio.stdout.write(inner_none.flatten().is_none());
+                  stdio.stdout.write(outer_none.flatten().is_none());
                   return;
                 }
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
-        assertEquals("42truetrue", run(program));
+        assertEquals("4242truetruetruetrue", run(program));
     }
 
     @Test
-    void deepUnwrapPanicsIfInnerOptionIsNone() throws Exception {
+    void unwrapOnlyRemovesOneLayerAndInnerNoneStillPanicsWhenUnwrapped() throws Exception {
         String program = """
                 pub fnc main(): void {
                   val Option<Option<int>> inner_none = Some(None);
-                  val int unwrapped = inner_none.unwrap();
-                  stdio.stdout.write(unwrapped);
+                  val Option<int> unwrapped_once = inner_none.unwrap();
+                  val int value = unwrapped_once.unwrap();
+                  stdio.stdout.write(value);
                   return;
                 }
                 """;
@@ -54,7 +60,7 @@ final class NestedOptionFutureUnwrapTest {
     }
 
     @Test
-    void awaitTransitivelyResolvesMappedNestedFutures() throws Exception {
+    void explicitFutureFlattenAndDoubleAwaitResolveTwoStages() throws Exception {
         String program = """
                 async fnc answer(): int {
                   return 42;
@@ -64,28 +70,49 @@ final class NestedOptionFutureUnwrapTest {
                   val Future<Future<int>> nested = answer().map(|int n| -> {
                     return answer();
                   });
-                  val int resolved = await nested;
-                  stdio.stdout.write(resolved);
+                  val int explicit_flatten = await nested.flatten();
+                  val int two_awaits = await await nested;
+                  stdio.stdout.write(explicit_flatten);
+                  stdio.stdout.write(two_awaits);
                   return;
                 }
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
-        assertEquals("42", run(program));
+        assertEquals("4242", run(program));
     }
 
     @Test
-    void anExplicitNestedFutureTypeIsNotAnAliasForFutureOfPayload() {
-        String program = """
-                fnc consume(Future<int> task): void {
-                  return;
-                }
-
+    void nestedFutureAndOptionTypesAreNotPayloadTypeAliases() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                fnc take(Future<int> future): void { return; }
                 fnc wrong(Future<Future<int>> nested): void {
-                  consume(nested);
+                  take(nested);
                   return;
                 }
-                """;
-        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(program));
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                fnc take(Option<int> option): void { return; }
+                fnc wrong(Option<Option<int>> nested): void {
+                  take(nested);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void flattenRequiresAStaticallyProvenNestedWrapper() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                fnc wrong(Option<int> plain): void {
+                  plain.flatten();
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                fnc wrong(Future<int> plain): void {
+                  plain.flatten();
+                  return;
+                }
+                """));
     }
 
     private static String run(String program) throws Exception {
