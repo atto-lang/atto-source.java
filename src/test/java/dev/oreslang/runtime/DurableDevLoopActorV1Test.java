@@ -19,7 +19,7 @@ final class DurableDevLoopActorV1Test {
 
         try (var runtime = new ActorRuntime()) {
             var actor = DurableDevLoopActorV1.spawn(runtime);
-            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
             var outputs = actor.outputs();
 
             actor.send(new DurableDevLoopActorV1.OpenRun(
@@ -53,12 +53,12 @@ final class DurableDevLoopActorV1Test {
             assertInstanceOf(
                     DurableDevLoopActorV1.Stopping.class,
                     next(outputs));
-            actor.getDone().get(5, TimeUnit.SECONDS);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
         }
 
         try (var runtime = new ActorRuntime()) {
             var recovered = DurableDevLoopActorV1.spawn(runtime);
-            recovered.getReady().get(5, TimeUnit.SECONDS);
+            recovered.raw().getReady().get(5, TimeUnit.SECONDS);
             var outputs = recovered.outputs();
 
             recovered.send(new DurableDevLoopActorV1.OpenRun(
@@ -80,7 +80,7 @@ final class DurableDevLoopActorV1Test {
             recovered.send(new DurableDevLoopActorV1.Shutdown(
                     "test done"));
             next(outputs);
-            recovered.getDone().get(5, TimeUnit.SECONDS);
+            recovered.raw().getDone().get(5, TimeUnit.SECONDS);
         }
     }
 
@@ -90,7 +90,7 @@ final class DurableDevLoopActorV1Test {
 
         try (var runtime = new ActorRuntime()) {
             var actor = DurableDevLoopActorV1.spawn(runtime);
-            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
             var outputs = actor.outputs();
 
             actor.send(new DurableDevLoopActorV1.OpenRun(
@@ -134,7 +134,7 @@ final class DurableDevLoopActorV1Test {
 
             actor.send(new DurableDevLoopActorV1.Shutdown("done"));
             next(outputs);
-            actor.getDone().get(5, TimeUnit.SECONDS);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
         }
 
         try (var store = SqliteWorkflowJournalV1.open(db)) {
@@ -156,7 +156,7 @@ final class DurableDevLoopActorV1Test {
 
         try (var runtime = new ActorRuntime()) {
             var actor = DurableDevLoopActorV1.spawn(runtime);
-            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
 
             actor.send(new DurableDevLoopActorV1.OpenRun(
                     db.toString(),
@@ -167,8 +167,8 @@ final class DurableDevLoopActorV1Test {
 
             assertThrows(
                     java.util.concurrent.ExecutionException.class,
-                    () -> actor.getDone().get(5, TimeUnit.SECONDS));
-            assertTrue(actor.failure().isPresent());
+                    () -> actor.raw().getDone().get(5, TimeUnit.SECONDS));
+            assertTrue(actor.raw().failure().isPresent());
         }
 
         try (var store = SqliteWorkflowJournalV1.open(db)) {
@@ -184,7 +184,8 @@ final class DurableDevLoopActorV1Test {
             throws Exception {
         var step = outputs.next().get(5, TimeUnit.SECONDS);
         assertFalse(step.done(), "actor output stream ended early");
-        return step.value().value();
+        return DurableDevLoopActorV1.decodeOutput(
+                step.value().value());
     }
 
     private static void seed(Path db, String runId, String goal) {
