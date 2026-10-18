@@ -72,9 +72,12 @@ that is deliberately separate from actor mail and from the future source-level
   queued user/control work abandoned at finalization, and the terminal
   exception *type name*;
 - the journal is diagnostic only. Lifecycle correctness never waits for it.
-  Capacity is reserved atomically and records are stored in a
-  `ConcurrentLinkedQueue`; a full/failed diagnostic publication increments
-  `supervisionEventsDropped` and actor teardown continues;
+  Java uses a pre-sized bounded deque guarded by an explicit diagnostic lock;
+  finalization publishes only via `tryLock()`, so a full **or contended**
+  diagnostic path increments `supervisionEventsDropped` and actor teardown
+  continues without parking behind telemetry. Trusted consumers serialize
+  dequeue + sequence assignment so concurrent drains cannot invert the
+  externally visible FIFO sequence;
 - terminal publication intentionally does **not** call
   `Throwable.getMessage()`, `Throwable.toString()`, guest formatting, or
   arbitrary observer hooks while finalization owns actor state. Detailed
@@ -116,6 +119,50 @@ journal, exhausted diagnostic sequencing, child failure visibility while the
 parent user turn is blocked, active-failure vs queued-tail accounting, and a
 200-step self-replenishing continuation chain with dispatcher throughput=1.
 
+## Normative OTP restart policy requirements
+
+The source-level OTP supervisor remains an integration gate, but its restart
+semantics are constrained now so implementation cannot silently inherit common
+actor-system failure modes:
+
+- **No unbounded crash loops.** Every supervisor has an explicit
+  `maxRestarts` within a monotonic `restartWindow`. Exhaustion escalates one
+  typed CONTROL failure to the parent; it never keeps respawning indefinitely.
+- **Backoff is bounded and deterministic by default.** Repeated failures use an
+  explicit min/max exponential backoff (or an application-provided policy).
+  Random jitter is opt-in and must come from an injected/replayable source so
+  tests and deterministic replay are not hostage to ambient randomness.
+- **Restart means a new incarnation.** A replacement actor gets a new
+  generation/incarnation identity. The old `ActorRef` remains terminal
+  forever and cannot silently retarget to the replacement. Stale messages and
+  stale CONTROL events therefore fail closed instead of reaching a new child.
+- **No implicit failed-message replay.** A message that began execution before
+  a crash is not automatically re-enqueued. At-most-once volatile mailbox
+  semantics stay explicit; durable/replayable processing requires an explicit
+  persistence/idempotency protocol above core actors.
+- **Strategies are ordered.** `one_for_one`, `rest_for_one`, and
+  `one_for_all` operate over a stable declared child order. Teardown proceeds
+  in reverse dependency order; replacement startup proceeds in declaration
+  order and respects each child's readiness barrier before dependent children
+  are considered healthy.
+- **Resource failure escalates; it does not spin.** Mailbox, actor-slot,
+  carrier, memory, restart-timer, or CONTROL admission exhaustion during a
+  restart is a supervisor failure decision. Implementations must not busy-loop,
+  allocate an unbounded side queue, or retry synchronously on an actor carrier.
+- **Restart policy cannot weaken downward.** Nested supervisors may choose
+  stricter limits but cannot exceed parent/process ceilings for restart
+  intensity, backoff resources, mailbox/memory, or isolation capabilities.
+- **CONTROL is authoritative and non-droppable.** Restart/escalation decisions
+  are driven from the reserved typed CONTROL path plus retained per-ref terminal
+  state, never from the droppable diagnostic journal.
+- **Crash-loop state is observable.** Supervisors expose current restart-window
+  occupancy, last restart cause, current backoff, child generation and
+  escalation count without exposing mutable child state.
+
+These requirements deliberately separate **fault recovery** from **message
+delivery guarantees**. Supervision can recreate computation; it must not
+pretend that an in-memory mailbox became a durable transaction log.
+
 ## Required test matrix (both backends; fail closed until executable)
 
 1. A->B->C inherits exactly one managed lifecycle group, independently of group event-bus join membership.
@@ -126,7 +173,10 @@ parent user turn is blocked, active-failure vs queued-tail accounting, and a
 6. S receives one immutable CONTROL failure for C panic; neither A nor B can intercept it using recover.
 7. S's on_panic owns an independent invocation context; its own recoverable failure may be handled locally; a true supervisor panic escalates to grandaddy.
 8. Cancellation and terminal panic run cleanup but never become recoverable; ensure duplicate notification and stale identity fences.
-9. Verify against the **exact source Git tree** in CI. When out of org Actions budget, mirror exact tree/blobs to a funded test org, using no private cross-org checkout secrets.
+9. Restart storms are bounded: hit the restart-intensity ceiling, verify deterministic backoff, one escalation, no busy-loop, and no replacement after escalation.
+10. Restart creates a new generation; stale refs/messages/CONTROL cannot target the replacement, and a crashing in-flight message is never implicitly replayed.
+11. `one_for_one`, `rest_for_one`, and `one_for_all` preserve deterministic dependency order and readiness barriers under concurrent child failure.
+12. Verify against the **exact source Git tree** in CI. When out of org Actions budget, mirror exact tree/blobs to a funded test org, using no private cross-org checkout secrets.
 
 ## Integration boundary
 
