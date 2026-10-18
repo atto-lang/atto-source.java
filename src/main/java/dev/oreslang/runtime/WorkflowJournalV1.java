@@ -1,6 +1,10 @@
 package dev.oreslang.runtime;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -264,9 +268,11 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
             long claimNumber = nextClaimNumber;
             long followingClaimNumber =
                     Math.addExact(nextClaimNumber, 1L);
-            String token =
-                    "workflow/" + runId
-                            + "/claim/" + claimNumber;
+            String token = claimToken(
+                    runId,
+                    effect.effectKey,
+                    nextAttempt,
+                    claimNumber);
 
             effect.attempts = nextAttempt;
             effect.state = EffectState.CLAIMED;
@@ -497,7 +503,10 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
                         "persisted effect command mismatch for "
                                 + entry.getKey());
             }
-            validatePersistedEffect(persisted);
+            validatePersistedEffect(
+                    persisted,
+                    state.runId(),
+                    state.nextClaimNumber());
             if (effect.retryAllowed != persisted.retryAllowed()) {
                 throw new IllegalStateException(
                         "persisted retry authority disagrees with "
@@ -543,7 +552,10 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
         return restored;
     }
 
-    private static void validatePersistedEffect(EffectSnapshot effect) {
+    private static void validatePersistedEffect(
+            EffectSnapshot effect,
+            String runId,
+            long nextClaimNumber) {
         Objects.requireNonNull(effect.effectKey(), "effectKey");
         Objects.requireNonNull(effect.command(), "command");
         Objects.requireNonNull(effect.state(), "state");
@@ -553,12 +565,17 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
         }
         switch (effect.state()) {
             case CLAIMED -> {
-                if (effect.workerId() == null
+                if (effect.attempts() <= 0
+                        || effect.workerId() == null
                         || effect.claimToken() == null
                         || effect.leaseUntilMillis() <= 0) {
                     throw new IllegalStateException(
                             "claimed persisted effect lacks live claim metadata");
                 }
+                validateClaimToken(
+                        effect,
+                        runId,
+                        nextClaimNumber);
             }
             case PENDING, COMPLETED, ABANDONED -> {
                 if (effect.workerId() != null
@@ -572,17 +589,98 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
             case AMBIGUOUS -> {
                 // Ambiguity deliberately retains the expired claim identity so
                 // reconciliation has evidence about the uncertain attempt.
-                if (effect.claimToken() == null
+                if (effect.attempts() <= 0
+                        || effect.workerId() == null
+                        || effect.claimToken() == null
                         || effect.leaseUntilMillis() <= 0) {
                     throw new IllegalStateException(
                             "ambiguous persisted effect lacks claim evidence");
                 }
+                validateClaimToken(
+                        effect,
+                        runId,
+                        nextClaimNumber);
             }
         }
-        if (effect.state() == EffectState.COMPLETED
-                && effect.receiptRef() == null) {
+        if (effect.state() == EffectState.COMPLETED) {
+            if (effect.attempts() <= 0
+                    || effect.receiptRef() == null) {
+                throw new IllegalStateException(
+                        "completed persisted effect lacks attempt/receipt");
+            }
+        } else if (effect.receiptRef() != null) {
             throw new IllegalStateException(
-                    "completed persisted effect lacks receipt");
+                    "non-completed persisted effect cannot carry receipt");
+        }
+    }
+
+    private static void validateClaimToken(
+            EffectSnapshot effect,
+            String runId,
+            long nextClaimNumber) {
+        String[] parts = effect.claimToken().split("/", -1);
+        if (parts.length != 7
+                || !"workflow".equals(parts[0])
+                || !"claim".equals(parts[1])
+                || !"attempt".equals(parts[3])
+                || !"effect".equals(parts[5])) {
+            throw new IllegalStateException(
+                    "persisted claim token has invalid structure");
+        }
+
+        final long claimNumber;
+        final int attempt;
+        try {
+            claimNumber = Long.parseLong(parts[2]);
+            attempt = Integer.parseInt(parts[4]);
+        } catch (NumberFormatException failure) {
+            throw new IllegalStateException(
+                    "persisted claim token has invalid numeric fields",
+                    failure);
+        }
+        if (claimNumber <= 0
+                || claimNumber >= nextClaimNumber
+                || attempt != effect.attempts()) {
+            throw new IllegalStateException(
+                    "persisted claim token sequence/attempt mismatch");
+        }
+
+        String expectedDigest = claimDigest(
+                runId, effect.effectKey());
+        if (!MessageDigest.isEqual(
+                expectedDigest.getBytes(StandardCharsets.US_ASCII),
+                parts[6].getBytes(StandardCharsets.US_ASCII))) {
+            throw new IllegalStateException(
+                    "persisted claim token effect digest mismatch");
+        }
+    }
+
+    private static String claimToken(
+            String runId,
+            String effectKey,
+            int attempt,
+            long claimNumber) {
+        return "workflow/claim/"
+                + claimNumber
+                + "/attempt/"
+                + attempt
+                + "/effect/"
+                + claimDigest(runId, effectKey);
+    }
+
+    private static String claimDigest(
+            String runId,
+            String effectKey) {
+        try {
+            MessageDigest digest =
+                    MessageDigest.getInstance("SHA-256");
+            digest.update(runId.getBytes(StandardCharsets.UTF_8));
+            digest.update((byte) 0);
+            digest.update(effectKey.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(
+                    "SHA-256 is unavailable", impossible);
         }
     }
 
