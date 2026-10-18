@@ -4190,6 +4190,14 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, null, failure);
                                 return;
                             }
+                            if (receiver instanceof OresObject object
+                                    && object == env.constructingObject
+                                    && object.klass.actorKind() == Ast.ActorKind.NONE) {
+                                continuation.accept(t, null, new IllegalArgumentException(
+                                        "cannot dispatch instance method '" + member.member()
+                                                + "' on constructing self"));
+                                return;
+                            }
                             evalSuspendableArguments(
                                     t,
                                     call.arguments(),
@@ -4331,6 +4339,13 @@ public final class OresEvalRootNode extends RootNode {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
 
+            if (receiver instanceof OresObject object
+                    && object == env.constructingObject
+                    && object.klass.actorKind() == Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "cannot dispatch instance method '" + member.member()
+                                + "' on constructing self");
+            }
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
