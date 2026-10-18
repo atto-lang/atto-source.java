@@ -72,7 +72,13 @@ final class TrustedUntrustedNetworkQuota implements AutoCloseable {
 
         /** Call immediately before performing external I/O. */
         boolean commitDispatch() {
-            return lifecycle.compareAndSet(0, 1);
+            // A supervisor may revoke a quota after admission but before
+            // dispatch. The same quota monitor fences close vs commitment.
+            // After commitment the trusted broker must cancel/close actual IO
+            // on revocation; this method cannot itself own an OS socket.
+            synchronized (owner) {
+                return !owner.closed && lifecycle.compareAndSet(0, 1);
+            }
         }
 
         /** Refund an admission that was never dispatched; cannot be replayed. */
