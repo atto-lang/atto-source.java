@@ -564,6 +564,7 @@ public final class ActorRuntime implements AutoCloseable {
             ActorArtifactAdmission.TrustedKeyPolicy keyPolicy,
             ActorArtifactAdmission.TargetPolicy targetPolicy,
             IsolatePolicy workerPolicy) {
+        requireIpcArtifactAdmissionAuthority();
         return admitIpcActorArtifact(
                 actorTypeName,
                 actorKind,
@@ -590,17 +591,7 @@ public final class ActorRuntime implements AutoCloseable {
             ActorArtifactAdmission.TrustedKeyPolicy keyPolicy,
             ActorArtifactAdmission.TargetPolicy targetPolicy,
             IsolatePolicy workerPolicy) {
-        requireSupervisorContext("admit IPC actor artifact");
-        for (IsolatePolicy.Capability capability : List.of(
-                IsolatePolicy.Capability.ACTOR_SPAWN,
-                IsolatePolicy.Capability.IPC,
-                IsolatePolicy.Capability.CHILD_PROCESS,
-                IsolatePolicy.Capability.HOT_CODE_LOAD)) {
-            if (!policyCeiling.allows(capability)) {
-                throw new SecurityException(
-                        capability + " capability required to admit IPC actor artifact");
-            }
-        }
+        requireIpcArtifactAdmissionAuthority();
         return ActorArtifactAdmission.admitIpcActor(
                 runtimeInstanceId,
                 actorTypeName,
@@ -613,6 +604,20 @@ public final class ActorRuntime implements AutoCloseable {
                 targetPolicy,
                 policyCeiling,
                 workerPolicy);
+    }
+
+    private void requireIpcArtifactAdmissionAuthority() {
+        requireSupervisorContext("admit IPC actor artifact");
+        for (IsolatePolicy.Capability capability : List.of(
+                IsolatePolicy.Capability.ACTOR_SPAWN,
+                IsolatePolicy.Capability.IPC,
+                IsolatePolicy.Capability.CHILD_PROCESS,
+                IsolatePolicy.Capability.HOT_CODE_LOAD)) {
+            if (!policyCeiling.allows(capability)) {
+                throw new SecurityException(
+                        capability + " capability required to admit IPC actor artifact");
+            }
+        }
     }
 
     /** Trusted runtime affinity check used by the future IPC launcher. */
