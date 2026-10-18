@@ -81,8 +81,8 @@ public final class PostgresWorkflowGateSmoke {
         var outbound=new DurableActorStore.Outbound("op-1","workflow:run:sha:1",bytes("request"));
         var outbound2=new DurableActorStore.Outbound("op-2","workflow:run:sha:2",bytes("request2"));
         var updated=new DurableActorStore.Snapshot(0,1,"code-v1",1,bytes("after-event"));
-        check(store.commitTurn(new DurableActorStore.Turn(key,1,0,"delivery-1",updated,
-            List.of(outbound,outbound2)))==1,"durable event + two outbox intents");
+        check(store.commitOwnedTurn(new DurableActorStore.Turn(key,1,0,"delivery-1",updated,
+            List.of(outbound,outbound2)),owner)==1,"durable event + two outbox intents");
         check(gate.admitSignedPush(key,new PostgresDurableWorkflowGate.SignedPush(
             9,10,ref,sha,"delivery-after-state-advanced",bytes("replayed"))) ==
             PostgresDurableWorkflowGate.Admission.STALE,
