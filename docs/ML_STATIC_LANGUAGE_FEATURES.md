@@ -127,3 +127,19 @@ require renaming a previously valid variable called `signature`.
 
 Never equate a passing parser test, Java host native-image smoke test,
 or host-only LLVM helper test with true Oreslang guest full-AOT parity.
+
+## 2026-10-18 audit: incomplete namespace-value confinement
+
+The `signature` spelling normalization does **not** itself prove that module
+namespaces are never reified as values. The Java typechecker currently resolves
+a bare module name to a structural module shape, and the interpreter uses an
+internal namespace facade when evaluating a module name. This is an outstanding
+closed-world soundness gap until the compiler rejects module names in all
+value positions while preserving direct static member access and lexical
+shadowing. `StaticModuleNamespaceConfinementTest` deliberately records this
+regression as a strict admission gate. No passing CI receipt exists for these
+new tests; PR #1386 must remain draft until the gate is repaired and executed.
+
+The prior exact-source private mirror represented the previous commit only.
+New audit/test commits invalidate its exact-head test provenance. Never use
+an older successful tree hash to claim that a newer branch was tested.
