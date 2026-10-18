@@ -18,6 +18,8 @@ SECURITY_PATHS = (
     "scripts/check-private-ci-destination.sh",
     "scripts/publish-private-ci-source.py",
     "scripts/run-in-private-ci-destination.sh",
+    "scripts/run-private-ci-regressions-local.sh",
+    "scripts/test-run-private-ci-regressions-local.sh",
     "scripts/test-private-ci-destination.sh",
     "scripts/test-private-ci-merged-main.py",
     "scripts/test-private-ci-review-coverage.py",
@@ -102,7 +104,9 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
             validate(self.owners + "\n/* @different\n", self.workflow)
 
     def test_missing_push_trigger_is_rejected(self):
-        damaged = self.workflow.replace(
+        beginning, separator, push_block = self.workflow.partition("  push:\n")
+        self.assertTrue(separator)
+        damaged = beginning + separator + push_block.replace(
             "      - 'tools/verify-exact-source-tree.sh'\n", "", 1)
         with self.assertRaisesRegex(ValueError, "does not trigger"):
             validate(self.owners, damaged)
