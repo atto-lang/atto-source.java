@@ -2,7 +2,6 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
 
-import java.lang.reflect.RecordComponent;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -122,6 +121,13 @@ public final class ConstructorDelegation {
         return false;
     }
 
+    /**
+     * Explicit AOT-safe walk. Constructor delegation is a statement; visit
+     * every syntactic child that can contain statements, including lambda
+     * bodies, registered channel callbacks, cleanup, select arms and matches.
+     * Unknown statement/expression shapes fail closed instead of silently
+     * permitting nested construction dispatch.
+     */
     private static void rejectNested(Object node, String owner) {
         if (node == null) return;
         if (node instanceof Ast.ConstructorDelegateStmt) {
@@ -133,13 +139,128 @@ public final class ConstructorDelegation {
             for (Object item : items) rejectNested(item, owner);
             return;
         }
-        if (!(node instanceof Record record) || node.getClass().getEnclosingClass() != Ast.class) return;
-        for (RecordComponent component : record.getClass().getRecordComponents()) {
-            try {
-                rejectNested(component.getAccessor().invoke(record), owner);
-            } catch (ReflectiveOperationException ex) {
-                throw new IllegalStateException("cannot inspect constructor delegation statement", ex);
-            }
+        if (node instanceof Ast.LiteralExpr || node instanceof Ast.NameExpr
+                || node instanceof Ast.BreakStmt || node instanceof Ast.ContinueStmt
+                || node instanceof Ast.Pattern) return;
+
+        if (node instanceof Ast.BinaryExpr item) {
+            rejectNested(item.left(), owner);
+            rejectNested(item.right(), owner);
+        } else if (node instanceof Ast.UnaryExpr item) {
+            rejectNested(item.operand(), owner);
+        } else if (node instanceof Ast.AssignExpr item) {
+            rejectNested(item.target(), owner);
+            rejectNested(item.value(), owner);
+        } else if (node instanceof Ast.ConditionalExpr item) {
+            rejectNested(item.condition(), owner);
+            rejectNested(item.whenTrue(), owner);
+            rejectNested(item.whenFalse(), owner);
+        } else if (node instanceof Ast.MatchExpr item) {
+            rejectNested(item.subject(), owner);
+            rejectNested(item.arms(), owner);
+        } else if (node instanceof Ast.MatchValueArm item) {
+            rejectNested(item.guard(), owner);
+            rejectNested(item.value(), owner);
+        } else if (node instanceof Ast.TypeTestExpr item) {
+            rejectNested(item.value(), owner);
+        } else if (node instanceof Ast.PatternTestExpr item) {
+            rejectNested(item.value(), owner);
+        } else if (node instanceof Ast.CastExpr item) {
+            rejectNested(item.value(), owner);
+        } else if (node instanceof Ast.SpreadExpr item) {
+            rejectNested(item.expression(), owner);
+        } else if (node instanceof Ast.CallExpr item) {
+            rejectNested(item.callee(), owner);
+            rejectNested(item.arguments(), owner);
+        } else if (node instanceof Ast.RuntimeCallExpr item) {
+            rejectNested(item.arguments(), owner);
+        } else if (node instanceof Ast.MemberExpr item) {
+            rejectNested(item.receiver(), owner);
+        } else if (node instanceof Ast.IndexExpr item) {
+            rejectNested(item.receiver(), owner);
+            rejectNested(item.index(), owner);
+        } else if (node instanceof Ast.NewExpr item) {
+            rejectNested(item.arguments(), owner);
+        } else if (node instanceof Ast.AwaitExpr item) {
+            rejectNested(item.expression(), owner);
+        } else if (node instanceof Ast.TrapExpr item) {
+            rejectNested(item.expression(), owner);
+        } else if (node instanceof Ast.ChannelOpExpr item) {
+            rejectNested(item.channel(), owner);
+            rejectNested(item.value(), owner);
+            rejectNested(item.callbackBody(), owner);
+        } else if (node instanceof Ast.DynamicSelectExpr item) {
+            rejectNested(item.cases(), owner);
+        } else if (node instanceof Ast.ListExpr item) {
+            rejectNested(item.elements(), owner);
+        } else if (node instanceof Ast.TupleExpr item) {
+            rejectNested(item.elements(), owner);
+        } else if (node instanceof Ast.ObjectExpr item) {
+            rejectNested(item.fields(), owner);
+        } else if (node instanceof Ast.ObjectField item) {
+            rejectNested(item.value(), owner);
+        } else if (node instanceof Ast.LambdaExpr item) {
+            rejectNested(item.expressionBody(), owner);
+            rejectNested(item.blockBody(), owner);
+        } else if (node instanceof Ast.BindingStmt item) {
+            rejectNested(item.initializer(), owner);
+        } else if (node instanceof Ast.DestructureStmt item) {
+            rejectNested(item.initializer(), owner);
+        } else if (node instanceof Ast.ExprStmt item) {
+            rejectNested(item.expression(), owner);
+        } else if (node instanceof Ast.ReturnStmt item) {
+            rejectNested(item.value(), owner);
+        } else if (node instanceof Ast.YieldStmt item) {
+            rejectNested(item.value(), owner);
+        } else if (node instanceof Ast.DeferStmt item) {
+            rejectNested(item.expression(), owner);
+        } else if (node instanceof Ast.BlockStmt item) {
+            rejectNested(item.body(), owner);
+        } else if (node instanceof Ast.IfStmt item) {
+            rejectNested(item.branches(), owner);
+            rejectNested(item.elseBody(), owner);
+        } else if (node instanceof Ast.IfBranch item) {
+            rejectNested(item.condition(), owner);
+            rejectNested(item.body(), owner);
+        } else if (node instanceof Ast.MatchStmt item) {
+            rejectNested(item.subject(), owner);
+            rejectNested(item.arms(), owner);
+        } else if (node instanceof Ast.MatchArm item) {
+            rejectNested(item.guard(), owner);
+            rejectNested(item.body(), owner);
+        } else if (node instanceof Ast.SwitchStmt item) {
+            rejectNested(item.subject(), owner);
+            rejectNested(item.cases(), owner);
+            rejectNested(item.defaultBody(), owner);
+        } else if (node instanceof Ast.SwitchCase item) {
+            rejectNested(item.constants(), owner);
+            rejectNested(item.body(), owner);
+        } else if (node instanceof Ast.TryStmt item) {
+            rejectNested(item.body(), owner);
+            rejectNested(item.catchBody(), owner);
+            rejectNested(item.finallyBody(), owner);
+        } else if (node instanceof Ast.ForOfStmt item) {
+            rejectNested(item.iterable(), owner);
+            rejectNested(item.body(), owner);
+        } else if (node instanceof Ast.ForOfDestructureStmt item) {
+            rejectNested(item.iterable(), owner);
+            rejectNested(item.body(), owner);
+        } else if (node instanceof Ast.ForStmt item) {
+            rejectNested(item.initializer(), owner);
+            rejectNested(item.condition(), owner);
+            rejectNested(item.update(), owner);
+            rejectNested(item.body(), owner);
+        } else if (node instanceof Ast.LoopStmt item) {
+            rejectNested(item.body(), owner);
+        } else if (node instanceof Ast.SelectStmt item) {
+            rejectNested(item.arms(), owner);
+        } else if (node instanceof Ast.SelectArm item) {
+            rejectNested(item.channel(), owner);
+            rejectNested(item.value(), owner);
+            rejectNested(item.body(), owner);
+        } else if (node instanceof Ast.Expr || node instanceof Ast.Stmt) {
+            throw new IllegalArgumentException(
+                    "unhandled constructor delegation AST node: " + node.getClass().getName());
         }
     }
 }
