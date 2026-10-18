@@ -160,6 +160,14 @@ class SurefireEvidenceTests(unittest.TestCase):
         self.report(SUITES[0]).write_text('<bad')
         self.check()
 
+    def test_equal_mtime_reports_on_coarse_filesystem_pass(self):
+        # Actual gate empties the Surefire report directory between phases;
+        # mtimes can tie on coarse-resolution filesystems.
+        for p in self.reports.iterdir():
+            t = self.marker.stat().st_mtime_ns
+            os.utime(p, ns=(t, t))
+        self.check(0)
+
     def test_stale_reports_are_rejected(self):
         earlier = self.marker.stat().st_mtime_ns - 1_000_000_000
         for p in self.reports.iterdir():

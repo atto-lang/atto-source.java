@@ -114,7 +114,9 @@ def verify(marker: Path, phase: str) -> tuple[int, int]:
     for path in sorted(reports.glob('TEST-*.xml')):
         if path.is_symlink() or not path.is_file():
             raise ValueError(f'unsafe report path: {path}')
-        if path.stat().st_mtime_ns > marker.stat().st_mtime_ns:
+        # The gate guarantees an empty report directory at each phase start.
+        # Filesystems may assign the SAME timestamp to marker and reports.
+        if path.stat().st_mtime_ns >= marker.stat().st_mtime_ns:
             fresh.append(path)
     if not fresh:
         raise ValueError('no fresh Surefire XML after Maven phase')

@@ -131,6 +131,16 @@ reports whose filename impersonates a mandatory suite without an executed
 testcase of that class. Run source-free adversarial verifier checks with
 `python3 -m unittest discover -s scripts -p test_nio_evidence_verifier.py -v`.
 The targeted test invocation explicitly disables Maven test-skipping flags.
+On filesystems with coarse timestamp granularity a freshly written JUnit XML
+report may have precisely the same `mtime` as its phase-start marker.
+The verifier therefore accepts report timestamps **at or after** the marker,
+while the shell gate preserves the essential freshness boundary: `mvn clean`
+must remove all previous `target/` contents before the targeted phase, and
+all targeted reports are moved out of `target/surefire-reports/` before the
+full-verify phase. Report times *older* than the marker still fail. This
+corrected two reproducible false negatives in the 17-method source-free
+shell gate suite and is covered by a dedicated equal-timestamp regression.
+
 The full suite has not been executed
 on a real runner; this is an evidence safeguard, not certification. It then
 runs `mvn -B -ntp -Dores.runtime.carriers=native verify`. An explicitly
