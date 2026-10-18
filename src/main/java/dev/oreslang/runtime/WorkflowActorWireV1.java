@@ -209,6 +209,14 @@ final class WorkflowActorWireV1 {
                     "event", event(value.resultingEvent()));
         }
         if (outcome
+                instanceof WorkflowActivityProtocolV1.Completed value) {
+            return map(
+                    "type", "completed",
+                    "effectKey", value.effectKey(),
+                    "claimToken", value.claimToken(),
+                    "receiptRef", value.receiptRef());
+        }
+        if (outcome
                 instanceof WorkflowActivityProtocolV1.KnownUnexecuted value) {
             return map(
                     "type", "known_unexecuted",
@@ -239,6 +247,11 @@ final class WorkflowActorWireV1 {
                             string(map, "claimToken"),
                             string(map, "receiptRef"),
                             event(map.get("event")));
+            case "completed" ->
+                    new WorkflowActivityProtocolV1.Completed(
+                            string(map, "effectKey"),
+                            string(map, "claimToken"),
+                            string(map, "receiptRef"));
             case "known_unexecuted" ->
                     new WorkflowActivityProtocolV1.KnownUnexecuted(
                             string(map, "effectKey"),
