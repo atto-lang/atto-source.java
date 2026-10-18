@@ -63,7 +63,7 @@ final class TrustedHierarchicalNetworkGate {
             }
         }
 
-        /** Cancel before dispatch and refund all three scopes exactly once. */
+        /** Cancel a published but undelivered request: release slots, not rate tokens. */
         boolean abortBeforeDispatch() {
             synchronized (gate.lock) {
                 if (!state.compareAndSet(0, 2)) return false;
@@ -143,15 +143,17 @@ final class TrustedHierarchicalNetworkGate {
                 completed = true;
                 return admitted;
             } finally {
-                // Also covers exceptions (including allocation failures).
+                // Unpublished partial admission: restore prior scopes before any
+                // caller can observe the result. Published leases deliberately
+                // do not refund rate tokens on cancellation.
                 if (!completed) {
                     if (third != null && third.lease() != null) {
-                        third.lease().abortBeforeDispatch();
+                        third.lease().rollbackUnpublished();
                     }
                     if (second != null && second.lease() != null) {
-                        second.lease().abortBeforeDispatch();
+                        second.lease().rollbackUnpublished();
                     }
-                    first.lease().abortBeforeDispatch();
+                    first.lease().rollbackUnpublished();
                 }
             }
         }
