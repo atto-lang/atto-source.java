@@ -527,9 +527,21 @@ public final class Ast {
         }
     }
 
-    /** Syntax-only nominal enum. All entrypoints still require checked lowering. */
-    public record EnumDecl(String name, List<EnumCase> cases) implements Decl {
+    /**
+     * Canonical v2 syntax AST: visibility is semantic source metadata, never
+     * inferred from the spelling of an import or the origin of a value.
+     * This does not enable enum runtime construction or case dispatch.
+     */
+    public record EnumDecl(String name, Visibility visibility, List<EnumCase> cases) implements Decl {
+        /** Compatibility for older private/default visibility syntax AST creation. */
+        public EnumDecl(String name, List<EnumCase> cases) {
+            this(name, Visibility.PRIVATE, cases);
+        }
+
         public EnumDecl {
+            if (visibility == null) {
+                throw new IllegalArgumentException("enum visibility must be known");
+            }
             if (name == null || name.isBlank()) {
                 throw new IllegalArgumentException("enum requires a nominal name");
             }
