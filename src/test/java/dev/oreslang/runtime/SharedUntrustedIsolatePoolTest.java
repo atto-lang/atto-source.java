@@ -28,6 +28,23 @@ final class SharedUntrustedIsolatePoolTest {
     }
 
     @Test
+    void groupCloseRedactsOrdinaryCauseButNeverDemotesVmFatal() {
+        var secret = new IllegalStateException("guest-private-internal-message");
+        var redacted = SharedUntrustedIsolatePool.sanitizeGroupRetirementFailure(secret);
+        assertEquals("untrusted group retirement failed", redacted.getMessage());
+        assertNull(redacted.getCause());
+        for (Error fatal : new Error[] {
+                new LinkageError("fatal linkage"),
+                new OutOfMemoryError("fatal memory"),
+                new ThreadDeath()
+        }) {
+            assertSame(fatal, assertThrows(fatal.getClass(),
+                    () -> SharedUntrustedIsolatePool.sanitizeGroupRetirementFailure(fatal)),
+                    "a fatal context failure cannot be replaced by an ordinary exception");
+        }
+    }
+
+    @Test
     void boundedPoolSettingsRequireSafeResourceLimits() {
         assertThrows(IllegalArgumentException.class,
                 () -> SharedUntrustedIsolatePool.validateConfiguration(1024, 1));
