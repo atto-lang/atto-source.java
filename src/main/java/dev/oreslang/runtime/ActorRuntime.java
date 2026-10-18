@@ -5402,8 +5402,15 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value)
-                || value instanceof ActorRuntime.ActorRef<?>
-                || value instanceof ActorRuntime.ActorGroupJoinCapability) return;
+                || value instanceof ActorRuntime.ActorRef<?>) return;
+        // Raw ActorGroup join authority belongs to the CONTROL plane. Keep
+        // this transport-specific walker fail-closed on its own so a future
+        // validation-order refactor cannot reopen DATA capability transport.
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
         if (value instanceof ChannelRuntime.Channel<?>
                 || value instanceof ChannelRuntime.SelectCase
                 || value instanceof ChannelRuntime.SelectSet) {
@@ -5474,6 +5481,14 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value)) return;
+
+        // SharedMutex payload inspection is an independent DATA authorization
+        // boundary. Do not rely on requireOwnedActorRefs() running later.
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
 
         if (value instanceof ActorRuntime.ActorRef<?> ref) {
             if (!ref.ownedBy(this)) {
