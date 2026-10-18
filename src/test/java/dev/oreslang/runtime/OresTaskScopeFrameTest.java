@@ -273,4 +273,46 @@ final class OresTaskScopeFrameTest {
                     "code-image release must not run twice on scope shutdown");
         }
     }
+
+    @Test
+    void closedSchedulerRejectsAdmissionAndRetiresGenerationExactlyOnce() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            OresScheduler scheduler = new OresScheduler(1);
+            scheduler.close();
+            AtomicInteger imageReleases = new AtomicInteger();
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> scope.startCompilerFrame(scheduler,
+                            resume -> new OresScheduler.Done<>(42),
+                            () -> imageReleases.incrementAndGet()));
+            assertEquals(1, imageReleases.get(),
+                    "a pin acquired before rejected scheduler admission must retire");
+            assertDoesNotThrow(scope::close);
+            assertEquals(1, imageReleases.get(),
+                    "closing the owner must not retire a rejected pin twice");
+        }
+    }
+
+    @Test
+    void rejectedAdmissionCannotHideGenerationReleaseFailure() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            OresScheduler scheduler = new OresScheduler(1);
+            scheduler.close();
+            AtomicInteger releases = new AtomicInteger();
+            java.util.concurrent.RejectedExecutionException rejected =
+                    assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                            () -> scope.startCompilerFrame(scheduler,
+                                    resume -> new OresScheduler.Done<>(42),
+                                    () -> {
+                                        releases.incrementAndGet();
+                                        throw new IllegalStateException("image release failed");
+                                    }));
+            assertEquals(1, releases.get());
+            assertEquals(1, rejected.getSuppressed().length,
+                    "host release failure must remain visible to the caller");
+            assertTrue(rejected.getSuppressed()[0].toString().contains("image release failed"));
+        }
+    }
+
 }
