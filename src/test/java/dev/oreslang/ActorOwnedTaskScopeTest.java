@@ -119,6 +119,46 @@ final class ActorOwnedTaskScopeTest {
     }
 
     @Test
+    void parentCancellationRetiresEightQueuedTaskHandles() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            java.util.concurrent.CopyOnWriteArrayList<TaskHandle<Integer>> children =
+                    new java.util.concurrent.CopyOnWriteArrayList<>();
+            AtomicInteger bodiesRun = new AtomicInteger();
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                for (int i = 0; i < 8; i++) {
+                    children.add(context.runtime().startActorOwnedTask(resume -> {
+                        bodiesRun.incrementAndGet();
+                        return OresScheduler.done(1);
+                    }));
+                }
+                context.self().stop();
+            });
+            ref.send(1);
+            assertTrue(ref.awaitTermination(10, TimeUnit.SECONDS));
+            assertEquals(8, children.size());
+            assertEquals(0, bodiesRun.get());
+            for (TaskHandle<Integer> child : children) {
+                assertInstanceOf(TaskHandle.Cancelled.class,
+                        child.getDone().get(3, TimeUnit.SECONDS));
+            }
+            assertTrue(ref.done().isDone());
+        }
+    }
+
+    @Test
+    void externalHostCannotForgeActorOwnedTaskAcrossActorRef() {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            // Mere possession of an ActorRef cannot mint the actor's Task scope
+            // or run work in its sealed actor-owned execution domain.
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> { });
+            assertNotNull(ref);
+            assertThrows(IllegalStateException.class, () ->
+                    runtime.startActorOwnedTask(r -> OresScheduler.done(1)));
+        }
+    }
+
+    @Test
     void hostStopCannotForgeCompletionBeforeActorTaskScopeTeardown()
             throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
