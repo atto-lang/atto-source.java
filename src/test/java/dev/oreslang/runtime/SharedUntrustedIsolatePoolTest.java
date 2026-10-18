@@ -220,4 +220,45 @@ final class SharedUntrustedIsolatePoolTest {
         }
     }
 
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches = "true")
+    void imageAdmissionIsFencedWithoutEnteringGuestExecutionMonitor() throws Exception {
+        try (SharedUntrustedIsolatePool pool = new SharedUntrustedIsolatePool(
+                256L * 1024 * 1024, 1);
+             SharedUntrustedIsolatePool.Group group = pool.createGroup();
+             var workers = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            group.sourceImageForSupervisor("worker.ores", "shared-code-v1");
+            java.util.concurrent.CountDownLatch monitorHeld =
+                    new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.CountDownLatch releaseMonitor =
+                    new java.util.concurrent.CountDownLatch(1);
+            var holder = workers.submit(() -> {
+                synchronized (group) {
+                    monitorHeld.countDown();
+                    try {
+                        assertTrue(releaseMonitor.await(30, java.util.concurrent.TimeUnit.SECONDS));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("test interrupted", e);
+                    }
+                }
+            });
+            try {
+                assertTrue(monitorHeld.await(10, java.util.concurrent.TimeUnit.SECONDS));
+                // Host-issued Context.close(true) must not need group monitor,
+                // even when an untrusted guest turn is blocked inside it.
+                var retired = workers.submit(group::close);
+                retired.get(20, java.util.concurrent.TimeUnit.SECONDS);
+                assertEquals(0, pool.liveCodeImagesForSupervisor(),
+                        "all code-image leases must be released after confirmed close");
+                assertThrows(IllegalStateException.class, () ->
+                        group.sourceImageForSupervisor("worker.ores", "shared-code-v1"));
+                assertEquals(0, pool.liveCodeImagesForSupervisor());
+            } finally {
+                releaseMonitor.countDown();
+                holder.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            }
+        }
+    }
 }
