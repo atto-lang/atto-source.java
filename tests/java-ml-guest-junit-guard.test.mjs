@@ -28,17 +28,20 @@ test("every actual invalid guest uses parser-positive then semantic rejection",(
   assert.match(body,/assertEquals\("", output\.toString/);
 });
 test("guest fixture SHA and separately pinned output prevent silent drift",()=>{
-  assert.match(java,/4597a2860fb5aaf0be5cf1dda5c16eaa93c5d8b2/);
+  assert.match(java,/8f056800f8955a94c48e24693af73d33ae1a4ada/);
   assert.match(java,/b602f9821817696f16499af1a74cb22d49a0ecab/);
   assert.match(java,/assertEquals\(expected, stdout\.toString/);
 });
 
 
-test("typed actor JUnit contract pins four Results and negative-success golden",()=>{
-  assert.match(java,/assertTrue\(text\.contains\("private print_outcome\(Result<int, String> outcome\): void"\)\)/);
+test("typed actor JUnit contract pins nominal errors and negative-success golden",()=>{
+  assert.match(java,/private print_outcome\(Result<int, TrainingError> outcome\): void/);
   for(const error of ["INVALID_INPUT","INVALID_GRADIENT","UNSAFE_CANDIDATE"]){
-    assert(java.includes('return Err(\\\"'+error+'\\\")'));
+    assert(java.includes("return Err(TrainingError."+error+"())"));
   }
+  assert.match(java,/define enum TrainingError as/);
+  assert.match(java,/match problem over/);
+  assert.match(java,/nominalTrainingErrorsRequireExactPayloadTypesAndExhaustiveCases/);
   assert.match(java,/self\.eval_affine\(3, 3, 2, -2, 101, 1, 202\)/);
   assert.match(java,/assertEquals\(expected, stdout\.toString/);
 });
@@ -51,7 +54,7 @@ test("guest CI source pins match actual fixture blobs and JUnit gate", () => {
   const workflow = readFileSync(new URL("../.github/workflows/ml-scalar-actor-guest.yml", import.meta.url), "utf8");
   const fixtureSha = gitBlobSha(readFileSync(new URL("./fixtures/ml-actor-state-scalar.ores", import.meta.url)));
   const goldenSha = gitBlobSha(readFileSync(new URL("./golden/ml-actor-state-scalar.stdout", import.meta.url)));
-  assert.equal(fixtureSha, "4597a2860fb5aaf0be5cf1dda5c16eaa93c5d8b2");
+  assert.equal(fixtureSha, "8f056800f8955a94c48e24693af73d33ae1a4ada");
   assert.equal(goldenSha, "b602f9821817696f16499af1a74cb22d49a0ecab");
   assert.match(java, new RegExp(fixtureSha));
   assert.match(java, new RegExp(goldenSha));

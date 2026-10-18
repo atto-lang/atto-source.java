@@ -36,7 +36,7 @@ jobs:
       - name: Fail closed on scalar fixture/golden drift before installing GraalVM
         run: |
           set -euo pipefail
-          test "$(git hash-object -- tests/fixtures/ml-actor-state-scalar.ores)" = "4597a2860fb5aaf0be5cf1dda5c16eaa93c5d8b2"
+          test "$(git hash-object -- tests/fixtures/ml-actor-state-scalar.ores)" = "8f056800f8955a94c48e24693af73d33ae1a4ada"
           test "$(git hash-object -- tests/golden/ml-actor-state-scalar.stdout)" = "b602f9821817696f16499af1a74cb22d49a0ecab"
           echo "ML_SCALAR_FIXTURE_AND_GOLDEN=EXACT_REVIEWED_BLOBS"
       - name: Host-only JUnit structural regression (not guest evidence)

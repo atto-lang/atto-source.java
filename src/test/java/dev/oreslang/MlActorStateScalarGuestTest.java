@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * GUEST execution gate for the actual Oreslang ML scalar actor-state fixture.
  *
  * The .ores fixture was copied byte-for-byte from oreslang-ml's stacked
- * actor-state PR #7 (Git blob 4597a2860fb5aaf0be5cf1dda5c16eaa93c5d8b2).
+ * actor-state PR #7 (Git blob 8f056800f8955a94c48e24693af73d33ae1a4ada).
  * This JUnit class requires an actual GraalVM Oreslang context evaluation;
  * pure host-side arithmetic is explicitly NOT accepted as execution evidence.
  *
@@ -47,7 +47,7 @@ final class MlActorStateScalarGuestTest {
 
     @Test void compiledActorStageHasOneStateSchemaAndDeclaredEffects() throws Exception {
         String text = source();
-        assertEquals("4597a2860fb5aaf0be5cf1dda5c16eaa93c5d8b2",
+        assertEquals("8f056800f8955a94c48e24693af73d33ae1a4ada",
                 gitBlobSha(text), "ML fixture drifted from pinned source Git blob");
         assertDoesNotThrow(() -> verify(text));
         assertEquals(1, count(text, "    state {"));
@@ -60,10 +60,10 @@ final class MlActorStateScalarGuestTest {
         assertTrue(text.contains("with state.read, state.write"));
         assertTrue(text.contains("using state.read("));
         assertTrue(text.contains("private eval_affine("));
-        assertTrue(text.contains("private print_outcome(Result<int, String> outcome): void"));
-        assertTrue(text.contains("return Err(\"INVALID_INPUT\")"));
-        assertTrue(text.contains("return Err(\"INVALID_GRADIENT\")"));
-        assertTrue(text.contains("return Err(\"UNSAFE_CANDIDATE\")"));
+        assertTrue(text.contains("private print_outcome(Result<int, TrainingError> outcome): void"));
+        assertTrue(text.contains("return Err(TrainingError.INVALID_INPUT())"));
+        assertTrue(text.contains("return Err(TrainingError.INVALID_GRADIENT())"));
+        assertTrue(text.contains("return Err(TrainingError.UNSAFE_CANDIDATE())"));
         assertTrue(text.contains("self.eval_affine(3, 3, 2, -2, 101, 1, 202)"));
         assertTrue(text.contains("issued_first: bool"));
         assertTrue(text.contains("issued_second: bool"));
@@ -73,13 +73,18 @@ final class MlActorStateScalarGuestTest {
         assertTrue(text.contains("if candidate_weight < -10000 || candidate_weight > 10000"));
         assertTrue(text.contains("if s.step >= 1000000 || s.version >= 1000000"));
         assertTrue(text.contains("private cancel_rejected("));
+        assertTrue(text.contains("define enum TrainingError as"));
+        assertTrue(text.contains("match outcome over"));
+        assertTrue(text.contains("match problem over"));
+        assertTrue(text.contains("on TrainingError.STALE_GRAPH ->"));
+        assertTrue(text.contains("on TrainingError.VALID_CANDIDATE_MUST_COMMIT ->"));
         assertTrue(text.contains("run_id: int = 101"));
         assertTrue(text.contains("incarnation: int = 1"));
         assertTrue(text.contains("graph_id: int = 202"));
-        assertTrue(text.contains("return Err(\"STALE_GRAPH\")"));
+        assertTrue(text.contains("return Err(TrainingError.STALE_GRAPH())"));
         assertTrue(text.contains("worker.send(\"wrong_graph\")"));
-        assertTrue(text.contains("return Err(\"STALE_RUN\")"));
-        assertTrue(text.contains("return Err(\"STALE_INCAR\")"));
+        assertTrue(text.contains("return Err(TrainingError.STALE_RUN())"));
+        assertTrue(text.contains("return Err(TrainingError.STALE_INCAR())"));
         assertFalse(text.contains("mail.value == \"cancel_failed\""));
         assertTrue(text.contains("self.cancel_rejected(2, 2, 101, 1, 202)"));
         assertFalse(text.contains("mail.value == \"high_commit\""));
@@ -91,8 +96,8 @@ final class MlActorStateScalarGuestTest {
         assertTrue(text.contains("s.issued_first && s.issued_second"));
         assertTrue(text.contains("!final_result.is_err() && self.demo_finish_ready()"));
         assertTrue(text.contains("worker.send(\"wrong_incarnation\")"));
-        assertTrue(text.contains("Result<int, String>"));
-        assertTrue(text.contains("return Err(\"STALE_STEP\")"));
+        assertTrue(text.contains("Result<int, TrainingError>"));
+        assertTrue(text.contains("return Err(TrainingError.STALE_STEP())"));
         assertTrue(text.contains("return Ok(s.version)"));
         assertTrue(text.contains("s.input_first * upstream"));
         assertTrue(text.contains("s.input_second * upstream"));
@@ -150,6 +155,34 @@ final class MlActorStateScalarGuestTest {
         }
         assertEquals("ORES_TYPED_RESULT_PASS\n",
                 stdout.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test void nominalTrainingErrorsRequireExactPayloadTypesAndExhaustiveCases() {
+        String wrongErrorType = """
+                define enum TrainingError as
+                    INVALID_INPUT
+                end
+                pub fnc bad(): Result<int, TrainingError> {
+                    return Err("INVALID_INPUT");
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(wrongErrorType),
+                "nominal wrong-type negative must parse");
+        assertRejected(wrongErrorType);
+        String omittedCase = """
+                define enum TrainingError as
+                    INVALID_INPUT
+                    STALE_GRAPH
+                end
+                pub fnc bad(TrainingError reason): int {
+                    match reason over
+                        on TrainingError.INVALID_INPUT -> { return 1; }
+                    end
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(omittedCase),
+                "non-exhaustive negative must parse");
+        assertRejected(omittedCase);
     }
 
     @Test void readEffectsDoNotGrantStateWriteAndLoanCannotEscape() {
