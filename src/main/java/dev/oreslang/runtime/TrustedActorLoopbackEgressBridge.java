@@ -53,7 +53,7 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
         requireHost();
         this.runtime = Objects.requireNonNull(runtime);
         this.actor = Objects.requireNonNull(actor);
-        if (actor.kind() != ActorRuntime.ActorKind.UNTRUSTED || !actor.isAlive()) {
+        if (actor.kind() != ActorRuntime.ActorKind.UNTRUSTED || !runtime.isAlive(actor)) {
             throw new IllegalArgumentException("only a live untrusted actor may bind");
         }
         this.bindingKey = new ActorKey(this.runtime, this.actor.id());
