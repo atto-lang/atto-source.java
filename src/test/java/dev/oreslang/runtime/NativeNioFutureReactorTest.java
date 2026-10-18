@@ -169,6 +169,9 @@ final class NativeNioFutureReactorTest {
             }
             assertEquals(0, reactor.outstandingFutures());
             assertTrue(reactor.closeAsync().isDone());
+            assertThrows(ExecutionException.class,
+                    () -> reactor.closeAsync().get(2, TimeUnit.SECONDS),
+                    "abrupt selector failure must not publish successful physical retirement");
         } finally {
             reactor.close();
         }
