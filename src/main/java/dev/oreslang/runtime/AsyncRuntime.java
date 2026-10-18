@@ -156,6 +156,30 @@ public final class AsyncRuntime implements AutoCloseable {
         return completion;
     }
 
+    /**
+     * Task-handle form for future source `let Task<T> r = nb { ... }`.
+     * Shares the context-owned submission path with existing async callables.
+     * Source capture/lifetime checking and scheduler continuation lowering
+     * must be complete before the compiler enables Task blocks.
+     */
+    public <T> OresTask<T> submitTask(Task<T> task) {
+        return new OresTask<>(submit(task));
+    }
+
+    /**
+     * Supervised fire-and-continue form for future source `do nb { ... }`.
+     * There is deliberately no return value or discardable Future; errors
+     * (including cancellation) are observed by the owning supervisor.
+     */
+    public void submitDetached(Task<?> task, java.util.function.Consumer<? super Throwable> onFailure) {
+        Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(onFailure, "onFailure");
+        OresFuture<?> future = submit(task);
+        future.whenCompleteRuntime((value, failure) -> {
+            if (failure != null) onFailure.accept(failure);
+        });
+    }
+
     /** Cancellation settles a Future before its carrier leaves the guest turn. */
     void awaitTaskExit(OresFuture<?> task) {
         TaskExit exit = taskExits.get(task);
