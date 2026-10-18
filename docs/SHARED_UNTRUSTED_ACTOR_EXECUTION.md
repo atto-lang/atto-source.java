@@ -24,7 +24,7 @@ context limits, and the guest can pause other untrusted actors during GC.
 
 ```java
 try (var actors = new SharedUntrustedActorSupervisor(256L << 20, 16);
-     var a = actors.spawn(source, "worker-a", "UntrustedWorker");
+     var a = actors.spawn(source, "workers.ores", "UntrustedWorker");
      var b = actors.spawn(source, "worker-b", "UntrustedWorker")) {
     a.send("work");  // copied and UTF-8 bounded scalar transport only
     b.send("work");
@@ -69,6 +69,11 @@ from the trusted process code store. Both `UntrustedJitCodeUnit` and untrusted
 
 - Source cache identity is the exact pair (logical code-unit ID, SHA-256 of
   UTF-8 source). Equality is rechecked against the original bytes/text on hits.
+  The `sourceId` argument denotes the **module/code unit**, not an actor name:
+  the two `workers.ores` actors in the example reuse this code unit, while
+  actor IDs and their mutable states are allocated independently. Different
+  source IDs must not be merged solely on matching bytes because their import
+  and diagnostic contexts can differ.
   Random actor UUIDs are still minted for invocation/revocation fencing, but
   are **not** part of the Source name or code cache key.
 - All matching live code units in one pooled untrusted Engine receive the
