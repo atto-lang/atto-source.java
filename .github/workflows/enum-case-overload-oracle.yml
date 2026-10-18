@@ -4,7 +4,11 @@ on:
     paths:
       - 'docs/ENUM_CASE_OVERLOAD_SPECIALIZATION.md'
       - 'src/main/java/dev/oreslang/types/EnumCaseOverloadPolicy.java'
-      - 'src/test/java/dev/oreslang/EnumCaseOverloadPolicyTest.java'
+      - 'src/main/java/dev/oreslang/types/EnumCaseSourceBindings.java'
+      - 'src/main/java/dev/oreslang/ast/EnumV2Migration.java'
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/test/java/dev/oreslang/Enum*.java'
       - 'contracts/v2/**'
       - '.github/workflows/enum-case-overload-oracle.yml'
   workflow_dispatch:
@@ -26,6 +30,19 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           test -z "$(git status --porcelain)"
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile real parser, migration and offline enum binding regression suites
+        run: |
+          mvn -B -ntp -Dores.runtime.carriers=native \
+            -Dtest=EnumFrontendMainRebaseTest,EnumFrontendRootAdmissionTest,EnumCaseSourceBindingsTest,EnumCaseOverloadPolicyTest,EnumCaseAstBoundaryAuditTest,EnumV2MigrationTest \
+            test
       - name: Compile isolated Java policy under strict warnings
         run: |
           mkdir -p /tmp/ores-enum-policy
