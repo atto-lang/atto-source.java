@@ -473,6 +473,9 @@ final class ActorObservabilityTest {
             assertEquals(0, pressure.lifecycleObserverCarriers());
             assertEquals(4_096, pressure.terminalJournalCapacity());
             assertEquals(0, pressure.terminalJournalBacklog());
+            assertEquals(0, pressure.supervisorFailureSlotsReserved());
+            assertEquals(0, pressure.supervisorFailureBacklog());
+            assertEquals(8, pressure.supervisorFailureCapacity());
             assertEquals(1_024, pressure.watchdogNoticeCapacity());
             assertEquals(0, pressure.watchdogNoticeBacklog());
 
@@ -753,4 +756,390 @@ final class ActorObservabilityTest {
                     "per-ref post-mortem survives global journal exhaustion");
         }
     }
+
+    @Test
+    void supervisorFailureControlSurvivesDroppedDiagnosticAndCarriesSpawnCause()
+            throws Exception {
+        CountDownLatch childCreated = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<ActorRuntime.ActorRef<String>> child =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        CountDownLatch diagnosticLockHeld = new CountDownLatch(1);
+        CountDownLatch releaseDiagnosticLock = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8, 16))) {
+            var parent = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        if (!"spawn".equals(message)) return;
+                        var spawned = context.runtime().<String>spawnPrivate(
+                                () -> (childMessage, childContext) -> {
+                                    throw new IllegalStateException("child boom");
+                                });
+                        child.set(spawned);
+                        childCreated.countDown();
+                        spawned.send("boom");
+                    });
+
+            Field lockField =
+                    ActorRuntime.class.getDeclaredField("supervisionEventQueueLock");
+            lockField.setAccessible(true);
+            var diagnosticLock =
+                    (java.util.concurrent.locks.ReentrantLock) lockField.get(runtime);
+            Thread holder = Thread.ofPlatform()
+                    .name("terminal-journal-contention")
+                    .start(() -> {
+                        diagnosticLock.lock();
+                        try {
+                            diagnosticLockHeld.countDown();
+                            releaseDiagnosticLock.await(8, TimeUnit.SECONDS);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        } finally {
+                            diagnosticLock.unlock();
+                        }
+                    });
+            assertTrue(diagnosticLockHeld.await(3, TimeUnit.SECONDS));
+
+            parent.send("spawn");
+            assertTrue(childCreated.await(3, TimeUnit.SECONDS));
+            parent.drain().get(3, TimeUnit.SECONDS);
+            assertTrue(child.get().awaitTermination(5, TimeUnit.SECONDS));
+
+            releaseDiagnosticLock.countDown();
+            holder.join(3_000L);
+            assertFalse(holder.isAlive());
+
+            assertTrue(runtime.supervisionEventsDropped() >= 1L,
+                    "best-effort terminal diagnostics must observe the forced contention drop");
+            assertTrue(runtime.pollTerminationEvent().isEmpty(),
+                    "dropped diagnostic telemetry must not be reconstructed as a journal record");
+
+            var before = runtime.supervisorControlStats();
+            assertEquals(1, before.reservedFailureSlots());
+            assertEquals(1, before.queuedFailures());
+
+            ActorRuntime.SupervisorFailureSignal signal =
+                    runtime.pollSupervisorFailure(parent).orElseThrow();
+            assertEquals(parent.id(), signal.supervisorId());
+            assertEquals(0L, signal.supervisorMessageSequence(),
+                    "child spawn must retain the causal parent mailbox sequence");
+            assertTrue(signal.supervisorMessageSender().isEmpty(),
+                    "host-originated parent mail has no actor sender");
+            assertEquals(child.get().id(), signal.childTerminal().actorId());
+            assertEquals(ActorRuntime.ActorTerminationKind.FAILED,
+                    signal.childTerminal().terminationKind());
+            assertEquals(IllegalStateException.class.getName(),
+                    signal.childTerminal().failureType());
+
+            var after = runtime.supervisorControlStats();
+            assertEquals(0, after.reservedFailureSlots());
+            assertEquals(0, after.queuedFailures());
+
+            parent.stop();
+            assertTrue(parent.awaitTermination(5, TimeUnit.SECONDS));
+        } finally {
+            releaseDiagnosticLock.countDown();
+        }
+    }
+
+    @Test
+    void normalChildTerminationReleasesReservedSupervisorFailureCapacity()
+            throws Exception {
+        CountDownLatch childCreated = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<ActorRuntime.ActorRef<String>> child =
+                new java.util.concurrent.atomic.AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8, 8))) {
+            var parent = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        if (!"spawn".equals(message)) return;
+                        var spawned = context.runtime().<String>spawnPrivate(
+                                () -> (childMessage, childContext) -> { });
+                        child.set(spawned);
+                        childCreated.countDown();
+                        spawned.stop();
+                    });
+
+            parent.send("spawn");
+            assertTrue(childCreated.await(3, TimeUnit.SECONDS));
+            parent.drain().get(3, TimeUnit.SECONDS);
+            assertTrue(child.get().awaitTermination(5, TimeUnit.SECONDS));
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (runtime.supervisorControlStats().reservedFailureSlots() != 0
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            var stats = runtime.supervisorControlStats();
+            assertEquals(0, stats.reservedFailureSlots(),
+                    "normal child completion must release its pre-reserved failure slot");
+            assertEquals(0, stats.queuedFailures());
+            assertTrue(runtime.pollSupervisorFailure(parent).isEmpty());
+
+            parent.stop();
+            assertTrue(parent.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    @Timeout(30)
+    void undrainedChildFailuresBackpressureSpawnInsteadOfDroppingControl()
+            throws Exception {
+        final int capacity = 4;
+        var children =
+                new java.util.concurrent.ConcurrentLinkedQueue<ActorRuntime.ActorRef<String>>();
+        var spawnFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8, capacity))) {
+            var parent = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        if (!"spawn".equals(message)) return;
+                        try {
+                            var spawned = context.runtime().<String>spawnPrivate(
+                                    () -> (childMessage, childContext) -> {
+                                        throw new IllegalStateException("synthetic child failure");
+                                    });
+                            children.add(spawned);
+                            spawned.send("boom");
+                        } catch (Throwable failure) {
+                            spawnFailure.compareAndSet(null, failure);
+                        }
+                    });
+
+            for (int i = 0; i < capacity; i++) {
+                parent.send("spawn");
+                parent.drain().get(5, TimeUnit.SECONDS);
+                ActorRuntime.ActorRef<String> spawned = children.poll();
+                assertNotNull(spawned, "expected admitted child " + i);
+                assertTrue(spawned.awaitTermination(5, TimeUnit.SECONDS));
+
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (runtime.reservedActorSlots() != 1
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(1);
+                }
+                assertEquals(1, runtime.reservedActorSlots(),
+                        "terminated child actor capacity must retire independently of supervisor CONTROL");
+            }
+
+            var full = runtime.supervisorControlStats();
+            assertEquals(capacity, full.reservedFailureSlots());
+            assertEquals(capacity, full.queuedFailures());
+
+            parent.send("spawn");
+            parent.drain().get(5, TimeUnit.SECONDS);
+            Throwable rejected = spawnFailure.get();
+            assertNotNull(rejected,
+                    "a full authoritative supervisor ledger must fail child spawn closed");
+            assertInstanceOf(IllegalStateException.class, rejected);
+            assertTrue(rejected.getMessage().contains("supervisor CONTROL failure ledger exhausted"));
+            assertNull(children.poll(),
+                    "failed reservation must roll back the child incarnation");
+
+            ActorRuntime.SupervisorFailureSignal released =
+                    runtime.pollSupervisorFailure(parent).orElseThrow();
+            assertEquals(ActorRuntime.ActorTerminationKind.FAILED,
+                    released.childTerminal().terminationKind());
+            assertEquals(capacity - 1,
+                    runtime.supervisorControlStats().queuedFailures());
+
+            spawnFailure.set(null);
+            parent.send("spawn");
+            parent.drain().get(5, TimeUnit.SECONDS);
+            ActorRuntime.ActorRef<String> replacement = children.poll();
+            assertNotNull(replacement,
+                    "draining one authoritative failure must restore one child-spawn slot");
+            assertTrue(replacement.awaitTermination(5, TimeUnit.SECONDS));
+            assertNull(spawnFailure.get());
+            assertEquals(capacity,
+                    runtime.supervisorControlStats().queuedFailures());
+
+            while (runtime.pollSupervisorFailure(parent).isPresent()) {
+                // Drain every retained failure before retiring the supervisor.
+            }
+            assertEquals(0, runtime.supervisorControlStats().reservedFailureSlots());
+            assertEquals(0, runtime.supervisorControlStats().queuedFailures());
+
+            parent.stop();
+            assertTrue(parent.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    @Timeout(30)
+    void concurrentChildFailureStormIsLosslessToSupervisorControl()
+            throws Exception {
+        final int childCount = 96;
+        var children =
+                new java.util.concurrent.ConcurrentLinkedQueue<ActorRuntime.ActorRef<Integer>>();
+        CountDownLatch spawnedAll = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(4, 4, 8, childCount + 16))) {
+            var parent = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        if (!"spawn-all".equals(message)) return;
+                        try {
+                            for (int i = 0; i < childCount; i++) {
+                                var child = context.runtime().<Integer>spawnPrivate(
+                                        () -> (value, childContext) -> {
+                                            throw new IllegalArgumentException(
+                                                    "storm-" + value);
+                                        });
+                                children.add(child);
+                                child.send(i);
+                            }
+                        } finally {
+                            spawnedAll.countDown();
+                        }
+                    });
+
+            parent.send("spawn-all");
+            assertTrue(spawnedAll.await(8, TimeUnit.SECONDS));
+            parent.drain().get(8, TimeUnit.SECONDS);
+
+            var allChildren = new java.util.ArrayList<ActorRuntime.ActorRef<Integer>>(childCount);
+            for (int i = 0; i < childCount; i++) {
+                ActorRuntime.ActorRef<Integer> child = children.poll();
+                assertNotNull(child, "missing spawned child " + i);
+                allChildren.add(child);
+            }
+            for (var child : allChildren) {
+                assertTrue(child.awaitTermination(8, TimeUnit.SECONDS),
+                        "child failure did not finalize");
+            }
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+            while (runtime.supervisorControlStats().queuedFailures() != childCount
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(childCount,
+                    runtime.supervisorControlStats().queuedFailures(),
+                    "every failed child must retain one authoritative CONTROL signal");
+
+            var seen = new java.util.HashSet<ActorRuntime.ActorId>();
+            for (int i = 0; i < childCount; i++) {
+                ActorRuntime.SupervisorFailureSignal signal =
+                        runtime.pollSupervisorFailure(parent).orElseThrow();
+                assertEquals(parent.id(), signal.supervisorId());
+                assertEquals(0L, signal.supervisorMessageSequence());
+                assertEquals(ActorRuntime.ActorTerminationKind.FAILED,
+                        signal.childTerminal().terminationKind());
+                assertTrue(seen.add(signal.childTerminal().actorId()),
+                        "one child incarnation must produce exactly one supervisor signal");
+            }
+            assertEquals(childCount, seen.size());
+            assertTrue(runtime.pollSupervisorFailure(parent).isEmpty());
+            assertEquals(0, runtime.supervisorControlStats().reservedFailureSlots());
+            assertEquals(0, runtime.supervisorControlStats().queuedFailures());
+
+            parent.stop();
+            assertTrue(parent.awaitTermination(8, TimeUnit.SECONDS));
+        }
+    }
+
+
+    @Test
+    @Timeout(30)
+    void supervisorControlPressureSnapshotsNeverTearDuringFailureAndDrain()
+            throws Exception {
+        final int childCount = 64;
+        var children =
+                new java.util.concurrent.ConcurrentLinkedQueue<ActorRuntime.ActorRef<Integer>>();
+        CountDownLatch spawnedAll = new CountDownLatch(1);
+        var sampling = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var samplerFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(4, 4, 8, childCount + 16))) {
+            var parent = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        if (!"spawn-all".equals(message)) return;
+                        try {
+                            for (int i = 0; i < childCount; i++) {
+                                var child = context.runtime().<Integer>spawnPrivate(
+                                        () -> (value, childContext) -> {
+                                            throw new IllegalStateException(
+                                                    "snapshot-race-" + value);
+                                        });
+                                children.add(child);
+                                child.send(i);
+                            }
+                        } finally {
+                            spawnedAll.countDown();
+                        }
+                    });
+
+            Thread sampler = Thread.ofPlatform()
+                    .daemon(true)
+                    .name("supervisor-control-pressure-sampler")
+                    .start(() -> {
+                        try {
+                            while (sampling.get()) {
+                                var control = runtime.supervisorControlStats();
+                                assertTrue(control.queuedFailures()
+                                        <= control.reservedFailureSlots());
+                                assertTrue(control.reservedFailureSlots()
+                                        <= control.capacity());
+
+                                var scheduler = runtime.schedulerSnapshot();
+                                assertTrue(scheduler.supervisorFailureBacklog()
+                                        <= scheduler.supervisorFailureSlotsReserved());
+                                assertTrue(scheduler.supervisorFailureSlotsReserved()
+                                        <= scheduler.supervisorFailureCapacity());
+                            }
+                        } catch (Throwable failure) {
+                            samplerFailure.compareAndSet(null, failure);
+                        }
+                    });
+
+            parent.send("spawn-all");
+            assertTrue(spawnedAll.await(8, TimeUnit.SECONDS));
+            parent.drain().get(8, TimeUnit.SECONDS);
+
+            var allChildren = new java.util.ArrayList<ActorRuntime.ActorRef<Integer>>(childCount);
+            for (int i = 0; i < childCount; i++) {
+                ActorRuntime.ActorRef<Integer> child = children.poll();
+                assertNotNull(child);
+                allChildren.add(child);
+            }
+            for (var child : allChildren) {
+                assertTrue(child.awaitTermination(8, TimeUnit.SECONDS));
+            }
+
+            var seen = new java.util.HashSet<ActorRuntime.ActorId>();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+            while (seen.size() < childCount && System.nanoTime() < deadline) {
+                runtime.pollSupervisorFailure(parent).ifPresent(signal ->
+                        assertTrue(seen.add(signal.childTerminal().actorId()),
+                                "duplicate supervisor failure during concurrent drain"));
+                Thread.onSpinWait();
+            }
+            assertEquals(childCount, seen.size());
+
+            sampling.set(false);
+            sampler.join(5_000L);
+            assertFalse(sampler.isAlive());
+            assertNull(samplerFailure.get(),
+                    () -> "supervisor pressure snapshot tore: " + samplerFailure.get());
+
+            var finalControl = runtime.supervisorControlStats();
+            assertEquals(0, finalControl.reservedFailureSlots());
+            assertEquals(0, finalControl.queuedFailures());
+
+            parent.stop();
+            assertTrue(parent.awaitTermination(8, TimeUnit.SECONDS));
+        } finally {
+            sampling.set(false);
+        }
+    }
+
 }

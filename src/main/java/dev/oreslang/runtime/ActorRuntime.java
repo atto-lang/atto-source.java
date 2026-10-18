@@ -312,6 +312,83 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Authoritative child-failure CONTROL signal. Unlike ActorTerminationEvent,
+     * this is not best-effort telemetry: its slot is reserved when the child is
+     * spawned and retained until trusted supervisor code consumes it or the
+     * supervising parent itself retires.
+     *
+     * <p>The parent mailbox cause is captured at spawn time. Sequence -1 means
+     * startup/runtime-continuation context rather than an admitted user message.
+     */
+    public record SupervisorFailureSignal(
+            ActorId supervisorId,
+            Optional<ActorId> supervisorMessageSender,
+            long supervisorMessageSequence,
+            ActorTerminalState childTerminal) {
+        public SupervisorFailureSignal {
+            Objects.requireNonNull(supervisorId, "supervisorId");
+            supervisorMessageSender = supervisorMessageSender == null
+                    ? Optional.empty() : supervisorMessageSender;
+            Objects.requireNonNull(supervisorMessageSender, "supervisorMessageSender");
+            if (supervisorMessageSequence < -1L) {
+                throw new IllegalArgumentException(
+                        "supervisor message sequence must be >= -1");
+            }
+            Objects.requireNonNull(childTerminal, "childTerminal");
+            if (childTerminal.terminationKind() != ActorTerminationKind.FAILED) {
+                throw new IllegalArgumentException(
+                        "supervisor failure signal requires FAILED child terminal state");
+            }
+            if (childTerminal.parentId().isEmpty()
+                    || !childTerminal.parentId().get().equals(supervisorId)) {
+                throw new IllegalArgumentException(
+                        "supervisor failure signal parent lineage mismatch");
+            }
+        }
+    }
+
+    /** Bounded authoritative supervisor CONTROL capacity. */
+    public record SupervisorControlStats(
+            int reservedFailureSlots,
+            int queuedFailures,
+            int capacity) {
+        public SupervisorControlStats {
+            if (reservedFailureSlots < 0 || queuedFailures < 0 || capacity < 0
+                    || queuedFailures > reservedFailureSlots
+                    || reservedFailureSlots > capacity) {
+                throw new IllegalArgumentException(
+                        "invalid supervisor CONTROL statistics");
+            }
+        }
+    }
+
+    /**
+     * One preallocated child-failure publication slot. The node itself is
+     * created during spawn, so child finalization never needs queue-node
+     * allocation merely to make a failure visible to its supervisor.
+     *
+     * <p>All mutable fields are owned by the parent ActorCell lifecycle lock.
+     */
+    private static final class SupervisorFailureSlot {
+        private final Optional<ActorId> causeSender;
+        private final long causeSequence;
+        private ActorTerminalState terminal;
+        private SupervisorFailureSlot next;
+        private boolean reserved;
+        private boolean queued;
+
+        private SupervisorFailureSlot(
+                Optional<ActorId> causeSender,
+                long causeSequence) {
+            this.causeSender = causeSender == null ? Optional.empty() : causeSender;
+            if (causeSequence < -1L) {
+                throw new IllegalArgumentException("cause sequence must be >= -1");
+            }
+            this.causeSequence = causeSequence;
+        }
+    }
+
     /** Internal payload published into the bounded ordered diagnostic journal. */
     private record ActorTerminationPayload(
             ActorId actorId,
@@ -423,6 +500,9 @@ public final class ActorRuntime implements AutoCloseable {
             int lifecycleObserverBacklog,
             int terminalJournalBacklog,
             int terminalJournalCapacity,
+            int supervisorFailureSlotsReserved,
+            int supervisorFailureBacklog,
+            int supervisorFailureCapacity,
             int watchdogNoticeBacklog,
             int watchdogNoticeCapacity,
             int liveActors,
@@ -435,6 +515,11 @@ public final class ActorRuntime implements AutoCloseable {
             if (lifecycleObserverCarriers < 0 || lifecycleObserverBacklog < 0
                     || terminalJournalBacklog < 0 || terminalJournalCapacity < 0
                     || terminalJournalBacklog > terminalJournalCapacity
+                    || supervisorFailureSlotsReserved < 0
+                    || supervisorFailureBacklog < 0
+                    || supervisorFailureCapacity < 0
+                    || supervisorFailureBacklog > supervisorFailureSlotsReserved
+                    || supervisorFailureSlotsReserved > supervisorFailureCapacity
                     || watchdogNoticeBacklog < 0 || watchdogNoticeCapacity < 0
                     || watchdogNoticeBacklog > watchdogNoticeCapacity
                     || liveActors < 0 || reservedActorSlots < 0) {
@@ -734,6 +819,19 @@ public final class ActorRuntime implements AutoCloseable {
      * retirement so blocked host callbacks cannot enable replacement churn.
      */
     private final AtomicInteger actorCapacityInUse = new AtomicInteger();
+    /**
+     * Every structured child reserves one potential failure signal slot before
+     * publication. Normal/cancelled completion releases it immediately; FAILED
+     * completion retains it until supervisor consumption. Thus failure delivery
+     * is bounded but never silently dropped because a queue happened to be full.
+     */
+    /**
+     * Packed linearizable supervisor CONTROL accounting:
+     * high 32 bits = reserved child-failure slots, low 32 bits = queued FAILED
+     * signals. Keeping both counters in one CAS word prevents observers from
+     * ever seeing a torn impossible pair during concurrent reserve/drain.
+     */
+    private final AtomicLong supervisorFailureCounts = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
@@ -1164,6 +1262,41 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Runtime-wide authoritative supervisor-failure CONTROL capacity.
+     * Reserved slots include live structured children plus failed children
+     * whose signals have not yet been consumed.
+     */
+    public SupervisorControlStats supervisorControlStats() {
+        requireSupervisorContext("inspect supervisor CONTROL statistics");
+        long counts = supervisorFailureCounts.get();
+        return new SupervisorControlStats(
+                supervisorReservedCount(counts),
+                supervisorQueuedCount(counts),
+                dispatcherConfig.maxActors());
+    }
+
+    /**
+     * Consume one non-droppable failed-child signal for a live supervisor.
+     * The best-effort global terminal journal is intentionally unrelated to
+     * this path and may be empty even when this ledger contains a failure.
+     */
+    public Optional<SupervisorFailureSignal> pollSupervisorFailure(
+            ActorRef<?> supervisorRef) {
+        requireSupervisorContext("drain supervisor child-failure CONTROL");
+        Objects.requireNonNull(supervisorRef, "supervisorRef");
+        if (!supervisorRef.ownedBy(this)) {
+            throw new IllegalArgumentException(
+                    "ActorRef belongs to another runtime");
+        }
+        ActorCell<?> supervisor = actors.get(supervisorRef.id());
+        if (supervisor == null) return Optional.empty();
+        synchronized (supervisor.lifecycleLock) {
+            return Optional.ofNullable(
+                    supervisor.pollSupervisorFailureLocked());
+        }
+    }
+
     /** Immutable point-in-time actor state for debugging and control planes. */
     public Optional<ActorSnapshot> snapshot(ActorRef<?> ref) {
         requireSupervisorContext("inspect actor state");
@@ -1363,6 +1496,7 @@ public final class ActorRuntime implements AutoCloseable {
     /** Supervisor-visible scheduler pressure for capacity planning and incident debugging. */
     public ActorSchedulerSnapshot schedulerSnapshot() {
         requireSupervisorContext("inspect actor scheduler pressure");
+        long supervisorCounts = supervisorFailureCounts.get();
         return new ActorSchedulerSnapshot(
                 carrierBackend(),
                 dispatcherPressure(privateDispatcher, dispatcherConfig.maxActors()),
@@ -1372,6 +1506,9 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleObserverDispatcher.getQueue().size(),
                 supervisionEventBacklog(),
                 SUPERVISION_EVENT_CAPACITY,
+                supervisorReservedCount(supervisorCounts),
+                supervisorQueuedCount(supervisorCounts),
+                dispatcherConfig.maxActors(),
                 watchdogNoticeBacklog(),
                 WATCHDOG_NOTICE_CAPACITY,
                 actorCount.get(),
@@ -5025,6 +5162,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     "cannot spawn a child from a stopping or force-fenced actor "
                                             + parent.ref.id());
                         }
+                        parent.reserveChildSupervisorFailureSlotLocked(cell);
                         // A nested spawn inherits its parent's structured
                         // lifecycle group. The spawn lineage is not a new
                         // supervisor or a new group. Event-bus membership
@@ -5071,7 +5209,13 @@ public final class ActorRuntime implements AutoCloseable {
                 // Roll back every registry when spawn admission fails. In
                 // particular, never strand an inherited group ownership ref.
                 if (cell != null) actors.remove(cell.ref.id(), cell);
-                if (linkedToParent && cell != null) parent.children.remove(cell);
+                if (parent != null && cell != null) {
+                    synchronized (parent.lifecycleLock) {
+                        if (linkedToParent) parent.children.remove(cell);
+                        parent.releaseChildSupervisorFailureSlotLocked(
+                                cell.supervisorFailureSlot);
+                    }
+                }
                 if (cell != null) {
                     ActorGroupId inheritedId = cell.managedByGroup.get();
                     ActorGroup inherited = inheritedId == null
@@ -5350,6 +5494,76 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
         return completion;
+    }
+
+    private static long packSupervisorFailureCounts(int reserved, int queued) {
+        return ((long) reserved << 32) | (queued & 0xffff_ffffL);
+    }
+
+    private static int supervisorReservedCount(long counts) {
+        return (int) (counts >>> 32);
+    }
+
+    private static int supervisorQueuedCount(long counts) {
+        return (int) counts;
+    }
+
+    private void reserveSupervisorFailureSlot() {
+        while (true) {
+            long current = supervisorFailureCounts.get();
+            int reserved = supervisorReservedCount(current);
+            int queued = supervisorQueuedCount(current);
+            if (reserved >= dispatcherConfig.maxActors()) {
+                throw new IllegalStateException(
+                        "supervisor CONTROL failure ledger exhausted: maximum "
+                                + dispatcherConfig.maxActors()
+                                + "; drain failed-child supervision signals before spawning more children");
+            }
+            long updated = packSupervisorFailureCounts(reserved + 1, queued);
+            if (supervisorFailureCounts.compareAndSet(current, updated)) return;
+        }
+    }
+
+    private void releaseSupervisorFailureSlot() {
+        while (true) {
+            long current = supervisorFailureCounts.get();
+            int reserved = supervisorReservedCount(current);
+            int queued = supervisorQueuedCount(current);
+            if (reserved <= queued || reserved <= 0) {
+                lifecyclePublicationFailures.incrementAndGet();
+                return;
+            }
+            long updated = packSupervisorFailureCounts(reserved - 1, queued);
+            if (supervisorFailureCounts.compareAndSet(current, updated)) return;
+        }
+    }
+
+    private void incrementSupervisorFailureBacklog() {
+        while (true) {
+            long current = supervisorFailureCounts.get();
+            int reserved = supervisorReservedCount(current);
+            int queued = supervisorQueuedCount(current);
+            if (queued >= reserved || queued >= dispatcherConfig.maxActors()) {
+                lifecyclePublicationFailures.incrementAndGet();
+                return;
+            }
+            long updated = packSupervisorFailureCounts(reserved, queued + 1);
+            if (supervisorFailureCounts.compareAndSet(current, updated)) return;
+        }
+    }
+
+    private void decrementSupervisorFailureBacklog() {
+        while (true) {
+            long current = supervisorFailureCounts.get();
+            int reserved = supervisorReservedCount(current);
+            int queued = supervisorQueuedCount(current);
+            if (queued <= 0 || reserved < queued) {
+                lifecyclePublicationFailures.incrementAndGet();
+                return;
+            }
+            long updated = packSupervisorFailureCounts(reserved, queued - 1);
+            if (supervisorFailureCounts.compareAndSet(current, updated)) return;
+        }
     }
 
     private void reserveActorSlot() {
@@ -7460,6 +7674,7 @@ public final class ActorRuntime implements AutoCloseable {
                 || !lifecycleObserversTerminated
                 || actorCount.get() != 0
                 || actorCapacityInUse.get() != 0
+                || supervisorFailureCounts.get() != 0L
                 || interrupted) {
             if (interrupted) {
                 for (ActorCell<?> cell : snapshot) {
@@ -7477,11 +7692,16 @@ public final class ActorRuntime implements AutoCloseable {
                             + ", lifecycleObserversTerminated="
                             + lifecycleObserversTerminated
                             + ", liveActors=" + actorCount.get()
-                            + ", retainedActorSlots=" + actorCapacityInUse.get());
+                            + ", retainedActorSlots=" + actorCapacityInUse.get()
+                            + ", supervisorFailureSlots="
+                            + supervisorReservedCount(supervisorFailureCounts.get())
+                            + ", supervisorFailureBacklog="
+                            + supervisorQueuedCount(supervisorFailureCounts.get()));
         }
         actors.clear();
         actorCount.set(0);
         actorCapacityInUse.set(0);
+        supervisorFailureCounts.set(0L);
     }
 
     private ExecutorService dispatcherFor(ActorKind kind) {
@@ -7634,6 +7854,12 @@ public final class ActorRuntime implements AutoCloseable {
         /** Mutable source actor state, created on this actor's dispatcher. */
         private ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
+        /** Preallocated publication node owned by parent.lifecycleLock. */
+        private final SupervisorFailureSlot supervisorFailureSlot;
+        /** Pending failed-child CONTROL signals owned by this lifecycleLock. */
+        private SupervisorFailureSlot supervisorFailureHead;
+        private SupervisorFailureSlot supervisorFailureTail;
+        private int pendingSupervisorFailures;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /**
@@ -7741,6 +7967,14 @@ public final class ActorRuntime implements AutoCloseable {
             this.codeExecutor = codeExecutor;
             this.codeActorType = codeActorType;
             this.parent = parent;
+            ActorInboxMail<?> parentMail = parent == null ? null : parent.activeMail;
+            this.supervisorFailureSlot = parent == null
+                    ? null
+                    : new SupervisorFailureSlot(
+                            parentMail == null
+                                    ? Optional.empty()
+                                    : parentMail.sender(),
+                            parentMail == null ? -1L : parentMail.sequence());
             int mailboxCapacity = policy.maxMailboxMessages() >
                             Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
                     ? Integer.MAX_VALUE
@@ -8081,6 +8315,10 @@ public final class ActorRuntime implements AutoCloseable {
             final long processedUserMessages = lastProcessedUserMessageSequence < 0
                     ? 0L
                     : lastProcessedUserMessageSequence + 1L;
+            // A stopped supervisor cannot execute future source supervision
+            // handlers. Retire any already-queued child failures now; its own
+            // parent will receive this actor's terminal state separately.
+            releaseAllSupervisorFailuresLocked();
             final Throwable terminal = ref.terminationCause.get();
             OresScheduler scheduler = sourceScheduler;
 
@@ -8211,7 +8449,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // arbitrary Future/output observer belonging to this child.
                 if (parent != null) {
                     try {
-                        parent.childFinalized(this);
+                        parent.childFinalized(this, retainedTerminal);
                     } catch (Throwable failure) {
                         firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
                     }
@@ -8292,10 +8530,155 @@ public final class ActorRuntime implements AutoCloseable {
             rethrowHostFatal(firstFatal);
         }
 
-        private void childFinalized(ActorCell<?> child) {
+        private void reserveChildSupervisorFailureSlotLocked(
+                ActorCell<?> child) {
+            if (!Thread.holdsLock(lifecycleLock)) {
+                throw new IllegalStateException(
+                        "supervisor CONTROL reservation requires parent lifecycle ownership");
+            }
+            if (child == null || child.parent != this
+                    || child.supervisorFailureSlot == null) {
+                throw new IllegalArgumentException(
+                        "invalid structured child supervisor reservation");
+            }
+            SupervisorFailureSlot slot = child.supervisorFailureSlot;
+            if (slot.reserved || slot.queued) {
+                throw new IllegalStateException(
+                        "child supervisor CONTROL slot already reserved");
+            }
+            reserveSupervisorFailureSlot();
+            slot.reserved = true;
+        }
+
+        private void releaseChildSupervisorFailureSlotLocked(
+                SupervisorFailureSlot slot) {
+            if (slot == null || !slot.reserved) return;
+            if (slot.queued) {
+                lifecyclePublicationFailures.incrementAndGet();
+                return;
+            }
+            slot.reserved = false;
+            slot.terminal = null;
+            slot.next = null;
+            releaseSupervisorFailureSlot();
+        }
+
+        private void enqueueSupervisorFailureLocked(
+                SupervisorFailureSlot slot,
+                ActorTerminalState terminal) {
+            if (!Thread.holdsLock(lifecycleLock)) {
+                throw new IllegalStateException(
+                        "supervisor failure publication requires lifecycle ownership");
+            }
+            if (slot == null || !slot.reserved || slot.queued
+                    || terminal == null
+                    || terminal.terminationKind() != ActorTerminationKind.FAILED) {
+                lifecyclePublicationFailures.incrementAndGet();
+                if (slot != null && slot.reserved && !slot.queued) {
+                    releaseChildSupervisorFailureSlotLocked(slot);
+                }
+                return;
+            }
+            slot.terminal = terminal;
+            slot.next = null;
+            slot.queued = true;
+            if (supervisorFailureTail == null) {
+                supervisorFailureHead = slot;
+            } else {
+                supervisorFailureTail.next = slot;
+            }
+            supervisorFailureTail = slot;
+            pendingSupervisorFailures++;
+            incrementSupervisorFailureBacklog();
+        }
+
+        private SupervisorFailureSignal pollSupervisorFailureLocked() {
+            if (!Thread.holdsLock(lifecycleLock)) {
+                throw new IllegalStateException(
+                        "supervisor failure drain requires lifecycle ownership");
+            }
+            SupervisorFailureSlot slot = supervisorFailureHead;
+            if (slot == null) return null;
+            supervisorFailureHead = slot.next;
+            if (supervisorFailureHead == null) supervisorFailureTail = null;
+            slot.next = null;
+            if (pendingSupervisorFailures <= 0) {
+                lifecyclePublicationFailures.incrementAndGet();
+                pendingSupervisorFailures = 0;
+            } else {
+                pendingSupervisorFailures--;
+            }
+            decrementSupervisorFailureBacklog();
+
+            ActorTerminalState terminal = slot.terminal;
+            slot.terminal = null;
+            slot.queued = false;
+            if (slot.reserved) {
+                slot.reserved = false;
+                releaseSupervisorFailureSlot();
+            } else {
+                lifecyclePublicationFailures.incrementAndGet();
+            }
+            if (terminal == null
+                    || terminal.terminationKind() != ActorTerminationKind.FAILED) {
+                lifecyclePublicationFailures.incrementAndGet();
+                return null;
+            }
+            return new SupervisorFailureSignal(
+                    ref.id(),
+                    slot.causeSender,
+                    slot.causeSequence,
+                    terminal);
+        }
+
+        private void releaseAllSupervisorFailuresLocked() {
+            if (!Thread.holdsLock(lifecycleLock)) {
+                throw new IllegalStateException(
+                        "supervisor failure cleanup requires lifecycle ownership");
+            }
+            SupervisorFailureSlot slot = supervisorFailureHead;
+            supervisorFailureHead = null;
+            supervisorFailureTail = null;
+            while (slot != null) {
+                SupervisorFailureSlot next = slot.next;
+                slot.next = null;
+                if (slot.queued) {
+                    slot.queued = false;
+                    decrementSupervisorFailureBacklog();
+                } else {
+                    lifecyclePublicationFailures.incrementAndGet();
+                }
+                slot.terminal = null;
+                if (slot.reserved) {
+                    slot.reserved = false;
+                    releaseSupervisorFailureSlot();
+                } else {
+                    lifecyclePublicationFailures.incrementAndGet();
+                }
+                slot = next;
+            }
+            pendingSupervisorFailures = 0;
+        }
+
+        private void childFinalized(
+                ActorCell<?> child,
+                ActorTerminalState terminal) {
             FinalizationPlan finalization = null;
             synchronized (lifecycleLock) {
                 children.remove(child);
+                SupervisorFailureSlot slot = child.supervisorFailureSlot;
+                if (slot != null && slot.reserved) {
+                    if (!stopped.get()
+                            && terminal != null
+                            && terminal.terminationKind()
+                                    == ActorTerminationKind.FAILED) {
+                        enqueueSupervisorFailureLocked(slot, terminal);
+                    } else {
+                        releaseChildSupervisorFailureSlotLocked(slot);
+                    }
+                } else if (slot != null) {
+                    lifecyclePublicationFailures.incrementAndGet();
+                }
                 if (stopped.get() && activeTurns == 0)
                     finalization = prepareFinalizationLocked();
                 lifecycleLock.notifyAll();

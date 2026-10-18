@@ -16,6 +16,14 @@ physical threads, and hidden restart/replay behavior.
 - Runtime continuations and lifecycle CONTROL use independently bounded reserved
   capacity. User code cannot relabel an ordinary message as CONTROL/priority.
 - Supervisor terminal signals must never depend on room in an ordinary user mailbox.
+- A structured child reserves bounded supervisor-failure CONTROL capacity before
+  its identity is published to the parent. Reservation failure aborts/rolls back
+  the child spawn; a child is never published without capacity for its possible
+  FAILED terminal signal.
+- NORMAL/CANCELLED child termination returns that reservation immediately.
+  FAILED termination converts the already-reserved slot into an authoritative
+  parent-owned signal which remains retained until trusted supervisor handling
+  consumes it or the supervising parent itself retires.
 - CONTROL never executes reentrantly over an already-running actor turn.
 - A suspended source receive owns its logical execution context; unrelated user
   mail cannot race that invocation.
@@ -118,8 +126,15 @@ A runtime may also expose a bounded global terminal journal. That journal:
   serialized consumer-side operation, while producers remain nonblocking.
 
 Supervisor restart/escalation policy must not depend on a droppable journal.
-The future source on_panic/on_raise/on_throw path requires non-droppable typed
-CONTROL admission tied to supervision authority.
+Correctness-critical child failure uses a separate pre-reserved supervisor
+CONTROL ledger. A full ledger therefore backpressures the *next child spawn*
+before publication rather than dropping an already-admitted child's failure.
+The retained signal includes the failed child's immutable terminal record plus
+the spawning parent's mailbox sender/sequence when the spawn was causally
+inside an admitted user message (sequence -1 denotes startup/runtime-control
+context). The future source on_panic/on_raise/on_throw dispatch path consumes
+this authoritative substrate and must execute handlers on the parent actor's
+single-flight CONTROL lane.
 
 ## 7. Debuggability without perturbation
 
@@ -135,7 +150,13 @@ Runtime counters distinguish at minimum:
 - normal, cancelled and failed terminations;
 - watchdog overruns and dropped watchdog notices;
 - dropped terminal diagnostics;
+- reserved and queued authoritative supervisor-failure CONTROL;
 - lifecycle publication/cleanup anomalies.
+
+Multi-field supervisor CONTROL pressure is one coherent observation: concurrent
+reserve/publish/drain activity must never expose an impossible transient such as
+queued failures exceeding reserved failure slots. Backends must publish those
+related counters from one linearizable state transition or equivalent lock.
 
 Diagnostic producers never wait for diagnostic consumers or diagnostic
 producers. Bounded terminal journals and watchdog-notice queues must couple
@@ -206,13 +227,22 @@ reserve diagnostic capacity and then die before publishing the record.
 19. blocked terminal observers retain only bounded lifecycle capacity and cannot
     create unbounded host workers or admit replacement actors past maxActors;
 20. runtime shutdown cannot retire the lifecycle-observer domain while a
-    removed/in-flight actor finalization can still publish its observer bundle.
+    removed/in-flight actor finalization can still publish its observer bundle;
+21. diagnostic-journal contention/full capacity cannot suppress a structured
+    child's authoritative FAILED signal;
+22. normal/cancelled child completion returns its pre-reserved supervisor slot;
+23. an undrained failed-child backlog fails future child spawn closed before
+    publication instead of dropping failure CONTROL;
+24. concurrent failed children produce exactly one retained supervisor signal
+    per incarnation, with no duplicates or silent loss;
+25. concurrent failure publication, drain and pressure sampling never exposes
+    torn supervisor CONTROL accounting (queued <= reserved <= capacity).
 
 ## Backend status - 2026-10-17
 
 | Backend | Status |
 | --- | --- |
-| Java/GraalVM | Active draft implements bounded mail/control, structured cancellation, single-flight execution, continuation fairness, typed send rejection, snapshots/stats, retained terminal state, ordered bounded terminal telemetry, watchdog isolation and two-phase finalization. Terminal ready/DONE/output/exit observers use a lazy bounded lifecycle-observer domain; actor capacity remains charged until that bundle retires, and runtime close fences in-flight finalization handoff before observer-domain shutdown. When `ores.runtime.carriers.global.max` is configured, CONTROL + PRIVATE + SHARED + UNTRUSTED + lifecycle-observer execution carriers share one 5..256 permit coordinator with one protected reserve per domain. JVM non-affine CONTROL/actor/lifecycle pools can borrow idle permits up to the safe per-domain ceiling, with coherent held/free and denial-reason telemetry. Affine/native pools remain conservative pending individual native carrier retirement acknowledgment (#1303). NIO/watchdog/user-owned scheduler threads remain separately accounted host resources. Stable THROW/RAISE/PANIC runtime identities are now present and retained terminal metadata exposes a typed failure view; source throw/raise lowering and authoritative supervisor callback admission remain release gates. |
+| Java/GraalVM | Active draft implements bounded mail/control, structured cancellation, single-flight execution, continuation fairness, typed send rejection, snapshots/stats, retained terminal state, ordered bounded terminal telemetry, watchdog isolation and two-phase finalization. Terminal ready/DONE/output/exit observers use a lazy bounded lifecycle-observer domain; actor capacity remains charged until that bundle retires, and runtime close fences in-flight finalization handoff before observer-domain shutdown. When `ores.runtime.carriers.global.max` is configured, CONTROL + PRIVATE + SHARED + UNTRUSTED + lifecycle-observer execution carriers share one 5..256 permit coordinator with one protected reserve per domain. JVM non-affine CONTROL/actor/lifecycle pools can borrow idle permits up to the safe per-domain ceiling, with coherent held/free and denial-reason telemetry; executor termination now fences physical permit-owner exit rather than trusting the earlier ThreadPoolExecutor termination publication. Affine/native pools remain conservative pending individual native carrier retirement acknowledgment (#1303). NIO/watchdog/user-owned scheduler threads remain separately accounted host resources. Stable THROW/RAISE/PANIC runtime identities are present and retained terminal metadata exposes a typed failure view. Java also has a pre-reserved, bounded, non-droppable failed-child CONTROL ledger with spawn-cause lineage, coherent pressure telemetry and host/supervisor drain APIs; wiring source on_panic/on_raise/on_throw handlers onto the parent single-flight CONTROL lane remains a release gate. |
 | LLVM | Native actor/group and RT/thread-accounting primitives exist. The host scheduler now retains immutable generation-bound terminal metadata for explicit STOP and VM/runtime retirement, including accepted/processed user-message accounting and domain-fenced lookup. Callback failure has no typed return channel yet, so FAILED classification, source supervision, terminal diagnostics/journaling and the full observability/fairness contract remain parity work. |
 | .NET | Contract target only; no source-runtime parity claim from this file. |
 | WASM | Contract target; fail closed where threads/native isolation are unavailable. |
