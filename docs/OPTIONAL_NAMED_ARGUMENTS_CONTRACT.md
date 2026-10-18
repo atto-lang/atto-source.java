@@ -416,3 +416,27 @@ These safeguards **do not imply** that named/optional invocation is
 executable or that JUnit/compiler CI has passed. The protected source
 organization currently lacks step-backed test evidence for the candidate
 head; private source transfer requires the separately reviewed allowlist.
+
+
+## Staged-formal AST admission audit (2026-10-18)
+
+The Java parser and AST now reject these formerly under-validated declaration shapes
+at construction time: `Option<T>? x`, `void? x`, `borrow T? x`,
+`borrow mut T? x`, `T? mut x`, and a `T?` containing a nested borrowed
+type or omittable marker. An ordinary generic type cannot directly contain
+the compiler-only omittable-formal marker. A required `Option<T> x` remains
+valid and distinct from `T? x`.
+
+In addition to checking function, method, interface and constructor formals,
+the pre-lowering guards reject synthetic misuse of a `T?` marker in field,
+return, inheritance/implementation, receiver and alias positions. The
+type checker repeats the signature check after annotation expansion. Direct
+AST construction is not permission to bypass these gates.
+
+Tests for parser/AST rejection and independent type/ownership admission are
+committed on Java PR #1335. **These are not executed-JUnit results.** GitHub
+Actions on the current private source branch reports failures without usable
+job steps or logs. Protected private-source export for alternate CI remains
+unapproved; do not mirror the repository to another organization without
+the approved allowlist. The runtime, ABI, ownership adaptation, and LLVM
+implementation remain intentionally disabled.
