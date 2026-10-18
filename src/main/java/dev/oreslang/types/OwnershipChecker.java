@@ -2527,12 +2527,20 @@ public final class OwnershipChecker {
             scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.BinaryExpr e) {
             scanExpr(e.left(), locals, outer, recursiveBinding, captures, false);
-            scanExpr(e.right(), locals, outer, recursiveBinding, captures, false);
+            Set<String> rightLocals = new HashSet<>(locals);
+            // A successful left-side refinement owns the alias on the
+            // short-circuit right path. It is not an outer capture.
+            if (e.operator().equals("&&")) {
+                collectConditionBindingNames(e.left(), rightLocals);
+            }
+            scanExpr(e.right(), rightLocals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.TrapExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.UnaryExpr e) scanExpr(e.operand(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ConditionalExpr e) {
             scanExpr(e.condition(), locals, outer, recursiveBinding, captures, false);
-            scanExpr(e.whenTrue(), locals, outer, recursiveBinding, captures, false);
+            Set<String> trueLocals = new HashSet<>(locals);
+            collectConditionBindingNames(e.condition(), trueLocals);
+            scanExpr(e.whenTrue(), trueLocals, outer, recursiveBinding, captures, false);
             scanExpr(e.whenFalse(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.RuntimeCallExpr e) {
             for (Ast.Expr arg : e.arguments()) {
