@@ -40,6 +40,8 @@ class SourceLocalNioGateTests(unittest.TestCase):
                        cwd=self.root, check=True)
         (self.root / "scripts").mkdir()
         shutil.copyfile(GATE, self.root / "scripts" / GATE.name)
+        shutil.copyfile(GATE.with_name("verify-nio-surefire-reports.py"),
+                        self.root / "scripts" / "verify-nio-surefire-reports.py")
         (self.root / ".gitignore").write_text("target/\n")
         subprocess.run(["git", "add", "."], cwd=self.root, check=True)
         subprocess.run(["git", "commit", "-qm", "test immutable input"],
@@ -59,6 +61,15 @@ case " $* " in
   *" clean "*)
     if [ "${FAKE_SKIP_CLEAN:-0}" = 1 ]; then exit 0; fi
     rm -rf target; exit 0 ;;
+  *" test "*)
+    mkdir -p target/surefire-reports
+    for suite in VmNioTcpListenerTest NativeNetStdlibTest NioReadinessGroupTest NativeNioFutureReactorTest OresSchedulerTest OresCarrierPermitPoolTest OresFuturesTest OresFutureCallbackTest; do
+      if [ "$FAKE_SKIP_JUNIT" = 1 ]; then
+        printf '<testsuite name="dev.oreslang.runtime.%s" tests="1" skipped="1"><testcase name="proof"><skipped/></testcase></testsuite>\\n' "$suite" > "target/surefire-reports/TEST-$suite.xml"
+      else
+        printf '<testsuite name="dev.oreslang.runtime.%s" tests="1" skipped="0"><testcase name="proof"/></testsuite>\\n' "$suite" > "target/surefire-reports/TEST-$suite.xml"
+      fi
+    done ;;
   *" verify "*)
     if [ "${FAKE_FAIL_VERIFY:-0}" = 1 ]; then exit 9; fi
     if [ "${FAKE_CHANGE_INDEX:-0}" = 1 ]; then
@@ -167,6 +178,14 @@ exit 0
         self.assertEqual(72, completed.returncode, completed.stderr)
         self.assertIn("result=FAIL", self.receipt())
         self.assertIn("stage=postflight-source-identity", self.receipt())
+
+    def test_all_targeted_suites_skipped_fails_qualification(self):
+        environment = self.env.copy()
+        environment["FAKE_SKIP_JUNIT"] = "1"
+        result = self.gate(env=environment)
+        self.assertEqual(74, result.returncode, result.stderr)
+        self.assertIn("stage=verify-targeted-junit-reports", self.receipt())
+        self.assertIn("result=FAIL", self.receipt())
 
     def test_nonzero_maven_exit_survives_tee_and_receipt(self):
         environment = self.env.copy()
