@@ -101,6 +101,27 @@ class MlGuestReceiptTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'lacks OresMain'):
             self.receipt()
 
+    def test_wrong_junit_classname_rejected(self):
+        self.xml.write_text(
+            self.xml.read_text().replace(
+                'dev.oreslang.MlActorStateScalarGuestTest', 'UnrelatedSyntheticTest'
+            )
+        )
+        with self.assertRaisesRegex(ValueError, 'wrong JUnit testcase class'):
+            self.receipt()
+
+    def test_oversized_build_info_rejected(self):
+        self.build_info.write_text('X' * 4097)
+        with self.assertRaisesRegex(ValueError, 'build-info size'):
+            self.receipt()
+
+    def test_inherited_git_dir_cannot_redirect_identity(self):
+        from unittest.mock import patch as mock_patch
+        with mock_patch.dict(os.environ, {'GIT_DIR': str(Path.cwd() / 'fake-git'),
+                                          'GIT_WORK_TREE': str(Path.cwd()),
+                                          'GIT_NO_REPLACE_OBJECTS': '0'}):
+            self.assertEqual(self.receipt()['source_commit'], self.head)
+
     def test_missing_build_info_rejected(self):
         self.build_info.write_text('{}')
         with self.assertRaisesRegex(ValueError, 'build-info'):
