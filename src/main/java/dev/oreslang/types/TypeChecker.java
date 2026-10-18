@@ -6,6 +6,7 @@ import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
+import dev.oreslang.types.Types.BoolLiteral;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.Generic;
@@ -2778,14 +2779,9 @@ public final class TypeChecker {
                                 "self." + operation
                                         + " currently requires a SHARED actor routed receive");
                     }
-                    if (operation.equals("forward_all")) {
-                        throw new IllegalArgumentException(
-                                "self.forward_all requires the typed per-edge admission receipt ABI; "
-                                        + "source lowering remains fail-closed");
-                    }
                     int payloadIndex;
                     switch (operation) {
-                        case "forward", "forward_round_robin", "backward", "reply" -> {
+                        case "forward", "forward_all", "forward_round_robin", "backward", "reply" -> {
                             if (call.arguments().size() != 1) {
                                 throw new IllegalArgumentException(
                                         "self." + operation + " expects exactly one value");
@@ -2817,6 +2813,25 @@ public final class TypeChecker {
                             currentActorKind,
                             false,
                             "self." + operation + " outbound value");
+                    if (operation.equals("forward_all")) {
+                        // Do not fan out a moved, borrowed, mutable or dynamic
+                        // value merely because a generic send admits it.
+                        if (!(payload == Primitive.INT || payload == Primitive.BOOL
+                                || payload == Primitive.STRING
+                                || payload instanceof StringLiteral
+                                || payload instanceof BoolLiteral)) {
+                            throw new IllegalArgumentException(
+                                    "self.forward_all requires immutable int/bool/string DATA "
+                                            + "until aggregate ownership fan-out is proven");
+                        }
+                        return new ListType(new Record(Map.of(
+                                "edge_index", Primitive.INT,
+                                "target", Primitive.STRING,
+                                "flow_id", Primitive.INT,
+                                "route_id", Primitive.INT,
+                                "admitted", Primitive.BOOL,
+                                "status", Primitive.STRING), true));
+                    }
                     return Primitive.VOID;
                 }
                 if (actorSelf && (member.member().equals("on_start")
