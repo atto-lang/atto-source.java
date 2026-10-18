@@ -1825,6 +1825,24 @@ public final class OwnershipChecker {
 
         ValueInfo receiver = checkExpr(member.receiver(), scope, false);
         Ast.TypeRef receiverType = receiver.type;
+        // Dereferencing an Option/Result borrow must never transfer its affine
+        // payload. The type checker resolves member return types after deref,
+        // so the ownership checker must enforce this independently; otherwise
+        // (&Option<Box>).unwrap() could duplicate the borrowed Box owner.
+        // Read-only queries and extraction from a wholly copyable sum remain
+        // valid, since neither transfers any owned state.
+        if (receiverType != null && receiverType.isBorrow()) {
+            Ast.TypeRef target = receiverType.borrowedTarget();
+            boolean borrowedSum = (target.name().equals("Option")
+                    && target.arguments().size() == 1)
+                    || (target.name().equals("Result")
+                    && target.arguments().size() == 2);
+            if (borrowedSum && extracting && !isCopyType(target)) {
+                throw error(member.member()
+                        + " cannot consume an affine Option/Result through a borrow");
+            }
+            return null;
+        }
         // Analyze each receiver exactly once. Previously a Future returned
         // from a call was checked here and again on the ordinary call path,
         // potentially consuming affine captures twice during compilation.
