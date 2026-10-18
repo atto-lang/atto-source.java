@@ -90,6 +90,50 @@ final class OwnershipMatchExpressionCaptureTest {
     }
 
     @Test
+    void deterministicNestedAndRefinedCaptureParityMatrix() throws Exception {
+        java.util.Random random = new java.util.Random(0x5eeda11L);
+        for (int i = 0; i < 400; i++) {
+            String outerName = "owned" + random.nextInt(100);
+            Ast.Expr body;
+            Set<String> expected;
+            switch (i % 4) {
+                case 0 -> {
+                    body = new Ast.NameExpr(outerName);
+                    expected = Set.of(outerName);
+                }
+                case 1 -> {
+                    body = new Ast.MatchExpr(new Ast.NameExpr("subject"),
+                            List.of(new Ast.MatchValueArm(
+                                    new Ast.BindingPattern("armBound"),
+                                    new Ast.NameExpr("guard"),
+                                    new Ast.BinaryExpr("+", new Ast.NameExpr("armBound"),
+                                            new Ast.NameExpr(outerName)))));
+                    expected = Set.of("subject", "guard", outerName);
+                }
+                case 2 -> {
+                    body = new Ast.BinaryExpr("&&",
+                            new Ast.TypeTestExpr(new Ast.NameExpr("subject"),
+                                    Ast.TypeRef.simple("int"), "armBound"),
+                            new Ast.NameExpr("armBound"));
+                    expected = Set.of("subject");
+                }
+                default -> {
+                    body = new Ast.LambdaExpr(
+                            List.of(new Ast.Param(Ast.TypeRef.simple("int"), "parameter")),
+                            new Ast.BinaryExpr("+", new Ast.NameExpr("parameter"),
+                                    new Ast.NameExpr(outerName)), null);
+                    expected = Set.of(outerName);
+                }
+            }
+            Ast.LambdaExpr lambda = new Ast.LambdaExpr(List.of(), body, null);
+            assertEquals(expected, capturedByOwnership(lambda,
+                    outerName, "subject", "guard", "armBound", "self"), "ownership " + i);
+            assertEquals(expected, dev.oreslang.nodes.LambdaCapturePlanner.captures(lambda),
+                    "runtime capture " + i);
+        }
+    }
+
+    @Test
     void matchArmBorrowedValueCannotEscapeThroughClosure() throws Exception {
         Ast.LambdaExpr lambda = new Ast.LambdaExpr(List.of(),
                 new Ast.MatchExpr(new Ast.NameExpr("subject"),
