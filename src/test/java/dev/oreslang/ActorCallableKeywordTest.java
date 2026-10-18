@@ -110,6 +110,29 @@ final class ActorCallableKeywordTest {
     }
 
     @Test
+    void ipcFfiExternRemainReservedBeforeExecutableLowering() {
+        List<Token> tokens = new Lexer("ipc ffi extern").scan();
+        assertEquals(Token.Type.IPC, tokens.get(0).type());
+        assertEquals(Token.Type.FFI, tokens.get(1).type());
+        assertEquals(Token.Type.EXTERN, tokens.get(2).type());
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub routine main(): void {
+                  val int ipc = 1;
+                  return;
+                }
+                """));
+        IllegalArgumentException foreign = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define ffi actor Native as
+                          extern suspends fnc call(int value): int;
+                        end
+                        """));
+        assertTrue(foreign.getMessage().contains("ForeignDecl"), foreign.getMessage());
+    }
+
+    @Test
     void actorMainRemainsForbidden() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 pub actor fnc main(): void { return; }
