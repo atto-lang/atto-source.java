@@ -1096,6 +1096,37 @@ public final class TypeChecker {
     }
 
     private void checkClassBody(String module, Ast.ClassDecl klass) {
+        // Parsing transport vocabulary does not install the corresponding
+        // authenticated listener/session, reply dispatcher or FFI safety proof.
+        // Validate AFTER AST transforms, so metadata cannot be laundered away.
+        Ast.ActorSpecialization actorSpec = klass.actorSpecialization();
+        if (klass.actorKind() == Ast.ActorKind.NONE) {
+            if (!actorSpec.equals(Ast.ActorSpecialization.defaultSpec())) {
+                throw new IllegalArgumentException("ordinary class '" + klass.name()
+                        + "' cannot carry actor transport specialization");
+            }
+        } else {
+            if (actorSpec.transport() != Ast.ActorTransport.MAIL) {
+                throw new IllegalArgumentException("actor '" + klass.name() + "' declares "
+                        + actorSpec.transport() + " " + actorSpec.direction()
+                        + " transport but no runtime-owned binding/codec/capability adapter "
+                        + "is installed; fail-closed before actor spawn");
+            }
+            if (actorSpec.replyRole() != Ast.ActorReplyRole.STREAM) {
+                throw new IllegalArgumentException("actor '" + klass.name()
+                        + "' declares unary request/reply, but correlation and exactly-once "
+                        + "reply lowering are not integrated on this compiler head");
+            }
+            if (!actorSpec.requirements().isEmpty() || !actorSpec.effects().isEmpty()) {
+                throw new IllegalArgumentException("actor '" + klass.name()
+                        + "' requires typed capability/effect verification and backend lowering "
+                        + "for requires/with clauses; declarations cannot be treated as comments");
+            }
+            if (!actorSpec.annotations().isEmpty()) {
+                throw new IllegalArgumentException("actor '" + klass.name()
+                        + "' transport direction annotations require a bound adapter");
+            }
+        }
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
 
