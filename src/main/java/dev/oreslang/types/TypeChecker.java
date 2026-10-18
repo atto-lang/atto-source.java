@@ -712,6 +712,20 @@ public final class TypeChecker {
         Set<Ast.MethodArity> locallyResolved = new HashSet<>();
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic() == staticNamespace) locallyResolved.add(method.overloadIdentity());
+            if (!staticNamespace && !method.isStatic()) {
+                validateOriginalPrivateAbstractSignature(klass, method);
+            }
+            if (!staticNamespace && !method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
+                // An intermediate concrete override cannot launder the private
+                // abstract slot into a public method further down the hierarchy.
+                Ast.ClassDecl origin = privateAbstractSlotOwner(
+                        klass, method.name(), method.arity(), new LinkedHashSet<>());
+                if (origin != null && origin != klass) {
+                    throw new IllegalArgumentException(
+                            "private abstract method '" + origin.name() + "." + method.name()
+                                    + "' cannot be made public by an override in " + klass.name());
+                }
+            }
         }
 
         Named classType = nominalClassType(klass);
@@ -733,6 +747,38 @@ public final class TypeChecker {
                         // contracts still advertise this slot to callers (including through
                         // a base-typed receiver). A private override would typecheck as
                         // public and then fail runtime access checks.
+                        if (parentMethod.isAbstract()
+                                && parentMethod.visibility() == Ast.Visibility.PRIVATE
+                                && klass.genericParameters().isEmpty()
+                                && origin.owner().genericParameters().isEmpty()
+                                && parentMethod.genericParameters().isEmpty()
+                                && local.genericParameters().isEmpty()) {
+                            boolean sameSignature =
+                                    parentMethod.returnType().equals(local.returnType())
+                                    && parentMethod.async() == local.async()
+                                    && parentMethod.suspends() == local.suspends()
+                                    && parentMethod.structural() == local.structural();
+                            for (int i = 0; i < local.arity() && sameSignature; i++) {
+                                Ast.Param a = parentMethod.parameters().get(i);
+                                Ast.Param b = local.parameters().get(i);
+                                sameSignature = a.type().equals(b.type())
+                                        && a.mutable() == b.mutable()
+                                        && a.structural() == b.structural();
+                            }
+                            if (!sameSignature) {
+                                throw new IllegalArgumentException(
+                                        "incompatible private abstract method override '"
+                                                + klass.name() + "." + local.name()
+                                                + "': parameter, return or effect signature differs");
+                            }
+                        }
+                        if (parentMethod.isAbstract()
+                                && parentMethod.visibility() == Ast.Visibility.PRIVATE
+                                && local.visibility() != Ast.Visibility.PRIVATE) {
+                            throw new IllegalArgumentException("private abstract method '"
+                                    + methodOriginLabel(origin) + "." + local.name()
+                                    + "' cannot be made public by an override in " + klass.name());
+                        }
                         if (parentMethod.visibility() == Ast.Visibility.PUBLIC
                                 && local.visibility() != Ast.Visibility.PUBLIC) {
                             String kind = staticNamespace ? "static function" : "method";
@@ -760,6 +806,54 @@ public final class TypeChecker {
                     + " from " + owners
                     + "; add an explicit child declaration for this name + arity slot; argument and return types never select an overload");
         }
+    }
+
+    private void validateOriginalPrivateAbstractSignature(
+            Ast.ClassDecl klass, Ast.MethodDecl implementation) {
+        Ast.ClassDecl origin = privateAbstractSlotOwner(
+                klass, implementation.name(), implementation.arity(),
+                new LinkedHashSet<>());
+        if (origin == null || origin == klass) return;
+        Ast.MethodDecl contract = null;
+        for (Ast.MethodDecl candidate : origin.methods()) {
+            if (candidate.isAbstract()
+                    && candidate.visibility() == Ast.Visibility.PRIVATE
+                    && !candidate.isStatic()
+                    && candidate.overloadIdentity().equals(implementation.overloadIdentity())) {
+                contract = candidate;
+                break;
+            }
+        }
+        if (contract == null) throw new IllegalArgumentException(
+                "private abstract slot provenance lost for " + klass.name());
+        if (!klass.genericParameters().isEmpty() || !origin.genericParameters().isEmpty()
+                || !contract.genericParameters().isEmpty()
+                || !implementation.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "generic private abstract override requires checked type substitution; "
+                            + "cannot admit " + klass.name() + "." + implementation.name());
+        }
+        boolean equal = contract.returnType().equals(implementation.returnType())
+                && contract.async() == implementation.async()
+                && contract.suspends() == implementation.suspends()
+                && contract.structural() == implementation.structural()
+                && (contract.explicitReceiverType() != null
+                     && contract.explicitReceiverType().isBorrow()
+                     && contract.explicitReceiverType().mutableBorrow())
+                   == (implementation.explicitReceiverType() != null
+                       && implementation.explicitReceiverType().isBorrow()
+                       && implementation.explicitReceiverType().mutableBorrow());
+        for (int i = 0; i < implementation.arity() && equal; i++) {
+            Ast.Param required = contract.parameters().get(i);
+            Ast.Param actual = implementation.parameters().get(i);
+            equal = required.type().equals(actual.type())
+                    && required.mutable() == actual.mutable()
+                    && required.structural() == actual.structural();
+        }
+        if (!equal) throw new IllegalArgumentException(
+                "incompatible private abstract method override '" + klass.name()
+                        + "." + implementation.name()
+                        + "': original superclass signature or effects differ");
     }
 
     private Map<Ast.MethodArity, List<MethodOrigin>> inheritedMethodOrigins(
@@ -885,12 +979,9 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "static class functions cannot be abstract: " + klass.name() + "." + method.name());
             }
-            if (method.visibility() != Ast.Visibility.PUBLIC) {
-                throw new IllegalArgumentException(
-                        "abstract method '" + klass.name() + "." + method.name()
-                                + "' with arity " + method.arity()
-                                + " must be public so subclasses can satisfy the slot");
-            }
+            // A private abstract slot is implementable by a subclass, but
+            // callable only from the class that originally declared the slot.
+            // Unlike Java private methods, it participates in virtual dispatch.
         }
 
         if (klass.isAbstract()) return;
@@ -3046,6 +3137,7 @@ public final class TypeChecker {
                         int methodArity = fixedCallArity(
                                 call.arguments(), env, generics, self,
                                 "method " + named.name() + "." + member.member());
+                        requireUserCallableMethodSlot(klass, member.member(), methodArity);
                         ResolvedMethod target = findMethodTarget(
                                 klass, named, member.member(), methodArity, new LinkedHashSet<>());
                         if (target == null) {
@@ -3464,6 +3556,15 @@ public final class TypeChecker {
             if (receiver instanceof Named named) {
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
+                    // Private abstract slots and actor lifecycle handlers are
+                    // never exposed as method values, even to the implementing class.
+                    if (klass.actorKind() != Ast.ActorKind.NONE
+                            && (member.member().equals("receive")
+                                || member.member().equals("on_start"))) {
+                        throw new IllegalArgumentException(
+                                "actor lifecycle method '" + member.member()
+                                        + "' is runtime-managed and cannot be referenced from user code");
+                    }
                     ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
                     if (field != null) {
                         requireClassMemberVisible(
@@ -4424,6 +4525,7 @@ public final class TypeChecker {
         if (iteratorTarget == null) return source;
 
         Ast.MethodDecl iterator = iteratorTarget.method();
+        requireUserCallableMethodSlot(klass, iterator.name(), iterator.arity());
         requireClassMemberVisible(
                 iterator.visibility(),
                 iteratorTarget.owner(),
@@ -6069,6 +6171,7 @@ public final class TypeChecker {
                         findMethodTarget(klass, named, "Symbol.iterator", 0, new LinkedHashSet<>());
                 if (iteratorTarget != null) {
                     Ast.MethodDecl iterator = iteratorTarget.method();
+                    requireUserCallableMethodSlot(klass, iterator.name(), iterator.arity());
                     requireClassMemberVisible(
                             iterator.visibility(),
                             iteratorTarget.owner(),
@@ -6114,6 +6217,7 @@ public final class TypeChecker {
                         findMethodTarget(klass, named, "Symbol.asyncIterator", 0, new LinkedHashSet<>());
                 if (iteratorTarget != null) {
                     Ast.MethodDecl iterator = iteratorTarget.method();
+                    requireUserCallableMethodSlot(klass, iterator.name(), iterator.arity());
                     requireClassMemberVisible(
                             iterator.visibility(),
                             iteratorTarget.owner(),
@@ -6690,6 +6794,48 @@ public final class TypeChecker {
             if (parent != null) collectInterfaceMethodNames(parent, names, seen);
         }
         seen.remove(iface);
+    }
+
+    private Ast.ClassDecl privateAbstractSlotOwner(
+            Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> visited) {
+        if (!visited.add(klass)) return null;
+        // The original superclass retains invocation authority when an intermediate
+        // abstract subclass redeclares the inherited slot.
+        Ast.ClassDecl origin = null;
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Ast.ClassDecl candidate = privateAbstractSlotOwner(parent, name, arity, visited);
+            if (candidate == null) continue;
+            if (origin != null && origin != candidate) {
+                throw new IllegalArgumentException(
+                        "ambiguous private abstract slot authority in " + klass.name());
+            }
+            origin = candidate;
+        }
+        if (origin != null) return origin;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic() && method.isAbstract()
+                    && method.visibility() == Ast.Visibility.PRIVATE
+                    && method.matchesArity(name, arity)) return klass;
+        }
+        return null;
+    }
+
+    private void requireUserCallableMethodSlot(Ast.ClassDecl klass, String name, int arity) {
+        if (klass.actorKind() != Ast.ActorKind.NONE
+                && (name.equals("receive") || name.equals("on_start"))) {
+            throw new IllegalArgumentException(
+                    "actor lifecycle method '" + name
+                            + "' is runtime-managed and cannot be invoked by user code");
+        }
+        Ast.ClassDecl origin = privateAbstractSlotOwner(
+                klass, name, arity, new LinkedHashSet<>());
+        if (origin != null && currentClassOwner != origin) {
+            throw new IllegalArgumentException(
+                    "private abstract method '" + origin.name() + "." + name
+                            + "' is callable only by its declaring superclass");
+        }
     }
 
     private void requireClassMemberVisible(
