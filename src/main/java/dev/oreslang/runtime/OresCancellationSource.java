@@ -35,6 +35,10 @@ public final class OresCancellationSource implements AutoCloseable {
         return notification;
     }
 
+    int linkedChildCountForTest() {
+        synchronized (gate) { return linkedChildren.size(); }
+    }
+
     /** OR-composition: cancellation of ANY upstream requests cancellation. */
     public static OresCancellationSource linked(OresCancellationToken... upstream) {
         Objects.requireNonNull(upstream, "upstream");
