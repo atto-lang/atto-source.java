@@ -66,6 +66,20 @@ final class ParserTest {
     }
 
     @Test
+    void duplicateNamedCallItemsAreRejectedAtTheAstBoundary() {
+        for (String invocation : List.of(
+                "f(a: 1, a: 2)", "f(a: _, a: 2)",
+                "new Thing(a: 1, a: 2)",
+                "spawn Worker(a: 1, a: 2)")) {
+            String source = "pub fnc test(): void { const v = " + invocation + "; return; }";
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(source), invocation);
+            assertTrue(failure.getMessage().contains("duplicate named call argument"),
+                    failure::toString);
+        }
+    }
+
+    @Test
     void ordinaryPositionalCallsRemainUnchanged() {
         for (String invocation : List.of("f(1, 2)", "f(3, None, true)",
                 "new Thing(1, 2)", "spawn Worker(1, 2)")) {
