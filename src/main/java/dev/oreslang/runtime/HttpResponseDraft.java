@@ -152,9 +152,17 @@ public final class HttpResponseDraft {
     /** Called only after claim, from the single owner of the HTTP exchange. */
     void writeClaimedTo(HttpExchange raw, BooleanSupplier cancelled,
                         Consumer<InputStream> activeBody) throws IOException {
+        writeClaimedTo(raw, cancelled, activeBody, this::openBody);
+    }
+
+    @FunctionalInterface interface BodyOpener { InputStream open() throws IOException; }
+
+    void writeClaimedTo(HttpExchange raw, BooleanSupplier cancelled,
+                        Consumer<InputStream> activeBody, BodyOpener opener) throws IOException {
         Objects.requireNonNull(raw, "exchange");
         Objects.requireNonNull(cancelled, "cancelled");
         Objects.requireNonNull(activeBody, "activeBody");
+        Objects.requireNonNull(opener, "opener");
         if (!handedOff.get()) throw new IllegalStateException("response not handed off");
         if (!emissionStarted.compareAndSet(false, true))
             throw new IllegalStateException("response already emitted");
@@ -168,7 +176,7 @@ public final class HttpResponseDraft {
         // Open and register a stream before committing a successful HTTP status.
         // A failing supplier must not send a misleading HTTP 200 response.
         // HEAD/bodyless responses must never open a body producer.
-        try (InputStream input = suppress ? null : openBody()) {
+        try (InputStream input = suppress ? null : opener.open()) {
             if (input != null) activeBody.accept(input);
             try {
                 if (cancelled.getAsBoolean())
