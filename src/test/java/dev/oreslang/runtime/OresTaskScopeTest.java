@@ -273,4 +273,34 @@ final class OresTaskScopeTest {
         assertEquals(1, callbacks.get());
     }
 
+
+    @Test
+    void subscriberArrivingBetweenRevocationAndDeliveryCannotFireEarly() {
+        java.util.concurrent.atomic.AtomicInteger callbackCount =
+                new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger hookCount =
+                new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = new OresFuture<>(hookCount::incrementAndGet);
+        Runnable publish = future.cancelDeferredNotification();
+        assertNotNull(publish);
+        assertEquals(1, hookCount.get());
+        assertTrue(future.isCancelled());
+
+        // Late subscriber used to run immediately here, potentially blocking
+        // scope cancellation before other children had been revoked.
+        future.whenCompleteRuntime((value, failure) -> {
+            assertInstanceOf(java.util.concurrent.CancellationException.class, failure);
+            callbackCount.incrementAndGet();
+        });
+        assertEquals(0, callbackCount.get());
+        assertNull(future.runtimeTerminalStateOrNull(),
+                "scheduler must not treat a deferred cancellation as ready");
+
+        publish.run();
+        assertEquals(1, callbackCount.get());
+        assertNotNull(future.runtimeTerminalStateOrNull());
+        publish.run(); // A duplicate deferred notifier must be idempotent.
+        assertEquals(1, callbackCount.get());
+    }
+
 }
