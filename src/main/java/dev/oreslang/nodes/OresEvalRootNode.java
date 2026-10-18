@@ -588,6 +588,13 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         @Override
+        public Object actorUpgradeDomain() {
+            // Identity, not equality: v1 may switch evaluators linked into the
+            // same OresContext, but cannot splice a foreign context/runtime.
+            return context;
+        }
+
+        @Override
         public String actorCodeSha256(String actorTypeName) {
             Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
             // Structural runtime identity only. It is deliberately separate
