@@ -159,6 +159,46 @@ final class ActorOwnedTaskScopeTest {
     }
 
     @Test
+    void untrustedActorCannotBypassQuotaAwareTaskAdmission() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            AtomicInteger guestTaskBodies = new AtomicInteger();
+            var ref = runtime.<Integer>spawnUntrusted(() -> (message, context) -> {
+                assertThrows(SecurityException.class, () ->
+                        context.runtime().startActorOwnedTask(resume -> {
+                            guestTaskBodies.incrementAndGet();
+                            return OresScheduler.done(1);
+                        }));
+                context.self().stop();
+            });
+            ref.send(1);
+            assertTrue(ref.awaitTermination(10, TimeUnit.SECONDS));
+            assertEquals(0, guestTaskBodies.get());
+            assertTrue(ref.failure().isEmpty());
+        }
+    }
+
+    @Test
+    void actorFailureCancelsOwnedTasksAndPreservesActorFailure() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicReference<TaskHandle<Integer>> childRef = new AtomicReference<>();
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                childRef.set(context.runtime().startActorOwnedTask(resume ->
+                        OresScheduler.done(7)));
+                throw new IllegalStateException("actor handler failed");
+            });
+            ref.send(1);
+            assertTrue(ref.awaitTermination(10, TimeUnit.SECONDS));
+            assertNotNull(childRef.get());
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    childRef.get().getDone().get(3, TimeUnit.SECONDS));
+            assertTrue(ref.failure().isPresent(),
+                    "actor failure must not be swallowed by Task cancellation");
+            assertInstanceOf(IllegalStateException.class, ref.failure().orElseThrow());
+        }
+    }
+
+    @Test
     void hostStopCannotForgeCompletionBeforeActorTaskScopeTeardown()
             throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
