@@ -160,3 +160,34 @@ source/destination approvals, attest protected source main and complete Git
 tree, build in approved private destination, obtain exact-head Maven/JUnit
 and Graal evidence, then review cleanup of ephemeral refs/artifacts.
 Do not equate a canary success with a merge gate.
+
+
+## Counter-overflow refusal and funded canary v2
+
+The scope's signed `int active` join-slot count is guarded before
+increment. At `Integer.MAX_VALUE`, `startTask()` throws
+`RejectedExecutionException` **without mutating the count, dispatching
+the task, or forging `getDone()`**. This is an overflow-safety invariant,
+not a substitute for per-tenant admission quotas.
+
+The new exact-source JUnit test
+`TaskScopeTest.saturatedJoinCounterRejectsBeforeSignedOverflow`
+injects the boundary reflectively, verifies refusal/no wraparound,
+restores its test-only counter, and seals the scope. The stage-2 test
+inventory now comprises **39 JUnit methods** (24 TaskHandle, 15 TaskScope),
+still **not executed under source-repo Maven CI**.
+
+The independent local Java 21 scope-admission model passed **3,500**
+cases including 500 saturation-boundary refusals. The *source-free*
+private alternate org runner
+[Actions run #39178017326](https://github.com/opto-sync-test/go-java-validation/actions/runs/39178017326)
+passed all eight recorded steps under Java 21, with job log
+`SOURCE_FREE_CANARY_PASS cases=2250 java=21.0.12.1`.
+That build contained **no private Oreslang source code or full tree**;
+it tested an independently written concurrency canary and the alternate
+organization's funded Actions capability.
+
+Actual source tests are still blocked by existing empty destination
+allowlist, source branch protection approval, CODEOWNER/security
+independence, and open CI source-exposure incident. Do not treat any
+source-free pass as Java/Graal runtime parity or merge evidence.
