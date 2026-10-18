@@ -24,6 +24,8 @@ public final class EnumCaseOverloadPolicy {
     public static final int MAX_CANDIDATES = 128;
     public static final int MAX_CASES = 1024;
     public static final int MAX_ENUMS = 4096;
+    /** Upper bound in encoded UTF-8 bytes on any nominal ID, case ID or name. */
+    public static final int MAX_ID_BYTES = 512;
     /** Initially admitted non-discriminator values are proven scalar primitives only. */
     private static final Set<String> FIXED_SCALARS =
             Set.of("bool", "int", "string", "float");
@@ -37,9 +39,11 @@ public final class EnumCaseOverloadPolicy {
         public EnumInfo {
             qualified(identity);
             Objects.requireNonNull(cases, "cases");
+            if (cases.isEmpty() || cases.size() > MAX_CASES) {
+                throw new IllegalArgumentException("enum case budget exceeded");
+            }
             cases = List.copyOf(cases);
-            if (cases.isEmpty() || cases.size() > MAX_CASES
-                    || new HashSet<>(cases).size() != cases.size()) {
+            if (new HashSet<>(cases).size() != cases.size()) {
                 throw new IllegalArgumentException("invalid enum case set");
             }
             for (String value : cases) identifier(value);
@@ -85,10 +89,10 @@ public final class EnumCaseOverloadPolicy {
             qualified(owner);
             identifier(name);
             Objects.requireNonNull(params, "params");
-            params = List.copyOf(params);
             if (params.size() > MAX_ARITY) {
                 throw new IllegalArgumentException("overload arity limit exceeded");
             }
+            params = List.copyOf(params);
         }
 
         public int arity() { return params.size(); }
@@ -126,6 +130,9 @@ public final class EnumCaseOverloadPolicy {
             List<Signature> candidates, Map<String, EnumInfo> certifiedEnums) {
         Objects.requireNonNull(candidates, "candidates");
         Objects.requireNonNull(certifiedEnums, "certifiedEnums");
+        if (candidates.isEmpty() || candidates.size() > MAX_CANDIDATES) {
+            throw new IllegalArgumentException("empty or oversize overload family");
+        }
         List<Signature> copy = List.copyOf(candidates);
         if (certifiedEnums.size() > MAX_ENUMS) {
             throw new IllegalArgumentException("enum registry proof budget exceeded");
@@ -170,10 +177,10 @@ public final class EnumCaseOverloadPolicy {
             List<Parameter> staticallyProvenArgs) {
         List<Signature> family = validateFamily(candidates, certifiedEnums);
         Objects.requireNonNull(staticallyProvenArgs, "staticallyProvenArgs");
-        List<Parameter> args = List.copyOf(staticallyProvenArgs);
-        if (args.size() != family.get(0).arity()) {
+        if (staticallyProvenArgs.size() != family.get(0).arity()) {
             throw new IllegalArgumentException("wrong argument arity");
         }
+        List<Parameter> args = List.copyOf(staticallyProvenArgs);
         Map<String, EnumInfo> registry = Map.copyOf(certifiedEnums);
         for (Parameter arg : args) checked(arg, registry);
         List<Signature> applicable = new ArrayList<>();
@@ -281,6 +288,9 @@ public final class EnumCaseOverloadPolicy {
     private static void identifier(String value) {
         Objects.requireNonNull(value, "identity");
         if (value.isBlank()) throw new IllegalArgumentException("blank identity");
+        if (value.length() > MAX_ID_BYTES) {
+            throw new IllegalArgumentException("nominal identity character budget exceeded");
+        }
         for (int i = 0; i < value.length(); i++) {
             char c = value.charAt(i);
             if (Character.isISOControl(c) || Character.isWhitespace(c)) {
@@ -299,6 +309,9 @@ public final class EnumCaseOverloadPolicy {
             } else if (bidiOrInvisible(c)) {
                 throw new IllegalArgumentException("bidi/invisible control in canonical identity");
             }
+        }
+        if (value.getBytes(StandardCharsets.UTF_8).length > MAX_ID_BYTES) {
+            throw new IllegalArgumentException("nominal identity UTF-8 budget exceeded");
         }
     }
 
