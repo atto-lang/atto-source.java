@@ -546,14 +546,41 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
 
     /**
-     * Host/supervisor admission boundary for a prebuilt IPC actor executable.
+     * Public host/supervisor admission boundary for a prebuilt IPC actor
+     * executable and its signed raw UTF-8 manifest.
      *
-     * <p>The runtime's actual policy ceiling is used as authority; callers
-     * cannot pass a fabricated supervisor policy. Minting an executable actor
-     * capability requires spawn, IPC, child-process and hot-code authority.
-     * This method does not launch a process.</p>
+     * <p>Raw ingress always passes through the bounded strict V1 parser before
+     * cryptographic/attestation admission. Callers therefore cannot bypass
+     * duplicate-key, malformed-UTF-8, unknown-field or exact-number checks by
+     * constructing a typed manifest themselves.</p>
      */
     public <T> ActorArtifact<T> admitIpcActorArtifact(
+            String actorTypeName,
+            Ast.ActorKind actorKind,
+            byte[] signedManifestUtf8,
+            byte[] exactArtifactBytes,
+            ActorArtifactAdmission.TrustedBuildAttestation attestation,
+            ActorArtifactAdmission.TrustedBuildAttestationPolicy attestationPolicy,
+            ActorArtifactAdmission.TrustedKeyPolicy keyPolicy,
+            ActorArtifactAdmission.TargetPolicy targetPolicy,
+            IsolatePolicy workerPolicy) {
+        return admitIpcActorArtifact(
+                actorTypeName,
+                actorKind,
+                ActorArtifactManifestJsonV1.parse(signedManifestUtf8),
+                exactArtifactBytes,
+                attestation,
+                attestationPolicy,
+                keyPolicy,
+                targetPolicy,
+                workerPolicy);
+    }
+
+    /**
+     * Typed admission bridge for runtime-internal tests/build plumbing only.
+     * External host ingress must use the raw-manifest overload above.
+     */
+    <T> ActorArtifact<T> admitIpcActorArtifact(
             String actorTypeName,
             Ast.ActorKind actorKind,
             ActorArtifactAdmission.Manifest manifest,
