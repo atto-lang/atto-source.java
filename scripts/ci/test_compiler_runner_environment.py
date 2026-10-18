@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -26,27 +27,27 @@ def policy_script():
 
 
 class CompilerRunnerEnvironmentTests(unittest.TestCase):
-    def test_posix_bootstrap_precedes_all_bash_steps(self):
-        workflow = WORKFLOW.read_text(encoding='utf-8')
-        boot = workflow.index(
+    def test_python_bootstrap_precedes_bash_and_checkout(self):
+        source = WORKFLOW.read_text(encoding='utf-8')
+        boot = source.index(
             '      - name: Reject exported Bash functions before any Bash step')
-        approved = workflow.index(
+        approved = source.index(
             '      - name: Verify protected source authorization before checkout')
-        checkout = workflow.index(
+        checkout = source.index(
             '      - name: Checkout approved SHA from original private repository only')
         self.assertLess(boot, approved)
         self.assertLess(approved, checkout)
-        section = workflow[boot:approved]
-        self.assertIn('        shell: sh\n', section)
-        self.assertIn('/usr/bin/env | /usr/bin/grep', section)
-        job_env = workflow.split('  approved-compiler-build:\n', 1)[1].split(
+        section = source[boot:approved]
+        self.assertIn('        shell: python -I {0}\n', section)
+        self.assertIn("k.startswith('BASH_FUNC_')", section)
+        job_env = source.split('  approved-compiler-build:\n', 1)[1].split(
             '\n    steps:\n', 1)[0]
         self.assertIn("      LD_AUDIT: ''", job_env)
         self.assertIn("      LD_DEBUG: ''", job_env)
 
-    def test_exported_bash_functions_and_options_denied_before_any_bash(self):
-        workflow = WORKFLOW.read_text(encoding='utf-8')
-        section = workflow.split(
+    def test_exported_bash_functions_and_options_rejected(self):
+        source = WORKFLOW.read_text(encoding='utf-8')
+        section = source.split(
             '      - name: Reject exported Bash functions before any Bash step\n',
             1)[1].split(
             '      - name: Verify protected source authorization before checkout\n',
@@ -56,9 +57,11 @@ class CompilerRunnerEnvironmentTests(unittest.TestCase):
         script = ''.join(line[10:] + '\n'
                          for line in match.group(1).splitlines())
         baseline = {'PATH': os.defpath, 'HOME': '/tmp', 'LC_ALL': 'C'}
-        clean = subprocess.run(
-            ['sh', '-eu', '-c', script], env=baseline,
-            capture_output=True, text=True, timeout=10)
+        def execute(env):
+            return subprocess.run(
+                [sys.executable, '-I', '-c', script], env=env,
+                capture_output=True, text=True, timeout=10)
+        clean = execute(baseline)
         self.assertEqual(clean.returncode, 0, clean.stderr)
         scenarios = (
             ('BASH_FUNC_git%%', '() { echo injected; }'),
@@ -69,12 +72,9 @@ class CompilerRunnerEnvironmentTests(unittest.TestCase):
         )
         for key, value in scenarios:
             with self.subTest(variable=key):
-                out = subprocess.run(
-                    ['sh', '-eu', '-c', script],
-                    env=dict(baseline, **{key: value}),
-                    capture_output=True, text=True, timeout=10)
-                self.assertNotEqual(out.returncode, 0)
-                self.assertIn('DENIED:', out.stderr)
+                result = execute(dict(baseline, **{key: value}))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(key, result.stderr)
 
 
     def test_job_env_disables_shell_startup_injection(self):
