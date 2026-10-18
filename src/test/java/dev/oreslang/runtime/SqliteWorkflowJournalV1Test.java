@@ -313,6 +313,51 @@ final class SqliteWorkflowJournalV1Test {
     }
 
     @Test
+    void semanticMutationFaultBeforeCommitRecoversPriorClaimState() {
+        Path db = tempDir.resolve("expired-complete-crash.db");
+        var loop = new DurableDevLoopV1("run-expired-crash", 3);
+        WorkflowJournalV1.Claim claim;
+
+        try (var seed = SqliteWorkflowJournalV1.open(db)) {
+            seed.append(loop.accept(
+                    "start",
+                    new DurableDevLoopV1.Start("goal")));
+            claim = seed.claimNext(
+                    "worker-a", 100L, 20L).orElseThrow();
+        }
+
+        try (var store = SqliteWorkflowJournalV1.open(
+                db,
+                point -> {
+                    if (point
+                            == SqliteWorkflowJournalV1.FaultPoint.BEFORE_COMMIT) {
+                        throw new SimulatedCrash(point);
+                    }
+                })) {
+            IllegalStateException failure = assertThrows(
+                    IllegalStateException.class,
+                    () -> store.complete(
+                            claim.effectKey(),
+                            claim.claimToken(),
+                            "receipt://late",
+                            120L));
+            assertTrue(
+                    java.util.Arrays.stream(failure.getSuppressed())
+                            .anyMatch(SimulatedCrash.class::isInstance));
+        }
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            var effect = reopened.effect(
+                    claim.effectKey()).orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.CLAIMED,
+                    effect.state());
+            assertNull(effect.receiptRef());
+            assertEquals(claim.claimToken(), effect.claimToken());
+        }
+    }
+
+    @Test
     void invalidClaimFailureRollsBackOnceAndStoreRemainsUsable() {
         Path db = tempDir.resolve("invalid-claim.db");
         var loop = new DurableDevLoopV1("run-invalid-claim", 3);
