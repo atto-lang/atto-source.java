@@ -161,6 +161,55 @@ final class MessagePackActorMailboxIntegrationTest {
     }
 
     @Test
+    void suspendedBinaryReceiveRetainsReservationUntilLogicalMailCompletes()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var completion =
+                    new java.util.concurrent.atomic.AtomicReference<
+                            dev.oreslang.runtime.OresFuture.Callback<Void>>();
+            var gate = dev.oreslang.runtime.OresFuture.<Void>fromCallback(
+                    completion::set);
+            var entered = new java.util.concurrent.CountDownLatch(1);
+
+            var ref = runtime.<Object>spawnPrivateTrusted(
+                    context -> (value, turn) -> {
+                        entered.countDown();
+                        runtime.suspendCurrentUserMailboxUntil(gate);
+                    });
+            runtime.bindSerializableMailbox(
+                    ref,
+                    new MailboxSchema(
+                            "test.Private.SuspendedBinary.v1",
+                            list(string())));
+
+            long baseline = runtime.actorMemoryBytes();
+            ref.send(List.of("x".repeat(16_384)));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            long retained = runtime.actorMemoryBytes();
+            assertTrue(
+                    retained > baseline,
+                    "decoded/wire reservation must remain charged while activeMail "
+                            + "survives a suspended receive");
+
+            completion.get().resolve(null);
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (runtime.actorMemoryBytes() != baseline
+                    && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertEquals(
+                    baseline,
+                    runtime.actorMemoryBytes(),
+                    "suspended mail reservation must release exactly once on resume");
+
+            ref.stop();
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void lateSchemaBindingCannotRetroactivelyChangeMailboxMeaning() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var delivered = new ArrayBlockingQueue<Object>(2);
