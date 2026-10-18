@@ -26,7 +26,11 @@ public final class CriticalGate {
     public final class Ticket implements AutoCloseable {
         // Cancellation of a pending admission retracts its queue slot. A granted
         // admission is already settled and therefore cannot be cancelled.
-        private final OresFuture<Void> admitted = new OresFuture<>(this::close);
+        // Cancellation must retract a pending FIFO/wait-graph edge BEFORE
+        // publishing the cancelled Future. A post-settlement close hook lets
+        // the waiter resume and see a phantom wait/deadlock registration.
+        private final OresFuture<Void> admitted =
+                new OresFuture<>(this::cancelPendingBeforePublication, () -> { });
         private boolean requested;
         private boolean granted;
         private boolean closed;
@@ -91,6 +95,23 @@ public final class CriticalGate {
             // after releasing the metadata coordinator.
             if (completeNow) admitted.completeFromRuntime(null);
             return admitted;
+        }
+
+        /**
+         * OresFuture cancellation admission executes before its public
+         * Cancelled state becomes observable. Only queued waiters may cancel:
+         * once a ticket has been granted, the physical owner must release it
+         * after its guest turn exits rather than using public Future cancel.
+         * No Future callbacks, guest code or wakeups run under COORDINATOR.
+         */
+        private boolean cancelPendingBeforePublication() {
+            synchronized (COORDINATOR) {
+                if (!requested || closed || granted) return false;
+                if (!waiters.remove(this)) return false;
+                closed = true;
+                WAITING_ON.remove(logicalOwner, CriticalGate.this);
+                return true;
+            }
         }
 
         /** Synchronous callers cannot suspend; never park an actor or ROOT carrier. */
