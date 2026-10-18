@@ -105,6 +105,60 @@ final class LambdaClosureEnvironmentIsolationTest {
                 "failed recursive initializer must not leave a MISSING reservation");
     }
 
+    @Test void deferredSelectProjectionDoesNotRetainChannelsPayloadOrSelf() throws Exception {
+        EnvAccess a = new EnvAccess();
+        Object root = a.frame(null);
+        for (String name : new String[] {
+                "self", "readChannel", "writeChannel", "writeValue",
+                "leftOwner", "rightOwner"
+        }) {
+            a.put(root, name, new Object(), Ast.BindingKind.VAL);
+        }
+
+        Ast.SelectArm read = new Ast.SelectArm(
+                Ast.ChannelOperation.READ,
+                new Ast.NameExpr("readChannel"),
+                null,
+                Ast.BindingKind.VAL,
+                "item",
+                java.util.List.of(new Ast.ExprStmt(new Ast.NameExpr("leftOwner"))));
+        Ast.SelectArm write = new Ast.SelectArm(
+                Ast.ChannelOperation.WRITE,
+                new Ast.NameExpr("writeChannel"),
+                new Ast.NameExpr("writeValue"),
+                null,
+                null,
+                java.util.List.of(new Ast.ExprStmt(new Ast.NameExpr("rightOwner"))));
+        Ast.SelectStmt selected = new Ast.SelectStmt(
+                Ast.WaitMode.NONBLOCKING,
+                Ast.SelectPolicy.FAIR,
+                java.util.List.of(read, write));
+
+        Set<String> captureNames = LambdaCapturePlanner.capturesSelect(selected);
+        Object closure = a.project.invoke(root, captureNames);
+        assertEquals(Set.of("leftOwner", "rightOwner"), a.bindings(closure).keySet());
+        assertNull(a.parent.get(closure));
+        assertNull(a.constructingObject.get(closure));
+    }
+
+    @Test void deferredChannelCallbackProjectionDropsUnreferencedAuthority() throws Exception {
+        EnvAccess a = new EnvAccess();
+        Object root = a.frame(null);
+        a.put(root, "self", new Object(), Ast.BindingKind.VAL);
+        a.put(root, "channel", new Object(), Ast.BindingKind.VAL);
+        a.put(root, "payload", new Object(), Ast.BindingKind.VAL);
+        a.put(root, "callbackOwner", new Object(), Ast.BindingKind.VAL);
+
+        Set<String> names = LambdaCapturePlanner.capturesBlock(
+                java.util.List.of(new Ast.ExprStmt(new Ast.NameExpr("callbackOwner"))));
+        Object closure = a.project.invoke(root, names);
+        assertEquals(Set.of("callbackOwner"), a.bindings(closure).keySet());
+        assertNull(a.parent.get(closure));
+        assertFalse(a.bindings(closure).containsKey("self"));
+        assertFalse(a.bindings(closure).containsKey("channel"));
+        assertFalse(a.bindings(closure).containsKey("payload"));
+    }
+
     @Test void explicitSelfCaptureStillRequiresAReferencedSlot() throws Exception {
         EnvAccess a = new EnvAccess();
         Object root = a.frame(null);
