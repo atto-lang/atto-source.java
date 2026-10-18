@@ -434,28 +434,49 @@ public final class SharedDomainArena {
             validateControlLocked(control);
             if (!closing) closing = true;
         }
-        gate.failWaiters(
+        requestPhysicalRetirement(
                 new IllegalStateException("shared-domain arena retired"));
-        gate.whenIdle(this::finishPhysicalRetirement);
         return region.physicallyClosed();
     }
 
     void retireFromRuntime() {
-        synchronized (this) {
-            if (closing) return;
-            closing = true;
-        }
-        gate.failWaiters(
+        synchronized (this) { closing = true; }
+        // An earlier attempt may have sealed the domain but failed before
+        // physical FFM reclamation. Repeated runtime close must be retryable.
+        requestPhysicalRetirement(
                 new IllegalStateException("shared-domain runtime retired"));
-        gate.whenIdle(this::finishPhysicalRetirement);
     }
 
     public synchronized boolean closed() { return closing; }
     public boolean physicallyClosed() { return region.physicallyClosed(); }
     public int queuedWaiters() { return gate.queuedWaiters(); }
 
+    private boolean physicalRetirementArmed;
+
+    private void requestPhysicalRetirement(Throwable failure) {
+        boolean install;
+        synchronized (this) {
+            install = !physicalRetirementArmed;
+            if (install) physicalRetirementArmed = true;
+        }
+        if (!install) return;
+        try {
+            gate.failWaiters(failure);
+            gate.whenIdle(this::finishPhysicalRetirement);
+        } catch (RuntimeException | Error error) {
+            synchronized (this) { physicalRetirementArmed = false; }
+            throw error;
+        }
+    }
+
     private void finishPhysicalRetirement() {
-        region.retireFromActor();
+        try {
+            region.retireFromActor();
+        } finally {
+            // One failure or deferred physical pin-release must not strand
+            // retirement permanently. A later trusted retry may re-arm.
+            synchronized (this) { physicalRetirementArmed = false; }
+        }
     }
 
     private ExplicitNativeI64Region.Slot requireHandle(Handle handle) {
