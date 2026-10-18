@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Execute the same reviewed source-i64 arithmetic inputs in real Truffle guests. */
 final class SourceI64RuntimeConformanceTest {
     private static final String REVIEWED_BLOB = "bbc319c19ecd007109d33592e210091eb267e5a2";
+    private static final String REVIEWED_SHA256 = "39bddbe558ad1c336271f91e6403c4555f2f16a7ed33a3355ee897721b6ab02a";
     private static final List<String> IDS = List.of(
             "precedence", "grouping", "signed-multiplication", "subtraction",
             "negative-result", "max-minus-one", "signed-minimum");
@@ -51,6 +52,8 @@ final class SourceI64RuntimeConformanceTest {
         String sha = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1")
                 .digest(gitBlob.toByteArray()));
         assertEquals(REVIEWED_BLOB, sha, "source-i64 fixture differs from reviewed Git blob");
+        assertEquals(REVIEWED_SHA256, HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(bytes)), "source-i64 fixture differs from SHA-256 pin");
 
         String json = new String(bytes, StandardCharsets.UTF_8);
         assertTrue(json.contains("\"reference-only-not-compiled-execution\""),
