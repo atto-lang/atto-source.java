@@ -1,5 +1,11 @@
 package dev.oreslang.runtime;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Objects;
@@ -176,293 +182,257 @@ public final class WorkflowSupervisorActorV1 {
         };
     }
 
+    private static final int PRIVATE_STATE_BYTES = 16_384;
+
+    private record PrivateConfig(
+            String databasePath,
+            String runId,
+            WorkflowSupervisorPolicyV1.Policy policy,
+            long startedAtMillis,
+            String workflowDatabasePath) { }
+
+    private static final class Resources implements AutoCloseable {
+        private final SqliteWorkflowSupervisorLedgerV1 ledger;
+        private final SqliteWorkflowJournalV1 workflowStore;
+
+        private Resources(
+                SqliteWorkflowSupervisorLedgerV1 ledger,
+                SqliteWorkflowJournalV1 workflowStore) {
+            this.ledger = ledger;
+            this.workflowStore = workflowStore;
+        }
+
+        @Override
+        public void close() {
+            RuntimeException failure = null;
+            try {
+                ledger.close();
+            } catch (RuntimeException e) {
+                failure = e;
+            }
+            if (workflowStore != null) {
+                try {
+                    workflowStore.close();
+                } catch (RuntimeException e) {
+                    if (failure == null) {
+                        failure = e;
+                    } else {
+                        failure.addSuppressed(e);
+                    }
+                }
+            }
+            if (failure != null) {
+                throw failure;
+            }
+        }
+    }
+
     private static ActorRuntime.Behavior<Object> createBehavior(
-            ActorRuntime.ActorContext<Object> ignored) {
-        return new Behavior();
+            ActorRuntime.ActorContext<Object> context) {
+        ActorRuntime.PrivateMemoryBlock state =
+                context.privateMemory()
+                        .orElseThrow(() -> new IllegalStateException(
+                                "workflow supervisor actor requires private memory"))
+                        .allocatePrivateBytes(PRIVATE_STATE_BYTES);
+        return new Behavior(state);
     }
 
     private static final class Behavior
             implements ActorRuntime.Behavior<Object> {
-        private SqliteWorkflowSupervisorLedgerV1 ledger;
-        private SqliteWorkflowJournalV1 workflowStore;
-        private String runId;
+        private final ActorRuntime.PrivateMemoryBlock stateBlock;
+
+        private Behavior(ActorRuntime.PrivateMemoryBlock stateBlock) {
+            this.stateBlock = Objects.requireNonNull(
+                    stateBlock, "stateBlock");
+        }
 
         @Override
         public void onMessage(
                 Object wire,
                 ActorRuntime.ActorContext<Object> context) {
             Message message = decodeMessage(wire);
+            PrivateConfig config = readConfig();
 
             if (message instanceof Configure configure) {
-                if (ledger != null) {
+                if (config != null) {
                     throw new IllegalStateException(
                             "workflow supervisor actor is already configured");
                 }
-                SqliteWorkflowSupervisorLedgerV1 opened =
-                        SqliteWorkflowSupervisorLedgerV1.open(
-                                Path.of(configure.databasePath()),
-                                configure.runId(),
-                                configure.policy(),
-                                configure.startedAtMillis());
-                SqliteWorkflowJournalV1 workflowOpened = null;
-                boolean accepted = false;
-                try {
-                    if (configure.workflowDatabasePath() != null) {
-                        workflowOpened = SqliteWorkflowJournalV1.open(
-                                Path.of(configure.workflowDatabasePath()));
-                        WorkflowJournalV1.StoreSnapshot snapshot =
-                                workflowOpened.snapshot();
-                        if (snapshot.runId() != null
-                                && !configure.runId().equals(
-                                        snapshot.runId())) {
-                            throw new IllegalStateException(
-                                    "supervisor workflow database run id "
-                                            + "does not match configuration");
-                        }
-                        if (snapshot.runId() != null) {
-                            DurableDevLoopV1.Snapshot reducer =
-                                    workflowOpened.replayDevLoop()
-                                            .machine()
-                                            .snapshot();
-                            if (reducer.phase()
-                                    == DurableDevLoopV1.Phase.CANCELLED
-                                    && !opened.usage().cancelled()) {
-                                opened.cancel(reducer.cancelReason());
-                            }
-                        }
-                    }
-                    this.ledger = opened;
-                    this.workflowStore = workflowOpened;
-                    this.runId = configure.runId();
+                PrivateConfig next = new PrivateConfig(
+                        configure.databasePath(),
+                        configure.runId(),
+                        configure.policy(),
+                        configure.startedAtMillis(),
+                        configure.workflowDatabasePath());
+                try (Resources resources = openResources(next)) {
+                    reconcileCancellation(resources);
+                    writeConfig(next);
                     emit(
                             context,
-                            new Ready(runId, ledger.usage()));
-                    accepted = true;
-                } finally {
-                    if (!accepted) {
-                        this.ledger = null;
-                        this.workflowStore = null;
-                        this.runId = null;
-                        opened.close();
-                        if (workflowOpened != null) {
-                            workflowOpened.close();
-                        }
-                    }
+                            new Ready(
+                                    next.runId(),
+                                    resources.ledger.usage()));
                 }
                 return;
             }
 
-            requireConfigured();
-
-            if (message instanceof Admit admit) {
-                if (workflowStore != null) {
-                    DurableDevLoopV1.Snapshot workflow =
-                            workflowStore.replayDevLoop()
-                                    .machine()
-                                    .snapshot();
-                    if (isTerminal(workflow.phase())) {
-                        WorkflowSupervisorPolicyV1.Usage usage =
-                                ledger.usage();
-                        String reason = switch (workflow.phase()) {
-                            case CANCELLED ->
-                                    usage.cancelled()
-                                            ? usage.cancellationReason()
-                                            : "workflow_cancelled";
-                            case FAILED -> "workflow_failed";
-                            case COMPLETED -> "workflow_completed";
-                            default -> throw new IllegalStateException(
-                                    "non-terminal workflow reached terminal guard");
-                        };
-                        emit(
-                                context,
-                                new AdmissionEvaluated(
-                                        new WorkflowSupervisorPolicyV1.Admission(
-                                                WorkflowSupervisorPolicyV1.Decision.CANCEL,
-                                                usage,
-                                                reason)));
-                        return;
-                    }
-                }
-
-                emit(
-                        context,
-                        new AdmissionEvaluated(
-                                ledger.admit(
-                                        admit.activity(),
-                                        admit.nowMillis(),
-                                        admit.additionalModelTokens(),
-                                        admit.additionalSpendMicros(),
-                                        workflowStore == null
-                                                ? admit.currentAmbiguousEffects()
-                                                : workflowStore.snapshot()
-                                                        .ambiguousEffects(),
-                                        admit.protectedWrite())));
-                return;
-            }
-
-            if (message instanceof Reserve reserve) {
-                if (workflowStore != null) {
-                    WorkflowJournalV1.EffectSnapshot effect =
-                            workflowStore.effect(reserve.effectKey())
-                                    .orElseThrow(() ->
-                                            new IllegalArgumentException(
-                                                    "unknown workflow effect "
-                                                            + reserve.effectKey()));
-                    WorkflowActivityProtocolV1.Kind expectedKind =
-                            WorkflowActivityProtocolV1.kindFor(
-                                    effect.command());
-                    if (expectedKind != reserve.activity()) {
-                        throw new IllegalArgumentException(
-                                "supervisor reservation activity "
-                                        + reserve.activity()
-                                        + " does not match effect command kind "
-                                        + expectedKind);
-                    }
-                    if (effect.state()
-                            != WorkflowJournalV1.EffectState.PENDING
-                            && effect.state()
-                            != WorkflowJournalV1.EffectState.CLAIMED) {
-                        throw new IllegalStateException(
-                                "cannot reserve budget for non-runnable effect "
-                                        + reserve.effectKey()
-                                        + " in state "
-                                        + effect.state());
-                    }
-
-                    DurableDevLoopV1.Snapshot workflow =
-                            workflowStore.replayDevLoop()
-                                    .machine()
-                                    .snapshot();
-                    if (isTerminal(workflow.phase())) {
-                        WorkflowSupervisorPolicyV1.Usage usage =
-                                ledger.usage();
-                        String reason = switch (workflow.phase()) {
-                            case CANCELLED ->
-                                    usage.cancelled()
-                                            ? usage.cancellationReason()
-                                            : "workflow_cancelled";
-                            case FAILED -> "workflow_failed";
-                            case COMPLETED -> "workflow_completed";
-                            default -> throw new IllegalStateException(
-                                    "non-terminal workflow reached "
-                                            + "terminal guard");
-                        };
-                        emit(
-                                context,
-                                new AdmissionEvaluated(
-                                        new WorkflowSupervisorPolicyV1.Admission(
-                                                WorkflowSupervisorPolicyV1.Decision.CANCEL,
-                                                usage,
-                                                reason)));
-                        return;
-                    }
-                }
-
-                emit(
-                        context,
-                        new AdmissionEvaluated(
-                                ledger.reserve(
-                                        reserve.effectKey(),
-                                        reserve.activity(),
-                                        reserve.nowMillis(),
-                                        reserve.estimatedModelTokens(),
-                                        reserve.estimatedSpendMicros(),
-                                        workflowStore == null
-                                                ? reserve.currentAmbiguousEffects()
-                                                : workflowStore.snapshot()
-                                                        .ambiguousEffects(),
-                                        reserve.protectedWrite())));
-                return;
-            }
-
-            if (message instanceof SettleUsage settle) {
-                WorkflowSupervisorPolicyV1.Usage usage =
-                        ledger.settle(
-                                settle.effectKey(),
-                                settle.actualModelTokens(),
-                                settle.actualSpendMicros());
-
-                if (usage.cancelled() && workflowStore != null) {
-                    DurableDevLoopV1 machine =
-                            workflowStore.replayDevLoop().machine();
-                    if (!isTerminal(machine.snapshot().phase())) {
-                        workflowStore.append(machine.accept(
-                                "supervisor-budget-cancel",
-                                new DurableDevLoopV1.Cancel(
-                                        usage.cancellationReason())));
-                    }
-                }
-
-                emit(context, new UsagePublished(usage));
-                return;
-            }
-
-            if (message instanceof Cancel cancel) {
-                WorkflowSupervisorPolicyV1.Usage usage;
-                if (workflowStore == null) {
-                    usage = ledger.cancel(cancel.reason());
-                } else {
-                    DurableDevLoopV1 machine =
-                            workflowStore.replayDevLoop().machine();
-                    DurableDevLoopV1.Snapshot workflow =
-                            machine.snapshot();
-                    if (!isTerminal(workflow.phase())) {
-                        workflowStore.append(machine.accept(
-                                "supervisor-cancel",
-                                new DurableDevLoopV1.Cancel(
-                                        cancel.reason())));
-                        usage = ledger.cancel(cancel.reason());
-                    } else if (workflow.phase()
-                            == DurableDevLoopV1.Phase.CANCELLED) {
-                        usage = ledger.usage().cancelled()
-                                ? ledger.usage()
-                                : ledger.cancel(
-                                        workflow.cancelReason());
-                    } else {
-                        usage = ledger.usage();
-                    }
-                }
-                emit(context, new UsagePublished(usage));
-                return;
-            }
-
-            if (message instanceof QueryUsage) {
-                emit(
-                        context,
-                        new UsagePublished(ledger.usage()));
-                return;
-            }
+            requireConfigured(config);
 
             if (message instanceof Shutdown) {
-                emit(context, new Stopping(runId));
-                SqliteWorkflowSupervisorLedgerV1 closing = ledger;
-                SqliteWorkflowJournalV1 closingWorkflow =
-                        workflowStore;
-                ledger = null;
-                workflowStore = null;
-                context.runtime().endCurrentActorWithCleanup(() -> {
-                    RuntimeException failure = null;
-                    try {
-                        closing.close();
-                    } catch (RuntimeException e) {
-                        failure = e;
+                emit(context, new Stopping(config.runId()));
+                stateBlock.close();
+                context.runtime().endCurrentActor();
+                return;
+            }
+
+            try (Resources resources = openResources(config)) {
+                SqliteWorkflowSupervisorLedgerV1 ledger =
+                        resources.ledger;
+                SqliteWorkflowJournalV1 workflowStore =
+                        resources.workflowStore;
+
+                reconcileCancellation(resources);
+
+                if (message instanceof Admit admit) {
+                    WorkflowSupervisorPolicyV1.Admission terminal =
+                            terminalAdmission(ledger, workflowStore);
+                    if (terminal != null) {
+                        emit(
+                                context,
+                                new AdmissionEvaluated(terminal));
+                        return;
                     }
-                    if (closingWorkflow != null) {
-                        try {
-                            closingWorkflow.close();
-                        } catch (RuntimeException e) {
-                            if (failure == null) {
-                                failure = e;
-                            } else {
-                                failure.addSuppressed(e);
-                            }
+
+                    emit(
+                            context,
+                            new AdmissionEvaluated(
+                                    ledger.admit(
+                                            admit.activity(),
+                                            admit.nowMillis(),
+                                            admit.additionalModelTokens(),
+                                            admit.additionalSpendMicros(),
+                                            workflowStore == null
+                                                    ? admit.currentAmbiguousEffects()
+                                                    : workflowStore.snapshot()
+                                                            .ambiguousEffects(),
+                                            admit.protectedWrite())));
+                    return;
+                }
+
+                if (message instanceof Reserve reserve) {
+                    if (workflowStore != null) {
+                        WorkflowJournalV1.EffectSnapshot effect =
+                                workflowStore.effect(reserve.effectKey())
+                                        .orElseThrow(() ->
+                                                new IllegalArgumentException(
+                                                        "unknown workflow effect "
+                                                                + reserve.effectKey()));
+                        WorkflowActivityProtocolV1.Kind expectedKind =
+                                WorkflowActivityProtocolV1.kindFor(
+                                        effect.command());
+                        if (expectedKind != reserve.activity()) {
+                            throw new IllegalArgumentException(
+                                    "supervisor reservation activity "
+                                            + reserve.activity()
+                                            + " does not match effect command kind "
+                                            + expectedKind);
+                        }
+                        if (effect.state()
+                                != WorkflowJournalV1.EffectState.PENDING
+                                && effect.state()
+                                != WorkflowJournalV1.EffectState.CLAIMED) {
+                            throw new IllegalStateException(
+                                    "cannot reserve budget for non-runnable effect "
+                                            + reserve.effectKey()
+                                            + " in state "
+                                            + effect.state());
+                        }
+
+                        WorkflowSupervisorPolicyV1.Admission terminal =
+                                terminalAdmission(
+                                        ledger, workflowStore);
+                        if (terminal != null) {
+                            emit(
+                                    context,
+                                    new AdmissionEvaluated(terminal));
+                            return;
                         }
                     }
-                    if (failure != null) {
-                        throw failure;
+
+                    emit(
+                            context,
+                            new AdmissionEvaluated(
+                                    ledger.reserve(
+                                            reserve.effectKey(),
+                                            reserve.activity(),
+                                            reserve.nowMillis(),
+                                            reserve.estimatedModelTokens(),
+                                            reserve.estimatedSpendMicros(),
+                                            workflowStore == null
+                                                    ? reserve.currentAmbiguousEffects()
+                                                    : workflowStore.snapshot()
+                                                            .ambiguousEffects(),
+                                            reserve.protectedWrite())));
+                    return;
+                }
+
+                if (message instanceof SettleUsage settle) {
+                    WorkflowSupervisorPolicyV1.Usage usage =
+                            ledger.settle(
+                                    settle.effectKey(),
+                                    settle.actualModelTokens(),
+                                    settle.actualSpendMicros());
+
+                    if (usage.cancelled() && workflowStore != null) {
+                        DurableDevLoopV1 machine =
+                                workflowStore.replayDevLoop().machine();
+                        if (!isTerminal(machine.snapshot().phase())) {
+                            workflowStore.append(machine.accept(
+                                    "supervisor-budget-cancel",
+                                    new DurableDevLoopV1.Cancel(
+                                            usage.cancellationReason())));
+                        }
                     }
-                });
-                return;
+
+                    emit(context, new UsagePublished(usage));
+                    return;
+                }
+
+                if (message instanceof Cancel cancel) {
+                    WorkflowSupervisorPolicyV1.Usage usage;
+                    if (workflowStore == null) {
+                        usage = ledger.cancel(cancel.reason());
+                    } else {
+                        DurableDevLoopV1 machine =
+                                workflowStore.replayDevLoop().machine();
+                        DurableDevLoopV1.Snapshot workflow =
+                                machine.snapshot();
+                        if (!isTerminal(workflow.phase())) {
+                            workflowStore.append(machine.accept(
+                                    "supervisor-cancel",
+                                    new DurableDevLoopV1.Cancel(
+                                            cancel.reason())));
+                            usage = ledger.cancel(cancel.reason());
+                        } else if (workflow.phase()
+                                == DurableDevLoopV1.Phase.CANCELLED) {
+                            usage = ledger.usage().cancelled()
+                                    ? ledger.usage()
+                                    : ledger.cancel(
+                                            workflow.cancelReason());
+                        } else {
+                            usage = ledger.usage();
+                        }
+                    }
+                    emit(context, new UsagePublished(usage));
+                    return;
+                }
+
+                if (message instanceof QueryUsage) {
+                    emit(
+                            context,
+                            new UsagePublished(ledger.usage()));
+                    return;
+                }
             }
 
             throw new IllegalStateException(
@@ -470,8 +440,177 @@ public final class WorkflowSupervisorActorV1 {
                             + message.getClass().getName());
         }
 
-        private void requireConfigured() {
-            if (ledger == null) {
+        private Resources openResources(PrivateConfig config) {
+            SqliteWorkflowSupervisorLedgerV1 ledger =
+                    SqliteWorkflowSupervisorLedgerV1.open(
+                            Path.of(config.databasePath()),
+                            config.runId(),
+                            config.policy(),
+                            config.startedAtMillis());
+            SqliteWorkflowJournalV1 workflowStore = null;
+            boolean accepted = false;
+            try {
+                if (config.workflowDatabasePath() != null) {
+                    workflowStore = SqliteWorkflowJournalV1.open(
+                            Path.of(config.workflowDatabasePath()));
+                    WorkflowJournalV1.StoreSnapshot snapshot =
+                            workflowStore.snapshot();
+                    if (snapshot.runId() != null
+                            && !config.runId().equals(
+                                    snapshot.runId())) {
+                        throw new IllegalStateException(
+                                "supervisor workflow database run id "
+                                        + "does not match configuration");
+                    }
+                }
+                accepted = true;
+                return new Resources(ledger, workflowStore);
+            } finally {
+                if (!accepted) {
+                    ledger.close();
+                    if (workflowStore != null) {
+                        workflowStore.close();
+                    }
+                }
+            }
+        }
+
+        private static void reconcileCancellation(
+                Resources resources) {
+            if (resources.workflowStore == null) {
+                return;
+            }
+            WorkflowJournalV1.StoreSnapshot snapshot =
+                    resources.workflowStore.snapshot();
+            if (snapshot.runId() == null) {
+                return;
+            }
+            DurableDevLoopV1.Snapshot reducer =
+                    resources.workflowStore.replayDevLoop()
+                            .machine()
+                            .snapshot();
+            if (reducer.phase()
+                    == DurableDevLoopV1.Phase.CANCELLED
+                    && !resources.ledger.usage().cancelled()) {
+                resources.ledger.cancel(reducer.cancelReason());
+            }
+        }
+
+        private static WorkflowSupervisorPolicyV1.Admission
+                terminalAdmission(
+                        SqliteWorkflowSupervisorLedgerV1 ledger,
+                        SqliteWorkflowJournalV1 workflowStore) {
+            if (workflowStore == null
+                    || workflowStore.snapshot().runId() == null) {
+                return null;
+            }
+            DurableDevLoopV1.Snapshot workflow =
+                    workflowStore.replayDevLoop()
+                            .machine()
+                            .snapshot();
+            if (!isTerminal(workflow.phase())) {
+                return null;
+            }
+            WorkflowSupervisorPolicyV1.Usage usage =
+                    ledger.usage();
+            String reason = switch (workflow.phase()) {
+                case CANCELLED ->
+                        usage.cancelled()
+                                ? usage.cancellationReason()
+                                : "workflow_cancelled";
+                case FAILED -> "workflow_failed";
+                case COMPLETED -> "workflow_completed";
+                default -> throw new IllegalStateException(
+                        "non-terminal workflow reached terminal guard");
+            };
+            return new WorkflowSupervisorPolicyV1.Admission(
+                    WorkflowSupervisorPolicyV1.Decision.CANCEL,
+                    usage,
+                    reason);
+        }
+
+        private PrivateConfig readConfig() {
+            byte[] payload =
+                    WorkflowPrivateActorStateV1.read(stateBlock);
+            if (payload.length == 0) {
+                return null;
+            }
+            try (DataInputStream input = new DataInputStream(
+                    new ByteArrayInputStream(payload))) {
+                int version = input.readInt();
+                if (version != 1) {
+                    throw new IllegalStateException(
+                            "unsupported supervisor private-state version "
+                                    + version);
+                }
+                String databasePath = readString(input);
+                String runId = readString(input);
+                WorkflowSupervisorPolicyV1.Policy policy =
+                        new WorkflowSupervisorPolicyV1.Policy(
+                                input.readLong(),
+                                input.readLong(),
+                                input.readInt(),
+                                input.readLong(),
+                                input.readInt(),
+                                input.readBoolean());
+                long startedAtMillis = input.readLong();
+                String workflowDatabasePath =
+                        readNullableString(input);
+                if (input.available() != 0) {
+                    throw new IllegalStateException(
+                            "trailing bytes in supervisor private state");
+                }
+                return new PrivateConfig(
+                        databasePath,
+                        runId,
+                        policy,
+                        startedAtMillis,
+                        workflowDatabasePath);
+            } catch (IOException | RuntimeException failure) {
+                if (failure instanceof IllegalStateException stateFailure) {
+                    throw stateFailure;
+                }
+                throw new IllegalStateException(
+                        "invalid supervisor private state",
+                        failure);
+            }
+        }
+
+        private void writeConfig(PrivateConfig config) {
+            try {
+                ByteArrayOutputStream bytes =
+                        new ByteArrayOutputStream();
+                try (DataOutputStream output =
+                        new DataOutputStream(bytes)) {
+                    output.writeInt(1);
+                    writeString(output, config.databasePath());
+                    writeString(output, config.runId());
+                    WorkflowSupervisorPolicyV1.Policy policy =
+                            config.policy();
+                    output.writeLong(policy.maxWallClockMillis());
+                    output.writeLong(policy.maxModelTokens());
+                    output.writeInt(policy.maxCiRuns());
+                    output.writeLong(policy.maxSpendMicros());
+                    output.writeInt(policy.maxAmbiguousEffects());
+                    output.writeBoolean(
+                            policy.requireApprovalBeforeProtectedWrite());
+                    output.writeLong(config.startedAtMillis());
+                    writeNullableString(
+                            output,
+                            config.workflowDatabasePath());
+                }
+                WorkflowPrivateActorStateV1.write(
+                        stateBlock, bytes.toByteArray());
+            } catch (IOException failure) {
+                throw new IllegalStateException(
+                        "failed to encode supervisor private state",
+                        failure);
+            }
+        }
+
+        private static void requireConfigured(
+                PrivateConfig config) {
+            if (config == null) {
                 throw new IllegalStateException(
                         "Configure must be the first supervisor message");
             }
@@ -483,6 +622,46 @@ public final class WorkflowSupervisorActorV1 {
             context.runtime().emitCurrentActorOutput(
                     encodeOutput(output));
         }
+    }
+
+    private static void writeString(
+            DataOutputStream output,
+            String value) throws IOException {
+        byte[] bytes = requireText(value, "private-state string")
+                .getBytes(StandardCharsets.UTF_8);
+        output.writeInt(bytes.length);
+        output.write(bytes);
+    }
+
+    private static String readString(
+            DataInputStream input) throws IOException {
+        int length = input.readInt();
+        if (length <= 0 || length > PRIVATE_STATE_BYTES) {
+            throw new IllegalStateException(
+                    "invalid private-state string length");
+        }
+        byte[] bytes = input.readNBytes(length);
+        if (bytes.length != length) {
+            throw new IllegalStateException(
+                    "truncated private-state string");
+        }
+        return new String(bytes, StandardCharsets.UTF_8);
+    }
+
+    private static void writeNullableString(
+            DataOutputStream output,
+            String value) throws IOException {
+        output.writeBoolean(value != null);
+        if (value != null) {
+            writeString(output, value);
+        }
+    }
+
+    private static String readNullableString(
+            DataInputStream input) throws IOException {
+        return input.readBoolean()
+                ? readString(input)
+                : null;
     }
 
     private static Map<String, Object> encodeMessage(Message message) {
