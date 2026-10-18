@@ -59,6 +59,27 @@ final class AnyCallableActorBoundaryTest {
     }
 
     @Test
+    void normalizedBuiltinNamesAreStableUnderDeterministicNamespaceFuzzing() {
+        java.util.Random random = new java.util.Random(155234L);
+        String[] builtins = {"AnyCallable", "ActorRef", "NetworkCodec",
+                "Serializable", "Sendable", "Pointer", "A"};
+        for (int i = 0; i < 20_000; i++) {
+            StringBuilder name = new StringBuilder("pkg");
+            for (int j = 0, n = random.nextInt(5); j < n; j++) {
+                name.append(random.nextBoolean() ? "." : "::");
+                name.append("mid").append(random.nextInt(15));
+            }
+            if (random.nextBoolean()) name.append(random.nextBoolean() ? "." : "::");
+            else name.setLength(0);
+            name.append(builtins[random.nextInt(builtins.length)]);
+            String rendered = name.toString();
+            String expected = rendered.replaceAll(".*(?:\\.|::)", "");
+            assertEquals(expected, TypeChecker.actorBoundarySimpleName(rendered),
+                    "qualified actor DATA builtin check must never drop an unqualified prefix");
+        }
+    }
+
+    @Test
     void erasedCallablesAndCodecObjectsNeverCrossActorData() {
         for (String type : new String[] {
                 "AnyCallable", "List<AnyCallable>",
