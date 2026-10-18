@@ -47,6 +47,81 @@ final class ActorDeclarationLexicalBoundaryTest {
     }
 
     @Test
+    void ipcAndFfiActorBoundariesAreOrthogonalAndFailClosed() {
+        Ast.Program program = Parser.parse("""
+                define ipc actor Worker as
+                end
+
+                define untrusted ipc actor Sandboxed as
+                end
+
+                define ffi actor Crypto as
+                end
+                """);
+
+        List<Ast.ClassDecl> actors = program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .toList();
+
+        assertEquals(Ast.ActorKind.PRIVATE, actors.get(0).actorKind());
+        assertEquals(Ast.ActorBoundary.IPC, actors.get(0).actorBoundary());
+        assertEquals(Ast.ActorKind.UNTRUSTED, actors.get(1).actorKind());
+        assertEquals(Ast.ActorBoundary.IPC, actors.get(1).actorBoundary());
+        assertEquals(Ast.ActorKind.PRIVATE, actors.get(2).actorKind());
+        assertEquals(Ast.ActorBoundary.FFI, actors.get(2).actorBoundary());
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define untrusted ffi actor Bad as
+                end
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define shared ipc actor Bad as
+                end
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define ipc ffi actor Bad as
+                end
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define ipc isoactor Bad as
+                end
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define ipc actor Generic<T> as
+                end
+                """));
+    }
+
+    @Test
+    void externalActorSpawnIsRejectedUntilAuthenticatedBoundaryLoweringExists() {
+        IllegalArgumentException ipc = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define ipc actor Worker as
+                        end
+                        pub routine main(): void {
+                          val worker = spawn Worker();
+                          return;
+                        }
+                        """)));
+        assertTrue(ipc.getMessage().contains("fail-closed"), ipc.getMessage());
+
+        IllegalArgumentException ffi = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define ffi actor Worker as
+                        end
+                        pub routine main(): void {
+                          val worker = spawn Worker();
+                          return;
+                        }
+                        """)));
+        assertTrue(ffi.getMessage().contains("fail-closed"), ffi.getMessage());
+    }
+
+    @Test
     void defineActorStillForbidsConstructorsUntilRuntimeStartupLoweringExists() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
