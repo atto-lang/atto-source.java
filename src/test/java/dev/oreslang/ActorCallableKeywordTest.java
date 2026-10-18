@@ -122,14 +122,49 @@ final class ActorCallableKeywordTest {
                   return;
                 }
                 """));
-        IllegalArgumentException foreign = assertThrows(
+        Ast.Program program = Parser.parse("""
+                define ffi actor Native as
+                  extern suspends fnc call(int value): int;
+                end
+                """);
+        Ast.ClassDecl nativeActor =
+                (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        assertEquals(Ast.ActorBoundary.FFI, nativeActor.actorBoundary());
+        assertEquals(1, nativeActor.foreignDeclarations().size());
+        Ast.ForeignDecl foreign = nativeActor.foreignDeclarations().getFirst();
+        assertEquals("call", foreign.name());
+        assertTrue(foreign.suspends());
+        assertEquals("call", foreign.symbolIdentity());
+
+        IllegalArgumentException nonFfi = assertThrows(
                 IllegalArgumentException.class,
                 () -> Parser.parse("""
-                        define ffi actor Native as
+                        define ipc actor Native as
                           extern suspends fnc call(int value): int;
                         end
                         """));
-        assertTrue(foreign.getMessage().contains("ForeignDecl"), foreign.getMessage());
+        assertTrue(nonFfi.getMessage().contains("requires an ffi actor"),
+                nonFfi.getMessage());
+
+        IllegalArgumentException blocking = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define ffi actor Native as
+                          extern fnc call(int value): int;
+                        end
+                        """));
+        assertTrue(blocking.getMessage().contains("must be 'suspends'"),
+                blocking.getMessage());
+
+        IllegalArgumentException body = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define ffi actor Native as
+                          extern suspends fnc call(int value): int { return value; }
+                        end
+                        """));
+        assertTrue(body.getMessage().contains("must end with ';'"),
+                body.getMessage());
     }
 
     @Test
