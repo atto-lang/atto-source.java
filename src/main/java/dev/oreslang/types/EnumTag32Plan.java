@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Host-only nullary-enum AOT value layout, NOT executable enum admission.
@@ -32,6 +33,7 @@ public final class EnumTag32Plan {
 
     private final String qualifiedEnumId;
     private final Map<String, Integer> tagsByCase;
+    private final Set<Integer> validTags;
     private final String schemaFingerprint;
 
     public EnumTag32Plan(String qualifiedEnumId, List<CaseTag> declaredCases) {
@@ -51,6 +53,7 @@ public final class EnumTag32Plan {
         }
         this.qualifiedEnumId = qualifiedEnumId;
         this.tagsByCase = java.util.Collections.unmodifiableMap(tags);
+        this.validTags = Set.copyOf(tags.values());
         this.schemaFingerprint = fingerprint(qualifiedEnumId, cases);
     }
 
@@ -68,7 +71,7 @@ public final class EnumTag32Plan {
     /** Runtime validation of an already chosen nominal envelope; NOT overload selection. */
     public boolean containsWireTag(int tag) {
         if (tag <= 0) return false;
-        return tagsByCase.containsValue(tag);
+        return validTags.contains(tag);
     }
 
     /** Reject cached AOT objects built for an old enum payload/tag schema. */
