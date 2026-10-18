@@ -5,6 +5,7 @@ Status: **draft, host API only, stacked on stage-1 PR #1402**.
 ## Implementation
 
 - `OresScheduler.startTracked(Task<T>)` opts into a new `TaskHandle<T>` without altering the existing `start()` or `OresFuture<T>` ABI.
+- `OresScheduler.newTaskScope()` creates an explicit host-only lifetime owner. `scope.startTask(...)` admits owned children; `scope.cancel(reason)` propagates cancellation; `scope.seal()` stops admission without cancelling; `scope.getDone()` joins physical quiescence of all admitted children. This is not actor or source-language scope integration.
 - `handle.cancel(reason)` owns a runtime-only `TaskCancellation` authority (stage 1); cancellation of the handle's result Future is permitted to win before the active guest turn exits.
 - `handle.getDone()` is a distinct `OresFuture<TaskOutcome<T>>`, whose cancellation admission always returns false. Neither callers nor task cancellation can forge a physical-exit witness.
 - The completion barrier waits for **both** the OresScheduler `onQuiescent` callback and terminal result notification, regardless of order.
@@ -15,14 +16,15 @@ Status: **draft, host API only, stacked on stage-1 PR #1402**.
 
 - `src/test/java/dev/oreslang/runtime/TaskHandleTest.java` has **21 scheduler-level JUnit cases** (actual Graal/Maven CI execution still pending).
 - Cases cover running guest-turn quiescence, cancellation before dispatch, suspended await, cooperative handoff, terminal success/failure, timeout observation, forged `getDone().cancel()`, cancellation races, reason preservation, admission denial on closed schedulers, repeated observation, cancellation requests after terminal outcomes, and guest-thrown CancellationException being diagnosed as failure.
-- A self-contained Java 21 host model compiled successfully, and 300 running cancellation/quiescence iterations plus success and guest-exception classification passed. **The model used a minimal scheduler/Future stub, not OresScheduler's real production source; it does not count as integration evidence.**
+- `src/test/java/dev/oreslang/runtime/TaskScopeTest.java` adds **9 more JUnit cases** for parent cancellation, multi-child physical join, sealing, admission races, invalid reasons, and scope admission on closed schedulers (30 test cases total, **not yet executed by Maven**).
+- A self-contained Java 21 host model compiled successfully, and 300 running cancellation/quiescence iterations plus success and guest-exception classification passed. A separate scope model completed 250 two-child parent-cancellation/join iterations. **The model used a minimal scheduler/Future stub, not OresScheduler's real production source; it does not count as integration evidence.**
 - Full source compilation, Java 21 Maven/GraalVM execution, LLVM parity, actor scope join, and source-language Task syntax are NOT verified.
-- On some paths `OresFuture.cancel` invokes synchronous host notification callbacks; `TaskHandle.cancel` therefore does **not** currently guarantee bounded wall-time. Do not advertise nonblocking source cancellation until publication is decoupled and tested.
+- On some paths `OresFuture.cancel` invokes synchronous host notification callbacks; `TaskHandle.cancel` and `TaskScope.cancel` therefore do **not** currently guarantee bounded wall-time. Do not advertise nonblocking source cancellation until publication is decoupled and tested.
 - The quiescence callback is the existing scheduler's guest-turn exit signal; it is not a guarantee about unrelated foreign native workers or asynchronous OS I/O.
 
 ## Required follow-up
 
-1. Add actor/root `TaskScope` with lifetime ownership, atomic authorized reparenting, cancellation propagation, failure supervision, and a scope join barrier.
+1. Connect the new **explicit host** `TaskScope` to actual actor/root lifecycle ownership. Add authorized reparenting and failure-supervision policies; these are not included in this stage.
 2. Harden `getDone()` and cancellation under source actor close, request-local turns, executor rejection, timed wall deadlines, repeated carrier migration, and teardown notification callbacks.
 3. Expose `Task<T>` syntax only after parser/typechecker/lowering and source-level conformance; `do task` must retain supervisor authority even if its handle is dropped.
 4. Validate exact PR-head Maven/JUnit and full GraalVM execution on an authorized runner. GitHub source-org Actions have been failing before executing steps.
