@@ -84,6 +84,37 @@ final class CallerRoleIncrementalAbiTest {
     }
 
     @Test
+    void publicEnumCaseAndTagChangesInvalidateSourceAbi() {
+        String baseline = IncrementalCompiler.abiDigest(Parser.parse("""
+                define pub enum Roles as
+                    A = 1
+                    B = 3
+                end
+                """));
+        String changedTag = IncrementalCompiler.abiDigest(Parser.parse("""
+                define pub enum Roles as
+                    A = 1
+                    B = 4
+                end
+                """));
+        String changedVariant = IncrementalCompiler.abiDigest(Parser.parse("""
+                define pub enum Roles as
+                    A = 1
+                    C = 3
+                end
+                """));
+        String changedPayload = IncrementalCompiler.abiDigest(Parser.parse("""
+                define pub enum Roles as
+                    A = 1
+                    B: int = 3
+                end
+                """));
+        assertNotEquals(baseline, changedTag);
+        assertNotEquals(baseline, changedVariant);
+        assertNotEquals(baseline, changedPayload);
+    }
+
+    @Test
     void implementationChangesDoNotModifyExportedPolicyAbi() {
         String first = fingerprint("""
                 @CallableBy(Callers.A)
