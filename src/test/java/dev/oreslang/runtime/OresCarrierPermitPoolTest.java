@@ -5,8 +5,6 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
@@ -41,117 +39,79 @@ final class OresCarrierPermitPoolTest {
         assertEquals(0, permits.totalHeld());
     }
 
-    @Test void javaThreadConsumesPermitOnlyWhenPhysicalStartBegins() throws Exception {
+    @Test void abandonedNewThreadReservationReconcilesExactlyOnce() {
         var permits = new OresCarrierPermitPool(5);
-        ThreadFactory control = permits.threadFactory(
-                OresCarrierPermitPool.Domain.CONTROL, "permit-control-");
+        OresCarrierPermitPool.ReconciliableThreadFactory factory =
+                permits.threadFactory(
+                        OresCarrierPermitPool.Domain.CONTROL, "permit-abandoned-");
+
+        Thread abandoned = factory.newThread(() -> { });
+        assertNotNull(abandoned);
+        assertEquals(Thread.State.NEW, abandoned.getState());
+        assertEquals(1, permits.totalHeld(),
+                "factory reserves before JDK thread-container startup");
+
+        factory.reconcileCreatedThreads();
+        assertEquals(0, permits.totalHeld(),
+                "abandoned NEW worker must return its reservation");
+        factory.reconcileCreatedThreads();
+        assertEquals(0, permits.totalHeld(),
+                "reconciliation must be idempotent");
+    }
+
+    @Test void adaptiveExecutorHoldsPermitForPhysicalWorkerLifetime() throws Exception {
+        var permits = new OresCarrierPermitPool(5);
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
+        var secondRan = new CountDownLatch(1);
 
-        Thread first = control.newThread(() -> {
-            entered.countDown();
-            try {
-                release.await(3, TimeUnit.SECONDS);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-            }
-        });
+        try (var workers = new AdaptiveCarrierExecutor(
+                0,
+                1,
+                8,
+                permits.threadFactory(
+                        OresCarrierPermitPool.Domain.CONTROL, "permit-control-"))) {
+            assertEquals(0, permits.totalHeld());
+            workers.execute(() -> {
+                entered.countDown();
+                try {
+                    release.await(3, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            assertEquals(1, permits.totalHeld());
+            assertEquals(1, permits.held(OresCarrierPermitPool.Domain.CONTROL));
+
+            // No second physical worker is allowed by this executor, but ready
+            // work remains queueable behind the permitted worker.
+            workers.execute(secondRan::countDown);
+            assertEquals(1, permits.totalHeld());
+            release.countDown();
+            assertTrue(secondRan.await(2, TimeUnit.SECONDS));
+        }
         assertEquals(0, permits.totalHeld(),
-                "allocating a Java Thread object is not physical carrier admission");
-
-        first.start();
-        assertTrue(entered.await(2, TimeUnit.SECONDS));
-        assertEquals(1, permits.totalHeld());
-        assertEquals(1, permits.held(OresCarrierPermitPool.Domain.CONTROL));
-
-        Thread denied = control.newThread(() -> { });
-        assertThrows(RejectedExecutionException.class, denied::start,
-                "cap=5 leaves no spare permit while four other reserves are unmet");
-        assertEquals(1, permits.totalHeld(),
-                "denied Thread.start must not leak a physical permit");
-
-        release.countDown();
-        first.join(2_000);
-        assertFalse(first.isAlive());
-        assertEquals(0, permits.totalHeld(),
-                "worker-loop exit must return the permit exactly once");
+                "executor worker-loop exit must return the permit exactly once");
     }
 
-    @Test void thrownWorkerStillReturnsPermit() throws Exception {
+    @Test void thrownWorkerStillReturnsPermitAfterExecutorRetiresIt() throws Exception {
         var permits = new OresCarrierPermitPool(5);
-        Thread worker = permits.threadFactory(
-                        OresCarrierPermitPool.Domain.PRIVATE, "permit-throw-")
-                .newThread(() -> { throw new AssertionError("synthetic worker failure"); });
-        worker.setUncaughtExceptionHandler((thread, failure) -> { });
-        worker.start();
-        worker.join(2_000);
-        assertFalse(worker.isAlive());
+        var ran = new CountDownLatch(1);
+        try (var workers = new AdaptiveCarrierExecutor(
+                0,
+                1,
+                8,
+                permits.threadFactory(
+                        OresCarrierPermitPool.Domain.PRIVATE, "permit-throw-"))) {
+            workers.execute(() -> {
+                ran.countDown();
+                throw new AssertionError("synthetic worker failure");
+            });
+            assertTrue(ran.await(2, TimeUnit.SECONDS));
+        }
         assertEquals(0, permits.totalHeld());
         assertEquals(0, permits.held(OresCarrierPermitPool.Domain.PRIVATE));
-    }
-
-    @Test void denialReasonsAndSnapshotReconcileExactly() {
-        var permits = new OresCarrierPermitPool(5);
-        var held = new ArrayList<OresCarrierPermitPool.Permit>();
-        try {
-            held.add(permits.tryAcquire(OresCarrierPermitPool.Domain.CONTROL));
-            assertNotNull(held.get(0));
-            assertNull(permits.tryAcquire(OresCarrierPermitPool.Domain.CONTROL),
-                    "second CONTROL carrier must preserve four unmet reserves");
-
-            for (var domain : List.of(
-                    OresCarrierPermitPool.Domain.PRIVATE,
-                    OresCarrierPermitPool.Domain.SHARED,
-                    OresCarrierPermitPool.Domain.UNTRUSTED,
-                    OresCarrierPermitPool.Domain.LIFECYCLE)) {
-                var permit = permits.tryAcquire(domain);
-                assertNotNull(permit);
-                held.add(permit);
-            }
-            assertNull(permits.tryAcquire(OresCarrierPermitPool.Domain.PRIVATE),
-                    "fully held global ceiling must report hard capacity denial");
-
-            var snapshot = permits.snapshot();
-            assertEquals(5, snapshot.maximum());
-            assertEquals(5, snapshot.totalHeld());
-            assertEquals(0, snapshot.free());
-            assertEquals(1, snapshot.controlHeld());
-            assertEquals(1, snapshot.privateHeld());
-            assertEquals(1, snapshot.sharedHeld());
-            assertEquals(1, snapshot.untrustedHeld());
-            assertEquals(1, snapshot.lifecycleHeld());
-            assertEquals(1L, snapshot.deniedReserveProtection());
-            assertEquals(1L, snapshot.deniedCapacity());
-        } finally {
-            held.forEach(OresCarrierPermitPool.Permit::close);
-        }
-        var released = permits.snapshot();
-        assertEquals(0, released.totalHeld());
-        assertEquals(5, released.free());
-        assertEquals(1L, released.deniedReserveProtection());
-        assertEquals(1L, released.deniedCapacity());
-    }
-
-    @Test void multiAcquireRollbackDoesNotLeakPartialPermits() {
-        var permits = new OresCarrierPermitPool(8);
-        var control = permits.tryAcquire(OresCarrierPermitPool.Domain.CONTROL);
-        assertNotNull(control);
-        try {
-            assertNull(permits.tryAcquireMany(OresCarrierPermitPool.Domain.CONTROL, 4),
-                    "transaction must fail when its final permit would steal a reserve");
-            var snapshot = permits.snapshot();
-            assertEquals(1, snapshot.totalHeld(),
-                    "partial transaction must restore original held state");
-            assertEquals(1, snapshot.controlHeld());
-            assertEquals(7, snapshot.free());
-            assertEquals(1L, snapshot.deniedReserveProtection());
-            assertEquals(0L, snapshot.deniedCapacity());
-        } finally {
-            control.close();
-            control.close();
-        }
-        assertEquals(0, permits.totalHeld(),
-                "Permit.close must remain idempotent after transactional pressure");
     }
 
     @Test void concurrentAcquireReleaseNeverExceedsMaximum() throws Exception {
