@@ -82,6 +82,7 @@ final class ActorThreadPolicyHardeningTest {
     void maliciousMinCannotBypassThroughDirectAstConstruction() {
         assertThrows(IllegalArgumentException.class, () -> new Ast.ActorThreadPolicy(0, 1));
         assertThrows(IllegalArgumentException.class, () -> new Ast.ActorThreadPolicy(2, 1));
+        assertThrows(IllegalArgumentException.class, () -> new Ast.ActorThreadPolicy(1, 4));
         assertThrows(IllegalArgumentException.class,
                 () -> ActorThreadAdmission.requireExclusiveBackend(withForgedPolicy(2, 2)));
         assertDoesNotThrow(() ->
