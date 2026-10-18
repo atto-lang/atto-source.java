@@ -100,8 +100,17 @@ public final class OptionalCallShapeBinder {
                     List<Integer> variadicSourceIndices,
                     List<Integer> explicitlyOmittedParameterIndices) {
             this(sourceIndexByParameter, variadicParameterIndex, variadicSourceIndices,
-                    explicitlyOmittedParameterIndices,
+                    rejectMissingOrigins(explicitlyOmittedParameterIndices),
                     identityItemIndexes(sourceIndexByParameter, variadicSourceIndices));
+        }
+
+        private static List<Integer> rejectMissingOrigins(List<Integer> omissions) {
+            Objects.requireNonNull(omissions, "omissions");
+            if (!omissions.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "explicitly omitted call items require original-source indexes");
+            }
+            return omissions;
         }
 
         private static List<Integer> identityItemIndexes(List<Integer> fixed, List<Integer> rest) {
