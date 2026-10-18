@@ -5068,7 +5068,7 @@ public final class TypeChecker {
             }
             rawReceiver = binding.type();
         } else {
-            rawReceiver = typeOf(member.receiver(), env, generics, self);
+            rawReceiver = typeOfStaticNamespaceReceiver(member.receiver(), env, generics, self);
         }
         Type receiver = receiverDispatchType(
                 unwrapMutexGuard(deref(rawReceiver)));
