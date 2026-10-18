@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.util.ArrayList;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -68,6 +69,52 @@ final class GenServerCallPortTest {
         assertThrows(ExecutionException.class, a.future()::get);
         assertThrows(ExecutionException.class, b.future()::get);
         assertFalse(port.reply(a.ticket(), actor(1), 4));
+    }
+
+    @Test void failedGenerationDoesNotDuplicateOrSettleUnrelatedCallMap() throws Exception {
+        var port = new GenServerCallPort<Integer>(258);
+        var unaffected = new ArrayList<GenServerCallPort.PendingCall<Integer>>();
+        for (int i = 0; i < 256; i++) {
+            unaffected.add(port.register(actor(2)));
+        }
+        var failedA = port.register(actor(1));
+        var failedB = port.register(actor(1));
+        assertEquals(258, port.pendingCount());
+        assertEquals(2, port.failActor(actor(1), new IllegalStateException("actor exited")));
+        assertEquals(256, port.pendingCount());
+        assertTrue(failedA.future().isDone());
+        assertTrue(failedB.future().isDone());
+        assertFalse(port.reply(failedA.ticket(), actor(1), 1));
+        for (var call : unaffected) {
+            assertFalse(call.future().isDone());
+            assertTrue(port.reply(call.ticket(), actor(2), 7));
+            assertEquals(7, call.future().get());
+        }
+        assertEquals(0, port.pendingCount());
+        assertEquals(0, port.close());
+    }
+
+    @Test void closeRetiresOnlyLiveCallsWithoutLosingCancellationWinners() throws Exception {
+        var port = new GenServerCallPort<Integer>(64);
+        var calls = new ArrayList<GenServerCallPort.PendingCall<Integer>>();
+        for (int i = 0; i < 64; i++) calls.add(port.register(actor(1)));
+        for (int i = 0; i < calls.size(); i += 2) {
+            assertTrue(calls.get(i).future().cancel(false));
+        }
+        assertEquals(32, port.pendingCount());
+        assertEquals(32, port.close());
+        assertEquals(0, port.close());
+        assertEquals(0, port.pendingCount());
+        for (int i = 0; i < calls.size(); i++) {
+            var call = calls.get(i);
+            if ((i & 1) == 0) {
+                assertTrue(call.future().isCancelled());
+            } else {
+                assertThrows(ExecutionException.class, call.future()::get);
+            }
+            assertFalse(port.reply(call.ticket(), actor(1), i));
+        }
+        assertThrows(IllegalStateException.class, () -> port.register(actor(1)));
     }
 
     @Test void replyCancellationRacesHaveExactlyOneWinner() throws Exception {
