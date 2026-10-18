@@ -2000,8 +2000,8 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> afterIterable = env.initializationSnapshot();
             Type element;
             if (loop.asyncIteration()) {
-                if (!currentAsyncCallable) {
-                    throw new IllegalArgumentException("'for await' is only valid inside an async fnc/routine or async generator");
+                if (!currentMaySuspend) {
+                    throw new IllegalArgumentException("'for await' requires an async or suspends caller (or VM-owned root main)");
                 }
                 element = asyncIterableElementType(iterable);
             } else {
@@ -2021,8 +2021,8 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> afterIterable = env.initializationSnapshot();
             Type element;
             if (loop.asyncIteration()) {
-                if (!currentAsyncCallable) {
-                    throw new IllegalArgumentException("'for await' is only valid inside an async fnc/routine or async generator");
+                if (!currentMaySuspend) {
+                    throw new IllegalArgumentException("'for await' requires an async or suspends caller (or VM-owned root main)");
                 }
                 element = asyncIterableElementType(iterable);
             } else {
