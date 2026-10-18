@@ -1,0 +1,48 @@
+name: Enum variant overload proof (host only)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/types/EnumVariantOverloadPolicy.java'
+      - 'src/test/java/dev/oreslang/EnumVariantOverloadPolicySmoke.java'
+      - 'src/test/java/dev/oreslang/EnumVariantOverloadPolicyTest.java'
+      - 'docs/ENUM_VARIANT_OVERLOAD_EXTENSION.md'
+      - '.github/workflows/enum-variant-overload-oracle.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compiler-policy-proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact revision without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify source revision and clean checkout
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Setup GraalVM JDK25 (not guest/AOT testing)
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          distribution: graalvm
+          version: '25.3'
+          java-version: '25'
+      - name: Compile proof with Java 21 source compatibility and strict warnings
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/enum-proof"
+          javac --release 21 -Xlint:all -Werror -d "$RUNNER_TEMP/enum-proof" \
+            src/main/java/dev/oreslang/types/EnumVariantOverloadPolicy.java \
+            src/test/java/dev/oreslang/EnumVariantOverloadPolicySmoke.java
+      - name: Execute release-active finite-product and stale-binding assertions
+        run: |
+          set -euo pipefail
+          java -cp "$RUNNER_TEMP/enum-proof" dev.oreslang.EnumVariantOverloadPolicySmoke
