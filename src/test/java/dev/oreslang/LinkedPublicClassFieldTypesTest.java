@@ -133,4 +133,66 @@ final class LinkedPublicClassFieldTypesTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new IncrementalCompiler().compile(files));
     }
+
+    @Test
+    void importedPrivateCallableAliasCannotHideDetachedClosureEnvironment() {
+        var files = new LinkedHashMap<String, String>();
+        files.put("src/options.ores", """
+                type InternalCallback = () => int;
+                pub define class ImportedOptions as
+                  pub val InternalCallback callback;
+                end
+                """);
+        files.put("src/actor.ores", """
+                import class ImportedOptions from './options';
+                fnc answer(): int { return 42; }
+
+                actor fnc bad(): void {
+                  val Channel<int> output = Channel.new<int>(1);
+                  val ImportedOptions options = new ImportedOptions(answer);
+                  nb cb writech output, 42 || -> {
+                    stdio.println(options.callback());
+                  };
+                  return;
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(files));
+        assertTrue(failure.getMessage().contains("cannot capture callable value 'options'"),
+                failure::getMessage);
+    }
+
+    @Test
+    void importedGenericPrivateAliasCannotHideCallableContainer() {
+        var files = new LinkedHashMap<String, String>();
+        files.put("src/options.ores", """
+                type InternalBucket<T> = Array<T>;
+                pub define class ImportedOptions as
+                  pub val InternalBucket<() => int> callbacks;
+                end
+                """);
+        files.put("src/actor.ores", """
+                import class ImportedOptions from './options';
+                fnc answer(): int { return 42; }
+
+                actor fnc bad(): void {
+                  val Channel<int> output = Channel.new<int>(1);
+                  val Array<() => int> callbacks = [answer];
+                  val ImportedOptions options = new ImportedOptions(callbacks);
+                  nb cb writech output, 42 || -> {
+                    stdio.println(options.callbacks[0]());
+                  };
+                  return;
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(files));
+        assertTrue(failure.getMessage().contains("cannot capture callable value 'options'"),
+                failure::getMessage);
+    }
+
 }
