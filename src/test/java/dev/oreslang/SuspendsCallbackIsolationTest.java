@@ -109,4 +109,75 @@ final class SuspendsCallbackIsolationTest {
         assertTrue(failure.getMessage().toLowerCase().contains("borrow"),
                 failure::getMessage);
     }
+    @Test
+    void standaloneSuspendsFunctionCannotBeReifiedAsPlainFnc() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        suspends fnc read_blocking(): int { return 3; }
+                        fnc bad(): void {
+                            val Fnc<int> callback = read_blocking;
+                            return;
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("suspends function")
+                && error.getMessage().contains("Fnc"), error::getMessage);
+    }
+
+    @Test
+    void staticSuspendsFunctionCannotBeReifiedAsPlainFnc() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Holder as
+                          pub static suspends fnc read_blocking(): int { return 3; }
+                        end
+                        fnc bad(): void {
+                            val Fnc<int> callback = Holder.read_blocking;
+                            return;
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("suspends static function"),
+                error::getMessage);
+    }
+
+    @Test
+    void staticSuspendsFunctionCannotBePassedAsTypedCallback() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Holder as
+                          pub static suspends fnc read_blocking(): int { return 3; }
+                        end
+                        fnc invoke(Fnc<int> callback): int { return callback(); }
+                        fnc bad(): int {
+                            return invoke(Holder.read_blocking);
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("suspends static function"),
+                error::getMessage);
+    }
+
+    @Test
+    void moduleSuspendsFunctionCannotBeReifiedButDirectCallStillWorks() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                define module Operations as
+                  pub suspends fnc read_blocking(): int { return 3; }
+                end
+                suspends fnc good(): int {
+                    return Operations.read_blocking();
+                }
+                """));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define module Operations as
+                          pub suspends fnc read_blocking(): int { return 3; }
+                        end
+                        fnc bad(): void {
+                            val Fnc<int> callback = Operations.read_blocking;
+                            return;
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("member")
+                || error.getMessage().contains("suspends"), error::getMessage);
+    }
+
 }
