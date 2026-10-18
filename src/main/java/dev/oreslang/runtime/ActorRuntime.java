@@ -7207,13 +7207,10 @@ public final class ActorRuntime implements AutoCloseable {
                 if (scheduler != null) {
                     try {
                         scheduler.close();
-                    } catch (RuntimeException shutdownFailure) {
+                    } catch (RuntimeException ignored) {
                         // The physical carrier and owned-task quiescence gates
-                        // already passed; preserve this shutdown failure but
-                        // continue closing actor state and notification outputs.
-                        // Preserve existing best-effort scheduler shutdown
-                        // behavior rather than rewriting a graceful actor
-                        // stop into a guest-visible failure.
+                        // already passed. Preserve the existing best-effort
+                        // scheduler close policy without changing actor errors.
                     }
                 }
                 drainMailboxReservations();
@@ -7263,6 +7260,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (terminal == null) ref.doneFuture.completeFromRuntime(null);
             else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
+            finalizerThread = null;
 
             if (cleanupFailure instanceof VirtualMachineError fatal) throw fatal;
             if (cleanupFailure instanceof ThreadDeath fatal) throw fatal;
