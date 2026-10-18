@@ -81,7 +81,7 @@ final class MlActorStateScalarGuestTest {
         assertTrue(text.contains("return Err(\"STALE_RUN\")"));
         assertTrue(text.contains("return Err(\"STALE_INCAR\")"));
         assertFalse(text.contains("mail.value == \"cancel_failed\""));
-        assertTrue(text.contains("self.cancel_rejected(2, 2, 101, 1)"));
+        assertTrue(text.contains("self.cancel_rejected(2, 2, 101, 1, 202)"));
         assertFalse(text.contains("mail.value == \"high_commit\""));
         assertFalse(text.contains("worker.send(\"high_commit\")"));
         assertTrue(text.contains("if !final_gradient.is_err(); do"));
