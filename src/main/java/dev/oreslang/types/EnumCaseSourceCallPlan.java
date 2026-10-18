@@ -227,6 +227,28 @@ public final class EnumCaseSourceCallPlan {
     public List<BoundCall> calls() { return orderedCalls; }
     public int familyCount() { return declarations.families().size(); }
 
+    /**
+     * Every locally admitted free-callable eos2 slot that a closed-world
+     * linker must define. Reject any instance/static method domain until
+     * source-identity-aware virtual/static call binding is implemented.
+     */
+    public java.util.Set<String> directModuleSymbols() {
+        java.util.Set<String> symbols = new java.util.HashSet<>();
+        for (var family : declarations.families().entrySet()) {
+            if (family.getKey().domain() != Domain.MODULE) {
+                throw new IllegalArgumentException(
+                        "AOT direct-call image cannot silently relink instance/static methods");
+            }
+            for (var candidate : family.getValue()) {
+                if (candidate.function() == null
+                        || !symbols.add(candidate.signature().symbolId())) {
+                    throw new IllegalArgumentException("duplicate/non-free eos2 target");
+                }
+            }
+        }
+        return java.util.Set.copyOf(symbols);
+    }
+
     /** Must pass the SAME program and AST call object; record equality is unsafe. */
     public BoundCall requireExactCall(Ast.Program original, Ast.CallExpr call) {
         if (original != source) {
