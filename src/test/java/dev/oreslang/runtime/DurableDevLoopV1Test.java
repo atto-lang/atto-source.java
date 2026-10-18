@@ -4,6 +4,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -379,6 +382,50 @@ final class DurableDevLoopV1Test {
                 start.journalEntry().disposition());
         assertEquals(DurableDevLoopV1.Phase.CANCELLED,
                 start.snapshot().phase());
+    }
+
+    @Test
+    void concurrentExactDuplicateStartDeliveryAppliesExactlyOnce() throws Exception {
+        var loop = new DurableDevLoopV1("run-concurrent-delivery", 3);
+        var event = new DurableDevLoopV1.Start("goal");
+        int callers = 32;
+
+        try (var pool = Executors.newFixedThreadPool(8)) {
+            var start = new CountDownLatch(1);
+            var futures = new ArrayList<java.util.concurrent.Future<
+                    DurableDevLoopV1.Transition>>();
+
+            for (int i = 0; i < callers; i++) {
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    return loop.accept("same-delivery", event);
+                }));
+            }
+            start.countDown();
+
+            int applied = 0;
+            int duplicates = 0;
+            var sequences = new java.util.TreeSet<Long>();
+            for (var future : futures) {
+                var transition = future.get(5, TimeUnit.SECONDS);
+                sequences.add(transition.journalEntry().sequence());
+                if (transition.journalEntry().disposition()
+                        == DurableDevLoopV1.Disposition.APPLIED) {
+                    applied++;
+                } else if (transition.journalEntry().disposition()
+                        == DurableDevLoopV1.Disposition.DUPLICATE) {
+                    duplicates++;
+                }
+            }
+
+            assertEquals(1, applied);
+            assertEquals(callers - 1, duplicates);
+            assertEquals(callers, sequences.size());
+            assertEquals(1L, sequences.first());
+            assertEquals((long) callers, sequences.last());
+            assertEquals(DurableDevLoopV1.Phase.CODING,
+                    loop.snapshot().phase());
+        }
     }
 
     @Test
