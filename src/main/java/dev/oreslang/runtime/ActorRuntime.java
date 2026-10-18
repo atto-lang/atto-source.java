@@ -6868,6 +6868,8 @@ public final class ActorRuntime implements AutoCloseable {
          * and host observer publication must happen outside this monitor.
          */
         private boolean finalizationClaimed;
+        /** A host callback on the finalizer may reenter stop; never self-join. */
+        private volatile Thread finalizerThread;
         private volatile ActorTurnWatchdog.Lease watchdogLease;
         private long turnStartedWallNanos;
         private long turnStartedCpuNanos = -1L;
@@ -7193,6 +7195,7 @@ public final class ActorRuntime implements AutoCloseable {
          * finalizationClaimed transition can execute this body.
          */
         private void completeFinalizationOutsideLock() {
+            finalizerThread = Thread.currentThread();
             OresScheduler scheduler;
             synchronized (lifecycleLock) {
                 scheduler = sourceScheduler;
@@ -7208,7 +7211,9 @@ public final class ActorRuntime implements AutoCloseable {
                         // The physical carrier and owned-task quiescence gates
                         // already passed; preserve this shutdown failure but
                         // continue closing actor state and notification outputs.
-                        cleanupFailure = shutdownFailure;
+                        // Preserve existing best-effort scheduler shutdown
+                        // behavior rather than rewriting a graceful actor
+                        // stop into a guest-visible failure.
                     }
                 }
                 drainMailboxReservations();
@@ -7279,6 +7284,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void awaitFinalized(long remainingNanos) throws InterruptedException {
+            // An exit hook runs on this finalizer; synchronously stopping the
+            // same actor from that hook cannot wait for itself to finish.
+            if (Thread.currentThread() == finalizerThread) return;
             long deadline = System.nanoTime() + Math.max(0L, remainingNanos);
             synchronized (lifecycleLock) {
                 while (!finalized) {
