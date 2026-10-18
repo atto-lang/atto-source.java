@@ -85,6 +85,9 @@ public final class EnumTag32Plan {
         if (identity == null || identity.isEmpty()) {
             throw new IllegalArgumentException("missing resolved enum ID");
         }
+        if (identity.getBytes(StandardCharsets.UTF_8).length > EnumAstIdentity.MAX_ID_BYTES) {
+            throw new IllegalArgumentException("resolved enum ID exceeds canonical ABI byte limit");
+        }
         // IDs are resolved by the source compiler; lexical validation here
         // is necessary but never sufficient to certify that provenance.
         String[] segments = identity.split("\\.", -1);
