@@ -538,7 +538,7 @@ final class ConstructorSemanticIrTest {
                         ConstructorSemanticIr.CaptureOrigin.RECURSIVE_SELF,
                         ConstructorSemanticIr.CaptureAccess.READ,
                         ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
-                        Set.of(ConstructorSemanticIr.CallableCapability.SERIALIZABLE)));
+                        Set.of(ConstructorSemanticIr.CallableCapability.CAPTURES_SERIALIZABLE_DATA)));
     }
 
     @Test
