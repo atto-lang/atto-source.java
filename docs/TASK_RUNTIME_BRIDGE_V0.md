@@ -27,3 +27,14 @@ The new source syntax `(async task |int a, string b| -> { return compute(a, b); 
 An ordinary `(async |int a, string b| -> nb { return compute(a, b); })(5, "xyz")` instead intends a `Future<Task<int>>`. Distinct completion/cancellation scopes remain visible and require separate joins; do not flatten them.
 
 Current Java `AsyncRuntime.submitTask` and `OresTask<T>` can provide the Task completion primitive, but the frontend in #1377 still rejects execution. Any backend wiring must verify nonparking `await`, lexical return/finally cleanup, actor-private memory isolation, ownership of ephemeral lambda arguments, and child task cancellation on context/actor teardown. `asFuture()` exposes cancellation authority; its current host implementation is not an actor-safe read-only Future view.
+
+
+## Structured compiler frames and physical quiescence (October 18, 2026)
+
+`OresTaskScope.startCompilerFrame(OresScheduler, OresScheduler.Task<T>)` is a host/compiler-only bridge to the existing cooperative, nonparking scheduler. Each submitted Task belongs to its context scope. Result settlement and physical execution exit are distinct: a cancelled Task's `getAwaited()` may already be cancelled while its guest frame is still executing cleanup, but `getDone()` observes the scheduler's `onQuiescent` callback.
+
+`OresContext.startCompilerTaskFrame` now registers frames in that scope rather than returning an unowned Future wrapper. Context shutdown cancels and physically joins those frames **before** destroying the root scheduler or shared immutable code image. A frame's continuation is scheduled through `OresScheduler.Await`; it never blocks a carrier on a pending Future. `OresTaskScope.close()` rejects invocation from actor turns, async carriers, and scheduler carriers to prevent a child waiting on its own owner thread. Added `OresTaskScopeFrameTest` for single-carrier await progress, cancellation/cleanup races, the blocking-close guard and late-admission rejection.
+
+**Release limitations:** The Oreslang parser/type checker still rejects source `task {}`, `nb {}` and `async task` execution because no general-purpose source AST-to-continuation-frame compiler exists yet. Task scopes cannot be exposed to guest code until actual captured values are moved/copied/shared into heap-owned frames and return/error/defer/finally are lowered correctly. Actor-affine child supervision/cancellation and untrusted fuel/deadline inheritance remain fail-closed. These new JUnit tests are committed but not yet verified in full GraalVM CI.
+
+**Do not mistake a successfully scheduled host frame for executable guest source lowering** or a cancelled result Future for a physically quiescent Task.
