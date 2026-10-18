@@ -327,12 +327,14 @@ final class ConstructorSemanticIrTest {
                 "x",
                 Types.Primitive.INT,
                 ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
                 Set.of());
         var inner = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 new ConstructorSemanticIr.CaptureBindingId("root::fn#block1:x"),
                 "x",
                 Types.Primitive.INT,
                 ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
                 Set.of());
         var plan = new ConstructorSemanticIr.CapturePlan(List.of(outer, inner));
         assertEquals(2, plan.bindings().size(),
@@ -344,24 +346,30 @@ final class ConstructorSemanticIrTest {
         var id = new ConstructorSemanticIr.CaptureBindingId("root::fn#slot");
         var first = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 id, "value", Types.Primitive.INT,
-                ConstructorSemanticIr.CaptureAccess.READ, Set.of());
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.DETACHED_VALUE_SNAPSHOT,
+                Set.of());
         var duplicate = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 id, "value", Types.Primitive.INT,
-                ConstructorSemanticIr.CaptureAccess.WRITE, Set.of());
+                ConstructorSemanticIr.CaptureAccess.WRITE,
+                ConstructorSemanticIr.CaptureTransfer.DETACHED_OWNERSHIP_MOVE,
+                Set.of());
         assertThrows(IllegalArgumentException.class,
                 () -> new ConstructorSemanticIr.CapturePlan(List.of(first, duplicate)));
     }
 
     @Test
-    void capturePlanMergePromotesWriteAndUnionsCapabilities() {
+    void capturePlanMergePromotesWriteMoveAndUnionsCapabilities() {
         var id = new ConstructorSemanticIr.CaptureBindingId("root::ctor#self");
         var read = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 id, "self", Types.Unknown.INSTANCE,
                 ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.DETACHED_VALUE_SNAPSHOT,
                 Set.of(ConstructorSemanticIr.CallableCapability.CONSTRUCTION_SCOPED));
         var write = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 id, "self", Types.Unknown.INSTANCE,
                 ConstructorSemanticIr.CaptureAccess.WRITE,
+                ConstructorSemanticIr.CaptureTransfer.DETACHED_OWNERSHIP_MOVE,
                 Set.of(ConstructorSemanticIr.CallableCapability.BORROWED));
 
         var merged = new ConstructorSemanticIr.CapturePlan(List.of(read))
@@ -369,9 +377,29 @@ final class ConstructorSemanticIrTest {
         assertEquals(1, merged.bindings().size());
         assertEquals(ConstructorSemanticIr.CaptureAccess.WRITE,
                 merged.bindings().getFirst().access());
+        assertEquals(ConstructorSemanticIr.CaptureTransfer.DETACHED_OWNERSHIP_MOVE,
+                merged.bindings().getFirst().transfer());
         assertTrue(merged.capturesBorrow());
         assertTrue(merged.capturesConstructionState());
         assertFalse(merged.actorDataAdmissible());
+    }
+
+    @Test
+    void incompatibleLexicalAndDetachedTransferModesCannotMerge() {
+        var id = new ConstructorSemanticIr.CaptureBindingId("root::fn#slot");
+        var lexical = new ConstructorSemanticIr.ResolvedCaptureBinding(
+                id, "value", Types.Primitive.INT,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
+                Set.of());
+        var detached = new ConstructorSemanticIr.ResolvedCaptureBinding(
+                id, "value", Types.Primitive.INT,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.DETACHED_VALUE_SNAPSHOT,
+                Set.of());
+        assertThrows(IllegalArgumentException.class,
+                () -> new ConstructorSemanticIr.CapturePlan(List.of(lexical))
+                        .merge(new ConstructorSemanticIr.CapturePlan(List.of(detached))));
     }
 
     @Test
@@ -379,13 +407,19 @@ final class ConstructorSemanticIrTest {
         var id = new ConstructorSemanticIr.CaptureBindingId("root::fn#0");
         var first = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 id, "first", Types.Primitive.INT,
-                ConstructorSemanticIr.CaptureAccess.READ, Set.of());
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
+                Set.of());
         var wrongName = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 id, "second", Types.Primitive.INT,
-                ConstructorSemanticIr.CaptureAccess.READ, Set.of());
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
+                Set.of());
         var wrongType = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 id, "first", Types.Primitive.STRING,
-                ConstructorSemanticIr.CaptureAccess.READ, Set.of());
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
+                Set.of());
 
         assertThrows(IllegalArgumentException.class,
                 () -> new ConstructorSemanticIr.CapturePlan(List.of(first))
@@ -395,7 +429,6 @@ final class ConstructorSemanticIrTest {
                         .merge(new ConstructorSemanticIr.CapturePlan(List.of(wrongType))));
     }
 
-
     @Test
     void serializableCapturesNeverAuthorizeExecutableOrAnyCallableTransport() {
         var capture = new ConstructorSemanticIr.ResolvedCaptureBinding(
@@ -403,6 +436,7 @@ final class ConstructorSemanticIrTest {
                 "payload",
                 Types.Primitive.STRING,
                 ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.DETACHED_VALUE_SNAPSHOT,
                 Set.of(ConstructorSemanticIr.CallableCapability.CAPTURES_SERIALIZABLE_DATA));
         var plan = new ConstructorSemanticIr.CapturePlan(List.of(capture));
         assertFalse(plan.serializableExecutableValue());
