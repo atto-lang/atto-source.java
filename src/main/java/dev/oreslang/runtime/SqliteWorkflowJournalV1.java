@@ -164,23 +164,6 @@ public final class SqliteWorkflowJournalV1
             long nowMillis,
             String eventId,
             DurableDevLoopV1.Event event) {
-        return mutate(store -> store.completeAndAppend(
-                effectKey,
-                claimToken,
-                receiptRef,
-                nowMillis,
-                eventId,
-                event));
-    }
-
-    @Override
-    public synchronized DurableDevLoopV1.Transition completeAndAppend(
-            String effectKey,
-            String claimToken,
-            String receiptRef,
-            long nowMillis,
-            String eventId,
-            DurableDevLoopV1.Event event) {
         Objects.requireNonNull(event, "event");
         return mutate(store -> store.completeAndAppend(
                 effectKey,
@@ -275,25 +258,56 @@ public final class SqliteWorkflowJournalV1
             faultInjector.hit(FaultPoint.AFTER_BEGIN);
 
             WorkflowJournalV1 candidate = loadVerifiedStore();
-            T result = operation.apply(candidate);
-            persistState(candidate.persistentState());
+            WorkflowJournalV1.PersistentState before =
+                    candidate.persistentState();
 
-            faultInjector.hit(FaultPoint.BEFORE_COMMIT);
-            execute("COMMIT");
-            committed = true;
-            delegate = candidate;
+            try {
+                T result = operation.apply(candidate);
+                persistState(candidate.persistentState());
 
-            faultInjector.hit(FaultPoint.AFTER_COMMIT);
-            return result;
+                faultInjector.hit(FaultPoint.BEFORE_COMMIT);
+                execute("COMMIT");
+                committed = true;
+                delegate = candidate;
+
+                faultInjector.hit(FaultPoint.AFTER_COMMIT);
+                return result;
+            } catch (RuntimeException | Error semanticFailure) {
+                WorkflowJournalV1.PersistentState after =
+                        candidate.persistentState();
+
+                if (!after.equals(before)) {
+                    try {
+                        persistState(after);
+                        faultInjector.hit(FaultPoint.BEFORE_COMMIT);
+                        execute("COMMIT");
+                        committed = true;
+                        delegate = candidate;
+                        faultInjector.hit(FaultPoint.AFTER_COMMIT);
+                    } catch (RuntimeException | Error
+                            | SQLException persistenceFailure) {
+                        if (!committed) {
+                            rollbackAndReloadOrInvalidate(
+                                    persistenceFailure);
+                        }
+                        semanticFailure.addSuppressed(
+                                persistenceFailure);
+                    }
+                } else if (!committed) {
+                    rollbackAndReloadOrInvalidate(
+                            semanticFailure);
+                }
+                throw semanticFailure;
+            }
         } catch (RuntimeException | Error failure) {
-            if (!committed) {
+            if (!committed && connection != null) {
                 rollbackAndReloadOrInvalidate(failure);
             }
             throw failure;
         } catch (SQLException failure) {
             IllegalStateException wrapped = new IllegalStateException(
                     "workflow SQLite mutation failed", failure);
-            if (!committed) {
+            if (!committed && connection != null) {
                 rollbackAndReloadOrInvalidate(wrapped);
             }
             throw wrapped;
