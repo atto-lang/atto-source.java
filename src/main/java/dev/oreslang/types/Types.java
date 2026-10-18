@@ -196,6 +196,9 @@ public final class Types {
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
+        // A compile-time namespace is never a value, not even when widened
+        // to Any/Unknown or erased to a generic. Keep this fail-closed.
+        if (from instanceof ModuleNamespace || to instanceof ModuleNamespace) return false;
         // Complements must be checked before permissive Unknown/Generic rules.
         // No compiler pass may turn uncertainty into a negative-type proof.
         if (to instanceof Not negative) {
