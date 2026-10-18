@@ -22,6 +22,8 @@ final class OresTestCommand {
     private static final Pattern SUMMARY = Pattern.compile(
             "(?m)^ORES_TEST\\|SUMMARY\\|total=(\\d+)\\|passed=(\\d+)"
             + "\\|failed=(\\d+)\\|skipped=(\\d+)\\|filtered=(\\d+)\\r?$");
+    private static final Pattern FUZZ_EVENT = Pattern.compile(
+            "(?m)^ORES_TEST\\\\|FUZZ\\\\|seed=(\\\\d+)\\\\|cases=(\\\\d+)\\\\r?$");
     private static final int MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 
     /** Refuse oversized guest output before allocating an unbounded buffer. */
@@ -167,6 +169,32 @@ final class OresTestCommand {
             return 1;
         }
         if (failed) return 1;
+
+        if (fuzz) {
+            // Fuzz mode is enabled only for a suite that actually generated
+            // input values through native stdlib/testing.fuzz_int_cases.
+            // Merely repeating an unchanged test program is not input fuzzing.
+            Matcher fuzzEvents = FUZZ_EVENT.matcher(out.toString(StandardCharsets.UTF_8));
+            int generators = 0;
+            long generatedInputs = 0;
+            while (fuzzEvents.find()) {
+                long guestSeed = Long.parseLong(fuzzEvents.group(1));
+                long cases = Long.parseLong(fuzzEvents.group(2));
+                if (cases < 1 || cases > 100_000
+                        || (seedSpecified && guestSeed != seed)) {
+                    return usage("fuzz seed/cases mismatch in ORES_TEST|FUZZ report");
+                }
+                generatedInputs += cases;
+                generators++;
+            }
+            if (generators == 0) {
+                return unsupported("--fuzz", "native suite did not execute any "
+                        + "fuzz_int_cases property generator");
+            }
+            System.out.println("ORES_TEST|INPUT_FUZZ|scope=seeded-int-property"
+                    + "|generators=" + generators + "|generated=" + generatedInputs
+                    + "|coverage_guided=false");
+        }
 
         if (fuzz || deadlock || scheduleFuzz || modelCheck || replayData != null) {
             // This probes *actual* runtime CriticalGate transitions, and a
