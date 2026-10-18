@@ -129,8 +129,10 @@ final class TrustedHierarchicalNetworkGate {
                 third = attempt(tenant, http);
                 if (third.lease() == null) return Admission.denied(third.status());
                 Lease lease = new Lease(first.lease(), second.lease(), third.lease());
+                Admission admitted = new Admission(
+                        TrustedUntrustedNetworkQuota.Status.ADMITTED, lease);
                 completed = true;
-                return new Admission(TrustedUntrustedNetworkQuota.Status.ADMITTED, lease);
+                return admitted;
             } finally {
                 // Also covers exceptions (including allocation failures).
                 if (!completed) {
