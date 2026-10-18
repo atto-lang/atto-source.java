@@ -375,6 +375,30 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** VM-wide physical execution permit pressure shared with CONTROL and actors. */
+    public record GlobalCarrierPressure(
+            int maximum,
+            int held,
+            int free,
+            int controlHeld,
+            int privateHeld,
+            int sharedHeld,
+            int untrustedHeld,
+            int lifecycleHeld,
+            long deniedCapacity,
+            long deniedReserveProtection) {
+        public GlobalCarrierPressure {
+            if (maximum < 5 || maximum > 256 || held < 0 || held > maximum
+                    || free != maximum - held || controlHeld < 0 || privateHeld < 0
+                    || sharedHeld < 0 || untrustedHeld < 0 || lifecycleHeld < 0
+                    || (long) controlHeld + privateHeld + sharedHeld + untrustedHeld
+                            + lifecycleHeld != held
+                    || deniedCapacity < 0 || deniedReserveProtection < 0) {
+                throw new IllegalArgumentException("invalid global carrier pressure");
+            }
+        }
+    }
+
     /** Runtime-wide physical scheduler pressure, distinct from logical actor state. */
     public record ActorSchedulerSnapshot(
             CarrierBackend carrierBackend,
@@ -906,7 +930,9 @@ public final class ActorRuntime implements AutoCloseable {
                                                     dispatcherConfig.sharedParallelism()))))
                     : Math.min(
                             dispatcherConfig.maxActors(),
-                            carrierBudget.lifecycleObserverMaximum());
+                            Math.min(
+                                    MAX_LIFECYCLE_OBSERVER_WORKERS,
+                                    carrierBudget.borrowingMaximumPerDomain()));
             lifecycleObservers = new ThreadPoolExecutor(
                     observerWorkers,
                     observerWorkers,
@@ -1300,6 +1326,24 @@ public final class ActorRuntime implements AutoCloseable {
                 && usesNativeCarriers(untrustedDispatcher)
                 ? CarrierBackend.NATIVE_PTHREAD
                 : CarrierBackend.JVM_THREAD_POOL;
+    }
+
+    /** Coherent VM-wide execution-carrier permit pressure, when globally budgeted. */
+    public Optional<GlobalCarrierPressure> globalCarrierPressure() {
+        requireSupervisorContext("inspect global carrier permit pressure");
+        if (carrierPermitPool == null) return Optional.empty();
+        OresCarrierPermitPool.Snapshot pressure = carrierPermitPool.snapshot();
+        return Optional.of(new GlobalCarrierPressure(
+                pressure.maximum(),
+                pressure.totalHeld(),
+                pressure.free(),
+                pressure.controlHeld(),
+                pressure.privateHeld(),
+                pressure.sharedHeld(),
+                pressure.untrustedHeld(),
+                pressure.lifecycleHeld(),
+                pressure.deniedCapacity(),
+                pressure.deniedReserveProtection()));
     }
 
     /** Supervisor-visible scheduler pressure for capacity planning and incident debugging. */
@@ -7453,7 +7497,7 @@ public final class ActorRuntime implements AutoCloseable {
             int max = carrierBudget == null
                     ? Integer.getInteger("ores.actor.dispatch.max.parallelism",
                             Math.max(20, parallelism))
-                    : parallelism;
+                    : carrierBudget.borrowingMaximumPerDomain();
             if (max < parallelism || max > 256) {
                 throw new IllegalArgumentException(
                         "ores.actor.dispatch.max.parallelism must be between domain minimum and 256");
