@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 
 GATE = Path(__file__).with_name('test-nio-exact-tree-source-local.sh')
+VERIFIER = Path(__file__).with_name('verify-nio-surefire-reports.py')
 
 SHIM = '''#!/usr/bin/env python3
 import os, pathlib, shutil, sys
@@ -34,6 +35,22 @@ elif name == 'mvn':
             if not any('NioReadinessGroupTest' in s for s in args): sys.exit(99)
             if not any('OresFuturesTest' in s for s in args): sys.exit(99)
             if os.environ.get('NIO_TEST_FAIL') == 'test': sys.exit(89)
+            suites = ('VmNioTcpListenerTest', 'NativeNetStdlibTest',
+                      'NioReadinessGroupTest', 'NativeNioFutureReactorTest',
+                      'OresSchedulerTest', 'OresCarrierPermitPoolTest',
+                      'OresFuturesTest', 'OresFutureCallbackTest')
+            reports = pathlib.Path('target/surefire-reports')
+            reports.mkdir(parents=True, exist_ok=True)
+            for suite in suites:
+                skip = 1 if os.environ.get('NIO_TEST_FAIL') == 'skip-tests' else 0
+                (reports / ('TEST-dev.oreslang.runtime.' + suite + '.xml')).write_text(
+                    '<testsuite name="dev.oreslang.runtime.' + suite
+                    + '" tests="1" skipped="' + str(skip)
+                    + '" failures="0" errors="0">'
+                    + '<testcase name="proof"' + ('><skipped/></testcase>' if skip else '/>')
+                    + '</testsuite>')
+            if os.environ.get('NIO_TEST_FAIL') == 'missing-reports':
+                shutil.rmtree(reports)
         elif step == 'verify':
             if os.environ.get('NIO_TEST_FAIL') == 'verify': sys.exit(90)
             if os.environ.get('NIO_TEST_FAIL') == 'mutate':
@@ -56,6 +73,7 @@ def scenario(name, code, setup=None, *, aot=False):
         repo, fakebin = root / 'repo', root / 'bin'
         repo.mkdir(); fakebin.mkdir(); (repo / 'scripts').mkdir()
         shutil.copy2(GATE, repo / 'scripts/gate.sh')
+        shutil.copy2(VERIFIER, repo / 'scripts/verify-nio-surefire-reports.py')
         (repo / '.gitignore').write_text('target/\n')
         (repo / 'README.md').write_text('synthetic fixture\n')
         for tool in ('java', 'javac', 'mvn', 'native-image'):
@@ -96,8 +114,10 @@ def scenario(name, code, setup=None, *, aot=False):
             body = receipt.read_text()
             assert f'exit_code={code}\n' in body, (name, body)
             assert ('result=PASS' in body) == (code == 0), name
-            if setup in ('clean', 'test', 'verify', 'mutate'):
+            if setup in ('clean', 'test', 'verify', 'mutate', 'missing-reports', 'skip-tests'):
                 stage = dict(clean='clean-stale-build', test='targeted-junit',
+                             **{'missing-reports': 'verify-targeted-junit-reports',
+                                'skip-tests': 'verify-targeted-junit-reports'},
                              verify='full-maven-verify', mutate='postflight-source-identity')[setup]
                 assert f'stage={stage}\n' in body, (name, body)
         trace = root / 'trace'
@@ -124,6 +144,8 @@ if __name__ == '__main__':
              ('wrong-jdk', 69, 'wrong-jdk', False),
              ('clean-failure', 88, 'clean', False),
              ('targeted-failure', 89, 'test', False),
+             ('missing-surefire-reports', 74, 'missing-reports', False),
+             ('skipped-junit-suites', 74, 'skip-tests', False),
              ('verify-failure', 90, 'verify', False),
              ('postflight-mutation', 70, 'mutate', False)]
     for name, code, fixture, aot in tests:
