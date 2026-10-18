@@ -1462,6 +1462,24 @@ public final class OwnershipChecker {
         if (call.callee() instanceof Ast.MemberExpr member) {
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
+            if (member.member().equals("flatten")
+                    && member.receiver() instanceof Ast.NameExpr rootName) {
+                VarState owner = scope.lookup(rootName.name());
+                if (owner != null && !owner.type.isBorrow()
+                        && owner.type.name().equals("Future")
+                        && owner.type.arguments().size() == 1) {
+                    Ast.TypeRef inner = owner.type.arguments().getFirst();
+                    if (!inner.name().equals("Future") || inner.arguments().size() != 1) {
+                        throw error("Future.flatten requires Future<Future<T>>");
+                    }
+                    if (!call.arguments().isEmpty()) {
+                        throw error("Future.flatten expects no arguments");
+                    }
+                    requireUsable(owner, rootName.name(), false);
+                    if (owner.kind == ValueKind.MOVE_ONLY) move(owner, rootName.name());
+                    return new ValueInfo(inner, kindOfType(inner), null);
+                }
+            }
 
             // Native collection mutations are effects on the receiver, not
             // harmless reads. TypeChecker validates method availability/arity.
