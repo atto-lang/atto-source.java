@@ -21,7 +21,10 @@ public final class OresTask<T> implements Awaitable<T> {
     private final OresFuture<?> quiescence;
 
     OresTask(OresFuture<T> completion) {
-        this(completion, completion);
+        this.completion = Objects.requireNonNull(completion, "completion");
+        // Scheduler Futures can cancel before an in-flight guest turn retires.
+        // Never mistake Future settlement for physical quiescence.
+        this.quiescence = null;
     }
 
     OresTask(OresFuture<T> completion, OresFuture<?> quiescence) {
@@ -68,6 +71,8 @@ public final class OresTask<T> implements Awaitable<T> {
      * on quiescence. Cancellation/failure is not rethrown by this barrier.
      */
     public OresFuture<Void> getDone() {
+        if (quiescence == null) throw new UnsupportedOperationException(
+                "Task quiescence is unavailable until its scheduler supplies an exit fence");
         OresFuture<Void> observer = new OresFuture<>();
         OresFuture.RuntimeWaiterRegistration<?> registration =
                 quiescence.whenCompleteRuntimeCancellable(
@@ -84,6 +89,8 @@ public final class OresTask<T> implements Awaitable<T> {
     }
 
     public boolean isQuiescent() {
+        if (quiescence == null) throw new UnsupportedOperationException(
+                "Task quiescence is unavailable until its scheduler supplies an exit fence");
         return quiescence.isDone();
     }
 }
