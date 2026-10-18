@@ -107,6 +107,72 @@ final class BoundInvocationSafetyTest {
     }
 
     @Test
+    void forgedModuleNoncallableNameCollisionRequiresRealLexicalResolution() {
+        Ast.ModuleDecl original = Parser.parse("""
+                define module app as
+                    pub fnc work(int a): int { return a; }
+                end
+                """).modules().getFirst();
+        Ast.StagedCallExpr call = new Ast.StagedCallExpr(
+                new Ast.NameExpr("work"), List.of(), false,
+                List.of(Ast.CallArgument.named("a", new Ast.LiteralExpr(3L))));
+
+        assertDoesNotThrow(() -> BoundInvocation.bindLiteralModuleFunction(original, call));
+
+        for (Ast.Decl collision : List.<Ast.Decl>of(
+                new Ast.FieldDecl("work", Ast.Visibility.PRIVATE,
+                        Ast.BindingKind.CONST, INT, new Ast.LiteralExpr(7L)),
+                new Ast.TypeAliasDecl("work", List.of(), INT),
+                new Ast.ClassDecl("work", false, List.of(), List.of(), List.of()))) {
+            Ast.ModuleDecl forged = new Ast.ModuleDecl(
+                    original.name(), List.of(original.declarations().getFirst(), collision));
+            assertThrows(IllegalArgumentException.class,
+                    () -> BoundInvocation.bindLiteralModuleFunction(forged, call));
+        }
+
+        Ast.ModuleDecl unrelated = new Ast.ModuleDecl(
+                original.name(), List.of(original.declarations().getFirst(),
+                new Ast.FieldDecl("other", Ast.Visibility.PRIVATE,
+                        Ast.BindingKind.CONST, INT, new Ast.LiteralExpr(7L))));
+        assertDoesNotThrow(() -> BoundInvocation.bindLiteralModuleFunction(unrelated, call));
+    }
+
+    @Test
+    void forgedClassFieldAndMethodCollisionRequiresMemberResolution() {
+        Ast.ClassDecl original = concreteBox();
+        Ast.StagedCallExpr call = new Ast.StagedCallExpr(
+                new Ast.MemberExpr(new Ast.NameExpr("box"), "echo"),
+                List.of(), false,
+                List.of(Ast.CallArgument.named("v", new Ast.LiteralExpr(9L))));
+        assertDoesNotThrow(() -> BoundInvocation.bindLiteralClassMethod(original, call));
+
+        Ast.FieldDecl collidingField = new Ast.FieldDecl(
+                "echo", Ast.Visibility.PRIVATE, Ast.BindingKind.CONST,
+                INT, new Ast.LiteralExpr(0L));
+        Ast.ClassDecl forged = new Ast.ClassDecl(
+                original.name(), original.visibility(), original.isAbstract(),
+                original.actorKind(), original.genericParameters(), original.parents(),
+                original.interfaces(), List.of(collidingField),
+                original.constructor(), original.methods());
+        assertThrows(IllegalArgumentException.class,
+                () -> BoundInvocation.bindLiteralClassMethod(forged, call));
+        assertThrows(IllegalArgumentException.class,
+                () -> BoundInvocation.bindClassMethod(forged, call, List.of(INT)));
+
+        Ast.FieldDecl unrelatedField = new Ast.FieldDecl(
+                "counter", Ast.Visibility.PRIVATE, Ast.BindingKind.CONST,
+                INT, new Ast.LiteralExpr(0L));
+        Ast.ClassDecl safe = new Ast.ClassDecl(
+                original.name(), original.visibility(), original.isAbstract(),
+                original.actorKind(), original.genericParameters(), original.parents(),
+                original.interfaces(), List.of(unrelatedField),
+                original.constructor(), original.methods());
+        var witness = BoundInvocation.bindLiteralClassMethod(safe, call);
+        assertEquals(BoundInvocation.Readiness.SHAPE_ONLY, witness.readiness());
+        assertThrows(IllegalStateException.class, witness::requireExecutable);
+    }
+
+    @Test
     void selectedFormalsAndCallItemOriginsSurviveReorderedMultipleOmissions() {
         Ast.ModuleDecl module = Parser.parse("""
                 define module app as
