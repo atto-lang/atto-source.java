@@ -1174,29 +1174,65 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Acknowledge one correctness-critical failure CONTROL event.
+     * Non-destructively observe one correctness-critical supervisor CONTROL event.
      *
-     * <p>Unlike pollTerminationEvent(), this path is authoritative rather than
-     * telemetry. A failed actor's maxActors reservation is retained until this
-     * acknowledgement, preventing crash/restart churn from overflowing or
-     * dropping supervisor decisions.</p>
+     * <p>Observation is deliberately separate from acknowledgement. A supervisor
+     * may inspect the failure, compute restart/escalation policy, persist an
+     * external decision, or itself crash without losing the authoritative event.
+     * The failed actor's maxActors reservation remains charged until the exact
+     * actor incarnation is explicitly acknowledged.</p>
      */
-    public Optional<SupervisorControlEvent> pollSupervisorControlEvent() {
-        requireSupervisorContext("drain actor supervisor CONTROL failures");
-        for (Map.Entry<ActorId, PendingSupervisorControl> entry
-                : pendingSupervisorControls.entrySet()) {
-            PendingSupervisorControl pending = entry.getValue();
-            if (!pendingSupervisorControls.remove(entry.getKey(), pending)) {
+    public Optional<SupervisorControlEvent> peekSupervisorControlEvent() {
+        requireSupervisorContext("inspect actor supervisor CONTROL failures");
+        for (PendingSupervisorControl pending : pendingSupervisorControls.values()) {
+            return Optional.of(pending.event);
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Explicitly acknowledge one previously observed supervisor CONTROL event.
+     *
+     * <p>The generation is mandatory even though ActorId values are not recycled:
+     * supervision policy is incarnation-scoped, and stale acknowledgements must
+     * never release capacity belonging to another generation if identity rules
+     * evolve. A generation mismatch leaves the event pending.</p>
+     */
+    public boolean acknowledgeSupervisorControlEvent(
+            ActorId actorId,
+            long generation) {
+        requireSupervisorContext("acknowledge actor supervisor CONTROL failure");
+        Objects.requireNonNull(actorId, "actorId");
+        if (generation <= 0) {
+            throw new IllegalArgumentException(
+                    "supervisor CONTROL generation must be positive");
+        }
+
+        for (;;) {
+            PendingSupervisorControl pending = pendingSupervisorControls.get(actorId);
+            if (pending == null) return false;
+            if (pending.event.generation() != generation) return false;
+            if (!pendingSupervisorControls.remove(actorId, pending)) {
                 continue;
             }
+
             if (!pending.cell.supervisorControlPending.compareAndSet(true, false)) {
                 lifecyclePublicationFailures.incrementAndGet();
             }
             supervisorControlAcknowledged.incrementAndGet();
             tryReleaseActorSlot(pending.cell);
-            return Optional.of(pending.event);
+            return true;
         }
-        return Optional.empty();
+    }
+
+    /**
+     * Legacy compatibility alias. Despite its historical name, this method is
+     * now non-destructive; callers must explicitly acknowledge the returned
+     * actor id/generation after policy handling succeeds.
+     */
+    @Deprecated(forRemoval = true)
+    public Optional<SupervisorControlEvent> pollSupervisorControlEvent() {
+        return peekSupervisorControlEvent();
     }
 
     public int supervisorControlBacklog() {
