@@ -26,7 +26,7 @@ public final class EnumTag32Plan {
 
     public record CaseTag(String name, int tag) {
         public CaseTag {
-            EnumAstIdentity.requireSimple(name);
+            requirePortableAscii(name);
             if (tag <= 0) throw new IllegalArgumentException("positive i32 enum tag required");
         }
     }
@@ -103,7 +103,26 @@ public final class EnumTag32Plan {
         if (segments.length < 2 || segments.length > 16) {
             throw new IllegalArgumentException("enum AOT ID requires 2..16 components");
         }
-        for (String part : segments) EnumAstIdentity.requireSimple(part);
+        for (String part : segments) requirePortableAscii(part);
+    }
+
+    /**
+     * Temporary **cross-backend** nullary AOT subset, not a language lexer
+     * restriction. Java's parser admits BMP Unicode letters but native LLVM's
+     * staged schema currently accepts ASCII only. Reject rather than issue
+     * a fingerprint one backend cannot reproduce or incorrectly normalize.
+     */
+    private static void requirePortableAscii(String name) {
+        EnumAstIdentity.requireSimple(name);
+        for (int i = 0; i < name.length(); i++) {
+            char ch = name.charAt(i);
+            boolean first = (ch >= 'A' && ch <= 'Z')
+                    || (ch >= 'a' && ch <= 'z') || ch == '_';
+            if (!first && !(i > 0 && ch >= '0' && ch <= '9')) {
+                throw new IllegalArgumentException(
+                        "nullary enum AOT requires portable ASCII nominal identities");
+            }
+        }
     }
 
     private static String fingerprint(String identity, boolean exported,
