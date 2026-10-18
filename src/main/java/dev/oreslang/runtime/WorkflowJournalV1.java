@@ -188,7 +188,8 @@ public final class WorkflowJournalV1 {
             }
         }
 
-        prevalidateCausalEffectLocked(entry, incomingRunId);
+        prevalidateCausalEffectLocked(
+                entry, incomingRunId, snapshot.iteration());
 
         long followingSequence = Math.addExact(nextSequence, 1L);
         if (runId == null) {
@@ -201,7 +202,8 @@ public final class WorkflowJournalV1 {
         nextSequence = followingSequence;
 
         if (entry.disposition() == DurableDevLoopV1.Disposition.APPLIED) {
-            retireCausalEffectLocked(entry.event(), incomingRunId);
+            retireCausalEffectLocked(
+                    entry.event(), incomingRunId, snapshot.iteration());
             if (isTerminal(snapshot.phase())) {
                 abandonPendingEffectsLocked();
             }
@@ -445,11 +447,13 @@ public final class WorkflowJournalV1 {
 
     private void prevalidateCausalEffectLocked(
             DurableDevLoopV1.JournalEntry entry,
-            String incomingRunId) {
+            String incomingRunId,
+            int currentIteration) {
         if (entry.disposition() != DurableDevLoopV1.Disposition.APPLIED) {
             return;
         }
-        String key = causalEffectKey(entry.event(), incomingRunId);
+        String key = causalEffectKey(
+                entry.event(), incomingRunId, currentIteration);
         if (key == null) {
             return;
         }
@@ -466,8 +470,10 @@ public final class WorkflowJournalV1 {
 
     private void retireCausalEffectLocked(
             DurableDevLoopV1.Event event,
-            String incomingRunId) {
-        String key = causalEffectKey(event, incomingRunId);
+            String incomingRunId,
+            int currentIteration) {
+        String key = causalEffectKey(
+                event, incomingRunId, currentIteration);
         if (key == null) {
             return;
         }
@@ -508,7 +514,8 @@ public final class WorkflowJournalV1 {
 
     private static String causalEffectKey(
             DurableDevLoopV1.Event event,
-            String runId) {
+            String runId,
+            int currentIteration) {
         String prefix = "devloop/" + runId + "/iteration/";
         if (event instanceof DurableDevLoopV1.CodeChanged changed) {
             return prefix + changed.iteration() + "/code";
@@ -517,19 +524,19 @@ public final class WorkflowJournalV1 {
             return prefix + pushed.iteration() + "/push";
         }
         if (event instanceof DurableDevLoopV1.CiCompleted ci) {
-            return prefix + "1/ci/" + ci.commitSha();
+            return prefix + currentIteration + "/ci/" + ci.commitSha();
         }
         if (event instanceof DurableDevLoopV1.EvaluationPassed passed) {
-            return prefix + "1/evaluate/" + passed.commitSha();
+            return prefix + currentIteration + "/evaluate/" + passed.commitSha();
         }
         if (event instanceof DurableDevLoopV1.EvaluationFailed failed) {
-            return prefix + "1/evaluate/" + failed.commitSha();
+            return prefix + currentIteration + "/evaluate/" + failed.commitSha();
         }
         if (event instanceof DurableDevLoopV1.BugReportCreated bug) {
             return prefix + bug.iteration() + "/bug/" + bug.commitSha();
         }
         if (event instanceof DurableDevLoopV1.ApprovalGranted approval) {
-            return prefix + "1/approval/" + approval.commitSha();
+            return prefix + currentIteration + "/approval/" + approval.commitSha();
         }
         return null;
     }
