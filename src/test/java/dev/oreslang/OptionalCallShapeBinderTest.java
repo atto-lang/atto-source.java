@@ -117,6 +117,30 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void checkedSourceExpressionsAreLexicalAndDoNotEvaluateOmittedItems() {
+        Ast.Expr last = new Ast.CallExpr(new Ast.NameExpr("lastEffect"), List.of());
+        Ast.Expr first = new Ast.CallExpr(new Ast.NameExpr("firstEffect"), List.of());
+        List<Ast.CallArgument> source = List.of(
+                Ast.CallArgument.named("c", last),
+                Ast.CallArgument.omit("b"),
+                Ast.CallArgument.named("a", first));
+        Plan plan = OptionalCallShapeBinder.bindParsed(FOO, source);
+        List<Ast.Expr> order =
+                OptionalCallShapeBinder.evaluatedExpressionsInSourceOrder(FOO, source, plan);
+        assertEquals(2, order.size());
+        assertSame(last, order.getFirst());
+        assertSame(first, order.get(1));
+        assertEquals(List.of(0, 2), plan.callItemIndexByEvaluatedSource());
+        assertEquals(List.of(1, -1, 0), plan.sourceIndexByParameter());
+
+        Plan forged = new Plan(List.of(0, -1, 1), -1, List.of(),
+                List.of(1), List.of(0, 2));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.evaluatedExpressionsInSourceOrder(
+                        FOO, source, forged));
+    }
+
+    @Test
     void stagedOptionalFormalsBindParsedSourceWithoutTreatingRequiredOptionAsOmittable() {
         Ast.Program parsed = Parser.parse("""
                 pub fnc candidate(string? label, Option<int> required, bool? enabled): void {
