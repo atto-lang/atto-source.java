@@ -128,7 +128,9 @@ public final class OptionalCallTempLowering {
     /** Derive the only temp mapping from already-bound, checked-source-order IR. */
     public static Recipe from(BoundInvocation bound) {
         Objects.requireNonNull(bound, "bound invocation");
-        bound.requireShapeOnlyForPreview();
+        if (bound.readiness() != BoundInvocation.Readiness.SHAPE_ONLY) {
+            throw new IllegalArgumentException("unreviewed bound invocation readiness");
+        }
         OptionalCallEvaluationSchedule.Schedule schedule = bound.schedule();
         TargetKind targetKind;
         Ast.Expr receiver = null;
