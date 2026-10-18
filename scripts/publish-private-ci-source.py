@@ -42,9 +42,14 @@ SOURCE_INCIDENT_REPOSITORY = "ores-truffle-oreslang/oreslang-platform-conformanc
 SOURCE_INCIDENT_REPOSITORY_ID = 1413795502
 SOURCE_INCIDENT_ISSUE_ID = 5832921751
 SOURCE_INCIDENT_NUMBER = 22
+CARRIER_INCIDENT_ISSUE_ID = 5904679716
+CARRIER_INCIDENT_NUMBER = 77
 SOURCE_INCIDENT_METADATA_ROUTE = "repos/" + SOURCE_INCIDENT_REPOSITORY
 SOURCE_INCIDENT_ROUTE = (
     SOURCE_INCIDENT_METADATA_ROUTE + "/issues/" + str(SOURCE_INCIDENT_NUMBER)
+)
+CARRIER_INCIDENT_ROUTE = (
+    SOURCE_INCIDENT_METADATA_ROUTE + "/issues/" + str(CARRIER_INCIDENT_NUMBER)
 )
 PROTECTED_BRANCH_ROUTE = SOURCE_METADATA_ROUTE + "/branches/main"
 PROTECTED_POLICY_ROUTE = (
@@ -563,12 +568,39 @@ def require_protected_carrier_policy(repository):
     return digest
 
 
-def require_incident_containment():
-    """Require the exact independently observable completed incident.
+def _require_completed_incident(route, issue_id, number, label):
+    issue = gh_api(route)
+    canonical_url = "https://api.github.com/" + route
+    canonical_repository_url = (
+        "https://api.github.com/" + SOURCE_INCIDENT_METADATA_ROUTE
+    )
+    closed_at = issue.get("closed_at")
+    if (type(issue.get("id")) is not int
+            or issue["id"] != issue_id
+            or type(issue.get("number")) is not int
+            or issue["number"] != number
+            or issue.get("url") != canonical_url
+            or issue.get("repository_url") != canonical_repository_url
+            or issue.get("pull_request") is not None
+            or issue.get("state") != "closed"
+            or issue.get("state_reason") != "completed"
+            or not isinstance(closed_at, str)):
+        raise Denied(f"{label} incident #{number} remains unresolved")
+    try:
+        parsed_closed_at = datetime.strptime(
+            closed_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError) as exc:
+        raise Denied(f"{label} incident closure timestamp is invalid") from exc
+    if parsed_closed_at.year < 2026:
+        raise Denied(f"{label} incident closure timestamp is invalid")
 
-    Repository path + issue number are not durable identities: a repository
-    can be renamed/deleted/recreated and a pull request also occupies the
-    issues API namespace. Bind both objects to immutable numeric GitHub IDs,
+
+def require_incident_containment():
+    """Require every independently observable private-source incident closed.
+
+    Repository path + issue numbers are not durable identities: a repository
+    can be renamed/deleted/recreated and pull requests also occupy the issues
+    API namespace. Bind repository + issue objects to immutable numeric IDs,
     require the incident repository to remain private, and reject PR-shaped
     payloads before treating closure as containment.
     """
@@ -581,30 +613,12 @@ def require_incident_containment():
             or incident_repository.get("archived") is not False
             or incident_repository.get("disabled") is not False):
         raise Denied("private-source incident repository identity is not verified")
-    issue = gh_api(SOURCE_INCIDENT_ROUTE)
-    canonical_url = "https://api.github.com/" + SOURCE_INCIDENT_ROUTE
-    canonical_repository_url = (
-        "https://api.github.com/" + SOURCE_INCIDENT_METADATA_ROUTE
-    )
-    closed_at = issue.get("closed_at")
-    if (type(issue.get("id")) is not int
-            or issue["id"] != SOURCE_INCIDENT_ISSUE_ID
-            or type(issue.get("number")) is not int
-            or issue["number"] != SOURCE_INCIDENT_NUMBER
-            or issue.get("url") != canonical_url
-            or issue.get("repository_url") != canonical_repository_url
-            or issue.get("pull_request") is not None
-            or issue.get("state") != "closed"
-            or issue.get("state_reason") != "completed"
-            or not isinstance(closed_at, str)):
-        raise Denied("private-source exposure incident #22 remains unresolved")
-    try:
-        parsed_closed_at = datetime.strptime(
-            closed_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError) as exc:
-        raise Denied("private-source exposure incident closure timestamp is invalid") from exc
-    if parsed_closed_at.year < 2026:
-        raise Denied("private-source exposure incident closure timestamp is invalid")
+    _require_completed_incident(
+        SOURCE_INCIDENT_ROUTE, SOURCE_INCIDENT_ISSUE_ID,
+        SOURCE_INCIDENT_NUMBER, "private-source exposure")
+    _require_completed_incident(
+        CARRIER_INCIDENT_ROUTE, CARRIER_INCIDENT_ISSUE_ID,
+        CARRIER_INCIDENT_NUMBER, "private-source carrier")
 
 
 def require_protected_main_policy(approved_policy):
