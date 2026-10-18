@@ -20,8 +20,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * Versioned source hot loader.
  *
  * Loading is side-effect free with respect to guest execution: source is
- * parsed/type/capability checked, then assigned a fresh context. The trusted
- * supervisor explicitly starts the generation after activation.
+ * parsed/type/capability checked, then assigned a fresh context. Legacy load()
+ * publishes before start; reloadAndStart() initializes before publication.
  *
  * No JNI/FFI or OS dynamic-library loading is required.
  */
@@ -95,14 +95,23 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     /**
-     * Reuses an incrementally compiled unit. Static compilation work is reused,
-     * while capability admission is deliberately repeated for the destination
-     * isolate because authority belongs to the runtime policy, not the cache.
+     * Accepts a compiled-unit descriptor only after independently validating its
+     * source text. CompiledUnit is a public, forgeable record: trusting its AST,
+     * source digest or dependency set as a security receipt would let a benign
+     * cached program authorize unrelated malicious source. A future incremental
+     * fast path needs compiler-private, digest-bound attestation.
      */
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
         java.util.Objects.requireNonNull(unit, "unit");
         validateAdmissionInputs(unit.unitId(), unit.sourceText());
-        CapabilityChecker.check(unit.program(), guestPolicy);
+        if (!digest(unit.sourceText()).equals(unit.sourceDigest())) {
+            throw new SecurityException("compiled hot-load source digest mismatch");
+        }
+        if (!unit.dependencies().isEmpty()) {
+            throw new SecurityException(
+                    "incremental hot loading of imported dependencies requires verified linker provenance");
+        }
+        OresCompiler.validateForIsolate(unit.sourceText(), guestPolicy);
         return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), true);
     }
 
@@ -136,7 +145,12 @@ public final class HotReloadManager implements AutoCloseable {
                     "adversarial hot-load live generation limit exceeded: "
                             + MAX_ADVERSARIAL_LIVE_GENERATIONS);
         }
-        long id = sequence.incrementAndGet();
+        long id = sequence.updateAndGet(current -> {
+            if (current == Long.MAX_VALUE) {
+                throw new IllegalStateException("hot-reload generation IDs exhausted");
+            }
+            return current + 1;
+        });
         Context context =
                 guestPolicy.restrictedContextBuilder(executionProfile).build();
         try {
@@ -144,15 +158,19 @@ public final class HotReloadManager implements AutoCloseable {
                     .mimeType(OresLanguage.MIME_TYPE)
                     .buildLiteral();
             Generation generation = new Generation(this, id, codeUnitId, sourceDigest, context, source, executionProfile);
+            if (publish) advanceRoutingEpoch();
             generations.put(id, generation);
             if (publish) {
-                advanceRoutingEpoch();
                 activeByCodeUnit.put(codeUnitId, generation);
                 active.set(generation);
             }
             return generation;
-        } catch (RuntimeException failure) {
-            context.close(true);
+        } catch (RuntimeException | Error failure) {
+            try {
+                context.close(true);
+            } catch (RuntimeException | Error cleanupFailure) {
+                if (cleanupFailure != failure) failure.addSuppressed(cleanupFailure);
+            }
             throw failure;
         }
     }
