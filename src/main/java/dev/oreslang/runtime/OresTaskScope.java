@@ -75,13 +75,41 @@ public final class OresTaskScope implements AutoCloseable {
      */
     <T> OresTask<T> startCompilerFrame(
             OresScheduler scheduler, OresScheduler.Task<T> frame) {
+        return startCompilerFrame(scheduler, frame, () -> { });
+    }
+
+    /**
+     * Trusted host lifecycle seam for code-generation and external-resource
+     * leases. The onPhysicalExit callback runs exactly once AFTER the final
+     * guest carrier turn has unwound, not when the cancelable result settles.
+     * A suspends call uses its parent's existing Task and does not re-enter
+     * this admission path. A child task needs its own independent code pin.
+     *
+     * The caller must acquire its pin BEFORE admission and must preserve it
+     * on all preparation, cancellation and close paths. The callback must
+     * be nonblocking, host-only and not execute guest code. The code-image
+     * owner must independently check its active pin counts before unload.
+     */
+    <T> OresTask<T> startCompilerFrame(
+            OresScheduler scheduler, OresScheduler.Task<T> frame,
+            Runnable onPhysicalExit) {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(frame, "frame");
+        Objects.requireNonNull(onPhysicalExit, "onPhysicalExit");
         synchronized (gate) {
             ensureAdmitting();
             OresFuture<Void> exited = new OresFuture<>();
-            OresFuture<T> completion = scheduler.start(
-                    frame, () -> exited.completeFromRuntime(null));
+            OresFuture<T> completion = scheduler.start(frame, () -> {
+                // The scheduler has already fenced the guest context/turn.
+                // A broken host release cannot be treated as a successful
+                // resource retirement; do not silently swallow its error.
+                try {
+                    onPhysicalExit.run();
+                    exited.completeFromRuntime(null);
+                } catch (RuntimeException | Error failure) {
+                    exited.failFromRuntime(failure);
+                }
+            });
             OresTask<T> child = new OresTask<>(completion, exited);
             tasks.add(child);
             child.getDone().whenCompleteRuntime((ignored, failure) -> {
