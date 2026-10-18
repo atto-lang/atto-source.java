@@ -85,15 +85,16 @@ from the trusted process code store. Both `UntrustedJitCodeUnit` and untrusted
   Quotas are enforced before insertion. Source images do not allocate a
   new Graal Engine, isolate, JIT, or heap for each actor.
 
-**Scope and unverified claims:** This proves reuse of immutable
-`org.graalvm.polyglot.Source` identities within the untrusted pool.
-`OresLanguage` still registers `ContextPolicy.EXCLUSIVE` in this stack,
-so identical Sources may still be parsed/compiled separately per Context.
-Compiled Truffle target or machine-code-page deduplication is **not yet
-proven**. Moving to `ContextPolicy.SHARED` requires a separate audited
-language-global/mutable-state split and exact-source native-isolate tests.
-The shared cache must never be exposed to the trusted Engine/compiled-code
-domain.
+**Scope and unverified claims:** This draft shares immutable
+`org.graalvm.polyglot.Source` identities inside the untrusted pool, switches
+`OresLanguage` to `ContextPolicy.SHARED`, and moves the mutable
+`OresEvalRootNode.Evaluator` from a root field into per-`OresContext`
+identity-keyed storage. This permits the Engine to reuse parsed call targets
+without reusing another actor's mutable evaluator, but actual parse counts,
+JIT code residency, concurrency safety and physical RX-page sharing still
+require exact-head executed tests. Code-page deduplication is **not yet
+proven**. The shared cache must never be exposed to the trusted
+Engine/compiled-code domain.
 
 This first integration covers explicit guest-source actors and untrusted
 hot-reload staging. Compiler-owned import closure resolution and
