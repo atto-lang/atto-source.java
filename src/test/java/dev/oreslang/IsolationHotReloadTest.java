@@ -112,6 +112,42 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void failedTrustedLoadAndStartDoesNotReplacePublishedGeneration() {
+        try (HotReloadManager hot = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var previous = hot.loadAndStart("worker.ores",
+                    "pub routine main(): void { return; }");
+            assertSame(previous, hot.active());
+            assertSame(previous, hot.active("worker.ores"));
+
+            assertThrows(RuntimeException.class, () -> hot.loadAndStart(
+                    "worker.ores", """
+                    pub routine main(): void {
+                      val values = arr[1];
+                      val invalid = values[99];
+                      return;
+                    }
+                    """));
+            assertSame(previous, hot.active(),
+                    "a failed start may not publish an invalid replacement");
+            assertSame(previous, hot.active("worker.ores"),
+                    "a failed replacement may not erase the original");
+            assertFalse(previous.closed());
+            assertEquals(1, hot.liveGenerations());
+
+            var replacement = hot.loadAndStart("worker.ores", """
+                    pub routine main(): void {
+                      val newVersion = 2;
+                      return;
+                    }
+                    """);
+            assertSame(replacement, hot.active("worker.ores"));
+            assertTrue(replacement.started());
+            assertNotSame(previous.context(), replacement.context());
+        }
+    }
+
+    @Test
     void hotReloadRequiresExplicitCapability() {
         assertThrows(SecurityException.class,
                 () -> new HotReloadManager(IsolatePolicy.strictFaas(), ExecutionProfile.serverJit()));
