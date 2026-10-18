@@ -2523,7 +2523,8 @@ public final class OwnershipChecker {
             source.debugName = capture.name;
             requireUsable(source, capture.name, capture.write);
 
-            if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW || source.type.isBorrow()) {
+            if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW
+                    || containsBorrowType(source.type)) {
                 if (allowActorSelfCapture
                         && capture.name.equals("self")
                         && isActorConfinedBorrow(source)) {
@@ -3529,7 +3530,7 @@ public final class OwnershipChecker {
 
             if (source.kind == ValueKind.IMM_BORROW
                     || source.kind == ValueKind.MUT_BORROW
-                    || source.type.isBorrow()) {
+                    || containsBorrowType(source.type)) {
                 throw error("nb select continuation cannot capture borrowed value '"
                         + capture.name
                         + "'; capture owned data or actor self instead");
