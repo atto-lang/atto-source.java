@@ -5370,10 +5370,14 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
         boolean mailboxSlotTransferred = false;
+        // A rejected competing claim must NEVER undo the other sender's
+        // successful claim in the common rejection/finally cleanup.
+        boolean thisSendClaimedFrame = false;
         try {
         // One frame may be offered to at most one mailbox at a time.
         // Acquire before any fallible preparation or enqueue operation.
         ActorPipelineRouteSession.claimMailboxAdmission(pipelineFrame);
+        thisSendClaimedFrame = pipelineFrame != null;
         validateMessageGraph(message);
         if (cell.kind == ActorKind.UNTRUSTED) {
             rejectUntrustedInboundCapabilities(message, new IdentityHashMap<>(), 0);
@@ -5506,7 +5510,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
         } finally {
             if (!mailboxSlotTransferred) {
-                ActorPipelineRouteSession.abortMailboxAdmission(pipelineFrame);
+                if (thisSendClaimedFrame)
+                    ActorPipelineRouteSession.abortMailboxAdmission(pipelineFrame);
                 cell.releaseMailboxSlot(false);
             }
         }
