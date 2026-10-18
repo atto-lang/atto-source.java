@@ -117,9 +117,13 @@ final class TrustedUntrustedNetworkQuota implements AutoCloseable {
             // Failed capacity admission must not burn request-start tokens.
             return Admission.denied(Status.TOO_MANY_IN_FLIGHT);
         }
+        // Materialize the lease and admission envelope before changing any
+        // quota counters: an allocation failure must not strand a slot or
+        // silently spend a rate token.
+        Admission granted = new Admission(Status.ADMITTED, new Lease(this, true));
         if (!httpStarts.tryConsume(1)) return Admission.denied(Status.RATE_LIMITED);
         httpInFlight++;
-        return new Admission(Status.ADMITTED, new Lease(this, true));
+        return granted;
     }
 
     /** Reserve before DNS/socket creation; release after the host socket closes. */
@@ -131,9 +135,10 @@ final class TrustedUntrustedNetworkQuota implements AutoCloseable {
         // A live-socket cap alone can be evaded by connect/fail/close storms.
         // Connection attempts consume a separate rate token even on DNS or
         // connect failure; successful close refunds only the live slot.
+        Admission granted = new Admission(Status.ADMITTED, new Lease(this, false));
         if (!tcpStarts.tryConsume(1)) return Admission.denied(Status.RATE_LIMITED);
         tcpConnections++;
-        return new Admission(Status.ADMITTED, new Lease(this, false));
+        return granted;
     }
 
     private synchronized void refundUnsent(boolean http) {
