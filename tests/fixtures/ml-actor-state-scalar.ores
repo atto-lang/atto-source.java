@@ -24,7 +24,7 @@ define actor VersionedScalarStage as
 
     // Reads a copied scalar snapshot under a shared read permit; multiplication
     // occurs OUTSIDE the state loan.
-    private forward(int x): int with state.read {
+    private eval_affine(int x): int with state.read {
         const weight = using state.read(|s| -> s.weight);
         return weight * x;
     }
@@ -46,16 +46,16 @@ define actor VersionedScalarStage as
             if microbatch != 1 && microbatch != 2; do
                 return -3;
             fi
+            if microbatch == 1 && s.seen_first; do
+                return -4;
+            fi
+            if microbatch == 2 && s.seen_second; do
+                return -4;
+            fi
             if microbatch == 1; do
-                if s.seen_first; do
-                    return -4;
-                fi
                 s.seen_first = true;
             fi
             if microbatch == 2; do
-                if s.seen_second; do
-                    return -4;
-                fi
                 s.seen_second = true;
             fi
             s.accumulated_gradient = s.accumulated_gradient + contribution;
@@ -97,11 +97,11 @@ define actor VersionedScalarStage as
     // ActorRef callers ONLY send messages; they never invoke actor user methods.
     receive(ActorMail<String> mail): void {
         if mail.value == "forward1"; do
-            stdio.println(self.forward(2));
+            stdio.println(self.eval_affine(2));
             return;
         fi
         if mail.value == "forward2"; do
-            stdio.println(self.forward(3));
+            stdio.println(self.eval_affine(3));
             return;
         fi
         if mail.value == "grad1"; do
@@ -126,11 +126,11 @@ define actor VersionedScalarStage as
             return;
         fi
         if mail.value == "stale"; do
-            stdio.println(self.accumulate(1, 2, 1));
+            stdio.println(self.accumulate(1, 1, 1, 2, 1));
             return;
         fi
         if mail.value == "after"; do
-            stdio.println(self.forward(2));
+            stdio.println(self.eval_affine(2));
             self.end();
             return;
         fi
