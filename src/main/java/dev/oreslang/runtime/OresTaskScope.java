@@ -170,6 +170,36 @@ public final class OresTaskScope implements AutoCloseable {
         return wonRoot;
     }
 
+    /** Runtime-only iterative close frame. Owned scopes form a tree. */
+    private static final class CloseFrame {
+        final OresTaskScope scope;
+        final List<OresTaskScope> children;
+        final List<OresTask<?>> owned;
+        int nextChild;
+        Throwable failure;
+
+        CloseFrame(OresTaskScope scope, List<OresTaskScope> children,
+                List<OresTask<?>> owned) {
+            this.scope = scope;
+            this.children = children;
+            this.owned = owned;
+        }
+
+        void record(Throwable problem) {
+            if (failure == null) failure = problem;
+            else if (failure != problem) failure.addSuppressed(problem);
+        }
+    }
+
+    private CloseFrame beginClose() {
+        synchronized (gate) {
+            if (joining) return null;
+            joining = true;
+            return new CloseFrame(this,
+                    new ArrayList<>(childScopes), new ArrayList<>(tasks));
+        }
+    }
+
     /** Cancel and join all descendants before releasing the scope owner. */
     @Override
     public void close() {
@@ -180,52 +210,70 @@ public final class OresTaskScope implements AutoCloseable {
             throw new IllegalStateException(
                     "TaskScope.close cannot block an actor, async carrier or scheduler task turn");
         }
-        cancel();
-        final boolean owner;
-        final List<OresTaskScope> scopes;
-        final List<OresTask<?>> owned;
-        synchronized (gate) {
-            owner = !joining;
-            if (owner) joining = true;
-            scopes = owner ? new ArrayList<>(childScopes) : List.of();
-            owned = owner ? new ArrayList<>(tasks) : List.of();
+
+        Throwable cancellationFailure = null;
+        try {
+            cancel();
+        } catch (RuntimeException | Error problem) {
+            // Revocation has already won for all children. Never abandon
+            // owned physical frames simply because a host notification fails.
+            cancellationFailure = problem;
         }
-        if (!owner) {
+
+        CloseFrame root = beginClose();
+        if (root == null) {
             joinExistingClose();
+            if (cancellationFailure instanceof RuntimeException failure) throw failure;
+            if (cancellationFailure instanceof Error failure) throw failure;
             return;
         }
-        Throwable firstFailure = null;
-        try {
-            for (OresTaskScope scope : scopes) {
-                try {
-                    scope.close();
-                } catch (RuntimeException | Error failure) {
-                    if (firstFailure == null) firstFailure = failure;
-                    else firstFailure.addSuppressed(failure);
+        if (cancellationFailure != null) root.record(cancellationFailure);
+
+        // Post-order traversal: deeply nested scopes must not consume the
+        // Java call stack. Each scope is joined exactly once even when another
+        // closing thread has already claimed it.
+        ArrayDeque<CloseFrame> pending = new ArrayDeque<>();
+        pending.push(root);
+        while (!pending.isEmpty()) {
+            CloseFrame current = pending.peek();
+            if (current.nextChild < current.children.size()) {
+                OresTaskScope child = current.children.get(current.nextChild++);
+                CloseFrame next = child.beginClose();
+                if (next == null) {
+                    try {
+                        child.joinExistingClose();
+                    } catch (RuntimeException | Error problem) {
+                        current.record(problem);
+                    }
+                } else {
+                    pending.push(next);
                 }
+                continue;
             }
-            for (OresTask<?> task : owned) {
+
+            for (OresTask<?> task : current.owned) {
                 try {
                     awaitPhysicalExit(task.getDone());
-                } catch (RuntimeException | Error failure) {
-                    if (firstFailure == null) firstFailure = failure;
-                    else firstFailure.addSuppressed(failure);
+                } catch (RuntimeException | Error problem) {
+                    current.record(problem);
                 }
             }
-            closeFailure = firstFailure;
-            if (firstFailure instanceof RuntimeException failure) throw failure;
-            if (firstFailure instanceof Error failure) throw failure;
-        } finally {
-            // Other close callers must see a failure rather than treating an
-            // exceptional join as successful physical quiescence.
-            closeFailure = firstFailure;
-            fullyJoined.countDown();
-            if (firstFailure == null && parent != null) {
-                synchronized (parent.gate) {
-                    parent.childScopes.remove(this);
+
+            OresTaskScope settled = current.scope;
+            settled.closeFailure = current.failure;
+            settled.fullyJoined.countDown();
+            if (current.failure == null && settled.parent != null) {
+                synchronized (settled.parent.gate) {
+                    settled.parent.childScopes.remove(settled);
                 }
+            }
+            pending.pop();
+            if (current.failure != null && !pending.isEmpty()) {
+                pending.peek().record(current.failure);
             }
         }
+        if (root.failure instanceof RuntimeException failure) throw failure;
+        if (root.failure instanceof Error failure) throw failure;
     }
 
     /** Wait through host interruption; releasing owned frames is mandatory. */
