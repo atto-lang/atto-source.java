@@ -139,11 +139,15 @@ fi
 # Git status may apply local clean filters and hide compiler-visible edits.
 # Check the raw checker itself without filters, then verify every tracked blob.
 verify_raw_worktree() {
-  local staged_blob actual_blob
-  staged_blob="$(git rev-parse ':scripts/nio_verify_raw_worktree.py')" || return 77
+  local approved_blob staged_blob actual_blob
+  # Trust only the pinned HEAD object, not the potentially modified index.
+  # Otherwise a staged replacement of this Python verifier can be executed
+  # before the verifier detects that the index differs from HEAD.
+  approved_blob="$(git rev-parse --verify 'HEAD:scripts/nio_verify_raw_worktree.py')" || return 77
+  staged_blob="$(git rev-parse --verify ':scripts/nio_verify_raw_worktree.py')" || return 77
   actual_blob="$(git hash-object --no-filters scripts/nio_verify_raw_worktree.py)" || return 77
-  [[ "$actual_blob" == "$staged_blob" ]] || {
-    printf 'ERROR: raw verifier bytes differ from staged Git blob.\n' >&2
+  [[ "$staged_blob" == "$approved_blob" && "$actual_blob" == "$approved_blob" ]] || {
+    printf 'ERROR: raw verifier bytes/index differ from approved HEAD blob.\n' >&2
     return 77
   }
   python3 -I scripts/nio_verify_raw_worktree.py "$EXPECTED_COMMIT" "$EXPECTED_TREE"

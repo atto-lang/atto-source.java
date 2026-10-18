@@ -249,6 +249,27 @@ unittest suites pass 19 + 7 + 20 + 10 tests; the 13 standalone scenarios
 also pass in separate disposable repositories. These are not evidence of
 real Java/JDK25/GraalVM/LLVM compilation or test success.
 
+### Verify the verifier against HEAD before executing it
+
+The pre-execution source verifier must itself be trusted before it is invoked.
+Previously the shell gate compared the raw Python checker against the
+**staged index** object and launched the Python file. A source-free adversarial
+case proved that an altered checker staged with `git add` could execute code
+**before** its subsequent HEAD/index consistency check rejected the tree
+(exit 77 came too late). The qualification helper now requires BOTH the
+staged blob and unfiltered raw checker blob to equal the already pinned
+`HEAD:scripts/nio_verify_raw_worktree.py` blob before Python execution.
+The new regression writes a side-effect marker from unapproved staged Python
+code, proves it executed under the previous gate, and checks that the
+hardened gate rejects it without any marker or Maven start.
+
+Local source-free qualification: 21 gate unittests, 7 Git-inspection tests,
+20 Surefire tests, 10 other verifier tests (58/58). The 13 standalone
+synthetic cases passed across two groups; an eight-worker harness invocation
+exceeded its 15-second per-process timeout for four cases, which were
+re-executed successfully with a 60-second timeout and two workers.
+These tests are not actual JDK25 Maven/JUnit/GraalVM or LLVM compiler tests.
+
 ## Evidence, trust boundary and interpretation
 
 - The script writes an **unsigned** `target/nio-exact-tree-gate/receipt.txt`

@@ -194,6 +194,28 @@ exit 0
         self.assertFalse(marker.exists(), "source gate ran untrusted clean filter")
         self.assertIn("stage=source-identity", self.receipt())
 
+    def test_staged_raw_verifier_cannot_run_before_head_identity(self):
+        # Old gate compares the Python helper with a potentially modified
+        # staged index and *executes* it before the HEAD/index check runs.
+        # This test ensures staged unreviewed code never executes.
+        helper = self.root / "scripts" / "nio_verify_raw_worktree.py"
+        marker = self.outside / "untrusted-verifier-was-executed"
+        source = helper.read_text()
+        self.assertIn("from __future__ import annotations", source)
+        injected = ("from __future__ import annotations\n"
+                    "from pathlib import Path as _ProofPath\n"
+                    f"_ProofPath({str(marker)!r}).write_text('executed')")
+        helper.write_text(source.replace("from __future__ import annotations", injected))
+        subprocess.run(["git", "add", "scripts/nio_verify_raw_worktree.py"],
+                       cwd=self.root, check=True)
+        # Prior behavior: returncode 77 but marker already created.
+        result = self.gate()
+        self.assertEqual(77, result.returncode, result.stderr)
+        self.assertFalse(marker.exists(), "unapproved Python verifier was executed")
+        self.assertIn("result=FAIL", self.receipt())
+        self.assertIn("stage=source-identity", self.receipt())
+        self.assertFalse((self.root / "target/nio-exact-tree-gate/targeted-junit.log").exists())
+
     def test_successful_clean_that_leaves_stale_target_fails_closed(self):
         target = self.root / "target"
         target.mkdir()
