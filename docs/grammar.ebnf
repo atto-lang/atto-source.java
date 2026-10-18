@@ -147,6 +147,7 @@ named_inferred_binding
 named_inferred_literal
                 = "infer" "<" IDENT ">" (
                     "struct" "{" [ struct_value_field { "," struct_value_field } ] "}"
+                  | "record" "{" [ struct_value_field { "," struct_value_field } ] "}"
                   | "tuple" "(" expression { "," expression } ")" ) ;
 (* The first type IDENT of named_inferred_binding must equal the IDENT after infer<...>.
    Named inference is currently a local immutable binding, not an arbitrary expression. *)
@@ -315,6 +316,7 @@ primary         = literal
                 | array_literal
                 | legacy_array_literal
                 | inferred_struct_literal
+                | inferred_record_literal
                 | explicit_struct_literal
                 | "(" expression ")" ;
 
@@ -332,6 +334,11 @@ legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 inferred_struct_literal
                 = "infer" "struct"
                   "{" [ struct_value_field { "," struct_value_field } ] "}" ;
+inferred_record_literal
+                = "infer" "record"
+                  "{" [ struct_value_field { "," struct_value_field } ] "}" ;
+(* Records share the existing closed readonly structural aggregate lowering.
+   No dynamic map keys, computed keys, or runtime reflection. *)
 explicit_struct_literal
                 = "struct" "{"
                   [ struct_field_spec { "," struct_field_spec } ]
