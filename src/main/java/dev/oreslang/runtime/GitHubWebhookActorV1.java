@@ -485,11 +485,21 @@ public final class GitHubWebhookActorV1 {
                 // Bind the delivery id only after the signed payload and exact
                 // commit/tree proof agree. Rejected proof attempts must never
                 // poison the durable or in-memory delivery identity.
-                PrivateState recorded =
-                        recordDelivery(
-                                state,
-                                verified,
-                                receive.treeProof());
+                PrivateState recorded;
+                try {
+                    recorded = recordDelivery(
+                            state,
+                            verified,
+                            receive.treeProof());
+                } catch (SecurityException conflict) {
+                    emit(
+                            context,
+                            new Unmatched(
+                                    verified.deliveryId(),
+                                    verified.payloadSha256(),
+                                    conflict.getMessage()));
+                    return;
+                }
                 if (recorded != state) {
                     writeState(recorded);
                 }
