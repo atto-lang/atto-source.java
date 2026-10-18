@@ -22,6 +22,9 @@ public final class Lexer {
         KEYWORDS.put("eq", EQ); KEYWORDS.put("neq", NEQ);
         KEYWORDS.put("nb", NB); KEYWORDS.put("select", SELECT); KEYWORDS.put("readch", READCH); KEYWORDS.put("writech", WRITECH);
         KEYWORDS.put("cb", CB); KEYWORDS.put("shared", SHARED); KEYWORDS.put("untrusted", UNTRUSTED);
+        // Actor boundary / foreign declaration keywords are reserved before
+        // executable lowering so they can never silently become identifiers.
+        KEYWORDS.put("ipc", IPC); KEYWORDS.put("ffi", FFI); KEYWORDS.put("extern", EXTERN);
         KEYWORDS.put("type", TYPE); KEYWORDS.put("types", TYPES); KEYWORDS.put("typeof", TYPEOF); KEYWORDS.put("interface", INTERFACE); KEYWORDS.put("trait", TRAIT); KEYWORDS.put("struct", STRUCT); KEYWORDS.put("impl", IMPL); KEYWORDS.put("abstract", ABSTRACT);
         KEYWORDS.put("void", VOID); KEYWORDS.put("static", STATIC); KEYWORDS.put("pub", PUB); KEYWORDS.put("private", PRIVATE);
         KEYWORDS.put("return", RETURN); KEYWORDS.put("defer", DEFER);
