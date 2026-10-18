@@ -232,6 +232,43 @@ canaries but cannot receive private source without the protected-main
 security approval tracked in issues #1368 and #1409. No cross-org source
 mirror has been performed.
 
+## Stream supplier failure before HTTP response commitment
+
+The trust-boundary audit caught a wire-level success misreport: the adapter
+previously called `HttpExchange.sendResponseHeaders(200, ...)` before invoking
+the lazy `InputStream` supplier. An immediately failing producer could therefore
+produce **HTTP 200 with an empty body** instead of aborting before response
+commitment. A newly authored real HTTP/1.1 regression reproduced this exact
+failure against the old source.
+
+The adapter now **opens and registers the response stream before emitting
+headers**. Supplier-open failure closes the transport without sending a 200
+response; cancellation is rechecked after producer registration and before
+header emission. HEAD and bodyless responses do not invoke suppliers.
+The buffer/chunk write loop, close-once body wrapper, and previously verified
+preflight/affine state machine are unchanged.
+
+- Exact current `HttpResponseDraft.java` Git blob:
+  `0bbaaddb59f427404683d21a01ce0d2f046c89ac`.
+- Exact `HttpResponseSupplierFailureCheck.java` blob:
+  `243c8ce8100e6bf6f04591cd656b9329dadd520f`.
+- `scripts/test-http-response-hardening.sh` now compiles and executes
+  the supplier-failure check, concurrent close, real-socket cancellation,
+  preflight retry and ordinary HTTP/1.1 wire check.
+- **Three consecutive local JDK21 runs of all five tests passed.**
+  The supplier failure check allows transparent client-side retry attempts
+  but rejects any successful HTTP response when every producer-open fails.
+
+Limit: a malicious or permanently blocking supplier that never returns from
+its factory cannot be interrupted solely through a returned stream handle.
+True bounded supplier acquisition requires an additional deadline-aware
+producer task/interruptible operation contract; the current HTTP deadline can
+close the socket but cannot guarantee cancellation of arbitrary host code.
+Full JDK25 GraalVM/Maven and guest actor conformance remain unverified because
+the source org's Actions jobs have zero executed steps. The private exact-tree
+candidate requires protected-main approval (#1368, #1409); no source export
+has been performed.
+
 ## Next implementation gates
 
 1. Establish a private, authorized CI runner; the source repository's checked-in
