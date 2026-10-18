@@ -36,6 +36,25 @@ def owner_matches(pattern, path):
     return pattern.lstrip("/") == path
 
 
+def require_unconditional_test_step(workflow, name, command):
+    """Accept only a standalone executable Action step, not commented text.
+
+    This is intentionally a narrow textual contract over the checked-in CI
+    layout, not a full YAML parser. Unknown keys, skip conditions, multiline
+    run bodies and continue-on-error all fail closed.
+    """
+    starts = list(re.finditer(r"(?m)^      - (?:name|uses): ", workflow))
+    blocks = [workflow[m.start():starts[i + 1].start() if i + 1 < len(starts)
+                       else len(workflow)] for i, m in enumerate(starts)]
+    expected = ["- name: " + name, "run: " + command]
+    matching = [block for block in blocks if block.splitlines()[0].strip() == expected[0]]
+    if len(matching) != 1:
+        raise ValueError("missing or duplicated required executable step " + name)
+    actual = [line.strip() for line in matching[0].splitlines() if line.strip()]
+    if actual != expected:
+        raise ValueError("required test step is not unconditional and executable: " + name)
+
+
 def validate(codeowners, workflow):
     if len(SECURITY_PATHS) != len(set(SECURITY_PATHS)):
         raise ValueError("duplicated security manifest entry")
@@ -73,10 +92,12 @@ def validate(codeowners, workflow):
         missing = set(SECURITY_PATHS) - set(filtered)
         if missing:
             raise ValueError(event + " does not trigger on " + sorted(missing)[0])
-    if "python3 -B scripts/test-private-ci-review-coverage.py" not in workflow:
-        raise ValueError("CODEOWNER/workflow coverage regression test is not executed")
-    if "bash scripts/test-run-private-ci-regressions-local.sh" not in workflow:
-        raise ValueError("offline private-CI regression runner self-test is not executed")
+    require_unconditional_test_step(
+        workflow, "Validate CI security review coverage",
+        "python3 -B scripts/test-private-ci-review-coverage.py")
+    require_unconditional_test_step(
+        workflow, "Validate offline regression runner",
+        "bash scripts/test-run-private-ci-regressions-local.sh")
 
 
 class ProtectedReviewCoverageTests(unittest.TestCase):
@@ -129,13 +150,60 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
     def test_missing_runner_self_test_is_rejected(self):
         damaged = self.workflow.replace(
             "bash scripts/test-run-private-ci-regressions-local.sh", "")
-        with self.assertRaisesRegex(ValueError, "runner self-test"):
+        with self.assertRaisesRegex(ValueError, "unconditional and executable"):
             validate(self.owners, damaged)
 
     def test_missing_test_invocation_is_rejected(self):
         damaged = self.workflow.replace(
             "python3 -B scripts/test-private-ci-review-coverage.py", "")
-        with self.assertRaisesRegex(ValueError, "not executed"):
+        with self.assertRaisesRegex(ValueError, "unconditional and executable"):
+            validate(self.owners, damaged)
+
+
+    def test_commented_out_security_invocation_is_rejected(self):
+        damaged = self.workflow.replace(
+            "run: python3 -B scripts/test-private-ci-review-coverage.py",
+            "# run: python3 -B scripts/test-private-ci-review-coverage.py")
+        with self.assertRaisesRegex(ValueError, "unconditional and executable"):
+            validate(self.owners, damaged)
+
+    def test_commented_out_runner_invocation_is_rejected(self):
+        damaged = self.workflow.replace(
+            "run: bash scripts/test-run-private-ci-regressions-local.sh",
+            "# run: bash scripts/test-run-private-ci-regressions-local.sh")
+        with self.assertRaisesRegex(ValueError, "unconditional and executable"):
+            validate(self.owners, damaged)
+
+    def test_disabled_security_step_is_rejected(self):
+        damaged = self.workflow.replace(
+            "        run: python3 -B scripts/test-private-ci-review-coverage.py",
+            "        if: false\n"
+            "        run: python3 -B scripts/test-private-ci-review-coverage.py")
+        with self.assertRaisesRegex(ValueError, "unconditional and executable"):
+            validate(self.owners, damaged)
+
+    def test_continue_on_error_security_step_is_rejected(self):
+        damaged = self.workflow.replace(
+            "        run: python3 -B scripts/test-private-ci-review-coverage.py",
+            "        continue-on-error: true\n"
+            "        run: python3 -B scripts/test-private-ci-review-coverage.py")
+        with self.assertRaisesRegex(ValueError, "unconditional and executable"):
+            validate(self.owners, damaged)
+
+    def test_nonexecuting_shell_block_is_rejected(self):
+        damaged = self.workflow.replace(
+            "        run: python3 -B scripts/test-private-ci-review-coverage.py",
+            "        run: |\n"
+            "          exit 0\n"
+            "          python3 -B scripts/test-private-ci-review-coverage.py")
+        with self.assertRaisesRegex(ValueError, "unconditional and executable"):
+            validate(self.owners, damaged)
+
+    def test_duplicated_security_step_is_rejected(self):
+        block = ("      - name: Validate CI security review coverage\n"
+                 "        run: python3 -B scripts/test-private-ci-review-coverage.py\n")
+        damaged = self.workflow.replace(block, block + block)
+        with self.assertRaisesRegex(ValueError, "duplicated required executable step"):
             validate(self.owners, damaged)
 
 
