@@ -80,6 +80,26 @@ public final class SameModuleLiteralInvocation {
         if (ownerHits != 1) {
             throw new IllegalArgumentException("calling function is not unique in parsed program");
         }
+        // Program ASTs may be constructed directly, outside the parser's
+        // namespace validation. A call in one module cannot acquire static
+        // resolution authority merely because another module has the same
+        // unqualified name. Keep this local witness narrower than TypeChecker.
+        int matchingModules = 0;
+        for (Ast.ModuleDecl module : program.modules()) {
+            if (module.name().equals(declaringModule.name())) matchingModules++;
+        }
+        if (matchingModules != 1) {
+            throw new IllegalArgumentException(
+                    "module namespace is not unique in parsed program");
+        }
+        // Annotations and contracts can synthesize or redirect declarations.
+        // This narrow witness does not execute annotation expansion or prove
+        // adherence, so never claim lexical origin from that unexpanded AST.
+        if (!declaringModule.annotations().isEmpty()
+                || !declaringModule.contracts().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "annotated or contracted module requires expanded scope proof");
+        }
 
         String targetName;
         if (call.callee() instanceof Ast.NameExpr direct) {
@@ -127,6 +147,23 @@ public final class SameModuleLiteralInvocation {
                     && (field.name().equals(targetName)
                     || field.name().equals(declaringModule.name()))) {
                 throw new IllegalArgumentException("module field could shadow target namespace");
+            }
+            // Type declarations have distinct lookup rules and may also
+            // introduce callable/constructor or member-qualified names.
+            // Do not rely on an unproved value/type namespace collision rule.
+            String competingName = null;
+            if (declaration instanceof Ast.ClassDecl klass) {
+                competingName = klass.name();
+            } else if (declaration instanceof Ast.InterfaceDecl iface) {
+                competingName = iface.name();
+            } else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                competingName = alias.name();
+            }
+            if (competingName != null
+                    && (competingName.equals(targetName)
+                    || competingName.equals(declaringModule.name()))) {
+                throw new IllegalArgumentException(
+                        "competing type declaration requires verified lexical resolution");
             }
         }
         BoundInvocation bound =

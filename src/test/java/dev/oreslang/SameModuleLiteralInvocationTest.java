@@ -220,4 +220,68 @@ final class SameModuleLiteralInvocationTest {
                         .map(slot -> slot.tempIndex()).toList());
         assertThrows(IllegalStateException.class, preview::requireExecutable);
     }
+
+    @Test
+    void duplicateModuleNamesCannotForgeStaticSameModuleResolution() {
+        Ast.Program original = program();
+        Ast.ModuleDecl app = original.modules().getFirst();
+        Ast.ModuleDecl another = new Ast.ModuleDecl("app", List.of());
+        Ast.Program ambiguous = new Ast.Program(List.of(app, another));
+        Ast.FunctionDecl calling = caller(original);
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(
+                        ambiguous, calling, call(calling)));
+        // A distinct unrelated module name does not create an ambiguity.
+        Ast.Program disjoint = new Ast.Program(List.of(
+                app, new Ast.ModuleDecl("other", List.of())));
+        assertDoesNotThrow(() -> SameModuleLiteralInvocation.inspect(
+                disjoint, calling, call(calling)));
+    }
+
+    @Test
+    void aliasOrClassNameCollisionsMustNotClaimCompilerCheckedScope() {
+        Ast.Program original = program();
+        Ast.ModuleDecl source = original.modules().getFirst();
+        Ast.FunctionDecl calling = caller(original);
+        Ast.StagedCallExpr staged = call(calling);
+        Ast.TypeAliasDecl colliding = new Ast.TypeAliasDecl(
+                "target", List.of(), Ast.TypeRef.simple("int"));
+        Ast.ModuleDecl withAlias = new Ast.ModuleDecl(
+                source.name(), List.of(source.declarations().getFirst(),
+                        calling, colliding));
+        Ast.Program conflicting = new Ast.Program(List.of(withAlias));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(
+                        conflicting, calling, staged));
+
+        Ast.TypeAliasDecl moduleAlias = new Ast.TypeAliasDecl(
+                "app", List.of(), Ast.TypeRef.simple("int"));
+        Ast.ModuleDecl withModuleAlias = new Ast.ModuleDecl(
+                source.name(), List.of(source.declarations().getFirst(),
+                        calling, moduleAlias));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(
+                        new Ast.Program(List.of(withModuleAlias)), calling, staged));
+    }
+
+    @Test
+    void annotatedOrContractedModuleMustBeExpandedBeforeLexicalProof() {
+        Ast.Program original = program();
+        Ast.ModuleDecl source = original.modules().getFirst();
+        Ast.FunctionDecl calling = caller(original);
+        var annotation = new Ast.Annotation("Authoritative", List.of());
+        var annotated = new Ast.ModuleDecl(
+                source.name(), List.of(annotation), List.of(),
+                source.declarations());
+        var contracted = new Ast.ModuleDecl(
+                source.name(), List.of(), List.of(Ast.TypeRef.simple("Shape")),
+                source.declarations());
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(
+                        new Ast.Program(List.of(annotated)), calling, call(calling)));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(
+                        new Ast.Program(List.of(contracted)), calling, call(calling)));
+    }
+
 }
