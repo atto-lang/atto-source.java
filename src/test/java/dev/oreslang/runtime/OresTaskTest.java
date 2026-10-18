@@ -116,4 +116,40 @@ final class OresTaskTest {
         }
     }
 
+
+    @Test
+    void retirementFailureReachesEachLiveDoneObserverButNotTaskResult() throws Exception {
+        OresFuture<Integer> result = new OresFuture<>();
+        OresFuture<Void> physicalExit = new OresFuture<>();
+        OresTask<Integer> task = new OresTask<>(result, physicalExit);
+        OresFuture<Void> abandoned = task.getDone();
+        OresFuture<Void> observing = task.getDone();
+        assertTrue(abandoned.cancel(true));
+        IllegalStateException failedRelease =
+                new IllegalStateException("trusted image retirement failed");
+        assertTrue(result.completeFromRuntime(42));
+        assertTrue(physicalExit.failFromRuntime(failedRelease));
+        assertEquals(42, result.get());
+        java.util.concurrent.ExecutionException observed =
+                assertThrows(java.util.concurrent.ExecutionException.class, observing::get);
+        assertSame(failedRelease, observed.getCause(),
+                "quiescence must propagate a failed trusted resource release");
+        assertTrue(abandoned.isCancelled());
+        assertEquals(0, physicalExit.pendingRuntimeWaiterCount(),
+                "settled or abandoned observers must detach");
+    }
+
+    @Test
+    void taskCancellationDoesNotTurnSuccessfulPhysicalCleanupIntoFailure()
+            throws Exception {
+        OresFuture<Integer> result = new OresFuture<>();
+        OresFuture<Void> physicalExit = new OresFuture<>();
+        OresTask<Integer> task = new OresTask<>(result, physicalExit);
+        OresFuture<Void> joined = task.cancelAndJoin();
+        assertTrue(task.isCancelled());
+        assertFalse(joined.isDone(), "cancellation is not proof of cleanup");
+        assertTrue(physicalExit.completeFromRuntime(null));
+        assertNull(joined.get(), "successful physical cleanup remains a void barrier");
+    }
+
 }
