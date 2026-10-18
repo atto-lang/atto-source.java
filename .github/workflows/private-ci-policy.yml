@@ -87,5 +87,37 @@ jobs:
               if commit in commit_tree and commit_tree[commit] != tree:
                   raise SystemExit("one source commit maps to inconsistent root trees")
               commit_tree[commit] = tree
+
+          reviewer = json.loads((base / "private-ci-independent-reviewer.json").read_text(encoding="utf-8"))
+          expected_reviewer_keys = {"schema", "enabled", "minimumPermission",
+                                    "disallowedReviewerIds", "reviewer"}
+          if (set(reviewer) != expected_reviewer_keys
+                  or type(reviewer.get("schema")) is not int
+                  or reviewer["schema"] != 2
+                  or type(reviewer.get("enabled")) is not bool
+                  or reviewer.get("minimumPermission") not in {"write", "maintain", "admin"}):
+              raise SystemExit("invalid independent reviewer policy")
+          blocked = reviewer.get("disallowedReviewerIds")
+          if (not isinstance(blocked, list) or len(blocked) != 2
+                  or any(type(item) is not int or item <= 0 for item in blocked)
+                  or set(blocked) != {11139560, 2148448}):
+              raise SystemExit("invalid independent reviewer denylist")
+          if reviewer["enabled"] is False:
+              if reviewer["reviewer"] is not None or dests or snaps:
+                  raise SystemExit("approvals require enabled independent reviewer")
+          else:
+              who = reviewer["reviewer"]
+              if (not isinstance(who, dict) or set(who) != {"login", "id"}
+                      or not isinstance(who.get("login"), str)
+                      or re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", who["login"]) is None
+                      or type(who.get("id")) is not int or who["id"] <= 0
+                      or who["id"] in blocked):
+                  raise SystemExit("invalid independent reviewer identity")
+              if len(dests) > 1 or len(snaps) > 1:
+                  raise SystemExit("only one private CI canary may be active")
+              if bool(dests) != bool(snaps):
+                  raise SystemExit("destination and snapshot approvals must activate together")
+              if dests and dests[0].split()[1] != snaps[0].split()[2]:
+                  raise SystemExit("destination and snapshot repository IDs differ")
           print("private CI issuer + source policy: PASS")
           PY
