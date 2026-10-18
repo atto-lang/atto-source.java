@@ -101,7 +101,7 @@ final class DurableDevLoopEndToEndV1Test {
                     nextWebhook(webhookOut));
 
             // Iteration 1: code.
-            var code1 = claim(workflow, workflowOut, "dispatcher", 200L);
+            var code1 = claim(workflow, workflowOut, "coding-worker", 200L);
             assertInstanceOf(
                     DurableDevLoopV1.RequestCode.class,
                     code1.command());
@@ -132,7 +132,7 @@ final class DurableDevLoopEndToEndV1Test {
             // Iteration 1: push exact commit A.
             String commit1 = sha('a');
             String tree1 = sha('b');
-            var push1 = claim(workflow, workflowOut, "dispatcher", 230L);
+            var push1 = claim(workflow, workflowOut, "git-worker", 230L);
             assertInstanceOf(
                     DurableDevLoopV1.PushCode.class,
                     push1.command());
@@ -161,7 +161,7 @@ final class DurableDevLoopEndToEndV1Test {
                     DurableDevLoopV1.Phase.WAITING_FOR_CI);
 
             // Iteration 1: durable CI wait + authenticated webhook.
-            var ci1 = claim(workflow, workflowOut, "dispatcher", 260L);
+            var ci1 = claim(workflow, workflowOut, "ci-worker", 260L);
             assertInstanceOf(
                     DurableDevLoopV1.AwaitCi.class,
                     ci1.command());
@@ -219,7 +219,7 @@ final class DurableDevLoopEndToEndV1Test {
                     DurableDevLoopV1.Phase.WRITING_BUG_REPORT);
 
             // Bug report closes iteration 1 and feeds iteration 2.
-            var bug1 = claim(workflow, workflowOut, "dispatcher", 290L);
+            var bug1 = claim(workflow, workflowOut, "bug-worker", 290L);
             assertInstanceOf(
                     DurableDevLoopV1.CreateBugReport.class,
                     bug1.command());
@@ -251,7 +251,7 @@ final class DurableDevLoopEndToEndV1Test {
                     DurableDevLoopV1.Phase.CODING);
 
             // Iteration 2 code + push.
-            var code2 = claim(workflow, workflowOut, "dispatcher", 320L);
+            var code2 = claim(workflow, workflowOut, "coding-worker", 320L);
             var code2Event = new DurableDevLoopV1.CodeChanged(
                     2, "patch://iteration-2");
             executeActivity(
@@ -271,7 +271,7 @@ final class DurableDevLoopEndToEndV1Test {
 
             String commit2 = sha('c');
             String tree2 = sha('d');
-            var push2 = claim(workflow, workflowOut, "dispatcher", 340L);
+            var push2 = claim(workflow, workflowOut, "git-worker", 340L);
             var push2Event = new DurableDevLoopV1.PushRecorded(
                     2, commit2);
             executeActivity(
@@ -302,7 +302,7 @@ final class DurableDevLoopEndToEndV1Test {
                             "ci")));
             nextWebhook(webhookOut);
 
-            var ci2 = claim(workflow, workflowOut, "dispatcher", 360L);
+            var ci2 = claim(workflow, workflowOut, "ci-worker", 360L);
             dispatch(ci, ci2);
             byte[] successBody = workflowRunBody(
                     "org/repo",
@@ -339,7 +339,7 @@ final class DurableDevLoopEndToEndV1Test {
                     DurableDevLoopV1.Phase.EVALUATING);
 
             // Evaluation passes.
-            var eval2 = claim(workflow, workflowOut, "dispatcher", 380L);
+            var eval2 = claim(workflow, workflowOut, "evaluation-worker", 380L);
             admit(
                     supervisor,
                     supervisorOut,
@@ -366,7 +366,7 @@ final class DurableDevLoopEndToEndV1Test {
 
             // Approval is itself a durable activity/effect.
             var approve = claim(
-                    workflow, workflowOut, "dispatcher", 410L);
+                    workflow, workflowOut, "approval-worker", 410L);
             var approved =
                     new DurableDevLoopV1.ApprovalGranted(commit2);
             executeActivity(
