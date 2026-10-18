@@ -9,6 +9,9 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -332,6 +335,77 @@ final class SourceActorHotUpgradeRuntimeTest {
             drain(source, ref);
             assertEquals(43L, old.observed.get(),
                     "old route reopens only after staged candidate retirement");
+            ref.stop();
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void concurrentCrossRuntimeRestoreHasExactlyOneWinner() throws Exception {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime source = new ActorRuntime(IsolatePolicy.developer());
+             ActorRuntime target = new ActorRuntime(IsolatePolicy.developer())) {
+            var image1 = store.publish("linear-race-source.ores", program);
+            var image2 = store.publish("linear-race-candidate.ores", Parser.parse(
+                    "pub routine main(): void { val version = 2; return; }"));
+            var old = new Executor(image1, 'a', '1', '2', false, null, null);
+            var next = new Executor(image2, 'b', '1', '2', true, null, null);
+            var ref = source.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(),
+                    old,
+                    "Counter");
+            ref.getReady().get(5, TimeUnit.SECONDS);
+            ref.send(41L);
+            drain(source, ref);
+
+            var transfer = source.tryBeginSourceActorTransfer(
+                    ref,
+                    java.util.UUID.randomUUID(),
+                    1L).orElseThrow();
+            CountDownLatch start = new CountDownLatch(1);
+            try (var pool = Executors.newFixedThreadPool(2)) {
+                Future<ActorRuntime.ActorRef<Object>> first = pool.submit(() -> {
+                    start.await();
+                    return target.spawnCodeActorFromTransfer(transfer, next);
+                });
+                Future<ActorRuntime.ActorRef<Object>> second = pool.submit(() -> {
+                    start.await();
+                    return target.spawnCodeActorFromTransfer(transfer, next);
+                });
+                start.countDown();
+
+                ActorRuntime.ActorRef<Object> winner = null;
+                int rejected = 0;
+                for (Future<ActorRuntime.ActorRef<Object>> attempt :
+                        java.util.List.of(first, second)) {
+                    try {
+                        ActorRuntime.ActorRef<Object> candidate =
+                                attempt.get(5, TimeUnit.SECONDS);
+                        assertNull(winner, "two restore contenders must never both win");
+                        winner = candidate;
+                    } catch (ExecutionException failure) {
+                        assertInstanceOf(
+                                IllegalStateException.class,
+                                failure.getCause(),
+                                "losing restore contender must fail on the linear claim");
+                        rejected++;
+                    }
+                }
+
+                assertNotNull(winner);
+                assertEquals(1, rejected);
+                winner.getReady().get(5, TimeUnit.SECONDS);
+                assertEquals(1, target.actorCount());
+                transfer.close();
+                assertTrue(winner.awaitTermination(5, TimeUnit.SECONDS));
+            }
+
+            assertEquals(0, target.actorCount());
+            ref.send(1L);
+            drain(source, ref);
+            assertEquals(43L, old.observed.get());
             ref.stop();
             assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
         }
