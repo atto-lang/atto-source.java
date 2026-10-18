@@ -260,6 +260,26 @@ public final class TypeChecker {
             }
         }
 
+        for (Map.Entry<String, Ast.ModuleDecl> entry : linkedModules.entrySet()) {
+            String localName = entry.getKey();
+            Ast.ModuleDecl linked = entry.getValue();
+            if (localName == null || localName.isBlank() || linked == null
+                    || !checker.importedModuleNamespaces.contains(localName)
+                    || checker.modules.containsKey(localName)) {
+                throw new IllegalArgumentException(
+                        "invalid or unauthorized linked module namespace '" + localName + "'");
+            }
+            boolean imported = program.imports().stream().anyMatch(use ->
+                    use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
+                            && use.names().size() == 1
+                            && use.names().getFirst().equals(linked.name())
+                            && ImportRules.exposedBindings(use).contains(localName));
+            if (!imported || checker.linkedModuleNamespaces.putIfAbsent(localName, linked) != null) {
+                throw new IllegalArgumentException(
+                        "linked module namespace lacks a unique explicit module import: " + localName);
+            }
+        }
+
         checker.validate(program);
         return program;
     }
