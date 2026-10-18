@@ -19,7 +19,7 @@ final class LambdaClosureEnvironmentIsolationTest {
     private static final class EnvAccess {
         final Class<?> type;
         final Constructor<?> ctor;
-        final Method define, lookup, assign, reserve, initialize, discardReservation, project;
+        final Method define, lookup, assign, reserve, initialize, discardReservation, project, detachedProject;
         final Field parent, slots, constructingObject;
 
         EnvAccess() throws Exception {
@@ -33,8 +33,10 @@ final class LambdaClosureEnvironmentIsolationTest {
             initialize = type.getDeclaredMethod("initialize", String.class, Object.class);
             discardReservation = type.getDeclaredMethod("discardReservation", String.class);
             project = type.getDeclaredMethod("snapshotCaptures", Set.class);
+            detachedProject = type.getDeclaredMethod("snapshotDetachedCaptures", Set.class);
             for (Method m : new Method[] {
-                    define, lookup, assign, reserve, initialize, discardReservation, project
+                    define, lookup, assign, reserve, initialize, discardReservation, project,
+                    detachedProject
             }) m.setAccessible(true);
             parent = type.getDeclaredField("parent");
             slots = type.getDeclaredField("slots");
