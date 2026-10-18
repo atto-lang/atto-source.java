@@ -17,8 +17,14 @@ import javax.sql.DataSource;
 public final class PostgresDurableWorkflowGate {
     private static final String KEY="tenant_id=? AND workflow_id=? AND run_id=? AND node_id=?";
     private final DataSource source;
-    public PostgresDurableWorkflowGate(DataSource source) {
+    private final PostgresDurableActorStore activationOwner;
+    /**
+     * The outbox gate is paired with the actor-store instance that owns its
+     * current activation. Epoch-only authority is deliberately insufficient.
+     */
+    public PostgresDurableWorkflowGate(DataSource source, PostgresDurableActorStore activationOwner) {
         this.source=Objects.requireNonNull(source,"source");
+        this.activationOwner=Objects.requireNonNull(activationOwner,"activationOwner");
     }
     public enum Admission { ACCEPTED, DUPLICATE, STALE }
     public record Expected(DurableActorStore.Address address,long installationId,
@@ -188,15 +194,7 @@ public final class PostgresDurableWorkflowGate {
         Objects.requireNonNull(actor);
         if(epoch<1 || seconds<1 || seconds>60)throw new IllegalArgumentException("claim deadline");
         return transaction(c -> {
-            try(PreparedStatement p=c.prepareStatement(
-                    "SELECT 1 FROM ores_durable_actor WHERE "+KEY +
-                    " AND active=true AND activation_epoch=?" +
-                    " AND lease_expires_at>clock_timestamp() FOR UPDATE")) {
-                bind(p,1,actor);p.setLong(5,epoch);
-                try(ResultSet r=p.executeQuery()) {
-                    if(!r.next())throw new IllegalStateException("outbox activation fenced");
-                }
-            }
+            activationOwner.requireOwnedActivation(c, actor, epoch);
             String intentId,idempotencyKey;byte[] payload;int oldAttempt;
             try(PreparedStatement p=c.prepareStatement(
                     "SELECT intent_id,idempotency_key,payload,attempt_count FROM ores_durable_outbox" +
@@ -235,13 +233,7 @@ public final class PostgresDurableWorkflowGate {
         Objects.requireNonNull(claim);
         if(receipt==null || receipt.isBlank())throw new IllegalArgumentException("receipt required");
         return transaction(c -> {
-            try(PreparedStatement p=c.prepareStatement(
-                    "SELECT 1 FROM ores_durable_actor WHERE "+KEY +
-                    " AND active=true AND activation_epoch=? AND lease_expires_at>clock_timestamp()" +
-                    " FOR UPDATE")) {
-                bind(p,1,claim.address());p.setLong(5,claim.epoch());
-                try(ResultSet r=p.executeQuery()){if(!r.next())throw new IllegalStateException("stale outbox epoch");}
-            }
+            activationOwner.requireOwnedActivation(c, claim.address(), claim.epoch());
             try(PreparedStatement p=c.prepareStatement(
                     "UPDATE ores_durable_outbox SET receipt_id=?,claim_token=NULL," +
                     "claim_until=NULL,claim_epoch=NULL WHERE "+KEY+" AND intent_id=?" +
