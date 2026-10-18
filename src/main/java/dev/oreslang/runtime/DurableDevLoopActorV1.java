@@ -287,6 +287,12 @@ public final class DurableDevLoopActorV1 {
             requireOpen();
 
             if (message instanceof Deliver deliver) {
+                if (requiresAtomicCompletion(deliver.event())) {
+                    throw new IllegalStateException(
+                            "causal workflow outcome requires atomic "
+                                    + "CompleteAndDeliver: "
+                                    + deliver.event().getClass().getSimpleName());
+                }
                 DurableDevLoopV1 machine =
                         store.replayDevLoop().machine();
                 DurableDevLoopV1.Transition transition =
@@ -706,6 +712,17 @@ public final class DurableDevLoopActorV1 {
         throw new IllegalArgumentException(
                 "unsupported dev-loop output "
                         + output.getClass().getName());
+    }
+
+    private static boolean requiresAtomicCompletion(
+            DurableDevLoopV1.Event event) {
+        return event instanceof DurableDevLoopV1.CodeChanged
+                || event instanceof DurableDevLoopV1.PushRecorded
+                || event instanceof DurableDevLoopV1.CiCompleted
+                || event instanceof DurableDevLoopV1.EvaluationPassed
+                || event instanceof DurableDevLoopV1.EvaluationFailed
+                || event instanceof DurableDevLoopV1.BugReportCreated
+                || event instanceof DurableDevLoopV1.ApprovalGranted;
     }
 
     private static boolean requiresOutcome(
