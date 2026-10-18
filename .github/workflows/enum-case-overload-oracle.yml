@@ -6,6 +6,7 @@ on:
       - 'src/main/java/dev/oreslang/types/EnumCaseOverloadPolicy.java'
       - 'src/main/java/dev/oreslang/types/EnumCaseSourceBindings.java'
       - 'src/main/java/dev/oreslang/types/EnumCaseSourceCallPlan.java'
+      - 'src/main/java/dev/oreslang/types/EnumCaseAotSourceImage.java'
       - 'src/main/java/dev/oreslang/ast/EnumV2Migration.java'
       - 'src/main/java/dev/oreslang/types/EnumTag32Plan.java'
       - 'src/main/java/dev/oreslang/ast/Ast.java'
@@ -43,7 +44,7 @@ jobs:
       - name: Compile real parser, migration and offline enum binding regression suites
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
-            -Dtest=EnumFrontendMainRebaseTest,EnumFrontendRootAdmissionTest,EnumCaseSourceBindingsTest,EnumCaseSourceCallPlanTest,EnumCaseOverloadPolicyTest,EnumCaseAstBoundaryAuditTest,EnumV2MigrationTest,EnumTag32SchemaVisibilityTest,EnumNullaryStagedLiteralBindingTest \
+            -Dtest=EnumFrontendMainRebaseTest,EnumFrontendRootAdmissionTest,EnumCaseSourceBindingsTest,EnumCaseSourceCallPlanTest,EnumCaseAotSourceImageTest,EnumCaseOverloadPolicyTest,EnumCaseAstBoundaryAuditTest,EnumV2MigrationTest,EnumTag32SchemaVisibilityTest,EnumNullaryStagedLiteralBindingTest \
             test
       - name: Compile isolated Java policy under strict warnings
         run: |
