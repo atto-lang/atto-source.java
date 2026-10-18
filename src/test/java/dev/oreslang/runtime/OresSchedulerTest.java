@@ -659,6 +659,89 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void cancellationRacingAwaitRegistrationNeverLosesOrDuplicatesResume() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            for (int round = 0; round < 96; round++) {
+                CountDownLatch revocationEntered = new CountDownLatch(1);
+                CountDownLatch finishRevocation = new CountDownLatch(1);
+                OresFuture<Integer> producer = new OresFuture<>(
+                        () -> true,
+                        () -> {
+                            revocationEntered.countDown();
+                            try {
+                                if (!finishRevocation.await(5, TimeUnit.SECONDS))
+                                    throw new AssertionError("revocation did not finish");
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                throw new AssertionError(interrupted);
+                            }
+                        });
+                CountDownLatch firstTurnEntered = new CountDownLatch(1);
+                CountDownLatch allowAwait = new CountDownLatch(1);
+                AtomicInteger turns = new AtomicInteger();
+                OresFuture<Integer> task = scheduler.start(resume -> {
+                    if (turns.getAndIncrement() == 0) {
+                        firstTurnEntered.countDown();
+                        assertTrue(allowAwait.await(5, TimeUnit.SECONDS));
+                        return OresScheduler.await(producer);
+                    }
+                    assertInstanceOf(java.util.concurrent.CancellationException.class,
+                            resume.failure());
+                    return OresScheduler.done(1);
+                });
+
+                AtomicBoolean cancelled = new AtomicBoolean();
+                Thread canceller = null;
+                try {
+                    assertTrue(firstTurnEntered.await(5, TimeUnit.SECONDS));
+                    if (round % 3 == 0) {
+                        // Cancellation CAS and revocation begin before the
+                        // awaiting turn can install its waiter.
+                        canceller = Thread.ofPlatform().start(
+                                () -> cancelled.set(producer.cancel(false)));
+                        assertTrue(revocationEntered.await(5, TimeUnit.SECONDS));
+                        allowAwait.countDown();
+                    } else if (round % 3 == 1) {
+                        // Race the registration against cancellation.
+                        canceller = Thread.ofPlatform().start(() -> {
+                            allowAwait.countDown();
+                            cancelled.set(producer.cancel(false));
+                        });
+                        assertTrue(revocationEntered.await(5, TimeUnit.SECONDS));
+                    } else {
+                        // Await waiter is already installed when cancellation
+                        // revocation starts.
+                        allowAwait.countDown();
+                        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                        while (producer.pendingRuntimeWaiterCount() == 0
+                                && System.nanoTime() < deadline) Thread.sleep(1);
+                        assertEquals(1, producer.pendingRuntimeWaiterCount());
+                        canceller = Thread.ofPlatform().start(
+                                () -> cancelled.set(producer.cancel(false)));
+                        assertTrue(revocationEntered.await(5, TimeUnit.SECONDS));
+                    }
+                    assertFalse(task.isDone(),
+                            "await resumed before revocation drained at round " + round);
+                    assertEquals(1, turns.get(),
+                            "guest continuation entered cancel hook at round " + round);
+                } finally {
+                    allowAwait.countDown();
+                    finishRevocation.countDown();
+                    if (canceller != null) {
+                        canceller.join(5000);
+                        assertFalse(canceller.isAlive(), "canceller stuck at round " + round);
+                    }
+                }
+                assertTrue(cancelled.get(), "cancel CAS lost at round " + round);
+                assertEquals(1, task.get(5, TimeUnit.SECONDS));
+                assertEquals(2, turns.get(), "duplicate resume at round " + round);
+                assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                        "waiter retained after cancellation at round " + round);
+            }
+        }
+    }
+
+    @Test
     void closingSchedulerDetachesSuspendedWaiterWithoutCancellingSharedFuture() throws Exception {
         OresFuture<Integer> shared = new OresFuture<>();
         OresScheduler scheduler = new OresScheduler(1);
