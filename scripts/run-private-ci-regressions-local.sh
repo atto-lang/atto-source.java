@@ -46,16 +46,18 @@ echo 'PRIVATE_CI_TEST_SCOPE=OFFLINE_NO_PUBLISH'
 import pathlib, sys
 root = pathlib.Path(sys.argv[1])
 for name in ('publish-private-ci-source.py', 'test-publish-private-ci-source.py',
-             'test-private-ci-merged-main.py'):
+             'test-private-ci-merged-main.py', 'test-private-ci-review-coverage.py'):
     path = root / name
     compile(path.read_bytes(), str(path), 'exec')
-print('PRIVATE_CI_PYTHON_COMPILE=3')
+print('PRIVATE_CI_PYTHON_COMPILE=4')
 PY
 bash -n "$script_dir/check-private-ci-destination.sh" \
     "$script_dir/test-private-ci-destination.sh" \
     "$script_dir/run-in-private-ci-destination.sh"
 echo 'PRIVATE_CI_BASH_SYNTAX=3'
 bash "$script_dir/test-private-ci-destination.sh"
+"$python_bin" -B "$script_dir/test-private-ci-review-coverage.py"
+echo 'PRIVATE_CI_REVIEW_COVERAGE_PASSED=1'
 for ((i=1; i<=repeats; i++)); do
   printf 'PRIVATE_CI_FULL_PYTHON_RUN=%d/%d\n' "$i" "$repeats"
   "$python_bin" -B "$script_dir/test-publish-private-ci-source.py"
