@@ -269,9 +269,8 @@ final class GenServerPendingCallsTest {
         var b = calls.register(target(1));
         var newer = calls.register(target(2));
 
-        IllegalStateException hostFailure =
-                new IllegalStateException("secret child crash details");
-        assertEquals(2, calls.failTarget(target(1), hostFailure));
+        assertEquals(2, calls.failTarget(
+                target(1), GenServerPendingCalls.TargetTermination.FAILURE));
         assertEquals(1, calls.pendingCount());
         assertEquals(2, calls.snapshot().targetFailureSettlements());
 
@@ -281,11 +280,11 @@ final class GenServerPendingCallsTest {
             var projected = assertInstanceOf(
                     GenServerPendingCalls.GenServerTargetTerminatedException.class,
                     failure.getCause());
-            assertEquals(IllegalStateException.class.getName(), projected.diagnosticType());
+            assertEquals(
+                    GenServerPendingCalls.TargetTermination.FAILURE,
+                    projected.termination());
             assertNull(projected.getCause());
             assertEquals(0, projected.getSuppressed().length);
-            assertFalse(projected.getMessage().contains("secret child crash details"));
-            assertNotSame(hostFailure, projected);
         }
 
         assertFalse(newer.future().isDone());
@@ -310,7 +309,8 @@ final class GenServerPendingCallsTest {
         }
 
         assertEquals(1_000, calls.snapshot().targetBuckets());
-        assertEquals(1, calls.failTarget(doomed, new IllegalStateException("boom")));
+        assertEquals(1, calls.failTarget(
+                doomed, GenServerPendingCalls.TargetTermination.FAILURE));
         assertEquals(999, calls.pendingCount());
         assertEquals(999, calls.snapshot().targetBuckets());
         calls.close();
@@ -347,7 +347,8 @@ final class GenServerPendingCallsTest {
                 var crash = executor.submit(() -> {
                     ready.await();
                     if (calls.failTarget(
-                            target(1), new IllegalStateException("crash")) == 1) {
+                            target(1),
+                            GenServerPendingCalls.TargetTermination.FAILURE) == 1) {
                         wins.incrementAndGet();
                     }
                     return null;
