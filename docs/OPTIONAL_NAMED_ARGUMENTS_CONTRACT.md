@@ -2,7 +2,9 @@
 
 Status: **design accepted for implementation planning, NOT currently available as source syntax**.
 Java/GraalVM currently has an arity-based runtime, ordinary expression-list calls,
-and exactly one explicitly declared class constructor. LLVM parity is separate.
+and exactly one explicitly declared class constructor. The LLVM native scalar subset
+already parses and lowers named calls at **exact** arity, but cannot omit arguments;
+its narrower implementation is not evidence of full Java/LLVM parity.
 Passing the pure-Java call-shape tests alone does not enable this feature.
 
 ## Canonical source forms
