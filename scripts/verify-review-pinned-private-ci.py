@@ -14,7 +14,9 @@ import datetime as dt
 import hashlib
 import json
 import math
+import os
 import re
+import stat
 from pathlib import Path
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -67,12 +69,30 @@ def finite_json_float(value):
     return number
 
 def bounded_bytes(path, limit, label):
-    # Do not allocate an unbounded attacker-controlled input before rejecting
-    # it. Exactly limit bytes are allowed, with a single-byte overflow probe.
-    with Path(path).open("rb") as stream:
+    # Admission metadata must be a stable, ordinary file: following a symlink
+    # could read secrets from the dispatcher's trusted checkout or host.
+    # Nonblocking opens avoid waiting forever on a substituted FIFO/device.
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise Denied("secure no-follow file access is unsupported")
+    flags = (os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0)
+             | getattr(os, "O_NONBLOCK", 0))
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise Denied("unsafe " + label + " input path") from exc
+    with os.fdopen(fd, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or not 0 < before.st_size <= limit):
+            raise Denied("invalid " + label + " input file")
         raw = stream.read(limit + 1)
-    if not raw or len(raw) > limit or raw.startswith(b"\xef\xbb\xbf"):
-        raise Denied("invalid " + label + " bytes")
+        after = os.fstat(stream.fileno())
+    if (len(raw) != before.st_size or after.st_size != before.st_size
+            or after.st_mtime_ns != before.st_mtime_ns
+            or after.st_ctime_ns != before.st_ctime_ns
+            or raw.startswith(b"\xef\xbb\xbf")):
+        raise Denied("invalid or changed " + label + " input bytes")
     return raw
 
 def load_json(path):
@@ -149,8 +169,8 @@ def pr_head(pr, repo, number):
         raise Denied("security PR must target main")
     if pr.get("state") != "open":
         raise Denied("security PR is not open")
-    if pr.get("merged") is True:
-        raise Denied("security PR unexpectedly merged")
+    if pr.get("merged") is not False:
+        raise Denied("security PR merge state missing or not explicitly false")
     if pr.get("draft") is not False:
         raise Denied("security PR must be ready for review")
     author = pr.get("user") or {}
