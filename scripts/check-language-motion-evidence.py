@@ -11,7 +11,7 @@ import re
 import stat
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
-RUN = re.compile(r"^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[1-9][0-9]*$")
+RUN = re.compile(r"^https://github[.]com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[1-9][0-9]*$")
 STATUS = {"pending_ci", "not_verified", "design_only", "partial_legacy_implementation", "verified"}
 PROPERTIES = {"pipelineCode", "mlCode", "httpCode", "selectCode"}
 
@@ -86,7 +86,7 @@ def check_manifest(record, root):
         source = location.read_bytes()
         require(0 < len(source) <= 102400, "fixture exceeds size bound")
         digest = hashlib.sha1(b"blob " + str(len(source)).encode("ascii")
-                              + b"\\0" + source).hexdigest()
+                              + bytes((0,)) + source).hexdigest()
         require(entry.get("source_blob_sha1") == digest,
                 "fixture content differs from pinned Git blob")
     return True
