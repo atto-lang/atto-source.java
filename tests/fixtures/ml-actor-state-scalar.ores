@@ -1,7 +1,7 @@
 // Proposed executable gate for Java/Graal actor state; NOT proven as a guest
 // execution on this exact tree. Uses int scalars to avoid pretending Tensor<f64>
 // or GPU-backed parameter storage is implemented.
-// Expected stdout (each own line): 20, 30, 2, -4, -2, 5, 5, 2, -1, 10.
+// Expected stdout (each own line): -6, 20, -7, 30, 2, -4, -2, 5, 5, 2, -1, 10.
 //
 // This is a single actor performing a scalar differentiable step. Gradient
 // contribution is x * upstream_gradient. Two microbatches are admitted at
@@ -18,24 +18,54 @@ define actor VersionedScalarStage as
         accumulated_gradient: int = 0;
         pending_gradients: int = 0;
         step: int = 1;
+        issued_first: bool = false;
+        issued_second: bool = false;
+        input_first: int = 0;
+        input_second: int = 0;
         seen_first: bool = false;
         seen_second: bool = false;
     }
 
-    // Reads a copied scalar snapshot under a shared read permit; multiplication
-    // occurs OUTSIDE the state loan.
-    private eval_affine(int x): int with state.read {
-        const weight = using state.read(|s| -> s.weight);
-        return weight * x;
-    }
-
-    // VJP of y=w*x: dL/dw += x * upstream_gradient.
-    // The producer's expected version must match the currently committed one.
-    // No await, select, I/O, GPU operation, or actor send in the callback.
-    private accumulate(int expected_step, int expected_version, int microbatch, int x, int upstream): int
+    // Reserve the (step, weight version, microbatch) forward context in the
+    // sole actor state. This *scalar* reference computes in the short state
+    // transaction; real tensor kernels must compute from a frozen pinned
+    // storage snapshot OUTSIDE the loan.
+    private eval_affine(int expected_step, int expected_version, int microbatch, int x): int
         with state.read, state.write
     {
-        const contribution = x * upstream;
+        return using state.write(critical |s| -> {
+            if s.version != expected_version; do
+                return -1;
+            fi
+            if s.step != expected_step; do
+                return -5;
+            fi
+            if microbatch == 1; do
+                if s.issued_first; do
+                    return -7;
+                fi
+                s.issued_first = true;
+                s.input_first = x;
+                return s.weight * x;
+            fi
+            if microbatch == 2; do
+                if s.issued_second; do
+                    return -7;
+                fi
+                s.issued_second = true;
+                s.input_second = x;
+                return s.weight * x;
+            fi
+            return -3;
+        });
+    }
+
+    // The input comes from the *saved forward context*, never the untrusted
+    // backward message. No gradient can be accepted without a prior matching
+    // forward, and no microbatch can contribute twice.
+    private accumulate(int expected_step, int expected_version, int microbatch, int upstream): int
+        with state.read, state.write
+    {
         return using state.write(critical |s| -> {
             if s.version != expected_version; do
                 return -1;
@@ -46,19 +76,28 @@ define actor VersionedScalarStage as
             if microbatch != 1 && microbatch != 2; do
                 return -3;
             fi
-            if microbatch == 1 && s.seen_first; do
-                return -4;
-            fi
-            if microbatch == 2 && s.seen_second; do
-                return -4;
-            fi
             if microbatch == 1; do
+                if !s.issued_first; do
+                    return -6;
+                fi
+                if s.seen_first; do
+                    return -4;
+                fi
                 s.seen_first = true;
+                s.accumulated_gradient = s.accumulated_gradient
+                    + (s.input_first * upstream);
             fi
             if microbatch == 2; do
+                if !s.issued_second; do
+                    return -6;
+                fi
+                if s.seen_second; do
+                    return -4;
+                fi
                 s.seen_second = true;
+                s.accumulated_gradient = s.accumulated_gradient
+                    + (s.input_second * upstream);
             fi
-            s.accumulated_gradient = s.accumulated_gradient + contribution;
             s.pending_gradients = s.pending_gradients + 1;
             return s.accumulated_gradient;
         });
@@ -76,12 +115,16 @@ define actor VersionedScalarStage as
             if s.step != expected_step; do
                 return -5;
             fi
-            if s.pending_gradients != 2 || !s.seen_first || !s.seen_second; do
+            if s.pending_gradients != 2 || !s.issued_first || !s.issued_second || !s.seen_first || !s.seen_second; do
                 return -2;
             fi
             s.weight = s.weight - s.accumulated_gradient;
             s.accumulated_gradient = 0;
             s.pending_gradients = 0;
+            s.issued_first = false;
+            s.issued_second = false;
+            s.input_first = 0;
+            s.input_second = 0;
             s.seen_first = false;
             s.seen_second = false;
             s.step = s.step + 1;
@@ -90,26 +133,38 @@ define actor VersionedScalarStage as
         });
     }
 
+    private weight_snapshot(): int with state.read {
+        return using state.read(|s| -> s.weight);
+    }
+
     private version(): int with state.read {
         return self.handle_state(critical read |s| -> s.version);
     }
 
     // ActorRef callers ONLY send messages; they never invoke actor user methods.
     receive(ActorMail<String> mail): void {
+        if mail.value == "orphan"; do
+            stdio.println(self.accumulate(1, 1, 2, 1));
+            return;
+        fi
         if mail.value == "forward1"; do
-            stdio.println(self.eval_affine(2));
+            stdio.println(self.eval_affine(1, 1, 1, 2));
+            return;
+        fi
+        if mail.value == "forward_duplicate"; do
+            stdio.println(self.eval_affine(1, 1, 1, 2));
             return;
         fi
         if mail.value == "forward2"; do
-            stdio.println(self.eval_affine(3));
+            stdio.println(self.eval_affine(1, 1, 2, 3));
             return;
         fi
         if mail.value == "grad1"; do
-            stdio.println(self.accumulate(1, 1, 1, 2, 1));
+            stdio.println(self.accumulate(1, 1, 1, 1));
             return;
         fi
         if mail.value == "duplicate"; do
-            stdio.println(self.accumulate(1, 1, 1, 2, 1));
+            stdio.println(self.accumulate(1, 1, 1, 1));
             return;
         fi
         if mail.value == "early"; do
@@ -117,7 +172,7 @@ define actor VersionedScalarStage as
             return;
         fi
         if mail.value == "grad2"; do
-            stdio.println(self.accumulate(1, 1, 2, 3, 1));
+            stdio.println(self.accumulate(1, 1, 2, 1));
             return;
         fi
         if mail.value == "commit"; do
@@ -126,11 +181,11 @@ define actor VersionedScalarStage as
             return;
         fi
         if mail.value == "stale"; do
-            stdio.println(self.accumulate(1, 1, 1, 2, 1));
+            stdio.println(self.accumulate(1, 1, 1, 1));
             return;
         fi
         if mail.value == "after"; do
-            stdio.println(self.eval_affine(2));
+            stdio.println(self.weight_snapshot() * 2);
             self.end();
             return;
         fi
@@ -141,7 +196,9 @@ end
 pub async routine main(): void {
     val worker = spawn VersionedScalarStage();
     await worker.ready;
+    worker.send("orphan");
     worker.send("forward1");
+    worker.send("forward_duplicate");
     worker.send("forward2");
     worker.send("grad1");
     worker.send("duplicate");
