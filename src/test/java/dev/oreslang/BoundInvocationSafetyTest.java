@@ -63,6 +63,29 @@ final class BoundInvocationSafetyTest {
     }
 
     @Test
+    void fabricatedInstanceMemberWithoutReceiverCannotProduceBoundPlan() {
+        Ast.ClassDecl owner = concreteBox();
+        Ast.StagedCallExpr nullReceiver = new Ast.StagedCallExpr(
+                new Ast.MemberExpr(null, "echo"), List.of(), false,
+                List.of(Ast.CallArgument.named("v", new Ast.LiteralExpr(9L))));
+        assertThrows(IllegalArgumentException.class,
+                () -> BoundInvocation.bindLiteralClassMethod(owner, nullReceiver));
+        assertThrows(IllegalArgumentException.class,
+                () -> BoundInvocation.bindClassMethod(
+                        owner, nullReceiver, List.of(INT)));
+
+        // The malformed-AST rejection must not disable the ordinary method
+        // shape preview. This is still SHAPE_ONLY, never an executable token.
+        Ast.StagedCallExpr valid = new Ast.StagedCallExpr(
+                new Ast.MemberExpr(new Ast.NameExpr("box"), "echo"),
+                List.of(), false,
+                List.of(Ast.CallArgument.named("v", new Ast.LiteralExpr(9L))));
+        BoundInvocation preview = BoundInvocation.bindLiteralClassMethod(owner, valid);
+        assertEquals(BoundInvocation.Readiness.SHAPE_ONLY, preview.readiness());
+        assertThrows(IllegalStateException.class, preview::requireExecutable);
+    }
+
+    @Test
     void syntheticConstructorSelfCannotBeMistakenForGuestAbiArgument() {
         Ast.ClassDecl concrete = concreteBox();
         Ast.ConstructorDecl original = concrete.constructor();
