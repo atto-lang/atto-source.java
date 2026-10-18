@@ -40,10 +40,22 @@ public final class CallerRoleContracts {
          * Enforce only AFTER a call has been bound to an exact declaration.
          * A name-only or arbitrary runtime lookup must never be used as proof.
          */
-        public void requireDirectCall(Object callee, Set<String> currentCallerRoles, String displayName) {
+        public void requireDirectCall(Object callee, Object callerDeclaration, String displayName) {
+            // Raw strings/sets supplied by clients are never authorization inputs.
+            // Only this index may derive the caller roles from its validated,
+            // identity-keyed declaration bindings. null denotes a lambda or
+            // another unannotated, separately executing callback.
             Set<String> allowed = permitted.get(callee);
-            if (allowed == null) return;
-            for (String role : currentCallerRoles) {
+            if (allowed == null) {
+                if (hasPolicyAnnotation(callee, "CallableBy")) {
+                    throw new IllegalArgumentException("@CallableBy target '" + displayName
+                            + "' is not bound to the checked source role index");
+                }
+                return;
+            }
+            Set<String> roles = callerDeclaration == null ? Set.of()
+                    : granted.getOrDefault(callerDeclaration, Set.of());
+            for (String role : roles) {
                 if (allowed.contains(role)) return;
             }
             throw new IllegalArgumentException("@CallableBy denies direct call to '" + displayName
@@ -117,6 +129,16 @@ public final class CallerRoleContracts {
             }
         }
         return index;
+    }
+
+    private static boolean hasPolicyAnnotation(Object declaration, String annotation) {
+        if (declaration instanceof Ast.FunctionDecl fn) {
+            return has(fn.annotations(), annotation);
+        }
+        if (declaration instanceof Ast.MethodDecl method) {
+            return has(method.annotations(), annotation);
+        }
+        return false;
     }
 
     private static boolean has(List<Ast.Annotation> annotations, String name) {
