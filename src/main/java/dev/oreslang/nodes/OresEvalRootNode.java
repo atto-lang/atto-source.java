@@ -602,7 +602,8 @@ public final class OresEvalRootNode extends RootNode {
         public String actorStateSchemaSha256(String actorTypeName) {
             Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
             return SourceActorCheckpointCodecV1.schemaSha256(
-                    actorTypeName, checkpointFields(klass));
+                    actorTypeName + "#" + klass.actorKind(),
+                    checkpointFields(klass));
         }
 
         @Override
@@ -616,7 +617,7 @@ public final class OresEvalRootNode extends RootNode {
                                 + "' requires exactly one receive parameter");
             }
             String canonical = "ores-source-actor-message-v1\n"
-                    + actorTypeName + "\n"
+                    + actorTypeName + "#" + klass.actorKind() + "\n"
                     + canonicalType(receive.parameters().getFirst().type()) + "\n"
                     + canonicalType(receive.returnType()) + "\n";
             return SourceActorCheckpointCodecV1.digest(canonical);
@@ -651,6 +652,18 @@ public final class OresEvalRootNode extends RootNode {
                         "source actor restore candidate code image does not match evaluator");
             }
             Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
+            ActorRuntime.ActorKind declaredKind = switch (klass.actorKind()) {
+                case NONE -> throw new IllegalArgumentException(
+                        "source hot-upgrade target is not an actor: " + actorTypeName);
+                case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
+                case SHARED -> ActorRuntime.ActorKind.SHARED;
+                case UNTRUSTED -> ActorRuntime.ActorKind.UNTRUSTED;
+            };
+            if (declaredKind != actorContext.kind()) {
+                throw new SecurityException(
+                        "source hot-upgrade cannot change actor kind from "
+                                + actorContext.kind() + " to " + declaredKind);
+            }
             LinkedHashMap<String, Object> fields =
                     SourceActorCheckpointCodecV1.decode(
                             checkpointFields(klass), snapshot);
