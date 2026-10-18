@@ -130,8 +130,18 @@ fi
 mkdir -p "$EVIDENCE_DIR"
 stage=targeted-junit
 mvn -B -ntp -Dores.runtime.carriers=native \
+  -DskipTests=false -Dmaven.test.skip=false -DfailIfNoTests=true \
   '-Dtest=VmNioTcpListenerTest,NativeNetStdlibTest,NioReadinessGroupTest,NativeNioFutureReactorTest,OresSchedulerTest,OresCarrierPermitPoolTest,OresFuturesTest,OresFutureCallbackTest' \
   test 2>&1 | tee "$EVIDENCE_DIR/targeted-junit.log"
+
+# A zero-exit Maven invocation alone does not prove any JUnit actually ran.
+# Surefire may be disabled in the POM or overridden by a profile. Require
+# nonzero executed test cases and all mandatory suite classes to appear in
+# parseable reports; malformed/zero-case/skipped-only reports fail closed.
+stage=verify-targeted-junit-reports
+python3 scripts/verify-nio-surefire-reports.py \
+  "$root/target/surefire-reports" \
+  | tee "$EVIDENCE_DIR/targeted-junit-evidence.txt"
 
 stage=full-maven-verify
 mvn -B -ntp -Dores.runtime.carriers=native verify 2>&1 \
