@@ -3756,7 +3756,24 @@ public final class TypeChecker {
                                 + "struct{field: Type,...}{...}, or an explicit Map<K,V> collection");
             }
             Ast.ClassDecl klass = findClass(created.type().name());
-            if (klass == null) return resolve(created.type(), generics, self);
+            if (klass == null) {
+                // Contracts/signatures and modules are compile-time declarations,
+                // never runtime constructors. Do not allow type resolution to
+                // reinterpret a nominal contract as an allocatable class.
+                Ast.InterfaceDecl nonClass = findInterface(created.type().name());
+                if (nonClass != null) {
+                    throw new IllegalArgumentException(
+                            "cannot instantiate " + (nonClass.moduleContract()
+                                    ? "compile-time contract/signature" : "interface")
+                                    + " '" + created.type().name() + "' with new");
+                }
+                if (modules.containsKey(created.type().name())) {
+                    throw new IllegalArgumentException(
+                            "cannot instantiate compile-time module '"
+                                    + created.type().name() + "' with new");
+                }
+                return resolve(created.type(), generics, self);
+            }
             rejectUnimportedClassNamespace(klass);
             if (klass.isAbstract()) {
                 throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "'");
