@@ -28,7 +28,7 @@ declared type: `T? name`. It does NOT alter a general type reference, make
 `T` nullable, or introduce JavaScript's `undefined`. This is intentionally
 different from `Option<T> name`, a *required* parameter whose caller must
 supply an Option value. In the callee, `T? name` is read as an `Option<T>`;
-a supplied ordinary `T` is wrapped in `Some(T)`, and omission is `None`.
+a supplied ordinary `T` is wrapped in `Some(T)`, an already-typed `Option<T>` value may be passed as-is, and omission is `None`.
 The omitted/default distinction must remain visible to match, borrowing,
 serialization, reflection, debugging and cross-backend lowering.
 
@@ -69,11 +69,16 @@ mapping formal -> source argument indexes is `[1, -1, 0]`.
 - Existing same-declared-arity collisions remain invalid (subject to a
   separately accepted nominal-enum overload contract, which **must not**
   distinguish declarations only through optional markers or labels).
-- Named/optional calls must select a **unique** statically visible call
-  shape based on supplied labels, required slots, and positional prefix.
-  For example `f(int a)` together with `f(int a, bool? flag)` makes `f(1)`
-  ambiguous: fail at compile time. Do **not** prefer exact arity, guess from
-  types, or depend on declaration order to resolve optional ambiguity.
+- For the conservative v1 release, an optional-capable declaration
+  has a supplied-count interval [number of required slots, total slots].
+  Reject at **declaration/link time** any pair of overloads whose intervals
+  overlap, even if their named-label sets appear disjoint. For example
+  `f(int a)` and `f(int a, bool? flag)` cannot coexist. This intentionally
+  rejects some theoretically disambiguatable calls until all compiler
+  backends have a proof-carrying stronger call-shape selector. Do **not**
+  prefer exact arity, guess by runtime type, or depend on declaration order.
+  Once the family passes admission, every call still binds to one signature
+  by positional prefix and exact named labels.
 - After structural selection, the existing callable selector uses the
   selected declaration's full value arity. Where inherited methods or
   interfaces are involved, an override must preserve each parameter name,
@@ -111,6 +116,7 @@ user arity** identity and ambiguity checks, not type or label overloading.
 
 ## Hardened exclusions (initial release)
 
+- Reject an optional marker on `Option<T>?` in v1; it would create an ambiguous nested-Option lifting rule.
 - Reject `T?` outside formal parameter declarations (field types, returns,
   local variables, type generic arguments) unless a separate nullable-type
   feature is specified. For now prefer `Option<T>` there.
