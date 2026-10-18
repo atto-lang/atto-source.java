@@ -545,6 +545,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
                         Reason.STATE,
                         "first authenticated worker frame must be exact CONTROL/READY");
             }
+            Arrays.fill(expectedReadyPayload, (byte) 0);
             state = State.READY;
             return;
         }
