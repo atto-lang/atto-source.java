@@ -110,7 +110,7 @@ cases = list(each_test(suite))
 ids = [case.id() for case in cases]
 publisher = sum(".DestinationBoundPublisherTests." in identifier for identifier in ids)
 merged = sum(".MergedMainProvenanceTests." in identifier for identifier in ids)
-if (len(ids) < 107 or publisher < 97 or merged < 10
+if (len(ids) < 115 or publisher < 105 or merged < 10
         or publisher + merged != len(ids) or len(set(ids)) != len(ids)):
     raise SystemExit(
         "PRIVATE_CI_TEST_INVENTORY_REJECTED: "
