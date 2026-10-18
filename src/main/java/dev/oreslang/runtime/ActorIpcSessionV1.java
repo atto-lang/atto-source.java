@@ -26,6 +26,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     public static final int PROTOCOL_MAJOR = 1;
     public static final int PROTOCOL_MINOR = 0;
     public static final int MAX_PAYLOAD_BYTES = 1024 * 1024;
+    public static final int MAX_CONTROL_PAYLOAD_BYTES = 64 * 1024;
 
     private static final byte[] MAGIC = "ORESIPC1".getBytes(StandardCharsets.US_ASCII);
     private static final int SHA256_BYTES = 32;
@@ -366,6 +367,11 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         if (messageSequence < 0) {
             throw new IllegalArgumentException("CONTROL message sequence cannot be negative");
         }
+        payload = Objects.requireNonNull(payload, "payload");
+        if (payload.length > MAX_CONTROL_PAYLOAD_BYTES) {
+            throw new IllegalArgumentException(
+                    "IPC CONTROL payload exceeds maximum size");
+        }
         long sequence = nextSupervisorControlSequence;
         long next = increment(sequence, "supervisor CONTROL");
         byte[] frame = encodeFrame(
@@ -481,6 +487,12 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
                     Reason.MALFORMED,
                     "IPC payload length/trailing-byte mismatch");
         }
+        if (parsedLane == Lane.CONTROL
+                && payloadLength > MAX_CONTROL_PAYLOAD_BYTES) {
+            throw new ProtocolException(
+                    Reason.MALFORMED,
+                    "IPC CONTROL payload exceeds maximum size");
+        }
         byte[] payload = new byte[payloadLength];
         in.get(payload);
         if (parsedLane != lane) {
@@ -592,6 +604,11 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
                     throw new ProtocolException(
                             Reason.STATE,
                             "COMPLETE must identify a positive message sequence");
+                }
+                if (frame.payload().length != 0) {
+                    throw new ProtocolException(
+                            Reason.STATE,
+                            "COMPLETE frame must not carry a payload");
                 }
             }
             case CONTROL -> {
