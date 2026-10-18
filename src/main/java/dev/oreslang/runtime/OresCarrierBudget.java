@@ -72,6 +72,25 @@ record OresCarrierBudget(
     }
 
     /**
+     * Cross-domain borrowing is only safe when actor workers are non-affine
+     * JVM workers backed by the shared permit coordinator. Keep the default
+     * auto/native and lane/cpu topologies on their static partition until
+     * native/affinity carrier retirement can be acknowledged per worker.
+     *
+     * <p>Require the JVM backend explicitly here: OresVM is created before
+     * ActorRuntime resolves any auto-backend fallback, so treating "auto" as
+     * borrow-safe would speculate about capacity that may belong to untracked
+     * native lanes.
+     */
+    static boolean explicitWorkConservingJvmTopology() {
+        String affinity = System.getProperty("ores.actor.affinity", "lane").trim();
+        String backend = System.getProperty("ores.runtime.carriers", "auto")
+                .trim()
+                .toLowerCase(java.util.Locale.ROOT);
+        return affinity.equals("none") && backend.equals("java");
+    }
+
+    /**
      * Largest number of permits one domain may hold while preserving one
      * protected permit for each other runtime execution domain.
      */
