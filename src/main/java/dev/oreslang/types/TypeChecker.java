@@ -1106,6 +1106,12 @@ public final class TypeChecker {
                         + "' cannot carry actor transport specialization");
             }
         } else {
+            if (actorSpec.transport() == Ast.ActorTransport.MAIL
+                    && actorSpec.direction() != Ast.ActorDirection.LOCAL) {
+                throw new IllegalArgumentException("actor '" + klass.name()
+                        + "' mailbox transport cannot claim non-local routing without"
+                        + " a verified adapter; fail-closed");
+            }
             if (actorSpec.transport() != Ast.ActorTransport.MAIL) {
                 throw new IllegalArgumentException("actor '" + klass.name() + "' declares "
                         + actorSpec.transport() + " " + actorSpec.direction()
