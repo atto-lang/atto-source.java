@@ -49,6 +49,9 @@ final class LambdaClosureEnvironmentIsolationTest {
         Object capture(Object frame, String... names) throws Exception {
             return project.invoke(frame, Set.of(names));
         }
+        Object detachedCapture(Object frame, String... names) throws Exception {
+            return detachedProject.invoke(frame, Set.of(names));
+        }
         @SuppressWarnings("unchecked")
         Map<String, Object> bindings(Object frame) throws Exception {
             return (Map<String, Object>) slots.get(frame);
@@ -78,6 +81,26 @@ final class LambdaClosureEnvironmentIsolationTest {
         assertEquals(17, a.lookup.invoke(closure, "used"));
         assertFalse(a.bindings(closure).containsKey("self"));
         assertFalse(a.bindings(closure).containsKey("secretCapability"));
+    }
+
+    @Test void detachedCaptureFreezesRebindableSlotAtRegistrationTime() throws Exception {
+        EnvAccess a = new EnvAccess();
+        Object root = a.frame(null);
+        a.put(root, "counter", 7, Ast.BindingKind.LET);
+
+        Object detached = a.detachedCapture(root, "counter");
+        assertNotSame(a.bindings(root).get("counter"), a.bindings(detached).get("counter"),
+                "detached actor continuation must not retain a live outer Slot alias");
+
+        a.assign.invoke(root, "counter", 99);
+        assertEquals(7, a.lookup.invoke(detached, "counter"),
+                "later outer rebind must not time-travel into a registered continuation");
+        assertEquals(99, a.lookup.invoke(root, "counter"));
+
+        a.assign.invoke(detached, "counter", 11);
+        assertEquals(11, a.lookup.invoke(detached, "counter"));
+        assertEquals(99, a.lookup.invoke(root, "counter"),
+                "continuation-local writes must not mutate the completed outer activation");
     }
 
     @Test void nearestShadowedSlotWinsAndMutableCaptureRetainsSlotIdentity() throws Exception {
