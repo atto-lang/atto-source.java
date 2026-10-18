@@ -67,6 +67,17 @@ public final class Ast {
             return arguments.getFirst();
         }
         public static TypeRef inferred() { return new TypeRef("$infer$", List.of(), false); }
+        /** Explicitly erased nominal interface view, distinct in the source AST. */
+        public static TypeRef dynamic(TypeRef target) {
+            return new TypeRef("$dyn$", List.of(target), false);
+        }
+        public boolean isDyn() { return name.equals("$dyn$"); }
+        public TypeRef dynTarget() {
+            if (!isDyn() || arguments.size() != 1 || inferArguments) {
+                throw new IllegalStateException("malformed dyn interface type");
+            }
+            return arguments.getFirst();
+        }
         public static TypeRef borrowed(TypeRef target, boolean mutable) {
             return new TypeRef(mutable ? "$borrow_mut$" : "$borrow$", List.of(target), false);
         }
