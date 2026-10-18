@@ -200,6 +200,32 @@ public final class OptionalCallShapeBinder {
             for (int source : sourceIndexByParameter) if (source >= 0) count++;
             return count;
         }
+        /** Count of all syntactic argument items, including explicit omissions. */
+        public int callItemCount() {
+            return Math.addExact(suppliedArgumentCount(), explicitlyOmittedParameterIndices.size());
+        }
+
+        /**
+         * Recover the source indexes of syntactic omit items. The original
+         * call-item order is preserved even when named bindings are reordered.
+         * Implicitly omitted parameters have no call item and are excluded.
+         */
+        public List<Integer> omittedCallItemIndices() {
+            List<Integer> result = new ArrayList<>();
+            int evaluated = 0;
+            for (int callItem = 0; callItem < callItemCount(); callItem++) {
+                if (evaluated < callItemIndexByEvaluatedSource.size()
+                        && callItemIndexByEvaluatedSource.get(evaluated) == callItem) {
+                    evaluated++;
+                } else {
+                    result.add(callItem);
+                }
+            }
+            if (result.size() != explicitlyOmittedParameterIndices.size()) {
+                throw new IllegalStateException("inconsistent omitted call-item origin plan");
+            }
+            return List.copyOf(result);
+        }
         public boolean omitted(int parameterIndex) {
             return parameterIndex != variadicParameterIndex
                     && sourceIndexByParameter.get(parameterIndex) == -1;
