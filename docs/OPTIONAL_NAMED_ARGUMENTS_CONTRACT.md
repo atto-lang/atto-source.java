@@ -577,3 +577,53 @@ guest-language parity; exact-tree JDK25/GraalVM/LLVM runs are still required.
 Source-org Actions jobs have failed without recorded runner steps or logs.
 Private cross-organization mirror transfer remains disallowed until separate
 CODEOWNER/security approval on protected branch under PR #1326.
+
+## Compiler-only literal lexical witness and receiver temps (2026-10-18)
+
+The stacked Java #1397 branch now supplies two additional NON-EXECUTABLE
+handoffs. They are not authorization to execute or a replacement for
+TypeChecker, OwnershipChecker, native lowering, or a real JDK25 test run.
+
+`OptionalCallTempLowering.from(BoundInvocation)` produces an immutable
+recipe separating:
+
+- Static module function: compile-time declaration selection, **no guest
+  target-expression temporary**.
+- Instance method: **one receiver expression temporary before all argument
+  temps**, without pretending the method MemberExpr itself is a callable
+  guest value.
+- Explicit class constructor: no guest receiver or callee-expression temp.
+
+Each evaluated lexical *occurrence* (not each AST object identity) creates
+its own argument temporary, indexed by dense evaluated-source order with
+its original raw call-item index. A supplied source maps to exactly one
+formal ABI slot; full formal slots materialize only after every argument
+temp and are annotated `PASS_REQUIRED`, `WRAP_SOME`, `PASS_OPTION` or
+`INJECT_NONE`. Injected None has no source temporary, even when it
+originated at an explicit `_` call item. The factory derives the mapping
+from the immutable bound schedule; callers cannot fabricate executable
+recipes through a public constructor.
+
+`SameModuleLiteralInvocation.inspect(program, caller, call)` is a second,
+narrow **lexical-origin preview**. It insists on original AST identity:
+the calling declaration belongs to exactly one source module in the
+supplied program and the call occurs exactly once as a direct top-level
+statement, return, or binding initializer inside it. Only same-module
+static direct/qualified calls are considered. Imported scopes, actor,
+async/suspending/generator/routine/generic/annotated calling contexts,
+parameter/module/local/destructure name shadowing and nonliteral
+arguments fail closed. Its helper derives primitive source types from
+actual literal AST nodes, not user-supplied claims.
+
+A passed preview still lacks path-sensitive lexical binding in general,
+visibility to other modules, trust for receiver/argument expression
+effects, borrows/moves, constructor initialization, and executable
+`Option<T>` layout. `requireExecutable()` remains an unconditional
+exception. Full compiler-issued type/ownership/effect proof and backend
+code generation remain distinct, mandatory future steps.
+
+Regression methods are committed for lexical origin/forgeries,
+receiver-before-argument ordering, distinct temporaries for repeated
+AST object identities, explicit omissions, Option adaptations, imported
+and shadowed names, and disabled guest execution. They are not passing
+JUnit evidence until an actual runner executes them.
