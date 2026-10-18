@@ -1738,11 +1738,42 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(continuation, "continuation");
 
         ActorCell<?> cell = actors.get(target.actorId());
-        if (cell == null || !ownFuture(cell, future)) return;
+        if (cell == null || cell.stopped.get() || closed.get()) return;
 
-        future.whenCompleteRuntime(
-                (value, failure) ->
-                        target.enqueue(() -> continuation.accept(value, failure)));
+        // A Future may remove itself from pendingOperations BEFORE its later
+        // completion callback queues the actor continuation. A supervisor
+        // observing that temporary gap must NOT falsely certify drain.
+        // Hold a separate publication reservation until enqueue completes.
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || closed.get()) return;
+            if (cell.pendingCompletionPublications == Integer.MAX_VALUE)
+                throw new IllegalStateException("actor completion-publication count exhausted");
+            cell.pendingCompletionPublications++;
+        }
+        AtomicBoolean settled = new AtomicBoolean();
+        Runnable release = () -> {
+            if (!settled.compareAndSet(false, true)) return;
+            synchronized (cell.lifecycleLock) {
+                if (cell.pendingCompletionPublications <= 0)
+                    throw new IllegalStateException("actor completion-publication underflow");
+                cell.pendingCompletionPublications--;
+                cell.lifecycleLock.notifyAll();
+            }
+        };
+        boolean registered = false;
+        try {
+            if (!ownFuture(cell, future)) return;
+            future.whenCompleteRuntime((value, failure) -> {
+                try {
+                    target.enqueue(() -> continuation.accept(value, failure));
+                } finally {
+                    release.run();
+                }
+            });
+            registered = true;
+        } finally {
+            if (!registered) release.run();
+        }
     }
 
     private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
@@ -4960,7 +4991,8 @@ public final class ActorRuntime implements AutoCloseable {
                             && !cell.endRequested && !cell.finalCleanupActive
                             && cell.activeMail == null
                             && cell.children.isEmpty()
-                            && cell.pendingOperations.isEmpty();
+                            && cell.pendingOperations.isEmpty()
+                            && cell.pendingCompletionPublications == 0;
                 }
             }
         }
@@ -6703,6 +6735,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /** Lifecycle-monitor-owned handoff count between Future completion and
+         * actual continuation-mailbox publication, independent of pendingOperations. */
+        private int pendingCompletionPublications;
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
          * AST/evaluator. Keys are immutable shared code-site identities.
