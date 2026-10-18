@@ -8,6 +8,7 @@ on:
       - 'tools/run-nested-extraction-exact-tree.sh'
       - 'tools/test-run-nested-extraction-exact-tree.sh'
       - 'tools/verify-exact-source-tree.sh'
+      - 'tools/test-verify-exact-source-tree.sh'
       - '.github/workflows/nested-extraction-exact-tree.yml'
   workflow_dispatch:
 
