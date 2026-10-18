@@ -13,6 +13,33 @@ import java.util.Optional;
  */
 public interface WorkflowJournalStoreV1 extends AutoCloseable {
 
+    record ReadView(
+            WorkflowJournalV1.StoreSnapshot storeSnapshot,
+            DurableDevLoopV1.ReplayResult replay,
+            List<DurableDevLoopV1.JournalEntry> journal,
+            List<WorkflowJournalV1.EffectSnapshot> effects) {
+        public ReadView {
+            java.util.Objects.requireNonNull(storeSnapshot, "storeSnapshot");
+            java.util.Objects.requireNonNull(replay, "replay");
+            journal = List.copyOf(
+                    java.util.Objects.requireNonNull(journal, "journal"));
+            effects = List.copyOf(
+                    java.util.Objects.requireNonNull(effects, "effects"));
+            if (storeSnapshot.journalEntries() != journal.size()) {
+                throw new IllegalArgumentException(
+                        "read view journal count mismatch");
+            }
+            if (storeSnapshot.nextSequence() != journal.size() + 1L) {
+                throw new IllegalArgumentException(
+                        "read view sequence mismatch");
+            }
+            if (!replay.machine().journal().equals(journal)) {
+                throw new IllegalArgumentException(
+                        "read view replay/journal mismatch");
+            }
+        }
+    }
+
     void append(DurableDevLoopV1.Transition transition);
 
     Optional<WorkflowJournalV1.Claim> claimNext(
@@ -60,6 +87,8 @@ public interface WorkflowJournalStoreV1 extends AutoCloseable {
     WorkflowJournalV1.StoreSnapshot snapshot();
 
     DurableDevLoopV1.ReplayResult replayDevLoop();
+
+    ReadView readView();
 
     @Override
     default void close() {
