@@ -340,3 +340,30 @@ type checking, ownership/effect checking, invocation lowering, and target
 execution use the same immutable selected-call plan. Existing parsers that
 still represent calls as `List<Expr>` must fail closed, not map `_` to
 `NameExpr("_")` or silently enable source omission.
+
+
+## Compiler stage update (2026-10-18): structured call items, no executable lowering
+
+The Java parser now produces distinct `Ast.CallArgument` records for each
+source call item: optional `label`, either `value` or `omitted`, and an
+explicit `spread` flag. An omitted item **has no `Ast.Expr`**.
+Normal positional calls retain `Ast.CallExpr` and `Ast.NewExpr` unchanged.
+Calls with named/omitted items instead produce `Ast.StagedCallExpr` or
+`Ast.StagedNewExpr` (the latter records whether it is an actor spawn).
+This is intentionally **syntax representation, not user-executable support**.
+
+The staged AST rejects missing/present-value contradictions, duplicate named
+labels, positional arguments after the first named argument, and unproved
+constructor spread forms. The `OptionalCallShapeBinder.parsedArgumentShapes`
+adapter translates parsed call items into pure shape descriptors while
+preserving raw indexes, but rejects spread pending typed collection proof.
+The type checker, ownership checker and interpreter independently fail closed
+for staged expressions: no runtime dispatch, Option wrapping or ownership
+transfer may be inferred simply because a call parsed successfully.
+
+Remaining acceptance gates: typed `T?` formals and `Option<T>` ABI;
+static overload selection; precisely-once lexical evaluation; constructor
+`self` erasure/definite initialization; ownership and effect checking;
+formatter round-tripping; and Java/GraalVM plus LLVM execution/parity.
+In particular, neither this stage nor pure reference-model success is a
+passing compiler test.
