@@ -207,12 +207,18 @@ final class SharedDomainArenaTest {
     @Test
     void publicSurfaceDoesNotExposeFfmSegmentsOrRawDomainStorage() {
         for (var method : SharedDomainArena.class.getMethods()) {
+            assertNotEquals("domainId", method.getName(),
+                    () -> "public API exposes numeric shared-domain coordinate: " + method);
             assertFalse(method.getReturnType().getName().contains("MemorySegment"),
                     () -> "public method exposes FFM segment: " + method);
             for (var type : method.getParameterTypes()) {
                 assertFalse(type.getName().contains("MemorySegment"),
                         () -> "public method accepts FFM segment: " + method);
             }
+        }
+        for (var method : SharedDomainArena.Grant.class.getMethods()) {
+            assertNotEquals("domainId", method.getName(),
+                    () -> "grant exposes numeric shared-domain coordinate: " + method);
         }
         for (Field field : SharedDomainArena.Handle.class.getDeclaredFields()) {
             assertFalse(field.getType().getName().contains("MemorySegment"),
