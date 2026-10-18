@@ -73,7 +73,9 @@ public final class OresTask<T> implements Awaitable<T> {
      * Cancelling this observer never cancels the producer or another observer.
      * Unlike isDone(), this waits for the host turn to return (including
      * cleanup). For scheduler frames, terminal publication is already fenced
-     * on quiescence. Cancellation/failure is not rethrown by this barrier.
+     * on quiescence. Task result cancellation/failure is not rethrown here;
+     * failure of the trusted physical retirement fence IS propagated so
+     * the owning scope cannot report successful resource cleanup.
      */
     public OresFuture<Void> getDone() {
         if (quiescence == null) throw new UnsupportedOperationException(

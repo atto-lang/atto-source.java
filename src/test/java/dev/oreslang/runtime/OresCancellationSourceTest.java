@@ -33,9 +33,11 @@ final class OresCancellationSourceTest {
         try (OresCancellationSource parent = new OresCancellationSource();
              OresCancellationSource linked =
                      OresCancellationSource.linked(parent.token())) {
-            assertEquals(1, parent.notification().pendingRuntimeWaiterCount());
+            assertEquals(1, parent.linkedChildCountForTest());
+            assertEquals(0, parent.notification().pendingRuntimeWaiterCount(),
+                    "directed links must not occupy ordinary observer slots");
             assertTrue(linked.cancel());
-            assertEquals(0, parent.notification().pendingRuntimeWaiterCount());
+            assertEquals(0, parent.linkedChildCountForTest());
             assertFalse(parent.isCancellationRequested());
         }
     }
@@ -262,6 +264,91 @@ final class OresCancellationSourceTest {
             assertTrue(first.isCancellationRequested());
             assertTrue(second.isCancellationRequested());
             assertEquals(2, delivered.get());
+        }
+    }
+
+
+    @Test
+    void reentrantTokenObserversQueueNewCancellationWaves() {
+        try (OresCancellationSource root = new OresCancellationSource();
+             OresCancellationSource unrelated = new OresCancellationSource()) {
+            AtomicInteger rootNotices = new AtomicInteger();
+            AtomicInteger unrelatedNotices = new AtomicInteger();
+            java.util.concurrent.atomic.AtomicReference<OresCancellationSource> lateChild =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            root.token().onCancellationRequested(() -> {
+                rootNotices.incrementAndGet();
+                assertFalse(root.cancel(), "reentrant claim must lose");
+                assertTrue(unrelated.cancel(), "independent source is claimed");
+                OresCancellationSource child =
+                        OresCancellationSource.linked(root.token());
+                assertTrue(child.isCancellationRequested());
+                lateChild.set(child);
+            });
+            unrelated.token().onCancellationRequested(unrelatedNotices::incrementAndGet);
+            assertTrue(root.cancel());
+            assertEquals(1, rootNotices.get());
+            assertEquals(1, unrelatedNotices.get());
+            OresCancellationSource child = lateChild.get();
+            assertNotNull(child);
+            try (child) {
+                assertTrue(child.isCancellationRequested());
+                assertEquals(0, child.notification().pendingRuntimeWaiterCount());
+            }
+        }
+    }
+
+    @Test
+    void detachedLinkedChildIsNotRetainedByItsFormerParent() {
+        try (OresCancellationSource root = new OresCancellationSource();
+             OresCancellationSource child = OresCancellationSource.linked(root.token())) {
+            assertFalse(root.isCancellationRequested());
+            assertTrue(child.cancel());
+            assertTrue(root.cancel());
+            assertFalse(child.cancel());
+            assertTrue(child.isCancellationRequested());
+            assertEquals(0, root.notification().pendingRuntimeWaiterCount());
+        }
+    }
+
+
+    @Test
+    void racingLinkRegistrationWithCancellationNeverLeavesChildLive() throws Exception {
+        for (int iteration = 0; iteration < 128; iteration++) {
+            try (OresCancellationSource parent = new OresCancellationSource()) {
+                CountDownLatch start = new CountDownLatch(1);
+                java.util.concurrent.atomic.AtomicReference<OresCancellationSource> child =
+                        new java.util.concurrent.atomic.AtomicReference<>();
+                java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                        new java.util.concurrent.atomic.AtomicReference<>();
+                Thread registrar = Thread.ofVirtual().start(() -> {
+                    try {
+                        start.await();
+                        child.set(OresCancellationSource.linked(parent.token()));
+                    } catch (Throwable problem) {
+                        failure.set(problem);
+                    }
+                });
+                Thread canceller = Thread.ofVirtual().start(() -> {
+                    try {
+                        start.await();
+                        parent.cancel();
+                    } catch (Throwable problem) {
+                        failure.set(problem);
+                    }
+                });
+                start.countDown();
+                registrar.join();
+                canceller.join();
+                assertNull(failure.get());
+                assertTrue(parent.isCancellationRequested());
+                OresCancellationSource linked = child.get();
+                assertNotNull(linked);
+                try (linked) {
+                    assertTrue(linked.isCancellationRequested(),
+                            "link must be claimed before or immediately after parent");
+                }
+            }
         }
     }
 

@@ -220,3 +220,70 @@ preemptible; directed cancellation callbacks must remain host-only and must
 not directly resume guest actor/task code. Complete Java/GraalVM regression
 runs, actor-affine message delivery, fuel/deadline inheritance, and LLVM
 parity are separate release gates.
+
+## Two-phase directed graph revocation audit (October 18, 2026)
+
+A further audit identified an ordering failure in the first iterative linked
+cancellation implementation: a synchronous host observer of the first child
+could block the cancelling thread before a second sibling's cancellation
+callback had even been entered. Iteration alone removed recursion but did
+**not** ensure revoke-before-observe across sibling links.
+
+`OresCancellationSource` now registers linked children separately from its
+ordinary `OresCancellationToken` observation listeners. The runtime-local
+`OresCancellationDispatcher` first atomically claims and traverses all
+reachable linked children using a queue, then publishes their terminal
+notification Futures. Every newly enqueued cancellation wave is revoked
+before the next ordinary notification. Directed child registration still
+does not confer ownership, actor identity or upstream cancellation rights.
+
+Committed Java JUnit regressions include a deliberately blocked observer
+on the first sibling, an observer that throws, nested cancellation/reentrant
+claims, a newly registered child after source cancellation, an independently
+canceled child, diamond fan-in, and 8,192-node link depth. The tests remain
+unexecuted on an actual Java/GraalVM source runner.
+
+Independent, source-free Node graph oracle on funded
+`gha-indie-worker/gha-indie-worker-e2e` Actions run
+[39175925002](https://github.com/gha-indie-worker/gha-indie-worker-e2e/actions/runs/39175925002)
+executed successfully: 86,393 abstract invariant checks, depth 8,192, and
+10,000 DAG trials; no private source copied. This proves **only the model**,
+not Java implementation correctness, JUnit execution, actor fairness or
+cross-backend conformance. Java fast-ci on the Task branch remains blocked
+before a runner starts (zero executed steps).
+
+Remaining race gates: simultaneous graph registration/cancellation, blocked
+arbitrary host callbacks (which cannot be preempted), exception and
+physical-cleanup accounting, bounded work admission, deadline/capability
+propagation, and runtime-specific scheduler/actor quiescence.
+
+## Concurrent scope-claim and retirement verification (October 18 follow-up)
+
+An idempotency audit found a parent cancellation traversal previously skipped
+a child scope as soon as its cancellation flag was claimed. A concurrent
+canceller can claim that flag before traversing its grandchildren, leaving
+a parent `close()` dependent on the other thread making progress. The iterative
+walk now revisits already-claimed child subtrees (without reporting a second
+winning cancellation claim). Task cancellation is still CAS-idempotent, so
+re-walking does not run producers twice or revive cancelled work.
+
+A checked-in JUnit regression models the real intermediate state where
+a child has claimed cancellation but not yet visited its grandchild.
+It verifies parent cancellation reaches the grandchild, cancels its live
+Task, preserves repeat-cancel return values, and joins physical Task exit.
+
+The independent source-free runner model successfully executed
+[funded Actions run 39176814665](https://github.com/gha-indie-worker/gha-indie-worker-e2e/actions/runs/39176814665):
+50,260 synthetic checks across 10,000 artificial claim/traversal
+interleavings and a 4,096-level nested supervision tree. It also probes the
+distinction between logical cancellation, physical completion and a failed
+trusted retirement outcome. This run **did not contain or execute private
+Oreslang source**, and does not validate Java compiler/runtime behavior.
+
+The Task handle's `getDone()` result is intentionally different from
+`getAwaited()`: failure/cancellation of the ordinary Task result must not
+be mistaken for failed physical cleanup, but failure of a trusted retirement
+fence must be preserved in every live `getDone()` observer. Additional Java
+JUnit tests now exercise failed retirement, independent observer detachment,
+and successful physical cleanup after Task cancellation. A source-local
+GraalVM/JDK 25 execution and Native Image pass are still required.
