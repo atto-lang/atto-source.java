@@ -563,4 +563,27 @@ final class ConstructorSemanticIrTest {
                         .merge(new ConstructorSemanticIr.CapturePlan(List.of(external))));
     }
 
+
+    @Test
+    void capturePlanRejectsMultipleRecursiveFixpointCells() {
+        var type = new Types.Function(List.of(), Types.Primitive.VOID);
+        var first = new ConstructorSemanticIr.ResolvedCaptureBinding(
+                new ConstructorSemanticIr.CaptureBindingId("root::fn#a"),
+                "a", type,
+                ConstructorSemanticIr.CaptureOrigin.RECURSIVE_SELF,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
+                Set.of());
+        var second = new ConstructorSemanticIr.ResolvedCaptureBinding(
+                new ConstructorSemanticIr.CaptureBindingId("root::fn#b"),
+                "b", type,
+                ConstructorSemanticIr.CaptureOrigin.RECURSIVE_SELF,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                ConstructorSemanticIr.CaptureTransfer.LEXICAL_SLOT_ALIAS,
+                Set.of());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new ConstructorSemanticIr.CapturePlan(List.of(first, second)));
+    }
+
 }
