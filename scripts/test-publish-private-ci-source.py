@@ -168,6 +168,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             # The server must return the exact canonical digest of the isolated
             # source tree; no orphaned/stale destination files may survive.
             return {"sha": E if "base_tree" in payload else self.expected_source_tree()}
+        if route in ("repos/trusted/ci/git/trees/" + B,
+                     "repos/trusted/ci/git/trees/" + E):
+            # The created root must preserve every parent entry except the
+            # one explicitly replaced isolated private-source subtree.
+            is_created = route.endswith("/" + E)
+            return {"sha": E if is_created else B, "truncated": False,
+                    "tree": [
+                        {"path": ".github", "mode": "040000", "type": "tree", "sha": C},
+                        {"path": "README.md", "mode": "100644", "type": "blob", "sha": D},
+                        {"path": pub.PREFIX, "mode": "040000", "type": "tree",
+                         "sha": self.expected_source_tree() if is_created else A},
+                    ]}
         # Unlike the parent A, the created commit F has its own Git identity.
         # Model a real acyclic commit graph instead of a self-parented fixture.
         if route == "repos/trusted/ci/git/commits/" + F:
@@ -1143,6 +1155,105 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[2][2]["base_tree"], B)
         self.assertEqual(writes[3][2]["tree"], E)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
+
+    def test_stored_root_tree_readback_precedes_commit_publication(self):
+        self.publish()
+        parent_reads = [i for i, (m, r, _) in enumerate(self.route_calls)
+                        if m == "GET" and r == "repos/trusted/ci/git/trees/" + B]
+        stored_reads = [i for i, (m, r, _) in enumerate(self.route_calls)
+                        if m == "GET" and r == "repos/trusted/ci/git/trees/" + E]
+        root_write = next(i for i, (m, r, p) in enumerate(self.route_calls)
+                          if m == "POST" and r.endswith("/git/trees")
+                          and "base_tree" in p)
+        commit_write = next(i for i, (m, r, _) in enumerate(self.route_calls)
+                            if m == "POST" and r.endswith("/git/commits"))
+        self.assertEqual((len(parent_reads), len(stored_reads)), (1, 1))
+        self.assertLess(parent_reads[0], root_write)
+        self.assertLess(root_write, stored_reads[0])
+        self.assertLess(stored_reads[0], commit_write)
+
+    def test_stored_root_tree_tampering_denied_before_commit_or_ref(self):
+        expected = self.expected_source_tree()
+        original = self.fake_api
+        baseline = {
+            "sha": E, "truncated": False,
+            "tree": [
+                {"path": ".github", "mode": "040000", "type": "tree", "sha": C},
+                {"path": "README.md", "mode": "100644", "type": "blob", "sha": D},
+                {"path": pub.PREFIX, "mode": "040000", "type": "tree",
+                 "sha": expected},
+            ],
+        }
+        bad_prefix = {"path": pub.PREFIX, "mode": "040000",
+                      "type": "tree", "sha": B}
+        variants = [
+            {},
+            {"sha": B, "truncated": False, "tree": baseline["tree"]},
+            {"sha": E, "truncated": True, "tree": baseline["tree"]},
+            {"sha": E, "truncated": False, "tree": None},
+            {"sha": E, "truncated": False, "tree": baseline["tree"][:2]},
+            {"sha": E, "truncated": False,
+             "tree": baseline["tree"][:2] + [bad_prefix]},
+            {"sha": E, "truncated": False,
+             "tree": baseline["tree"][:1] + baseline["tree"][2:]},
+            {"sha": E, "truncated": False,
+             "tree": baseline["tree"] + [{"path": ".github/workflows",
+                       "mode": "040000", "type": "tree", "sha": A}]},
+            {"sha": E, "truncated": False,
+             "tree": baseline["tree"] + [baseline["tree"][2]]},
+            {"sha": E, "truncated": False,
+             "tree": [{"path": ".github", "mode": "040000",
+                       "type": "tree", "sha": A}] + baseline["tree"][1:]},
+            {"sha": E, "truncated": False,
+             "tree": baseline["tree"][:2] + [
+                 {"path": pub.PREFIX, "mode": "100644",
+                  "type": "blob", "sha": expected}]},
+        ]
+        for forged in variants:
+            with self.subTest(forged=forged):
+                self.route_calls.clear()
+                self.mock_source_tree = expected
+                def api(route, method="GET", payload=None):
+                    if method == "GET" and route == "repos/trusted/ci/git/trees/" + E:
+                        self.route_calls.append((method, route, payload))
+                        return forged
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=api):
+                    with self.assertRaisesRegex(pub.Denied, "root tree"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, expected, 1286, A)
+                self.assertFalse(any(m == "POST" and r.endswith("/git/commits")
+                                     for m, r, _ in self.route_calls))
+                self.assertFalse(any(m == "POST" and r.endswith("/git/refs")
+                                     for m, r, _ in self.route_calls))
+
+    def test_unreadable_base_root_tree_denied_before_private_blob(self):
+        expected = self.expected_source_tree()
+        original = self.fake_api
+        malformed = [
+            {},
+            {"sha": B, "tree": [], "truncated": True},
+            {"sha": B, "tree": None, "truncated": False},
+            {"sha": B, "tree": [{"path": "../escape", "type": "blob",
+                                 "mode": "100644", "sha": D}],
+             "truncated": False},
+            {"sha": B, "tree": [{"path": "README.md", "type": "blob",
+                                 "mode": "100644", "sha": "invalid"}],
+             "truncated": False},
+        ]
+        for forged in malformed:
+            with self.subTest(forged=forged):
+                self.route_calls.clear()
+                def api(route, method="GET", payload=None):
+                    if method == "GET" and route == "repos/trusted/ci/git/trees/" + B:
+                        self.route_calls.append((method, route, payload))
+                        return forged
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=api):
+                    with self.assertRaises(pub.Denied):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, expected, 1286, A)
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_created_ci_commit_readback_precedes_ref_publication(self):
         # The commit GET must independently authenticate its tree and parent
