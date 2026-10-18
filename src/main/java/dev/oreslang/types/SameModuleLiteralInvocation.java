@@ -63,6 +63,7 @@ public final class SameModuleLiteralInvocation {
                 || caller.async() || caller.suspends() || caller.generator()
                 || caller.nonLexical() || caller.structural() || caller.trapped()
                 || !caller.genericParameters().isEmpty()
+                || !caller.genericSpecs().isEmpty()
                 || !caller.annotations().isEmpty()) {
             throw new IllegalArgumentException(
                     "actor, routine, generic, effectful or annotated caller needs trusted lexical authority");
