@@ -398,4 +398,33 @@ final class ValuePipeOperatorTest {
         assertTrue(aliased.getMessage().contains("first-class callable"), aliased::toString);
     }
 
+    @Test
+    void rejectsStaticallyKnownNonCallableStagesBeforeGuestExecution() {
+        Ast.Program valuePipeline = Parser.parse("""
+                fnc broken(): int {
+                    val stage = 7;
+                    return 1 |> stage;
+                }
+                """);
+        IllegalArgumentException pipelineFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(valuePipeline));
+        assertTrue(pipelineFailure.getMessage().contains("non-callable"),
+                pipelineFailure::toString);
+
+        // The same type rule must apply to ordinary calls: pipe lowering
+        // must not create a weaker dynamic dispatch exception.
+        Ast.Program ordinaryCall = Parser.parse("""
+                fnc broken(): int {
+                    val stage = 7;
+                    return stage(1);
+                }
+                """);
+        IllegalArgumentException directFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(ordinaryCall));
+        assertTrue(directFailure.getMessage().contains("non-callable"),
+                directFailure::toString);
+    }
+
 }
