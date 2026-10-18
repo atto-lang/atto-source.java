@@ -300,6 +300,65 @@ public final class IncrementalCompiler {
         return match;
     }
 
+    private static final Set<String> LINKABLE_CONTRACT_TYPES = Set.of(
+            "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+            "int", "uint", "bigint", "f32", "f64", "float",
+            "decimal", "complex64", "complex128", "complex",
+            "bool", "boolean", "string", "String", "void", "null",
+            "Object", "List", "Array", "Vector", "Slice", "Map",
+            "Tuple", "FixedArray", "FixedList", "Option", "Result", "Future",
+            "Iterator", "AsyncIterator", "IteratorResult", "Generator",
+            "AsyncGenerator", "Channel", "SelectCase", "SelectSet",
+            "SelectResult", "Fnc", "Function", "Symbol", "ActorId", "ActorKind");
+
+    private static void validatePortableImportedContract(
+            Ast.InterfaceDecl contract,
+            String targetId) {
+        Set<String> contractGenerics = Set.copyOf(contract.genericParameters());
+        for (Ast.InterfaceMember member : contract.members()) {
+            if (member instanceof Ast.InterfaceFieldDecl field) {
+                validatePortableContractType(
+                        field.type(), contractGenerics, targetId,
+                        contract.name() + "." + field.name());
+            } else if (member instanceof Ast.InterfaceFunctionDecl fn) {
+                LinkedHashSet<String> generics =
+                        new LinkedHashSet<>(contractGenerics);
+                generics.addAll(fn.genericParameters());
+                for (Ast.Param param : fn.parameters()) {
+                    validatePortableContractType(
+                            param.type(), generics, targetId,
+                            contract.name() + "." + fn.name());
+                }
+                validatePortableContractType(
+                        fn.returnType(), generics, targetId,
+                        contract.name() + "." + fn.name());
+            }
+        }
+    }
+
+    private static void validatePortableContractType(
+            Ast.TypeRef ref,
+            Set<String> generics,
+            String targetId,
+            String member) {
+        if (ref == null) {
+            throw new IllegalArgumentException(
+                    "imported contract member '" + member + "' from '" + targetId
+                            + "' has an inferred type");
+        }
+        if (ref.isStringLiteral()) return;
+        String name = ref.name();
+        if (!generics.contains(name) && !LINKABLE_CONTRACT_TYPES.contains(name)) {
+            throw new IllegalArgumentException(
+                    "imported contract member '" + member + "' from '" + targetId
+                            + "' references nominal type '" + name
+                            + "' without linker provenance");
+        }
+        for (Ast.TypeRef argument : ref.arguments()) {
+            validatePortableContractType(argument, generics, targetId, member);
+        }
+    }
+
     public synchronized void clear() {
         cache.clear();
         cachedImportResolutionDigests.clear();
