@@ -138,7 +138,7 @@ The Java frontend recognizes the AST forms but **both fail closed at type checki
 
 Use `task { ... }` for a **Task-producing expression**; `do task { ... }` when the caller deliberately discards the Task handle. The previous `nb { ... }` and `do nb { ... }` remain source-compatible aliases with the identical AST. Both launch immediately. Only `await` suspends the current Task to join another Task. When the awaited completion is pending and compiler continuation frames exist, the scheduler releases the physical worker; the language NEVER interprets a keyword as "switch OS threads now."
 
-`nb task { ... }` is intentionally **not supported**. It suggests a second thread-dispatch/yield mode that cannot be defined consistently with the scheduler. `task` remains a contextual identifier when followed by a task block; an ordinary `task()` callable is unchanged.
+`nb task { ... }` is a valid redundant spelling of the very same Task launch, not a second scheduling/cancellation tier. A bare `nb task { ... };` statement is rejected just like a bare `task { ... };` statement; bind the handle or use `do task { ... };`. `task` remains a contextual identifier when followed by a task block; an ordinary `task()` callable is unchanged.
 
 **Single-layer whole-body Task lambda:**
 
