@@ -177,6 +177,30 @@ final class OptionalCallLiteralStageTest {
                 () -> OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
                         extraModule, call));
 
+        var imported = new Ast.Program(
+                List.of(new Ast.ImportDecl(Ast.ImportKind.ALL,
+                        List.of(), true, null, "external")),
+                List.of(module));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
+                        imported, call));
+
+        var decorated = new Ast.Program(List.of(new Ast.ModuleDecl(
+                module.name(), List.of(new Ast.Annotation("Audit", List.of())),
+                List.of(fn))));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
+                        decorated, call));
+
+        var asyncFn = new Ast.FunctionDecl(fn.name(), fn.kind(), fn.visibility(),
+                true, Ast.ActorKind.NONE, List.of(), fn.parameters(),
+                fn.returnType(), List.of(), fn.body());
+        var asyncProgram = new Ast.Program(List.of(new Ast.ModuleDecl(
+                module.name(), List.of(asyncFn))));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
+                        asyncProgram, call));
+
         var wrongFunction = new Ast.StagedCallExpr(new Ast.NameExpr("other"),
                 List.of(), false, call.arguments());
         assertThrows(IllegalArgumentException.class,
