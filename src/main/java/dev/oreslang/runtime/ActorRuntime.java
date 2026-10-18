@@ -5371,6 +5371,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         boolean mailboxSlotTransferred = false;
         try {
+        // One frame may be offered to at most one mailbox at a time.
+        // Acquire before any fallible preparation or enqueue operation.
+        ActorPipelineRouteSession.claimMailboxAdmission(pipelineFrame);
         validateMessageGraph(message);
         if (cell.kind == ActorKind.UNTRUSTED) {
             rejectUntrustedInboundCapabilities(message, new IdentityHashMap<>(), 0);
@@ -5502,7 +5505,10 @@ public final class ActorRuntime implements AutoCloseable {
             // branch. Admission does not promise eventual processing.
         }
         } finally {
-            if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
+            if (!mailboxSlotTransferred) {
+                ActorPipelineRouteSession.abortMailboxAdmission(pipelineFrame);
+                cell.releaseMailboxSlot(false);
+            }
         }
     }
 
