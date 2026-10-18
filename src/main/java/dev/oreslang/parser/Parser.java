@@ -3757,10 +3757,7 @@ public final class Parser {
             consume(LPAREN, "expected '(' after actor type");
             List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after actor spawn arguments");
-            // Keep actor creation semantically distinct from ordinary class construction.
-            // RuntimeCallExpr is an internal intrinsic encoding; source syntax is only
-            // `spawn ActorType(...)`, never `rt spawn` or `new ActorType(...)`.
-            return new Ast.RuntimeCallExpr("spawn", List.of(new Ast.NewExpr(type, args)));
+            return new Ast.SpawnExpr(type, args);
         }
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
