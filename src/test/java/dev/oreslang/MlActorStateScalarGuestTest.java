@@ -82,8 +82,8 @@ final class MlActorStateScalarGuestTest {
         assertFalse(text.contains("mail.value == \"high_commit\""));
         assertFalse(text.contains("worker.send(\"high_commit\")"));
         assertTrue(text.contains("if !final_gradient.is_err(); do"));
-        assertFalse(text.contains("mail.value == \\"after\\""));
-        assertFalse(text.contains("worker.send(\\"after\\")"));
+        assertFalse(text.contains("mail.value == \"after\""));
+        assertFalse(text.contains("worker.send(\"after\")"));
         assertTrue(text.contains("private demo_finish_ready(): bool with state.read"));
         assertTrue(text.contains("s.issued_first && s.issued_second"));
         assertTrue(text.contains("!final_result.is_err() && self.demo_finish_ready()"));
