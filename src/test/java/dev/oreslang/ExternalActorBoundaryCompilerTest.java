@@ -95,15 +95,59 @@ final class ExternalActorBoundaryCompilerTest {
     }
 
     @Test
-    void externInsideFfiActorIsReservedForForeignDeclNotNormalMethod() {
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        define ffi actor NativeWorker as
-                          extern suspends fnc native_call(int value): int;
-                        end
-                        """));
-        assertTrue(failure.getMessage().contains("ForeignDecl"), failure::getMessage);
+    void externInsideFfiActorProducesDedicatedForeignDecl() {
+        Ast.ClassDecl actor = onlyClass("""
+                define ffi actor NativeWorker as
+                  extern suspends fnc native_call(i32 value): i64;
+                end
+                """);
+        assertEquals(Ast.ActorBoundary.FFI, actor.actorBoundary());
+        assertEquals(1, actor.foreignDeclarations().size());
+        Ast.ForeignDecl foreign = actor.foreignDeclarations().getFirst();
+        assertEquals("native_call", foreign.name());
+        assertTrue(foreign.suspends());
+        assertEquals(1, foreign.arity());
+        assertEquals("i32", foreign.parameters().getFirst().type().name());
+        assertEquals("i64", foreign.returnType().name());
+        assertEquals("native_call", foreign.symbolIdentity());
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define ffi actor NativeWorker as
+                  extern suspends fnc native_call(i32 value): i64;
+                end
+                """)));
+
+        for (String rejected : List.of(
+                """
+                define ipc actor Bad as
+                  extern suspends fnc native_call(i32 value): i64;
+                end
+                """,
+                """
+                define ffi actor Bad as
+                  extern fnc native_call(i32 value): i64;
+                end
+                """,
+                """
+                define ffi actor Bad as
+                  extern suspends fnc native_call(int value): i64;
+                end
+                """,
+                """
+                define ffi actor Bad as
+                  extern suspends fnc native_call(i32 value): string;
+                end
+                """,
+                """
+                define ffi actor Bad as
+                  @Unsafe extern suspends fnc native_call(i32 value): i64;
+                end
+                """)) {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(rejected)),
+                    rejected);
+        }
     }
 
     @Test
@@ -134,6 +178,31 @@ final class ExternalActorBoundaryCompilerTest {
                 .findFirst().orElseThrow();
         assertEquals(Ast.ActorKind.PRIVATE, shakenActor.actorKind());
         assertEquals(Ast.ActorBoundary.IPC, shakenActor.actorBoundary());
+
+        Ast.Program ffiExpanded = AnnotationExpander.expand(Parser.parse("""
+                define pub ffi actor NativeWorker as
+                  extern suspends fnc native_call(i32 value): i64;
+                end
+                """));
+        Ast.ClassDecl ffiActor = ffiExpanded.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .findFirst().orElseThrow();
+        assertEquals(1, ffiActor.foreignDeclarations().size());
+
+        TreeShaker.Result ffiShaken = TreeShaker.shake(
+                TypeChecker.check(ffiExpanded),
+                BuildOptions.library(Map.of()));
+        Ast.ClassDecl shakenFfi = ffiShaken.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .findFirst().orElseThrow();
+        assertEquals(Ast.ActorBoundary.FFI, shakenFfi.actorBoundary());
+        assertEquals(1, shakenFfi.foreignDeclarations().size());
+        assertEquals("native_call",
+                shakenFfi.foreignDeclarations().getFirst().name());
     }
 
     @Test
