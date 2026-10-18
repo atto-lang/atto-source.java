@@ -31,7 +31,8 @@ class GitInspectionFailureTests(unittest.TestCase):
             bin_path.mkdir()
             (root / 'scripts').mkdir()
             for name in ('test-nio-exact-tree-source-local.sh',
-                         'nio_verify_surefire_evidence.py'):
+                         'nio_verify_surefire_evidence.py',
+                         'nio_verify_raw_worktree.py'):
                 shutil.copy2(SRC / name, root / 'scripts' / name)
             (root / '.gitignore').write_text('target/\n')
             (root / 'README.md').write_text('source-free fixture\n')

@@ -216,6 +216,22 @@ cases, 20 Surefire cases and 10 other verifier cases (55/55 passing),
 with all 13 standalone gate scenarios also executed in isolated repos.
 None of this constitutes JDK25/GraalVM/LLVM compiler execution.
 
+### Raw Git blob identity beyond porcelain status
+
+A local untracked `.git/info/attributes` rule can configure a clean filter
+that makes `git status` appear clean while actual source bytes differ from
+the pinned Git tree. The source-local gate now verifies **raw tracked bytes**
+against staged SHA-1 Git blobs independently at admission and postflight,
+checks file modes and symlink target bytes, denies Git index/worktree override
+environment variables and checks its own verifier's unfiltered Git blob
+before invoking it. Any raw mismatch exits **77**. An adversarial fixture
+demonstrated a synthetic source edit masked by `tr A-Z a-z` being accepted
+on the previous gate and rejected after hardening. The existing source-free
+test fixtures include the exact tracked raw verifier helper. The Python
+unittest suites pass 19 + 7 + 20 + 10 tests; the 13 standalone scenarios
+also pass in separate disposable repositories. These are not evidence of
+real Java/JDK25/GraalVM/LLVM compilation or test success.
+
 ## Evidence, trust boundary and interpretation
 
 - The script writes an **unsigned** `target/nio-exact-tree-gate/receipt.txt`

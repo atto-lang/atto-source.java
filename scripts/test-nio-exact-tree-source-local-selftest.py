@@ -74,6 +74,8 @@ def scenario(name, code, setup=None, *, aot=False):
         repo.mkdir(); fakebin.mkdir(); (repo / 'scripts').mkdir()
         shutil.copy2(GATE, repo / 'scripts/gate.sh')
         shutil.copy2(VERIFIER, repo / 'scripts/nio_verify_surefire_evidence.py')
+        shutil.copy2(GATE.with_name('nio_verify_raw_worktree.py'),
+                     repo / 'scripts/nio_verify_raw_worktree.py')
         (repo / '.gitignore').write_text('target/\n')
         (repo / 'README.md').write_text('synthetic fixture\n')
         for tool in ('java', 'javac', 'mvn', 'native-image'):

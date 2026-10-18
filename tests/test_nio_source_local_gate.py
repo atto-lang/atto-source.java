@@ -42,7 +42,10 @@ class SourceLocalNioGateTests(unittest.TestCase):
         (self.root / "scripts").mkdir()
         shutil.copyfile(GATE, self.root / "scripts" / GATE.name)
         shutil.copyfile(VERIFIER, self.root / "scripts" / VERIFIER.name)
+        shutil.copyfile(GATE.with_name("nio_verify_raw_worktree.py"),
+                        self.root / "scripts" / "nio_verify_raw_worktree.py")
         (self.root / ".gitignore").write_text("target/\n")
+        (self.root / "source.c").write_text("int source(void) { return 1; }\n")
         subprocess.run(["git", "add", "."], cwd=self.root, check=True)
         subprocess.run(["git", "commit", "-qm", "test immutable input"],
                        cwd=self.root, check=True)
@@ -157,6 +160,23 @@ exit 0
         self.assertEqual(66, result.returncode, result.stderr)
         self.assertEqual("do-not-touch\n", marker.read_text())
         self.assertIn("result=FAIL", self.receipt())
+
+    def test_git_clean_filter_cannot_hide_compiler_visible_source(self):
+        # Local clean filter can mask raw source edits from Git porcelain.
+        (self.root / ".git" / "info" / "attributes").write_text(
+            "source.c filter=mask\n")
+        subprocess.run(["git", "config", "filter.mask.clean", "tr A-Z a-z"],
+                       cwd=self.root, check=True)
+        source = self.root / "source.c"
+        source.write_text(source.read_text().replace("int source", "INT source"))
+        ordinary = run("git", "-c", "core.fileMode=true", "-c",
+                       "core.fsmonitor=false", "status", "--porcelain=v1",
+                       cwd=self.root)
+        self.assertEqual("", ordinary.stdout.strip(), ordinary.stderr)
+        result = self.gate()
+        self.assertEqual(77, result.returncode, result.stderr)
+        self.assertIn("result=FAIL", self.receipt())
+        self.assertIn("stage=source-identity", self.receipt())
 
     def test_successful_clean_that_leaves_stale_target_fails_closed(self):
         target = self.root / "target"

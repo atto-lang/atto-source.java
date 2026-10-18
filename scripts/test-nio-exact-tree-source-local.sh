@@ -133,6 +133,20 @@ if [[ -n "$checkout_status" ]]; then
   exit 67
 fi
 
+# Git status may apply local clean filters and hide compiler-visible edits.
+# Check the raw checker itself without filters, then verify every tracked blob.
+verify_raw_worktree() {
+  local staged_blob actual_blob
+  staged_blob="$(git rev-parse ':scripts/nio_verify_raw_worktree.py')" || return 77
+  actual_blob="$(git hash-object --no-filters scripts/nio_verify_raw_worktree.py)" || return 77
+  [[ "$actual_blob" == "$staged_blob" ]] || {
+    printf 'ERROR: raw verifier bytes differ from staged Git blob.\n' >&2
+    return 77
+  }
+  python3 -I scripts/nio_verify_raw_worktree.py "$EXPECTED_COMMIT" "$EXPECTED_TREE"
+}
+verify_raw_worktree || exit 77
+
 stage=toolchain
 for tool in java javac mvn python3; do
   command -v "$tool" >/dev/null || { printf 'ERROR: required tool missing: %s\n' "$tool" >&2; exit 69; }
@@ -232,5 +246,6 @@ ignored_files="$(unexpected_ignored_files)" || {
   printf 'ERROR: ignored non-build files appeared during qualification.\n' >&2
   exit 74
 }
+verify_raw_worktree || exit 77
 stage=complete
 printf 'PASS: source-local NIO suite, full Maven verify%s\n' "$( $NATIVE_AOT && printf ', native-aot' || true)"
