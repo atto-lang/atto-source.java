@@ -101,10 +101,20 @@ public final class OptionalCallLiteralStage {
                             "candidate callable needs checked effects, generics or capabilities");
                 }
                 candidate = fn;
-            } else if (decl instanceof Ast.FieldDecl field
-                    && target.name().equals(field.name())) {
+            } else if ((decl instanceof Ast.FieldDecl field
+                        && target.name().equals(field.name()))
+                    || (decl instanceof Ast.ClassDecl klass
+                        && target.name().equals(klass.name()))
+                    || (decl instanceof Ast.InterfaceDecl iface
+                        && target.name().equals(iface.name()))
+                    || (decl instanceof Ast.TypeAliasDecl alias
+                        && target.name().equals(alias.name()))) {
+                // Even declarations that are type-only in one target may
+                // participate in named import, constructor or companion
+                // resolution elsewhere. A candidate preview cannot decide
+                // whether these names share a runtime namespace.
                 throw new IllegalArgumentException(
-                        "same-name module value needs real lexical resolution");
+                        "same-name module declaration needs real lexical resolution");
             }
         }
         if (candidate == null) {
