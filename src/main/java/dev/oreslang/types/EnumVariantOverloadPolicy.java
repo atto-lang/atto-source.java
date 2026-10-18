@@ -33,6 +33,8 @@ public final class EnumVariantOverloadPolicy {
         public EnumInfo {
             requireId(symbolId);
             Objects.requireNonNull(cases, "cases");
+            if (cases.size() > MAX_CASES) throw new IllegalArgumentException("enum case limit");
+            cases = Map.copyOf(cases);
             if (cases.isEmpty() || cases.size() > MAX_CASES) {
                 throw new IllegalArgumentException("empty or oversized enum case set");
             }
@@ -40,7 +42,6 @@ public final class EnumVariantOverloadPolicy {
                 requireName(item.getKey());
                 Objects.requireNonNull(item.getValue(), "case payload");
             }
-            cases = Map.copyOf(cases);
         }
 
         public boolean eligible() {
@@ -82,10 +83,8 @@ public final class EnumVariantOverloadPolicy {
             requireName(name);
             Objects.requireNonNull(parameters, "parameters");
             if (parameters.size() > MAX_ARITY) throw new IllegalArgumentException("arity limit");
-            if (parameters.stream().anyMatch(Objects::isNull)) {
-                throw new IllegalArgumentException("null parameter");
-            }
             parameters = List.copyOf(parameters);
+            if (parameters.size() > MAX_ARITY) throw new IllegalArgumentException("arity changed during snapshot");
         }
         public int arity() { return parameters.size(); }
     }
