@@ -23,6 +23,9 @@ public final class EnumCaseOverloadPolicy {
     public static final int MAX_ARITY = 64;
     public static final int MAX_CANDIDATES = 128;
     public static final int MAX_CASES = 1024;
+    /** Initially admitted non-discriminator values are proven scalar primitives only. */
+    private static final Set<String> FIXED_SCALARS =
+            Set.of("bool", "int", "string", "float");
 
     public enum Domain { MODULE, INSTANCE, STATIC }
     public enum Kind { FIXED, ENUM, CASE }
@@ -48,8 +51,9 @@ public final class EnumCaseOverloadPolicy {
             Objects.requireNonNull(kind, "kind");
             identifier(identity);
             if (kind == Kind.FIXED) {
-                if (caseName != null || Set.of("Any", "Unknown", "void", "null").contains(identity)) {
-                    throw new IllegalArgumentException("ineligible fixed parameter");
+                if (caseName != null || !FIXED_SCALARS.contains(identity)) {
+                    throw new IllegalArgumentException(
+                            "unproven or noncanonical fixed parameter: " + identity);
                 }
             } else {
                 qualified(identity);
@@ -240,7 +244,14 @@ public final class EnumCaseOverloadPolicy {
     }
 
     private static void checked(Parameter param, Map<String, EnumInfo> registry) {
-        if (param.kind() == Kind.FIXED) return;
+        // Parameter records validate at construction; this additional check
+        // keeps this helper conservative if records evolve in a later ABI.
+        if (param.kind() == Kind.FIXED) {
+            if (!FIXED_SCALARS.contains(param.identity())) {
+                throw new IllegalArgumentException("unproven fixed scalar");
+            }
+            return;
+        }
         EnumInfo declaration = registry.get(param.identity());
         if (declaration == null || !declaration.payloadEligible()) {
             throw new IllegalArgumentException("unproven or ineligible enum declaration");
