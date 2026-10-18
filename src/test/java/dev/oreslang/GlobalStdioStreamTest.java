@@ -61,6 +61,20 @@ final class GlobalStdioStreamTest {
     }
 
     @Test
+    void globalObservableCanAdaptNativeReadableStreamWithoutAnotherPump() throws Exception {
+        var result = run("""
+                pub routine main(): void {
+                  val ReadableStream<String> stream = stdin.in.stream();
+                  for const line of Observable.from_stream(stream) {
+                    stdio.println(line);
+                  }
+                  return;
+                }
+                """, "one\ntwo\n");
+        assertEquals("one\ntwo\n", result.stdout());
+    }
+
+    @Test
     void stdinInStreamHasNativeReadableStreamTypeAndPreservesEof() throws Exception {
         var result = run("""
                 pub routine main(): void {
@@ -144,6 +158,7 @@ final class GlobalStdioStreamTest {
                   val Channel<String> raw = stdio.in;
                   val ReadableStream<String> stream = stdin.in.stream();
                   val Iterator<String> source = Observable.from_ch(process.stdin);
+                  val Iterator<String> stream_source = Observable.from_stream(stream);
                   return;
                 }
                 """;
