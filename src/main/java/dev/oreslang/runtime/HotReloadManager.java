@@ -148,6 +148,10 @@ public final class HotReloadManager implements AutoCloseable {
                     "adversarial hot-load source exceeds maximum character count "
                             + MAX_ADVERSARIAL_SOURCE_CHARS);
         }
+        // Reject invalid Unicode, oversized UTF-8 or control-character unit
+        // names before allocating the only untrusted native Engine/Context.
+        // Static Oreslang parsing remains exclusively in the guest isolate.
+        UntrustedSourceImageCache.validateCandidate(codeUnitId, sourceText);
     }
 
     private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
