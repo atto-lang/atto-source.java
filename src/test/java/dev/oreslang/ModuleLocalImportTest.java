@@ -14,8 +14,6 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -52,7 +50,7 @@ final class ModuleLocalImportTest {
 
     @Test
     void twoModulesMayUseTheSameImportedBindingIndependently() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
                 define module Alpha as
                   import fnc value from "./alpha";
                   pub fnc use(): void {
@@ -75,7 +73,7 @@ final class ModuleLocalImportTest {
     void fileRootImportDoesNotLeakIntoNamedModule() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
+                () -> TypeChecker.checkTypes(Parser.parse("""
                         import fnc value from "./dep";
 
                         define module Alpha as
@@ -85,7 +83,8 @@ final class ModuleLocalImportTest {
                         end
                         """)));
 
-        assertTrue(failure.getMessage().contains("unknown name 'value'"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("file/root-scoped"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("move the import into the module prelude"), failure.getMessage());
     }
 
     @Test
