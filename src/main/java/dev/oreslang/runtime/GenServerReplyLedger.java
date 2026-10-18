@@ -1,6 +1,6 @@
 package dev.oreslang.runtime;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -67,7 +67,7 @@ final class GenServerReplyLedger {
             long capacityRejected) { }
 
     private final int capacity;
-    private final Map<Long, Ticket> pending = new HashMap<>();
+    private final Map<Long, Ticket> pending = new LinkedHashMap<>();
     private boolean closed;
     /** Monotonic, local, opaque. Zero permanently marks sequence exhaustion. */
     private long nextCorrelation = 1L;
