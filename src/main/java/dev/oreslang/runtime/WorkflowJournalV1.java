@@ -26,7 +26,8 @@ public final class WorkflowJournalV1 {
         PENDING,
         CLAIMED,
         AMBIGUOUS,
-        COMPLETED
+        COMPLETED,
+        ABANDONED
     }
 
     public record EffectSnapshot(
@@ -55,7 +56,8 @@ public final class WorkflowJournalV1 {
             int pendingEffects,
             int claimedEffects,
             int ambiguousEffects,
-            int completedEffects) { }
+            int completedEffects,
+            int abandonedEffects) { }
 
     private static final long MAX_LEASE_MILLIS =
             7L * 24L * 60L * 60L * 1000L;
@@ -156,6 +158,9 @@ public final class WorkflowJournalV1 {
                     "non-applied transition emitted side effects");
         }
 
+        verifyReducerTransitionLocked(
+                transition, incomingRunId, incomingMaxIterations);
+
         // Prevalidate every command before mutating the store so append remains
         // all-or-nothing.
         Map<String, DurableDevLoopV1.Command> newEffects =
@@ -189,6 +194,11 @@ public final class WorkflowJournalV1 {
         }
         journal.add(entry);
         nextSequence = followingSequence;
+
+        if (isTerminal(snapshot.phase())) {
+            abandonPendingEffectsLocked();
+        }
+
         for (var effect : newEffects.entrySet()) {
             effects.putIfAbsent(
                     effect.getKey(),
@@ -254,11 +264,13 @@ public final class WorkflowJournalV1 {
     public synchronized void releaseUnexecuted(
             String effectKey,
             String claimToken,
-            String reasonRef) {
-        MutableEffect effect =
-                requireClaimed(effectKey, claimToken);
-        effect.reconciliationRef = requireText(
+            String reasonRef,
+            long nowMillis) {
+        String reason = requireText(
                 reasonRef, "reasonRef", 4_096);
+        MutableEffect effect =
+                requireLiveClaim(effectKey, claimToken, nowMillis);
+        effect.reconciliationRef = reason;
         effect.state = EffectState.PENDING;
         clearClaim(effect);
     }
@@ -269,11 +281,13 @@ public final class WorkflowJournalV1 {
     public synchronized void complete(
             String effectKey,
             String claimToken,
-            String receiptRef) {
-        MutableEffect effect =
-                requireClaimed(effectKey, claimToken);
-        effect.receiptRef = requireText(
+            String receiptRef,
+            long nowMillis) {
+        String receipt = requireText(
                 receiptRef, "receiptRef", 8_192);
+        MutableEffect effect =
+                requireLiveClaim(effectKey, claimToken, nowMillis);
+        effect.receiptRef = receipt;
         effect.state = EffectState.COMPLETED;
         clearClaim(effect);
     }
@@ -348,12 +362,14 @@ public final class WorkflowJournalV1 {
         int claimed = 0;
         int ambiguous = 0;
         int completed = 0;
+        int abandoned = 0;
         for (MutableEffect effect : effects.values()) {
             switch (effect.state) {
                 case PENDING -> pending++;
                 case CLAIMED -> claimed++;
                 case AMBIGUOUS -> ambiguous++;
                 case COMPLETED -> completed++;
+                case ABANDONED -> abandoned++;
             }
         }
 
@@ -365,7 +381,8 @@ public final class WorkflowJournalV1 {
                 pending,
                 claimed,
                 ambiguous,
-                completed);
+                completed,
+                abandoned);
     }
 
     /**
@@ -378,6 +395,70 @@ public final class WorkflowJournalV1 {
         }
         return DurableDevLoopV1.replay(
                 runId, maxIterations, List.copyOf(journal));
+    }
+
+
+    private void verifyReducerTransitionLocked(
+            DurableDevLoopV1.Transition supplied,
+            String incomingRunId,
+            int incomingMaxIterations) {
+        DurableDevLoopV1 machine;
+        if (journal.isEmpty()) {
+            machine = new DurableDevLoopV1(
+                    incomingRunId, incomingMaxIterations);
+        } else {
+            machine = DurableDevLoopV1.replay(
+                    incomingRunId,
+                    incomingMaxIterations,
+                    List.copyOf(journal)).machine();
+        }
+
+        var entry = supplied.journalEntry();
+        var expected = machine.accept(
+                entry.eventId(), entry.event());
+
+        if (!expected.journalEntry().equals(entry)) {
+            throw new IllegalStateException(
+                    "transition journal entry does not match reducer replay");
+        }
+        if (!expected.snapshot().equals(supplied.snapshot())) {
+            throw new IllegalStateException(
+                    "transition snapshot does not match reducer replay");
+        }
+        if (!expected.commands().equals(supplied.commands())) {
+            throw new IllegalStateException(
+                    "transition commands do not match reducer replay");
+        }
+    }
+
+    private void abandonPendingEffectsLocked() {
+        for (MutableEffect effect : effects.values()) {
+            if (effect.state == EffectState.PENDING) {
+                effect.state = EffectState.ABANDONED;
+            }
+        }
+    }
+
+    private static boolean isTerminal(DurableDevLoopV1.Phase phase) {
+        return phase == DurableDevLoopV1.Phase.COMPLETED
+                || phase == DurableDevLoopV1.Phase.FAILED
+                || phase == DurableDevLoopV1.Phase.CANCELLED;
+    }
+
+    private MutableEffect requireLiveClaim(
+            String effectKey,
+            String claimToken,
+            long nowMillis) {
+        requireClock(nowMillis);
+        MutableEffect effect =
+                requireClaimed(effectKey, claimToken);
+        observeClockLocked(nowMillis);
+        if (effect.leaseUntilMillis <= nowMillis) {
+            effect.state = EffectState.AMBIGUOUS;
+            throw new IllegalStateException(
+                    "effect claim lease expired; reconciliation required");
+        }
+        return effect;
     }
 
     private void observeClockLocked(long nowMillis) {
