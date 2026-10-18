@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
@@ -332,6 +333,7 @@ public final class NativeHttp implements AutoCloseable {
         boolean busy, committed, bodyRead, streamingBody, suppressBody;
         int bodyBytes;
         volatile boolean terminal;
+        volatile InputStream activeResponseInput;
         boolean transportClosed;
         String ticket;
         final String requestId = UUID.randomUUID().toString();
@@ -360,7 +362,11 @@ public final class NativeHttp implements AutoCloseable {
             if (alreadyClosed && poolWorker != null) { release(); return; }
             if (actor != null && cancelOwner) actor.cancel();
             if (alreadyClosed) { release(); return; }
-            try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
+            InputStream responseInput = activeResponseInput;
+            try { io.execute(() -> { try {
+                if (responseInput != null) { try { responseInput.close(); } catch (IOException ignored) { } }
+                if (send) reject(raw, status); else raw.close();
+            } finally { synchronized (this) { transportClosed = true; } release(); } }); }
             catch (RejectedExecutionException closed) { release(); }
         }
         void finish() {
@@ -511,6 +517,52 @@ public final class NativeHttp implements AutoCloseable {
                 return owned;
             });
         }
+        /**
+         * Trusted host transport adapter for the planned unary HttpResponse result.
+         * Caller ownership is still enforced by operation(...). The response is
+         * consumed once and the stream runs on a virtual I/O worker. This does
+         * not expose HttpResponseDraft to Oreslang guest code.
+         */
+        public OresFuture<Object> respond(HttpResponseDraft draft) {
+            Objects.requireNonNull(draft, "response");
+            if (!draft.streaming() && draft.bufferedLength() > state.server.bodyLimit)
+                throw new IllegalArgumentException("buffered response exceeds configured limit");
+            return operation(() -> {
+                draft.claim();
+                synchronized (state) {
+                    if (state.committed) throw new IllegalStateException("response already started");
+                    state.committed = true;
+                    state.responseStatus = draft.status();
+                }
+                for (Map.Entry<String, String> header : draft.headers())
+                    state.raw.getResponseHeaders().add(header.getKey(), header.getValue());
+                boolean suppress = state.raw.getRequestMethod().equals("HEAD") || !draft.hasBody();
+                if (state.raw.getRequestMethod().equals("HEAD") && draft.hasBody() && !draft.streaming())
+                    state.raw.getResponseHeaders().set("Content-Length", Integer.toString(draft.bufferedLength()));
+                long length = suppress ? -1 : draft.streaming() ? 0
+                        : draft.bufferedLength() == 0 ? -1 : draft.bufferedLength();
+                state.raw.sendResponseHeaders(draft.status(), length);
+                if (!suppress) {
+                    try (InputStream body = draft.openBody()) {
+                        state.activeResponseInput = body;
+                        try {
+                            byte[] chunk = new byte[8192];
+                            int count;
+                            while ((count = body.read(chunk)) != -1) {
+                                if (state.terminal) throw new IOException("HTTP response cancelled");
+                                if (count == 0) throw new IOException("HTTP body stream made no progress");
+                                state.raw.getResponseBody().write(chunk, 0, count);
+                            }
+                        } finally {
+                            state.activeResponseInput = null;
+                        }
+                    }
+                }
+                state.finish();
+                return null;
+            });
+        }
+
         public OresFuture<Object> respond(int status, String contentType, String body) {
             return respondBuffer(status, contentType, body.getBytes(StandardCharsets.UTF_8));
         }
