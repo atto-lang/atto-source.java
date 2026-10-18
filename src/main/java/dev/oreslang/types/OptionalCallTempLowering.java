@@ -27,6 +27,28 @@ public final class OptionalCallTempLowering {
         STATIC_MODULE_FUNCTION, INSTANCE_METHOD_RECEIVER, CLASS_CONSTRUCTOR
     }
 
+    /**
+     * Backend-oriented phase schedule. This differs intentionally from the
+     * generic InvocationPreview EVALUATE_CALLEE: a resolved static module
+     * function is not a guest expression, and an instance member expression
+     * captures its RECEIVER, not a callable method object.
+     */
+    public enum Phase {
+        CAPTURE_RECEIVER, CAPTURE_ARGUMENT, MATERIALIZE_ABI_SLOT, INVOKE_SELECTED
+    }
+
+    public record Step(Phase phase, int index) {
+        public Step {
+            Objects.requireNonNull(phase, "phase");
+            if (phase == Phase.INVOKE_SELECTED ? index != -1 : index < 0) {
+                throw new IllegalArgumentException("invalid temp phase index");
+            }
+            if (phase == Phase.CAPTURE_RECEIVER && index != 0) {
+                throw new IllegalArgumentException("receiver must occupy first temp");
+            }
+        }
+    }
+
     /** A separate lexical call-item occurrence receives one distinct temp. */
     public record ArgumentTemp(int evaluatedIndex, int rawCallItemIndex,
                                int tempIndex, Ast.Expr expression) {
@@ -71,6 +93,7 @@ public final class OptionalCallTempLowering {
         private final int receiverTempIndex;
         private final List<ArgumentTemp> argumentTemps;
         private final List<AbiSlot> abiSlots;
+        private final List<Step> steps;
 
         private Recipe(BoundInvocation bound, TargetKind targetKind,
                        Ast.Expr receiverExpression, int receiverTempIndex,
@@ -110,6 +133,25 @@ public final class OptionalCallTempLowering {
             for (boolean covered : seen) {
                 if (!covered) throw new IllegalArgumentException("dropped argument temp");
             }
+            for (int i = 0; i < abiSlots.size(); i++) {
+                if (abiSlots.get(i).formalIndex() != i) {
+                    throw new IllegalArgumentException("ABI slots must be in formal order");
+                }
+            }
+            List<Step> schedule = new ArrayList<>(
+                    (receiverTempIndex == 0 ? 1 : 0)
+                    + argumentTemps.size() + abiSlots.size() + 1);
+            if (receiverTempIndex == 0) {
+                schedule.add(new Step(Phase.CAPTURE_RECEIVER, 0));
+            }
+            for (ArgumentTemp argument : argumentTemps) {
+                schedule.add(new Step(Phase.CAPTURE_ARGUMENT, argument.tempIndex()));
+            }
+            for (AbiSlot slot : abiSlots) {
+                schedule.add(new Step(Phase.MATERIALIZE_ABI_SLOT, slot.formalIndex()));
+            }
+            schedule.add(new Step(Phase.INVOKE_SELECTED, -1));
+            steps = List.copyOf(schedule);
         }
 
         public BoundInvocation bound() { return bound; }
@@ -118,6 +160,8 @@ public final class OptionalCallTempLowering {
         public int receiverTempIndex() { return receiverTempIndex; }
         public List<ArgumentTemp> argumentTemps() { return argumentTemps; }
         public List<AbiSlot> abiSlots() { return abiSlots; }
+        /** Immutable recipe only; these are not executable instructions. */
+        public List<Step> steps() { return steps; }
         public BoundInvocation.Readiness readiness() {
             return BoundInvocation.Readiness.SHAPE_ONLY;
         }
