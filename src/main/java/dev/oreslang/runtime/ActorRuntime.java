@@ -973,7 +973,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (current == Long.MAX_VALUE) {
                     // Never wrap diagnostic order into negative values. The
                     // authoritative ActorRef terminal state still survives.
-                    supervisionEventsDropped.incrementAndGet();
+                    saturatingIncrement(supervisionEventsDropped);
                     continue;
                 }
                 supervisionEventSequence.set(current + 1L);
@@ -1055,7 +1055,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void recordWatchdogOverrun(ActorCell<?> cell, ActorTurnWatchdog.Lease lease) {
         long now = System.nanoTime();
-        watchdogOverruns.incrementAndGet();
+        saturatingIncrement(watchdogOverruns);
         WatchdogNotice notice = new WatchdogNotice(
                 cell.ref.id(), cell.kind,
                 lease.elapsedNanos(now), lease.sinceCheckpointNanos(now));
@@ -1071,7 +1071,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
         if (!published) {
-            watchdogNoticesDropped.incrementAndGet();
+            saturatingIncrement(watchdogNoticesDropped);
         }
     }
 
@@ -1091,6 +1091,22 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Monotonic telemetry must never wrap negative in a long-lived runtime.
+     * Saturation preserves the invariant that diagnostics are always readable,
+     * even after the exact event count is no longer representable.
+     */
+    private static long saturatingIncrement(AtomicLong counter) {
+        Objects.requireNonNull(counter, "counter");
+        for (;;) {
+            long current = counter.get();
+            if (current == Long.MAX_VALUE) return Long.MAX_VALUE;
+            if (counter.compareAndSet(current, current + 1L)) {
+                return current + 1L;
+            }
+        }
+    }
+
+    /**
      * Runtime-cleanup failures are observable but cannot become a reason to
      * leave an ActorCell half-finalized. Preserve only the first host-fatal
      * error for deferred rethrow; all failures increment telemetry without
@@ -1099,7 +1115,7 @@ public final class ActorRuntime implements AutoCloseable {
     private Throwable noteLifecyclePublicationFailure(
             Throwable firstFatal,
             Throwable failure) {
-        lifecyclePublicationFailures.incrementAndGet();
+        saturatingIncrement(lifecyclePublicationFailures);
         return firstFatal == null && isHostFatal(failure)
                 ? failure
                 : firstFatal;
@@ -1123,9 +1139,9 @@ public final class ActorRuntime implements AutoCloseable {
             ActorTerminalState terminal) {
         ActorTerminationKind kind = terminal.terminationKind();
         switch (kind) {
-            case NORMAL -> normalTerminations.incrementAndGet();
-            case CANCELLED -> cancelledTerminations.incrementAndGet();
-            case FAILED -> failedTerminations.incrementAndGet();
+            case NORMAL -> saturatingIncrement(normalTerminations);
+            case CANCELLED -> saturatingIncrement(cancelledTerminations);
+            case FAILED -> saturatingIncrement(failedTerminations);
         }
 
         ActorTerminationPayload payload = new ActorTerminationPayload(
@@ -1142,7 +1158,7 @@ public final class ActorRuntime implements AutoCloseable {
                 "");
 
         if (supervisionEventSequence.get() == Long.MAX_VALUE) {
-            supervisionEventsDropped.incrementAndGet();
+            saturatingIncrement(supervisionEventsDropped);
             return;
         }
 
@@ -1166,7 +1182,7 @@ public final class ActorRuntime implements AutoCloseable {
             // Contention, capacity pressure and terminal sequence exhaustion
             // are all explicit best-effort telemetry drops. Actor finalization
             // never waits for diagnostics.
-            supervisionEventsDropped.incrementAndGet();
+            saturatingIncrement(supervisionEventsDropped);
         }
     }
 
@@ -2411,7 +2427,7 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = actors.get(actorId);
         if (cell == null || cell.stopped.get() || closed.get()) return false;
         if (!cell.reserveContinuationSlot()) {
-            continuationAdmissionFailures.incrementAndGet();
+            saturatingIncrement(continuationAdmissionFailures);
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
             return false;
@@ -4909,7 +4925,7 @@ public final class ActorRuntime implements AutoCloseable {
                 int remainingCapacity = actorCapacityInUse.decrementAndGet();
                 if (remainingCapacity < 0) {
                     actorCapacityInUse.incrementAndGet();
-                    lifecyclePublicationFailures.incrementAndGet();
+                    saturatingIncrement(lifecyclePublicationFailures);
                 }
                 throw failure;
             }
@@ -5223,10 +5239,10 @@ public final class ActorRuntime implements AutoCloseable {
                 int remainingLive = actorCount.decrementAndGet();
                 if (remainingLive < 0) {
                     actorCount.incrementAndGet();
-                    lifecyclePublicationFailures.incrementAndGet();
+                    saturatingIncrement(lifecyclePublicationFailures);
                 }
                 if (!cell.actorSlotReleasePending.compareAndSet(false, true)) {
-                    lifecyclePublicationFailures.incrementAndGet();
+                    saturatingIncrement(lifecyclePublicationFailures);
                 }
             }
         } catch (Throwable failure) {
@@ -5241,13 +5257,13 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void releaseActorSlotAfterLifecycleObservers(ActorCell<?> cell) {
         if (!cell.actorSlotReleasePending.compareAndSet(true, false)) {
-            lifecyclePublicationFailures.incrementAndGet();
+            saturatingIncrement(lifecyclePublicationFailures);
             return;
         }
         int remaining = actorCapacityInUse.decrementAndGet();
         if (remaining < 0) {
             actorCapacityInUse.incrementAndGet();
-            lifecyclePublicationFailures.incrementAndGet();
+            saturatingIncrement(lifecyclePublicationFailures);
         }
     }
 
@@ -5657,26 +5673,26 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) {
-            invalidReferenceSendRejections.incrementAndGet();
+            saturatingIncrement(invalidReferenceSendRejections);
             throw new ActorInvalidReferenceException(
                     "ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) {
-            terminatedSendRejections.incrementAndGet();
+            saturatingIncrement(terminatedSendRejections);
             throw terminated(ref);
         }
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) {
-                terminatedSendRejections.incrementAndGet();
+                saturatingIncrement(terminatedSendRejections);
                 throw terminated(ref);
             }
             if (cell.sealing) {
-                sealedSendRejections.incrementAndGet();
+                saturatingIncrement(sealedSendRejections);
                 throw new ActorSealedException(ref.id());
             }
             if (!cell.reserveMailboxSlot()) {
-                mailboxFullRejections.incrementAndGet();
+                saturatingIncrement(mailboxFullRejections);
                 throw new ActorMailboxFullException(ref.id());
             }
         }
@@ -5751,15 +5767,15 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 synchronized (cell.lifecycleLock) {
                     if (cell.stopped.get() || cell.finalized) {
-                        terminatedSendRejections.incrementAndGet();
+                        saturatingIncrement(terminatedSendRejections);
                         throw terminated(ref);
                     }
                     if (cell.sealing) {
-                        sealedSendRejections.incrementAndGet();
+                        saturatingIncrement(sealedSendRejections);
                         throw new ActorSealedException(ref.id());
                     }
                     if (cell.forceKillFenced) {
-                        lifecycleFenceSendRejections.incrementAndGet();
+                        saturatingIncrement(lifecycleFenceSendRejections);
                         throw new IllegalStateException(
                                 "actor " + ref.id()
                                         + " is fenced while force cancellation is pending");
@@ -5776,11 +5792,11 @@ public final class ActorRuntime implements AutoCloseable {
                     envelope = MessageEnvelope.message(
                             prepared, release, sender, sequence);
                     if (!cell.mailbox.tryWrite(envelope)) {
-                        mailboxFullRejections.incrementAndGet();
+                        saturatingIncrement(mailboxFullRejections);
                         throw new ActorMailboxFullException(ref.id());
                     }
                     cell.nextUserMessageSequence = nextSequence;
-                    userMessagesAccepted.incrementAndGet();
+                    saturatingIncrement(userMessagesAccepted);
                     mailboxSlotTransferred = true;
                     admitted = true;
                     commitSharedMutexBindings(sharedMutexReservations);
@@ -7712,7 +7728,7 @@ public final class ActorRuntime implements AutoCloseable {
                             "nonsequential actor message completion for " + ref.id());
                 }
                 lastProcessedUserMessageSequence = sequence;
-                userMessagesProcessed.incrementAndGet();
+                saturatingIncrement(userMessagesProcessed);
                 for (int i = pendingDrains.size() - 1; i >= 0; --i) {
                     DrainWaiter waiter = pendingDrains.get(i);
                     if (waiter.sequence() <= sequence) {
@@ -7973,7 +7989,7 @@ public final class ActorRuntime implements AutoCloseable {
                         plan.abandonedContinuations,
                         plan.terminal == null ? "" : plan.terminal.getClass().getName());
                 if (!ref.terminalState.compareAndSet(null, retainedTerminal)) {
-                    lifecyclePublicationFailures.incrementAndGet();
+                    saturatingIncrement(lifecyclePublicationFailures);
                     retainedTerminal = ref.terminalState.get();
                 }
             } catch (Throwable failure) {
@@ -7990,7 +8006,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // Per-ref post-mortem is more important than the global
                 // journal. If allocation itself failed, account a dropped
                 // journal record and continue authoritative teardown.
-                supervisionEventsDropped.incrementAndGet();
+                saturatingIncrement(supervisionEventsDropped);
             }
 
             firstFatal = unregisterActor(this, firstFatal);
@@ -8002,7 +8018,7 @@ public final class ActorRuntime implements AutoCloseable {
                     finalizationPrepared = false;
                     publishTerminalObservers = true;
                 } else {
-                    lifecyclePublicationFailures.incrementAndGet();
+                    saturatingIncrement(lifecyclePublicationFailures);
                 }
                 lifecycleLock.notifyAll();
             }
