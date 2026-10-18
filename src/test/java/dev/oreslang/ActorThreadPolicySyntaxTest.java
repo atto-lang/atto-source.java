@@ -73,6 +73,7 @@ final class ActorThreadPolicySyntaxTest {
                 "define actor Worker with threads(min: 2, max: 1) as end",
                 "define actor Worker with threads(max: 0) as end",
                 "define actor Worker with threads(max: 3) as end",
+                "define actor Worker with threads(max: 4) as end",
                 "@ActorThreads(max = 3) define actor Worker as end",
                 "@ActorThreads(min = 1, max = 1) define actor Worker with threads(min: 1, max: 1) as end",
                 "@ActorThreads(min = -1) define actor Worker as end",
