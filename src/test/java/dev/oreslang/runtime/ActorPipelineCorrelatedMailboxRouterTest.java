@@ -50,6 +50,127 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
     }
 
     @Test
+    void actorGroupFanoutSelectiveAndRoundRobinUseOnlyLiveGraphMembers()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var join = group.joinCapability();
+            var routerRef =
+                    new AtomicReference<ActorPipelineCorrelatedMailboxRouter<String>>();
+            var receipts = new java.util.concurrent.ConcurrentHashMap<String,
+                    List<ActorPipelineCorrelatedMailboxRouter.Admission>>();
+            var seen = new java.util.concurrent.ConcurrentLinkedQueue<String>();
+            var denied = new AtomicInteger();
+            var a = runtime.<String>spawnShared(() -> (value, actor) ->
+                    seen.add("worker-a:" + value));
+            var b = runtime.<String>spawnShared(() -> (value, actor) ->
+                    seen.add("worker-b:" + value));
+            var sink = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                var router = routerRef.get();
+                switch (value) {
+                    case "fan1", "fan2" ->
+                            receipts.put(value, router.forwardAll(value));
+                    case "selected" ->
+                            receipts.put(value, router.forwardSelected(
+                                    java.util.Set.of("worker-b"), value));
+                    case "deny" -> {
+                        try {
+                            router.forwardSelected(java.util.Set.of("worker-b"), "bad");
+                            throw new AssertionError(
+                                    "inactive ActorGroup member received fanout");
+                        } catch (IllegalStateException expected) {
+                            denied.incrementAndGet();
+                        }
+                        receipts.put(value, router.forwardSelected(
+                                java.util.Set.of("worker-a"), value));
+                    }
+                    case "rr1", "rr2", "rr3" ->
+                            router.forwardRoundRobin(value);
+                    default -> throw new AssertionError("unexpected source mail " + value);
+                }
+            });
+
+            group.join(a, join);
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, fanInGraph(),
+                    Map.of("source", source, "worker-a", a,
+                           "worker-b", b, "sink", sink), 53, 24, group);
+            routerRef.set(router);
+
+            // Only the first worker is a current cooperating group member.
+            router.ingress("source", "fan1");
+            source.drain().get(5, TimeUnit.SECONDS);
+            a.drain().get(5, TimeUnit.SECONDS);
+            b.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(1, receipts.get("fan1").size());
+            assertEquals("worker-a", receipts.get("fan1").getFirst().target());
+            assertEquals(0, receipts.get("fan1").getFirst().edgeIndex());
+
+            // Selective fanout names a graph edge, but must also pass the
+            // group membership check. Denial must not consume the source.
+            router.ingress("source", "deny");
+            source.drain().get(5, TimeUnit.SECONDS);
+            a.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(1, denied.get());
+            assertEquals("worker-a", receipts.get("deny").getFirst().target());
+
+            // A subsequent join affects future snapshots without changing
+            // any prior frame's sealed origin/worker return path.
+            group.join(b, join);
+            router.ingress("source", "fan2");
+            source.drain().get(5, TimeUnit.SECONDS);
+            a.drain().get(5, TimeUnit.SECONDS);
+            b.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(2, receipts.get("fan2").size());
+            assertEquals(0, receipts.get("fan2").get(0).edgeIndex());
+            assertEquals(1, receipts.get("fan2").get(1).edgeIndex());
+            assertEquals(receipts.get("fan2").get(0).flowId(),
+                         receipts.get("fan2").get(1).flowId());
+            assertNotEquals(receipts.get("fan2").get(0).routeId(),
+                            receipts.get("fan2").get(1).routeId());
+
+            router.ingress("source", "selected");
+            source.drain().get(5, TimeUnit.SECONDS);
+            b.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(1, receipts.get("selected").size());
+            assertEquals("worker-b", receipts.get("selected").getFirst().target());
+            assertEquals(1, receipts.get("selected").getFirst().edgeIndex(),
+                    "selective fanout must report ORIGINAL DAG edge index");
+
+            router.ingress("source", "rr1");
+            source.drain().get(5, TimeUnit.SECONDS);
+            a.drain().get(5, TimeUnit.SECONDS);
+            router.ingress("source", "rr2");
+            source.drain().get(5, TimeUnit.SECONDS);
+            b.drain().get(5, TimeUnit.SECONDS);
+            assertTrue(seen.contains("worker-a:rr1"));
+            assertTrue(seen.contains("worker-b:rr2"));
+
+            // Actor termination revokes cooperative membership; the next
+            // round-robin selection skips the removed DAG target.
+            b.stop();
+            b.getDone().get(5, TimeUnit.SECONDS);
+            router.ingress("source", "rr3");
+            source.drain().get(5, TimeUnit.SECONDS);
+            a.drain().get(5, TimeUnit.SECONDS);
+            assertTrue(seen.contains("worker-a:rr3"));
+            assertFalse(seen.contains("worker-b:rr3"));
+            assertEquals(0, router.outstanding(), "group fanout leaked frames");
+
+            router.close();
+            group.close(); // Membership alone must not cancel worker a.
+            assertTrue(a.isAlive(), "ActorGroup membership implied worker ownership");
+            source.stop();
+            a.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            a.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void compilerBridgeUsesOnlyEnvelopeBoundTurnAuthority() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var finished = new CountDownLatch(1);
