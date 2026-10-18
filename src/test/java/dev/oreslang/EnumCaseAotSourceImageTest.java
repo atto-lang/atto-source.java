@@ -51,17 +51,10 @@ final class EnumCaseAotSourceImageTest {
         digests.clear();
         image.verify(exact, source, direct); // Immutable compilation snapshot.
 
-        EnumCaseAotSourceImage second = EnumCaseAotSourceImage.seal(plan,
-                java.util.Map.of(
-                        exact.exactSymbol(), "a".repeat(64),
-                        fallback.exactSymbol(), "a".repeat(64),
-                        plan.calls().stream().map(EnumCaseSourceCallPlan.BoundCall::exactSlot)
-                                .filter(symbol -> !symbol.equals(exact.exactSymbol())
-                                        && !symbol.equals(fallback.exactSymbol()))
-                                .findAny().orElseGet(() -> plan.directModuleSymbols().stream()
-                                        .filter(symbol -> !symbol.equals(exact.exactSymbol())
-                                                && !symbol.equals(fallback.exactSymbol()))
-                                        .findFirst().orElseThrow()), "a".repeat(64)));
+        Map<String, String> sameBody = new HashMap<>();
+        plan.directModuleSymbols().forEach(symbol ->
+                sameBody.put(symbol, "a".repeat(64)));
+        EnumCaseAotSourceImage second = EnumCaseAotSourceImage.seal(plan, sameBody);
         assertThrows(IllegalArgumentException.class,
                 () -> second.verify(exact, source, direct));
 
