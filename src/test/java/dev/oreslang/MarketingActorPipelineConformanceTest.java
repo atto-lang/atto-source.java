@@ -61,11 +61,11 @@ final class MarketingActorPipelineConformanceTest {
         String receipt = Files.readString(
                 Path.of("contracts/conformance/language-motion-v1.json"),
                 StandardCharsets.UTF_8);
-        assertTrue(receipt.contains("\\"source_blob_sha1\\": \\"" + FIXTURE_GIT_BLOB_SHA + "\\""));
-        assertTrue(receipt.contains("\\"java_status\\": \\"pending_ci\\""));
-        assertTrue(receipt.contains("\\"not_in_main\\": true"));
-        assertFalse(receipt.matches("(?s).*\\\"java_status\\\"\\s*:\\s*\\\"verified\\\".*"));
-        assertFalse(receipt.matches("(?s).*\\\"llvm_status\\\"\\s*:\\s*\\\"verified\\\".*"));
+        assertTrue(receipt.contains("\"source_blob_sha1\": \"" + FIXTURE_GIT_BLOB_SHA + "\""));
+        assertTrue(receipt.contains("\"java_status\": \"pending_ci\""));
+        assertTrue(receipt.contains("\"not_in_main\": true"));
+        assertFalse(receipt.contains("\"java_status\": \"verified\""));
+        assertFalse(receipt.contains("\"llvm_status\": \"verified\""));
     }
 
     @Test
