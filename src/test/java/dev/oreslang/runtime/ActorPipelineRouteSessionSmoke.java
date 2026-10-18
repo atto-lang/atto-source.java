@@ -246,6 +246,14 @@ public final class ActorPipelineRouteSessionSmoke {
         ActorPipelineRouteSession.claimMailboxAdmission(claimFrame);
         reject(() -> ActorPipelineRouteSession.claimMailboxAdmission(claimFrame),
                 "concurrent mailbox publishers claimed the same route frame");
+        // In-flight mailbox admission blocks generation replacement and
+        // terminal teardown; otherwise a stopped graph could enqueue stale
+        // DATA before the successful tryWrite is marked irrevocable.
+        reject(() -> claimLedger.abortAndAdvanceGeneration(25),
+                "abort fenced epoch over in-flight mailbox publication");
+        reject(() -> claimLedger.close(),
+                "close retired actor route during in-flight mailbox admission");
+        check(!claimLedger.closed(), "rejected close mutated live session");
         ActorPipelineRouteSession.abortMailboxAdmission(claimFrame);
         check(!ActorPipelineRouteSession.wasMailboxPublished(claimFrame),
                 "failed prepublication attempt reported accepted DATA");
@@ -257,6 +265,16 @@ public final class ActorPipelineRouteSessionSmoke {
         check(ActorPipelineRouteSession.wasMailboxPublished(claimFrame),
                 "abort of a published frame erased monotonic publication");
         claimLedger.complete(claimFrame);
+        claimLedger.advanceGeneration(25);
+        var newRoot = claimLedger.ingress("source");
+        ActorPipelineRouteSession.claimMailboxAdmission(newRoot);
+        reject(() -> claimLedger.abortAndAdvanceGeneration(26),
+                "generation abort raced second claimed mailbox frame");
+        ActorPipelineRouteSession.abortMailboxAdmission(newRoot);
+        check(claimLedger.abortAndAdvanceGeneration(26) == 1,
+                "failed claimed mailbox abort left phantom correlation frame");
+        reject(() -> ActorPipelineRouteSession.claimMailboxAdmission(newRoot),
+                "old generation was claimable after supervisor abort");
 
         // Eight concurrent racing host admission attempts MUST grant exactly
         // one winner until that winner releases its reservation. Do not
