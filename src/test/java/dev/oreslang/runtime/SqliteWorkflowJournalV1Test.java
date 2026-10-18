@@ -656,6 +656,47 @@ final class SqliteWorkflowJournalV1Test {
     }
 
     @Test
+    void reorderedPersistedEffectsFailClosedOnOpen() throws Exception {
+        Path db = tempDir.resolve("effect-order.db");
+        var loop = new DurableDevLoopV1("run-effect-order", 3);
+
+        try (var store = SqliteWorkflowJournalV1.open(db)) {
+            store.append(loop.accept(
+                    "start",
+                    new DurableDevLoopV1.Start("goal")));
+            store.append(loop.accept(
+                    "code",
+                    new DurableDevLoopV1.CodeChanged(
+                            1, "patch://one")));
+            assertEquals(2, store.effects().size());
+        }
+
+        try (var connection = DriverManager.getConnection(
+                "jdbc:sqlite:" + db.toAbsolutePath());
+             var statement = connection.createStatement()) {
+            assertEquals(
+                    1,
+                    statement.executeUpdate(
+                            "UPDATE workflow_effects "
+                                    + "SET ordinal = -1 WHERE ordinal = 0"));
+            assertEquals(
+                    1,
+                    statement.executeUpdate(
+                            "UPDATE workflow_effects "
+                                    + "SET ordinal = 0 WHERE ordinal = 1"));
+            assertEquals(
+                    1,
+                    statement.executeUpdate(
+                            "UPDATE workflow_effects "
+                                    + "SET ordinal = 1 WHERE ordinal = -1"));
+        }
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> SqliteWorkflowJournalV1.open(db));
+    }
+
+    @Test
     void noncanonicalIgnoredEventColumnFailsClosedOnOpen() throws Exception {
         Path db = tempDir.resolve("noncanonical-event.db");
         seedStarted(db, "run-noncanonical-event");
