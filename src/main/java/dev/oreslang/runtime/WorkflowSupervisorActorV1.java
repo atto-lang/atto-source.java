@@ -319,9 +319,9 @@ public final class WorkflowSupervisorActorV1 {
                                         + expectedKind);
                     }
                     if (effect.state()
-                            == WorkflowJournalV1.EffectState.COMPLETED
-                            || effect.state()
-                            == WorkflowJournalV1.EffectState.ABANDONED) {
+                            != WorkflowJournalV1.EffectState.PENDING
+                            && effect.state()
+                            != WorkflowJournalV1.EffectState.CLAIMED) {
                         throw new IllegalStateException(
                                 "cannot reserve budget for non-runnable effect "
                                         + reserve.effectKey()
