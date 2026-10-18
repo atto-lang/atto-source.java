@@ -143,6 +143,21 @@ chmod +x "$work/broken-index-bin/git"
   export PATH="$work/broken-index-bin:$PATH"
   assert_status 99 'tracked blob hashing failure cannot certify source' "$clean_tree" source
 )
+# Also require successful enumeration of untracked files. A failed
+# untracked-file listing must not be interpreted as an empty list.
+mkdir -p "$work/broken-others-bin"
+cat > "$work/broken-others-bin/git" <<'MOCK_OTHERS'
+#!/usr/bin/env bash
+if [[ "${1:-}" == ls-files && "${2:-}" == --others ]]; then
+  exit 98
+fi
+exec "$REAL_GIT" "$@"
+MOCK_OTHERS
+chmod +x "$work/broken-others-bin/git"
+(
+  export PATH="$work/broken-others-bin:$PATH"
+  assert_status 68 'untracked enumeration failure never certifies source' "$clean_tree" source
+)
 # Verify ordinary source works after removing the adversarial Git shim.
 assert_status 0 'clean source remains valid after index failure test' "$clean_tree" source
 echo 'SOURCE_TREE_GATE_TESTS_PASS'
