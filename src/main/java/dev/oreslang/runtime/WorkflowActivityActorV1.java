@@ -415,9 +415,9 @@ public final class WorkflowActivityActorV1 {
         }
 
         private void writeState(PrivateState state) {
+            WorkflowPrivateActorStateV1.ScrubbableOutput bytes =
+                    new WorkflowPrivateActorStateV1.ScrubbableOutput();
             try {
-                ByteArrayOutputStream bytes =
-                        new ByteArrayOutputStream();
                 try (DataOutputStream output =
                         new DataOutputStream(bytes)) {
                     output.writeInt(1);
@@ -435,7 +435,7 @@ public final class WorkflowActivityActorV1 {
                         writeClaim(output, claim);
                     }
                 }
-                byte[] encoded = bytes.toByteArray();
+                byte[] encoded = bytes.snapshotAndWipe();
                 try {
                     WorkflowPrivateActorStateV1.write(
                             stateBlock, encoded);
@@ -446,6 +446,8 @@ public final class WorkflowActivityActorV1 {
                 throw new IllegalStateException(
                         "failed to encode activity private state",
                         failure);
+            } finally {
+                bytes.wipe();
             }
         }
 
