@@ -446,10 +446,15 @@ final class GitHubWebhookActorV1Test {
                             sha('b'),
                             "tree-proof://wrong")));
 
-            assertThrows(
-                    java.util.concurrent.ExecutionException.class,
-                    () -> actor.raw().getDone().get(5, TimeUnit.SECONDS));
-            assertTrue(actor.raw().failure().isPresent());
+            var rejected = assertInstanceOf(
+                    GitHubWebhookActorV1.Rejected.class,
+                    next(outputs));
+            assertTrue(rejected.reason().contains("rejected"));
+            assertTrue(actor.raw().failure().isEmpty());
+
+            actor.send(new GitHubWebhookActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
         }
     }
 
@@ -499,10 +504,15 @@ final class GitHubWebhookActorV1Test {
                             tree,
                             "tree-proof://bad")));
 
-            assertThrows(
-                    java.util.concurrent.ExecutionException.class,
-                    () -> actor.raw().getDone().get(
-                            5, TimeUnit.SECONDS));
+            var rejected = assertInstanceOf(
+                    GitHubWebhookActorV1.Rejected.class,
+                    next(outputs));
+            assertTrue(rejected.reason().contains("rejected"));
+            assertTrue(actor.raw().failure().isEmpty());
+
+            actor.send(new GitHubWebhookActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
         }
 
         try (var runtime = new ActorRuntime()) {
@@ -535,7 +545,8 @@ final class GitHubWebhookActorV1Test {
     }
 
     @Test
-    void invalidWebhookSignatureFailsIngressActor() throws Exception {
+    void invalidWebhookSignatureIsRejectedWithoutKillingIngressActor()
+            throws Exception {
         byte[] secret =
                 "0123456789abcdef0123456789abcdef"
                         .getBytes(StandardCharsets.UTF_8);
@@ -563,21 +574,41 @@ final class GitHubWebhookActorV1Test {
                     "ci",
                     "success",
                     "https://github.example/actions/runs/44");
+            var proof = new GitHubWorkflowRunPayloadV1.GitTreeProof(
+                    sha('a'),
+                    sha('b'),
+                    "tree-proof://44");
+
             actor.send(new GitHubWebhookActorV1.ReceiveCiWebhook(
                     new GitHubWebhookSecurityV1.Headers(
                             "sha256=" + "00".repeat(32),
                             "delivery-bad",
                             "workflow_run"),
                     body,
-                    new GitHubWorkflowRunPayloadV1.GitTreeProof(
-                            sha('a'),
-                            sha('b'),
-                            "tree-proof://44")));
+                    proof));
 
-            assertThrows(
-                    java.util.concurrent.ExecutionException.class,
-                    () -> actor.raw().getDone().get(5, TimeUnit.SECONDS));
-            assertTrue(actor.raw().failure().isPresent());
+            var rejected = assertInstanceOf(
+                    GitHubWebhookActorV1.Rejected.class,
+                    next(outputs));
+            assertTrue(rejected.reason().contains("signature"));
+            assertTrue(actor.raw().failure().isEmpty());
+
+            actor.send(new GitHubWebhookActorV1.ReceiveCiWebhook(
+                    new GitHubWebhookSecurityV1.Headers(
+                            "sha256=" + hmac(secret, body),
+                            "delivery-bad",
+                            "workflow_run"),
+                    body,
+                    proof));
+
+            var matched = assertInstanceOf(
+                    GitHubWebhookActorV1.Matched.class,
+                    next(outputs));
+            assertEquals("run", matched.runId());
+
+            actor.send(new GitHubWebhookActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
         }
     }
 
