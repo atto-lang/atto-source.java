@@ -118,6 +118,25 @@ final class UntrustedSourceImageCacheTest {
     }
 
     @Test
+    void rejectsMalformedUnicodeAmbiguousSourceNamesAndOversizedUtf8() {
+        var cache = new UntrustedSourceImageCache();
+        String unpairedSurrogate = String.valueOf((char) 0xD800);
+        assertThrows(IllegalArgumentException.class,
+                () -> cache.acquire("worker.ores", unpairedSurrogate),
+                "malformed Unicode must not be replaced before source hashing");
+        assertThrows(IllegalArgumentException.class,
+                () -> cache.acquire("unit\nbad", "valid"),
+                "untrusted logical module names cannot contain control characters");
+        assertThrows(IllegalArgumentException.class,
+                () -> cache.acquire("unit" + unpairedSurrogate, "valid"));
+        assertThrows(IllegalArgumentException.class,
+                () -> cache.acquire("worker.ores", "€".repeat(400_000)),
+                "UTF-8 byte quota must take precedence over UTF-16 character count");
+        assertEquals(0, cache.liveImages());
+        assertEquals(0L, cache.pinnedBytes());
+    }
+
+    @Test
     void concurrentReadersInternOnlyOneSource() throws Exception {
         var cache = new UntrustedSourceImageCache();
         CountDownLatch begin = new CountDownLatch(1);
