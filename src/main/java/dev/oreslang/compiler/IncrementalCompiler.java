@@ -2,6 +2,7 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
@@ -28,6 +29,8 @@ import java.util.Set;
  */
 public final class IncrementalCompiler {
     private final Map<String, CompiledUnit> cache = new LinkedHashMap<>();
+    private final Map<String, String> cachedImportResolutionDigests =
+            new LinkedHashMap<>();
 
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
