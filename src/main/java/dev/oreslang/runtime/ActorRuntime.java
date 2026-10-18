@@ -1333,6 +1333,16 @@ public final class ActorRuntime implements AutoCloseable {
          * This is NOT an artifact signature. Production native loaders must
          * independently authenticate executable bytes before they can run.
          */
+        /**
+         * Opaque compiler/runtime ownership domain. V1 upgrades may only swap
+         * executors from the same domain; cross-context/process migration needs
+         * a separate logical-routing transaction.
+         */
+        default Object actorUpgradeDomain() {
+            throw new UnsupportedOperationException(
+                    "actor executor does not expose a hot-upgrade domain");
+        }
+
         default String actorCodeSha256(String actorTypeName) {
             throw new UnsupportedOperationException(
                     "actor executor does not support hot-upgrade code receipts");
@@ -4981,6 +4991,9 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRef<Object> ref,
             ActorCodeExecutor proposed) {
         requireSupervisorContext("hot-upgrade source actor");
+        policyCeiling.require(
+                IsolatePolicy.Capability.HOT_CODE_LOAD,
+                "hot-upgrade source actor");
         Objects.requireNonNull(ref, "ref");
         Objects.requireNonNull(proposed, "proposed");
         if (!ref.ownedBy(this))
@@ -4993,6 +5006,19 @@ public final class ActorRuntime implements AutoCloseable {
             if (!freeze.schedulerDrained()) return false;
             @SuppressWarnings("unchecked")
             ActorCell<Object> cell = (ActorCell<Object>) raw;
+
+            final ActorCodeExecutor current;
+            final SharedCodeImageStore.CodeImage currentImage;
+            final SharedCodeImageStore.CodeImage candidateImage;
+            final ActorOwnedGuestState currentState;
+            final String actorType;
+            final long originEpoch;
+            final ActorCheckpointEnvelopeV1.Header header;
+            final ActorContext<Object> activeContext;
+            final ActorContext<Object> candidateContext;
+
+            // Capture immutable transaction inputs under the lifecycle monitor,
+            // then release it before compiler-owned snapshot/restore work.
             synchronized (cell.lifecycleLock) {
                 if (closed.get() || cell.stopped.get() || cell.finalized
                         || cell.endRequested || cell.forceKillFenced)
@@ -5000,96 +5026,126 @@ public final class ActorRuntime implements AutoCloseable {
                 if (cell.codeExecutor == null || cell.codeActorState == null)
                     throw new IllegalStateException(
                             "hot source upgrade requires an initialized source actor");
-                if (!freeze.schedulerDrained())
-                    return false;
+                if (!freeze.schedulerDrained()) return false;
 
-                ActorCodeExecutor current = cell.codeExecutor;
-                SharedCodeImageStore.CodeImage currentImage = cell.codeImage;
-                SharedCodeImageStore.CodeImage candidateImage =
+                current = cell.codeExecutor;
+                currentImage = cell.codeImage;
+                currentState = cell.codeActorState;
+                actorType = cell.codeActorType;
+                originEpoch = cell.sourceCodeEpoch;
+                candidateImage =
                         Objects.requireNonNull(proposed.codeImage(), "candidate code image");
                 if (candidateImage == currentImage)
                     throw new IllegalArgumentException(
                             "candidate source actor code image is identical to active image");
+                Object activeDomain = Objects.requireNonNull(
+                        current.actorUpgradeDomain(), "active source actor upgrade domain");
+                Object candidateDomain = Objects.requireNonNull(
+                        proposed.actorUpgradeDomain(), "candidate source actor upgrade domain");
+                if (activeDomain != candidateDomain)
+                    throw new SecurityException(
+                            "v1 source actor hot upgrade cannot cross OresContext/runtime domains");
 
                 String oldCode = canonicalSha256(
-                        current.actorCodeSha256(cell.codeActorType), "active code digest");
+                        current.actorCodeSha256(actorType), "active code digest");
                 String nextCode = canonicalSha256(
-                        proposed.actorCodeSha256(cell.codeActorType), "candidate code digest");
+                        proposed.actorCodeSha256(actorType), "candidate code digest");
                 if (oldCode.equals(nextCode))
                     throw new IllegalArgumentException(
                             "candidate source actor code digest is identical to active code");
 
                 String oldSchema = canonicalSha256(
-                        current.actorStateSchemaSha256(cell.codeActorType),
+                        current.actorStateSchemaSha256(actorType),
                         "active state schema digest");
                 String nextSchema = canonicalSha256(
-                        proposed.actorStateSchemaSha256(cell.codeActorType),
+                        proposed.actorStateSchemaSha256(actorType),
                         "candidate state schema digest");
                 if (!oldSchema.equals(nextSchema))
                     throw new SecurityException(
                             "v1 source actor upgrade cannot change persistent state schema");
 
                 String oldMessage = canonicalSha256(
-                        current.actorMessageAbiSha256(cell.codeActorType),
+                        current.actorMessageAbiSha256(actorType),
                         "active message ABI digest");
                 String nextMessage = canonicalSha256(
-                        proposed.actorMessageAbiSha256(cell.codeActorType),
+                        proposed.actorMessageAbiSha256(actorType),
                         "candidate message ABI digest");
                 if (!oldMessage.equals(nextMessage))
                     throw new SecurityException(
                             "v1 source actor upgrade cannot change message ABI");
 
-                if (cell.sourceCodeEpoch <= 0 || cell.sourceCodeEpoch == Long.MAX_VALUE)
+                if (originEpoch <= 0 || originEpoch == Long.MAX_VALUE)
                     throw new IllegalStateException("source actor code epoch exhausted");
-                String capabilities = actorPolicySha256(cell.policy);
-                ActorCheckpointEnvelopeV1.Header header =
-                        new ActorCheckpointEnvelopeV1.Header(
-                                ref.id().value(),
-                                cell.sourceCodeEpoch,
-                                oldCode,
-                                oldSchema,
-                                oldMessage,
-                                capabilities);
+                header = new ActorCheckpointEnvelopeV1.Header(
+                        ref.id().value(),
+                        originEpoch,
+                        oldCode,
+                        oldSchema,
+                        oldMessage,
+                        actorPolicySha256(cell.policy));
+                activeContext = cell.sourceUpgradeContext(currentImage);
+                candidateContext = cell.sourceUpgradeContext(candidateImage);
+            }
 
-                ActorContext<Object> activeContext = cell.sourceUpgradeContext(currentImage);
-                byte[] payload = Objects.requireNonNull(
-                        current.snapshotActorState(
-                                cell.codeActorType,
-                                cell.codeActorState,
-                                activeContext),
-                        "active source actor snapshot");
-                byte[] wire = ActorCheckpointEnvelopeV1.encode(
-                        new ActorCheckpointEnvelopeV1.Snapshot(header, payload));
-                byte[] verified = ActorCheckpointEnvelopeV1.decode(wire, header).stateBytes();
+            // Compiler-owned serialization may allocate/hash but must not run
+            // guest callbacks, suspend, perform I/O or mutate old state. It
+            // intentionally runs OUTSIDE lifecycleLock so actor CONTROL and
+            // cancellation cannot be stalled by codec work.
+            byte[] payload = Objects.requireNonNull(
+                    current.snapshotActorState(
+                            actorType,
+                            currentState,
+                            activeContext),
+                    "active source actor snapshot");
+            byte[] wire = ActorCheckpointEnvelopeV1.encode(
+                    new ActorCheckpointEnvelopeV1.Snapshot(header, payload));
+            byte[] verified =
+                    ActorCheckpointEnvelopeV1.decode(wire, header).stateBytes();
 
-                ActorContext<Object> candidateContext =
-                        cell.sourceUpgradeContext(candidateImage);
-                ActorOwnedGuestState restored = Objects.requireNonNull(
-                        proposed.restoreActorState(
-                                cell.codeActorType,
-                                verified,
-                                candidateContext),
-                        "candidate source actor restore returned null state");
-                if (!restored.ownerActorId().equals(ref.id()))
+            ActorOwnedGuestState restored = Objects.requireNonNull(
+                    proposed.restoreActorState(
+                            actorType,
+                            verified,
+                            candidateContext),
+                    "candidate source actor restore returned null state");
+            if (!restored.ownerActorId().equals(ref.id()))
+                throw new SecurityException(
+                        "restored source actor state changed logical actor ownership");
+            byte[] candidateSnapshot = Objects.requireNonNull(
+                    proposed.snapshotActorState(
+                            actorType,
+                            restored,
+                            candidateContext),
+                    "candidate source actor re-snapshot");
+            if (!java.util.Arrays.equals(verified, candidateSnapshot))
+                throw new SecurityException(
+                        "same-schema source actor restore changed persistent state bytes");
+
+            // Final compare-and-commit. Freeze still seals user ingress. A
+            // lifecycle CONTROL operation, new continuation, or any unexpected
+            // mutation that happened while serialization ran makes the
+            // transaction fail closed rather than publishing a stale snapshot.
+            synchronized (cell.lifecycleLock) {
+                if (closed.get() || cell.stopped.get() || cell.finalized
+                        || cell.endRequested || cell.forceKillFenced)
+                    throw terminated(ref);
+                if (!freeze.schedulerDrained()) return false;
+                if (cell.codeExecutor != current
+                        || cell.codeImage != currentImage
+                        || cell.codeActorState != currentState
+                        || cell.sourceCodeEpoch != originEpoch)
+                    throw new IllegalStateException(
+                            "source actor changed while hot-upgrade candidate was staged");
+                if (proposed.codeImage() != candidateImage
+                        || proposed.actorUpgradeDomain()
+                            != current.actorUpgradeDomain())
                     throw new SecurityException(
-                            "restored source actor state changed logical actor ownership");
+                            "candidate source actor provenance changed while staged");
 
-                byte[] candidateSnapshot = Objects.requireNonNull(
-                        proposed.snapshotActorState(
-                                cell.codeActorType,
-                                restored,
-                                candidateContext),
-                        "candidate source actor re-snapshot");
-                if (!java.util.Arrays.equals(verified, candidateSnapshot))
-                    throw new SecurityException(
-                            "same-schema source actor restore changed persistent state bytes");
-
-                // Single lifecycle-monitor commit: dispatch observes either the
-                // complete old triple or the complete candidate triple.
                 cell.codeImage = candidateImage;
                 cell.codeExecutor = proposed;
                 cell.codeActorState = restored;
-                cell.sourceCodeEpoch++;
+                cell.sourceCodeEpoch = Math.addExact(originEpoch, 1L);
                 return true;
             }
         }
