@@ -95,6 +95,45 @@ final class OresCarrierPermitPoolTest {
                 "reconciliation must be idempotent");
     }
 
+    @Test void reconciledAbandonedThreadCannotExecuteIfStartedLater() throws Exception {
+        var permits = new OresCarrierPermitPool(5);
+        OresCarrierPermitPool.ReconciliableThreadFactory factory =
+                permits.threadFactory(
+                        OresCarrierPermitPool.Domain.PRIVATE, "permit-late-start-");
+        var ran = new CountDownLatch(1);
+
+        Thread abandoned = factory.newThread(ran::countDown);
+        assertNotNull(abandoned);
+        assertEquals(1, permits.totalHeld());
+
+        factory.reconcileCreatedThreads();
+        assertEquals(0, permits.totalHeld());
+
+        abandoned.start();
+        abandoned.join(3_000L);
+        assertFalse(abandoned.isAlive());
+        assertEquals(1L, ran.getCount(),
+                "a worker whose permit was reconciled away must never execute runtime work");
+        assertEquals(0, permits.totalHeld());
+        assertTrue(factory.awaitPhysicalTermination(1, TimeUnit.SECONDS));
+    }
+
+    @Test void decoratorFailureReturnsReservedPermitImmediately() {
+        var permits = new OresCarrierPermitPool(5);
+        OresCarrierPermitPool.ReconciliableThreadFactory factory =
+                permits.threadFactory(
+                        OresCarrierPermitPool.Domain.LIFECYCLE,
+                        "permit-decorator-failure-",
+                        ignored -> {
+                            throw new IllegalStateException("synthetic decorator failure");
+                        });
+
+        assertThrows(IllegalStateException.class, () -> factory.newThread(() -> { }));
+        assertEquals(0, permits.totalHeld(),
+                "failed worker decoration must not retain a physical carrier permit");
+        assertEquals(0, permits.held(OresCarrierPermitPool.Domain.LIFECYCLE));
+    }
+
     @Test void adaptiveExecutorHoldsPermitForPhysicalWorkerLifetime() throws Exception {
         var permits = new OresCarrierPermitPool(5);
         var entered = new CountDownLatch(1);
