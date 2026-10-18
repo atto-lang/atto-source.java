@@ -7515,13 +7515,15 @@ public final class ActorRuntime implements AutoCloseable {
                 // but defers pthread creation until first runnable work. Once a
                 // native pool starts it still creates its bounded capacity
                 // together; per-carrier adaptive native growth remains future work.
+                // Native pools still create their fixed pthread set as one
+                // bootstrap transaction. Do not attach the shared physical
+                // permit coordinator until liboresthread exposes an exit/reaper
+                // acknowledgement for partial-start rollback (#1303).
                 return new NativeCarrierExecutor(
                         parallelism,
                         parallelism,
                         readyQueueCapacity,
-                        threadPrefix,
-                        carrierPermitPool,
-                        permitDomain);
+                        threadPrefix);
             } catch (UnsatisfiedLinkError | SecurityException unavailable) {
                 if (requested.equals("native")) {
                     throw new IllegalStateException(
