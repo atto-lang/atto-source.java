@@ -135,15 +135,22 @@ public final class IncrementalCompiler {
             Ast.Program checked;
             LinkedClasses linked = linkedPublicClasses(
                     id, parsed.get(id), parsed, normalizedImportResolutions);
-            if (linked.classes().isEmpty()) {
+            Map<String, Ast.InterfaceDecl> linkedContracts =
+                    linkedImportedContracts(
+                            id, parsed.get(id), parsed, normalizedImportResolutions);
+            if (linked.classes().isEmpty() && linkedContracts.isEmpty()) {
                 checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
             } else {
                 try {
-                    // Foreign layouts are used for type and ownership proofs;
-                    // their declarations are never executed in the importer.
-                    checked = TypeChecker.checkTypesWithImportedClasses(
-                            Parser.parse(normalized.get(id)), linked.classes(), linked.aliases());
-                    OwnershipChecker.checkWithImportedClasses(checked, linked.classes());
+                    // Foreign declarations are type-only proofs. They are not
+                    // inserted into the executable importer AST.
+                    checked = TypeChecker.checkTypesWithLinkedImports(
+                            Parser.parse(normalized.get(id)),
+                            linked.classes(),
+                            linked.aliases(),
+                            linkedContracts);
+                    OwnershipChecker.checkWithImportedClasses(
+                            checked, linked.classes());
                 } catch (IllegalArgumentException invalid) {
                     throw new IllegalArgumentException(
                             "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
@@ -231,6 +238,7 @@ public final class IncrementalCompiler {
 
     public synchronized void clear() {
         cache.clear();
+        cachedImportResolutionDigests.clear();
     }
 
     private static String abiDigest(Ast.Program program) {
