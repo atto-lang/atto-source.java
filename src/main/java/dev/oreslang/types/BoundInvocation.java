@@ -199,6 +199,10 @@ public final class BoundInvocation {
         } else {
             throw new IllegalArgumentException("unproved indirect or foreign callee");
         }
+        // For app.target(...), the name "app" must resolve to the actual
+        // module namespace, not a same-spelled callable or value declaration.
+        // This preview has no checked namespace resolution to disambiguate it.
+        boolean moduleQualified = call.callee() instanceof Ast.MemberExpr;
         List<Ast.FunctionDecl> candidates = new ArrayList<>();
         List<Integer> ordinals = new ArrayList<>();
         List<List<Ast.Param>> signatures = new ArrayList<>();
@@ -217,9 +221,15 @@ public final class BoundInvocation {
             } else if (declaration instanceof Ast.TypeAliasDecl alias) {
                 competingName = alias.name();
             }
-            if (name.equals(competingName)) {
+            if (name.equals(competingName)
+                    || (moduleQualified && module.name().equals(competingName))) {
                 throw new IllegalArgumentException(
-                        "module callable name collides with an unproved declaration");
+                        "module callable or qualifier name collides with an unproved declaration");
+            }
+            if (declaration instanceof Ast.FunctionDecl f
+                    && moduleQualified && f.name().equals(module.name())) {
+                throw new IllegalArgumentException(
+                        "module qualifier collides with an unproved callable value");
             }
             if (declaration instanceof Ast.FunctionDecl f
                     && f.name().equals(name)) {
