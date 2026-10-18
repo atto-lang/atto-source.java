@@ -139,15 +139,33 @@ public final class TypeChecker {
      * rather than fabricating an integer or disabling type checking.
      */
     public static Ast.Program checkTypesWithImportedClasses(
-            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Ast.Program program,
+            Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
-        if (linkedClasses == null || linkedAliases == null) {
-            throw new IllegalArgumentException("linked public classes/aliases cannot be null");
+        return checkTypesWithLinkedImports(
+                program, linkedClasses, linkedAliases, Map.of());
+    }
+
+    /**
+     * Linker-authenticated type-only declarations. Foreign declarations are
+     * deliberately not inserted into the local AST, so checking them cannot
+     * accidentally make their bodies executable or re-export them.
+     */
+    public static Ast.Program checkTypesWithLinkedImports(
+            Ast.Program program,
+            Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedInterfaces) {
+        if (linkedClasses == null || linkedAliases == null || linkedInterfaces == null) {
+            throw new IllegalArgumentException(
+                    "linked public class/interface metadata cannot be null");
         }
         program = AnnotationExpander.expand(program);
+        ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
+
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
@@ -157,7 +175,7 @@ public final class TypeChecker {
             }
             boolean imported = program.imports().stream().anyMatch(use ->
                     use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
-                            && use.names().contains(name));
+                            && ImportRules.exposedBindings(use).contains(name));
             if (!imported || checker.classes.containsKey(name)
                     || checker.ambiguousClasses.contains(name)) {
                 throw new IllegalArgumentException(
@@ -169,15 +187,40 @@ public final class TypeChecker {
             for (Map.Entry<String, Ast.TypeAliasDecl> alias : aliases.entrySet()) {
                 if (alias.getKey() == null || alias.getValue() == null
                         || !alias.getKey().equals(alias.getValue().name())) {
-                    throw new IllegalArgumentException("invalid private linked field type alias");
+                    throw new IllegalArgumentException(
+                            "invalid private linked field type alias");
                 }
             }
             checker.linkedClassAliases.put(declaration, Map.copyOf(aliases));
             checker.hiddenLinkedAliasNames.addAll(aliases.keySet());
         }
         if (!linkedClasses.keySet().containsAll(linkedAliases.keySet())) {
-            throw new IllegalArgumentException("orphaned linked class field alias metadata");
+            throw new IllegalArgumentException(
+                    "orphaned linked class field alias metadata");
         }
+
+        for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedInterfaces.entrySet()) {
+            String localName = entry.getKey();
+            Ast.InterfaceDecl declaration = entry.getValue();
+            if (localName == null || localName.isBlank() || declaration == null
+                    || declaration.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "invalid linked public interface/contract: " + localName);
+            }
+            boolean imported = program.imports().stream().anyMatch(use ->
+                    use.kind() == Ast.ImportKind.CONTRACT
+                            && !use.wildcard()
+                            && ImportRules.exposedBindings(use).contains(localName));
+            if (!imported
+                    || checker.interfaces.containsKey(localName)
+                    || checker.ambiguousInterfaces.contains(localName)) {
+                throw new IllegalArgumentException(
+                        "linked public contract was not uniquely imported: " + localName);
+            }
+            checker.interfaces.put(localName, declaration);
+            checker.interfaceOwners.put(declaration, "<linked:" + localName + ">");
+        }
+
         checker.validate(program);
         return program;
     }
