@@ -62,7 +62,7 @@ public final class PostgresQuotaSmoke {
             .acquireLease(address,rebootedOwner).activation();
         ok(rebooted.snapshot().stateVersion()==1 && rebooted.inbox().size()==2 &&
             rebooted.pendingOutbox().size()==1,"outbox limit rolls back state and consumption");
-        ok(store.acknowledge(address,rebooted.epoch(),"o1","receipt-1"),"clear pending outbox");
+        rejects(() -> store.acknowledge(address,rebooted.epoch(),"o1","receipt-1"),"ownerless acknowledgement forbidden");
         ok(store.commitTurn(new DurableActorStore.Turn(address,rebooted.epoch(),1,
             "m2",two,List.of(blocked)))==2,"outbox capacity recovers after receipt");
 
