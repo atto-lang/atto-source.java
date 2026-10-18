@@ -38,9 +38,16 @@ def check_report(path: Path) -> tuple[int, set[str]]:
         if size > MAX_XML_BYTES:
             raise ValueError('Surefire XML exceeds bounded parse limit')
         payload = path.read_bytes()
-        if b'<!DOCTYPE' in payload.upper() or b'<!ENTITY' in payload.upper():
+        # Surefire XML must be UTF-8. A UTF-16/32-encoded DTD contains
+        # NULs and evades an ASCII byte scan while ElementTree expands it.
+        # Decode first, then forbid declarations on the decoded Unicode text.
+        try:
+            decoded = payload.decode('utf-8-sig')
+        except UnicodeDecodeError as exc:
+            raise ValueError('non-UTF-8 Surefire evidence is forbidden') from exc
+        if '<!DOCTYPE' in decoded.upper() or '<!ENTITY' in decoded.upper():
             raise ValueError('DOCTYPE/ENTITY is forbidden in Surefire evidence')
-        root = ET.fromstring(payload)
+        root = ET.fromstring(decoded)
     except (ET.ParseError, OSError) as exc:
         raise ValueError(f'invalid XML: {exc}') from exc
     tag = local(root.tag)

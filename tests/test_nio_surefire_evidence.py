@@ -90,6 +90,31 @@ class SurefireEvidenceTests(unittest.TestCase):
         self.marker.symlink_to(outside)
         self.check()
 
+    def test_utf16_dtd_entity_is_rejected(self):
+        # Previously passed: <!DOCTYPE> in UTF-16 escapes byte-level ASCII
+        # declaration checks, and ElementTree expands the internal entity.
+        suite = SUITES[0]
+        p = self.report(suite)
+        xml = ('<?xml version="1.0" encoding="UTF-16"?>'
+               '<!DOCTYPE testsuite [<!ENTITY injected "synthetic">]>'
+               + self.xml(suite).replace('name="synthetic"',
+                                           'name="&injected;"'))
+        p.write_bytes(xml.encode('utf-16'))
+        self.check()
+
+    def test_utf16_without_dtd_is_rejected(self):
+        suite = SUITES[0]
+        self.report(suite).write_bytes(
+            ('<?xml version="1.0" encoding="UTF-16"?>' + self.xml(suite))
+            .encode('utf-16'))
+        self.check()
+
+    def test_utf8_bom_without_dtd_is_allowed(self):
+        suite = SUITES[0]
+        p = self.report(suite)
+        p.write_bytes(b'\xef\xbb\xbf' + p.read_bytes())
+        self.check(0)
+
     def test_dtd_is_rejected(self):
         p = self.report(SUITES[0])
         p.write_text('<!DOCTYPE testsuite [<!ENTITY x "x">]>' + p.read_text())

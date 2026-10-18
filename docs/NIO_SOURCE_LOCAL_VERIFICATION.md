@@ -153,6 +153,11 @@ as a tracked source file, so mocked Maven success cannot pass by relying on
 an omitted test helper. The dedicated XML suite rejects suite-name identity
 substitution, contradictory counters, symlinks and entity declarations. XML
 parsing is capped at 32 MiB per report to reduce unbounded-memory exposure.
+The checker accepts only UTF-8 XML (optionally with a UTF-8 BOM) and applies
+DOCTYPE/ENTITY restrictions to decoded text: multi-byte UTF-16/UTF-32
+declarations must not bypass the XML policy. A source-free regression
+reproduced the previous UTF-16 entity-policy bypass; the stricter checker
+rejects it without treating synthetic evidence as JUnit compilation.
 These tests are source-free: no JDK25, JUnit, GraalVM or LLVM qualification.
 
 The regressions cover wrong commit/tree, hidden tracked source changes using
