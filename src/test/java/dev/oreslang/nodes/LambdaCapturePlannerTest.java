@@ -44,6 +44,22 @@ final class LambdaCapturePlannerTest {
         assertEquals(Set.of(), LambdaCapturePlanner.captures(expression(nlex)));
     }
 
+    @Test void shadowingSelfInsideLambdaNeverCapturesOuterReceiver() {
+        Ast.LambdaExpr nested = expression(name("self"));
+        Ast.LambdaExpr outer = statements(
+                new Ast.BindingStmt(Ast.BindingKind.VAL,
+                        Ast.TypeRef.simple("int"), "self", new Ast.LiteralExpr(10)),
+                new Ast.ReturnStmt(nested));
+        assertEquals(Set.of(), LambdaCapturePlanner.captures(outer));
+    }
+
+    @Test void patternArmsDoNotTreatLocallyBoundValuesAsCaptures() {
+        Ast.MatchExpr matched = new Ast.MatchExpr(name("subject"),
+                List.of(new Ast.MatchValueArm(
+                        new Ast.BindingPattern("local"), null, name("local"))));
+        assertEquals(Set.of("subject"), LambdaCapturePlanner.captures(expression(matched)));
+    }
+
     @Test void conditionBindingsCannotStealOuterNames() {
         Ast.IfStmt branch = new Ast.IfStmt(List.of(
                 new Ast.IfBranch(
