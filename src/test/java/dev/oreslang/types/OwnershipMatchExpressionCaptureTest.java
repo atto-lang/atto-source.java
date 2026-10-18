@@ -65,6 +65,31 @@ final class OwnershipMatchExpressionCaptureTest {
     }
 
     @Test
+    void shortCircuitRefinementNameIsNotAnOuterCapture() throws Exception {
+        Ast.Expr condition = new Ast.BinaryExpr("&&",
+                new Ast.TypeTestExpr(new Ast.NameExpr("subject"),
+                        Ast.TypeRef.simple("int"), "shadow"),
+                new Ast.NameExpr("shadow"));
+        Ast.LambdaExpr lambda = new Ast.LambdaExpr(List.of(), condition, null);
+        Set<String> expected = Set.of("subject");
+        assertEquals(expected, capturedByOwnership(lambda, "subject", "shadow", "self"));
+        assertEquals(expected, dev.oreslang.nodes.LambdaCapturePlanner.captures(lambda));
+    }
+
+    @Test
+    void conditionalTrueArmUsesItsRefinementNotOuterAlias() throws Exception {
+        Ast.Expr conditional = new Ast.ConditionalExpr(
+                new Ast.TypeTestExpr(new Ast.NameExpr("subject"),
+                        Ast.TypeRef.simple("int"), "shadow"),
+                new Ast.NameExpr("shadow"), new Ast.NameExpr("fallback"));
+        Ast.LambdaExpr lambda = new Ast.LambdaExpr(List.of(), conditional, null);
+        Set<String> expected = Set.of("subject", "fallback");
+        assertEquals(expected, capturedByOwnership(
+                lambda, "subject", "shadow", "fallback", "self"));
+        assertEquals(expected, dev.oreslang.nodes.LambdaCapturePlanner.captures(lambda));
+    }
+
+    @Test
     void matchArmBorrowedValueCannotEscapeThroughClosure() throws Exception {
         Ast.LambdaExpr lambda = new Ast.LambdaExpr(List.of(),
                 new Ast.MatchExpr(new Ast.NameExpr("subject"),
