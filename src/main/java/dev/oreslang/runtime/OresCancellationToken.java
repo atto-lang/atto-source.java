@@ -23,6 +23,11 @@ public final class OresCancellationToken {
         this.source = Objects.requireNonNull(source, "source");
     }
 
+    /** Internal directed-link registration only; never a guest capability. */
+    OresCancellationSource ownerSource() {
+        return source;
+    }
+
     public boolean isCancellationRequested() {
         return source.isCancellationRequested();
     }
