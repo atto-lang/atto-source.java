@@ -440,3 +440,41 @@ job steps or logs. Protected private-source export for alternate CI remains
 unapproved; do not mirror the repository to another organization without
 the approved allowlist. The runtime, ABI, ownership adaptation, and LLVM
 implementation remain intentionally disabled.
+
+
+## Typed ABI preview milestone (2026-10-18)
+
+Java PR #1335 now contains `OptionalCallAbiPreview.prepareExact`, an
+**untrusted, non-executable** typed call-plan sketch. Given the selected
+formal signature, the original parsed call items, a recomputed/verified
+`OptionalCallShapeBinder.Plan`, and one independently checked *exact*
+resolved value type per supplied expression in lexical order, it records:
+
+- `PASS_REQUIRED`: unchanged required value;
+- `WRAP_SOME`: exact `T` supplied to `T?` becomes one `Some<T>`;
+- `PASS_OPTION`: exact `Option<T>` supplied to `T?` passes unmodified;
+- `INJECT_NONE`: an implicit or explicit omission of `T?` generates typed
+  `Option<T>.None` at the ABI slot (with no evaluated expression).
+
+The immutable preview has one slot per **declared value parameter**, in
+declaration order; source expressions are retained only once in lexical
+order and referenced by dense indexes. The constructor rejects duplicate,
+missing or out-of-order source bindings and duplicate raw call-item origins.
+Explicit `_`/`omit` retains its original call-item index; implicit omission
+uses -1. Already-typed explicit `None` remains a **supplied expression**,
+not an omission.
+
+The preview deliberately rejects unresolved, void, borrowed, inexact or
+unknown argument types, and refuses variadic pack lowering. It does not
+implement aliases, generic substitutions, subtyping, callback/effect/loan
+proofs, native ABI emission, actual `Some`/`None` object construction or
+runtime invocation. Its input `evaluatedTypes` must be validated independently
+by the type checker: the helper cannot trust caller-supplied type assertions.
+No executable code path consumes the preview; neither the Java interpreter
+nor LLVM may bypass existing fail-closed gates because it exists.
+
+A dedicated `OptionalCallAbiPreviewTest` source covers reordered named
+calls, omission origins, required-vs-optional `Option<T>`, exact `Some`
+lifting, immutable results, forged-plan rejection, and unsafe/unproved
+types. **These are committed JUnit tests, not green executed JUnit evidence.**
+Full compiler/type/ownership/runtime integration remains the next gate.
