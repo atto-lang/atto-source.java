@@ -1799,7 +1799,8 @@ public final class OwnershipChecker {
         boolean query = member.member().equals("is_some") || member.member().equals("is_none")
                 || member.member().equals("is_ok") || member.member().equals("is_err");
         boolean extracting = member.member().equals("unwrap") || member.member().equals("unwrap_safe")
-                || member.member().equals("expect") || member.member().equals("unwrap_or");
+                || member.member().equals("expect") || member.member().equals("unwrap_or")
+                || member.member().equals("flatten");
         if (!query && !extracting) return null;
 
         ValueInfo receiver = checkExpr(member.receiver(), scope, false);
@@ -1807,7 +1808,23 @@ public final class OwnershipChecker {
         if (receiverType == null || receiverType.isBorrow()) return null;
         boolean option = receiverType.name().equals("Option") && receiverType.arguments().size() == 1;
         boolean result = receiverType.name().equals("Result") && receiverType.arguments().size() == 2;
+        boolean future = receiverType.name().equals("Future") && receiverType.arguments().size() == 1;
+        if (member.member().equals("flatten") && future) {
+            Ast.TypeRef inner = receiverType.arguments().getFirst();
+            if (!inner.name().equals("Future") || inner.arguments().size() != 1) return null;
+            for (Ast.Expr argument : arguments) checkExpr(argument, scope, true);
+            if (member.receiver() instanceof Ast.NameExpr receiverName) {
+                VarState state = scope.lookup(receiverName.name());
+                if (state != null && state.kind == ValueKind.MOVE_ONLY) {
+                    move(state, receiverName.name());
+                }
+            }
+            return new ValueInfo(inner, kindOfType(inner), null);
+        }
         if (!option && !result) return null;
+        if (member.member().equals("flatten")
+                && (!option || !receiverType.arguments().getFirst().name().equals("Option")
+                        || receiverType.arguments().getFirst().arguments().size() != 1)) return null;
 
         if (query) {
             for (Ast.Expr argument : arguments) checkExpr(argument, scope, true);
