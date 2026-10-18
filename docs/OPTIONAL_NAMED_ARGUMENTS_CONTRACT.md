@@ -529,3 +529,31 @@ layout. The type checker, ownership checker and interpreter continue to reject
 staged optional calls; this stage must never be used as permission to bypass
 those guards. The next gate is compiler-owned resolution and ownership
 verification, then checked Option materialization in each backend.
+
+
+## Constructor receiver erasure admission audit (2026-10-18)
+
+The non-executable Java ABI preview now **rejects a constructor formal
+list containing a parameter named `self`**. The construction-scoped
+receiver is not a user value slot and must have been erased *before*
+forming a source call-shape/ABI plan; a named call item `self: value`
+cannot bind the receiver or satisfy any definite-initialization
+obligation. The preview keeps one ABI slot per effective user
+parameter, never per raw syntactic constructor binder. This extra
+guard supplements (rather than replaces) trusted constructor-owner
+resolution and ownership/definite-initialization checking.
+
+Regression sources cover forged `self` formals, forged named `self:`
+calls, and the valid receiver-erased one-slot constructor plan.
+These are **committed tests, not evidence of successful repository
+JUnit execution**. Do not enable this feature at the interpreter
+or LLVM runtime boundary until the full proof chain and exact-head
+CI passes.
+
+Private source mirror status: `main` policy file
+`.github/private-ci-approved-repositories.txt` still lists no
+approved destination, and security review PR #1326 remains draft
+despite successful *source-free* Actions in a private alternate
+organization. A user-requested mirror is **not** a substitute for
+protected-branch CODEOWNER/security approval. No source bytes were
+transferred by this audit.
