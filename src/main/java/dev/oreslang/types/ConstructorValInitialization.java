@@ -130,6 +130,39 @@ public final class ConstructorValInitialization {
             if (defaultExit != null) normalExits.add(defaultExit);
             return merge(normalExits);
         }
+        if (stmt instanceof Ast.MatchStmt matched) {
+            scan(matched.subject(), state, required, klass);
+            List<State> normalExits = new ArrayList<>();
+            boolean catchAll = false;
+            for (Ast.MatchArm arm : matched.arms()) {
+                scan(arm.guard(), state, required, klass);
+                State exit = block(arm.body(), state.copy(), required, klass);
+                if (exit != null) normalExits.add(exit);
+                if (arm.guard() == null && (arm.pattern() instanceof Ast.WildcardPattern
+                        || arm.pattern() instanceof Ast.BindingPattern)) catchAll = true;
+            }
+            if (!catchAll) normalExits.add(state);
+            return merge(normalExits);
+        }
+        if (stmt instanceof Ast.ForOfStmt loop && loop.asyncIteration()) {
+            throw constructionSuspension(klass, "async iteration");
+        }
+        if (stmt instanceof Ast.ForOfDestructureStmt loop && loop.asyncIteration()) {
+            throw constructionSuspension(klass, "async iteration");
+        }
+        if (stmt instanceof Ast.SelectStmt select && select.mode() == Ast.WaitMode.BLOCKING) {
+            throw constructionSuspension(klass, "blocking select");
+        }
+        if (stmt instanceof Ast.DeferStmt defer) {
+            requireComplete(state, required, klass);
+            if (defer.expression() instanceof Ast.LambdaExpr lambda) {
+                scan(lambda.expressionBody(), state, required, klass, true);
+                scan(lambda.blockBody(), state, required, klass, true);
+            } else {
+                scan(defer.expression(), state, required, klass, true);
+            }
+            return state;
+        }
 
         // Until the frontend has a sound CFG for loop backedges, exceptional
         // completion, deferred cleanup and detached arms, initialize before
