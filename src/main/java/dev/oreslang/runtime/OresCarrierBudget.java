@@ -10,8 +10,13 @@ package dev.oreslang.runtime;
  * not yet a work-conserving shared worker pool: unused permits cannot be
  * borrowed between domains without proving affinity/UNTRUSTED isolation.
  *
- * <p>Reactor threads and explicit user-owned OresScheduler(N) threads are
- * separate resources, not hidden actor/CONTROL carriers.
+ * <p>Reactor threads, the bounded lazy lifecycle-observer host domain, and
+ * explicit user-owned OresScheduler(N) threads are separate resources, not
+ * hidden actor/CONTROL execution carriers. In particular, this v1 budget does
+ * NOT claim to cap lifecycle-observer workers; ActorRuntime exposes their live
+ * carrier and backlog counts separately. A future work-conserving VM-wide
+ * topology should fold every runtime-owned host worker into one physical
+ * budget rather than silently widening this property.
  */
 record OresCarrierBudget(
         int maximum,
