@@ -38,4 +38,35 @@ if ! git diff --quiet HEAD -- "${status_path}" \
   exit 67
 fi
 
+# A Git index can mark files assume-unchanged or skip-worktree, making
+# git diff --quiet appear clean even when bytes read by Maven have changed.
+# Independently check raw bytes against the attested Git blobs. Reject
+# symlinks/gitlinks and unmerged stages instead of following external content.
+# NUL-delimited index records preserve filenames containing whitespace/newlines.
+while IFS= read -r -d '' entry; do
+  metadata="${entry%%
+\t'*}"
+  path="${entry#*
+\t'}"
+  read -r mode blob stage <<< "$metadata"
+  if [[ "$stage" != 0 || ( "$mode" != 100644 && "$mode" != 100755 ) ]]; then
+    echo "SOURCE_TREE_UNSAFE_ENTRY; only stage-0 regular files are allowed" >&2
+    exit 68
+  fi
+  if [[ ! -f "$path" || -L "$path" ]]; then
+    echo "SOURCE_WORKTREE_DIRTY; missing or non-regular tracked file" >&2
+    exit 67
+  fi
+  if [[ "$mode" == 100755 && ! -x "$path" ]] \
+      || [[ "$mode" == 100644 && -x "$path" ]]; then
+    echo "SOURCE_WORKTREE_DIRTY; tracked file mode differs from attested tree" >&2
+    exit 67
+  fi
+  observed_blob="$(git hash-object --no-filters -- "$path")"
+  if [[ "$observed_blob" != "$blob" ]]; then
+    echo "SOURCE_WORKTREE_DIRTY; tracked bytes differ from attested Git blob" >&2
+    exit 67
+  fi
+done < <(git ls-files --stage -z -- "$status_path")
+
 echo "SOURCE_TREE_VERIFIED expected=${expected} actual=${actual} source_root=${source_root}"
