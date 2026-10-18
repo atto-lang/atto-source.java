@@ -2,6 +2,10 @@
 
 Status: **proposed contract / implementation not yet enabled**. This is an audit artifact, not a claim that the compiler accepts named value arguments.
 
+See [OPTIONAL_NAMED_ARGUMENTS_CONTRACT.md](OPTIONAL_NAMED_ARGUMENTS_CONTRACT.md)
+for proposed non-trailing `T? parameter` slots and constructor omissions.
+The shape binder is a pre-integration utility; guest syntax remains gated.
+
 ## Canonical delimiters and surfaces
 
 Oreslang deliberately uses two different argument channels:
