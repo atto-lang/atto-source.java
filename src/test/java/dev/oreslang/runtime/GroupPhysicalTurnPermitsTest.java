@@ -66,12 +66,13 @@ final class GroupPhysicalTurnPermitsTest {
         assertEquals(2, gate.trySnapshot().active());
         var next = gate.tryRelease(two).successor();
         assertEquals(actor(3), next.actor());
-        assertEquals(GroupPhysicalTurnPermits.Admission.QUEUED,
+        assertEquals(GroupPhysicalTurnPermits.Admission.INCARNATION_BUSY,
+                gate.tryRequest(new GroupPhysicalTurnPermits.Actor(1, 2)).status(),
+                "successor incarnation cannot overlap the predecessor physical turn");
+        assertNull(gate.tryRelease(one).successor());
+        assertEquals(GroupPhysicalTurnPermits.Admission.GRANTED,
                 gate.tryRequest(new GroupPhysicalTurnPermits.Actor(1, 2)).status());
-        var newer = gate.tryRelease(one).successor();
-        assertEquals(new GroupPhysicalTurnPermits.Actor(1, 2), newer.actor());
         assertNull(gate.tryRelease(next).successor());
-        assertNull(gate.tryRelease(newer).successor());
     }
 
     @Test
@@ -83,4 +84,28 @@ final class GroupPhysicalTurnPermitsTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new GroupPhysicalTurnPermits.Grant(actor(1), 0));
     }
+    @Test
+    void queuedPredecessorMustCancelBeforeSuccessorIncarnationCanEnter() {
+        var gate = new GroupPhysicalTurnPermits(1, 2);
+        var holder = gate.tryRequest(actor(10)).grant();
+        var queued = new GroupPhysicalTurnPermits.Actor(20, 1);
+        var restarted = new GroupPhysicalTurnPermits.Actor(20, 2);
+        assertEquals(GroupPhysicalTurnPermits.Admission.QUEUED,
+                gate.tryRequest(queued).status());
+        assertEquals(GroupPhysicalTurnPermits.Admission.INCARNATION_BUSY,
+                gate.tryRequest(restarted).status());
+        assertEquals(GroupPhysicalTurnPermits.Cancellation.CANCELLED,
+                gate.tryCancelQueued(queued));
+        assertEquals(GroupPhysicalTurnPermits.Admission.QUEUED,
+                gate.tryRequest(restarted).status());
+        var transfer = gate.tryRelease(holder);
+        assertTrue(transfer.released());
+        assertEquals(restarted, transfer.successor().actor());
+        assertEquals(GroupPhysicalTurnPermits.Admission.INCARNATION_BUSY,
+                gate.tryRequest(queued).status());
+        assertNull(gate.tryRelease(transfer.successor()).successor());
+        assertEquals(GroupPhysicalTurnPermits.Admission.GRANTED,
+                gate.tryRequest(queued).status());
+    }
+
 }
