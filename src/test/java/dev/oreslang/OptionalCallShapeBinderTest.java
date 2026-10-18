@@ -124,7 +124,7 @@ final class OptionalCallShapeBinderTest {
                         List.of(Parameter.required("a")),
                         List.of(Parameter.required("a"), Parameter.optional("b"))),
                         List.of(Argument.positional())));
-        assertTrue(error.getMessage().contains("ambiguous optional/named"));
+        assertTrue(error.getMessage().contains("overlapping optional supplied-arity intervals"));
     }
 
     @Test
@@ -156,7 +156,25 @@ final class OptionalCallShapeBinderTest {
                         List.of(Parameter.required("a"), Parameter.optional("b")),
                         List.of(Parameter.required("a"), Parameter.optional("c"))),
                         List.of(Argument.named("a"))));
-        assertTrue(error.getMessage().contains("ambiguous optional/named"));
+        assertTrue(error.getMessage().contains("overlapping optional supplied-arity intervals"));
+    }
+
+    @Test
+    void conservativeArityOverlapCheckRejectsEvenDisjointNames() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.requireNonOverlappingOptionalArityIntervals(
+                        List.of(
+                                List.of(Parameter.required("left"), Parameter.optional("x")),
+                                List.of(Parameter.required("right")))));
+        assertTrue(error.getMessage().contains("overlapping optional supplied-arity intervals"));
+    }
+
+    @Test
+    void whollyNonOptionalDifferentArityOverloadsStayAvailable() {
+        assertDoesNotThrow(() -> OptionalCallShapeBinder.requireNonOverlappingOptionalArityIntervals(
+                List.of(
+                        List.of(Parameter.required("a")),
+                        List.of(Parameter.required("a"), Parameter.required("b")))));
     }
 
     @Test
