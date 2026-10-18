@@ -212,4 +212,33 @@ final class RefinementRulesTest {
                 a.name(), a.target(), a.refinement(),
                 a.name(), a.target(), a.refinement()));
     }
+    @Test void fullDomainExclusionsAbovePrior100kThresholdCannotPassProof() {
+        // Previous cutoff skipped the exhaustive-holes check at width 100,000.
+        // This proves an inclusive 100,001-value interval is still empty
+        // when every member has been excluded, without enumerating the range
+        // in the implementation or overflowing signed interval arithmetic.
+        var holes = java.util.stream.LongStream.rangeClosed(0L, 100_000L)
+                .boxed().collect(java.util.stream.Collectors.toSet());
+        assertEquals(100_001, holes.size());
+        assertThrows(IllegalArgumentException.class, () ->
+                new RefinementRules.Interval("value", 0L, 100_000L, holes));
+
+        var withOneWitness = new java.util.HashSet<>(holes);
+        withOneWitness.remove(50_000L);
+        var nonempty = new RefinementRules.Interval("value", 0L, 100_000L, withOneWitness);
+        assertTrue(nonempty.contains(50_000L));
+        assertFalse(nonempty.contains(0L));
+
+        // Public proof records must not contain out-of-range exclusions.
+        assertThrows(IllegalArgumentException.class, () ->
+                new RefinementRules.Interval("length", 4L, 7L, java.util.Set.of(3L)));
+        // Unsigned-width cases cannot be mistaken for a small interval.
+        assertDoesNotThrow(() -> new RefinementRules.Interval(
+                "value", Long.MIN_VALUE, Long.MAX_VALUE,
+                java.util.Set.of(Long.MIN_VALUE, Long.MAX_VALUE)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new RefinementRules.Interval("length", 4L, 3L, java.util.Set.of()));
+    }
+
+
 }
