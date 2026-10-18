@@ -319,6 +319,28 @@ public final class ConstructorSemanticIr {
         }
     }
 
+    public enum CaptureTransfer {
+        /** Ordinary lexical closure shares the resolved binding cell. */
+        LEXICAL_SLOT_ALIAS,
+        /** Detached read-only Copy capture snapshots the registration-time value. */
+        DETACHED_VALUE_SNAPSHOT,
+        /** Detached mutable or move-only capture transfers ownership to the continuation. */
+        DETACHED_OWNERSHIP_MOVE,
+        /** Canonical actor self is re-entered only through the same actor continuation lane. */
+        ACTOR_SELF_REBORROW;
+
+        public CaptureTransfer merge(CaptureTransfer other) {
+            Objects.requireNonNull(other, "capture transfer");
+            if (this == other) return this;
+            if ((this == DETACHED_VALUE_SNAPSHOT && other == DETACHED_OWNERSHIP_MOVE)
+                    || (this == DETACHED_OWNERSHIP_MOVE && other == DETACHED_VALUE_SNAPSHOT)) {
+                return DETACHED_OWNERSHIP_MOVE;
+            }
+            throw new IllegalArgumentException(
+                    "incompatible capture transfer modes: " + this + " vs " + other);
+        }
+    }
+
     /**
      * One resolved free-variable dependency of a callable/deferred continuation.
      *
@@ -330,6 +352,7 @@ public final class ConstructorSemanticIr {
             String debugName,
             Types.Type type,
             CaptureAccess access,
+            CaptureTransfer transfer,
             Set<CallableCapability> capabilities) {
         public ResolvedCaptureBinding {
             Objects.requireNonNull(bindingId, "capture binding id");
@@ -338,6 +361,7 @@ public final class ConstructorSemanticIr {
             }
             Objects.requireNonNull(type, "capture type");
             Objects.requireNonNull(access, "capture access");
+            Objects.requireNonNull(transfer, "capture transfer");
             capabilities = Set.copyOf(capabilities);
         }
 
@@ -357,6 +381,7 @@ public final class ConstructorSemanticIr {
                     debugName,
                     type,
                     access.merge(other.access),
+                    transfer.merge(other.transfer),
                     mergedCapabilities);
         }
     }
