@@ -124,6 +124,22 @@ final class DynInterfaceViewTest {
     }
 
     @Test
+    void dynCannotBeSmuggledThroughActorOrChannelTypeArguments() {
+        for (String container : new String[] {
+                "ActorRef<dyn Deployable>",
+                "ActorMail<dyn Deployable>",
+                "Channel<List<dyn Deployable>>",
+                "SharedMutex<dyn Deployable>"
+        }) {
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(PRELUDE
+                            + "fnc bad(" + container + " value): void { return; }")),
+                    container);
+            assertTrue(failure.getMessage().contains("transport/ownership ABI"), failure::getMessage);
+        }
+    }
+
+    @Test
     void dynCannotBeConstructedOrSpawned() {
         for (String code : new String[] {
                 "new dyn Deployable()",
