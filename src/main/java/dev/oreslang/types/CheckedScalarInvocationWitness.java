@@ -63,6 +63,20 @@ public final class CheckedScalarInvocationWitness {
         if (!(lexical.bound().selectedDeclaration() instanceof Ast.FunctionDecl selected)) {
             throw new IllegalArgumentException("selected target is not an original module function");
         }
+        // The narrow issuer never claims to validate exotic caller signature
+        // effects or unresolved/captured parameter types. Those belong to the
+        // ordinary recursive semantic and ownership checker.
+        if (caller.returnType() == null || !exactScalarOrVoid(caller.returnType())) {
+            throw new IllegalArgumentException(
+                    "caller return signature requires full semantic type resolution");
+        }
+        for (Ast.Param formal : caller.parameters()) {
+            if (formal.optional() || formal.structural() || formal.mutable()
+                    || !exactScalar(formal.valueType())) {
+                throw new IllegalArgumentException(
+                        "caller parameter signature requires full compiler checking");
+            }
+        }
         if (selected.returnType() == null || !exactScalarOrVoid(selected.returnType())) {
             throw new IllegalArgumentException(
                     "callee return type requires full semantic type resolution");
@@ -99,7 +113,8 @@ public final class CheckedScalarInvocationWitness {
                     throw new IllegalArgumentException("void call cannot initialize a value binding");
                 }
                 Ast.TypeRef declared = binding.declaredType();
-                if (declared != null && !declared.name().equals("$infer$")
+                if (declared != null
+                        && (!declared.equals(Ast.TypeRef.inferred()))
                         && (!exactScalar(declared)
                             || !declared.equals(selected.returnType()))) {
                     throw new IllegalArgumentException(
