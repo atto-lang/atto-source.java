@@ -34,41 +34,88 @@ public final class OptionalCallShapeBinder {
         }
     }
 
-    public record Parameter(String name, boolean optional) {
+    public record Parameter(String name, boolean optional, boolean variadic) {
         public Parameter {
             if (name == null || name.isBlank()) {
                 throw new IllegalArgumentException("parameter name cannot be blank");
             }
+            if (optional && variadic) {
+                throw new IllegalArgumentException("variadic parameter cannot be optional");
+            }
         }
+        public Parameter(String name, boolean optional) { this(name, optional, false); }
         public static Parameter required(String name) { return new Parameter(name, false); }
         public static Parameter optional(String name) { return new Parameter(name, true); }
+        /** A single final rest parameter; omission is an empty collection, NEVER None. */
+        public static Parameter variadic(String name) { return new Parameter(name, false, true); }
     }
 
-    /** Position in the argument-source list for each declared parameter. */
-    public record Plan(List<Integer> sourceIndexByParameter) {
+    /**
+     * Formal-to-source index plan. -1 marks an omitted OPTIONAL scalar formal;
+     * the final variadic formal is represented separately by a list of source
+     * indexes and is not omitted even when its list is empty.
+     */
+    public record Plan(List<Integer> sourceIndexByParameter,
+                       int variadicParameterIndex,
+                       List<Integer> variadicSourceIndices) {
+        public Plan(List<Integer> sourceIndexByParameter) {
+            this(sourceIndexByParameter, -1, List.of());
+        }
+
         public Plan {
             sourceIndexByParameter = List.copyOf(sourceIndexByParameter);
-            boolean[] seen = new boolean[sourceIndexByParameter.size()];
-            int supplied = 0;
-            for (int source : sourceIndexByParameter) {
-                if (source == -1) continue;
-                if (source < 0 || source >= seen.length || seen[source]) {
-                    throw new IllegalArgumentException("invalid or duplicate call-plan source index");
-                }
-                seen[source] = true;
-                supplied++;
+            variadicSourceIndices = List.copyOf(variadicSourceIndices);
+            if (variadicParameterIndex != -1
+                    && variadicParameterIndex != sourceIndexByParameter.size() - 1) {
+                throw new IllegalArgumentException("variadic plan slot must be final");
             }
-            for (int source = 0; source < supplied; source++) {
-                if (!seen[source]) {
-                    throw new IllegalArgumentException("noncontiguous call-plan source indexes");
-                }
+            if (variadicParameterIndex == -1 && !variadicSourceIndices.isEmpty()) {
+                throw new IllegalArgumentException("rest sources without variadic parameter");
+            }
+            if (variadicParameterIndex >= 0
+                    && sourceIndexByParameter.get(variadicParameterIndex) != -1) {
+                throw new IllegalArgumentException("rest slot cannot have a scalar source");
+            }
+            int supplied = variadicSourceIndices.size();
+            for (int i = 0; i < sourceIndexByParameter.size(); i++) {
+                int source = sourceIndexByParameter.get(i);
+                if (source < -1) throw new IllegalArgumentException("invalid call-plan source index");
+                if (source >= 0) supplied++;
+            }
+            boolean[] seen = new boolean[supplied];
+            for (int i = 0; i < sourceIndexByParameter.size(); i++) {
+                int source = sourceIndexByParameter.get(i);
+                if (source != -1) markSeen(seen, source);
+            }
+            for (int source : variadicSourceIndices) {
+                markSeen(seen, source);
+            }
+            for (boolean isSeen : seen) {
+                if (!isSeen) throw new IllegalArgumentException("noncontiguous call-plan source indexes");
             }
         }
+
+        private static void markSeen(boolean[] seen, int source) {
+            if (source < 0 || source >= seen.length || seen[source]) {
+                throw new IllegalArgumentException("invalid or duplicate call-plan source index");
+            }
+            seen[source] = true;
+        }
+
         public int declaredArity() { return sourceIndexByParameter.size(); }
+        public int suppliedArgumentCount() {
+            int count = variadicSourceIndices.size();
+            for (int source : sourceIndexByParameter) if (source >= 0) count++;
+            return count;
+        }
         public boolean omitted(int parameterIndex) {
-            return sourceIndexByParameter.get(parameterIndex) == -1;
+            return parameterIndex != variadicParameterIndex
+                    && sourceIndexByParameter.get(parameterIndex) == -1;
         }
         public int sourceIndex(int parameterIndex) {
+            if (parameterIndex == variadicParameterIndex) {
+                throw new IllegalArgumentException("rest parameter has multiple source indexes");
+            }
             return sourceIndexByParameter.get(parameterIndex);
         }
     }
@@ -88,6 +135,9 @@ public final class OptionalCallShapeBinder {
      * A middle optional slot can be omitted through a label, not by positional
      * hole shifting. Following the first named argument, positional arguments
      * are forbidden; spreads must be rejected by the frontend before this call.
+     * A sole final rest parameter collects remaining positional source indexes
+     * in lexical order and uses empty collection (not None) when unsupplied.
+     * Passing rest by label is gated until collection and spread checking exist.
      */
     public static Plan bind(List<Parameter> parameters, List<Argument> arguments) {
         Objects.requireNonNull(parameters, "parameters");
@@ -97,6 +147,9 @@ public final class OptionalCallShapeBinder {
         int[] binding = new int[parameters.size()];
         Arrays.fill(binding, -1);
         int nextPositional = 0;
+        int restSlot = parameters.isEmpty() || !parameters.getLast().variadic()
+                ? -1 : parameters.size() - 1;
+        List<Integer> restSources = new ArrayList<>();
         boolean seenNamed = false;
         for (int sourceIndex = 0; sourceIndex < arguments.size(); sourceIndex++) {
             Argument argument = Objects.requireNonNull(arguments.get(sourceIndex), "argument");
@@ -104,6 +157,10 @@ public final class OptionalCallShapeBinder {
             if (argument.label() == null) {
                 if (seenNamed) {
                     throw new IllegalArgumentException("positional argument after named argument");
+                }
+                if (restSlot >= 0 && nextPositional >= restSlot) {
+                    restSources.add(sourceIndex);
+                    continue;
                 }
                 if (nextPositional >= parameters.size()) {
                     throw new IllegalArgumentException("too many positional arguments");
@@ -116,6 +173,10 @@ public final class OptionalCallShapeBinder {
                     throw new IllegalArgumentException("unknown named argument '" + argument.label() + "'");
                 }
                 slot = namedSlot;
+                if (slot == restSlot) {
+                    throw new IllegalArgumentException(
+                            "named rest argument requires an explicit collection/spread contract");
+                }
             }
             if (binding[slot] != -1) {
                 throw new IllegalArgumentException(
@@ -126,19 +187,22 @@ public final class OptionalCallShapeBinder {
 
         List<Integer> permutation = new ArrayList<>(binding.length);
         for (int i = 0; i < binding.length; i++) {
-            if (binding[i] == -1 && !parameters.get(i).optional()) {
+            if (i != restSlot && binding[i] == -1 && !parameters.get(i).optional()) {
                 throw new IllegalArgumentException(
                         "missing required argument '" + parameters.get(i).name() + "'");
             }
             permutation.add(binding[i]);
         }
-        return new Plan(permutation);
+        return new Plan(permutation, restSlot, restSources);
     }
 
     private static Map<String, Integer> checkedParameters(List<Parameter> parameters) {
         Map<String, Integer> parameterIndex = new HashMap<>();
         for (int i = 0; i < parameters.size(); i++) {
             Parameter parameter = Objects.requireNonNull(parameters.get(i), "parameter");
+            if (parameter.variadic() && i != parameters.size() - 1) {
+                throw new IllegalArgumentException("variadic parameter must be final");
+            }
             if (parameterIndex.putIfAbsent(parameter.name(), i) != null) {
                 throw new IllegalArgumentException("duplicate parameter name '" + parameter.name() + "'");
             }
@@ -149,7 +213,8 @@ public final class OptionalCallShapeBinder {
     /**
      * Conservative v1 admission check for an existing callable overload domain.
      * An optional declaration accepts a supplied-argument COUNT interval
-     * [number of required slots, total slots]. Any interval intersecting
+     * [number of required slots, total slots], or infinity for a rest tail.
+     * Any interval intersecting
      * another declaration's interval is rejected at declaration/link time,
      * even if their label sets appear disjoint. This preserves deterministic
      * arity-only dispatch until cross-backend call-shape proofs exist.
@@ -165,14 +230,16 @@ public final class OptionalCallShapeBinder {
         }
         for (int i = 0; i < signatures.size(); i++) {
             List<Parameter> a = signatures.get(i);
-            long aRequired = a.stream().filter(p -> !p.optional()).count();
+            long aRequired = a.stream().filter(p -> !p.optional() && !p.variadic()).count();
+            long aMaximum = a.isEmpty() || !a.getLast().variadic() ? a.size() : Long.MAX_VALUE;
             for (int j = i + 1; j < signatures.size(); j++) {
                 List<Parameter> b = signatures.get(j);
-                long bRequired = b.stream().filter(p -> !p.optional()).count();
+                long bRequired = b.stream().filter(p -> !p.optional() && !p.variadic()).count();
+                long bMaximum = b.isEmpty() || !b.getLast().variadic() ? b.size() : Long.MAX_VALUE;
                 if (aRequired == a.size() && bRequired == b.size()) {
                     continue; // ordinary exact-arity policy remains separate
                 }
-                if (Math.max(aRequired, bRequired) <= Math.min(a.size(), b.size())) {
+                if (Math.max(aRequired, bRequired) <= Math.min(aMaximum, bMaximum)) {
                     throw new IllegalArgumentException(
                             "overlapping optional supplied-arity intervals for declarations "
                                     + i + " and " + j);
