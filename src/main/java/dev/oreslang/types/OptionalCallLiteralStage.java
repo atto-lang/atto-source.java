@@ -110,6 +110,20 @@ public final class OptionalCallLiteralStage {
         if (candidate == null) {
             throw new IllegalArgumentException("unknown local function candidate");
         }
+        // A literal expression proves one scalar type, not an arbitrary
+        // nominal declaration, generic placeholder, borrowed view or
+        // mutable parameter loan. Restrict this candidate stage to the exact
+        // scalar value types that the AST literal classifier can establish.
+        for (Ast.Param formal : candidate.parameters()) {
+            Ast.TypeRef valueType = formal.valueType();
+            if (formal.structural() || formal.mutable()
+                    || valueType.inferArguments() || !valueType.arguments().isEmpty()
+                    || !List.of("int", "float", "bool", "string")
+                            .contains(valueType.name())) {
+                throw new IllegalArgumentException(
+                        "local literal candidate lacks proven scalar value/ownership type");
+            }
+        }
         LiteralPlan preview = prepareDirectLiteralCall(call, candidate.parameters());
         return new LocalCandidate(candidate, preview);
     }
