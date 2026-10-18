@@ -23,7 +23,7 @@ final class ActorArtifactV1Test {
                 Ast.ActorKind.PRIVATE,
                 Ast.ActorBoundary.IPC,
                 Set.of(IsolatePolicy.Capability.STDOUT));
-        byte[] signature = sign(pair, unsigned);
+        byte[] signature = sign(pair, unsigned, "release-key-2026q4");
         var signed = new ActorArtifactV1.SignedReceipt(
                 unsigned, "release-key-2026q4", signature);
 
@@ -33,7 +33,7 @@ final class ActorArtifactV1Test {
 
         ActorArtifactV1<Object> admitted =
                 ActorArtifactV1.admit(
-                        signed, artifact, pair.getPublic(), supervisor);
+                        signed, artifact, new ActorArtifactV1.TrustedReleaseKey("release-key-2026q4", pair.getPublic()), supervisor);
 
         artifact[0] ^= 0x55;
         assertEquals(
@@ -72,7 +72,7 @@ final class ActorArtifactV1Test {
         SecurityException failure = assertThrows(
                 SecurityException.class,
                 () -> ActorArtifactV1.admit(
-                        signed, tampered, pair.getPublic(), supervisor));
+                        signed, tampered, new ActorArtifactV1.TrustedReleaseKey("release-key-2026q4", pair.getPublic()), supervisor));
         assertTrue(failure.getMessage().contains("SHA-256 mismatch"),
                 failure.getMessage());
     }
@@ -98,7 +98,7 @@ final class ActorArtifactV1Test {
                         new ActorArtifactV1.SignedReceipt(
                                 original, "release", signature),
                         artifact,
-                        attacker.getPublic(),
+                        new ActorArtifactV1.TrustedReleaseKey("release", attacker.getPublic()),
                         supervisor));
 
         byte[] forgedSignature = signature.clone();
@@ -109,7 +109,7 @@ final class ActorArtifactV1Test {
                         new ActorArtifactV1.SignedReceipt(
                                 original, "release", forgedSignature),
                         artifact,
-                        signer.getPublic(),
+                        new ActorArtifactV1.TrustedReleaseKey("release", signer.getPublic()),
                         supervisor));
 
         var altered = new ActorArtifactV1.UnsignedReceipt(
@@ -164,8 +164,8 @@ final class ActorArtifactV1Test {
                 second);
 
         assertArrayEquals(
-                ActorArtifactV1.signingBytes(a),
-                ActorArtifactV1.signingBytes(b));
+                ActorArtifactV1.signingBytes(a, "release"),
+                ActorArtifactV1.signingBytes(b, "release"));
         assertArrayEquals(
                 ActorArtifactV1.capabilityDigest(first),
                 ActorArtifactV1.capabilityDigest(second));
@@ -190,7 +190,7 @@ final class ActorArtifactV1Test {
                 () -> ActorArtifactV1.admit(
                         trustedSigned,
                         artifact,
-                        pair.getPublic(),
+                        new ActorArtifactV1.TrustedReleaseKey("release", pair.getPublic()),
                         IsolatePolicy.developer()));
         assertTrue(noIpc.getMessage().contains("IPC"), noIpc.getMessage());
 
@@ -210,7 +210,7 @@ final class ActorArtifactV1Test {
                 () -> ActorArtifactV1.admit(
                         untrustedSigned,
                         artifact,
-                        pair.getPublic(),
+                        new ActorArtifactV1.TrustedReleaseKey("release", pair.getPublic()),
                         supervisor));
         assertTrue(
                 ambient.getMessage().contains("zero ambient guest capabilities"),
@@ -319,7 +319,7 @@ final class ActorArtifactV1Test {
             throws Exception {
         Signature signer = Signature.getInstance("Ed25519");
         signer.initSign(pair.getPrivate());
-        signer.update(ActorArtifactV1.signingBytes(receipt));
+        signer.update(ActorArtifactV1.signingBytes(receipt, "release"));
         return signer.sign();
     }
 
