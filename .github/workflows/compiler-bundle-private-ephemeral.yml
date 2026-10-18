@@ -92,6 +92,12 @@ jobs:
           python3 -m unittest discover -s scripts/ci -p 'test_compiler_bundle.py' -v
           python3 -m unittest discover -s scripts/ci -p 'test_compiler_ephemeral_policy.py' -v
           python3 -m unittest discover -s scripts/ci -p 'test_compiler_runner_environment.py' -v
+      - name: Install existing GraalVM JDK25 without shared dependency cache
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # pinned setup action
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
       - name: Refuse ambient compiler and Git process overrides
         shell: bash
         run: |
@@ -116,12 +122,6 @@ jobs:
             fi
           done
           echo 'CLEAN_COMPILER_PROCESS_ENVIRONMENT=PASS'
-      - name: Install existing GraalVM JDK25 without shared dependency cache
-        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # pinned setup action
-        with:
-          version: '25.3'
-          java-version: '25'
-          distribution: graalvm
       - name: Build and run full actual Java compiler tests
         shell: bash
         run: |

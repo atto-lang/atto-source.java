@@ -70,61 +70,10 @@ class CompilerRunnerEnvironmentTests(unittest.TestCase):
             '      - name: Checkout approved SHA from original private repository only\n', 1)[0]
         after = source.split(
             '      - name: Refuse ambient compiler and Git process overrides\n', 1)[1].split(
-            '      - name: Install existing GraalVM JDK25\n', 1)[0]
-        marker = 'for key in "' + '    def execute(self, *, overrides=None, config=None):
-        with tempfile.TemporaryDirectory(prefix='oreslang-runner-policy-') as temp:
-            root = Path(temp)
-            (root / '.mvn').mkdir()
-            if config:
-                target = root / config
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text('unreviewed override', encoding='utf-8')
-            env = {'PATH': os.defpath, 'HOME': temp, 'LC_ALL': 'C'}
-            env.update(overrides or {})
-            return subprocess.run(['bash', '--noprofile', '--norc', '-e', '-o',
-                                   'pipefail', '-c', policy_script()], cwd=root,
-                                  env=env, capture_output=True, text=True, timeout=10)
-
-    def test_bootstrap_gate_runs_before_checkout(self):
-        workflow = WORKFLOW.read_text(encoding='utf-8')
-        start = workflow.index('      - name: Reject ambient launch overrides before checkout')
-        checkout = workflow.index('      - name: Checkout approved SHA from original private repository only')
-        check_source = workflow.index('      - name: Verify exact SHA and tree')
-        self.assertLess(start, checkout)
-        self.assertLess(checkout, check_source)
-        bootstrap = workflow[start:checkout]
-        for key in FORBIDDEN:
-            self.assertIn(key, bootstrap)
-        self.assertIn('exit 1', bootstrap)
-
-    def test_clean_is_accepted(self):
-        result = self.execute()
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_every_ambient_override_is_denied(self):
-        for key in FORBIDDEN:
-            with self.subTest(key=key):
-                result = self.execute(overrides={key: 'unreviewed-value'})
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(key, result.stderr)
-
-    def test_repository_maven_overrides_are_denied(self):
-        for config in CONFIG_FILES:
-            with self.subTest(config=config):
-                result = self.execute(config=config)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(config, result.stderr)
-
-    def test_empty_environment_value_is_allowed(self):
-        self.assertEqual(self.execute(overrides={'MAVEN_OPTS': ''}).returncode, 0)
-
-
-if __name__ == '__main__':
-    unittest.main()
- + '{!GIT_@}"; do'
+            '      - name: Build and run full actual Java compiler tests\n', 1)[0]
+        marker = 'for key in "${!GIT_@}"; do'
         self.assertIn(marker, before)
         self.assertIn(marker, after)
-
 
     def execute(self, *, overrides=None, config=None):
         with tempfile.TemporaryDirectory(prefix='oreslang-runner-policy-') as temp:
@@ -139,6 +88,14 @@ if __name__ == '__main__':
             return subprocess.run(['bash', '--noprofile', '--norc', '-e', '-o',
                                    'pipefail', '-c', policy_script()], cwd=root,
                                   env=env, capture_output=True, text=True, timeout=10)
+
+    def test_second_environment_check_runs_after_setup_before_maven(self):
+        workflow = WORKFLOW.read_text(encoding='utf-8')
+        setup = workflow.index('      - name: Install existing GraalVM JDK25')
+        guard = workflow.index('      - name: Refuse ambient compiler and Git process overrides')
+        build = workflow.index('      - name: Build and run full actual Java compiler tests')
+        self.assertLess(setup, guard)
+        self.assertLess(guard, build)
 
     def test_bootstrap_gate_runs_before_checkout(self):
         workflow = WORKFLOW.read_text(encoding='utf-8')
