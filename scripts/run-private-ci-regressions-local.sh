@@ -29,6 +29,9 @@ for file in "${files[@]}"; do
 done
 unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_API_TOKEN
 unset GIT_ASKPASS SSH_ASKPASS SSH_AUTH_SOCK
+# Python -I ignores interpreter environment and user site imports; also
+# scrub startup/PYTHONPATH hooks inherited from an untrusted job environment.
+unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONINSPECT PYTHONUSERBASE
 export GH_PROMPT_DISABLED=1 GIT_TERMINAL_PROMPT=0
 config_sandbox="$(mktemp -d)"
 manifest_before="$(mktemp)"
@@ -36,7 +39,7 @@ manifest_after="$(mktemp)"
 trap 'rm -rf "$config_sandbox"; rm -f "$manifest_before" "$manifest_after"' EXIT
 export GH_CONFIG_DIR="$config_sandbox" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 fingerprint() {
-  "$python_bin" - "$script_dir" "${files[@]}" <<'PY'
+  "$python_bin" -I -B - "$script_dir" "${files[@]}" <<'PY'
 import hashlib, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 for name in sys.argv[2:]:
@@ -48,7 +51,7 @@ PY
 }
 fingerprint > "$manifest_before"
 echo 'PRIVATE_CI_TEST_SCOPE=OFFLINE_NO_PUBLISH'
-"$python_bin" - "$script_dir" <<'PY'
+"$python_bin" -I -B - "$script_dir" <<'PY'
 import pathlib, sys
 root = pathlib.Path(sys.argv[1])
 for name in ('publish-private-ci-source.py', 'test-publish-private-ci-source.py',
@@ -62,11 +65,11 @@ bash -n "$script_dir/check-private-ci-destination.sh" \
     "$script_dir/run-in-private-ci-destination.sh"
 echo 'PRIVATE_CI_BASH_SYNTAX=3'
 bash "$script_dir/test-private-ci-destination.sh"
-"$python_bin" -B "$script_dir/test-private-ci-review-coverage.py"
+"$python_bin" -I -B "$script_dir/test-private-ci-review-coverage.py"
 echo 'PRIVATE_CI_REVIEW_COVERAGE_PASSED=1'
 for ((i=1; i<=repeats; i++)); do
   printf 'PRIVATE_CI_FULL_PYTHON_RUN=%d/%d\n' "$i" "$repeats"
-  "$python_bin" -B "$script_dir/test-publish-private-ci-source.py"
+  "$python_bin" -I -B "$script_dir/test-publish-private-ci-source.py"
 done
 fingerprint > "$manifest_after"
 if ! cmp -s "$manifest_before" "$manifest_after"; then
