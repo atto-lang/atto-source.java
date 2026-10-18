@@ -85,6 +85,13 @@ public final class TaskHandle<T> {
 
     /** Requests cancellation; never claims the guest turn has exited. */
     public boolean cancel(String reason) {
+        // Validate even on an already-terminal handle: a caller must not be
+        // able to bypass the public cancellation contract by racing completion.
+        Objects.requireNonNull(reason, "reason");
+        if (reason.isBlank() || reason.length() > 256) {
+            throw new IllegalArgumentException(
+                    "reason must contain 1..256 nonblank characters");
+        }
         // Cancellation is a request against live work. A terminal result is
         // immutable even when its physical quiescence notification is pending.
         OresFuture<T> current = result.get();
