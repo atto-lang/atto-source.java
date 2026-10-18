@@ -49,6 +49,12 @@ public final class PostgresQuotaSmoke {
         var two = new DurableActorStore.Snapshot(0,1,"code-v1",2,bytes("two"));
         rejects(() -> store.commitTurn(new DurableActorStore.Turn(address,first.epoch(),1,
             "m2",two,List.of(blocked))),"pending outbox must stop at one entry");
+        try (var c=ds.getConnection();
+             var p=c.prepareStatement("UPDATE ores_durable_actor SET lease_until=clock_timestamp()-interval '1 second' "+
+                "WHERE tenant_id=? AND workflow_id=? AND run_id=? AND node_id=?")) {
+            p.setString(1,address.tenantId());p.setString(2,address.workflowId());
+            p.setString(3,address.runId());p.setString(4,address.nodeId());p.executeUpdate();
+        }
         var rebooted = new PostgresDurableActorStore(ds,2,1).activate(address);
         ok(rebooted.snapshot().stateVersion()==1 && rebooted.inbox().size()==2 &&
             rebooted.pendingOutbox().size()==1,"outbox limit rolls back state and consumption");
