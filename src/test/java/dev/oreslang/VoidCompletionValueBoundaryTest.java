@@ -118,6 +118,21 @@ final class VoidCompletionValueBoundaryTest {
                           return;
                         }
                         """));
-        assertTrue(error.getMessage() != null && !error.getMessage().isBlank());
+        assertTrue(error.getMessage().contains("static select expressions are not lowered yet"), error::getMessage);
+    }
+
+    @Test
+    void awaitDoSelectIsRejectedAsStatementOnlyForm() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        fnc invalid(Channel<int> inbox): void {
+                          await do select first {
+                            when readch inbox: int value -> { return; }
+                          };
+                          return;
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("'await do select' is invalid"), error::getMessage);
     }
 }
