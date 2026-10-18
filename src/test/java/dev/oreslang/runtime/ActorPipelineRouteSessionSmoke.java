@@ -34,6 +34,45 @@ public final class ActorPipelineRouteSessionSmoke {
         check(ActorPipelineRouteSession.ReturnPath.class.getConstructors().length == 0,
                 "host caller could construct a forged reply path");
         var plan = graph();
+        // ActorGroup membership may restrict an existing DAG, never
+        // introduce a new edge or change its deterministic receipt order.
+        // This standalone selector test has no ActorRuntime dependency.
+        var selectedLedger = new ActorPipelineRouteSession(plan, 72, 6);
+        var groupRoot = selectedLedger.ingress("source");
+        var ordered = plan.forwardAll("source");
+        var onlySecond = selectedLedger.forwardSelected(
+                groupRoot, List.of(ordered.get(1)));
+        check(onlySecond.size() == 1
+                        && onlySecond.getFirst().receiver().equals("worker-b"),
+                "selective ActorGroup fanout chose incorrect connected worker");
+        selectedLedger.complete(onlySecond.getFirst());
+        reject(() -> selectedLedger.forwardSelected(
+                        groupRoot, List.of(ordered.get(0), ordered.get(0))),
+                "selective fanout admitted duplicate route edges");
+        try {
+            selectedLedger.forwardSelected(
+                    groupRoot, List.of(ordered.get(1), ordered.get(0)));
+            throw new AssertionError("selective fanout reordered immutable DAG edges");
+        } catch (SecurityException expected) { }
+        reject(() -> selectedLedger.forwardSelected(groupRoot, List.of()),
+                "empty ActorGroup selection silently discarded DATA");
+        reject(() -> selectedLedger.forwardRoundRobinEligible(
+                        groupRoot, java.util.Set.of()),
+                "round-robin without group members silently discarded DATA");
+        var firstEligible = selectedLedger.forwardRoundRobinEligible(
+                groupRoot, java.util.Set.of("worker-b"));
+        check(firstEligible.receiver().equals("worker-b"),
+                "round-robin did not skip nonmember graph worker-a");
+        selectedLedger.complete(firstEligible);
+        var nextEligible = selectedLedger.forwardRoundRobinEligible(
+                groupRoot, java.util.Set.of("worker-a", "worker-b"));
+        check(nextEligible.receiver().equals("worker-a"),
+                "round-robin cursor changed incorrectly after membership expansion");
+        selectedLedger.complete(nextEligible);
+        selectedLedger.complete(groupRoot);
+        check(selectedLedger.outstanding() == 0,
+                "selective fanout or round-robin retained phantom frames");
+
         var ledger = new ActorPipelineRouteSession(plan, 7, 8);
         reject(() -> ledger.ingress("worker-a"), "internal worker must not originate flow");
         reject(() -> ledger.ingress("worker-b"), "second internal worker must not originate flow");
@@ -259,6 +298,6 @@ public final class ActorPipelineRouteSessionSmoke {
         check(errors.get() == 0 && parallel.outstanding() == 1,
                 "concurrent branches raced or leaked");
         parallel.complete(r);
-        System.out.println("ORES_ACTOR_REPLY_CORRELATION_OK cases=19 concurrent_branches=2000");
+        System.out.println("ORES_ACTOR_REPLY_CORRELATION_OK cases=20 concurrent_branches=2000");
     }
 }
