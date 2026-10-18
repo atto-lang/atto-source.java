@@ -382,6 +382,55 @@ final class SameModuleLiteralInvocationTest {
                 original, source, staged));
     }
 
+    @Test
+    void qualifiedModuleCallRejectsConflictingCallableNamespace() {
+        Ast.Program parsed = Parser.parse("""
+                define module app as
+                    pub fnc target(int a): int { return a; }
+                    pub fnc caller(): void {
+                        const value = app.target(a: 7);
+                        return;
+                    }
+                end
+                """);
+        Ast.FunctionDecl calling = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().get(1);
+        Ast.StagedCallExpr staged = (Ast.StagedCallExpr)
+                ((Ast.BindingStmt) calling.body().getFirst()).initializer();
+        assertDoesNotThrow(() -> SameModuleLiteralInvocation.inspect(
+                parsed, calling, staged));
+
+        Ast.Program competingSource = Parser.parse("""
+                define module unrelated as
+                    pub fnc app(): int { return 4; }
+                end
+                """);
+        Ast.FunctionDecl competing = (Ast.FunctionDecl)
+                competingSource.modules().getFirst().declarations().getFirst();
+        Ast.ModuleDecl source = parsed.modules().getFirst();
+        Ast.ModuleDecl withCompetitor = new Ast.ModuleDecl(
+                source.name(), source.annotations(), source.contracts(),
+                List.of(source.declarations().getFirst(), calling, competing));
+        Ast.Program ambiguous = new Ast.Program(List.of(withCompetitor));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(ambiguous, calling, staged));
+
+        // A differently named unrelated function does not invalidate the
+        // static qualifier in this deliberately restricted witness.
+        Ast.Program harmlessSource = Parser.parse("""
+                define module unrelated as
+                    pub fnc helper(): int { return 4; }
+                end
+                """);
+        Ast.FunctionDecl harmless = (Ast.FunctionDecl)
+                harmlessSource.modules().getFirst().declarations().getFirst();
+        Ast.Program safe = new Ast.Program(List.of(new Ast.ModuleDecl(
+                source.name(), source.annotations(), source.contracts(),
+                List.of(source.declarations().getFirst(), calling, harmless))));
+        assertDoesNotThrow(() -> SameModuleLiteralInvocation.inspect(
+                safe, calling, staged));
+    }
+
     private static Ast.FunctionDecl withBody(Ast.FunctionDecl source, List<Ast.Stmt> body) {
         return new Ast.FunctionDecl(
                 source.name(), source.kind(), source.visibility(), source.async(),
