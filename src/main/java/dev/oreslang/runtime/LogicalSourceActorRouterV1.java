@@ -26,12 +26,15 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     public record LogicalAddress(
             UUID actorId,
             long incarnation,
+            long routeEpoch,
             ActorRuntime.ActorKind kind) {
         public LogicalAddress {
             Objects.requireNonNull(actorId);
             Objects.requireNonNull(kind);
             if (incarnation <= 0)
                 throw new IllegalArgumentException("logical incarnation must be positive");
+            if (routeEpoch <= 0)
+                throw new IllegalArgumentException("logical route epoch must be positive");
         }
     }
 
@@ -40,7 +43,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             HotReloadManager.Generation.ActorRouteLease generationLease,
             HotReloadManager.ActorGenerationView view,
             ActorRuntime.ActorRef<Object> physical,
-            long incarnation) { }
+            long incarnation,
+            long routeEpoch) { }
 
     public final class LogicalActorRef {
         private LogicalActorRef() { }
@@ -51,7 +55,11 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             synchronized (routeLock) {
                 requireOpenLocked();
                 reapRetiredLocked();
-                return new LogicalAddress(logicalId, active.incarnation, kind);
+                return new LogicalAddress(
+                        logicalId,
+                        active.incarnation,
+                        active.routeEpoch,
+                        kind);
             }
         }
 
@@ -60,6 +68,20 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 requireOpenLocked();
                 reapRetiredLocked();
                 return active.incarnation;
+            }
+        }
+
+        /**
+         * Monotonic physical-route epoch for the current logical incarnation.
+         * A successful transparent hot replacement advances this value without
+         * changing actor incarnation. Crash/restart semantics use incarnation
+         * instead and must never be conflated with a route change.
+         */
+        public long routeEpoch() {
+            synchronized (routeLock) {
+                requireOpenLocked();
+                reapRetiredLocked();
+                return active.routeEpoch;
             }
         }
 
@@ -90,14 +112,22 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             if (timeout.isNegative() || timeout.isZero())
                 throw new IllegalArgumentException("timeout must be positive");
             requireBlockingHostSurface("read logical actor output");
-            final ActorRuntime.ActorOutputStream<Object> stream;
+            final OresFuture<GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>>> pending;
             synchronized (routeLock) {
                 awaitUpgradeLocked();
                 requireOpenLocked();
                 reapRetiredLocked();
-                stream = active.physical.outputs();
+                // Reader registration is part of route lookup linearization.
+                // The transfer gate checks physical pending output readers; if
+                // next() happened after releasing routeLock an upgrade could
+                // observe zero readers, publish, and strand this caller on the
+                // retired physical stream.
+                pending = active.physical.outputs().next();
             }
-            return stream.next().get(
+            // Waiting is deliberately outside routeLock. Completion callbacks
+            // and actor lifecycle work must never execute under the logical
+            // route publication monitor.
+            return pending.get(
                     toNanosSaturated(timeout),
                     TimeUnit.NANOSECONDS);
         }
@@ -163,7 +193,13 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             return new LogicalSourceActorRouterV1(
                     kind,
                     actorTypeName,
-                    new Route(generation, generationLease, view, physical, 1L));
+                    new Route(
+                            generation,
+                            generationLease,
+                            view,
+                            physical,
+                            1L,
+                            1L));
         } finally {
             if (!ready) {
                 if (physical != null) physical.stop();
@@ -229,9 +265,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 if (candidateGeneration == active.generation)
                     throw new IllegalArgumentException(
                             "candidate generation is already the active logical route");
-                if (active.incarnation == Long.MAX_VALUE)
+                if (active.routeEpoch == Long.MAX_VALUE)
                     throw new IllegalStateException(
-                            "logical actor incarnation exhausted");
+                            "logical actor route epoch exhausted");
                 upgrading = true;
                 pauseOwned = true;
                 prior = active;
@@ -263,7 +299,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                         candidateLease,
                         candidate,
                         replacement,
-                        Math.addExact(prior.incarnation, 1L));
+                        prior.incarnation,
+                        Math.addExact(prior.routeEpoch, 1L));
                 candidateLeaseTransferred = true;
                 published = true;
                 // Keep host route admission paused until the old physical
@@ -327,7 +364,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                                     candidateLease,
                                     candidate,
                                     replacement,
-                                    prior == null ? 0L : prior.incarnation));
+                                    prior == null ? 1L : prior.incarnation,
+                                    prior == null ? 1L : prior.routeEpoch));
                         }
                         // The candidate context must stay pinned until its
                         // unpublished physical actor actually finalizes.
