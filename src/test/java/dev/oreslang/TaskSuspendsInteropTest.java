@@ -54,8 +54,7 @@ final class TaskSuspendsInteropTest {
                 () -> OresCompiler.parseAndTypeCheck("""
                         suspends fnc reader(): int { return 7; }
                         suspends fnc outer(): int {
-                            let fn = |int n| -> reader();
-                            return fn(1);
+                            return (|int n| -> reader())(1);
                         }
                         """));
         assertTrue(failure.getMessage().contains("suspends"), failure::getMessage);
