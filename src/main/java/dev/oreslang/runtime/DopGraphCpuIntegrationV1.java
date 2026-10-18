@@ -107,12 +107,14 @@ public final class DopGraphCpuIntegrationV1 {
                         // park the bounded CPU worker indefinitely.
                         if (!schedulerAdmitted.await(30,
                                 java.util.concurrent.TimeUnit.SECONDS)) {
+                            cancelled.set(true);
                             future.failFromRuntime(new java.util.concurrent.RejectedExecutionException(
                                     "trusted CPU executor admission timed out"));
                             return;
                         }
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
+                        cancelled.set(true);
                         future.failFromRuntime(interrupted);
                         return;
                     }
