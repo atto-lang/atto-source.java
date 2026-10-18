@@ -21,6 +21,12 @@ import java.util.UUID;
 public final class ActorIpcProcessV1 implements AutoCloseable {
     public static final int DEFAULT_STARTUP_TIMEOUT_MILLIS = 5_000;
 
+    public static final class ReadTimeoutException extends RuntimeException {
+        private ReadTimeoutException(String message) {
+            super(message);
+        }
+    }
+
     private final ActorIpcSessionV1 session;
     private final NativeActorIpcTransportV1 transport;
     private boolean closed;
@@ -148,7 +154,12 @@ public final class ActorIpcProcessV1 implements AutoCloseable {
             requireOpen();
             frame = session.encodeSupervisorData(messageSequence, payload);
         }
-        transport.writeDataFrame(frame);
+        try {
+            transport.writeDataFrame(frame);
+        } catch (RuntimeException failure) {
+            failClosed();
+            throw failure;
+        }
     }
 
     public void sendControl(
@@ -163,40 +174,74 @@ public final class ActorIpcProcessV1 implements AutoCloseable {
                     messageSequence,
                     payload);
         }
-        transport.writeControlFrame(frame);
+        try {
+            transport.writeControlFrame(frame);
+        } catch (RuntimeException failure) {
+            failClosed();
+            throw failure;
+        }
     }
 
     public ActorIpcSessionV1.Frame receiveData(int timeoutMillis) {
-        byte[] wire = transport.readDataFrame(timeoutMillis);
+        byte[] wire;
+        try {
+            wire = transport.readDataFrame(timeoutMillis);
+        } catch (NativeActorIpcTransportV1.ReadTimeoutException timeout) {
+            throw new ReadTimeoutException(timeout.getMessage());
+        } catch (RuntimeException failure) {
+            failClosed();
+            throw failure;
+        }
         synchronized (this) {
             requireOpen();
-            ActorIpcSessionV1.Frame frame =
-                    session.acceptWorkerFrame(wire);
-            if (frame.lane() != ActorIpcSessionV1.Lane.DATA) {
-                closeOnProtocolMismatch();
-                throw new SecurityException(
-                        "CONTROL frame arrived on physical DATA transport");
+            try {
+                ActorIpcSessionV1.Frame frame =
+                        session.acceptWorkerFrame(wire);
+                if (frame.lane() != ActorIpcSessionV1.Lane.DATA) {
+                    throw new SecurityException(
+                            "CONTROL frame arrived on physical DATA transport");
+                }
+                return frame;
+            } catch (RuntimeException failure) {
+                failClosedLocked();
+                throw failure;
             }
-            return frame;
         }
     }
 
     public ActorIpcSessionV1.Frame receiveControl(int timeoutMillis) {
-        byte[] wire = transport.readControlFrame(timeoutMillis);
+        byte[] wire;
+        try {
+            wire = transport.readControlFrame(timeoutMillis);
+        } catch (NativeActorIpcTransportV1.ReadTimeoutException timeout) {
+            throw new ReadTimeoutException(timeout.getMessage());
+        } catch (RuntimeException failure) {
+            failClosed();
+            throw failure;
+        }
         synchronized (this) {
             requireOpen();
-            ActorIpcSessionV1.Frame frame =
-                    session.acceptWorkerFrame(wire);
-            if (frame.lane() != ActorIpcSessionV1.Lane.CONTROL) {
-                closeOnProtocolMismatch();
-                throw new SecurityException(
-                        "DATA frame arrived on physical CONTROL transport");
+            try {
+                ActorIpcSessionV1.Frame frame =
+                        session.acceptWorkerFrame(wire);
+                if (frame.lane() != ActorIpcSessionV1.Lane.CONTROL) {
+                    throw new SecurityException(
+                            "DATA frame arrived on physical CONTROL transport");
+                }
+                return frame;
+            } catch (RuntimeException failure) {
+                failClosedLocked();
+                throw failure;
             }
-            return frame;
         }
     }
 
-    private void closeOnProtocolMismatch() {
+    private synchronized void failClosed() {
+        if (closed) return;
+        failClosedLocked();
+    }
+
+    private void failClosedLocked() {
         closed = true;
         try {
             session.close();
