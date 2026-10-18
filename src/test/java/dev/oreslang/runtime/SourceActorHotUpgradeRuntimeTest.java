@@ -56,6 +56,9 @@ final class SourceActorHotUpgradeRuntimeTest {
         }
 
         @Override public SharedCodeImageStore.CodeImage codeImage() { return image; }
+        @Override public Object actorUpgradeDomain() {
+            return SourceActorHotUpgradeRuntimeTest.class;
+        }
         @Override public String actorCodeSha256(String actorTypeName) { return code; }
         @Override public String actorStateSchemaSha256(String actorTypeName) { return schema; }
         @Override public String actorMessageAbiSha256(String actorTypeName) { return messageAbi; }
