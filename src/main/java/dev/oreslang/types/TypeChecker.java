@@ -123,6 +123,7 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(program);
         program = AnnotationExpander.expand(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
@@ -144,6 +145,7 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(program);
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
@@ -6931,6 +6933,8 @@ public final class TypeChecker {
     }
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
+        // Also protects lambda parameters, which are not named declarations.
+        OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(List.of(param));
         if (!param.structural()) return resolve(param.type(), generics, self);
         if (param.mutable()) {
             throw new IllegalArgumentException(
