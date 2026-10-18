@@ -203,6 +203,12 @@ end
 
 ## UI contract
 
+The workflow UI consumes immutable actor projections such as. The Java
+reference backend now includes WorkflowRunProjectionV1, which refuses to
+project reducer/store revision skew, exposes effect counts and exact workflow
+revision, and surfaces approval/ambiguous-effect attention states without
+granting mutation authority.
+
 The workflow UI consumes immutable actor projections such as:
 
 ~~~text
@@ -253,6 +259,13 @@ DurableDevLoopV1Test covers:
 - deterministic journal replay and stable regenerated effect keys;
 - cancellation before start;
 - malformed Git object-id rejection.
+
+WorkflowJournalV1Test additionally covers outbox claims, receipts, ambiguous
+lease expiry, explicit reconciliation, policy pinning, atomic append failure,
+effect-origin uniqueness and monotonic-clock enforcement.
+
+WorkflowRunProjectionV1Test covers normal UI projection, ambiguous-effect
+attention, approval attention and fail-closed reducer/store revision skew.
 
 ## Next implementation slices
 
