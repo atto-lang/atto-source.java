@@ -48,7 +48,9 @@ a nominal reference view, not an implicit heap-boxing operation.
 3. The concrete class must explicitly implement the nominal interface;
    structural shape similarity is insufficient.
 4. `new dyn I()` and `spawn dyn I()` are rejected. No constructor,
-   allocator, or actor capability is manufactured by erasure.
+   allocator, or actor capability is manufactured by erasure. Erased
+   interface views inside ActorRef, ActorMail, ActorOutput, Channel and
+   SharedMutex type arguments are rejected until safe transport exists.
 5. Existing class/interface method name-and-arity dispatch is preserved.
    The `dyn` marker does not change overload identity or permit
    first-class bound methods.
