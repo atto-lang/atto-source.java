@@ -66,6 +66,7 @@ final class WorkflowActivityProtocolV1Test {
                 "effect/push"));
         var outcome = new WorkflowActivityProtocolV1.Succeeded(
                 "effect/other",
+                claim.claimToken(),
                 "receipt://push",
                 new DurableDevLoopV1.PushRecorded(
                         1, sha('a')));
@@ -74,6 +75,23 @@ final class WorkflowActivityProtocolV1Test {
                 IllegalArgumentException.class,
                 () -> WorkflowActivityProtocolV1.validateOutcome(
                         claim, outcome));
+    }
+
+    @Test
+    void staleOutcomeFromOlderClaimAttemptIsRejected() {
+        var claim = claim(new DurableDevLoopV1.PushCode(
+                1,
+                "patch://one",
+                "effect/push"));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorkflowActivityProtocolV1.validateOutcome(
+                        claim,
+                        new WorkflowActivityProtocolV1.KnownUnexecuted(
+                                claim.effectKey(),
+                                "older/claim/token",
+                                "worker://not-started")));
     }
 
     @Test
@@ -89,6 +107,7 @@ final class WorkflowActivityProtocolV1Test {
                         claim,
                         new WorkflowActivityProtocolV1.Succeeded(
                                 "effect/push",
+                                claim.claimToken(),
                                 "receipt://wrong",
                                 new DurableDevLoopV1.EvaluationPassed(
                                         sha('a')))));
@@ -98,6 +117,7 @@ final class WorkflowActivityProtocolV1Test {
                         claim,
                         new WorkflowActivityProtocolV1.Succeeded(
                                 "effect/push",
+                                claim.claimToken(),
                                 "receipt://push",
                                 new DurableDevLoopV1.PushRecorded(
                                         1, sha('a')))));
