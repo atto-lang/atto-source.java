@@ -95,6 +95,8 @@ public final class EnumVariantOverloadPolicySmoke {
         rejected(() -> EnumVariantOverloadPolicy.admit(List.of(sig(f),
                 new Signature("file::Other", Domain.MODULE, "f", List.of(f)))));
         String keyA = EnumVariantOverloadPolicy.symbol(specializedA);
+        eq("ores-enum-variant-slot-v1|12:66696c653a3a6d6f64756c65|6:4d4f44554c45|1:66"
+                + "|1:32|1:56|9:66696c653a3a466f6f|1:41|1:50|3:696e74", keyA);
         String keyB = EnumVariantOverloadPolicy.symbol(specializedB);
         check(!keyA.equals(keyB));
         check(!EnumVariantOverloadPolicy.symbol(general).equals(keyA));
