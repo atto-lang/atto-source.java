@@ -88,7 +88,7 @@ public final class SqliteWorkflowJournalV1
                     "jdbc:sqlite:" + this.databasePath);
             configureConnection();
             initializeSchema();
-            this.delegate = loadVerifiedStore();
+            this.delegate = loadVerifiedStoreSnapshot();
         } catch (SQLException | IOException failure) {
             closeAfterFailedOpen();
             throw new IllegalStateException(
@@ -322,26 +322,12 @@ public final class SqliteWorkflowJournalV1
 
     private void refresh() {
         requireOpen();
-        boolean transactionResolved = false;
         try {
-            execute("BEGIN");
-            WorkflowJournalV1 refreshed = loadVerifiedStore();
-            execute("COMMIT");
-            transactionResolved = true;
-            delegate = refreshed;
-        } catch (RuntimeException | Error failure) {
-            if (!transactionResolved && connection != null) {
-                rollbackAndReloadOrInvalidate(failure);
-            }
-            throw failure;
+            delegate = loadVerifiedStoreSnapshot();
         } catch (SQLException failure) {
-            IllegalStateException wrapped = new IllegalStateException(
+            throw new IllegalStateException(
                     "failed to refresh workflow SQLite journal",
                     failure);
-            if (!transactionResolved && connection != null) {
-                rollbackAndReloadOrInvalidate(wrapped);
-            }
-            throw wrapped;
         }
     }
 
@@ -440,6 +426,28 @@ public final class SqliteWorkflowJournalV1
                                 + "; expected "
                                 + SCHEMA_VERSION);
             }
+        }
+    }
+
+    private WorkflowJournalV1 loadVerifiedStoreSnapshot()
+            throws SQLException {
+        boolean transactionOpen = false;
+        try {
+            execute("BEGIN");
+            transactionOpen = true;
+            WorkflowJournalV1 loaded = loadVerifiedStore();
+            execute("COMMIT");
+            transactionOpen = false;
+            return loaded;
+        } catch (SQLException | RuntimeException | Error failure) {
+            if (transactionOpen) {
+                try {
+                    execute("ROLLBACK");
+                } catch (SQLException rollbackFailure) {
+                    failure.addSuppressed(rollbackFailure);
+                }
+            }
+            throw failure;
         }
     }
 
@@ -713,7 +721,7 @@ public final class SqliteWorkflowJournalV1
         }
 
         try {
-            delegate = loadVerifiedStore();
+            delegate = loadVerifiedStoreSnapshot();
         } catch (SQLException | RuntimeException reloadFailure) {
             originalFailure.addSuppressed(reloadFailure);
             invalidateConnection();
