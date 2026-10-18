@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -19,7 +20,9 @@ public final class GitHubWebhookActorV1 {
     public sealed interface Message permits Configure, RegisterRun,
             UnregisterRun, ReceiveCiWebhook, Shutdown { }
 
-    public record Configure(byte[] secret) implements Message {
+    public record Configure(
+            byte[] secret,
+            String databasePath) implements Message {
         public Configure {
             Objects.requireNonNull(secret, "secret");
             if (secret.length < 16) {
@@ -27,6 +30,14 @@ public final class GitHubWebhookActorV1 {
                         "webhook secret must contain at least 16 bytes");
             }
             secret = secret.clone();
+            if (databasePath != null) {
+                databasePath = requireText(
+                        databasePath, "databasePath");
+            }
+        }
+
+        public Configure(byte[] secret) {
+            this(secret, null);
         }
 
         @Override
@@ -205,10 +216,13 @@ public final class GitHubWebhookActorV1 {
                 Matched output) { }
 
         private byte[] secret;
+        private SqliteGitHubWebhookLedgerV1 ledger;
         private final Map<String, GitHubCiCorrelationV1.Expectation>
                 expectations = new LinkedHashMap<>();
         private final LinkedHashMap<String, MatchedDelivery>
                 matchedDeliveries = new LinkedHashMap<>();
+        private final LinkedHashMap<String, String>
+                deliveryIdentities = new LinkedHashMap<>();
 
         @Override
         public void onMessage(
@@ -221,8 +235,26 @@ public final class GitHubWebhookActorV1 {
                     throw new IllegalStateException(
                             "GitHub webhook actor is already configured");
                 }
-                secret = configure.secret();
-                emit(context, new Ready());
+                SqliteGitHubWebhookLedgerV1 opened = null;
+                boolean accepted = false;
+                try {
+                    if (configure.databasePath() != null) {
+                        opened = SqliteGitHubWebhookLedgerV1.open(
+                                Path.of(configure.databasePath()));
+                        for (var expectation : opened.expectations()) {
+                            expectations.put(
+                                    expectation.runId(), expectation);
+                        }
+                    }
+                    secret = configure.secret();
+                    ledger = opened;
+                    accepted = true;
+                    emit(context, new Ready());
+                } finally {
+                    if (!accepted && opened != null) {
+                        opened.close();
+                    }
+                }
                 return;
             }
 
@@ -230,13 +262,18 @@ public final class GitHubWebhookActorV1 {
 
             if (message instanceof RegisterRun register) {
                 var expectation = register.expectation();
-                var prior = expectations.putIfAbsent(
-                        expectation.runId(), expectation);
+                var prior = expectations.get(
+                        expectation.runId());
                 if (prior != null && !prior.equals(expectation)) {
                     throw new IllegalStateException(
                             "run correlation already registered differently: "
                                     + expectation.runId());
                 }
+                if (ledger != null) {
+                    ledger.register(expectation);
+                }
+                expectations.putIfAbsent(
+                        expectation.runId(), expectation);
                 emit(
                         context,
                         new RunRegistered(expectation.runId()));
@@ -244,6 +281,9 @@ public final class GitHubWebhookActorV1 {
             }
 
             if (message instanceof UnregisterRun unregister) {
+                if (ledger != null) {
+                    ledger.unregister(unregister.runId());
+                }
                 expectations.remove(unregister.runId());
                 emit(
                         context,
@@ -256,6 +296,7 @@ public final class GitHubWebhookActorV1 {
                         secret,
                         receive.rawBody(),
                         receive.headers());
+                recordDelivery(verified);
                 MatchedDelivery priorDelivery =
                         matchedDeliveries.get(verified.deliveryId());
                 if (priorDelivery != null) {
@@ -351,13 +392,54 @@ public final class GitHubWebhookActorV1 {
                 secret = null;
                 expectations.clear();
                 matchedDeliveries.clear();
-                context.runtime().endCurrentActor();
+                deliveryIdentities.clear();
+                SqliteGitHubWebhookLedgerV1 closing = ledger;
+                ledger = null;
+                if (closing == null) {
+                    context.runtime().endCurrentActor();
+                } else {
+                    context.runtime().endCurrentActorWithCleanup(
+                            closing::close);
+                }
                 return;
             }
 
             throw new IllegalStateException(
                     "unsupported GitHub webhook actor message "
                             + message.getClass().getName());
+        }
+
+        private void recordDelivery(
+                GitHubWebhookSecurityV1.VerifiedWebhook verified) {
+            if (ledger != null) {
+                ledger.recordDelivery(
+                        verified.deliveryId(),
+                        verified.payloadSha256(),
+                        verified.eventName());
+                return;
+            }
+
+            String identity =
+                    verified.eventName()
+                            + "\u0000"
+                            + verified.payloadSha256();
+            String prior = deliveryIdentities.putIfAbsent(
+                    verified.deliveryId(), identity);
+            if (prior != null && !prior.equals(identity)) {
+                throw new SecurityException(
+                        "GitHub delivery id was reused with "
+                                + "different authenticated content");
+            }
+            if (prior == null
+                    && deliveryIdentities.size()
+                            > MAX_MATCHED_DELIVERIES * 2) {
+                var iterator =
+                        deliveryIdentities.keySet().iterator();
+                if (iterator.hasNext()) {
+                    iterator.next();
+                    iterator.remove();
+                }
+            }
         }
 
         private void rememberMatchedDelivery(
@@ -398,7 +480,8 @@ public final class GitHubWebhookActorV1 {
         if (message instanceof Configure value) {
             return WorkflowActorWireV1.map(
                     "type", "configure",
-                    "secret", WorkflowActorWireV1.bytes(value.secret()));
+                    "secret", WorkflowActorWireV1.bytes(value.secret()),
+                    "databasePath", value.databasePath());
         }
         if (message instanceof RegisterRun value) {
             return WorkflowActorWireV1.map(
@@ -436,7 +519,9 @@ public final class GitHubWebhookActorV1 {
                 WorkflowActorWireV1.objectMap(wire);
         return switch (WorkflowActorWireV1.string(map, "type")) {
             case "configure" -> new Configure(
-                    WorkflowActorWireV1.bytes(map.get("secret")));
+                    WorkflowActorWireV1.bytes(map.get("secret")),
+                    WorkflowActorWireV1.nullableString(
+                            map, "databasePath"));
             case "register" -> new RegisterRun(
                     WorkflowActorWireV1.expectation(
                             map.get("expectation")));
