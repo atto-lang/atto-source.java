@@ -84,4 +84,72 @@ final class TrustedHttpLoopbackProbeTest {
             }
         }
     }
+    @Test void shutdownFencesAdmissionAndSettlesCancelledHostExchange() throws Exception {
+        var acceptedRequest = new CountDownLatch(1);
+        var releaseServer = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+        try (ServerSocket listener = new ServerSocket(0, 4,
+                java.net.InetAddress.getByName("127.0.0.1"))) {
+            Thread server = new Thread(() -> {
+                try (var socket = listener.accept()) {
+                    socket.setSoTimeout(5000);
+                    var reader = new BufferedReader(new InputStreamReader(
+                            socket.getInputStream(), StandardCharsets.US_ASCII));
+                    String line;
+                    while ((line = reader.readLine()) != null && !line.isEmpty()) { }
+                    acceptedRequest.countDown();
+                    if (!releaseServer.await(5, TimeUnit.SECONDS))
+                        throw new IllegalStateException("shutdown probe server timed out");
+                    // Closing the server socket without a response is deliberate.
+                } catch (Throwable error) {
+                    failure.set(error);
+                    acceptedRequest.countDown();
+                }
+            }, "quota-loopback-shutdown-test");
+            server.setDaemon(true);
+            server.start();
+            var gate = new TrustedHierarchicalNetworkGate();
+            long epoch = System.nanoTime();
+            java.util.function.LongSupplier clock = () -> System.nanoTime() - epoch;
+            var policy = new TrustedUntrustedNetworkQuota.Policy(100, 10, 1, 10, 10, 2);
+            var child = gate.createHostScope(policy, clock);
+            var parent = gate.createHostScope(policy, clock);
+            var tenant = gate.createHostScope(policy, clock);
+            try (var broker = new TrustedHttpLoopbackProbe(
+                    gate, child, parent, tenant, listener.getLocalPort())) {
+                CompletableFuture<Integer> pending = broker.getStatus();
+                assertTrue(acceptedRequest.await(4, TimeUnit.SECONDS));
+                assertEquals(null, failure.get());
+                assertEquals(TrustedUntrustedNetworkQuota.Status.TOO_MANY_IN_FLIGHT,
+                        gate.tryStartHttp(child, parent, tenant).status());
+                broker.close();
+                assertTrue(broker.getStatus().isCompletedExceptionally());
+                boolean settled = false;
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
+                while (System.nanoTime() < deadline) {
+                    var admitted = gate.tryStartHttp(child, parent, tenant);
+                    if (admitted.lease() != null) {
+                        admitted.lease().close();
+                        settled = true;
+                        break;
+                    }
+                    assertEquals(TrustedUntrustedNetworkQuota.Status.TOO_MANY_IN_FLIGHT,
+                            admitted.status());
+                    Thread.sleep(10);
+                }
+                assertTrue(settled, "host cancellation must settle a lease");
+                assertTrue(pending.isCompletedExceptionally(),
+                        "cancelled underlying HTTP must settle dependent caller");
+            } finally {
+                releaseServer.countDown();
+                server.join(4000);
+                assertFalse(server.isAlive());
+                assertEquals(null, failure.get());
+                child.close();
+                parent.close();
+                tenant.close();
+            }
+        }
+    }
+
 }
