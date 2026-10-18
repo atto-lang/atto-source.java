@@ -82,12 +82,20 @@ public final class HttpResponseDraftStandaloneCheck {
         AtomicInteger cancelledStreamCloses = new AtomicInteger();
         var responseCancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
         var cancelledCleanupDone = new java.util.concurrent.CountDownLatch(1);
+        AtomicInteger aggregateRejects = new AtomicInteger();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 8);
         var workers = Executors.newCachedThreadPool();
         server.setExecutor(workers);
         server.createContext("/", exchange -> {
             try {
-                HttpResponseDraft response = switch (exchange.getRequestURI().getPath()) {
+                String route = exchange.getRequestURI().getPath();
+                if (route.equals("/aggregate-count")) {
+                    for (int i = 0; i < 95; i++)
+                        exchange.getResponseHeaders().add("X-Existing-" + i, "a");
+                }
+                if (route.equals("/aggregate-bytes"))
+                    exchange.getResponseHeaders().add("X-Existing", "e".repeat(18000));
+                HttpResponseDraft response = switch (route) {
                     case "/text" -> HttpResponseDraft.text("hello from Oreslang", 201,
                             List.of(Map.entry("X-Mode", "fetch")));
                     case "/cookie" -> HttpResponseDraft.text("cookie", 200,
@@ -96,6 +104,11 @@ public final class HttpResponseDraftStandaloneCheck {
                         opened.incrementAndGet();
                         return new ByteArrayInputStream("alpha-beta".getBytes(StandardCharsets.UTF_8));
                     }, 200, List.of());
+                    case "/aggregate-count" -> HttpResponseDraft.text("oversize", 200,
+                            java.util.stream.IntStream.range(0, 10)
+                                    .mapToObj(i -> Map.entry("X-New-" + i, "b")).toList());
+                    case "/aggregate-bytes" -> HttpResponseDraft.text("oversize", 200,
+                            List.of(Map.entry("X-New", "n".repeat(16000))));
                     case "/empty" -> HttpResponseDraft.empty(204, List.of());
                     case "/cancel" -> HttpResponseDraft.streaming(() -> {
                         opened.incrementAndGet();
@@ -120,6 +133,10 @@ public final class HttpResponseDraftStandaloneCheck {
                             if (exchange.getRequestURI().getPath().equals("/cancel-after-open") && input != null)
                                 responseCancelled.set(true);
                         });
+            } catch (IllegalArgumentException invalid) {
+                if (exchange.getRequestURI().getPath().startsWith("/aggregate"))
+                    aggregateRejects.incrementAndGet();
+                else throw invalid;
             } finally {
                 if (exchange.getRequestURI().getPath().equals("/cancel-after-open"))
                     cancelledCleanupDone.countDown();
@@ -172,6 +189,21 @@ public final class HttpResponseDraftStandaloneCheck {
             check(cancelledCleanupDone.await(3, java.util.concurrent.TimeUnit.SECONDS), "cancel cleanup ran");
             check(cancelledStreamReads.get() == 0, "do not read source after cancellation");
             check(cancelledStreamCloses.get() == 1, "cancelled source closed exactly once");
+            responseCancelled.set(false);
+            for (String route : List.of("/aggregate-count", "/aggregate-bytes")) {
+                try {
+                    client.send(HttpRequest.newBuilder(base.resolve(route))
+                                    .timeout(java.time.Duration.ofSeconds(3)).build(),
+                            HttpResponse.BodyHandlers.ofString());
+                    throw new AssertionError("combined header budget bypass for " + route);
+                } catch (java.io.IOException expected) {
+                    // Failed closed before HTTP headers were emitted.
+                }
+            }
+            for (int spin = 0; spin < 100 && aggregateRejects.get() < 2; spin++)
+                Thread.sleep(10);
+            check(aggregateRejects.get() >= 2,
+                    "combined header limits enforced, observed=" + aggregateRejects.get());
         } finally {
             server.stop(0);
             workers.shutdownNow();
