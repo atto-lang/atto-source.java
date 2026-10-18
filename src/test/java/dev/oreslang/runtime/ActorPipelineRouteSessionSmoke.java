@@ -251,6 +251,8 @@ public final class ActorPipelineRouteSessionSmoke {
         // DATA before the successful tryWrite is marked irrevocable.
         reject(() -> claimLedger.abortAndAdvanceGeneration(25),
                 "abort fenced epoch over in-flight mailbox publication");
+        reject(() -> claimLedger.complete(claimFrame),
+                "explicit completion retired in-flight mailbox publication");
         reject(() -> claimLedger.close(),
                 "close retired actor route during in-flight mailbox admission");
         check(!claimLedger.closed(), "rejected close mutated live session");
