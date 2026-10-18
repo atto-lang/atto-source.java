@@ -27,15 +27,19 @@ final class WorkflowPrivateActorStateV1 {
             throw new IllegalStateException(
                     "private workflow state block is too small");
         }
-        int length = ByteBuffer.wrap(bytes)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .getInt();
-        if (length < 0 || length > bytes.length - LENGTH_BYTES) {
-            throw new IllegalStateException(
-                    "private workflow state length is corrupt");
+        try {
+            int length = ByteBuffer.wrap(bytes)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .getInt();
+            if (length < 0 || length > bytes.length - LENGTH_BYTES) {
+                throw new IllegalStateException(
+                        "private workflow state length is corrupt");
+            }
+            return Arrays.copyOfRange(
+                    bytes, LENGTH_BYTES, LENGTH_BYTES + length);
+        } finally {
+            Arrays.fill(bytes, (byte) 0);
         }
-        return Arrays.copyOfRange(
-                bytes, LENGTH_BYTES, LENGTH_BYTES + length);
     }
 
     static void write(
@@ -50,11 +54,15 @@ final class WorkflowPrivateActorStateV1 {
                             + " byte block");
         }
         byte[] bytes = new byte[block.capacity()];
-        ByteBuffer.wrap(bytes)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .putInt(payload.length)
-                .put(payload);
-        block.copyIn(bytes);
+        try {
+            ByteBuffer.wrap(bytes)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(payload.length)
+                    .put(payload);
+            block.copyIn(bytes);
+        } finally {
+            Arrays.fill(bytes, (byte) 0);
+        }
     }
 
     static boolean empty(ActorRuntime.PrivateMemoryBlock block) {
