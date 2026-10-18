@@ -128,6 +128,17 @@ public final class HttpResponseDraft {
         Objects.requireNonNull(activeBody, "activeBody");
         claim();
         if (cancelled.getAsBoolean()) throw new IOException("HTTP response cancelled before headers");
+        // The legacy exchange may already contain user-supplied headers.
+        // Enforce one aggregate budget, not an independent budget per API.
+        List<Map.Entry<String, String>> combined = new ArrayList<>(headers);
+        for (Map.Entry<String, List<String>> field : raw.getResponseHeaders().entrySet()) {
+            for (String value : field.getValue()) {
+                if (combined.size() >= MAX_FIELDS)
+                    throw new IllegalArgumentException("too many combined response fields");
+                combined.add(Map.entry(field.getKey(), value));
+            }
+        }
+        checkHeaders(combined);
         for (Map.Entry<String, String> field : headers)
             raw.getResponseHeaders().add(field.getKey(), field.getValue());
         boolean suppress = raw.getRequestMethod().equals("HEAD") || !bodyPresent;
