@@ -7,8 +7,10 @@ unsupported syntax. This file does not claim executable cross-backend parity.
 
 ## One rule: catch ordinary `throw`, never panic
 
-`trap expr` is proposed as a unary expression operator whose purpose is
-exactly the same as the existing `trap fnc` callable boundary:
+`trap expr` is a separate proposed unary expression operator; it does not
+share the callable `trap fnc` ABI. Callable traps return opaque
+`TrapResult<T>` values with success and error projections, while this
+unimplemented expression form is designed to yield `Option<T>`:
 
 - Evaluate `expr` exactly once.
 - If it completes normally with value `v: T`, yield `Some(v): Option<T>`.
@@ -25,8 +27,9 @@ exactly the same as the existing `trap fnc` callable boundary:
 Proposed static typing: `Gamma |- e: T` implies
 `Gamma |- trap e: Option<T>`. The ordinary-throw effect of `e` is
 eliminated at the boundary; other exceptional/control effects are preserved.
-For `void`, the language-level result is `Option<void>`, consistent with
-the existing compiler-produced callable-trap form.
+For `void`, the proposed expression-level result is `Option<void>`. This is
+independent of the callable `TrapResult<void>` contract described in
+[TRAP.md](TRAP.md).
 
 `trap` binds as a prefix unary operator, including member calls: `trap
 account.try_lock().unwrap()` traps the full `unwrap()` call, **not** a
