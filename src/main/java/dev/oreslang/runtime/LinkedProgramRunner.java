@@ -402,6 +402,13 @@ public final class LinkedProgramRunner {
                 continue;
             }
 
+            if (CoreLibrarySources.isReservedFreestandingImport(imported.path())) {
+                throw new IllegalArgumentException(
+                        "reserved freestanding library import '" + imported.path()
+                                + "' has no compiler-owned Java module yet; "
+                                + "cannot resolve from project files or ORESLANG_PATH");
+            }
+
             String raw = imported.path().replace('\\', '/');
             java.util.Optional<Path> target = projectConfig.resolveImport(normalized, imported.path());
             if (target.isEmpty()) {
