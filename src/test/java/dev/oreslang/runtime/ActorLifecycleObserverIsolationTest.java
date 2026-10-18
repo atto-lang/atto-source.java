@@ -282,6 +282,9 @@ final class ActorLifecycleObserverIsolationTest {
         try (ActorRuntime runtime = new ActorRuntime(
                 IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(1, 1, 1, 1))) {
+            assertEquals(0, runtime.lifecycleObserverCarrierCount(),
+                    "lifecycle observer domain must preserve zero-thread cold start");
+            assertEquals(0, runtime.lifecycleObserverBacklog());
             var actor = runtime.<String>spawnShared(
                     () -> (message, context) -> { });
 
@@ -298,6 +301,10 @@ final class ActorLifecycleObserverIsolationTest {
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS),
                     "logical actor finalization precedes arbitrary observer completion");
             assertTrue(observerEntered.await(3, TimeUnit.SECONDS));
+            assertEquals(1, runtime.lifecycleObserverCarrierCount(),
+                    "one blocked lifecycle callback needs one bounded host worker");
+            assertEquals(0, runtime.lifecycleObserverBacklog(),
+                    "single observer is active, not silently queued elsewhere");
 
             assertThrows(IllegalStateException.class,
                     () -> runtime.<String>spawnShared(
