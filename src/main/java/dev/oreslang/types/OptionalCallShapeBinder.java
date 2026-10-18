@@ -119,10 +119,16 @@ public final class OptionalCallShapeBinder {
     public static void requireNoUnloweredOptionalFormals(Ast.Program program) {
         Objects.requireNonNull(program, "program");
         for (Ast.ModuleDecl module : program.modules()) {
+            requireNoOmittableAnnotations(module.annotations(), "module annotation");
+            for (Ast.TypeRef contract : module.contracts()) {
+                requireNoOmittableTypeOutsideFormal(contract, "module contract");
+            }
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl function) {
                     requireNoUnloweredOptionalFormals(function.parameters());
+                    requireNoOmittableAnnotations(function.annotations(), "function annotation");
                     requireNoOmittableTypeOutsideFormal(function.returnType(), "function return");
+                    requireNoUnloweredOptionalFormalsInBody(function.body());
                     for (Ast.GenericParameter generic : function.genericSpecs()) {
                         requireNoOmittableTypeOutsideFormal(generic.defaultType(), "generic default");
                     }
@@ -142,6 +148,8 @@ public final class OptionalCallShapeBinder {
                     }
                 } else if (decl instanceof Ast.FieldDecl field) {
                     requireNoOmittableTypeOutsideFormal(field.type(), "module field");
+                    requireNoOmittableAnnotations(field.annotations(), "module field annotation");
+                    requireNoUnloweredOptionalFormalsInExpr(field.initializer());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
                     requireNoOmittableTypeOutsideFormal(alias.target(), "type alias");
                 }
@@ -160,14 +168,202 @@ public final class OptionalCallShapeBinder {
         }
         for (Ast.FieldDecl field : klass.fields()) {
             requireNoOmittableTypeOutsideFormal(field.type(), "class field");
+            requireNoOmittableAnnotations(field.annotations(), "class field annotation");
+            requireNoUnloweredOptionalFormalsInExpr(field.initializer());
         }
         if (klass.constructor() != null) {
             requireNoUnloweredOptionalFormals(klass.constructor().parameters());
+            requireNoOmittableAnnotations(klass.constructor().annotations(), "constructor annotation");
+            requireNoUnloweredOptionalFormalsInBody(klass.constructor().body());
         }
         for (Ast.MethodDecl method : klass.methods()) {
             requireNoUnloweredOptionalFormals(method.parameters());
             requireNoOmittableTypeOutsideFormal(method.returnType(), "method return");
             requireNoOmittableTypeOutsideFormal(method.explicitReceiverType(), "method receiver");
+            requireNoOmittableAnnotations(method.annotations(), "method annotation");
+            requireNoUnloweredOptionalFormalsInBody(method.body());
+        }
+    }
+
+    private static void requireNoOmittableAnnotations(List<Ast.Annotation> annotations, String where) {
+        for (Ast.Annotation annotation : annotations) {
+            for (Ast.TypeRef type : annotation.arguments()) {
+                requireNoOmittableTypeOutsideFormal(type, where);
+            }
+        }
+    }
+
+    /**
+     * All entry points (including direct Truffle root construction) must inspect
+     * lambda formals in nested, unused, deferred, callback and branch bodies.
+     * A declaration-only scan leaves unlowered T? closures reachable without
+     * type/ownership admission. Exhaustive-on-known-AST traversal is intentional:
+     * new AST kinds must be reviewed here before interpreter admission.
+     */
+    private static void requireNoUnloweredOptionalFormalsInBody(List<Ast.Stmt> body) {
+        for (Ast.Stmt statement : body) requireNoUnloweredOptionalFormalsInStmt(statement);
+    }
+
+    private static void requireNoUnloweredOptionalFormalsInPattern(Ast.Pattern pattern) {
+        if (pattern instanceof Ast.TypePattern p) {
+            requireNoOmittableTypeOutsideFormal(p.type(), "match type pattern");
+        } else if (pattern instanceof Ast.StructuralPattern p) {
+            requireNoOmittableTypeOutsideFormal(p.target(), "match structural pattern");
+        } else if (pattern instanceof Ast.TuplePattern p) {
+            for (Ast.Pattern item : p.elements()) requireNoUnloweredOptionalFormalsInPattern(item);
+        } else if (pattern instanceof Ast.ConstructorPattern p) {
+            for (Ast.Pattern item : p.arguments()) requireNoUnloweredOptionalFormalsInPattern(item);
+        } else if (!(pattern instanceof Ast.WildcardPattern
+                || pattern instanceof Ast.LiteralPattern
+                || pattern instanceof Ast.BindingPattern)) {
+            throw new IllegalArgumentException("unreviewed match pattern in optional-formal admission");
+        }
+    }
+
+    private static void requireNoUnloweredOptionalFormalsInStmt(Ast.Stmt stmt) {
+        Objects.requireNonNull(stmt, "statement");
+        if (stmt instanceof Ast.BindingStmt s) {
+            requireNoOmittableTypeOutsideFormal(s.declaredType(), "local binding");
+            requireNoUnloweredOptionalFormalsInExpr(s.initializer());
+        } else if (stmt instanceof Ast.DestructureStmt s) {
+            requireNoUnloweredOptionalFormalsInExpr(s.initializer());
+        } else if (stmt instanceof Ast.ReturnStmt s) {
+            requireNoUnloweredOptionalFormalsInExpr(s.value());
+        } else if (stmt instanceof Ast.YieldStmt s) {
+            requireNoUnloweredOptionalFormalsInExpr(s.value());
+        } else if (stmt instanceof Ast.ExprStmt s) {
+            requireNoUnloweredOptionalFormalsInExpr(s.expression());
+        } else if (stmt instanceof Ast.DeferStmt s) {
+            requireNoUnloweredOptionalFormalsInExpr(s.expression());
+        } else if (stmt instanceof Ast.BlockStmt s) {
+            requireNoUnloweredOptionalFormalsInBody(s.body());
+        } else if (stmt instanceof Ast.IfStmt s) {
+            for (Ast.IfBranch branch : s.branches()) {
+                requireNoUnloweredOptionalFormalsInExpr(branch.condition());
+                requireNoUnloweredOptionalFormalsInBody(branch.body());
+            }
+            requireNoUnloweredOptionalFormalsInBody(s.elseBody());
+        } else if (stmt instanceof Ast.MatchStmt s) {
+            requireNoUnloweredOptionalFormalsInExpr(s.subject());
+            for (Ast.MatchArm arm : s.arms()) {
+                requireNoUnloweredOptionalFormalsInPattern(arm.pattern());
+                requireNoUnloweredOptionalFormalsInExpr(arm.guard());
+                requireNoUnloweredOptionalFormalsInBody(arm.body());
+            }
+        } else if (stmt instanceof Ast.SwitchStmt s) {
+            requireNoUnloweredOptionalFormalsInExpr(s.subject());
+            for (Ast.SwitchCase branch : s.cases()) {
+                for (Ast.Expr value : branch.constants()) requireNoUnloweredOptionalFormalsInExpr(value);
+                requireNoUnloweredOptionalFormalsInBody(branch.body());
+            }
+            requireNoUnloweredOptionalFormalsInBody(s.defaultBody());
+        } else if (stmt instanceof Ast.TryStmt s) {
+            requireNoUnloweredOptionalFormalsInBody(s.body());
+            requireNoUnloweredOptionalFormalsInBody(s.catchBody());
+            requireNoUnloweredOptionalFormalsInBody(s.finallyBody());
+        } else if (stmt instanceof Ast.ForOfStmt s) {
+            requireNoUnloweredOptionalFormalsInExpr(s.iterable());
+            requireNoUnloweredOptionalFormalsInBody(s.body());
+        } else if (stmt instanceof Ast.ForOfDestructureStmt s) {
+            requireNoUnloweredOptionalFormalsInExpr(s.iterable());
+            requireNoUnloweredOptionalFormalsInBody(s.body());
+        } else if (stmt instanceof Ast.ForStmt s) {
+            if (s.initializer() != null) requireNoUnloweredOptionalFormalsInStmt(s.initializer());
+            requireNoUnloweredOptionalFormalsInExpr(s.condition());
+            requireNoUnloweredOptionalFormalsInExpr(s.update());
+            requireNoUnloweredOptionalFormalsInBody(s.body());
+        } else if (stmt instanceof Ast.LoopStmt s) {
+            requireNoUnloweredOptionalFormalsInBody(s.body());
+        } else if (stmt instanceof Ast.SelectStmt s) {
+            for (Ast.SelectArm arm : s.arms()) {
+                requireNoOmittableTypeOutsideFormal(arm.bindingType(), "select binding type");
+                requireNoUnloweredOptionalFormalsInExpr(arm.channel());
+                requireNoUnloweredOptionalFormalsInExpr(arm.value());
+                requireNoUnloweredOptionalFormalsInBody(arm.body());
+            }
+        } else if (!(stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ContinueStmt)) {
+            throw new IllegalArgumentException("unreviewed statement kind in optional-formal admission");
+        }
+    }
+
+    private static void requireNoUnloweredOptionalFormalsInExpr(Ast.Expr expr) {
+        if (expr == null) return;
+        if (expr instanceof Ast.LambdaExpr e) {
+            requireNoUnloweredOptionalFormals(e.parameters());
+            requireNoUnloweredOptionalFormalsInExpr(e.expressionBody());
+            if (e.blockBody() != null) requireNoUnloweredOptionalFormalsInBody(e.blockBody());
+        } else if (expr instanceof Ast.BinaryExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.left());
+            requireNoUnloweredOptionalFormalsInExpr(e.right());
+        } else if (expr instanceof Ast.UnaryExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.operand());
+        } else if (expr instanceof Ast.AssignExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.target());
+            requireNoUnloweredOptionalFormalsInExpr(e.value());
+        } else if (expr instanceof Ast.ConditionalExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.condition());
+            requireNoUnloweredOptionalFormalsInExpr(e.whenTrue());
+            requireNoUnloweredOptionalFormalsInExpr(e.whenFalse());
+        } else if (expr instanceof Ast.MatchExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.subject());
+            requireNoOmittableTypeOutsideFormal(e.resultType(), "match result");
+            for (Ast.MatchValueArm arm : e.arms()) {
+                requireNoUnloweredOptionalFormalsInPattern(arm.pattern());
+                requireNoUnloweredOptionalFormalsInExpr(arm.guard());
+                requireNoUnloweredOptionalFormalsInExpr(arm.value());
+            }
+        } else if (expr instanceof Ast.TypeTestExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.value());
+            requireNoOmittableTypeOutsideFormal(e.targetType(), "type test");
+        } else if (expr instanceof Ast.PatternTestExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.value());
+            requireNoUnloweredOptionalFormalsInPattern(e.pattern());
+        } else if (expr instanceof Ast.CastExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.value());
+            requireNoOmittableTypeOutsideFormal(e.targetType(), "cast type");
+        } else if (expr instanceof Ast.SpreadExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.expression());
+        } else if (expr instanceof Ast.CallExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.callee());
+            for (Ast.TypeRef type : e.typeArguments()) requireNoOmittableTypeOutsideFormal(type, "call type argument");
+            for (Ast.Expr arg : e.arguments()) requireNoUnloweredOptionalFormalsInExpr(arg);
+        } else if (expr instanceof Ast.StagedCallExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.callee());
+            for (Ast.TypeRef type : e.typeArguments()) requireNoOmittableTypeOutsideFormal(type, "staged call type argument");
+            for (Ast.CallArgument item : e.arguments()) requireNoUnloweredOptionalFormalsInExpr(item.value());
+        } else if (expr instanceof Ast.StagedNewExpr e) {
+            requireNoOmittableTypeOutsideFormal(e.type(), "staged construction type");
+            for (Ast.CallArgument item : e.arguments()) requireNoUnloweredOptionalFormalsInExpr(item.value());
+        } else if (expr instanceof Ast.RuntimeCallExpr e) {
+            for (Ast.Expr arg : e.arguments()) requireNoUnloweredOptionalFormalsInExpr(arg);
+        } else if (expr instanceof Ast.MemberExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.receiver());
+        } else if (expr instanceof Ast.IndexExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.receiver());
+            requireNoUnloweredOptionalFormalsInExpr(e.index());
+        } else if (expr instanceof Ast.NewExpr e) {
+            requireNoOmittableTypeOutsideFormal(e.type(), "constructed type");
+            for (Ast.Expr arg : e.arguments()) requireNoUnloweredOptionalFormalsInExpr(arg);
+        } else if (expr instanceof Ast.AwaitExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.expression());
+        } else if (expr instanceof Ast.TrapExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.expression());
+        } else if (expr instanceof Ast.ChannelOpExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.channel());
+            requireNoUnloweredOptionalFormalsInExpr(e.value());
+            requireNoUnloweredOptionalFormalsInBody(e.callbackBody());
+        } else if (expr instanceof Ast.DynamicSelectExpr e) {
+            requireNoUnloweredOptionalFormalsInExpr(e.cases());
+        } else if (expr instanceof Ast.ListExpr e) {
+            for (Ast.Expr arg : e.elements()) requireNoUnloweredOptionalFormalsInExpr(arg);
+        } else if (expr instanceof Ast.TupleExpr e) {
+            for (Ast.Expr arg : e.elements()) requireNoUnloweredOptionalFormalsInExpr(arg);
+        } else if (expr instanceof Ast.ObjectExpr e) {
+            for (Ast.ObjectField field : e.fields()) requireNoUnloweredOptionalFormalsInExpr(field.value());
+            for (Ast.StructFieldSpec field : e.declaredFields())
+                requireNoOmittableTypeOutsideFormal(field.type(), "struct field");
+        } else if (!(expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr)) {
+            throw new IllegalArgumentException("unreviewed expression kind in optional-formal admission");
         }
     }
 
