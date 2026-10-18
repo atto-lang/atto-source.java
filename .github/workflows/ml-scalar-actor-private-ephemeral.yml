@@ -60,8 +60,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$APPROVED_SHA"
           test "$(git rev-parse 'HEAD^{tree}')" = "$APPROVED_TREE"
           test -z "$(git status --porcelain --untracked-files=all)"
-          test "$(git hash-object -- tests/fixtures/ml-actor-state-scalar.ores)" = "26a3cb34b126185d56f5d2c7ff370cab953b0b4b"
-          test "$(git hash-object -- tests/golden/ml-actor-state-scalar.stdout)" = "867f4ca71a20b58b1f35e239d4bef160f7ef5342"
+          test "$(git hash-object -- tests/fixtures/ml-actor-state-scalar.ores)" = "a98d7c5282045ad147b8425ec52526a0427bbeec"
+          test "$(git hash-object -- tests/golden/ml-actor-state-scalar.stdout)" = "029f88f5a174c1269a784ab4cc44b67e348156d1"
           echo "ML_SOURCE_LOCAL_EXACT_SHA_TREE=PASS"
           echo "CROSS_ORG_PRIVATE_SOURCE_EXPORT=NONE"
 
