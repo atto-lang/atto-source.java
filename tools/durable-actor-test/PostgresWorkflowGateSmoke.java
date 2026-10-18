@@ -31,7 +31,7 @@ public final class PostgresWorkflowGateSmoke {
         source.setUser(System.getenv("AI_DEV_LOOP_DB_USER"));
         source.setPassword(System.getenv("AI_DEV_LOOP_DB_PASSWORD"));
         var db=new PostgresDurableActorStore(source);
-        var gate=new PostgresDurableWorkflowGate(source);
+        var gate=new PostgresDurableWorkflowGate(source,db);
         var address=new DurableActorStore.Address("tenant-a","wf","webhook","node");
         var other=new DurableActorStore.Address("tenant-b","wf","webhook","node");
         var initial=new DurableActorStore.Snapshot(0,1,"code-a",0,bytes("v0"));
@@ -90,6 +90,8 @@ public final class PostgresWorkflowGateSmoke {
         webhook.get(30,TimeUnit.SECONDS);
         racing.shutdown();
         var a=db.activate(address);
+        var stranger=new PostgresDurableWorkflowGate(source,new PostgresDurableActorStore(source));
+        fail(()->stranger.claim(address,a.epoch(),30),"non-owner cannot claim outbox");
         check(a.inbox().size()==21 && a.epoch()==1,"authenticated events delivered without deadlock");
         var o1=new DurableActorStore.Outbound("push-1","unique:push:1",bytes("git"));
         var o2=new DurableActorStore.Outbound("test-1","unique:test:1",bytes("CI"));
@@ -127,16 +129,34 @@ public final class PostgresWorkflowGateSmoke {
             " WHERE tenant_id=? AND workflow_id=? AND run_id=? AND node_id=?",address);
         var fresh=new PostgresDurableActorStore(source);
         var b=fresh.activate(address);
+        var freshGate=new PostgresDurableWorkflowGate(source,fresh);
         check(b.epoch()==2,"supervised reactivation after lease expiry");
         fail(()->gate.finish(vulnerable,"late-receipt"),"previous epoch rejected");
+        fail(()->gate.claim(address,b.epoch(),30),"stale owner cannot claim new epoch");
         // An old outbox claim isn't automatically stolen while its own timer remains alive.
-        check(gate.claim(address,b.epoch(),30)==null,"claim lease honored on new epoch");
+        check(freshGate.claim(address,b.epoch(),30)==null,"claim lease honored on new epoch");
         exec(source,"UPDATE ores_durable_outbox SET claim_until=clock_timestamp()-interval '1 second'"+
             " WHERE tenant_id=? AND workflow_id=? AND run_id=? AND node_id=?"+
             " AND intent_id='push-2'",address);
-        var takeover=gate.claim(address,b.epoch(),30);
+        var takeover=freshGate.claim(address,b.epoch(),30);
         check(takeover!=null && takeover.attempt()==2,"expired claim reclaimed");
-        check(gate.finish(takeover,"success-after-restart"),"reconciled");
+        fail(()->gate.finish(takeover,"forged-owner"),"wrong owner cannot finish new claim");
+        check(freshGate.finish(takeover,"success-after-restart"),"reconciled");
+
+        // A delivery is unique across actors even after the first workflow
+        // finishes and a different actor begins waiting for the same push.
+        var second=new DurableActorStore.Address("tenant-a","wf","next-workflow","node");
+        check(db.initialize(second,initial),"second actor initialized");
+        exec(source,"UPDATE ores_durable_webhook_expectation SET stage='closed'"+
+            " WHERE tenant_id=? AND workflow_id=? AND run_id=? AND node_id=?",address);
+        gate.stage(new PostgresDurableWorkflowGate.Expected(second,7,13,sha,
+            "refs/heads/feature",1,0));
+        check(gate.accept("tenant-a",7,13,sha,"refs/heads/feature","delivery-1",raw)==
+            PostgresDurableWorkflowGate.Admission.DUPLICATE,"cross-workflow replay prevented");
+        check(db.activate(second).inbox().isEmpty(),"replay did not reach second actor");
+        fail(()->gate.accept("tenant-a",7,13,"b".repeat(40),
+            "refs/heads/feature","delivery-1",raw),
+            "same delivery identity cannot change signed source metadata");
         System.out.println("POSTGRES_WORKFLOW_GATE_PASS");
     }
 }
