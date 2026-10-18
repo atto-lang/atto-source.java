@@ -3,11 +3,9 @@ package dev.oreslang.types;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 
 /**
  * A source-order-preserving, type-agnostic binding plan for named and optional
@@ -74,13 +72,7 @@ public final class OptionalCallShapeBinder {
     public static Plan bind(List<Parameter> parameters, List<Argument> arguments) {
         Objects.requireNonNull(parameters, "parameters");
         Objects.requireNonNull(arguments, "arguments");
-        Map<String, Integer> parameterIndex = new HashMap<>();
-        for (int i = 0; i < parameters.size(); i++) {
-            Parameter parameter = Objects.requireNonNull(parameters.get(i), "parameter");
-            if (parameterIndex.putIfAbsent(parameter.name(), i) != null) {
-                throw new IllegalArgumentException("duplicate parameter name '" + parameter.name() + "'");
-            }
-        }
+        Map<String, Integer> parameterIndex = checkedParameters(parameters);
 
         int[] binding = new int[parameters.size()];
         Arrays.fill(binding, -1);
@@ -123,6 +115,17 @@ public final class OptionalCallShapeBinder {
         return new Plan(permutation);
     }
 
+    private static Map<String, Integer> checkedParameters(List<Parameter> parameters) {
+        Map<String, Integer> parameterIndex = new HashMap<>();
+        for (int i = 0; i < parameters.size(); i++) {
+            Parameter parameter = Objects.requireNonNull(parameters.get(i), "parameter");
+            if (parameterIndex.putIfAbsent(parameter.name(), i) != null) {
+                throw new IllegalArgumentException("duplicate parameter name '" + parameter.name() + "'");
+            }
+        }
+        return parameterIndex;
+    }
+
     /**
      * Resolve a family structurally, by labels and required slots ONLY.
      * Full declared arity is retained for the ordinary callable ABI selector.
@@ -138,8 +141,10 @@ public final class OptionalCallShapeBinder {
         Objects.requireNonNull(signatures, "signatures");
         Objects.requireNonNull(arguments, "arguments");
         Selection selected = null;
-        Set<Integer> valid = new HashSet<>();
+        List<Integer> valid = new ArrayList<>();
         for (int i = 0; i < signatures.size(); i++) {
+            // Malformed declarations are errors, not silently skipped candidates.
+            checkedParameters(Objects.requireNonNull(signatures.get(i), "signature"));
             try {
                 Plan plan = bind(signatures.get(i), arguments);
                 selected = new Selection(i, plan);
