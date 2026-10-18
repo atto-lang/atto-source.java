@@ -129,6 +129,14 @@ public final class HttpResponseDraftStandaloneCheck {
                     }, 200, List.of());
                     default -> HttpResponseDraft.text("head-only", 200, List.of());
                 };
+                if (route.equals("/preflight-retry")) {
+                    for (int i = 0; i < 101; i++)
+                        exchange.getResponseHeaders().add("X-Budget-" + i, "a");
+                    rejected(() -> response.preflight(exchange));
+                    exchange.getResponseHeaders().clear();
+                    response.preflight(exchange);
+                    preflightRetries.incrementAndGet();
+                }
                 response.writeTo(exchange,
                         () -> exchange.getRequestURI().getPath().equals("/cancel") || responseCancelled.get(),
                         input -> {
