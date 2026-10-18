@@ -127,9 +127,18 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             // Waiting is deliberately outside routeLock. Completion callbacks
             // and actor lifecycle work must never execute under the logical
             // route publication monitor.
-            return pending.get(
-                    toNanosSaturated(timeout),
-                    TimeUnit.NANOSECONDS);
+            try {
+                return pending.get(
+                        toNanosSaturated(timeout),
+                        TimeUnit.NANOSECONDS);
+            } catch (InterruptedException | TimeoutException abandonedRead) {
+                // The physical output channel owns the pending subscription.
+                // A timed-out/interrupted host reader must revoke that
+                // subscription before the router can safely migrate actors.
+                // Cancellation is best-effort if completion already won.
+                pending.cancel(false);
+                throw abandonedRead;
+            }
         }
     }
 
@@ -173,6 +182,17 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         if (readyTimeout.isNegative() || readyTimeout.isZero())
             throw new IllegalArgumentException("ready timeout must be positive");
         requireBlockingHostSurface("spawn a logical source actor");
+        // This V1 source router runs actors in same-JVM ActorRuntime pools.
+        // Distinct Truffle contexts are NOT proof of a protected per-actor
+        // address space, and selecting UNTRUSTED does not instantiate a new
+        // protected worker for each actor. Never silently downgrade private
+        // or untrusted actor isolation during a hot-upgrade route.
+        if (kind != ActorRuntime.ActorKind.SHARED) {
+            throw new SecurityException(
+                    "logical actor hot-upgrade v1 requires SHARED actor kind; "
+                            + "PRIVATE and UNTRUSTED require a verified per-actor "
+                            + "protected worker/isolate migration backend");
+        }
 
         HotReloadManager.ActorGenerationView view =
                 generation.linkActorGeneration(actorTypeName);

@@ -7,6 +7,48 @@ actor-family, and retirement-barrier documents. In particular, Java main's gener
 actor upgrade. The stacked Java module-contract PR #460 implements more conservative
 module loading, but expressly defers actor state migration; it is not merged here.
 
+## Production-readiness audit (2026-10-18)
+
+**Implementation versus target:** Java HotReloadManager can stage checked
+Graal contexts, and the experimental logical router migrates simple SHARED
+source actors across contexts with an unchanged state/message schema.
+A new context or actor-owned arena does not guarantee OS address-space
+protection, independent garbage collection or safety from arbitrary native
+code. Java PRIVATE and UNTRUSTED upgrades now fail closed in the V1 same-JVM
+router until a per-actor protected worker or verified isolate is available.
+
+**Read cancellation is part of quiescence:** a logical output reader registers
+a physical output subscription before the routing lock is released. If the
+host times out or is interrupted, that subscription must be cancelled.
+Otherwise it can strand the old code-image generation and block the next
+upgrade. Both cases have Java source regression tests.
+
+**No JIT requirement:** Java/Truffle may interpret new source or optimize it
+on JIT-enabled targets. LLVM may use offline AOT-built, signed PIC code or a
+trusted ORC JIT generation. AOT code can be hot replaced via checked loader
+indirection. Neither a raw FFI pointer nor a JIT resource tracker proves it
+is safe to unload code still reachable from a suspended frame, callback,
+shared arena, external device, or continuation.
+
+**Production release barrier:** require authenticated artifact provenance,
+state-schema and message-ABI receipts, capability non-escalation, actor
+execution/continuation/task drain, verified state-loan and shared-region
+leases, bounded immutable message transfer, FFI/DMA retirement, and
+generation-pinned rollback. Failed preparation reopens the old route only
+after candidate cleanup; failure after publication must keep old code
+quarantined until its last pin is gone. Never silently resume an invalid
+previous physical actor after committing a newer route.
+
+**Erlang comparison:** BEAM processes have separately GC-managed private
+heaps but normally share an operating-system address space. Oreslang can
+choose a *stronger* protected-worker boundary for isolated and untrusted
+actors, but must verify it independently of heap ownership and actor kind.
+
+These additions are draft hardening, not passing guest compiler evidence.
+The source-owning GitHub organization must execute the exact-head JDK25 and
+GraalVM tests, or independently approve a private carrier on a protected
+branch before any source mirror.
+
 ## Correct memory and process model
 
 An *actor* is not an OS process. Erlang/BEAM lightweight processes have private

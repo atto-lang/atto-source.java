@@ -255,6 +255,127 @@ final class LogicalSourceActorCrossContextUpgradeTest {
     }
 
     @Test
+    void protectedActorKindsCannotDowngradeToSameJvmHotReload() throws Exception {
+        String source = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 1; return; }
+                  receive(ActorMail<int> mail): void { return; }
+                end
+                pub routine main(): void { return; }
+                """;
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var generation = manager.stageActorGeneration("protected-v1.ores", source);
+            for (var kind : java.util.List.of(
+                    ActorRuntime.ActorKind.PRIVATE,
+                    ActorRuntime.ActorKind.UNTRUSTED)) {
+                var failure = assertThrows(SecurityException.class,
+                        () -> LogicalSourceActorRouterV1.spawn(
+                                generation, kind, "Counter", WAIT));
+                assertTrue(failure.getMessage().contains("protected worker/isolate"),
+                        failure::getMessage);
+            }
+            assertEquals(1, manager.liveGenerations(),
+                    "refused physical isolation must not stage extra generations");
+            assertDoesNotThrow(generation::close,
+                    "refused routes must not leave a generation lifetime pin");
+        }
+    }
+
+    @Test
+    void interruptedLogicalOutputReadDoesNotPinOldCodeImage() throws Exception {
+        String firstSource = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 2; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { return; }
+                """;
+        String secondSource = firstSource.replace(
+                "self.count = 2; return;", "self.count = 999; return;");
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("interrupt-v1.ores", firstSource);
+            var second = manager.stageActorGeneration("interrupt-v2.ores", secondSource);
+            try (LogicalSourceActorRouterV1 router =
+                         LogicalSourceActorRouterV1.spawn(
+                                 first, ActorRuntime.ActorKind.SHARED,
+                                 "Counter", WAIT)) {
+                var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                Thread reader = Thread.ofPlatform().start(() -> {
+                    Thread.currentThread().interrupt();
+                    try {
+                        router.ref().nextOutput(WAIT);
+                        failure.set(new AssertionError("interrupted read unexpectedly succeeded"));
+                    } catch (InterruptedException expected) {
+                        // The router must cancel the pending output subscription.
+                    } catch (Throwable unexpected) {
+                        failure.set(unexpected);
+                    }
+                });
+                reader.join(5000);
+                assertFalse(reader.isAlive(), "interrupted logical reader did not stop");
+                assertNull(failure.get());
+                assertTrue(router.upgradeTo(second, WAIT));
+                router.ref().send(40L);
+                assertEquals(42L, next(router.ref()));
+            }
+        }
+    }
+
+    @Test
+    void timedOutLogicalOutputReadDoesNotStrandHotUpgrade() throws Exception {
+        String v1 = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 1; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { return; }
+                """;
+        String v2 = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 900; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { return; }
+                """;
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("timeout-v1.ores", v1);
+            var second = manager.stageActorGeneration("timeout-v2.ores", v2);
+            try (LogicalSourceActorRouterV1 router =
+                         LogicalSourceActorRouterV1.spawn(
+                                 first, ActorRuntime.ActorKind.SHARED,
+                                 "Counter", WAIT)) {
+                var ref = router.ref();
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> ref.nextOutput(Duration.ofMillis(20)));
+                assertTrue(router.upgradeTo(second, WAIT),
+                        "timed-out output waiter must be cancelled before upgrading");
+                ref.send(41L);
+                assertEquals(42L, next(ref),
+                        "migrated actor must preserve state after output timeout");
+            }
+        }
+    }
+
+    @Test
     void pendingOldOutputReaderBlocksMigrationUntilCancelled() throws Exception {
         String v1 = """
                 define actor Counter as
