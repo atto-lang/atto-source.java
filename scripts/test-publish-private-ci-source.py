@@ -452,6 +452,8 @@ class CommittedSourceTreeTests(unittest.TestCase):
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         (self.source / "nested").mkdir()
         (self.source / "nested/abc.ores").write_text("safe\n")
+        (self.source / "nested.txt").write_text("prefix comparison\n")
+        (self.source / "utf-é.ores").write_text("utf8\n")
 
         def git(*args):
             return subprocess.check_output(
