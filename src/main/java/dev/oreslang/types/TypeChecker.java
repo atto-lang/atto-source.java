@@ -1563,7 +1563,17 @@ public final class TypeChecker {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
-            if (iface.moduleContract()) throw new IllegalArgumentException("module contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
+            if (iface.moduleContract()) {
+                if (iface.staticContract()) {
+                    throw new IllegalArgumentException(
+                            "static contract '" + interfaceRef.name()
+                                    + "' must be implemented with 'implements static "
+                                    + interfaceRef.name() + "'");
+                }
+                throw new IllegalArgumentException(
+                        "module contract '" + interfaceRef.name()
+                                + "' cannot be implemented by class '" + klass.name() + "'");
+            }
             Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
             if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
             Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
@@ -1573,6 +1583,58 @@ public final class TypeChecker {
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
             }
+        }
+
+        Set<String> implementedStaticContracts = new HashSet<>();
+        for (Ast.TypeRef contractRef : klass.staticContracts()) {
+            if (!implementedStaticContracts.add(contractRef.name())) {
+                throw new IllegalArgumentException(
+                        "duplicate static contract '" + contractRef.name()
+                                + "' on " + klass.name());
+            }
+            Ast.InterfaceDecl contract = findInterface(contractRef.name());
+            if (contract == null || !contract.moduleContract() || !contract.staticContract()) {
+                if (contract != null && contract.moduleContract()) {
+                    throw new IllegalArgumentException(
+                            "module contract '" + contractRef.name()
+                                    + "' cannot be implemented by a class static namespace");
+                }
+                if (contract != null) {
+                    throw new IllegalArgumentException(
+                            "interface '" + contractRef.name()
+                                    + "' is an instance contract; omit 'static' after implements");
+                }
+                throw new IllegalArgumentException(
+                        "unknown static contract '" + contractRef.name()
+                                + "' implemented by " + klass.name());
+            }
+
+            Type resolvedContract =
+                    resolveModuleContractRef(contractRef, contract, Set.of());
+            if (!(resolvedContract instanceof Named contractType)) {
+                throw new IllegalArgumentException(
+                        "static contract target must resolve to a named type");
+            }
+            Record expectedTemplate = interfaceShape(
+                    contract,
+                    Set.copyOf(contract.genericParameters()),
+                    new LinkedHashSet<>());
+            Record expected = (Record) substituteGenerics(
+                    expectedTemplate,
+                    genericBindings(
+                            contract.genericParameters(),
+                            contractType.arguments(),
+                            "static contract " + contract.name()));
+            Record actual = publicStaticClassShape(klass);
+            if (!assignable(actual, expected)) {
+                throw new IllegalArgumentException(
+                        "class '" + klass.name()
+                                + "' does not implement static contract '"
+                                + contractRef.name() + "': expected "
+                                + expected + " but got " + actual);
+            }
+            validateStaticContractFields(
+                    klass, contract, actual, expected, new LinkedHashSet<>());
         }
     }
 
