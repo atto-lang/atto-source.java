@@ -265,6 +265,7 @@ public final class NativeIo {
     }
 
     public static TcpConnection connect(OresContext context, String host, int port) {
+        TrustedNetworkIngressGuard.rejectUntrustedDirectNetwork("network.connect");
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("network.connect host cannot be blank");
         }
