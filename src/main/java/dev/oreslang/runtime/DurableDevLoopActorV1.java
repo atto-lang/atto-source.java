@@ -15,8 +15,9 @@ import java.util.Objects;
 public final class DurableDevLoopActorV1 {
 
     public sealed interface Message permits OpenRun, Deliver,
-            ClaimEffect, CompleteEffect, ReleaseEffect, ExpireClaims,
-            ReconcileCompleted, ReconcileRetry, QueryProjection, Shutdown { }
+            ClaimEffect, CompleteEffect, CompleteAndDeliver,
+            ReleaseEffect, ExpireClaims, ReconcileCompleted,
+            ReconcileRetry, QueryProjection, Shutdown { }
 
     public record OpenRun(
             String databasePath,
@@ -63,6 +64,22 @@ public final class DurableDevLoopActorV1 {
             effectKey = requireText(effectKey, "effectKey");
             claimToken = requireText(claimToken, "claimToken");
             receiptRef = requireText(receiptRef, "receiptRef");
+        }
+    }
+
+    public record CompleteAndDeliver(
+            String effectKey,
+            String claimToken,
+            String receiptRef,
+            long nowMillis,
+            String eventId,
+            DurableDevLoopV1.Event event) implements Message {
+        public CompleteAndDeliver {
+            effectKey = requireText(effectKey, "effectKey");
+            claimToken = requireText(claimToken, "claimToken");
+            receiptRef = requireText(receiptRef, "receiptRef");
+            eventId = requireText(eventId, "eventId");
+            event = Objects.requireNonNull(event, "event");
         }
     }
 
@@ -315,6 +332,23 @@ public final class DurableDevLoopActorV1 {
                 return;
             }
 
+            if (message instanceof CompleteAndDeliver complete) {
+                DurableDevLoopV1.Transition transition =
+                        store.completeAndAppend(
+                                complete.effectKey(),
+                                complete.claimToken(),
+                                complete.receiptRef(),
+                                complete.nowMillis(),
+                                complete.eventId(),
+                                complete.event());
+                emit(
+                        context,
+                        new Transitioned(
+                                transition.journalEntry(),
+                                projection()));
+                return;
+            }
+
             if (message instanceof ReleaseEffect release) {
                 store.releaseUnexecuted(
                         release.effectKey(),
@@ -499,6 +533,16 @@ public final class DurableDevLoopActorV1 {
                     "receiptRef", value.receiptRef(),
                     "nowMillis", value.nowMillis());
         }
+        if (message instanceof CompleteAndDeliver value) {
+            return WorkflowActorWireV1.map(
+                    "type", "complete_and_deliver",
+                    "effectKey", value.effectKey(),
+                    "claimToken", value.claimToken(),
+                    "receiptRef", value.receiptRef(),
+                    "nowMillis", value.nowMillis(),
+                    "eventId", value.eventId(),
+                    "event", WorkflowActorWireV1.event(value.event()));
+        }
         if (message instanceof ReleaseEffect value) {
             return WorkflowActorWireV1.map(
                     "type", "release",
@@ -560,6 +604,14 @@ public final class DurableDevLoopActorV1 {
                     WorkflowActorWireV1.string(map, "claimToken"),
                     WorkflowActorWireV1.string(map, "receiptRef"),
                     WorkflowActorWireV1.longValue(map, "nowMillis"));
+            case "complete_and_deliver" ->
+                    new CompleteAndDeliver(
+                            WorkflowActorWireV1.string(map, "effectKey"),
+                            WorkflowActorWireV1.string(map, "claimToken"),
+                            WorkflowActorWireV1.string(map, "receiptRef"),
+                            WorkflowActorWireV1.longValue(map, "nowMillis"),
+                            WorkflowActorWireV1.string(map, "eventId"),
+                            WorkflowActorWireV1.event(map.get("event")));
             case "release" -> new ReleaseEffect(
                     WorkflowActorWireV1.string(map, "effectKey"),
                     WorkflowActorWireV1.string(map, "claimToken"),
