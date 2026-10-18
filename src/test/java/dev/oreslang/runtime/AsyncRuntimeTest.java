@@ -124,4 +124,23 @@ final class AsyncRuntimeTest {
         }
     }
 
+    @Test
+    void asyncRuntimeRejectsItsOwnCarrierSelfJoinWithoutSealingHostShutdown() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             AsyncRuntime unrelated = new AsyncRuntime()) {
+            OresFuture<Integer> future = runtime.submit(() -> {
+                IllegalStateException rejected =
+                        assertThrows(IllegalStateException.class, runtime::close);
+                assertTrue(rejected.getMessage().contains("own carrier"));
+                assertFalse(runtime.isClosed(),
+                        "a self-join must not publish physical retirement or stop other tasks");
+                // Shutdown of a different idle runtime is not a self-join.
+                assertDoesNotThrow(unrelated::close);
+                return 42;
+            });
+            assertEquals(42, future.get(3, TimeUnit.SECONDS));
+            assertFalse(runtime.isClosed());
+        }
+    }
+
 }
