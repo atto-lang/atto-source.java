@@ -214,3 +214,30 @@ Resetting branch references did **not** remove the Git objects: commits were
 still retrievable by SHA. Administrators must restrict public access and seek
 GitHub Support assistance for retained Git objects, Actions caches/logs, and
 other copies before resolving the incident.
+
+## Offline publisher regression execution
+
+These checks **do not transfer source**. From a trusted authorized checkout of
+this security PR, run:
+
+```bash
+bash scripts/test-run-private-ci-regressions-local.sh
+PRIVATE_CI_TEST_REPEATS=3 bash scripts/run-private-ci-regressions-local.sh
+```
+
+The first command tests the runner against synthetic fixtures. The second
+compiles the actual publisher and its Python regressions, syntax-checks the
+actual Bash guards, executes the destination denial tests, and repeats the
+complete Python publisher suite (which also discovers merged-main tests)
+three times. The runner removes inherited GitHub token variables, uses a
+temporary empty GH CLI configuration, validates file SHA-256 stability and
+emits `PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1` **only** when every step
+succeeds. These controls isolate credentials, but are **not** a network sandbox:
+run offline or in a network-restricted environment.
+
+Until the actual command above produces its final success receipt and
+independent source branch/destination approvals are complete, CI publication
+remains **not authorized**. Neither source-free funded-runner results nor
+the local runner's synthetic smoke tests constitute execution of the full
+publisher suite.
+
