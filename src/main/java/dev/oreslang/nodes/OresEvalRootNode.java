@@ -7907,9 +7907,95 @@ public final class OresEvalRootNode extends RootNode {
                 if (parent == null) throw new IllegalArgumentException("unknown parent class " + parentRef.name());
                 for (Ast.FieldDecl field : effectiveFields(parent, seen)) result.putIfAbsent(field.name(), field);
             }
-            for (Ast.FieldDecl field : klass.fields()) result.put(field.name(), field);
+            for (Ast.FieldDecl field : klass.fields()) {
+                if (!field.isStatic()) result.put(field.name(), field);
+            }
             seen.remove(klass);
             return List.copyOf(result.values());
+        }
+
+        private Ast.FieldDecl findLocalStaticField(
+                Ast.ClassDecl klass,
+                String name) {
+            for (Ast.FieldDecl field : klass.fields()) {
+                if (field.isStatic() && field.name().equals(name)) return field;
+            }
+            return null;
+        }
+
+        private LinkedHashMap<String, Object> staticFields(Ast.ClassDecl klass) {
+            synchronized (staticFieldValues) {
+                LinkedHashMap<String, Object> existing = staticFieldValues.get(klass);
+                if (existing != null) {
+                    if (initializingStaticFields.contains(klass)) {
+                        throw new IllegalStateException(
+                                "static field initialization cycle involving " + klass.name());
+                    }
+                    return existing;
+                }
+
+                LinkedHashMap<String, Object> values = new LinkedHashMap<>();
+                for (Ast.FieldDecl field : klass.fields()) {
+                    if (field.isStatic()) {
+                        values.put(field.name(), UNINITIALIZED_FIELD);
+                    }
+                }
+                staticFieldValues.put(klass, values);
+                if (!initializingStaticFields.add(klass)) {
+                    staticFieldValues.remove(klass);
+                    throw new IllegalStateException(
+                            "static field initialization cycle involving " + klass.name());
+                }
+
+                try {
+                    Env initEnv = new Env(null, false, klass);
+                    for (Ast.FieldDecl field : klass.fields()) {
+                        if (!field.isStatic()) continue;
+                        if (field.initializer() == null) {
+                            throw new IllegalStateException(
+                                    "static field '" + klass.name() + "."
+                                            + field.name() + "' has no initializer");
+                        }
+                        values.put(field.name(), eval(field.initializer(), initEnv));
+                    }
+                    return values;
+                } catch (RuntimeException | Error failure) {
+                    staticFieldValues.remove(klass);
+                    throw failure;
+                } finally {
+                    initializingStaticFields.remove(klass);
+                }
+            }
+        }
+
+        private Object readStaticField(Ast.ClassDecl klass, String name) {
+            synchronized (staticFieldValues) {
+                Object value = staticFields(klass).get(name);
+                if (value == null && !staticFields(klass).containsKey(name)) {
+                    throw new IllegalArgumentException(
+                            "unknown static field " + klass.name() + "." + name);
+                }
+                if (value == UNINITIALIZED_FIELD) {
+                    throw new IllegalStateException(
+                            "static field '" + klass.name() + "." + name
+                                    + "' is read before initialization");
+                }
+                return value;
+            }
+        }
+
+        private void writeStaticField(
+                Ast.ClassDecl klass,
+                String name,
+                Object value) {
+            synchronized (staticFieldValues) {
+                LinkedHashMap<String, Object> fields = staticFields(klass);
+                if (!fields.containsKey(name)) {
+                    throw new IllegalArgumentException(
+                            "unknown static field " + klass.name() + "." + name);
+                }
+                fields.put(name, value);
+            }
         }
 
         private record OwnedField(Ast.ClassDecl owner, Ast.FieldDecl field) { }
@@ -7944,7 +8030,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
             }
             for (Ast.FieldDecl field : klass.fields()) {
-                if (field.name().equals(name)) {
+                if (!field.isStatic() && field.name().equals(name)) {
                     seen.remove(klass);
                     return new OwnedField(klass, field);
                 }
