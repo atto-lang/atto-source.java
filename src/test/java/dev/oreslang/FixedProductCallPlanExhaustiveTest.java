@@ -10,11 +10,11 @@ import static dev.oreslang.types.FixedProductCallPlan.InputSlot.named;
 import static dev.oreslang.types.FixedProductCallPlan.InputSlot.positional;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Exhaustively prove finite source-to-ABI permutations through arity six. */
+/** Exhaustively prove finite source-to-ABI permutations through arity seven. */
 final class FixedProductCallPlanExhaustiveTest {
     @Test
     void allPositionalPrefixesAndNamedTailPermutationsMapExactlyOnce() {
-        for (int arity = 0; arity <= 6; arity++) {
+        for (int arity = 0; arity <= 7; arity++) {
             for (int prefix = 0; prefix <= arity; prefix++) {
                 List<Integer> remaining = new ArrayList<>();
                 for (int i = prefix; i < arity; i++) remaining.add(i);
@@ -45,7 +45,7 @@ final class FixedProductCallPlanExhaustiveTest {
                 assertEquals(expectedAbiToSource[i], plan.abiToSource().get(i).intValue());
                 assertEquals(i, plan.sourceOrder().get(i).sourceIndex());
             }
-            assertEquals(plan, new FixedProductCallPlan(plan.sourceOrder(), plan.abiToSource()));
+            assertEquals(plan, FixedProductCallPlan.bind(parameters, slots));
             return;
         }
         for (int i = 0; i < remaining.size(); i++) {
@@ -66,15 +66,7 @@ final class FixedProductCallPlanExhaustiveTest {
                 () -> FixedProductCallPlan.bind(params, List.of(named("a"), positional())));
         assertThrows(IllegalArgumentException.class,
                 () -> FixedProductCallPlan.bind(params, List.of(named("a"), named("unknown"))));
-        assertThrows(IllegalArgumentException.class,
-                () -> new FixedProductCallPlan(
-                        List.of(new FixedProductCallPlan.BoundSlot(0, 1, null),
-                                new FixedProductCallPlan.BoundSlot(1, 0, "a")),
-                        List.of(1, 0)));
-        assertThrows(IllegalArgumentException.class,
-                () -> new FixedProductCallPlan(
-                        List.of(new FixedProductCallPlan.BoundSlot(0, 0, "a"),
-                                new FixedProductCallPlan.BoundSlot(1, 1, "a")),
-                        List.of(0, 1)));
+        assertEquals(0, FixedProductCallPlan.class.getConstructors().length);
+        assertFalse(FixedProductCallPlan.class.isRecord());
     }
 }
