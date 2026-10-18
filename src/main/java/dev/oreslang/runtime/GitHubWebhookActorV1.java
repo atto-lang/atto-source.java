@@ -6,12 +6,11 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Shared GitHub webhook ingress actor for durable workflow runs.
+ * Shared authenticated GitHub ingress actor.
  *
- * <p>The actor authenticates the exact raw request body before considering
- * normalized CI facts. It does not directly mutate a workflow actor: matched
- * deliveries are emitted as immutable outputs so a router/supervisor can send
- * the GitHub delivery id and typed CI event to the owning durable run.</p>
+ * <p>Only maps/lists/scalars cross ActorRuntime. Raw webhook bytes and the
+ * secret are base64 encoded by the host facade before transport, decoded only
+ * on the serialized actor lane, and never exposed through actor outputs.</p>
  */
 public final class GitHubWebhookActorV1 {
 
@@ -120,30 +119,90 @@ public final class GitHubWebhookActorV1 {
 
     public record Stopping() implements Output { }
 
-    private GitHubWebhookActorV1() { }
+    public static final class Ref {
+        private final ActorRuntime.ActorRef<Object> raw;
 
-    public static ActorRuntime.ActorRef<Message> spawn(
-            ActorRuntime runtime) {
-        Objects.requireNonNull(runtime, "runtime");
-        return runtime.spawnShared(
-                GitHubWebhookActorV1::createBehavior);
+        private Ref(ActorRuntime.ActorRef<Object> raw) {
+            this.raw = Objects.requireNonNull(raw, "raw");
+        }
+
+        public ActorRuntime.ActorRef<Object> raw() {
+            return raw;
+        }
+
+        public void send(Message message) {
+            raw.send(encodeMessage(
+                    Objects.requireNonNull(message, "message")));
+        }
+
+        public ActorRuntime.ActorOutputStream<Object> outputs() {
+            return raw.outputs();
+        }
     }
 
-    private static ActorRuntime.Behavior<Message> createBehavior(
-            ActorRuntime.ActorContext<Message> ignored) {
+    private GitHubWebhookActorV1() { }
+
+    public static Ref spawn(ActorRuntime runtime) {
+        Objects.requireNonNull(runtime, "runtime");
+        return new Ref(runtime.spawnShared(
+                GitHubWebhookActorV1::createBehavior));
+    }
+
+    public static Output decodeOutput(Object wire) {
+        Map<String, Object> map =
+                WorkflowActorWireV1.objectMap(wire);
+        return switch (WorkflowActorWireV1.string(map, "type")) {
+            case "ready" -> new Ready();
+            case "run_registered" -> new RunRegistered(
+                    WorkflowActorWireV1.string(map, "runId"));
+            case "run_unregistered" -> new RunUnregistered(
+                    WorkflowActorWireV1.string(map, "runId"));
+            case "matched" -> {
+                DurableDevLoopV1.Event event =
+                        WorkflowActorWireV1.event(
+                                map.get("event"));
+                if (!(event instanceof DurableDevLoopV1.CiCompleted ci)) {
+                    throw new IllegalArgumentException(
+                            "matched webhook output does not contain CI event");
+                }
+                yield new Matched(
+                        WorkflowActorWireV1.string(map, "runId"),
+                        WorkflowActorWireV1.string(map, "deliveryId"),
+                        WorkflowActorWireV1.string(
+                                map, "payloadSha256"),
+                        WorkflowActorWireV1.longValue(
+                                map, "workflowRunId"),
+                        ci);
+            }
+            case "unmatched" -> new Unmatched(
+                    WorkflowActorWireV1.string(map, "deliveryId"),
+                    WorkflowActorWireV1.string(
+                            map, "payloadSha256"),
+                    WorkflowActorWireV1.string(map, "reason"));
+            case "stopping" -> new Stopping();
+            default -> throw new IllegalArgumentException(
+                    "unknown GitHub ingress output type "
+                            + WorkflowActorWireV1.string(map, "type"));
+        };
+    }
+
+    private static ActorRuntime.Behavior<Object> createBehavior(
+            ActorRuntime.ActorContext<Object> ignored) {
         return new Behavior();
     }
 
     private static final class Behavior
-            implements ActorRuntime.Behavior<Message> {
+            implements ActorRuntime.Behavior<Object> {
         private byte[] secret;
         private final Map<String, GitHubCiCorrelationV1.Expectation>
                 expectations = new LinkedHashMap<>();
 
         @Override
         public void onMessage(
-                Message message,
-                ActorRuntime.ActorContext<Message> context) {
+                Object wire,
+                ActorRuntime.ActorContext<Object> context) {
+            Message message = decodeMessage(wire);
+
             if (message instanceof Configure configure) {
                 if (secret != null) {
                     throw new IllegalStateException(
@@ -186,7 +245,8 @@ public final class GitHubWebhookActorV1 {
                         receive.headers());
 
                 int matched = 0;
-                String lastReason = "no registered run matched CI identity";
+                String lastReason =
+                        "no registered run matched CI identity";
                 for (var expectation : expectations.values()) {
                     var result = GitHubCiCorrelationV1.correlate(
                             expectation,
@@ -239,10 +299,108 @@ public final class GitHubWebhookActorV1 {
         }
 
         private static void emit(
-                ActorRuntime.ActorContext<Message> context,
+                ActorRuntime.ActorContext<Object> context,
                 Output output) {
-            context.runtime().emitCurrentActorOutput(output);
+            context.runtime().emitCurrentActorOutput(
+                    encodeOutput(output));
         }
+    }
+
+    private static Map<String, Object> encodeMessage(Message message) {
+        if (message instanceof Configure value) {
+            return WorkflowActorWireV1.map(
+                    "type", "configure",
+                    "secret", WorkflowActorWireV1.bytes(value.secret()));
+        }
+        if (message instanceof RegisterRun value) {
+            return WorkflowActorWireV1.map(
+                    "type", "register",
+                    "expectation",
+                            WorkflowActorWireV1.expectation(
+                                    value.expectation()));
+        }
+        if (message instanceof UnregisterRun value) {
+            return WorkflowActorWireV1.map(
+                    "type", "unregister",
+                    "runId", value.runId());
+        }
+        if (message instanceof ReceiveCiWebhook value) {
+            return WorkflowActorWireV1.map(
+                    "type", "receive_ci",
+                    "headers",
+                            WorkflowActorWireV1.headers(value.headers()),
+                    "rawBody",
+                            WorkflowActorWireV1.bytes(value.rawBody()),
+                    "observed",
+                            WorkflowActorWireV1.observed(
+                                    value.observed()));
+        }
+        if (message instanceof Shutdown) {
+            return WorkflowActorWireV1.map("type", "shutdown");
+        }
+        throw new IllegalArgumentException(
+                "unsupported GitHub ingress message "
+                        + message.getClass().getName());
+    }
+
+    private static Message decodeMessage(Object wire) {
+        Map<String, Object> map =
+                WorkflowActorWireV1.objectMap(wire);
+        return switch (WorkflowActorWireV1.string(map, "type")) {
+            case "configure" -> new Configure(
+                    WorkflowActorWireV1.bytes(map.get("secret")));
+            case "register" -> new RegisterRun(
+                    WorkflowActorWireV1.expectation(
+                            map.get("expectation")));
+            case "unregister" -> new UnregisterRun(
+                    WorkflowActorWireV1.string(map, "runId"));
+            case "receive_ci" -> new ReceiveCiWebhook(
+                    WorkflowActorWireV1.headers(map.get("headers")),
+                    WorkflowActorWireV1.bytes(map.get("rawBody")),
+                    WorkflowActorWireV1.observed(map.get("observed")));
+            case "shutdown" -> new Shutdown();
+            default -> throw new IllegalArgumentException(
+                    "unknown GitHub ingress message type "
+                            + WorkflowActorWireV1.string(map, "type"));
+        };
+    }
+
+    private static Map<String, Object> encodeOutput(Output output) {
+        if (output instanceof Ready) {
+            return WorkflowActorWireV1.map("type", "ready");
+        }
+        if (output instanceof RunRegistered value) {
+            return WorkflowActorWireV1.map(
+                    "type", "run_registered",
+                    "runId", value.runId());
+        }
+        if (output instanceof RunUnregistered value) {
+            return WorkflowActorWireV1.map(
+                    "type", "run_unregistered",
+                    "runId", value.runId());
+        }
+        if (output instanceof Matched value) {
+            return WorkflowActorWireV1.map(
+                    "type", "matched",
+                    "runId", value.runId(),
+                    "deliveryId", value.deliveryId(),
+                    "payloadSha256", value.payloadSha256(),
+                    "workflowRunId", value.workflowRunId(),
+                    "event", WorkflowActorWireV1.event(value.event()));
+        }
+        if (output instanceof Unmatched value) {
+            return WorkflowActorWireV1.map(
+                    "type", "unmatched",
+                    "deliveryId", value.deliveryId(),
+                    "payloadSha256", value.payloadSha256(),
+                    "reason", value.reason());
+        }
+        if (output instanceof Stopping) {
+            return WorkflowActorWireV1.map("type", "stopping");
+        }
+        throw new IllegalArgumentException(
+                "unsupported GitHub ingress output "
+                        + output.getClass().getName());
     }
 
     private static String requireText(String value, String name) {
