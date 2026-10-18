@@ -35,6 +35,13 @@ final class LambdaCapturePlannerTest {
                 new Ast.ReturnStmt(name("local")))));
     }
 
+    @Test void recursiveFixpointNameRemainsInRuntimeCapturePlan() {
+        Ast.LambdaExpr recursive = expression(
+                new Ast.CallExpr(name("fact"), List.of(new Ast.LiteralExpr(1))));
+        assertEquals(Set.of("fact"), LambdaCapturePlanner.captures(recursive),
+                "runtime lowering must retain the pre-reserved recursive Slot identity");
+    }
+
     @Test void nestedClosureTransitiveCapturesRespectOwnParameters() {
         Ast.LambdaExpr nested = new Ast.LambdaExpr(
                 List.of(new Ast.Param(Ast.TypeRef.simple("int"), "inner")),
