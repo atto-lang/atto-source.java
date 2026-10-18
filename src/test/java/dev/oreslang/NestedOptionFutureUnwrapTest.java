@@ -242,6 +242,67 @@ final class NestedOptionFutureUnwrapTest {
         assertThrows(PolyglotException.class, () -> run(program));
     }
 
+    @Test
+    void genericOptionUnwrapMustPreserveItsStaticallyInstantiatedPayloadType() throws Exception {
+        String program = """
+                fnc one_layer<T>(Option<T> input): T {
+                  return input.unwrap();
+                }
+
+                pub fnc main(): void {
+                  val Option<Option<int>> nested = Some(Some(31));
+                  val Option<int> inner = one_layer<Option<int>>(nested);
+                  stdio.stdout.write(inner.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("31", run(program));
+    }
+
+    @Test
+    void genericFutureAwaitMustPreserveItsStaticallyInstantiatedPayloadType() throws Exception {
+        String program = """
+                fnc one_stage<T>(Future<T> source): T {
+                  return await source;
+                }
+
+                async fnc value(): int { return 31; }
+
+                pub fnc main(): void {
+                  val Future<Future<int>> nested = value().map(|int n| -> {
+                    return value();
+                  });
+                  val Future<int> inner = one_stage<Future<int>>(nested);
+                  stdio.stdout.write(await inner);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("31", run(program));
+    }
+
+    @Test
+    void genericCallersCannotImplicitlyFlattenNestedWrapperPayloads() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                fnc one_layer<T>(Option<T> input): T {
+                  return input.unwrap();
+                }
+                fnc invalid(Option<Option<int>> source): int {
+                  return one_layer<Option<int>>(source);
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                fnc one_stage<T>(Future<T> source): T {
+                  return await source;
+                }
+                fnc invalid(Future<Future<int>> source): int {
+                  return one_stage<Future<int>>(source);
+                }
+                """));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "nested-option-future.ores")
