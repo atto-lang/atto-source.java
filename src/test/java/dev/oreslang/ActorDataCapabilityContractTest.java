@@ -19,7 +19,9 @@ final class ActorDataCapabilityContractTest {
                 "ActorHandle<int>", "ActorControlHandle",
                 "ActorGroupJoinCapability", "ContinuationTarget",
                 "SyncCell<int>", "Region<int>", "RegionTransfer<int>",
-                "OwnedRegion<int>", "Option<ActorHandle<int>>",
+                "OwnedRegion<int>", "AnyCallable", "List<AnyCallable>",
+                "codec.AnyCallable", "codec.NetworkCodec<int, JsonWire>",
+                "Option<ActorHandle<int>>",
                 "Result<Region<int>, String>",
                 "Supervisor.ActorGroupJoinCapability"
         }) {
@@ -50,7 +52,7 @@ final class ActorDataCapabilityContractTest {
     void ordinaryAsyncTasksCannotLaunderActorAuthorityViaSharedSafe() {
         for (String type : new String[] {
                 "ActorHandle<int>", "ActorGroupJoinCapability",
-                "Region<int>", "NetworkCodec<int>",
+                "Region<int>", "NetworkCodec<int>", "AnyCallable",
                 "Option<RegionTransfer<int>>"
         }) {
             assertThrows(IllegalArgumentException.class,
