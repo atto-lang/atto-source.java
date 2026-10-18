@@ -162,6 +162,17 @@ public final class SameModuleLiteralInvocation {
             }
         }
         for (Ast.Decl declaration : declaringModule.declarations()) {
+            // A qualified app.target(...) candidate still needs proof that
+            // "app" resolves to the module namespace rather than a callable
+            // value. This small witness does not own the value-vs-module name
+            // resolver. A same-named module function is therefore ambiguous,
+            // regardless of arity or whether the function body is pure.
+            if (call.callee() instanceof Ast.MemberExpr
+                    && declaration instanceof Ast.FunctionDecl competing
+                    && competing.name().equals(declaringModule.name())) {
+                throw new IllegalArgumentException(
+                        "callable shadows module qualifier; requires lexical resolution");
+            }
             if (declaration instanceof Ast.FieldDecl field
                     && (field.name().equals(targetName)
                     || field.name().equals(declaringModule.name()))) {
