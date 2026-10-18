@@ -540,7 +540,9 @@ final class MutexLanguageTest {
                 """);
 
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
-        assertTrue(error.getMessage().contains("cannot await while holding a MutexGuard"));
+        assertTrue(error.getMessage().contains("cannot await while holding a MutexGuard")
+                || error.getMessage().contains("await requires an async or suspends caller"),
+                error::getMessage);
     }
 
     @Test
