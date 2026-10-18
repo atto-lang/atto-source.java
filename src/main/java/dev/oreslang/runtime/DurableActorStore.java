@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 
@@ -86,7 +87,7 @@ public interface DurableActorStore {
                 List<Outbound> outgoing) {
         public Turn {
             Objects.requireNonNull(address, "address");
-            if (epoch <= 0 || expectedStateVersion < 0) {
+            if (epoch <= 0 || expectedStateVersion < 0 || expectedStateVersion == Long.MAX_VALUE) {
                 throw new IllegalArgumentException("invalid turn fencing/version");
             }
             requireId(consumedDeliveryId, "consumedDeliveryId");
@@ -95,6 +96,13 @@ public interface DurableActorStore {
                 throw new IllegalArgumentException("nonsequential state version");
             }
             outgoing = List.copyOf(outgoing);
+            var ids = new HashSet<String>();
+            var keys = new HashSet<String>();
+            for (Outbound intent : outgoing) {
+                if (!ids.add(intent.intentId()) || !keys.add(intent.idempotencyKey())) {
+                    throw new IllegalArgumentException("duplicate outgoing intent identity/key");
+                }
+            }
         }
     }
 
