@@ -1,0 +1,136 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.SameModuleLiteralInvocation;
+import dev.oreslang.types.BoundInvocation;
+import dev.oreslang.types.OptionalCallAbiPreview;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/** Lexical-origin assertions only, with no executable type/ownership token. */
+final class SameModuleLiteralInvocationTest {
+    private static Ast.Program program() {
+        return Parser.parse("""
+                define module app as
+                    pub fnc target(int a, string? b, bool c): int { return a; }
+                    pub fnc caller(): void {
+                        const result = target(c: true, b: _, a: 4);
+                        return;
+                    }
+                end
+                """);
+    }
+
+    private static Ast.FunctionDecl caller(Ast.Program program) {
+        return (Ast.FunctionDecl) program.modules().getFirst().declarations().get(1);
+    }
+
+    private static Ast.StagedCallExpr call(Ast.FunctionDecl caller) {
+        return (Ast.StagedCallExpr) ((Ast.BindingStmt) caller.body().getFirst()).initializer();
+    }
+
+    @Test
+    void directSourceInvocationHasSameProgramAndDeclarationIdentity() {
+        Ast.Program program = program();
+        Ast.FunctionDecl calling = caller(program);
+        Ast.StagedCallExpr call = call(calling);
+        var witness = SameModuleLiteralInvocation.inspect(program, calling, call);
+
+        assertSame(program, witness.program());
+        assertSame(program.modules().getFirst(), witness.module());
+        assertSame(calling, witness.caller());
+        assertSame(call, witness.source());
+        assertSame(program.modules().getFirst().declarations().getFirst(),
+                witness.bound().selectedDeclaration());
+        assertEquals(List.of(2, 1, 0),
+                witness.tempRecipe().abiSlots().stream()
+                        .map(slot -> slot.rawCallItemIndex()).toList());
+        assertEquals(OptionalCallAbiPreview.Action.INJECT_NONE,
+                witness.tempRecipe().abiSlots().get(1).action());
+        assertEquals(BoundInvocation.Readiness.SHAPE_ONLY, witness.readiness());
+        assertThrows(IllegalStateException.class, witness::requireExecutable);
+    }
+
+    @Test
+    void detachedOrForeignCallerAndDetachedInvocationCannotClaimLexicalOrigin() {
+        Ast.Program program = program();
+        Ast.FunctionDecl calling = caller(program);
+        Ast.StagedCallExpr original = call(calling);
+        Ast.Program another = Parser.parse("""
+                define module different as
+                    pub fnc caller(): void { return; }
+                end
+                """);
+        var foreignCaller = (Ast.FunctionDecl)
+                another.modules().getFirst().declarations().getFirst();
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(program, foreignCaller, original));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(program, calling,
+                        new Ast.StagedCallExpr(original.callee(), List.of(), false,
+                                original.arguments())));
+    }
+
+    @Test
+    void shadowedCallTargetAndUnsoundCallerTypeClaimsAreRejected() {
+        Ast.Program parsed = Parser.parse("""
+                define module app as
+                    pub fnc target(int a): int { return a; }
+                    pub fnc caller(int target): void {
+                        const result = target(a: 5);
+                        return;
+                    }
+                end
+                """);
+        Ast.FunctionDecl caller = caller(parsed);
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(parsed, caller, call(caller)));
+
+        Ast.Program variables = Parser.parse("""
+                define module app as
+                    pub fnc target(int a): int { return a; }
+                    pub fnc caller(): void {
+                        const x = 7;
+                        const result = target(a: x);
+                        return;
+                    }
+                end
+                """);
+        Ast.FunctionDecl variableCaller = caller(variables);
+        Ast.StagedCallExpr variableCall = (Ast.StagedCallExpr)
+                ((Ast.BindingStmt) variableCaller.body().get(1)).initializer();
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(variables, variableCaller, variableCall));
+    }
+
+    @Test
+    void importedOrNestedScopeFailsClosedBeforeAnyExecution() {
+        Ast.Program parsed = program();
+        Ast.ImportDecl bogus = new Ast.ImportDecl(
+                Ast.ImportKind.MODULE, List.of("foreign"), false, null, "foreign");
+        Ast.Program imported = new Ast.Program(parsed.namespace(),
+                List.of(bogus), parsed.modules());
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(imported,
+                        caller(parsed), call(caller(parsed))));
+
+        Ast.FunctionDecl caller = caller(parsed);
+        Ast.StagedCallExpr original = call(caller);
+        Ast.FunctionDecl wrapped = new Ast.FunctionDecl(
+                caller.name(), caller.kind(), caller.visibility(), caller.async(),
+                caller.generator(), caller.structural(), caller.nonLexical(), caller.trapped(),
+                caller.actorKind(), caller.genericParameters(), caller.parameters(),
+                caller.returnType(), caller.annotations(),
+                List.of(new Ast.BlockStmt(List.of(new Ast.ExprStmt(original)))));
+        Ast.ModuleDecl module = parsed.modules().getFirst();
+        Ast.ModuleDecl modified = new Ast.ModuleDecl(module.name(), module.annotations(),
+                module.contracts(), List.of(module.declarations().getFirst(), wrapped));
+        Ast.Program nested = new Ast.Program(List.of(modified));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(nested, wrapped, original));
+    }
+}
