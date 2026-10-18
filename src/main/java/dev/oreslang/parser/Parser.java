@@ -961,8 +961,30 @@ public final class Parser {
         return result;
     }
 
+    /**
+     * General numeric lexing is intentionally permissive for legacy language
+     * constructs. Scheduling capacity metadata is safety-sensitive: separators
+     * must be strictly internal, between two ASCII decimal digits.
+     */
+    private static boolean validActorThreadDigits(String literal) {
+        if (literal == null || literal.isEmpty()) return false;
+        for (int i = 0; i < literal.length(); ++i) {
+            char ch = literal.charAt(i);
+            if (ch >= '0' && ch <= '9') continue;
+            if (ch != '_' || i == 0 || i == literal.length() - 1) return false;
+            char before = literal.charAt(i - 1);
+            char after = literal.charAt(i + 1);
+            if (before < '0' || before > '9' || after < '0' || after > '9')
+                return false;
+        }
+        return true;
+    }
+
     private int parsePositiveActorThreadInteger() {
         Token literal = consume(INT, "actor threads require positive integer literals");
+        if (!validActorThreadDigits(literal.lexeme())) {
+            throw error(literal, "malformed actor thread integer separator");
+        }
         try {
             int value = Integer.parseInt(literal.lexeme().replace("_", ""));
             if (value < 1) throw error(literal, "actor thread limits must be positive");
@@ -1301,6 +1323,10 @@ public final class Parser {
                         if (check(IDENT) && checkNext(EQUAL)) {
                             String parameterName = advance().lexeme();
                             consume(EQUAL, "expected '=' after named annotation parameter");
+                            if (name.equals("ActorThreads") && check(INT)
+                                    && !validActorThreadDigits(peek().lexeme())) {
+                                throw error(peek(), "malformed actor thread integer separator");
+                            }
                             args.add(Ast.TypeRef.namedParameter(parameterName, parseMetaValue()));
                         } else {
                             args.add(parseMetaValue());
