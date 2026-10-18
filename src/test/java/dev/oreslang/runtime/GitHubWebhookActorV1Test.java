@@ -357,6 +357,102 @@ final class GitHubWebhookActorV1Test {
     }
 
     @Test
+    void durableDeliveryIdConflictIsUnmatchedAfterRestart()
+            throws Exception {
+        Path db = tempDir.resolve("webhook-conflict-restart.db");
+        byte[] secret =
+                "0123456789abcdef0123456789abcdef"
+                        .getBytes(StandardCharsets.UTF_8);
+        String commit = sha('a');
+        String tree = sha('b');
+        byte[] firstBody = workflowRunBody(
+                "org/repo",
+                commit,
+                54L,
+                "ci",
+                "success",
+                "https://github.example/actions/runs/54");
+        var firstHeaders = new GitHubWebhookSecurityV1.Headers(
+                "sha256=" + hmac(secret, firstBody),
+                "delivery-conflict-restart",
+                "workflow_run");
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = GitHubWebhookActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new GitHubWebhookActorV1.Configure(
+                    secret, db.toString()));
+            next(outputs);
+            actor.send(new GitHubWebhookActorV1.RegisterRun(
+                    new GitHubCiCorrelationV1.Expectation(
+                            "run-conflict-restart",
+                            "org/repo",
+                            commit,
+                            tree,
+                            "ci")));
+            next(outputs);
+            actor.send(new GitHubWebhookActorV1.ReceiveCiWebhook(
+                    firstHeaders,
+                    firstBody,
+                    new GitHubWorkflowRunPayloadV1.GitTreeProof(
+                            commit,
+                            tree,
+                            "tree-proof://54")));
+            assertInstanceOf(
+                    GitHubWebhookActorV1.Matched.class,
+                    next(outputs));
+
+            actor.send(new GitHubWebhookActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
+        }
+
+        byte[] changedBody = workflowRunBody(
+                "org/repo",
+                commit,
+                55L,
+                "ci",
+                "success",
+                "https://github.example/actions/runs/55");
+        var changedHeaders = new GitHubWebhookSecurityV1.Headers(
+                "sha256=" + hmac(secret, changedBody),
+                "delivery-conflict-restart",
+                "workflow_run");
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = GitHubWebhookActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new GitHubWebhookActorV1.Configure(
+                    secret, db.toString()));
+            next(outputs);
+            actor.send(new GitHubWebhookActorV1.ReceiveCiWebhook(
+                    changedHeaders,
+                    changedBody,
+                    new GitHubWorkflowRunPayloadV1.GitTreeProof(
+                            commit,
+                            tree,
+                            "tree-proof://55")));
+
+            var conflict = assertInstanceOf(
+                    GitHubWebhookActorV1.Unmatched.class,
+                    next(outputs));
+            assertEquals(
+                    "delivery-conflict-restart",
+                    conflict.deliveryId());
+            assertTrue(conflict.reason().contains("reused"));
+            assertTrue(actor.raw().failure().isEmpty());
+
+            actor.send(new GitHubWebhookActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void ambiguousExactCorrelationRoutesNowhere() throws Exception {
         byte[] secret =
                 "0123456789abcdef0123456789abcdef"
