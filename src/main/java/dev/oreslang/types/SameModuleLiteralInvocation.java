@@ -128,8 +128,16 @@ public final class SameModuleLiteralInvocation {
             // before accepting any richer calling body.
             Ast.Expr value;
             if (statement instanceof Ast.ExprStmt expression) {
+                if (expression.expression() == null) {
+                    throw new IllegalArgumentException(
+                            "empty expression statement requires parser/semantic proof");
+                }
                 value = expression.expression();
             } else if (statement instanceof Ast.BindingStmt binding) {
+                if (binding.initializer() == null) {
+                    throw new IllegalArgumentException(
+                            "uninitialized local requires definite-assignment proof");
+                }
                 if (binding.name().equals(targetName)
                         || binding.name().equals(declaringModule.name())
                         || binding.inferredTypeName() != null) {
