@@ -125,6 +125,9 @@ public final class TypeChecker {
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
         OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(program);
         program = AnnotationExpander.expand(program);
+        // Expansion is a new AST trust boundary: no generated signature may
+        // introduce a T? formal after the initial source admission check.
+        OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
@@ -147,6 +150,7 @@ public final class TypeChecker {
         }
         OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(program);
         program = AnnotationExpander.expand(program);
+        OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
