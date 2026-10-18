@@ -1464,6 +1464,31 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             outside.rmdir()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_preflight_does_not_execute_checkout_controlled_shell(self):
+        # An unreviewed source checkout can contain an attacker-controlled
+        # guard; it must never run with the publisher's GitHub credentials.
+        scripts = self.root / "scripts"
+        scripts.mkdir(exist_ok=True)
+        marker = self.root / "checkout-guard-executed"
+        guard = scripts / "check-private-ci-destination.sh"
+        guard.write_text("#!/bin/sh\\ntouch " + str(marker) + "\\n")
+        guard.chmod(0o755)
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with patch.object(pub.subprocess, "run", side_effect=AssertionError(
+                    "publisher invoked an executable from the checkout")):
+                pub.require_preflight("trusted/ci", self.root)
+        self.assertFalse(marker.exists())
+        self.assertTrue(any(route == "repos/trusted/ci"
+                            for _, route, _ in self.route_calls))
+
+    def test_preflight_denies_disallowed_destination_without_shell(self):
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with patch.object(pub.subprocess, "run", side_effect=AssertionError(
+                    "unreviewed checkout shell must not execute")):
+                with self.assertRaisesRegex(pub.Denied, "revoked or absent"):
+                    pub.require_preflight("not-approved/infra", self.root)
+        self.assertEqual([], self.route_calls)
+
     def test_denied_preflight_halts_before_api(self):
         with patch.object(pub, "require_preflight", side_effect=pub.Denied("not approved")):
             with self.assertRaisesRegex(pub.Denied, "not approved"):
