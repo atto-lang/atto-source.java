@@ -104,7 +104,7 @@ public final class OresVM implements AutoCloseable {
         // carriers are created only when independent runnable CONTROL turns contend.
         int maximumControlParallelism = carrierBudget == null
                 ? Integer.getInteger("ores.runtime.control.max.parallelism", 20)
-                : carrierBudget.controlReserve();
+                : Math.min(20, carrierBudget.borrowingMaximumPerDomain());
         validateControlBounds(controlParallelism, maximumControlParallelism);
         this.controlExecutor = new AdaptiveCarrierExecutor(
                 controlParallelism, maximumControlParallelism,
@@ -213,6 +213,10 @@ public final class OresVM implements AutoCloseable {
     OresCarrierBudget carrierBudget() { return carrierBudget; }
 
     OresCarrierPermitPool carrierPermitPool() { return carrierPermitPool; }
+
+    OresCarrierPermitPool.Snapshot carrierPermitSnapshot() {
+        return carrierPermitPool == null ? null : carrierPermitPool.snapshot();
+    }
 
     /** Test/host diagnostic for OresVM-owned runtime threads only. JVM GC,
      * JIT/JVMCI and embedder threads are intentionally outside this census.
