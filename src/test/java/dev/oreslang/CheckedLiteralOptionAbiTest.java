@@ -135,6 +135,36 @@ final class CheckedLiteralOptionAbiTest {
 
 
     @Test
+    void forgedNonFiniteFloatPayloadsCannotBecomeCheckedScalarOrOptionValues() {
+        for (double invalid : new double[] {
+                Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY
+        }) {
+            // An AST LiteralExpr accepts any Object, but special IEEE-754
+            // payloads have no independently validated source spelling here.
+            assertThrows(IllegalArgumentException.class,
+                    () -> new CheckedLiteralOptionAbi.CapturedScalar(
+                            Ast.TypeRef.simple("float"), invalid));
+        }
+        // Finite scalar literals retain their exact float type and value,
+        // including signed zero, which has real source-level semantics.
+        for (double valid : new double[] { 0.0d, -0.0d, 2.5d, -123.25d }) {
+            var captured = new CheckedLiteralOptionAbi.CapturedScalar(
+                    Ast.TypeRef.simple("float"), valid);
+            assertEquals(Ast.TypeRef.simple("float"), captured.type());
+            assertEquals(
+                    Double.doubleToRawLongBits(valid),
+                    Double.doubleToRawLongBits((double) captured.value()));
+        }
+        var some = new CheckedLiteralOptionAbi.SomeValue(
+                Ast.TypeRef.simple("float"),
+                new CheckedLiteralOptionAbi.CapturedScalar(
+                        Ast.TypeRef.simple("float"), 2.5d));
+        assertEquals(new Ast.TypeRef("Option",
+                        List.of(Ast.TypeRef.simple("float")), false),
+                some.calleeType());
+    }
+
+    @Test
     void previewCanOnlyBeIssuedByTheMaterializer() {
         assertEquals(0, CheckedLiteralOptionAbi.Preview.class.getConstructors().length,
                 "public preview constructors would allow forged checked ABI evidence");
