@@ -7103,6 +7103,17 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ImportedNamespace namespace) return namespace.owner().exportValue(namespace.kind(), name);
             if (receiver instanceof ModuleFacade namespace) return namespace.owner().moduleMember(namespace.module(), name);
             if (receiver instanceof ClassFacade klass) {
+                Ast.FieldDecl field =
+                        klass.owner().findLocalStaticField(klass.klass(), name);
+                if (field != null) {
+                    klass.owner().requireClassMemberVisible(
+                            field.visibility(),
+                            klass.klass(),
+                            env == null ? null : env.accessClass(),
+                            "static field",
+                            field.name());
+                    return klass.owner().readStaticField(klass.klass(), field.name());
+                }
                 List<Ast.MethodDecl> functions = klass.owner().findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
