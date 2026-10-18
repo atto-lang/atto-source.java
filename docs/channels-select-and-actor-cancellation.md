@@ -325,8 +325,10 @@ lifetime rules as static `nb select` arms:
   continuing caller cannot read, mutate, or transfer them;
 - ordinary borrowed captures (including aliases of actor `self`) and
   guard-bearing captures are rejected;
-- Copy captures remain usable by the caller; a mutable capture transfers
-  exclusively, even when its underlying type is Copy;
+- read-only Copy captures are snapshotted at registration: the callback sees
+  the captured value even if the continuing caller later rebinds its own local;
+- a mutable capture transfers exclusively, even when its underlying type is
+  Copy, and the detached continuation receives its own continuation-local Slot;
 - only the canonical actor `self` mailbox capability has the special
   actor-turn lifetime;
 - nested channel callbacks are included in outer deferred-capture scanning,
@@ -373,8 +375,12 @@ detached `void` continuation scope:
 - `return value;` is invalid;
 - `break`/`continue` cannot escape into an enclosing loop that has already
   continued;
-- Copy values and locally-copyable channel/select handles may be captured while
-  the current turn continues;
+- read-only Copy values are snapshotted into continuation-local Slots at
+  registration while the current turn continues; later outer rebinding cannot
+  alter what the already-armed arm observes;
+- channel/payload expressions used to register the select are not retained just
+  because they participated in registration; only free variables in deferred
+  arm bodies enter the continuation environment;
 - move-only owned locals referenced by any arm transfer into the armed
   selection, so the continuing outer code cannot use them afterward;
 - mutable captures transfer exclusively into the continuation;
