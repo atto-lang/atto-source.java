@@ -378,8 +378,19 @@ public final class Ast {
                     new ActorThreadPolicy(1, java.util.Objects.requireNonNull(maxActorThreads).value()));
         }
 
-        /** Compatibility accessor, representing only the maximum. */
+        /**
+         * Lossless compatibility projection to the historical max-only enum.
+         * A modern min > 1 policy cannot be represented by that enum: fail
+         * closed instead of silently weakening the capacity floor when a
+         * legacy AST producer reconstructs the declaration.
+         */
         public MaxActorThreads maxActorThreads() {
+            if (actorThreads.min() != 1) {
+                throw new IllegalStateException(
+                        "legacy MaxActorThreads cannot represent actor threads min="
+                                + actorThreads.min()
+                                + "; use the full ActorThreadPolicy");
+            }
             return switch (actorThreads.max()) {
                 case 1 -> MaxActorThreads.LOW;
                 case 2 -> MaxActorThreads.MEDIUM;
