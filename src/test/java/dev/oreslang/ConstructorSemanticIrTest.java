@@ -131,6 +131,25 @@ final class ConstructorSemanticIrTest {
     }
 
     @Test
+    void recursiveSelfCellIsRuntimeFixpointNotExternalOwnershipOrActorData() {
+        ConstructorSemanticIr.CaptureBinding recursive =
+                new ConstructorSemanticIr.CaptureBinding(
+                        "root::fact", ConstructorSemanticIr.CaptureOrigin.RECURSIVE_SELF, false);
+        assertFalse(recursive.participatesInExternalOwnership());
+        assertFalse(recursive.actorDataAdmissible());
+
+        ConstructorSemanticIr.CaptureBinding outer =
+                new ConstructorSemanticIr.CaptureBinding(
+                        "root::bias", ConstructorSemanticIr.CaptureOrigin.EXTERNAL_BINDING, true);
+        assertTrue(outer.participatesInExternalOwnership());
+        assertFalse(outer.actorDataAdmissible());
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new ConstructorSemanticIr.CaptureBinding(
+                        "root::fact", ConstructorSemanticIr.CaptureOrigin.RECURSIVE_SELF, true));
+    }
+
+    @Test
     void serializableCaptureMetadataNeverMakesExecutableCallablePortableData() {
         ConstructorSemanticIr.CallableType callable =
                 new ConstructorSemanticIr.CallableType(
