@@ -544,3 +544,36 @@ constructor ABI and unlowered constructor `self` receiver erasure.
 These checks narrow planning admission; they do **not** enable calls.
 This IR still cannot establish caller lexical scope or trusted source types,
 and `requireExecutable()` remains an unconditional error.
+
+### Branch reconciliation and checked literal-only source types (2026-10-18)
+
+The owner-bound invocation branch (Java PR #1397, stacked on #1335) now
+preserves both histories in non-force merge commits, retaining #1335's
+canonical `OptionalCallEvaluationSchedule` and its raw-call-item
+`SourceBinding` provenance. The `BoundInvocation` constructor rebinds
+against the *original* staged call items and selected declaration. Every
+recorded ABI slot must agree with the formal name/type, dense expression
+source index, and original omitted/supplied raw call-item position. Its
+schedule is a single immutable source-first/ABI-second snapshot.
+
+The public `bindModuleFunction`, `bindClassMethod`, and
+`bindClassConstructor` factories still take **asserted**, untrusted source
+types for structural/diagnostic planning only. No executable authorization
+is derived from these values. Narrow companion `bindLiteral*` factories
+instead derive exact primitive (`int`, `float`, `bool`, `string`) facts
+directly from top-level literal-expression AST values; bare `None`, variable
+references, calls, spreads, null and unsupported literals fail closed.
+Even this narrow provenance is **not** sufficient for access, ownership,
+effects, alias/generic substitution or runtime Option ABI proof.
+
+Both paths return `SHAPE_ONLY` and `requireExecutable()` always throws.
+The next authorization gate must be issued by the lexical TypeChecker and
+OwnershipChecker after selected-owner visibility, receiver, generic,
+borrowing/moving, effects, constructor initialization, and type adaptations
+are checked together. Only then can compiler-owned temporary lowering be
+enabled. Neither this stage nor the textual JUnit tests establish executable
+guest-language parity; exact-tree JDK25/GraalVM/LLVM runs are still required.
+
+Source-org Actions jobs have failed without recorded runner steps or logs.
+Private cross-organization mirror transfer remains disallowed until separate
+CODEOWNER/security approval on protected branch under PR #1326.
