@@ -94,4 +94,26 @@ final class OresTaskTest {
         }
     }
 
+    @Test
+    void futureProjectionRetainsCancellationAuthority() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime()) {
+            CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch interrupted = new CountDownLatch(1);
+            OresTask<Integer> task = runtime.submitTask(() -> {
+                started.countDown();
+                try {
+                    Thread.sleep(TimeUnit.SECONDS.toMillis(30));
+                    return 7;
+                } catch (InterruptedException expected) {
+                    interrupted.countDown();
+                    throw expected;
+                }
+            });
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            assertTrue(task.asFuture().cancel(true));
+            assertTrue(task.isCancelled());
+            assertTrue(interrupted.await(2, TimeUnit.SECONDS));
+        }
+    }
+
 }
