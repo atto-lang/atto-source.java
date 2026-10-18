@@ -276,9 +276,15 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
 
             var sink = runtime.<String>spawnShared(() -> (value, actor) -> {
                 assertEquals("work:sink", value);
+                assertTrue(ActorPipelineRouteSession.wasMailboxPublished(
+                        runtime.currentPipelineRouteFrame()),
+                        "sink routed DATA must be marked published before receive");
                 runtime.routeCurrentPipelineBackward("ack:sink");
             });
             var worker = runtime.<String>spawnShared(() -> (value, actor) -> {
+                assertTrue(ActorPipelineRouteSession.wasMailboxPublished(
+                        runtime.currentPipelineRouteFrame()),
+                        "worker receive cannot run with unpublished route frame");
                 if (value.equals("work")) {
                     runtime.routeCurrentPipelineForward(value + ":sink");
                 } else if (value.equals("ack:sink")) {
