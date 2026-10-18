@@ -270,10 +270,10 @@ resolved representation:
 
 ```text
 CapturePlan {
-  bindings: CaptureBinding[]
+  bindings: ResolvedCaptureBinding[]
 }
 
-CaptureBinding {
+ResolvedCaptureBinding {
   binding_id: CaptureBindingId   // declaration identity, never source spelling
   debug_name: String
   type: Type
