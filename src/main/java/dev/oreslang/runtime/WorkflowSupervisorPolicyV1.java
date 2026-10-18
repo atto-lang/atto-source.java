@@ -124,7 +124,7 @@ public final class WorkflowSupervisorPolicyV1 {
         long elapsed = Math.subtractExact(
                 nowMillis, usage.startedAtMillis());
         if (elapsed > policy.maxWallClockMillis()) {
-            return cancel(
+            return cancelAdmission(
                     usage,
                     "wall_clock_budget_exhausted");
         }
@@ -132,7 +132,7 @@ public final class WorkflowSupervisorPolicyV1 {
         long nextTokens = Math.addExact(
                 usage.modelTokens(), additionalModelTokens);
         if (nextTokens > policy.maxModelTokens()) {
-            return cancel(
+            return cancelAdmission(
                     usage,
                     "model_token_budget_exhausted");
         }
@@ -140,7 +140,7 @@ public final class WorkflowSupervisorPolicyV1 {
         long nextSpend = Math.addExact(
                 usage.spendMicros(), additionalSpendMicros);
         if (nextSpend > policy.maxSpendMicros()) {
-            return cancel(
+            return cancelAdmission(
                     usage,
                     "spend_budget_exhausted");
         }
@@ -148,7 +148,7 @@ public final class WorkflowSupervisorPolicyV1 {
         int nextCiRuns = usage.ciRuns()
                 + (activity == WorkflowActivityProtocolV1.Kind.CI ? 1 : 0);
         if (nextCiRuns > policy.maxCiRuns()) {
-            return cancel(
+            return cancelAdmission(
                     usage,
                     "ci_run_budget_exhausted");
         }
@@ -198,7 +198,7 @@ public final class WorkflowSupervisorPolicyV1 {
                 reason);
     }
 
-    private static Admission cancel(
+    private static Admission cancelAdmission(
             Usage usage,
             String reason) {
         Usage cancelled = cancel(usage, reason);
