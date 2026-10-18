@@ -4965,6 +4965,59 @@ public final class ActorRuntime implements AutoCloseable {
      * foreign FFI/timer/device leases have quiesced. A production supervisor
      * must subsequently obtain those independent fences before upgrading.</p>
      */
+    /**
+     * Trusted host registration for one actor-related external callback, timer,
+     * FFI call or device operation. The owner must retain the lease throughout
+     * the complete lifetime and close it only after callbacks cannot resume.
+     * This is a host hook, not automatic registration of every native resource.
+     */
+    final class HotUpgradeExternalLease implements AutoCloseable {
+        private final ActorCell<?> cell;
+        private final AtomicBoolean released = new AtomicBoolean();
+
+        private HotUpgradeExternalLease(ActorCell<?> cell) {
+            this.cell = cell;
+        }
+
+        @Override public void close() {
+            synchronized (cell.lifecycleLock) {
+                if (!released.compareAndSet(false, true)) return;
+                if (cell.hotUpgradeExternalPins <= 0)
+                    throw new IllegalStateException("actor external upgrade pin underflow");
+                cell.hotUpgradeExternalPins--;
+                cell.lifecycleLock.notifyAll();
+            }
+        }
+    }
+
+    /**
+     * Register external actor work before it becomes observable. A concurrent
+     * supervisor freeze and this admission are serialized on lifecycleLock:
+     * once freeze wins, no new host-side work may take the old generation.
+     */
+    HotUpgradeExternalLease pinExternalWorkForHotUpgrade(ActorRef<?> ref) {
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this))
+            throw new ActorInvalidReferenceException(
+                    "external upgrade lease belongs to a foreign actor runtime");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) throw terminated(ref);
+        synchronized (cell.lifecycleLock) {
+            if (closed.get() || cell.stopped.get() || cell.finalized || cell.sealing)
+                throw terminated(ref);
+            if (cell.upgradeIngressTicket != null)
+                throw new ActorSealedException(ref.id());
+            if (cell.hotUpgradeExternalPins == Integer.MAX_VALUE)
+                throw new IllegalStateException("actor external upgrade pin budget exhausted");
+            // Construct the lease before reserving its counter, so OOME
+            // does not strand the actor in a permanently pinned generation.
+            HotUpgradeExternalLease lease = new HotUpgradeExternalLease(cell);
+            cell.hotUpgradeExternalPins++;
+            return lease;
+        }
+    }
+
     final class HotUpgradeIngressFreeze implements AutoCloseable {
         private final ActorCell<?> cell;
         private final Object ticket;
@@ -4973,6 +5026,15 @@ public final class ActorRuntime implements AutoCloseable {
         private HotUpgradeIngressFreeze(ActorCell<?> cell, Object ticket) {
             this.cell = cell;
             this.ticket = ticket;
+        }
+
+        /** Number of registered external host tasks still holding this generation. */
+        int outstandingExternalPins() {
+            synchronized (cell.lifecycleLock) {
+                if (released.get() || cell.upgradeIngressTicket != ticket)
+                    throw new IllegalStateException("stale hot-upgrade freeze handle");
+                return cell.hotUpgradeExternalPins;
+            }
         }
 
         /** A scheduler/mailbox observation, NOT an executable-image retirement proof. */
@@ -4992,7 +5054,8 @@ public final class ActorRuntime implements AutoCloseable {
                             && cell.activeMail == null
                             && cell.children.isEmpty()
                             && cell.pendingOperations.isEmpty()
-                            && cell.pendingCompletionPublications == 0;
+                            && cell.pendingCompletionPublications == 0
+                            && cell.hotUpgradeExternalPins == 0;
                 }
             }
         }
@@ -6760,6 +6823,8 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean sealing;
         /** Supervisor-only opaque admission identity; no guest-code access. */
         private Object upgradeIngressTicket;
+        /** Host-registered external callback/FFI/device lifetimes; lifecycleLock-owned. */
+        private int hotUpgradeExternalPins;
         // Lifetime-affine structured owner: never transferred before physical
         // finalization, even if the original group closes during cancellation.
         private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
