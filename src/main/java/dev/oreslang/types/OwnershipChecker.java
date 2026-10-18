@@ -3650,9 +3650,17 @@ public final class OwnershipChecker {
         return type != null && !type.isBorrow() && type.name().equals("MutexGuard") && type.arguments().size() == 1;
     }
 
-    private static boolean containsCallableCaptureType(Ast.TypeRef type) {
+    private boolean containsCallableCaptureType(Ast.TypeRef type) {
+        return containsCallableCaptureType(type, new LinkedHashSet<>());
+    }
+
+    private boolean containsCallableCaptureType(
+            Ast.TypeRef type,
+            Set<Ast.ClassDecl> seenClasses) {
         if (type == null) return false;
-        if (type.isBorrow()) return containsCallableCaptureType(type.borrowedTarget());
+        if (type.isBorrow()) {
+            return containsCallableCaptureType(type.borrowedTarget(), seenClasses);
+        }
         if (type.name().equals("Fnc")
                 || type.name().equals("Function")
                 || type.name().equals("AnyCallable")) {
@@ -3660,13 +3668,29 @@ public final class OwnershipChecker {
         }
         if (type.isRecordType()) {
             for (Ast.TypeRef member : type.recordMembers().values()) {
-                if (containsCallableCaptureType(member)) return true;
+                if (containsCallableCaptureType(member, seenClasses)) return true;
             }
         }
         for (Ast.TypeRef argument : type.arguments()) {
-            if (containsCallableCaptureType(argument)) return true;
+            if (containsCallableCaptureType(argument, seenClasses)) return true;
         }
-        return false;
+
+        Ast.ClassDecl klass = findClass(type.name());
+        if (klass == null || !seenClasses.add(klass)) return false;
+        try {
+            for (ResolvedField field :
+                    effectiveFieldTargets(klass, type, new LinkedHashSet<>())) {
+                Ast.TypeRef fieldType = substituteType(
+                        ownershipFieldType(field.field()),
+                        genericBindings(
+                                field.owner().genericParameters(),
+                                field.ownerType().arguments()));
+                if (containsCallableCaptureType(fieldType, seenClasses)) return true;
+            }
+            return false;
+        } finally {
+            seenClasses.remove(klass);
+        }
     }
 
     private static boolean containsMutexGuardType(Ast.TypeRef type) {
