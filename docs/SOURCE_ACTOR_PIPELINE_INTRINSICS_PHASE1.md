@@ -230,7 +230,12 @@ one-shot delivery, or `CLAIMED → FREE` on **known prepublication**
 rejection. `ActorRuntime.sendWithPipelineFrame` claims before any
 fallible DATA preparation and refunds the claim with mailbox credits if
 it never publishes. Two concurrent publishers cannot enqueue the same
-sealed frame. `PUBLISHED` never transitions backward.
+sealed frame. A **per-send successful-claim flag** guards cleanup:
+a losing competing sender must never abort another sender's claim.
+The new real-mailbox JUnit regression holds a claim, rejects a
+competing send, proves the original claim remains reserved, then
+admits exactly one intended DATA envelope after release.
+`PUBLISHED` never transitions backward.
 
 The exact mailbox `tryWrite` commit is immediately followed by a
 **nonthrowing, allocation-free, monitor-free** publication state update.
