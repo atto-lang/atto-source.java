@@ -3729,7 +3729,7 @@ public final class Parser {
                     String name = advance().lexeme();
                     params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
                 } else {
-                    Ast.TypeRef type = parseTypeRef();
+                    Ast.TypeRef type = parseFormalTypeRef();
                     boolean mutable = match(MUT);
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
                     params.add(new Ast.Param(type, name, false, mutable));
