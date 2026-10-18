@@ -114,18 +114,27 @@ public final class WorkflowSupervisorPolicyV1 {
             throw new IllegalArgumentException(
                     "supervisor estimates cannot be negative");
         }
-        if (usage.cancelled()) {
+        Usage observed = new Usage(
+                usage.startedAtMillis(),
+                usage.modelTokens(),
+                usage.ciRuns(),
+                usage.spendMicros(),
+                currentAmbiguousEffects,
+                usage.cancelled(),
+                usage.cancellationReason());
+
+        if (observed.cancelled()) {
             return new Admission(
                     Decision.CANCEL,
-                    usage,
-                    usage.cancellationReason());
+                    observed,
+                    observed.cancellationReason());
         }
 
         long elapsed = Math.subtractExact(
-                nowMillis, usage.startedAtMillis());
+                nowMillis, observed.startedAtMillis());
         if (elapsed > policy.maxWallClockMillis()) {
             return cancelAdmission(
-                    usage,
+                    observed,
                     "wall_clock_budget_exhausted");
         }
 
@@ -133,7 +142,7 @@ public final class WorkflowSupervisorPolicyV1 {
                 usage.modelTokens(), additionalModelTokens);
         if (nextTokens > policy.maxModelTokens()) {
             return cancelAdmission(
-                    usage,
+                    observed,
                     "model_token_budget_exhausted");
         }
 
@@ -141,7 +150,7 @@ public final class WorkflowSupervisorPolicyV1 {
                 usage.spendMicros(), additionalSpendMicros);
         if (nextSpend > policy.maxSpendMicros()) {
             return cancelAdmission(
-                    usage,
+                    observed,
                     "spend_budget_exhausted");
         }
 
@@ -150,7 +159,7 @@ public final class WorkflowSupervisorPolicyV1 {
                 activity == WorkflowActivityProtocolV1.Kind.CI ? 1 : 0);
         if (nextCiRuns > policy.maxCiRuns()) {
             return cancelAdmission(
-                    usage,
+                    observed,
                     "ci_run_budget_exhausted");
         }
 
@@ -158,7 +167,7 @@ public final class WorkflowSupervisorPolicyV1 {
                 > policy.maxAmbiguousEffects()) {
             return new Admission(
                     Decision.REQUIRE_HUMAN,
-                    usage,
+                    observed,
                     "ambiguous_effect_budget_exhausted");
         }
 
@@ -166,12 +175,12 @@ public final class WorkflowSupervisorPolicyV1 {
                 && policy.requireApprovalBeforeProtectedWrite()) {
             return new Admission(
                     Decision.REQUIRE_HUMAN,
-                    usage,
+                    observed,
                     "protected_write_requires_approval");
         }
 
         Usage updated = new Usage(
-                usage.startedAtMillis(),
+                observed.startedAtMillis(),
                 nextTokens,
                 nextCiRuns,
                 nextSpend,
