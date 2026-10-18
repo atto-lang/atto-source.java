@@ -512,6 +512,24 @@ final class DurableDevLoopEndToEndV1Test {
             assertEquals(2, replay.iteration());
             assertTrue(store.snapshot().completedEffects() >= 7);
         }
+
+        try (var ledger = SqliteWorkflowSupervisorLedgerV1.open(
+                database,
+                "run-e2e",
+                new WorkflowSupervisorPolicyV1.Policy(
+                        60_000L,
+                        100_000L,
+                        10,
+                        50_000_000L,
+                        2,
+                        false),
+                100L)) {
+            var usage = ledger.usage();
+            assertEquals(2_550L, usage.modelTokens());
+            assertEquals(255_000L, usage.spendMicros());
+            assertEquals(2, usage.ciRuns());
+            assertFalse(usage.cancelled());
+        }
     }
 
     @Test
