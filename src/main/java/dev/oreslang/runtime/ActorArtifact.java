@@ -15,6 +15,7 @@ import java.util.UUID;
  * object rather than re-resolving a guest-controlled path.</p>
  */
 public final class ActorArtifact<T> {
+    private final UUID admittingRuntimeId;
     private final UUID codeGenerationId;
     private final String actorTypeName;
     private final Ast.ActorKind actorKind;
@@ -24,6 +25,7 @@ public final class ActorArtifact<T> {
     private final String messageAbiSha256;
     private final String stateSchemaSha256;
     private final String wireCodecSha256;
+    private final String workerPolicySha256;
     private final String compilerBackend;
     private final String compilerVersion;
     private final String compilerGitCommit;
@@ -35,6 +37,7 @@ public final class ActorArtifact<T> {
     private final byte[] exactArtifactBytes;
 
     private ActorArtifact(
+            UUID admittingRuntimeId,
             UUID codeGenerationId,
             String actorTypeName,
             Ast.ActorKind actorKind,
@@ -44,6 +47,7 @@ public final class ActorArtifact<T> {
             String messageAbiSha256,
             String stateSchemaSha256,
             String wireCodecSha256,
+            String workerPolicySha256,
             String compilerBackend,
             String compilerVersion,
             String compilerGitCommit,
@@ -53,6 +57,8 @@ public final class ActorArtifact<T> {
             String keyId,
             Set<IsolatePolicy.Capability> requiredCapabilities,
             byte[] exactArtifactBytes) {
+        this.admittingRuntimeId =
+                Objects.requireNonNull(admittingRuntimeId, "admittingRuntimeId");
         this.codeGenerationId = Objects.requireNonNull(codeGenerationId, "codeGenerationId");
         this.actorTypeName = requireText(actorTypeName, "actorTypeName");
         this.actorKind = Objects.requireNonNull(actorKind, "actorKind");
@@ -68,6 +74,7 @@ public final class ActorArtifact<T> {
         this.messageAbiSha256 = requireText(messageAbiSha256, "messageAbiSha256");
         this.stateSchemaSha256 = requireText(stateSchemaSha256, "stateSchemaSha256");
         this.wireCodecSha256 = requireText(wireCodecSha256, "wireCodecSha256");
+        this.workerPolicySha256 = requireText(workerPolicySha256, "workerPolicySha256");
         this.compilerBackend = requireText(compilerBackend, "compilerBackend");
         this.compilerVersion = requireText(compilerVersion, "compilerVersion");
         this.compilerGitCommit = requireText(compilerGitCommit, "compilerGitCommit");
@@ -83,6 +90,7 @@ public final class ActorArtifact<T> {
     }
 
     static <T> ActorArtifact<T> mint(
+            UUID admittingRuntimeId,
             UUID codeGenerationId,
             String actorTypeName,
             Ast.ActorKind actorKind,
@@ -91,6 +99,7 @@ public final class ActorArtifact<T> {
             String messageAbiSha256,
             String stateSchemaSha256,
             String wireCodecSha256,
+            String workerPolicySha256,
             String compilerBackend,
             String compilerVersion,
             String compilerGitCommit,
@@ -101,6 +110,7 @@ public final class ActorArtifact<T> {
             Set<IsolatePolicy.Capability> requiredCapabilities,
             byte[] exactArtifactBytes) {
         return new ActorArtifact<>(
+                admittingRuntimeId,
                 codeGenerationId,
                 actorTypeName,
                 actorKind,
@@ -110,6 +120,7 @@ public final class ActorArtifact<T> {
                 messageAbiSha256,
                 stateSchemaSha256,
                 wireCodecSha256,
+                workerPolicySha256,
                 compilerBackend,
                 compilerVersion,
                 compilerGitCommit,
@@ -130,6 +141,7 @@ public final class ActorArtifact<T> {
     public String messageAbiSha256() { return messageAbiSha256; }
     public String stateSchemaSha256() { return stateSchemaSha256; }
     public String wireCodecSha256() { return wireCodecSha256; }
+    public String workerPolicySha256() { return workerPolicySha256; }
     public String compilerBackend() { return compilerBackend; }
     public String compilerVersion() { return compilerVersion; }
     public String compilerGitCommit() { return compilerGitCommit; }
@@ -148,6 +160,10 @@ public final class ActorArtifact<T> {
      */
     byte[] copyExactArtifactBytesForTrustedLauncher() {
         return exactArtifactBytes.clone();
+    }
+
+    boolean admittedForRuntime(UUID runtimeId) {
+        return admittingRuntimeId.equals(runtimeId);
     }
 
     @Override
