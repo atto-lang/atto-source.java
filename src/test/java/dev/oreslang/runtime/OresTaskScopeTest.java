@@ -237,4 +237,40 @@ final class OresTaskScopeTest {
         }
     }
 
+    @Test
+    void deepScopeTreeCancelsAndClosesWithoutRecursiveStackOverflow() {
+        try (AsyncRuntime runtime = new AsyncRuntime()) {
+            OresTaskScope root = new OresTaskScope(runtime);
+            OresTaskScope leaf = root;
+            for (int i = 0; i < 4_096; i++) {
+                leaf = leaf.childScope();
+            }
+            assertTrue(root.cancel());
+            assertTrue(leaf.isCancelRequested());
+            assertDoesNotThrow(root::close);
+        }
+    }
+
+    @Test
+    void deferredFutureCancellationRevokesBeforeNotifyingSubscribers() {
+        java.util.concurrent.atomic.AtomicInteger revocations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger callbacks =
+                new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future =
+                new OresFuture<>(revocations::incrementAndGet);
+        future.whenCompleteRuntime((value, failure) -> {
+            assertInstanceOf(java.util.concurrent.CancellationException.class, failure);
+            callbacks.incrementAndGet();
+        });
+        Runnable deliver = future.cancelDeferredNotification();
+        assertNotNull(deliver);
+        assertTrue(future.isCancelled());
+        assertEquals(1, revocations.get());
+        assertEquals(0, callbacks.get());
+        assertFalse(future.cancel(true));
+        deliver.run();
+        assertEquals(1, callbacks.get());
+    }
+
 }
