@@ -400,6 +400,46 @@ final class ActorObservabilityTest {
         }
     }
 
+
+    @Test
+    void schedulerPressureSnapshotSeparatesPhysicalAndLogicalBacklog() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 8))) {
+            var first = runtime.<String>spawnShared(() -> (message, context) -> {
+                entered.countDown();
+                release.await(5, TimeUnit.SECONDS);
+            });
+            var second = runtime.<String>spawnShared(() -> (message, context) -> { });
+            first.send("hold");
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            second.send("wait");
+
+            ActorRuntime.ActorSchedulerSnapshot pressure = runtime.schedulerSnapshot();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (pressure.sharedDomain().queuedTasks() == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+                pressure = runtime.schedulerSnapshot();
+            }
+            assertEquals(1, pressure.sharedDomain().maximumCarriers());
+            assertEquals(1, pressure.sharedDomain().startedCarriers());
+            assertTrue(pressure.sharedDomain().activeCarriers() >= 1);
+            assertTrue(pressure.sharedDomain().queuedTasks() >= 1);
+            assertEquals(1, runtime.snapshot(second).orElseThrow().queuedUserMessages());
+            assertEquals(0, pressure.lifecycleObserverCarriers());
+
+            release.countDown();
+            first.stop();
+            second.stop();
+            assertTrue(first.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(second.awaitTermination(5, TimeUnit.SECONDS));
+        } finally {
+            release.countDown();
+        }
+    }
+
     @Test
     void exhaustedDiagnosticSequenceFailsClosedWithoutWrappingOrBlockingTermination()
             throws Exception {
