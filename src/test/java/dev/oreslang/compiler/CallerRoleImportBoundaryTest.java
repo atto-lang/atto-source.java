@@ -130,6 +130,17 @@ final class CallerRoleImportBoundaryTest {
     }
 
     @Test
+    void actorWithoutGuardedStaticMethodRemainsImportable() {
+        String source = """
+                define pub actor Worker as
+                    pub static fnc safe(): void {}
+                end
+                """;
+        assertDoesNotThrow(() -> link(
+                source, "import actor Worker from \"provider.ores\";"));
+    }
+
+    @Test
     void protectedPublicStaticMethodInImportedClassIsRejected() {
         String source = """
                 define enum Roles as
