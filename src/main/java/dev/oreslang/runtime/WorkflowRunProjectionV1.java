@@ -21,6 +21,7 @@ public record WorkflowRunProjectionV1(
         int claimedEffects,
         int ambiguousEffects,
         int completedEffects,
+        int abandonedEffects,
         boolean pendingApproval,
         boolean terminal,
         boolean requiresAttention,
@@ -41,7 +42,8 @@ public record WorkflowRunProjectionV1(
                 || pendingEffects < 0
                 || claimedEffects < 0
                 || ambiguousEffects < 0
-                || completedEffects < 0) {
+                || completedEffects < 0
+                || abandonedEffects < 0) {
             throw new IllegalArgumentException(
                     "projection counters must be non-negative");
         }
@@ -106,6 +108,7 @@ public record WorkflowRunProjectionV1(
                 store.claimedEffects(),
                 store.ambiguousEffects(),
                 store.completedEffects(),
+                store.abandonedEffects(),
                 approval,
                 terminal,
                 attention != null,
