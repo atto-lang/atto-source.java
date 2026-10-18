@@ -6,6 +6,7 @@ on:
       - 'src/test/java/dev/oreslang/EnumVariantOverloadPolicySmoke.java'
       - 'src/test/java/dev/oreslang/EnumVariantOverloadPolicyTest.java'
       - 'docs/ENUM_VARIANT_OVERLOAD_EXTENSION.md'
+      - 'contracts/v1/enum-variant-aot/test_static_aot_model.py'
       - '.github/workflows/enum-variant-overload-oracle.yml'
   workflow_dispatch:
 
@@ -46,3 +47,8 @@ jobs:
         run: |
           set -euo pipefail
           java -cp "$RUNNER_TEMP/enum-proof" dev.oreslang.EnumVariantOverloadPolicySmoke
+      - name: Shared source-free finite AOT contract (normal and optimized Python)
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest discover -s contracts/v1/enum-variant-aot -p 'test_static_aot_model.py' -v
+          python3 -B -O -m unittest discover -s contracts/v1/enum-variant-aot -p 'test_static_aot_model.py' -v
