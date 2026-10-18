@@ -2926,7 +2926,7 @@ public final class TypeChecker {
                 };
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
-                Type receiver = deref(typeOfStaticNamespaceReceiver(member.receiver(), env, generics, self));
+                Type receiver = deref(resolveStaticMemberReceiver(typeOfStaticNamespaceReceiver(member.receiver(), env, generics, self)));
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
 
