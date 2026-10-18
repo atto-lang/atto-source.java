@@ -122,6 +122,44 @@ final class OresCarrierBudgetTest {
         }
     }
 
+    @Test void budgetedControlDomainCanBorrowIdleGlobalPermits() throws Exception {
+        String previous = System.getProperty(OresCarrierBudget.PROPERTY);
+        try {
+            System.setProperty(OresCarrierBudget.PROPERTY, "8");
+            OresVM vm = OresVM.create(Runnable::run);
+            CountDownLatch entered = new CountDownLatch(4);
+            CountDownLatch release = new CountDownLatch(1);
+            try {
+                for (int i = 0; i < 4; i++) {
+                    vm.dispatchHostIoMapping(() -> {
+                        entered.countDown();
+                        try {
+                            release.await(5, TimeUnit.SECONDS);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                    });
+                }
+                assertTrue(entered.await(3, TimeUnit.SECONDS),
+                        "CONTROL should borrow all three spare permits while preserving four reserves");
+                assertEquals(4, vm.controlCarrierCount());
+                var pressure = vm.carrierPermitSnapshot();
+                assertNotNull(pressure);
+                assertEquals(4, pressure.controlHeld());
+                assertEquals(4, pressure.totalHeld());
+                assertEquals(4, pressure.free());
+                assertEquals(0L, pressure.deniedCapacity());
+                assertEquals(0L, pressure.deniedReserveProtection());
+            } finally {
+                release.countDown();
+                vm.close();
+            }
+        } finally {
+            if (previous == null) System.clearProperty(OresCarrierBudget.PROPERTY);
+            else System.setProperty(OresCarrierBudget.PROPERTY, previous);
+        }
+    }
+
     @Test void budgetedJvmActorDomainCanBorrowIdleGlobalPermits() throws Exception {
         String previous = System.getProperty(OresCarrierBudget.PROPERTY);
         String previousBackend = System.getProperty("ores.runtime.carriers");
