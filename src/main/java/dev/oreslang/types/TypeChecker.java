@@ -3472,7 +3472,7 @@ public final class TypeChecker {
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
-            Type receiver = typeOf(member.receiver(), env, generics, self);
+            Type receiver = typeOfStaticNamespaceReceiver(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
