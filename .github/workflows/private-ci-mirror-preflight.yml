@@ -7,8 +7,6 @@ on:
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source.py'
-      - 'scripts/test-run-private-ci-regressions-local.sh'
-      - 'scripts/run-private-ci-regressions-local.sh'
       - 'scripts/test-private-ci-merged-main.py'
       - 'scripts/test-private-ci-review-coverage.py'
       - 'scripts/run-private-ci-regressions-local.sh'
@@ -26,8 +24,6 @@ on:
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source.py'
-      - 'scripts/test-run-private-ci-regressions-local.sh'
-      - 'scripts/run-private-ci-regressions-local.sh'
       - 'scripts/test-private-ci-merged-main.py'
       - 'scripts/test-private-ci-review-coverage.py'
       - 'scripts/run-private-ci-regressions-local.sh'
@@ -55,7 +51,6 @@ jobs:
           python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/test-private-ci-merged-main.py scripts/test-private-ci-review-coverage.py
           python3 -B scripts/test-private-ci-review-coverage.py
           bash -n scripts/run-private-ci-regressions-local.sh scripts/test-run-private-ci-regressions-local.sh
-          bash scripts/test-run-private-ci-regressions-local.sh
           bash scripts/test-run-private-ci-regressions-local.sh
           bash scripts/test-private-ci-destination.sh
           bash -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh
