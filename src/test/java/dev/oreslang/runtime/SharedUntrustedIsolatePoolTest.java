@@ -127,6 +127,41 @@ final class SharedUntrustedIsolatePoolTest {
     }
 
     @Test
+    @EnabledIfEnvironmentVariable(named = "ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches = "true")
+    void failedHotReloadPreservesPriorActiveVersionAndItsPinnedContext() {
+        try (HotReloadManager loader = HotReloadManager.forUntrustedActors(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            HotReloadManager.Generation previous = loader.loadAndStart(
+                    "worker.ores", "pub routine main(): void { return; }");
+            assertTrue(previous.started());
+            assertSame(previous, loader.active("worker.ores"));
+            assertSame(previous, loader.active());
+            assertEquals(1, loader.liveGenerations());
+
+            // The candidate must fail inside the guest isolate, after host
+            // source preflight but before its code can become active.
+            assertThrows(IllegalStateException.class, () -> loader.loadAndStart(
+                    "worker.ores", "pub routine main(): void {"));
+            assertSame(previous, loader.active("worker.ores"),
+                    "failed candidate must never replace the old module");
+            assertSame(previous, loader.active(),
+                    "failed candidate must never erase the last live generation");
+            assertFalse(previous.closed(),
+                    "old Context and code-image lease must survive rollback");
+            assertEquals(1, loader.liveGenerations(),
+                    "failed candidate must retire only its own Context");
+
+            HotReloadManager.Generation replacement = loader.loadAndStart(
+                    "worker.ores", "pub routine main(): void { val x = 2; return; }");
+            assertSame(replacement, loader.active("worker.ores"));
+            assertTrue(replacement.started());
+            assertNotSame(previous.context(), replacement.context());
+            assertSame(previous.context().getEngine(), replacement.context().getEngine(),
+                    "generation replacement must not allocate another isolate");
+        }
+    }
+
+    @Test
     void closedUntrustedLoaderRejectsNewGenerationsBeforeIsolateAllocation() {
         HotReloadManager loader = HotReloadManager.forUntrustedActors(
                 IsolatePolicy.developer(), ExecutionProfile.serverJit());
