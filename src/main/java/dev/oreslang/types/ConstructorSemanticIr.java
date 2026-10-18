@@ -73,6 +73,14 @@ public final class ConstructorSemanticIr {
             }
         }
 
+        /** Prefer compiler-derived receiver provenance over caller-supplied metadata. */
+        public static ConstructorDecl of(String owner, Ast.ConstructorDecl source) {
+            Objects.requireNonNull(source, "source constructor");
+            return of(owner,
+                    source.bindsSelf() ? ReceiverBinding.EXPLICIT_SELF : ReceiverBinding.IMPLICIT,
+                    source);
+        }
+
         public static ConstructorDecl of(
                 String owner,
                 ReceiverBinding receiverBinding,
