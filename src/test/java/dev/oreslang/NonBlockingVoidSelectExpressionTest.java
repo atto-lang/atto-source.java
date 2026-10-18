@@ -70,6 +70,39 @@ final class NonBlockingVoidSelectExpressionTest {
     }
 
     @Test
+    void futureAwaitArmResolvesItsTypedPayloadWithoutStealingChannelData() throws Exception {
+        String source = """
+                async fnc compute(): int { return 17; }
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    const Channel<int> inbox = Channel.new<int>(1);
+                    const Future<int> pending = compute();
+                    const Future<void> selected = nb select first {
+                      when readch inbox: int message -> {
+                        stdio.stdout.write("incorrect-channel");
+                      }
+                      when await pending: int result -> {
+                        stdio.stdout.write("future:");
+                        stdio.stdout.write(result);
+                      }
+                    };
+                    await selected;
+                    stdio.stdout.write(":done");
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val worker = await spawn Worker();
+                  worker.send("go");
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        assertEquals("future:17:done", run(source));
+    }
+
+    @Test
     void defaultArmIsDeferredEvenWithoutResultPayload() throws Exception {
         String source = """
                 define actor Worker as
