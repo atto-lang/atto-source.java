@@ -429,15 +429,24 @@ final class ActorSupervisorRestartCircuit {
     }
 
     private void pruneWindow(long nowNanos) {
-        long cutoff;
-        try {
-            cutoff = Math.subtractExact(nowNanos, config.windowNanos());
-        } catch (ArithmeticException underflow) {
-            cutoff = Long.MIN_VALUE;
-        }
-        // Half-open window [now-window, now]: a restart exactly at the cutoff
-        // still counts, avoiding boundary-dependent intensity oscillation.
-        while (restartSize != 0 && restartTimes[restartHead] < cutoff) {
+        /*
+         * Compare elapsed age, never absolute signed timestamps. System.nanoTime
+         * has an arbitrary signed origin and may cross Long.MAX_VALUE ->
+         * Long.MIN_VALUE while the VM is alive. Signed cutoff comparisons would
+         * retain stale restart entries across that boundary and can manufacture
+         * a false restart-storm escalation.
+         *
+         * requireMonotonicTime() already establishes forward modulo-long time
+         * for each observation. Exact-window entries still count; only ages
+         * strictly greater than windowNanos expire.
+         */
+        while (restartSize != 0) {
+            long age = nowNanos - restartTimes[restartHead];
+            if (age < 0) {
+                throw new IllegalStateException(
+                        "restart history age exceeded the supported monotonic interval");
+            }
+            if (age <= config.windowNanos()) break;
             restartHead = (restartHead + 1) % restartTimes.length;
             restartSize--;
         }
