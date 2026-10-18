@@ -173,11 +173,45 @@ final class EnumFrontendMainRebaseTest {
         for (String source : List.of(
                 "define suspend enum Color as Red end",
                 "define async enum Color as Red end",
-                "define pub enum Color as Red end",
+                "define static enum Color as Red end",
+                "define trap enum Color as Red end",
                 "@Serializable define enum Color as Red end",
                 "define suspend match pattern P as Color.Red end")) {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
         }
+    }
+
+    @Test
+    void visibilityIsPreservedInCanonicalV2EnumAstWithoutEnablingExecution() {
+        Ast.Program root = Parser.parse("""
+                define enum PrivateEnum as A, B end
+                define pub enum PublicEnum as A, B end
+                """);
+        Ast.EnumDecl privateEnum = assertInstanceOf(Ast.EnumDecl.class,
+                root.modules().getFirst().declarations().get(0));
+        Ast.EnumDecl publicEnum = assertInstanceOf(Ast.EnumDecl.class,
+                root.modules().getFirst().declarations().get(1));
+        assertEquals(Ast.Visibility.PRIVATE, privateEnum.visibility());
+        assertEquals(Ast.Visibility.PUBLIC, publicEnum.visibility());
+        assertEquals(List.of(1, 2), publicEnum.cases().stream().map(Ast.EnumCase::tag).toList());
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypes(root));
+
+        Ast.Program module = Parser.parse("""
+                define module M as
+                    define pub enum External as A = 8, B end
+                    define enum Internal as X end
+                end
+                """);
+        Ast.EnumDecl external = assertInstanceOf(Ast.EnumDecl.class,
+                module.modules().getFirst().declarations().get(0));
+        Ast.EnumDecl internal = assertInstanceOf(Ast.EnumDecl.class,
+                module.modules().getFirst().declarations().get(1));
+        assertEquals(Ast.Visibility.PUBLIC, external.visibility());
+        assertEquals(Ast.Visibility.PRIVATE, internal.visibility());
+        assertEquals(List.of(8, 9), external.cases().stream().map(Ast.EnumCase::tag).toList());
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.EnumDecl("Forged", null, List.of(new Ast.EnumCase("A", null, 1))));
     }
 
     @Test
