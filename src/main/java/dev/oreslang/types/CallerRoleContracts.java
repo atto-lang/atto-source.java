@@ -146,9 +146,11 @@ public final class CallerRoleContracts {
 
     private static String resolveRole(Ast.TypeRef value, String module,
                                       Map<String, Ast.EnumDecl> enums, String annotation) {
-        if (value == null || value.inferArguments() || !value.arguments().isEmpty()) {
+        if (value == null || value.inferArguments() || !value.arguments().isEmpty()
+                || value.isStringLiteral() || value.isIntLiteral() || value.isBoolLiteral()
+                || value.isNamedParameter() || value.name().startsWith("$")) {
             throw new IllegalArgumentException("@" + annotation
-                    + " accepts only nullary named enum case constants");
+                    + " requires Enum.Case or Module.Enum.Case, not a literal or type expression");
         }
         String spelling = value.name();
         int lastDot = spelling.lastIndexOf('.');
