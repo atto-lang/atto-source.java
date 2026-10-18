@@ -140,6 +140,39 @@ final class DeferredChannelOwnershipHardeningTest {
     }
 
     @Test
+    void callbackRejectsCallableHiddenBehindTypeAlias() {
+        reject("""
+                type Callback = () => int;
+                actor fnc bad(): void {
+                  val Channel<int> output = Channel.new<int>(1);
+                  let int value = 7;
+                  val Callback reader = || -> value;
+                  nb cb writech output, 42 || -> {
+                    stdio.println(reader());
+                  };
+                  return;
+                }
+                """, "cannot capture callable value 'reader'");
+    }
+
+    @Test
+    void callbackRejectsCallableHiddenBehindGenericAliasContainer() {
+        reject("""
+                type Bucket<T> = Array<T>;
+                actor fnc bad(): void {
+                  val Channel<int> output = Channel.new<int>(1);
+                  let int value = 7;
+                  val (() => int) reader = || -> value;
+                  val Bucket<() => int> readers = [reader];
+                  nb cb writech output, 42 || -> {
+                    stdio.println(readers[0]());
+                  };
+                  return;
+                }
+                """, "cannot capture callable value 'readers'");
+    }
+
+    @Test
     void callbackRejectsContainerThatTransitivelyContainsCallable() {
         reject("""
                 actor fnc bad(): void {
