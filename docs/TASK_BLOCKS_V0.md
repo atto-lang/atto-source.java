@@ -256,3 +256,24 @@ Implementation gates: actor-affine TaskScope admission, typed suspends
 callables and effect propagation across indirect calls, source-level
 continuation lowering, exactly-once cleanup, cancellation wakeup and
 generation fences, source-native/WASM parity, and actual exact-head tests.
+
+
+## Audit: suspend-effect laundering and borrow containment (2026-10-18)
+
+The same suspension effect must be preserved across **all** callable-value paths; merely checking direct `suspends fnc` calls is insufficient.
+
+Hardened the Java type checker so a plain synchronous callback passed against an expected `Fnc<...>` contract, or invoked under `Mutex.with_lock`, cannot inherit an outer `async` / `suspends` declaration's permission. Save both `currentMaySuspend` and `currentAsyncCallable`, clear them for callback analysis, and restore them in `finally`. Existing direct `suspends` calls remain legal in genuinely suspendable callables and VM-owned root `main`.
+
+Until effectful function-value signatures are implemented, **fail closed** on first-class `suspends` function references, static methods and their contextual typed callback coercions; they must not silently become ordinary `Fnc<...>`. Public module namespace shapes also omit a bare/raw function-valued member for a suspended function, while retaining its arity-qualified contract member for module conformance and leaving *direct qualified calls* unaffected. A future `SuspendsFnc<...>` type must explicitly carry and enforce the suspend effect across indirect calls before this restriction is relaxed.
+
+The ownership checker now rejects live nested borrows (`Tuple<&T>`, `Result<&T,E>`, and other recursively parameterized borrow-bearing types) across any scheduler suspension, in addition to root-level borrow states, guard-held critical regions and outstanding mutable/immutable loans. Actor `self` keeps only its preexisting mailbox-affine exception; no user borrow or guard gains that privilege.
+
+Added `SuspendsCallbackIsolationTest` regression coverage for typed and mutex callback effects, state restoration, borrow-bearing tuple suspension, global/static/module function value erasure and preservation of legal direct calls. Updated a legacy Mutex callback negative test to recognize either a guard-specific or a stronger synchronous-callback effect diagnostic. Conformance PR #105 adds corresponding parser-accepted / semantic-rejected fixtures.
+
+**Test status:** structural source checks passed 16/16 and the new conformance-fixture checks passed 12/12. No JUnit/Maven/LLVM compiler execution is claimed. The source PR GitHub Actions jobs still failed with zero steps. Two explicitly source-free probes were rerun in private alternative carriers:
+- `gha-indie-worker/gha-indie-worker-docs` [run 39059223685](https://github.com/gha-indie-worker/gha-indie-worker-docs/actions/runs/39059223685), attempt 3: failed with **zero steps**.
+- `3FA-app/threefa-monorepo` [run 38617654037](https://github.com/3FA-app/threefa-monorepo/actions/runs/38617654037), attempt 2: failed with **zero steps**.
+
+Neither carrier established usable GitHub Actions minutes/runner capacity. **No private code was transferred across organizations.** If an authorized, private and funded carrier becomes available, mirror only the reviewed exact Git source tree/manifest and execute `mvn -B -ntp -Dtest=SuspendsCallbackIsolationTest,SuspendsTaskEffectContractTest,SuspendsContractLanguageTest,TaskOwnershipBoundaryTest,MutexLanguageTest test` at its recorded exact commit. Avoid secrets and ensure temporary refs are cleaned up.
+
+The guest `task {}`, `async task` and first-class `suspends` lambda execution gates must remain closed pending real suspension-safe lowering, ownership and cancellation tests.
