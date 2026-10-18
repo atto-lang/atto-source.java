@@ -8,7 +8,7 @@ MOD=importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(MOD)
 
 def receipt():
     return {
-      "schema":2,
+      "schema":3,
       "source_repository":MOD.SOURCE_REPO,"source_repository_id":MOD.SOURCE_REPO_ID,
       "source_commit_sha":"1"*40,"source_tree_sha":"2"*40,
       "carrier_repository":MOD.CARRIER_REPO,"carrier_repository_id":MOD.CARRIER_REPO_ID,
@@ -22,6 +22,7 @@ def receipt():
       "snapshot_approval_pr":MOD.SNAPSHOT_PR,"snapshot_approval_head_sha":"8"*40,"snapshot_review_id":13,
       "carrier_policy_pr":MOD.CARRIER_PR,"carrier_policy_head_sha":"3"*40,"carrier_review_id":14,
       "incident_resume_comment_id":15,
+      "carrier_incident_resume_comment_id":16,
     }
 
 class DispatcherTest(unittest.TestCase):
@@ -50,6 +51,15 @@ class DispatcherTest(unittest.TestCase):
         r=receipt(); r["independent_reviewer_source_permission"]="read"
         with self.assertRaises(MOD.Denied): MOD.validate_receipt(r)
 
+
+    def test_schema2_receipt_denied_after_second_incident_gate(self):
+        r=receipt(); r["schema"]=2
+        with self.assertRaises(MOD.Denied): MOD.validate_receipt(r)
+
+    def test_missing_private_carrier_resume_id_denied(self):
+        r=receipt(); r.pop("carrier_incident_resume_comment_id")
+        with self.assertRaises(MOD.Denied): MOD.validate_receipt(r)
+
     def test_open_incident_denied_even_before_resume_comment(self):
         old_repo=MOD.repo_identity; old_api=MOD.PUB.gh_api
         try:
@@ -58,8 +68,24 @@ class DispatcherTest(unittest.TestCase):
               "id":MOD.INCIDENT_ISSUE_ID,"number":MOD.INCIDENT_NUMBER,
               "state":"open","state_reason":None
             }
-            with self.assertRaisesRegex(MOD.Denied,"incident remains unresolved"):
-                MOD.require_incident_closed()
+            with self.assertRaisesRegex(MOD.Denied,"public exposure incident remains unresolved"):
+                MOD.require_incident_closed(
+                    MOD.INCIDENT_NUMBER,MOD.INCIDENT_ISSUE_ID,"public exposure")
+        finally:
+            MOD.repo_identity=old_repo; MOD.PUB.gh_api=old_api
+
+    def test_open_private_carrier_incident_denied(self):
+        old_repo=MOD.repo_identity; old_api=MOD.PUB.gh_api
+        try:
+            MOD.repo_identity=lambda *args:None
+            MOD.PUB.gh_api=lambda route:{
+              "id":MOD.CARRIER_INCIDENT_ISSUE_ID,"number":MOD.CARRIER_INCIDENT_NUMBER,
+              "state":"open","state_reason":None
+            }
+            with self.assertRaisesRegex(MOD.Denied,"private carrier incident remains unresolved"):
+                MOD.require_incident_closed(
+                    MOD.CARRIER_INCIDENT_NUMBER,MOD.CARRIER_INCIDENT_ISSUE_ID,
+                    "private carrier")
         finally:
             MOD.repo_identity=old_repo; MOD.PUB.gh_api=old_api
 
