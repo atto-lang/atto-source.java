@@ -1,45 +1,58 @@
 # Nested Option and Future extraction (Java/GraalVM audit, 2026-10-17)
 
-## Core decision
+## Decision: explicit flatten, never universal type equivalence
 
-Nested wrappers are **real types and real runtime values**, not universal aliases.
+`Option<Option<T>>` is **not equivalent** to `Option<T>`:
 
-- `Option<Option<T>>` has `None`, `Some(None)`, and `Some(Some(v))`.
-  Losing the outer distinction changes `trap`, `match`, `is_some`, and
-  `unwrap_safe` semantics. The source type and constructors remain nested.
-- `Future<Future<T>>` has two completion stages with their own cancellation,
-  failure, and task lifetime obligations. Retain its distinct static type.
+- `None`: outer computation produced no optional value;
+- `Some(None)`: outer computation succeeded with a missing inner value;
+- `Some(Some(v))`: both layers are present.
 
-**Explicit extraction** is transitive in the Java/GraalVM evaluator:
+The distinction matters for `trap`, pattern matching, `is_some`, `unwrap_safe`,
+ownership, and serialization. A generic `Option<T>.unwrap(): T` must unwrap
+**exactly one layer** to remain type sound when `T` is itself an Option.
 
-- `Option<Option<T>>.unwrap()` yields `T`. Any `None` layer
-  panics, including `Some(None)`; `is_some`, `is_none`, `unwrap_safe`,
-  `unwrap_or`, `expect`, constructors and patterns are unchanged.
-- `await Future<Future<T>>` yields `T`; any failure propagates and each
-  pending stage is resumed on the admitted scheduler. `await ActorRef<T>`
-  remains an actor readiness barrier, retaining `ActorRef<T>`.
+Likewise, `Future<Future<T>>` is a distinct type representing two asynchronous
+stages and failure/cancellation/lifetime boundaries. A generic
+`await Future<T>: T` removes **exactly one layer**. Deep implicit runtime
+adoption would disagree with the generic static return type when `T` is a Future.
 
-`trap` **must not flatten** successful Option payloads: `trap someNone()`
-remains `Some(None)`, distinct from the outer `None` produced by an ordinary
-throw. Likewise, do not silently canonicalize generic types inside `List`,
-`Result`, actor mails, WIT schemas, or external ABI contracts.
+## New explicit Java/GraalVM operations
 
-## Safety notes and remaining work
+| Source expression | Result | Behavior |
+| --- | --- | --- |
+| `Option<Option<T>>.flatten()` | `Option<T>` | Outer `None` -> `None`, `Some(inner)` -> `inner` |
+| `Option<Option<T>>.unwrap()` | `Option<T>` | Panics only if outer layer is `None` |
+| `Option<Option<T>>.flatten().unwrap()` | `T` | Panics if either layer is `None` |
+| `Future<Future<T>>.flatten()` | `Future<T>` | Composes the two completion stages without blocking an actor carrier |
+| `await nestedFuture.flatten()` | `T` | Awaits both stages |
+| `await await nestedFuture` | `T` | Two explicit awaits |
 
-- The Java runtime iteratively consumes settled nested Futures, retains a
-  per-await identity set across suspensions, caps a chain at 256 layers, and
-  denies pending suspension with a live `MutexGuard`. Host projection retains
-  the no-yield preflight.
-- Deep `unwrap` preserves the existing panic pathway and uses an identity and
-  depth guard. It does not make `None` a recoverable `throw`.
-- Cancellation of one outer Future is **not** implicitly cancellation of every
-  independently owned inner Future. A separate structured ownership and
-  cancellation-adoption contract is needed before any implicit Future
-  canonicalization.
-- LLVM and JavaScript backends still need equivalent lowering, type checking,
-  panic/error handling, nested-stage lifecycle tests, and cross-backend
-  differential fixtures. This document does **not** assert parity there.
-- Required follow-up: race tests where a nested stage is pending, cancelled,
-  fails, or resolves to an already completed stage; large chains and deliberate
-  cycles; affine payloads under `Option`; `trap` nested-state regression;
-  compiler and runtime conformance in native-image as well as JVM.
+`Option<T>.flatten()` and `Future<T>.flatten()` are rejected without
+statically proven nested wrappers. The runtime rejects dynamically invalid
+`Option.flatten()` payloads rather than fabricating a value.
+
+**No automatic canonicalization** is performed within generic types, aliases,
+lists, results, actor messages, WIT schemas or ABIs. `Some(None)` continues to
+differ from `None` until the programmer explicitly calls `flatten()`.
+The `trap` expression does not flatten successful `Option` payloads.
+
+## Audit and remaining verification
+
+- Java `Future.flatten()` delegates to the existing scheduler-owned
+  `compose/flatMap` continuation path; no producer-thread guest execution
+  is introduced by a new independent primitive.
+- Java `Option.flatten()` is a single-layer value transformation, preserving
+  ownership of the nested payload and the existing `unwrap` panic behavior.
+- Future stage cancellation remains governed by the existing `flatMap`/source
+  task rules; it is **not** proof that cancelling an outer Future cancels all
+  independently owned inner work. That needs a separately specified contract.
+- LLVM and JavaScript backends require corresponding typing, lowering,
+  diagnostics and differential conformance. This patch covers Java/GraalVM only.
+- Tests should cover present/absent nested values, generic parametricity,
+  pending/error/cancelled inner and outer Futures, rapid completion races,
+  host projection boundaries, affine payloads, and native-image execution.
+  Until tests execute on the exact commit, results are unverified.
+
+See `docs/TRAP_EXPRESSION_UNWRAP.md` for the existing throw/panic separation
+and `docs/ADT_TYPE_SYSTEM.md` for exhaustive nested-pattern coverage.
