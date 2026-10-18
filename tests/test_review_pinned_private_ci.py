@@ -612,13 +612,13 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                        {"sha": SOURCE_COMMIT, "commit": {"tree": SOURCE_TREE}}):
             with self.subTest(commit=commit):
                 self.assertDenied(lambda fx: fx.__setitem__(
-                    "source_commit", self.write("bad-commit-tree.json", commit)))
+                    "source_commit", self.write("bad-commit-tree.json", json.dumps(commit))))
 
     def test_malformed_destination_document_shapes_denied(self):
         for document in ([], None, "carrier", 0, False):
             with self.subTest(document=document):
                 self.assertDenied(lambda fx: fx.__setitem__(
-                    "destination_repo", self.write("bad-destination.json", document)))
+                    "destination_repo", self.write("bad-destination.json", json.dumps(document))))
 
     def test_bounded_bytes_rejects_invalid_empty_and_bom(self):
         for content in (b"", b"\xef\xbb\xbf{}", b"x" * (MOD.MAX_LEDGER + 1)):
