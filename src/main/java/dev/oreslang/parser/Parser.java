@@ -3250,7 +3250,14 @@ public final class Parser {
             boolean mutable = match(MUT);
             return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
         }
-        if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
+        if (match(AWAIT)) {
+            if (check(DO) && (checkNext(SELECT) || checkNext(NB))) {
+                throw error(peek(), "'await do select' is invalid: do select is a statement, "
+                        + "not an awaitable expression; use a tracked 'nb select { ... }' expression "
+                        + "when static-select Future lowering is available");
+            }
+            return new Ast.AwaitExpr(parseUnary());
+        }
         // Expression-level trap is a typed Option boundary; the declaration
         // modifier "trap fnc" remains a distinct grammar production.
         if (match(TRAP)) return new Ast.TrapExpr(parseUnary());
@@ -3373,6 +3380,11 @@ public final class Parser {
 
     private Ast.DynamicSelectExpr parseDynamicSelect(Ast.WaitMode mode) {
         Ast.SelectPolicy policy = parseSelectPolicy();
+        if (check(LBRACE)) {
+            throw error(peek(), "braced static select expressions are not lowered yet; "
+                    + "legacy static select is statement-only and cannot produce Future<T>; "
+                    + "use 'select from cases' for the currently supported dynamic expression");
+        }
         consume(FROM,
                 "dynamic select requires 'select from cases'; static select uses 'select { when ... }'");
         Ast.Expr cases = parseUnary();
