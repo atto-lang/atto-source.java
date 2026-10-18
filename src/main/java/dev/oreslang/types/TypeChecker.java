@@ -1663,6 +1663,10 @@ public final class TypeChecker {
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
+        if (stmt instanceof Ast.TaskBlockStmt
+                || (stmt instanceof Ast.BindingStmt binding && binding.initializer() instanceof Ast.TaskExpr)) {
+            throw new IllegalArgumentException("nb Task blocks require ownership-safe capture and scheduler lowering; source execution is not enabled");
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             boolean namedInference = binding.inferredTypeName() != null;
             Type declaredAhead = namedInference || binding.declaredType() == null
@@ -2053,6 +2057,9 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.TaskExpr) {
+            throw new IllegalArgumentException("nb Task blocks require ownership-safe capture and scheduler lowering; source execution is not enabled");
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");
