@@ -28,7 +28,7 @@ final class SourceActorHotUpgradeRuntimeTest {
         @Override public ActorRuntime.ActorId ownerActorId() { return owner; }
     }
 
-    private static final class Executor implements ActorRuntime.ActorCodeExecutor {
+    private static class Executor implements ActorRuntime.ActorCodeExecutor {
         private final SharedCodeImageStore.CodeImage image;
         private final String code;
         private final String schema;
@@ -118,6 +118,20 @@ final class SourceActorHotUpgradeRuntimeTest {
             return new State(
                     context.self().id(),
                     ByteBuffer.wrap(snapshot).order(ByteOrder.BIG_ENDIAN).getLong());
+        }
+    }
+
+    private static final class FailingRestoreExecutor extends Executor {
+        private FailingRestoreExecutor(SharedCodeImageStore.CodeImage image) {
+            super(image, 'b', '1', '2', true, null, null);
+        }
+
+        @Override
+        public ActorRuntime.ActorOwnedGuestState restoreActorState(
+                String actorTypeName,
+                byte[] snapshot,
+                ActorRuntime.ActorContext<Object> context) {
+            throw new IllegalStateException("candidate restore injected failure");
         }
     }
 
@@ -216,6 +230,53 @@ final class SourceActorHotUpgradeRuntimeTest {
             drain(runtime, ref);
             assertEquals(42, v1.observed.get());
             ref.send("stop");
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void failedCrossRuntimeRestoreReclaimsUnregisteredCandidateAndReopensOldActor()
+            throws Exception {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime source = new ActorRuntime(IsolatePolicy.developer());
+             ActorRuntime target = new ActorRuntime(IsolatePolicy.developer())) {
+            var image1 = store.publish("transfer-source.ores", program);
+            var image2 = store.publish("transfer-candidate.ores", Parser.parse(
+                    "pub routine main(): void { val version = 2; return; }"));
+            var old = new Executor(image1, 'a', '1', '2', false, null, null);
+            var bad = new FailingRestoreExecutor(image2);
+            var ref = source.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(),
+                    old,
+                    "Counter");
+            ref.getReady().get(5, TimeUnit.SECONDS);
+            ref.send(41L);
+            drain(source, ref);
+            assertEquals(42L, old.observed.get());
+
+            int actorCountBefore = target.actorCount();
+            long memoryBefore = target.actorMemoryBytes();
+            var transfer = source.tryBeginSourceActorTransfer(
+                    ref,
+                    java.util.UUID.randomUUID(),
+                    1L).orElseThrow();
+            try (transfer) {
+                assertThrows(IllegalStateException.class,
+                        () -> target.spawnCodeActorFromTransfer(transfer, bad));
+            }
+            assertEquals(actorCountBefore, target.actorCount(),
+                    "failed restored spawn must release its reserved actor slot");
+            assertEquals(memoryBefore, target.actorMemoryBytes(),
+                    "failed restored spawn must reclaim candidate-owned runtime memory");
+
+            // Closing the failed transfer is rollback: exact old state and
+            // ingress resume in the original physical actor.
+            ref.send(1L);
+            drain(source, ref);
+            assertEquals(43L, old.observed.get());
+            ref.stop();
             assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
