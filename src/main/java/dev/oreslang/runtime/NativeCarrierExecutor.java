@@ -12,7 +12,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 
@@ -54,11 +53,6 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private final AtomicInteger activeCount = new AtomicInteger();
     private final AtomicLong completedTaskCount = new AtomicLong();
     private final AtomicReferenceArray<Thread> carrierThreads;
-    private final OresCarrierPermitPool carrierPermitPool;
-    private final OresCarrierPermitPool.Domain permitDomain;
-    private final AtomicReferenceArray<OresCarrierPermitPool.Permit> carrierPermits;
-    /** 0=unreserved, 1=reserved/not entered, 2=worker loop entered, 3=released. */
-    private final AtomicIntegerArray carrierPermitStates;
     private final AtomicBoolean shutdown = new AtomicBoolean();
     private volatile boolean nativeStarted;
     // Includes callers waiting to enter nativeLifecycleLock. Shutdown may
@@ -75,26 +69,12 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
             int maximumPoolSize,
             int queueCapacity,
             String threadPrefix) {
-        this(corePoolSize, maximumPoolSize, queueCapacity, threadPrefix, null, null);
-    }
-
-    NativeCarrierExecutor(
-            int corePoolSize,
-            int maximumPoolSize,
-            int queueCapacity,
-            String threadPrefix,
-            OresCarrierPermitPool carrierPermitPool,
-            OresCarrierPermitPool.Domain permitDomain) {
         if (corePoolSize <= 0) throw new IllegalArgumentException("corePoolSize must be > 0");
         if (maximumPoolSize < corePoolSize) {
             throw new IllegalArgumentException("maximumPoolSize must be >= corePoolSize");
         }
         if (queueCapacity <= 0) throw new IllegalArgumentException("queueCapacity must be > 0");
         Objects.requireNonNull(threadPrefix, "threadPrefix");
-        if ((carrierPermitPool == null) != (permitDomain == null)) {
-            throw new IllegalArgumentException(
-                    "native carrier permit pool and domain must be configured together");
-        }
 
         ensureNativeLibraryLoaded();
 
@@ -102,10 +82,6 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         this.maximumPoolSize = maximumPoolSize;
         this.nativeStackBytes = configuredCarrierStackBytes();
         this.carrierThreads = new AtomicReferenceArray<>(maximumPoolSize);
-        this.carrierPermitPool = carrierPermitPool;
-        this.permitDomain = permitDomain;
-        this.carrierPermits = new AtomicReferenceArray<>(maximumPoolSize);
-        this.carrierPermitStates = new AtomicIntegerArray(maximumPoolSize);
         this.corePoolSize = new AtomicInteger(corePoolSize);
         this.largestPoolSize = new AtomicInteger(corePoolSize);
 
@@ -126,65 +102,22 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
                     throw new RejectedExecutionException("native carrier executor is shut down");
                 }
                 if (nativeStarted) return false;
-                reserveNativeCarrierPermits();
                 try {
                     nativeStart(nativeHandle);
                     nativeStarted = true;
                     return true;
                 } catch (RuntimeException | Error failure) {
                     // nativeStart may have created a partial/all carrier set
-                    // before an attach failure. Fence all further admission,
-                    // release only slots whose worker loop never entered, and
-                    // let entered carriers return their own permits on exit.
+                    // before an attach failure. Fence all further admission
+                    // and hand reclamation to native shutdown exactly once.
                     shutdown.set(true);
                     nativeShutdown(nativeHandle);
-                    releaseUnenteredNativeCarrierPermits();
                     throw failure;
                 }
             }
         } finally {
             bootstrapAdmissions.decrementAndGet();
         }
-    }
-
-    private void reserveNativeCarrierPermits() {
-        if (carrierPermitPool == null) return;
-        OresCarrierPermitPool.Permit[] reserved =
-                carrierPermitPool.tryAcquireMany(permitDomain, maximumPoolSize);
-        if (reserved == null) {
-            throw new RejectedExecutionException(
-                    "global physical carrier budget cannot reserve native pool for "
-                            + permitDomain);
-        }
-        for (int slot = 0; slot < reserved.length; slot++) {
-            carrierPermits.set(slot, reserved[slot]);
-            carrierPermitStates.set(slot, 1);
-        }
-    }
-
-    private void releaseUnenteredNativeCarrierPermits() {
-        if (carrierPermitPool == null) return;
-        for (int slot = 0; slot < maximumPoolSize; slot++) {
-            if (carrierPermitStates.compareAndSet(slot, 1, 3)) {
-                OresCarrierPermitPool.Permit permit = carrierPermits.getAndSet(slot, null);
-                if (permit != null) permit.close();
-            }
-        }
-    }
-
-    private void releaseEnteredNativeCarrierPermit(int slot) {
-        if (carrierPermitPool == null) return;
-        int previous = carrierPermitStates.getAndSet(slot, 3);
-        if (previous == 3) return;
-        if (previous != 2) {
-            throw new IllegalStateException(
-                    "native carrier permit exited from invalid state " + previous);
-        }
-        OresCarrierPermitPool.Permit permit = carrierPermits.getAndSet(slot, null);
-        if (permit == null) {
-            throw new IllegalStateException("native carrier permit disappeared before exit");
-        }
-        permit.close();
     }
 
     static void requireAllowedCpu(int cpu) {
@@ -249,11 +182,6 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
      */
     @SuppressWarnings("unused") // invoked from JNI
     private void nativeCarrierLoop(int slot) {
-        if (carrierPermitPool != null
-                && !carrierPermitStates.compareAndSet(slot, 1, 2)) {
-            throw new IllegalStateException(
-                    "native carrier entered without a reserved physical permit");
-        }
         CURRENT_EXECUTOR.set(this);
         CURRENT_SLOT.set(slot);
         CURRENT_NATIVE_THREAD_ID.set(nativeCurrentThreadId());
@@ -302,7 +230,6 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
             CURRENT_NATIVE_THREAD_ID.remove();
             CURRENT_SLOT.remove();
             CURRENT_EXECUTOR.remove();
-            releaseEnteredNativeCarrierPermit(slot);
         }
     }
 
@@ -436,9 +363,6 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
             // hands joins/reclamation to a native reaper so an uncooperative
             // guest stack can never hold this caller hostage.
             nativeShutdown(nativeHandle);
-            // A bootstrap that never entered one or more Java carrier loops
-            // must not retain their pre-start physical permits.
-            releaseUnenteredNativeCarrierPermits();
         }
         return List.copyOf(abandoned);
     }
