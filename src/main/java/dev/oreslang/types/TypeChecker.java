@@ -282,7 +282,40 @@ public final class TypeChecker {
         }
     }
 
+    private static boolean forbiddenCallableNominal(String name) {
+        String simple = name.substring(name.lastIndexOf('.') + 1);
+        return switch (simple) {
+            case "Callable", "Fnc", "Function", "Routine", "Method" -> true;
+            default -> false;
+        };
+    }
+
+    private static void requireNominalIdentity(String name, String context) {
+        if (forbiddenCallableNominal(name)) {
+            throw new IllegalArgumentException(context + " cannot use callable identity '" + name
+                    + "': functions/routines are executable signatures, not inheritable classes or interfaces");
+        }
+    }
+
+    private void validateCallableNominalBoundaries() {
+        // Defend the semantic boundary even when ASTs originate from a generated
+        // source, an imported code unit, or a future alternate frontend.
+        for (Ast.ClassDecl klass : classOwners.keySet()) {
+            requireNominalIdentity(klass.name(), "class/actor declaration");
+            for (Ast.TypeRef ref : klass.parents())
+                requireNominalIdentity(ref.name(), "extends clause on " + klass.name());
+            for (Ast.TypeRef ref : klass.interfaces())
+                requireNominalIdentity(ref.name(), "implements clause on " + klass.name());
+        }
+        for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) {
+            requireNominalIdentity(iface.name(), "interface/trait/contract declaration");
+            for (Ast.TypeRef ref : iface.parents())
+                requireNominalIdentity(ref.name(), "extends clause on " + iface.name());
+        }
+    }
+
     private void validate(Ast.Program program) {
+        validateCallableNominalBoundaries();
         // Local overload identity must be validated before class-shape
         // construction. Otherwise same-name/same-arity declarations whose
         // types differ can fail later as a generic structural conflict before
