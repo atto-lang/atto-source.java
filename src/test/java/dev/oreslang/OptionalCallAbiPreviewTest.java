@@ -151,6 +151,36 @@ final class OptionalCallAbiPreviewTest {
     }
 
     @Test
+    void manuallyForgedAbiTablesCannotDuplicateDropOrRetypeSources() {
+        Ast.Expr effect = new Ast.NameExpr("effect");
+        var first = new OptionalCallAbiPreview.Slot(
+                0, "first", INT, OptionalCallAbiPreview.Action.PASS_REQUIRED, 0, 0);
+        var duplicate = new OptionalCallAbiPreview.Slot(
+                1, "second", INT, OptionalCallAbiPreview.Action.PASS_REQUIRED, 0, 1);
+        assertThrows(IllegalArgumentException.class,
+                () -> new OptionalCallAbiPreview.Preview(
+                        List.of(effect), List.of(first, duplicate)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new OptionalCallAbiPreview.Preview(List.of(effect), List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new OptionalCallAbiPreview.Preview(
+                        List.of(effect), List.of(new OptionalCallAbiPreview.Slot(
+                                0, "x", INT, OptionalCallAbiPreview.Action.PASS_REQUIRED, 1, 0))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new OptionalCallAbiPreview.Slot(
+                        0, "b", STRING, OptionalCallAbiPreview.Action.INJECT_NONE, -1, -1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new OptionalCallAbiPreview.Slot(
+                        0, "b", STRING, OptionalCallAbiPreview.Action.WRAP_SOME, 0, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new OptionalCallAbiPreview.Preview(
+                        List.of(effect), List.of(first,
+                                new OptionalCallAbiPreview.Slot(
+                                        1, "optional", OPTION_STRING,
+                                        OptionalCallAbiPreview.Action.INJECT_NONE, -1, 0))));
+    }
+
+    @Test
     void sourceAndAbiTablesAreImmutableAndVariadicIsNotSilentlyLowered() {
         var source = List.of(Ast.CallArgument.named("c", new Ast.LiteralExpr(true)),
                 Ast.CallArgument.named("a", new Ast.LiteralExpr(3L)));
