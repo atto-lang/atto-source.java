@@ -25,16 +25,20 @@ public final class RefinementRules {
     public record Interval(String property, long min, long max, Set<Long> excluded) {
         public Interval {
             excluded = Set.copyOf(excluded);
-            if (min > max || min == max && excluded.contains(min))
+            if (min > max)
                 throw new IllegalArgumentException("unsatisfiable refinement interval");
-            if (max >= min && max - min >= 0 && max - min < excluded.size() && max - min < 100_000) {
-                boolean member = false;
-                for (long i = min; ; i++) {
-                    if (!excluded.contains(i)) { member = true; break; }
-                    if (i == max) break; // avoid wraparound at Long.MAX_VALUE
-                }
-                if (!member) throw new IllegalArgumentException("unsatisfiable refinement exclusions");
+            for (long hole : excluded) {
+                if (hole < min || hole > max)
+                    throw new IllegalArgumentException("refinement exclusion outside interval");
             }
+            // A set of unique in-range holes covers this *entire* inclusive
+            // interval exactly when max - min == holes.size() - 1.
+            // This modulo-long subtraction is safe here: every representable
+            // set size is <= Integer.MAX_VALUE, while intervals wider than
+            // Long.MAX_VALUE wrap to a NEGATIVE difference and cannot match.
+            // No O(width) enumeration or arbitrary 100k cutoff is needed.
+            if (!excluded.isEmpty() && max - min == (long) excluded.size() - 1L)
+                throw new IllegalArgumentException("unsatisfiable refinement exclusions");
         }
         public boolean contains(long value) {
             return withinBounds(value, min, max, excluded);
