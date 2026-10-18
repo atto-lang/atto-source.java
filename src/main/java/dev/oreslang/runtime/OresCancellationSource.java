@@ -18,6 +18,8 @@ public final class OresCancellationSource implements AutoCloseable {
     private final Object gate = new Object();
     private final List<OresCancellationToken.Registration> upstreams =
             new ArrayList<>();
+    /** Internal directed children, processed before publishing host observers. */
+    private final List<OresCancellationSource> linkedChildren = new ArrayList<>();
     private final OresFuture<Void> notification = new OresFuture<>();
     private final OresCancellationToken token = new OresCancellationToken(this);
 
@@ -41,7 +43,7 @@ public final class OresCancellationSource implements AutoCloseable {
             for (OresCancellationToken parent : upstream) {
                 Objects.requireNonNull(parent, "linked cancellation token");
                 OresCancellationToken.Registration registration =
-                        parent.onCancellationRequested(() -> OresCancellationDispatcher.request(child));
+                        parent.ownerSource().registerLinkedChild(child);
                 synchronized (child.gate) {
                     if (child.requested.get()) {
                         registration.close();
@@ -58,20 +60,59 @@ public final class OresCancellationSource implements AutoCloseable {
     }
 
     /**
-     * Request cancellation. The claim is atomic and idempotent.
-     * Host listeners are notified only after all upstream subscriptions are
-     * detached; their callbacks should not block scheduler or actor carriers.
+     * Internal link only: ordinary cancellation-token observers must not run
+     * before sibling and transitively linked producers have been revoked.
+     * Registrations have no ownership/actor identity and detach one way.
      */
-    public boolean cancel() {
-        if (!requested.compareAndSet(false, true)) return false;
+    private OresCancellationToken.Registration registerLinkedChild(
+            OresCancellationSource child) {
+        Objects.requireNonNull(child, "child");
+        boolean cancelledAlready;
+        synchronized (gate) {
+            cancelledAlready = requested.get();
+            if (!cancelledAlready) linkedChildren.add(child);
+        }
+        if (cancelledAlready) {
+            OresCancellationDispatcher.request(child);
+        }
+        return () -> {
+            synchronized (gate) {
+                linkedChildren.remove(child);
+            }
+        };
+    }
+
+    /** Called by the package-private iterative directed-cancellation engine. */
+    boolean claimCancellation() {
+        return requested.compareAndSet(false, true);
+    }
+
+    /** Detach inbound references and snapshot children without notifying hosts. */
+    List<OresCancellationSource> collectLinkedChildren() {
         final List<OresCancellationToken.Registration> prior;
+        final List<OresCancellationSource> children;
         synchronized (gate) {
             prior = new ArrayList<>(upstreams);
             upstreams.clear();
+            children = new ArrayList<>(linkedChildren);
+            linkedChildren.clear();
         }
         for (OresCancellationToken.Registration link : prior) link.close();
+        return children;
+    }
+
+    /** Ordinary observers are published only after graph revocation. */
+    void publishCancellation() {
         notification.completeFromRuntime(null);
-        return true;
+    }
+
+    /**
+     * Request cancellation and propagate it through all directed children
+     * before delivering ordinary host completion subscribers. The boolean
+     * reports which caller claimed this source, not physical Task quiescence.
+     */
+    public boolean cancel() {
+        return OresCancellationDispatcher.request(this);
     }
 
     @Override
