@@ -363,6 +363,15 @@ class NativeHttpTest {
                 template.formatted("new HttpResponse(\"ok\")")));
     }
 
+    @Test void httpResponseNominalTypeCannotBeSpoofedOrMailedBetweenActors() {
+        for (String declaration : List.of(
+                "define class HttpResponse as end",
+                "type HttpResponse = int;",
+                "define actor Bad as receive(ActorMail<HttpResponse> mail): void { return; } end")) {
+            assertThrows(Exception.class, () -> OresCompiler.parseAndTypeCheck(declaration), declaration);
+        }
+    }
+
     @Test void guestResponseDraftRejectsInvalidStatusAndBodylessStatus() {
         String valid = """
             define actor A as
