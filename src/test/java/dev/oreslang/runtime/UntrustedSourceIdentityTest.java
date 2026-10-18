@@ -56,6 +56,26 @@ final class UntrustedSourceIdentityTest {
     }
 
     @Test
+    void canonicalEquivalentCodeUnitNamesMustNotAcquireDistinctImages() {
+        // Unicode NFC avoids invisible aliases in import resolution and
+        // diagnostics while preserving the original, authorized spelling.
+        for (String[] pair : new String[][] {
+                {"unit/é.ores", "unit/e\u0301.ores"},
+                {"unit/Å.ores", "unit/A\u030a.ores"},
+                {"unit/가.ores", "unit/\u1100\u1161.ores"},
+                {"unit/ñ.ores", "unit/n\u0303.ores"}
+        }) {
+            assertEquals(pair[0],
+                    UntrustedSourceIdentity.inspect(pair[0], "source").codeUnitId());
+            assertThrows(IllegalArgumentException.class,
+                    () -> UntrustedSourceIdentity.inspect(pair[1], "source"),
+                    "non-NFC alias cannot obtain a separate code-image identity");
+        }
+        assertEquals("lib/🎉.ores",
+                UntrustedSourceIdentity.inspect("lib/🎉.ores", "source").codeUnitId());
+    }
+
+    @Test
     void sourceLimitIsExactUtf8ByteCount() {
         assertEquals(1_048_576,
                 UntrustedSourceIdentity.inspect("a", "x".repeat(1_048_576)).byteLength());
