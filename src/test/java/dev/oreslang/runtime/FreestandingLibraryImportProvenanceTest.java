@@ -26,7 +26,9 @@ final class FreestandingLibraryImportProvenanceTest {
             IllegalArgumentException denied = assertThrows(
                     IllegalArgumentException.class,
                     () -> LinkedProgramRunner.validate(entry, Map.of()), prefix);
-            assertTrue(denied.getMessage().contains("reserved freestanding library import"),
+            assertTrue(denied.getMessage().contains(prefix.equals("core")
+                            ? "unknown compiler-owned core module"
+                            : "reserved freestanding library import"),
                     () -> prefix + ": " + denied.getMessage());
             assertTrue(denied.getMessage().contains(prefix + "/shadow"));
         }
@@ -46,7 +48,7 @@ final class FreestandingLibraryImportProvenanceTest {
                 IllegalArgumentException.class,
                 () -> LinkedProgramRunner.validate(entry, Map.of(
                         "ORESLANG_PATH", ambient.toString())));
-        assertTrue(denied.getMessage().contains("reserved freestanding library import"));
+        assertTrue(denied.getMessage().contains("unknown compiler-owned core module"));
     }
 
     @Test
@@ -62,6 +64,10 @@ final class FreestandingLibraryImportProvenanceTest {
         }
         // Neither slash variant can cause a packaged stdlib name to resolve
         // from the application search path instead of the trusted source.
+        assertTrue(CoreLibrarySources.isFreestandingCoreImport("core/numeric"));
+        assertTrue(CoreLibrarySources.isFreestandingCoreImport("core\\\\numeric"));
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.freestandingCoreUnitId("core\\\\numeric"));
         assertTrue(CoreLibrarySources.isCoreImport("std/core"));
         assertTrue(CoreLibrarySources.isCoreImport("std\\core"));
         assertThrows(IllegalArgumentException.class,
