@@ -129,6 +129,63 @@ final class ActorArtifactAdmissionTest {
     }
 
     @Test
+    void attestationTrustPolicyIsMandatoryAndFailsClosed() throws Exception {
+        byte[] executable = "ELF-attestation-policy".getBytes(StandardCharsets.UTF_8);
+        KeyPair keys = keyPair();
+        var manifest = sign(manifest(executable, List.of()), keys);
+
+        SecurityException failure = assertThrows(
+                SecurityException.class,
+                () -> ActorArtifactAdmission.admitIpcActor(
+                        java.util.UUID.randomUUID(),
+                        "ImageWorker",
+                        Ast.ActorKind.PRIVATE,
+                        manifest,
+                        executable,
+                        attestation("ImageWorker", manifest),
+                        ignored -> { throw new SecurityException("attestation not trusted"); },
+                        (builder, keyId) -> keys.getPublic(),
+                        targetPolicy(),
+                        supervisorPolicy(),
+                        privateWorkerPolicy()));
+        assertTrue(failure.getMessage().contains("attestation not trusted"),
+                failure.getMessage());
+    }
+
+    @Test
+    void callerByteMutationDuringTrustCallbacksCannotChangeSealedExecutable()
+            throws Exception {
+        byte[] executable = "ELF-racy-input".getBytes(StandardCharsets.UTF_8);
+        byte[] original = executable.clone();
+        KeyPair keys = keyPair();
+        var manifest = sign(manifest(original, List.of()), keys);
+
+        ActorArtifact<Object> artifact = ActorArtifactAdmission.admitIpcActor(
+                java.util.UUID.randomUUID(),
+                "ImageWorker",
+                Ast.ActorKind.PRIVATE,
+                manifest,
+                executable,
+                attestation("ImageWorker", manifest),
+                ignored -> executable[0] ^= 0x55,
+                (builder, keyId) -> {
+                    executable[1] ^= 0x22;
+                    return keys.getPublic();
+                },
+                targetPolicy(),
+                supervisorPolicy(),
+                privateWorkerPolicy());
+
+        assertFalse(java.util.Arrays.equals(original, executable),
+                "test must actually mutate caller-owned storage during admission");
+        assertArrayEquals(
+                original,
+                artifact.copyExactArtifactBytesForTrustedLauncher(),
+                "admission must hash, verify and seal one entry snapshot");
+        assertEquals(sha256(original), artifact.artifactSha256());
+    }
+
+    @Test
     void manifestCannotSelectItsOwnUntrustedKey() throws Exception {
         byte[] executable = "ELF-key-policy".getBytes(StandardCharsets.UTF_8);
         KeyPair signer = keyPair();
@@ -215,7 +272,10 @@ final class ActorArtifactAdmissionTest {
                         TRUST_ATTESTATION,
                         (builder, keyId) -> keys.getPublic(), targetPolicy(),
                         supervisorPolicy(), privateWorkerPolicy()));
-        assertTrue(excess.getMessage().contains("outside worker policy"), excess.getMessage());
+        assertTrue(
+                excess.getMessage().contains("exactly match")
+                        || excess.getMessage().contains("missing="),
+                excess.getMessage());
     }
 
     @Test
@@ -291,7 +351,7 @@ final class ActorArtifactAdmissionTest {
                         attestation("ImageWorker", manifest),
                         TRUST_ATTESTATION,
                         (builder, keyId) -> keys.getPublic(), targetPolicy(),
-                        noLoad, IsolatePolicy.developer()));
+                        noLoad, privateWorkerPolicy()));
         assertTrue(authority.getMessage().contains("HOT_CODE_LOAD"), authority.getMessage());
     }
 
@@ -312,6 +372,7 @@ final class ActorArtifactAdmissionTest {
                             manifest,
                             executable,
                             attestation,
+                            TRUST_ATTESTATION,
                             (builder, keyId) -> keys.getPublic(),
                             targetPolicy(),
                             IsolatePolicy.developer()));
@@ -331,6 +392,7 @@ final class ActorArtifactAdmissionTest {
                     manifest,
                     executable,
                     attestation,
+                    TRUST_ATTESTATION,
                     (builder, keyId) -> keys.getPublic(),
                     targetPolicy(),
                     privateWorkerPolicy());
