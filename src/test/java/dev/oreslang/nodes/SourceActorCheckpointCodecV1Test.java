@@ -82,6 +82,28 @@ final class SourceActorCheckpointCodecV1Test {
         values.put("name", "x");
         assertThrows(SecurityException.class,
                 () -> SourceActorCheckpointCodecV1.encode(fields(), values));
+
+        LinkedHashMap<String, Object> hidden = new LinkedHashMap<>();
+        hidden.put("count", 1L);
+        hidden.put("ready", true);
+        hidden.put("name", "ok");
+        hidden.put("hiddenJvmHandle", new Object());
+        assertThrows(SecurityException.class,
+                () -> SourceActorCheckpointCodecV1.encode(fields(), hidden));
+
+        LinkedHashMap<String, Object> floating = new LinkedHashMap<>();
+        floating.put("count", 42.5d);
+        floating.put("ready", true);
+        floating.put("name", "no-coercion");
+        assertThrows(SecurityException.class,
+                () -> SourceActorCheckpointCodecV1.encode(fields(), floating));
+
+        LinkedHashMap<String, Object> tooWide = new LinkedHashMap<>();
+        tooWide.put("count", java.math.BigInteger.valueOf(Long.MAX_VALUE).add(java.math.BigInteger.ONE));
+        tooWide.put("ready", true);
+        tooWide.put("name", "overflow");
+        assertThrows(SecurityException.class,
+                () -> SourceActorCheckpointCodecV1.encode(fields(), tooWide));
     }
 
     @Test
