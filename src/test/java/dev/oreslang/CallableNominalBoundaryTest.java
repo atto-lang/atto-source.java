@@ -71,6 +71,47 @@ final class CallableNominalBoundaryTest {
     }
 
     @Test
+    void functionValuesDoNotExposeObjectPropertiesOrCallableClassConversions() {
+        for (String source : List.of(
+                """
+                fnc increment(int x): int { return x + 1; }
+                fnc bad(): void {
+                    val callable = increment;
+                    val metadata = callable.meta;
+                }
+                """,
+                """
+                fnc increment(int x): int { return x + 1; }
+                fnc bad(): void {
+                    val callable = increment;
+                    callable.metadata = 10;
+                }
+                """,
+                """
+                define class Worker as
+                    pub method apply(int value): int { return value; }
+                end
+                fnc bad(): void {
+                    val worker = new Worker();
+                    val captured = worker.apply;
+                }
+                """,
+                """
+                define class Worker as
+                    pub method apply(int value): int { return value; }
+                end
+                fnc bad(): int {
+                    val worker = new Worker();
+                    return worker(10);
+                }
+                """
+        )) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+        }
+    }
+
+    @Test
     void ordinaryNominalTypesAndFirstClassFunctionSignaturesStillWork() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define interface Api as
