@@ -238,6 +238,20 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void omittedOptionalBeforeVariadicTailDoesNotCreateEvaluationHole() {
+        Plan plan = OptionalCallShapeBinder.bind(List.of(
+                Parameter.optional("prefix"), Parameter.variadic("rest")), List.of(
+                        Argument.positionalOmission(),
+                        Argument.positional(),
+                        Argument.positional()));
+        assertTrue(plan.omitted(0));
+        assertTrue(plan.explicitlyOmitted(0));
+        assertEquals(List.of(0, 1), plan.variadicSourceIndices());
+        assertEquals(2, plan.suppliedArgumentCount());
+        assertFalse(plan.omitted(1));
+    }
+
+    @Test
     void omissionAndExplicitOptionNoneHaveDistinctCompileTimePlans() {
         Plan explicitOmit = OptionalCallShapeBinder.bind(FOO, List.of(
                 Argument.positional(), Argument.positionalOmission(), Argument.positional()));
