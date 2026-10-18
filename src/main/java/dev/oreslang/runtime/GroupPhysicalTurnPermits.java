@@ -111,6 +111,10 @@ final class GroupPhysicalTurnPermits {
                 Actor successor = queue.removeFirst();
                 queued.remove(successor);
                 Grant next = grantUnderLock(successor);
+                // Ticket exhaustion seals the queue before the successor
+                // becomes active. Do not strand its identity reservation.
+                if (next == null)
+                    reservedIncarnations.remove(successor.id(), successor);
                 return new Release(true, false, next);
             }
             return new Release(true, false, null);
