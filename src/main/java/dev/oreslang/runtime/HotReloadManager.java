@@ -274,16 +274,16 @@ public final class HotReloadManager implements AutoCloseable {
     @Override
     public synchronized void close() {
         closed = true;
-        RuntimeException failure = null;
+        Throwable failure = null;
         for (var entry : new java.util.ArrayList<>(generations.entrySet())) {
             try {
                 entry.getValue().close();
                 generations.remove(entry.getKey(), entry.getValue());
-            } catch (RuntimeException error) {
-                // An unsuccessful close stays reserved, even if guest code
-                // was already fenced from all supervisor APIs.
-                if (failure == null) failure = error;
-                else failure.addSuppressed(error);
+            } catch (RuntimeException | Error error) {
+                // Attempt every sibling even if an earlier guest Context
+                // could not retire. Keep failed generations reserved and
+                // prioritize a later fatal VM/Engine teardown error.
+                failure = VerifiedCloseFence.mergeRetirementFailure(failure, error);
             }
         }
         activeByCodeUnit.clear();
@@ -292,15 +292,13 @@ public final class HotReloadManager implements AutoCloseable {
             try {
                 untrustedPool.close();
                 untrustedPool = null;
-            } catch (RuntimeException error) {
+            } catch (RuntimeException | Error error) {
                 // An unsuccessful isolate close must not be marked as fully
-                // released. SharedUntrustedIsolatePool keeps its admission
-                // slot fenced until the underlying Engine really closes.
-                if (failure == null) failure = error;
-                else failure.addSuppressed(error);
+                // released. The pool holds its process-wide admission slot.
+                failure = VerifiedCloseFence.mergeRetirementFailure(failure, error);
             }
         }
-        if (failure != null) throw failure;
+        VerifiedCloseFence.rethrowRetirementFailure(failure);
     }
 
     private static String digest(String text) {
@@ -372,11 +370,17 @@ public final class HotReloadManager implements AutoCloseable {
                         throw new IllegalStateException("untrusted hot-load admission deadline expired");
                     }
                     return null;
-                } catch (RuntimeException guestFailure) {
-                    try { close(); } catch (RuntimeException ignored) {
-                        // Keep the original guest error and its host-reachable
-                        // cause chain out of the supervisor API entirely.
+                } catch (RuntimeException | Error guestFailure) {
+                    Throwable report = guestFailure;
+                    try { close(); }
+                    catch (RuntimeException | Error cleanup) {
+                        report = VerifiedCloseFence.preferFatalSpawnCleanup(
+                                guestFailure, cleanup);
                     }
+                    // A real host-VM fatal error must not be demoted to an
+                    // ordinary parse failure. All other guest errors remain
+                    // sanitized, with no guest objects in the cause chain.
+                    if (VerifiedCloseFence.isVmFatal(report)) throw (Error) report;
                     throw new IllegalStateException(
                             "untrusted generation failed or isolated Context was revoked");
                 }
