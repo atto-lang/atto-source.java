@@ -200,7 +200,7 @@ public final class PostgresDurableWorkflowGate {
             try(PreparedStatement p=c.prepareStatement(
                 "SELECT 1 FROM ores_durable_actor WHERE "+KEY+
                 " AND active AND activation_epoch=? AND lease_owner=?"+
-                " AND lease_until>clock_timestamp()")){
+                " AND lease_until>clock_timestamp()+interval '5 seconds'")){
                 key(p,1,a);p.setLong(5,epoch);p.setObject(6,owner);
                 try(ResultSet r=p.executeQuery()){
                     if(!r.next())throw new IllegalStateException("outbox actor lease fenced");
