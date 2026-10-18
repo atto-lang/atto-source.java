@@ -172,6 +172,13 @@ final class EnumCaseOverloadPolicyTest {
         }
         assertThrows(IllegalArgumentException.class, () ->
                 EnumCaseOverloadPolicy.validateFamily(tooMany, ENUMS));
+        java.util.HashMap<String, EnumInfo> tooManyEnums = new java.util.HashMap<>();
+        for (int i = 0; i <= EnumCaseOverloadPolicy.MAX_ENUMS; i++) {
+            String id = "root.E" + i;
+            tooManyEnums.put(id, new EnumInfo(id, List.of("A"), true));
+        }
+        assertThrows(IllegalArgumentException.class, () ->
+                EnumCaseOverloadPolicy.validateFamily(List.of(call(fixed("int"))), tooManyEnums));
         assertThrows(IllegalArgumentException.class, () ->
                 EnumCaseOverloadPolicy.validateFamily(List.of(
                         call(enumType("root.Foo")),
