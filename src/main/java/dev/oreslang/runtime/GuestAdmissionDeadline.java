@@ -63,16 +63,30 @@ final class GuestAdmissionDeadline implements AutoCloseable {
         if (state.get() != RUNNING) return false;
         if (System.nanoTime() - startNanos >= timeoutNanos) {
             expireAndRevoke();
+            alarm.cancel(false);
             return false;
         }
         if (!state.compareAndSet(RUNNING, COMPLETE)) return false;
+        // The thread may have stalled between its first clock read and CAS.
+        // Never publish a late admission merely because TIMER was starved.
+        if (System.nanoTime() - startNanos >= timeoutNanos) {
+            state.set(EXPIRED); // only this winner can transition COMPLETE
+            dispatchRevocation();
+            alarm.cancel(false);
+            return false;
+        }
         alarm.cancel(false);
         return true;
     }
 
     private void expireAndRevoke() {
         if (!state.compareAndSet(RUNNING, EXPIRED)) return;
-        alarm.cancel(false);
+        // A nanosecond-scale timeout can fire before the constructor assigns
+        // its final alarm reference: do not touch alarm on the timer thread.
+        dispatchRevocation();
+    }
+
+    private void dispatchRevocation() {
         // Native Context.close(true) must never run on the one timer thread.
         Thread.ofVirtual().name("ores-untrusted-admission-revoke").start(() -> {
             try { revokeContext.run(); }
