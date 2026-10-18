@@ -82,6 +82,11 @@ final class LogicalSourceActorCrossContextUpgradeTest {
                                  WAIT)) {
                 var ref = router.ref();
                 UUIDAssertions.requireStable(ref.id());
+                assertThrows(IllegalStateException.class,
+                        () -> manager.retire(first.id()),
+                        "active logical route must pin its generation");
+                assertThrows(IllegalStateException.class, first::close,
+                        "direct generation close must not invalidate a live actor route");
                 var logicalBefore = ref.address();
                 var physicalBefore = router.physicalAddressForTesting();
 
@@ -98,6 +103,9 @@ final class LogicalSourceActorCrossContextUpgradeTest {
                 assertNotEquals(physicalBefore.runtimeId(), physicalAfter.runtimeId());
                 assertNotEquals(physicalBefore.actorId(), physicalAfter.actorId());
                 assertSame(second, router.generation());
+                assertThrows(IllegalStateException.class,
+                        () -> manager.retire(second.id()),
+                        "new active generation must remain route-pinned");
                 assertFalse(second.started(),
                         "cross-context actor restore must not run generation main");
 
@@ -115,6 +123,61 @@ final class LogicalSourceActorCrossContextUpgradeTest {
                 assertTrue(first.closed());
                 ref.send(1L);
                 assertEquals(46L, next(ref));
+            }
+        }
+    }
+
+    @Test
+    void unreadOldOutputBlocksMigrationUntilParentConsumesIt() throws Exception {
+        String v1 = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 1; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { return; }
+                """;
+        String v2 = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 999; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { val version = 2; return; }
+                """;
+
+        try (HotReloadManager manager =
+                     new HotReloadManager(IsolatePolicy.developer(),
+                             ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("out-v1.ores", v1);
+            var second = manager.stageActorGeneration("out-v2.ores", v2);
+            try (LogicalSourceActorRouterV1 router =
+                         LogicalSourceActorRouterV1.spawn(
+                                 first,
+                                 ActorRuntime.ActorKind.SHARED,
+                                 "Counter",
+                                 WAIT)) {
+                var ref = router.ref();
+                ref.send(41L);
+                router.physicalRefForTesting().drain().get(5, java.util.concurrent.TimeUnit.SECONDS);
+
+                assertThrows(IllegalStateException.class,
+                        () -> router.upgradeTo(second, WAIT),
+                        "v1 must not strand unread outputs in the retired physical stream");
+                assertEquals(1L, ref.incarnation());
+                assertEquals(42L, next(ref));
+
+                assertTrue(router.upgradeTo(second, WAIT));
+                ref.send(1L);
+                assertEquals(43L, next(ref));
             }
         }
     }
