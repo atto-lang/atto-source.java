@@ -61,7 +61,7 @@ final class ActorHotUpgradeIngressIntegrationTest {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch exit = new CountDownLatch(1);
         AtomicInteger delivered = new AtomicInteger();
-/****/        try (var runtime = new ActorRuntime()) {
+        try (var runtime = new ActorRuntime()) {
             var actor = runtime.<Integer>spawnShared(
                     () -> (message, context) -> {
                         if (message == 1) {
