@@ -326,4 +326,37 @@ final class OptionalCallAbiPreviewTest {
                         staged, required, List.of(INT)));
     }
 
+    @Test
+    void malformedRawOrMultiArgumentOptionCannotClaimAnExactAbi() {
+        for (Ast.TypeRef malformed : List.of(
+                Ast.TypeRef.simple("Option"),
+                new Ast.TypeRef("Option", List.of(STRING, BOOL), false))) {
+            List<Ast.Param> required = List.of(new Ast.Param(malformed, "required"));
+            List<Ast.CallArgument> call = List.of(
+                    Ast.CallArgument.value(new Ast.NameExpr("value")));
+            var plan = OptionalCallShapeBinder.bindParsed(
+                    OptionalCallShapeBinder.declaredParameterShapes(required), call);
+            assertThrows(IllegalArgumentException.class,
+                    () -> OptionalCallAbiPreview.prepareExact(
+                            required, call, plan, List.of(malformed)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> new OptionalCallAbiPreview.Slot(0, "required",
+                            malformed, OptionalCallAbiPreview.Action.PASS_REQUIRED, 0, 0));
+        }
+    }
+
+    @Test
+    void previewRejectsUnresolvedOrVoidConstructionTargets() {
+        for (String invalid : List.of("void", "Unknown", "null", "$infer$")) {
+            Ast.StagedNewExpr node = new Ast.StagedNewExpr(
+                    Ast.TypeRef.simple(invalid),
+                    List.of(Ast.CallArgument.named("a", new Ast.LiteralExpr(1L))),
+                    false);
+            assertThrows(IllegalArgumentException.class,
+                    () -> OptionalCallAbiPreview.prepareStagedConstructionExact(
+                            node, List.of(new Ast.Param(INT, "a")), List.of(INT)),
+                    invalid);
+        }
+    }
+
 }

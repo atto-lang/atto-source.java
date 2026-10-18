@@ -41,7 +41,7 @@ public final class OptionalCallAbiPreview {
             if (formalIndex < 0 || formalName == null || formalName.isBlank()) {
                 throw new IllegalArgumentException("invalid formal ABI slot");
             }
-            Objects.requireNonNull(calleeType, "calleeType");
+            requireExactConcreteType(calleeType);
             Objects.requireNonNull(action, "action");
             if (evaluatedSourceIndex < -1 || originalCallItemIndex < -1) {
                 throw new IllegalArgumentException("negative ABI source origin");
@@ -308,6 +308,7 @@ public final class OptionalCallAbiPreview {
             List<Ast.TypeRef> checkedSourceTypes) {
         Objects.requireNonNull(construction, "staged construction");
         Ast.TypeRef type = construction.type();
+        requireExactConcreteType(type);
         if (type.inferArguments() || !type.arguments().isEmpty() || type.isBorrow()) {
             throw new IllegalArgumentException(
                     "generic or borrowed construction requires separate target type proof");
@@ -331,6 +332,12 @@ public final class OptionalCallAbiPreview {
                 || type.name().equals("null") || type.name().equals("Unknown")
                 || type.isBorrow()) {
             throw new IllegalArgumentException("unresolved, borrowed or non-value ABI type");
+        }
+        // The canonical Option family is parameterized by exactly one
+        // concrete payload. A raw Option or an Option<T, U> must not acquire
+        // an apparent "exact" ABI merely by matching a forged input type.
+        if (type.name().equals("Option") && type.arguments().size() != 1) {
+            throw new IllegalArgumentException("Option ABI type requires exactly one concrete type argument");
         }
         for (Ast.TypeRef argument : type.arguments()) {
             requireExactConcreteType(argument);
