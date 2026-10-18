@@ -3791,76 +3791,98 @@ public final class OresEvalRootNode extends RootNode {
                 Object value,
                 Env env,
                 SourceValueCont continuation) {
-            OresFuture<?> future;
-            if (value instanceof OresFuture<?> oresFuture) {
-                future = oresFuture;
-            } else if (value instanceof ActorRuntime.ActorRef<?> actorRef) {
-                // Preserve the reference result; await only actor initialization.
-                future = actorRef.readyRef();
-            } else if (value instanceof Awaitable<?> awaitable) {
-                // The host projection itself may have side effects: preflight
-                // must happen before getAwaited(), not just before Task.await.
-                try {
-                    future = HostAwaitProjection.project(
-                            awaitable, env::hasLiveMutexGuards);
-                } catch (RuntimeException | Error failure) {
-                    continuation.accept(task, null, failure);
+            suspendOnAwaitable(
+                    task, value, env, continuation,
+                    new java.util.IdentityHashMap<>());
+        }
+
+        private void suspendOnAwaitable(
+                SourceTask task,
+                Object value,
+                Env env,
+                SourceValueCont continuation,
+                java.util.IdentityHashMap<Object, Boolean> visited) {
+            // Each settled layer is consumed iteratively (no Java stack
+            // growth). Pending layers re-enter only through an admitted guest
+            // continuation; producer callbacks never execute guest source.
+            while (true) {
+                OresFuture<?> future;
+                ActorRuntime.ActorRef<?> actorRef = null;
+                if (value instanceof OresFuture<?> oresFuture) {
+                    future = oresFuture;
+                } else if (value instanceof ActorRuntime.ActorRef<?> ref) {
+                    // ActorRef is a readiness barrier, not a nested Future.
+                    // Preserve its identity and do not adopt the reference.
+                    actorRef = ref;
+                    future = ref.readyRef();
+                } else if (value instanceof Awaitable<?> awaitable) {
+                    // Projection may execute host code: preflight first.
+                    try {
+                        future = HostAwaitProjection.project(
+                                awaitable, env::hasLiveMutexGuards);
+                    } catch (RuntimeException | Error failure) {
+                        continuation.accept(task, null, failure);
+                        return;
+                    }
+                } else if (value instanceof CompletionStage<?> stage) {
+                    try {
+                        future = HostAwaitProjection.adapt(
+                                stage, env::hasLiveMutexGuards);
+                    } catch (RuntimeException | Error failure) {
+                        continuation.accept(task, null, failure);
+                        return;
+                    }
+                } else {
+                    continuation.accept(task, value, null);
                     return;
                 }
-            } else if (value instanceof CompletionStage<?> stage) {
-                // from(stage) registers an arbitrary host completion callback.
-                try {
-                    future = HostAwaitProjection.adapt(
-                            stage, env::hasLiveMutexGuards);
-                } catch (RuntimeException | Error failure) {
-                    continuation.accept(task, null, failure);
+
+                if (visited.put(value, Boolean.TRUE) != null || visited.size() > 256) {
+                    continuation.accept(task, null,
+                            new IllegalStateException("cyclic or excessively nested awaitable"));
                     return;
                 }
-            } else {
-                continuation.accept(
-                        task,
-                        value,
-                        null);
-                return;
-            }
-
-            if (future == null) {
-                continuation.accept(
-                        task,
-                        null,
-                        new IllegalStateException(
-                                "awaitable projected a null Future"));
-                return;
-            }
-
-            if (future.isDone()) {
-                try {
-                    continuation.accept(
-                            task,
-                            future.join(),
-                            null);
-                } catch (RuntimeException | Error failure) {
-                    continuation.accept(task, null, failure);
+                if (future == null) {
+                    continuation.accept(task, null,
+                            new IllegalStateException("awaitable projected a null Future"));
+                    return;
                 }
+                if (future.isDone()) {
+                    try {
+                        Object resolved = future.join();
+                        if (actorRef != null) {
+                            continuation.accept(task, actorRef, null);
+                            return;
+                        }
+                        value = resolved;
+                        continue;
+                    } catch (RuntimeException | Error failure) {
+                        continuation.accept(task, null, failure);
+                        return;
+                    }
+                }
+
+                if (env.hasLiveMutexGuards()) {
+                    continuation.accept(task, null,
+                            new IllegalStateException(
+                                    "cannot await a pending Future while holding a live MutexGuard"));
+                    return;
+                }
+
+                ActorRuntime.ActorRef<?> awaitedActor = actorRef;
+                task.suspend(
+                        future,
+                        (t, result, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                            } else if (awaitedActor != null) {
+                                continuation.accept(t, awaitedActor, null);
+                            } else {
+                                suspendOnAwaitable(t, result, env, continuation, visited);
+                            }
+                        });
                 return;
             }
-
-            if (env.hasLiveMutexGuards()) {
-                continuation.accept(
-                        task,
-                        null,
-                        new IllegalStateException(
-                                "cannot await a pending Future while holding a live MutexGuard"));
-                return;
-            }
-
-            task.suspend(
-                    future,
-                    (t, result, failure) ->
-                            continuation.accept(
-                                    t,
-                                    result,
-                                    failure));
         }
 
         private void evalSuspendableChannel(
@@ -6414,15 +6436,22 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
+                java.util.IdentityHashMap<Object, Boolean> visited =
+                        new java.util.IdentityHashMap<>();
+                while (value instanceof OresFuture<?>
+                        || value instanceof CompletionStage<?>) {
+                    if (visited.put(value, Boolean.TRUE) != null || visited.size() > 256) {
+                        throw new IllegalStateException("cyclic or excessively nested awaitable");
+                    }
+                    if (value instanceof OresFuture<?> future) {
+                        value = AsyncRuntime.await(future);
+                    } else {
+                        value = AsyncRuntime.await((CompletionStage<?>) value);
+                    }
+                }
                 if (value instanceof ActorRuntime.ActorRef<?> actorRef) {
                     AsyncRuntime.await(actorRef.ready());
                     return actorRef;
-                }
-                if (value instanceof OresFuture<?> future) {
-                    return AsyncRuntime.await(future);
-                }
-                if (value instanceof CompletionStage<?> stage) {
-                    return AsyncRuntime.await(stage);
                 }
                 return value;
             }
@@ -7258,8 +7287,20 @@ public final class OresEvalRootNode extends RootNode {
                 case "is_none" -> (Invokable) args -> { requireZero(args, "Option.is_none"); return !option.present(); };
                 case "unwrap" -> (Invokable) args -> {
                     requireZero(args, "Option.unwrap");
-                    if (!option.present()) throw new OresPanic("called Option::unwrap() on a None value");
-                    return option.value();
+                    Object current = option;
+                    java.util.IdentityHashMap<Object, Boolean> visited =
+                            new java.util.IdentityHashMap<>();
+                    while (current instanceof OptionValue nested) {
+                        if (visited.put(nested, Boolean.TRUE) != null
+                                || visited.size() > 256) {
+                            throw new OresPanic("cyclic or excessively nested Option::unwrap()");
+                        }
+                        if (!nested.present()) {
+                            throw new OresPanic("called Option::unwrap() on a None value");
+                        }
+                        current = nested.value();
+                    }
+                    return current;
                 };
                 case "unwrap_safe" -> (Invokable) args -> {
                     requireZero(args, "Option.unwrap_safe");
