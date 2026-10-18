@@ -2,6 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
+import {createHash} from "node:crypto";
 const java=readFileSync(new URL("../src/test/java/dev/oreslang/MlActorStateScalarGuestTest.java",import.meta.url),"utf8");
 function section(start,end){
   const a=java.indexOf(start),b=java.indexOf(end,a+start.length);
@@ -40,4 +41,24 @@ test("typed actor JUnit contract pins four Results and negative-success golden",
   }
   assert.match(java,/self\.eval_affine\(3, 3, 2, -2\)/);
   assert.match(java,/assertEquals\(expected, stdout\.toString/);
+});
+
+function gitBlobSha(data) {
+  const raw = Buffer.isBuffer(data) ? data : Buffer.from(data);
+  return createHash("sha1").update("blob " + raw.length + "\0").update(raw).digest("hex");
+}
+test("guest CI source pins match actual fixture blobs and JUnit gate", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/ml-scalar-actor-guest.yml", import.meta.url), "utf8");
+  const fixtureSha = gitBlobSha(readFileSync(new URL("./fixtures/ml-actor-state-scalar.ores", import.meta.url)));
+  const goldenSha = gitBlobSha(readFileSync(new URL("./golden/ml-actor-state-scalar.stdout", import.meta.url)));
+  assert.equal(fixtureSha, "26a3cb34b126185d56f5d2c7ff370cab953b0b4b");
+  assert.equal(goldenSha, "867f4ca71a20b58b1f35e239d4bef160f7ef5342");
+  assert.match(java, new RegExp(fixtureSha));
+  assert.match(java, new RegExp(goldenSha));
+  assert.match(workflow, new RegExp(fixtureSha));
+  assert.match(workflow, new RegExp(goldenSha));
+  assert.equal(workflow.split('      - "tests/golden/ml-actor-state-scalar.stdout"').length - 1, 1, "one golden path filter only");
+  assert.match(workflow, /-Dtest=MlActorStateScalarGuestTest test/);
+  assert.match(workflow, /-Dores\\.runtime\\.carriers=native clean verify/);
+  assert.doesNotMatch(workflow, /uses: (?:actions\\/checkout|graalvm\\/setup-graalvm)@v[0-9]/);
 });
