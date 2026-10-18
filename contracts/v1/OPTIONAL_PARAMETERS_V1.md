@@ -144,3 +144,13 @@ V1 constraints for safety:
 ### Compatibility and migration guard
 
 Before promoting this proposal to syntax, audit all reachable user-visible call signatures and the existing use of identifier `omit` (including imports, methods, symbols and backtick escaping) to decide how to reserve it without shadowing existing value bindings. v1 only reserves a bare `omit` **argument item**, not every occurrence of the letters in a longer expression. For callable overrides and imported signatures, preserve exact optional/rest markers and source names in versioned public metadata; reject metadata drift rather than guessing. A typed Option-like value and an omitted slot are still separately represented even when both lower to None. Treat any unsupported variadic/constructor/actor-suspending form as a compile-time error, never silently lower to zero/null/empty string.
+
+## Implementation phases and competing syntax resolution
+
+The **single canonical proposed spelling** is `...T rest` (e.g. `...string messages`), symmetric with Oreslang's already existing call spread `...tuple`. The alternative draft `rest ...T items` is **not** an accepted alias. Do not teach both spellings or silently parse one as the other.
+
+- Phase A: implement named value argument AST/binding, then optional `T? slot`, bare contextual `omit`, typed `None`, constructor parity and overload-domain admission.
+- Phase B: implement final `...T rest` with only explicit positional variadic elements, empty-rest behavior, per-element typing, borrowed `Slice<T>` and ownership/lifetime checks. Names may bind fixed slots and leave rest empty. No runtime-length collection spread or named-rest pack until separately proved.
+- Phase C: implement **checked** final dynamic collection spread and named rest pack with complete source-order, borrow/effect, continuation and backing-storage proofs. Reference-oracle scenarios for `...tagList` and `tags: list` describe **Phase C semantics**, not currently admitted guest syntax. Existing Java static fixed-tuple spread remains independent.
+- No second or overloaded explicit constructor in v1. In a future separately gated constructor-overloading feature, only caller-visible parameters count toward overload admission; the implicit construction receiver is not an argument. Actor constructors remain disallowed.
+- Experimental pure-binder results are not evidence of executable Java/LLVM guest syntax, Option lowering, variadic runtime packing or CI parity. Fail closed on unsupported paths.
