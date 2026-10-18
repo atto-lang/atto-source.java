@@ -139,6 +139,176 @@ final class ActorObservabilityTest {
     }
 
     @Test
+    void failedActorRetainsNonDroppableSupervisorControlUntilAcknowledged()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 1))) {
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        throw new IllegalStateException("boom");
+                    });
+            actor.send("fail");
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            try {
+                actor.done().get(5, TimeUnit.SECONDS);
+                fail("failed actor DONE must fail");
+            } catch (java.util.concurrent.ExecutionException expected) {
+                assertInstanceOf(IllegalStateException.class, expected.getCause());
+            }
+
+            assertEquals(0, runtime.actorCount());
+            assertEquals(1, runtime.reservedActorSlots(),
+                    "failed actor capacity remains charged until supervisor CONTROL acknowledgement");
+            assertEquals(1, runtime.supervisorControlBacklog());
+            assertEquals(1L, runtime.supervisorControlPublished());
+            assertEquals(0L, runtime.supervisorControlAcknowledged());
+
+            assertThrows(IllegalStateException.class,
+                    () -> runtime.<String>spawnShared(
+                            () -> (message, context) -> { }),
+                    "replacement churn must not outrun an undelivered crash decision");
+
+            var control = runtime.pollSupervisorControlEvent().orElseThrow();
+            assertEquals(actor.id(), control.actorId());
+            assertEquals(actor.generation(), control.generation());
+            assertEquals(ActorFailure.Kind.RUNTIME_FAILURE, control.failureKind());
+            assertEquals(IllegalStateException.class.getName(), control.failureType());
+            assertEquals(0, runtime.supervisorControlBacklog());
+            assertEquals(1L, runtime.supervisorControlAcknowledged());
+
+            ActorRuntime.ActorRef<String> replacement = null;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (replacement == null && System.nanoTime() < deadline) {
+                try {
+                    replacement = runtime.<String>spawnShared(
+                            () -> (message, context) -> { });
+                } catch (IllegalStateException stillCharged) {
+                    Thread.sleep(1);
+                }
+            }
+            assertNotNull(replacement,
+                    "acknowledgement releases capacity after lifecycle observers retire");
+            replacement.stop();
+            assertTrue(replacement.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void supervisorControlIsIndependentOfCompletelyFullDiagnosticJournal()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            Field eventsField =
+                    ActorRuntime.class.getDeclaredField("supervisionEvents");
+            eventsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            var events = (java.util.ArrayDeque<Object>) eventsField.get(runtime);
+
+            var seed = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            seed.stop();
+            assertTrue(seed.awaitTermination(5, TimeUnit.SECONDS));
+            Object payload = events.peekFirst();
+            assertNotNull(payload);
+            while (events.size() < 4_096) events.addLast(payload);
+
+            var failed = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        throw new ActorFailure.Panic("panic");
+                    });
+            failed.send("fail");
+            assertTrue(failed.awaitTermination(5, TimeUnit.SECONDS));
+
+            assertTrue(runtime.supervisionEventsDropped() >= 1L,
+                    "best-effort diagnostic record may be dropped");
+            assertEquals(1, runtime.supervisorControlBacklog(),
+                    "correctness-critical CONTROL must survive diagnostic saturation");
+            var control = runtime.pollSupervisorControlEvent().orElseThrow();
+            assertEquals(failed.id(), control.actorId());
+            assertEquals(ActorFailure.Kind.PANIC, control.failureKind());
+            assertEquals(ActorFailure.Panic.class.getName(), control.failureType());
+        }
+    }
+
+    @Test
+    void concurrentCrashStormRetainsExactlyOneSupervisorControlPerFailedIncarnation()
+            throws Exception {
+        final int count = 128;
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(4, 4, 8, count));
+             var senders = java.util.concurrent.Executors.newFixedThreadPool(12)) {
+            var actors = new java.util.ArrayList<ActorRuntime.ActorRef<Integer>>(count);
+            for (int i = 0; i < count; ++i) {
+                actors.add(runtime.<Integer>spawnShared(
+                        () -> (message, context) -> {
+                            throw new ActorFailure.Raised("raised");
+                        }));
+            }
+
+            var start = new CountDownLatch(1);
+            var finished = new CountDownLatch(count);
+            var failures = new java.util.concurrent.ConcurrentLinkedQueue<Throwable>();
+            for (var actor : actors) {
+                senders.execute(() -> {
+                    try {
+                        start.await();
+                        actor.send(1);
+                    } catch (Throwable failure) {
+                        failures.add(failure);
+                    } finally {
+                        finished.countDown();
+                    }
+                });
+            }
+            start.countDown();
+            assertTrue(finished.await(10, TimeUnit.SECONDS));
+            assertTrue(failures.isEmpty(), () -> "send failures: " + failures);
+            for (var actor : actors) {
+                assertTrue(actor.awaitTermination(8, TimeUnit.SECONDS));
+            }
+
+            assertEquals(count, runtime.supervisorControlBacklog());
+            assertEquals(count, runtime.reservedActorSlots(),
+                    "every failed incarnation retains bounded decision capacity");
+            assertEquals(count, runtime.supervisorControlPublished());
+
+            var seen = new java.util.HashSet<ActorRuntime.ActorId>();
+            for (int i = 0; i < count; ++i) {
+                var event = runtime.pollSupervisorControlEvent().orElseThrow();
+                assertTrue(seen.add(event.actorId()),
+                        "one failed incarnation must publish exactly one CONTROL event");
+                assertEquals(ActorFailure.Kind.RAISE, event.failureKind());
+            }
+            assertEquals(count, seen.size());
+            assertTrue(runtime.pollSupervisorControlEvent().isEmpty());
+            assertEquals(count, runtime.supervisorControlAcknowledged());
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (runtime.reservedActorSlots() != 0 && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(0, runtime.reservedActorSlots(),
+                    "all capacity releases after CONTROL acknowledgement and observer retirement");
+        }
+    }
+
+    @Test
+    void normalTerminationNeverConsumesSupervisorFailureCapacity()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            actor.done().get(5, TimeUnit.SECONDS);
+            assertEquals(0, runtime.supervisorControlBacklog());
+            assertEquals(0L, runtime.supervisorControlPublished());
+            assertTrue(runtime.pollSupervisorControlEvent().isEmpty());
+        }
+    }
+
+    @Test
     void sendRejectionTelemetrySeparatesSealedTerminatedAndForeignRefs()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();
