@@ -19,6 +19,12 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * provider is available.</p>
  */
 final class NativeActorIpcTransportV1 implements AutoCloseable {
+    static final class ReadTimeoutException extends RuntimeException {
+        ReadTimeoutException(String message) {
+            super(message);
+        }
+    }
+
     private static final String LIBRARY = "oresipc";
     private static final Object LOAD_LOCK = new Object();
     private static volatile boolean loaded;
@@ -128,11 +134,17 @@ final class NativeActorIpcTransportV1 implements AutoCloseable {
         var lock = lifecycle.readLock();
         lock.lock();
         try {
-            return nativeReadFrame(
+            byte[] frame = nativeReadFrame(
                     requireOpen(),
                     lane,
                     limit,
                     timeoutMillis);
+            if (frame == null) {
+                throw new ReadTimeoutException(
+                        "IPC " + (lane == DATA ? "DATA" : "CONTROL")
+                                + " frame read timed out before any frame byte");
+            }
+            return frame;
         } finally {
             lock.unlock();
         }
