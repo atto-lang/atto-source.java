@@ -521,8 +521,9 @@ public final class Ast {
     /** A nominal enum case. tag is a stable positive wire tag, not the case value. */
     public record EnumCase(String name, TypeRef payload, int tag) {
         public EnumCase {
-            if (name == null || name.isBlank() || tag < 1) {
-                throw new IllegalArgumentException("invalid enum case name or positive wire tag");
+            EnumAstIdentity.requireSimple(name);
+            if (tag < 1) {
+                throw new IllegalArgumentException("enum case requires positive wire tag");
             }
         }
     }
@@ -542,9 +543,7 @@ public final class Ast {
             if (visibility == null) {
                 throw new IllegalArgumentException("enum visibility must be known");
             }
-            if (name == null || name.isBlank()) {
-                throw new IllegalArgumentException("enum requires a nominal name");
-            }
+            EnumAstIdentity.requireSimple(name);
             if (cases == null || cases.isEmpty() || cases.size() > 4096) {
                 throw new IllegalArgumentException("enum case count must be 1..4096");
             }
@@ -564,9 +563,7 @@ public final class Ast {
     /** Pattern is a nonconstructible, closed set of qualified enum cases. */
     public record PatternDecl(String name, List<String> alternatives) implements Decl {
         public PatternDecl {
-            if (name == null || name.isBlank()) {
-                throw new IllegalArgumentException("named enum pattern requires a name");
-            }
+            EnumAstIdentity.requireSimple(name);
             if (alternatives == null || alternatives.isEmpty()
                     || alternatives.size() > 4096) {
                 throw new IllegalArgumentException("named pattern alternatives exceed bound");
@@ -574,8 +571,9 @@ public final class Ast {
             alternatives = List.copyOf(alternatives);
             HashSet<String> unique = new HashSet<>();
             for (String alternative : alternatives) {
-                if (alternative.isBlank() || !unique.add(alternative)) {
-                    throw new IllegalArgumentException("invalid or duplicate named pattern alternative");
+                EnumAstIdentity.requirePatternAlternative(alternative);
+                if (!unique.add(alternative)) {
+                    throw new IllegalArgumentException("duplicate named pattern alternative");
                 }
             }
         }
