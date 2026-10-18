@@ -21,14 +21,18 @@ bash "$source_dir/tools/verify-exact-source-tree.sh" "$expected" "$source_dir" |
 printf 'NESTED_EXTRACTION_CI|TREE_VERIFIED|%s|%s\n' "$expected" "$source_dir"
 command -v java >/dev/null || die 'Java unavailable' 69
 command -v mvn >/dev/null || die 'Maven unavailable' 69
-java_major="$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.specification.version = //p' | head -n 1)"
+java_details="$(java -XshowSettings:properties -version 2>&1)" || die 'Java version probe failed' 69
+java_major="$(printf '%s\n' "$java_details" | sed -n 's/^[[:space:]]*java.specification.version = //p' | head -n 1)"
 [[ "$java_major" == '25' ]] || die 'GraalVM JDK 25 required' 69
+printf '%s\n' "$java_details" | grep -qi 'graalvm' || die 'GraalVM JDK 25 distribution required' 69
 # Maven may ignore PATH's java and use JAVA_HOME instead. Never certify a
 # JDK 25 run if the Maven JVM is pointed at an older/different installation.
 if [[ -n "${JAVA_HOME:-}" ]]; then
     [[ -x "$JAVA_HOME/bin/java" ]] || die 'JAVA_HOME does not contain executable java' 69
-    home_major="$("$JAVA_HOME/bin/java" -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.specification.version = //p' | head -n 1)"
+    home_details="$("$JAVA_HOME/bin/java" -XshowSettings:properties -version 2>&1)" || die 'JAVA_HOME version probe failed' 69
+    home_major="$(printf '%s\n' "$home_details" | sed -n 's/^[[:space:]]*java.specification.version = //p' | head -n 1)"
     [[ "$home_major" == '25' ]] || die 'JAVA_HOME JVM must be JDK 25 for Maven' 69
+    printf '%s\n' "$home_details" | grep -qi 'graalvm' || die 'JAVA_HOME must use GraalVM JDK 25' 69
 fi
 if [[ "$phase" == native-* || "$phase" == all ]]; then
     [[ "$(uname -s)" == Linux ]] || die 'native smoke phase requires Linux' 69
@@ -37,7 +41,7 @@ if [[ "$phase" == native-* || "$phase" == all ]]; then
 fi
 cd "$source_dir"
 run_targeted() {
-    local tests='AffineSumProjectionExtractionTest,BorrowedSumExtractionOwnershipTest,CheckedOptionDepthMetadataTest,FutureCompositionLanguageTest,NestedExtractionArityDiagnosticsTest,NestedFutureAffineReceiverTest,NestedFutureFlattenArityTest,NestedFutureSchedulerContractTest,NestedFutureCycleInterleavingTest,NestedFutureFlattenCycleRegressionTest,NestedOptionDepthConformanceTest,NestedOptionFutureExtractionLanguageTest,NestedOptionNoneBoundaryTest,NestedOptionResultBoundaryRegressionTest'
+    local tests='AffineSumProjectionExtractionTest,BorrowedSumExtractionOwnershipTest,CheckedOptionDepthMetadataTest,NestedExtractionCallableEscapeTest,FutureCompositionLanguageTest,NestedExtractionArityDiagnosticsTest,NestedFutureAffineReceiverTest,NestedFutureFlattenArityTest,NestedFutureSchedulerContractTest,NestedFutureCycleInterleavingTest,NestedFutureFlattenCycleRegressionTest,NestedOptionDepthConformanceTest,NestedOptionFutureExtractionLanguageTest,NestedOptionNoneBoundaryTest,NestedOptionResultBoundaryRegressionTest'
     mvn -B -ntp "-Dtest=$tests" -DfailIfNoTests=true test
 }
 run_full() { mvn -B -ntp -Dores.runtime.carriers=native verify; }
