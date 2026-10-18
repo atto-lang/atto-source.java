@@ -82,6 +82,8 @@ public final class TypeChecker {
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
     private final Set<String> importedModuleNamespaces = new HashSet<>();
+    // Authenticated compile-time declarations supplied by the source-unit linker.
+    private final Map<String, Ast.ModuleDecl> linkedModuleNamespaces = new HashMap<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
