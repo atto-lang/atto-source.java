@@ -122,14 +122,28 @@ public final class OptionalCallShapeBinder {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl function) {
                     requireNoUnloweredOptionalFormals(function.parameters());
+                    requireNoOmittableTypeOutsideFormal(function.returnType(), "function return");
+                    for (Ast.GenericParameter generic : function.genericSpecs()) {
+                        requireNoOmittableTypeOutsideFormal(generic.defaultType(), "generic default");
+                    }
                 } else if (decl instanceof Ast.ClassDecl klass) {
                     requireNoUnloweredOptionalFormals(klass);
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    for (Ast.TypeRef parent : iface.parents()) {
+                        requireNoOmittableTypeOutsideFormal(parent, "interface parent");
+                    }
                     for (Ast.InterfaceMember member : iface.members()) {
                         if (member instanceof Ast.InterfaceFunctionDecl function) {
                             requireNoUnloweredOptionalFormals(function.parameters());
+                            requireNoOmittableTypeOutsideFormal(function.returnType(), "interface return");
+                        } else if (member instanceof Ast.InterfaceFieldDecl field) {
+                            requireNoOmittableTypeOutsideFormal(field.type(), "interface field");
                         }
                     }
+                } else if (decl instanceof Ast.FieldDecl field) {
+                    requireNoOmittableTypeOutsideFormal(field.type(), "module field");
+                } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    requireNoOmittableTypeOutsideFormal(alias.target(), "type alias");
                 }
             }
         }
@@ -138,11 +152,29 @@ public final class OptionalCallShapeBinder {
     /** Reject optional formals from linked class signatures as well. */
     public static void requireNoUnloweredOptionalFormals(Ast.ClassDecl klass) {
         Objects.requireNonNull(klass, "class declaration");
+        for (Ast.TypeRef parent : klass.parents()) {
+            requireNoOmittableTypeOutsideFormal(parent, "class parent");
+        }
+        for (Ast.TypeRef iface : klass.interfaces()) {
+            requireNoOmittableTypeOutsideFormal(iface, "implemented interface");
+        }
+        for (Ast.FieldDecl field : klass.fields()) {
+            requireNoOmittableTypeOutsideFormal(field.type(), "class field");
+        }
         if (klass.constructor() != null) {
             requireNoUnloweredOptionalFormals(klass.constructor().parameters());
         }
         for (Ast.MethodDecl method : klass.methods()) {
             requireNoUnloweredOptionalFormals(method.parameters());
+            requireNoOmittableTypeOutsideFormal(method.returnType(), "method return");
+            requireNoOmittableTypeOutsideFormal(method.explicitReceiverType(), "method receiver");
+        }
+    }
+
+    private static void requireNoOmittableTypeOutsideFormal(Ast.TypeRef type, String location) {
+        if (type != null && type.isOmittableFormal()) {
+            throw new IllegalArgumentException(
+                    "T? is only valid on formal argument slots, not " + location);
         }
     }
 
