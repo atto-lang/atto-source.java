@@ -105,6 +105,7 @@ public final class HttpResponseDraftStandaloneCheck {
                         opened.incrementAndGet();
                         return new ByteArrayInputStream("alpha-beta".getBytes(StandardCharsets.UTF_8));
                     }, 200, List.of());
+                    case "/preflight-retry" -> HttpResponseDraft.text("after correction", 200, List.of(Map.entry("X-Retry", "yes")));
                     case "/aggregate-count" -> HttpResponseDraft.text("oversize", 200,
                             java.util.stream.IntStream.range(0, 10)
                                     .mapToObj(i -> Map.entry("X-New-" + i, "b")).toList());
