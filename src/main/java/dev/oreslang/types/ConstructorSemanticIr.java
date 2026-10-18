@@ -276,32 +276,12 @@ public final class ConstructorSemanticIr {
          * fixpoint. This is required for invocation but is not an external
          * ownership capture and can never become portable DATA.
          */
-        RECURSIVE_SELF
-    }
-
-    public record CaptureBinding(
-            String bindingId,
-            CaptureOrigin origin,
-            boolean write) {
-        public CaptureBinding {
-            if (bindingId == null || bindingId.isBlank()) {
-                throw new IllegalArgumentException("capture binding id cannot be blank");
-            }
-            Objects.requireNonNull(origin, "capture origin");
-            if (origin == CaptureOrigin.RECURSIVE_SELF && write) {
-                throw new IllegalArgumentException(
-                        "recursive callable self slot cannot be classified as an outer mutable capture");
-            }
-        }
-
-        public boolean participatesInExternalOwnership() {
-            return origin == CaptureOrigin.EXTERNAL_BINDING;
-        }
-
-        /** Executable capture cells never authorize actor/network DATA. */
-        public boolean actorDataAdmissible() {
-            return false;
-        }
+        RECURSIVE_SELF,
+        /**
+         * The runtime-proven current actor receiver. This semantic tag, never
+         * source spelling, is the authority for the actor-turn reborrow rule.
+         */
+        CANONICAL_ACTOR_SELF
     }
 
     /** Stable lexical identity after name resolution; spelling alone is never identity. */
@@ -383,6 +363,22 @@ public final class ConstructorSemanticIr {
                     throw new IllegalArgumentException(
                             "recursive callable self slot cannot carry outer ownership/capability metadata");
                 }
+            } else if (origin == CaptureOrigin.CANONICAL_ACTOR_SELF) {
+                if (access != CaptureAccess.READ) {
+                    throw new IllegalArgumentException(
+                            "canonical actor self is a read-only actor-turn capability binding");
+                }
+                if (transfer != CaptureTransfer.ACTOR_SELF_REBORROW) {
+                    throw new IllegalArgumentException(
+                            "canonical actor self must use actor-self reborrow transfer");
+                }
+                if (!capabilities.equals(Set.of(CallableCapability.ACTOR_LOCAL))) {
+                    throw new IllegalArgumentException(
+                            "canonical actor self must carry only ACTOR_LOCAL capability metadata");
+                }
+            } else if (transfer == CaptureTransfer.ACTOR_SELF_REBORROW) {
+                throw new IllegalArgumentException(
+                        "actor-self reborrow requires canonical actor-self semantic origin");
             }
         }
 
@@ -437,6 +433,7 @@ public final class ConstructorSemanticIr {
             bindings = List.copyOf(bindings);
             java.util.HashSet<CaptureBindingId> ids = new java.util.HashSet<>();
             CaptureBindingId recursiveSelf = null;
+            CaptureBindingId canonicalActorSelf = null;
             for (ResolvedCaptureBinding binding : bindings) {
                 Objects.requireNonNull(binding, "capture binding");
                 if (!ids.add(binding.bindingId())) {
@@ -452,8 +449,20 @@ public final class ConstructorSemanticIr {
                                         + binding.bindingId().declarationId());
                     }
                     recursiveSelf = binding.bindingId();
+                } else if (binding.origin() == CaptureOrigin.CANONICAL_ACTOR_SELF) {
+                    if (canonicalActorSelf != null) {
+                        throw new IllegalArgumentException(
+                                "one capture plan cannot contain multiple canonical actor-self bindings: "
+                                        + canonicalActorSelf.declarationId() + " and "
+                                        + binding.bindingId().declarationId());
+                    }
+                    canonicalActorSelf = binding.bindingId();
                 }
             }
+            bindings = bindings.stream()
+                    .sorted(java.util.Comparator.comparing(
+                            binding -> binding.bindingId().declarationId()))
+                    .toList();
         }
 
         public static CapturePlan empty() {
