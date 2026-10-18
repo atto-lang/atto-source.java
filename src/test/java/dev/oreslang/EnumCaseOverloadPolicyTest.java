@@ -131,6 +131,16 @@ final class EnumCaseOverloadPolicyTest {
         assertThrows(IllegalArgumentException.class, () ->
                 new Parameter(EnumCaseOverloadPolicy.Kind.ENUM, "root.Foo", "A"));
         assertThrows(IllegalArgumentException.class, () -> fixed("Any"));
+        // No source-supplied class names, structural strings, unknown or
+        // noncanonical primitive aliases may become FIXED ABI evidence.
+        for (String id : List.of("User", "Foo.A", "i8", "String", "f64",
+                "Tuple<int>", "{x:int}", "Unknown", "void")) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    fixed(id), "expected fixed-type rejection for " + id);
+        }
+        for (String id : List.of("int", "bool", "string", "float")) {
+            assertDoesNotThrow(() -> fixed(id));
+        }
         assertThrows(IllegalArgumentException.class, () -> enumCase("root.Foo", ""));
         assertThrows(IllegalArgumentException.class, () -> enumType("Foo"));
         assertThrows(IllegalArgumentException.class, () -> enumType("root. Foo"));
