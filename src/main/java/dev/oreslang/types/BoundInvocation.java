@@ -59,6 +59,66 @@ public final class BoundInvocation {
         if (!owned) {
             throw new IllegalArgumentException("selected declaration not owned by parsed owner");
         }
+        verifySelectedSourceSnapshot(kind, source, selected, preview, schedule);
+    }
+
+    /**
+     * Recheck that the immutable schedule and ABI slots refer to the original
+     * parsed call items and the exact selected declaration. Do not trust a
+     * self-consistent but unrelated supplied preview or formal permutation.
+     * This is provenance validation only, NOT a type/loan/effect proof.
+     */
+    private static void verifySelectedSourceSnapshot(
+            Kind kind, Ast.Expr source, Object selected,
+            OptionalCallAbiPreview.InvocationPreview preview,
+            OptionalCallEvaluationSchedule.Schedule schedule) {
+        List<Ast.Param> formals;
+        List<Ast.CallArgument> callItems;
+        if (kind == Kind.CLASS_CONSTRUCTOR) {
+            if (!(source instanceof Ast.StagedNewExpr construction)
+                    || construction.actorSpawn()
+                    || preview.kind() != OptionalCallAbiPreview.InvocationKind.CLASS_CONSTRUCTOR
+                    || !construction.type().equals(preview.constructedType())) {
+                throw new IllegalArgumentException("constructor source and ABI plan disagree");
+            }
+            formals = ((Ast.ConstructorDecl) selected).parameters();
+            callItems = construction.arguments();
+        } else {
+            if (!(source instanceof Ast.StagedCallExpr call)
+                    || preview.kind() != OptionalCallAbiPreview.InvocationKind.CALL
+                    || call.callee() != preview.calleeExpression()) {
+                throw new IllegalArgumentException("original callee and ABI plan disagree");
+            }
+            formals = kind == Kind.MODULE_FUNCTION
+                    ? ((Ast.FunctionDecl) selected).parameters()
+                    : ((Ast.MethodDecl) selected).parameters();
+            callItems = call.arguments();
+        }
+        var plan = OptionalCallShapeBinder.bindParsedFormals(formals, callItems);
+        List<OptionalCallAbiPreview.Slot> slots = preview.arguments().abiSlots();
+        if (plan.variadicParameterIndex() != -1 || slots.size() != formals.size()
+                || !schedule.abiSlots().equals(slots)) {
+            throw new IllegalArgumentException("selected declaration has incompatible full ABI schedule");
+        }
+        java.util.Map<Integer, Integer> explicitOmissions = new java.util.HashMap<>();
+        for (var item : plan.omittedCallItemBindings()) {
+            explicitOmissions.put(item.parameterIndex(), item.callItemIndex());
+        }
+        for (int i = 0; i < formals.size(); i++) {
+            Ast.Param formal = formals.get(i);
+            OptionalCallAbiPreview.Slot slot = slots.get(i);
+            int sourceIndex = plan.sourceIndex(i);
+            int callItemIndex = sourceIndex < 0
+                    ? explicitOmissions.getOrDefault(i, -1)
+                    : plan.callItemIndex(sourceIndex);
+            if (slot.formalIndex() != i || !slot.formalName().equals(formal.name())
+                    || !slot.calleeType().equals(formal.calleeType())
+                    || slot.evaluatedSourceIndex() != sourceIndex
+                    || slot.originalCallItemIndex() != callItemIndex) {
+                throw new IllegalArgumentException(
+                        "ABI slot differs from selected declaration or source call-item origin");
+            }
+        }
     }
 
     public Ast.Expr source() { return source; }
