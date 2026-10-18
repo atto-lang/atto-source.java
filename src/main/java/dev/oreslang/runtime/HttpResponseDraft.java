@@ -165,11 +165,16 @@ public final class HttpResponseDraft {
         if (raw.getRequestMethod().equals("HEAD") && bodyPresent && !streaming())
             raw.getResponseHeaders().set("Content-Length", Integer.toString(bufferedLength()));
         long length = suppress ? -1 : streaming() ? 0 : bufferedLength() == 0 ? -1 : bufferedLength();
-        raw.sendResponseHeaders(status, length);
-        if (suppress) return;
-        try (InputStream input = openBody()) {
-            activeBody.accept(input);
+        // Open and register a stream before committing a successful HTTP status.
+        // A failing supplier must not send a misleading HTTP 200 response.
+        // HEAD/bodyless responses must never open a body producer.
+        try (InputStream input = suppress ? null : openBody()) {
+            if (input != null) activeBody.accept(input);
             try {
+                if (cancelled.getAsBoolean())
+                    throw new IOException("HTTP response cancelled before headers");
+                raw.sendResponseHeaders(status, length);
+                if (suppress) return;
                 byte[] chunk = new byte[8192];
                 int count;
                 while (true) {
@@ -181,7 +186,7 @@ public final class HttpResponseDraft {
                     raw.getResponseBody().write(chunk, 0, count);
                 }
             } finally {
-                activeBody.accept(null);
+                if (input != null) activeBody.accept(null);
             }
         }
     }
