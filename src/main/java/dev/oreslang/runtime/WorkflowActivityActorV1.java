@@ -288,6 +288,8 @@ public final class WorkflowActivityActorV1 {
             return switch (outcome) {
                 case WorkflowActivityProtocolV1.Succeeded value ->
                         value.effectKey();
+                case WorkflowActivityProtocolV1.Completed value ->
+                        value.effectKey();
                 case WorkflowActivityProtocolV1.KnownUnexecuted value ->
                         value.effectKey();
                 case WorkflowActivityProtocolV1.Ambiguous value ->
