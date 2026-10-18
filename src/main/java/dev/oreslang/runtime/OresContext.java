@@ -468,48 +468,21 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
-        // Phase 1: ownership and physical quiescence. Never release a
-        // scheduler, context, or code generation while guest frames can still
-        // execute against them. A failed quiescence / generation-retirement
-        // fence must quarantine the remaining owner resources.
-        try {
-            compilerTaskScope.close();
-        } catch (RuntimeException | Error scopeFailure) {
-            throw new IllegalStateException(
-                    "Task scope retirement incomplete; VM and code-image teardown aborted",
-                    scopeFailure);
-        }
-
-        try {
-            asyncRuntime.close();
-        } catch (RuntimeException | Error asyncFailure) {
-            throw new IllegalStateException(
-                    "async carriers not quiescent; VM and code-image teardown aborted",
-                    asyncFailure);
-        }
-
-        // Phase 2: dispose providers and actor owners after Task/async
-        // quiescence. A failure here also prevents VM/code-image reclamation.
-        nativeIo.close();
-        http.close();
-        try {
-            actors.close();
-        } catch (RuntimeException | Error actorFailure) {
-            throw new IllegalStateException(
-                    "actor shutdown incomplete; VM and code-image teardown aborted",
-                    actorFailure);
-        }
-
-        // Phase 3: reclaim the runtime only after the owners above closed.
-        // Do not run image reclamation in a finally block around vm.close():
-        // if the VM cannot stop its workers, the images must stay pinned.
-        vm.close();
-        synchronized (this) {
-            linkedCodeUnits.clear();
-            linkedImportResolutions.clear();
-            sharedCodeImages.close();
-        }
-        garbageCollector.close();
-        output.flush();
+        OresContextTeardown.close(
+                compilerTaskScope::close,
+                asyncRuntime::close,
+                nativeIo::close,
+                http::close,
+                actors::close,
+                vm::close,
+                () -> {
+                    synchronized (this) {
+                        sharedCodeImages.close();
+                        linkedCodeUnits.clear();
+                        linkedImportResolutions.clear();
+                    }
+                },
+                garbageCollector::close,
+                output::flush);
     }
 }
