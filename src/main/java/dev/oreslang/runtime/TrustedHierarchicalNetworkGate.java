@@ -54,6 +54,13 @@ final class TrustedHierarchicalNetworkGate {
         /** Must be called by the trusted broker just before I/O submission. */
         boolean commitDispatch() {
             synchronized (gate.lock) {
+                // Host Scope.close also holds gate.lock. Therefore these
+                // three preflights form an atomic revocation snapshot:
+                // no partial dispatch commitment after one scope retires.
+                if (state.get() != 0
+                        || !child.canCommitDispatch()
+                        || !supervisor.canCommitDispatch()
+                        || !tenant.canCommitDispatch()) return false;
                 if (!state.compareAndSet(0, 1)) return false;
                 if (!child.commitDispatch() || !supervisor.commitDispatch()
                         || !tenant.commitDispatch()) {
