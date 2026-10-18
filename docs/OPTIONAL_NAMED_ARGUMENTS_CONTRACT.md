@@ -585,3 +585,44 @@ pub fnc greet(string? name): string {
 The syntax above is a **parsing contract only** while optional `T?`
 parameters are still staged. Type-checking and execution remain denied
 until the typed Option ABI and ownership admission are implemented.
+
+
+## Parser-owned local literal candidate preview (2026-10-18)
+
+`OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(program, call)`
+derives a candidate function's formal parameters from an **actual parsed**
+single-module `Ast.Program` instead of accepting caller-supplied formal
+metadata. The compiler-only result combines a parsed `FunctionDecl` with
+the independently typed scalar-literal ABI/evaluation preview.
+
+Admission is intentionally narrower than eventual language semantics:
+programs with imports or multiple modules, annotated/contracted modules,
+same-name field collisions, overloaded names, unknown labels, generic call
+application, effectful/nonliteral arguments, callable generics, async,
+suspending, generator, nonlexical, trapped, actor-owned and annotated
+functions are rejected. These exclusions may later be relaxed only after
+the real type/lexical/ownership resolver proves them. The helper does not
+inspect or authenticate the lexical call-site location: a local variable
+may still shadow a module function, and merely matching a parsed direct
+name does **not** establish resolution, accessibility or authority.
+
+This is **not** a compiled call, an executable IR token, or a replacement
+for `TypeChecker` / `OwnershipChecker`. The Java interpreter and native
+backends continue rejecting staged calls and `T?` formals. A compiler
+integration must authenticate lexical owner, declaration identity,
+overload family, generic substitutions, source expressions, effects,
+loans/moves and checked Option<T> ABI before enabling invocation.
+
+New JUnit regression *source* covers a named reordered call with explicit
+omission and direct parsed declaration identity, plus duplicate/same-name
+declarations, imports, annotations, async, unknown names/labels, generic
+calls and nonliteral effects. The source organization Actions jobs are
+still failing before recording execution steps, so no green JUnit claim
+can be made on this branch.
+
+The protected `main` private-source export allowlist remains empty.
+Security approval PR #1326 remains draft and CODEOWNER-reviewed approval
+is a prerequisite for any cross-organization private source mirroring.
+Alternate private destination's previously successful synthetic workflows
+are *not* evidence of compilation; recent checked destination jobs also
+failed with zero recorded steps. No source transfer was performed.
