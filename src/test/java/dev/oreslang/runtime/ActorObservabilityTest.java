@@ -390,7 +390,7 @@ final class ActorObservabilityTest {
                 ActorRuntime.ActorTerminationEvent event =
                         runtime.pollTerminationEvent().orElseThrow();
                 assertEquals(expected, event.sequence(),
-                        "MPSC journal must never expose a later terminal record first");
+                        "terminal journal must never expose a later published record first");
                 assertTrue(seenActors.add(event.actorId()),
                         "one actor must produce exactly one terminal record");
             }
