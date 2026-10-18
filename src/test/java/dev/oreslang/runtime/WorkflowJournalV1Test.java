@@ -713,14 +713,19 @@ final class WorkflowJournalV1Test {
                                 state.journal(),
                                 List.of(tamperedAttempt))));
 
+        String originalToken = original.claimToken();
+        char replacement =
+                originalToken.charAt(originalToken.length() - 1) == '0'
+                        ? '1'
+                        : '0';
         var tamperedDigest = new WorkflowJournalV1.EffectSnapshot(
                 original.effectKey(),
                 original.command(),
                 original.state(),
                 original.attempts(),
                 original.workerId(),
-                original.claimToken().substring(
-                        0, original.claimToken().length() - 1) + "0",
+                originalToken.substring(
+                        0, originalToken.length() - 1) + replacement,
                 original.leaseUntilMillis(),
                 original.receiptRef(),
                 original.reconciliationRef(),
