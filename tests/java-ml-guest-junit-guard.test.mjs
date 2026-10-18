@@ -31,3 +31,13 @@ test("guest fixture SHA and separately pinned output prevent silent drift",()=>{
   assert.match(java,/867f4ca71a20b58b1f35e239d4bef160f7ef5342/);
   assert.match(java,/assertEquals\(expected, stdout\.toString/);
 });
+
+
+test("typed actor JUnit contract pins four Results and negative-success golden",()=>{
+  assert.match(java,/assertTrue\(text\.contains\("private print_outcome\(Result<int, String> outcome\): void"\)\)/);
+  for(const error of ["INVALID_INPUT","INVALID_GRADIENT","UNSAFE_CANDIDATE"]){
+    assert(java.includes('return Err(\\\"'+error+'\\\")'));
+  }
+  assert.match(java,/self\.eval_affine\(3, 3, 2, -2\)/);
+  assert.match(java,/assertEquals\(expected, stdout\.toString/);
+});
