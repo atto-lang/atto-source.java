@@ -1,6 +1,11 @@
 package dev.oreslang.runtime;
 
 import java.net.URI;
+import java.net.ProxySelector;
+import java.net.Proxy;
+import java.net.SocketAddress;
+import java.io.IOException;
+import java.util.List;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -38,6 +43,13 @@ final class TrustedHttpLoopbackProbe implements AutoCloseable {
         this.destination = URI.create("http://127.0.0.1:" + trustedPort + "/");
         this.client = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NEVER)
+                .proxy(new ProxySelector() {
+                    @Override public List<Proxy> select(URI target) {
+                        return List.of(Proxy.NO_PROXY);
+                    }
+                    @Override public void connectFailed(
+                        URI uri, SocketAddress address, IOException error) { }
+                })
                 .connectTimeout(Duration.ofSeconds(2)).build();
     }
 
