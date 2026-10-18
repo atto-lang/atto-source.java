@@ -64,7 +64,7 @@ public final class SharedDomainArena {
             this.write = write;
         }
 
-        public long domainId() { return domainId; }
+        long domainId() { return domainId; }
     }
 
     /** Opaque shared slot handle; its native FFM Slot never escapes. */
@@ -257,7 +257,7 @@ public final class SharedDomainArena {
         }
     }
 
-    public long domainId() { return domainId; }
+    long domainId() { return domainId; }
 
     public synchronized Control takeControl() {
         runtime.requireSharedDomainControlAuthority(
