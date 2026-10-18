@@ -71,6 +71,29 @@ final class GeneratorRuntimeTest {
         });
     }
     @Test
+    void rejectedProducerLaunchFailsEveryPullWithoutHangingOrRunningGuestBody() {
+        assertTimeoutPreemptively(java.time.Duration.ofSeconds(3), () -> {
+            java.util.concurrent.atomic.AtomicInteger guestEffects =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            AsyncRuntime runtime = new AsyncRuntime();
+            var generator = GeneratorRuntime.generator(runtime, emitter -> {
+                guestEffects.incrementAndGet();
+                emitter.emit(1);
+            });
+            runtime.close(); // Force synchronous producer-start admission denial.
+            try (generator) {
+                for (int i = 0; i < 3; i++) {
+                    assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                            generator::nextStep,
+                            "pull " + i + " must preserve admission rejection");
+                }
+                assertEquals(0, guestEffects.get(),
+                        "no guest producer code may execute after rejected admission");
+            }
+        });
+    }
+
+    @Test
     void asyncPullsUseOresFutureIncludingTerminalPulls() throws Exception {
         try (AsyncRuntime runtime = new AsyncRuntime();
              var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(42))) {
