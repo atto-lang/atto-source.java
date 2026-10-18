@@ -24,6 +24,26 @@ final class OresTestCommand {
             + "\\|failed=(\\d+)\\|skipped=(\\d+)\\|filtered=(\\d+)\\r?$");
     private static final int MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 
+    /** Refuse oversized guest output before allocating an unbounded buffer. */
+    private static final class BoundedCapture extends ByteArrayOutputStream {
+        @Override
+        public synchronized void write(int value) {
+            if (count >= MAX_CAPTURE_BYTES) {
+                throw new IllegalStateException("oreslang test output exceeds 16 MiB");
+            }
+            super.write(value);
+        }
+
+        @Override
+        public synchronized void write(byte[] bytes, int offset, int length) {
+            java.util.Objects.checkFromIndexSize(offset, length, bytes.length);
+            if (length > MAX_CAPTURE_BYTES - count) {
+                throw new IllegalStateException("oreslang test output exceeds 16 MiB");
+            }
+            super.write(bytes, offset, length);
+        }
+    }
+
     private OresTestCommand() { }
 
     static int run(String[] args) throws Exception {
@@ -62,8 +82,8 @@ final class OresTestCommand {
         // TestOptions(..., machine=true), run_suite and require_success.
         // Capture bounded output to validate the authenticated command path
         // before the CLI reports success; output is emitted afterward.
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        ByteArrayOutputStream out = new BoundedCapture();
+        ByteArrayOutputStream err = new BoundedCapture();
         var result = LinkedProgramRunner.runWithExitStatus(
                 file, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
                 out, err);
