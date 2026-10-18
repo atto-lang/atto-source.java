@@ -546,7 +546,7 @@ final class OresSchedulerTest {
     @Test
     void completionRacingAwaitRegistrationNeverLosesOrDuplicatesResume() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(2)) {
-            for (int round = 0; round < 128; round++) {
+            for (int round = 0; round < 192; round++) {
                 OresFuture<Integer> producer = new OresFuture<>();
                 CountDownLatch firstTurnEntered = new CountDownLatch(1);
                 CountDownLatch allowAwait = new CountDownLatch(1);
@@ -565,18 +565,32 @@ final class OresSchedulerTest {
                 });
                 try {
                     assertTrue(firstTurnEntered.await(5, TimeUnit.SECONDS));
-                    if ((round & 1) == 0) {
-                        // Settlement strictly before the scheduler's waiter registration.
+                    if (round % 3 == 0) {
+                        // Settlement strictly before scheduler waiter registration.
                         assertTrue(producer.completeFromRuntime(expected));
                         allowAwait.countDown();
-                    } else {
-                        // The producer and suspending turn compete for publication.
+                    } else if (round % 3 == 1) {
+                        // Producer and suspending turn compete for publication.
+                        AtomicBoolean settled = new AtomicBoolean();
                         Thread completer = Thread.ofPlatform().start(() -> {
                             allowAwait.countDown();
-                            assertTrue(producer.completeFromRuntime(expected));
+                            settled.set(producer.completeFromRuntime(expected));
                         });
                         completer.join(5000);
                         assertFalse(completer.isAlive(), "producer stalled at round " + round);
+                        assertTrue(settled.get(), "producer did not settle at round " + round);
+                    } else {
+                        // Force the pending registration to exist before
+                        // settlement, covering the other side of the race.
+                        allowAwait.countDown();
+                        long registeredDeadline = System.nanoTime()
+                                + TimeUnit.SECONDS.toNanos(5);
+                        while (producer.pendingRuntimeWaiterCount() == 0
+                                && System.nanoTime() < registeredDeadline)
+                            Thread.sleep(1);
+                        assertEquals(1, producer.pendingRuntimeWaiterCount(),
+                                "await never registered at round " + round);
+                        assertTrue(producer.completeFromRuntime(expected));
                     }
                 } finally {
                     allowAwait.countDown();
