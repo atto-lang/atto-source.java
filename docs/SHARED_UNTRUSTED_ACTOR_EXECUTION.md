@@ -84,7 +84,19 @@ from the trusted process code store. Both `UntrustedJitCodeUnit` and untrusted
   or pointers to cross-actor memory, or authorizes FFI/host capabilities.
 - Each Context pins the Source through a lease until **confirmed**
   `Context.close(true)`. Failed close retains the lease and capacity;
-  successful last release evicts the Source for reclamation.
+  successful last release evicts the Source for reclamation. Code admission
+  and the close fence serialize through a **separate image-admission lock**,
+  not the monitor used for guest execution. An uncooperative guest cannot
+  prevent the supervisor from fencing new source-image admissions.
+- Reimporting the identical module in one Context reuses **one** lease,
+  rather than retaining source text or a new lease per import. Mixing a
+  different version of the same module within one Context is rejected:
+  hot reload creates a new Context/generation. Each Context permits at most
+  128 distinct module images.
+- The trusted host preflights both actor-spawn and hot-reload inputs against
+  strict UTF-8 encoding and the exact byte budget **before allocating the
+  untrusted native Engine**. Malformed UTF-16 and control-character module
+  identities fail closed; source parsing/type checking stays inside the guest.
 - This prototype caps simultaneously live distinct source images at 512
   and total pinned source text at 16 MiB (each text <= 1 MiB UTF-8).
   Quotas are enforced before insertion. Source images do not allocate a
