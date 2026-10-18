@@ -181,7 +181,17 @@ def validate_info(obj):
 
 
 def probe_info(launcher, cwd):
-    env = {'PATH': os.defpath, 'LC_ALL': 'C', 'LANG': 'C', 'TZ': 'UTC'}
+    # The standard host PATH often points to a different (older) JDK than the
+    # GraalVM JDK installed by CI. Preserve only the reviewed JDK bin path;
+    # never inherit an arbitrary runner PATH, tokens or JAVA_TOOL_OPTIONS.
+    home = os.environ.get('JAVA_HOME')
+    java_path = os.defpath
+    if home:
+        root = Path(home)
+        check(root.is_absolute() and (root / 'bin' / 'java').is_file(),
+              'JAVA_HOME does not identify a Java runtime')
+        java_path = str(root / 'bin') + os.pathsep + os.defpath
+    env = {'PATH': java_path, 'LC_ALL': 'C', 'LANG': 'C', 'TZ': 'UTC'}
     run = subprocess.run([str(launcher), '--build-info'], cwd=cwd, env=env,
                          capture_output=True, timeout=40)
     check(run.returncode == 0 and not run.stderr and len(run.stdout) <= 4096,
@@ -247,7 +257,11 @@ def create(args):
             shutil.copyfile(dep, out / 'deps' / dep.name, follow_symlinks=False)
         (out / 'run-oreslang').write_text(LAUNCHER, encoding='utf-8')
         (out / 'run-oreslang').chmod(0o700)
-        java = subprocess.run(['java', '--version'], capture_output=True, text=True,
+        # Record the same JDK that probe_info will execute via the launcher.
+        # Never silently report a different JDK's version as artifact provenance.
+        home = os.environ.get('JAVA_HOME')
+        java_bin = str(Path(home) / 'bin' / 'java') if home else 'java'
+        java = subprocess.run([java_bin, '--version'], capture_output=True, text=True,
                               timeout=20, check=True).stdout.strip()
         maven = subprocess.run(['mvn', '--version'], capture_output=True, text=True,
                                timeout=20, check=True).stdout.strip()

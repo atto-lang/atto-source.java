@@ -8,6 +8,7 @@ on:
       - 'tools/run-nested-extraction-exact-tree.sh'
       - 'tools/test-run-nested-extraction-exact-tree.sh'
       - 'tools/verify-exact-source-tree.sh'
+      - 'tools/test-verify-exact-source-tree.sh'
       - '.github/workflows/nested-extraction-exact-tree.yml'
   workflow_dispatch:
 
@@ -40,6 +41,8 @@ jobs:
           [[ "$expected" =~ ^[a-f0-9]{40}$ ]]
           test "$(git rev-parse 'HEAD^{tree}')" = "$expected"
           test -z "$(git status --porcelain --untracked-files=all)"
+          # git status omits ignored build inputs; independently reject those.
+          test -z "$(git ls-files --others -- .)"
           echo "sha=$expected" >> "$GITHUB_OUTPUT"
           printf 'commit=%s\ntree=%s\nsource_repo=%s\n' "$EXPECTED_COMMIT" "$expected" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/nested-provenance.txt"
       - name: Offline byte-level source-tree integrity adversarial tests
@@ -96,6 +99,8 @@ jobs:
           [[ "$expected" =~ ^[a-f0-9]{40}$ ]]
           test "$(git rev-parse 'HEAD^{tree}')" = "$expected"
           test -z "$(git status --porcelain --untracked-files=all)"
+          # git status omits ignored build inputs; independently reject those.
+          test -z "$(git ls-files --others -- .)"
           echo "sha=$expected" >> "$GITHUB_OUTPUT"
           printf 'commit=%s\ntree=%s\nsource_repo=%s\n' "$EXPECTED_COMMIT" "$expected" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/nested-provenance.txt"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
@@ -151,6 +156,8 @@ jobs:
           [[ "$expected" =~ ^[a-f0-9]{40}$ ]]
           test "$(git rev-parse 'HEAD^{tree}')" = "$expected"
           test -z "$(git status --porcelain --untracked-files=all)"
+          # git status omits ignored build inputs; independently reject those.
+          test -z "$(git ls-files --others -- .)"
           echo "sha=$expected" >> "$GITHUB_OUTPUT"
           printf 'commit=%s\ntree=%s\nsource_repo=%s\n' "$EXPECTED_COMMIT" "$expected" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/nested-provenance.txt"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1

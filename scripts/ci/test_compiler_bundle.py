@@ -28,6 +28,71 @@ class WorkflowActionPinTests(unittest.TestCase):
         self.assertIn('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02', uses)
 
 
+class CompilerToolchainProbeTests(unittest.TestCase):
+    def test_probe_prefers_configured_graalvm_java_without_host_secrets(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / 'jdk'
+            (home / 'bin').mkdir(parents=True)
+            (home / 'bin' / 'java').write_bytes(b'fake Java executable')
+            response = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=json.dumps(INFO).encode(), stderr=b'')
+            with patch.dict(os.environ, {
+                'JAVA_HOME': str(home), 'GITHUB_TOKEN': 'canary',
+                'JAVA_TOOL_OPTIONS': '-Dsecret=value',
+            }):
+                with patch.object(cb.subprocess, 'run', return_value=response) as proc:
+                    self.assertEqual(cb.probe_info(Path(tmp) / 'run-oreslang', Path(tmp)), INFO)
+                    env = proc.call_args.kwargs['env']
+            self.assertEqual(env['PATH'], str(home / 'bin') + os.pathsep + os.defpath)
+            self.assertNotIn('JAVA_TOOL_OPTIONS', env)
+            self.assertNotIn('GITHUB_TOKEN', env)
+
+    def test_invalid_java_home_fails_before_executing_launcher(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {'JAVA_HOME': tmp}):
+                with patch.object(cb.subprocess, 'run', side_effect=AssertionError('ran')):
+                    with self.assertRaisesRegex(ValueError, 'JAVA_HOME'):
+                        cb.probe_info(Path(tmp) / 'run-oreslang', Path(tmp))
+
+    def test_workflow_positive_negative_checks_cannot_be_optimized_away(self):
+        import os
+        import re
+        import textwrap
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'examples').mkdir()
+            (root / 'examples' / 'together.ores').write_text('synthetic test')
+            bundle = root / 'oreslang-compiler-bundle'
+            bundle.mkdir()
+            launcher = bundle / 'run-oreslang'
+            (root / 'jdk' / 'bin').mkdir(parents=True)
+            (root / 'jdk' / 'bin' / 'java').write_bytes(b'synthetic')
+            workflow = (Path(__file__).resolve().parents[2] /
+                        '.github/workflows/compiler-bundle-proof.yml').read_text()
+            m = re.search(r"          python3 -I - <<'PYCODE'\n(.*?)\n          PYCODE", workflow, re.S)
+            self.assertIsNotNone(m)
+            script = textwrap.dedent(m.group(1))
+            env = {'PATH': os.defpath, 'JAVA_HOME': str(root / 'jdk'),
+                   'GITHUB_WORKSPACE': str(root), 'RUNNER_TEMP': str(root),
+                   'PYTHONOPTIMIZE': '1'}
+            # A launcher that fails every source check must never pass CI,
+            # including when Python optimization is enabled.
+            launcher.write_text('#!/bin/sh\nexit 1\n')
+            launcher.chmod(0o700)
+            failed = subprocess.run([sys.executable, '-O', '-I', '-c', script],
+                                    env=env, cwd=root, capture_output=True, text=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn('positive .ores compilation failed', failed.stderr)
+            # A fake CLI returning success to malformed code must also fail.
+            launcher.write_text('#!/bin/sh\nexit 0\n')
+            accepted = subprocess.run([sys.executable, '-O', '-I', '-c', script],
+                                      env=env, cwd=root, capture_output=True, text=True)
+            self.assertNotEqual(accepted.returncode, 0)
+            self.assertIn('malformed source was not rejected', accepted.stderr)
+
+
 class BundleTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
