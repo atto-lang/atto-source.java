@@ -6064,6 +6064,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof OresObject object) return objectMember(object, name, env);
+            if (receiver instanceof List<?> list) return listMember(list, name);
+
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
@@ -6641,7 +6644,25 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
-            if (receiver instanceof OresObject object) {
+            if (receiver instanceof Map<?, ?> map) {
+                if (!map.containsKey(name)) throw new IllegalArgumentException("unknown struct/map member " + name);
+                Object value = map.get(name);
+                if (value == UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            "explicit struct field '" + name + "' is read before initialization");
+                }
+                return value;
+            }
+            InteropLibrary foreign = InteropLibrary.getUncached(receiver);
+            if (foreign.hasMembers(receiver)) {
+                context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
+                        "Java host object member " + name);
+                return hostMember(receiver, "host object", name);
+            }
+            throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
+        }
+
+        private Object objectMember(OresObject object, String name, Env env) {
                 if (object.fields.containsKey(name)) {
                     OwnedField ownedField = object.owner.findField(
                             object.klass, name, declarationIdentitySet());
@@ -6665,8 +6686,9 @@ public final class OresEvalRootNode extends RootNode {
                     return new BoundMethod(object, name, env == null ? null : env.accessClass());
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
-            }
-            if (receiver instanceof List<?> rawList) {
+        }
+
+        private Object listMember(List<?> rawList, String name) {
                 return switch (name) {
                     case "size" -> (long) rawList.size();
                     case "get" -> (Invokable) args -> {
@@ -6703,23 +6725,6 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException(
                             "unknown List member " + name);
                 };
-            }
-            if (receiver instanceof Map<?, ?> map) {
-                if (!map.containsKey(name)) throw new IllegalArgumentException("unknown struct/map member " + name);
-                Object value = map.get(name);
-                if (value == UNINITIALIZED_FIELD) {
-                    throw new IllegalArgumentException(
-                            "explicit struct field '" + name + "' is read before initialization");
-                }
-                return value;
-            }
-            InteropLibrary foreign = InteropLibrary.getUncached(receiver);
-            if (foreign.hasMembers(receiver)) {
-                context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
-                        "Java host object member " + name);
-                return hostMember(receiver, "host object", name);
-            }
-            throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
         }
 
         private Object hostMember(Object receiver, String ownerName, String name) {
