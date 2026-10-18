@@ -77,6 +77,14 @@ final class SharedUntrustedIsolatePoolTest {
                 IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
             assertThrows(IllegalArgumentException.class, () ->
                     loader.load("oversized.ores", "x".repeat(1_048_577)));
+            assertThrows(IllegalArgumentException.class, () ->
+                    loader.load("utf8.ores", "€".repeat(400_000)),
+                    "oversized UTF-8 bytes must be rejected before isolate allocation");
+            assertThrows(IllegalArgumentException.class, () ->
+                    loader.load("bad\nunit.ores", "valid"),
+                    "malformed module identity is rejected before isolate allocation");
+            assertThrows(IllegalArgumentException.class, () ->
+                    loader.load("invalid.ores", String.valueOf((char) 0xD800)));
             assertEquals(0, loader.liveGenerations());
         }
     }
