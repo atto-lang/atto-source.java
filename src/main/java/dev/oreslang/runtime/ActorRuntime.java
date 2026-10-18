@@ -7868,6 +7868,21 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 };
 
+                if (behavior == null
+                        && codeExecutor != null
+                        && codeActorState != null
+                        && !ref.readyFuture.isDone()) {
+                    synchronized (lifecycleLock) {
+                        if (stopped.get() || forceKillFenced) {
+                            ref.readyFuture.failFromRuntime(terminated(ref));
+                        } else {
+                            // Cross-context restore preloaded a compiler-owned
+                            // state object. Do NOT call initializeActor/on_start.
+                            ref.readyFuture.completeFromRuntime(null);
+                        }
+                    }
+                }
+
                 if (behavior == null && codeActorState == null) {
                     if (codeExecutor != null) {
                         @SuppressWarnings("unchecked")
