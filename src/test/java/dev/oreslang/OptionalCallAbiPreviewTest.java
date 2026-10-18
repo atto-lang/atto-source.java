@@ -359,4 +359,28 @@ final class OptionalCallAbiPreviewTest {
         }
     }
 
+
+    @Test
+    void forgedScalarLiteralTypeClaimsCannotPrepareAbi() {
+        List<Ast.Param> numeric = List.of(new Ast.Param(INT, "a"));
+        for (Ast.Expr value : List.of(new Ast.LiteralExpr(7L),
+                new Ast.LiteralExpr(true), new Ast.LiteralExpr("hello"),
+                new Ast.LiteralExpr(3.5))) {
+            var call = List.of(Ast.CallArgument.named("a", value));
+            var shape = OptionalCallShapeBinder.bindParsed(
+                    OptionalCallShapeBinder.declaredParameterShapes(numeric), call);
+            Ast.TypeRef claimed = value instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof Long ? STRING : INT;
+            assertThrows(IllegalArgumentException.class,
+                    () -> OptionalCallAbiPreview.prepareExact(
+                            numeric, call, shape, List.of(claimed)));
+        }
+        var valid = List.of(Ast.CallArgument.named("a", new Ast.LiteralExpr(7L)));
+        var plan = OptionalCallShapeBinder.bindParsed(
+                OptionalCallShapeBinder.declaredParameterShapes(numeric), valid);
+        assertEquals(OptionalCallAbiPreview.Action.PASS_REQUIRED,
+                OptionalCallAbiPreview.prepareExact(
+                        numeric, valid, plan, List.of(INT)).abiSlots().getFirst().action());
+    }
+
 }

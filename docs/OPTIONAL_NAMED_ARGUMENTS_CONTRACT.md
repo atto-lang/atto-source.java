@@ -502,3 +502,30 @@ loan/move/effect checks, constructor self rules and executable Option ABI
 are **not proven by a preview**. The compiler, ownership checker and
 interpreter continue rejecting staged guest calls and `T?` formals;
 this is not a green Java, GraalVM or LLVM runtime feature.
+
+
+## Literal-derived argument proof (draft Java PR #1335)
+
+The compiler-only \`OptionalCallLiteralStage.prepareDirectLiteralCall\` checks a
+deliberately narrow, independently typeable source subset: supplied values must
+be literal \`int\` (Long), \`float\` (Double), \`bool\` (Boolean), or \`string\`
+(String) AST nodes, or omitted call items. The literal type is derived from
+the AST instead of accepting caller assertions, then the existing original
+call-item binder, type-exact ABI preview and lexical-evaluation schedule are
+applied. Supplied \`T\` to \`T?\` plans \`WRAP_SOME\`; omission plans
+\`INJECT_NONE\` without evaluating a source expression.
+
+General \`OptionalCallAbiPreview.prepareExact\` also rejects a scalar
+literal claimed to have a different exact TypeRef, not merely \`null\`.
+Complex/symbol/custom literal categories remain gated until they have
+independent canonical source-type proofs. Plain \`None\` is not a primitive
+literal: it remains a typed expression requiring normal resolver proof,
+never an implicit omission.
+
+**Not an executable call witness:** even direct NameExpr callees can be
+shadowed or inaccessible, and this literal stage proves neither target
+identity/overload, generic substitution, effects, ownership, nor value ABI
+layout. The type checker, ownership checker and interpreter continue to reject
+staged optional calls; this stage must never be used as permission to bypass
+those guards. The next gate is compiler-owned resolution and ownership
+verification, then checked Option materialization in each backend.
