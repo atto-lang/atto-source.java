@@ -176,10 +176,14 @@ final class ActorArtifactV1Test {
                 unsigned.actorBoundary(),
                 unsigned.artifactFormat(),
                 unsigned.compilerBackend(),
+                unsigned.compilerVersion(),
+                unsigned.compilerGitCommit(),
                 unsigned.targetTriple(),
                 unsigned.abi(),
+                unsigned.artifactSha256(),
                 unsigned.messageAbiSha256(),
-                unsigned.stateSchemaSha256());
+                unsigned.stateSchemaSha256(),
+                unsigned.capabilityPolicySha256());
         assertThrows(
                 SecurityException.class,
                 () -> ActorArtifactV1.admit(
@@ -197,10 +201,14 @@ final class ActorArtifactV1Test {
                 unsigned.actorBoundary(),
                 unsigned.artifactFormat(),
                 unsigned.compilerBackend(),
+                unsigned.compilerVersion(),
+                unsigned.compilerGitCommit(),
                 unsigned.targetTriple(),
                 unsigned.abi(),
+                unsigned.artifactSha256(),
                 wrongMessageAbi,
-                unsigned.stateSchemaSha256());
+                unsigned.stateSchemaSha256(),
+                unsigned.capabilityPolicySha256());
         assertThrows(
                 SecurityException.class,
                 () -> ActorArtifactV1.admit(
@@ -208,6 +216,31 @@ final class ActorArtifactV1Test {
                         artifact,
                         trusted(pair, "release"),
                         wrongAbi,
+                        supervisor));
+
+        byte[] wrongArtifact = unsigned.artifactSha256();
+        wrongArtifact[0] ^= 1;
+        var wrongArtifactContract = new ActorArtifactV1.ExpectedActorContract(
+                unsigned.actorTypeName(),
+                unsigned.actorKind(),
+                unsigned.actorBoundary(),
+                unsigned.artifactFormat(),
+                unsigned.compilerBackend(),
+                unsigned.compilerVersion(),
+                unsigned.compilerGitCommit(),
+                unsigned.targetTriple(),
+                unsigned.abi(),
+                wrongArtifact,
+                unsigned.messageAbiSha256(),
+                unsigned.stateSchemaSha256(),
+                unsigned.capabilityPolicySha256());
+        assertThrows(
+                SecurityException.class,
+                () -> ActorArtifactV1.admit(
+                        signed,
+                        artifact,
+                        trusted(pair, "release"),
+                        wrongArtifactContract,
                         supervisor));
     }
 
@@ -304,7 +337,7 @@ final class ActorArtifactV1Test {
                         Ast.ActorKind.PRIVATE,
                         Ast.ActorBoundary.LOCAL,
                         ActorArtifactV1.ArtifactFormat.NATIVE_EXECUTABLE,
-                        "java-graalvm",
+                        ActorArtifactV1.CompilerBackend.JAVA_GRAALVM,
                         "0.1",
                         "a".repeat(40),
                         "x86_64-unknown-linux-gnu",
@@ -321,10 +354,50 @@ final class ActorArtifactV1Test {
                 IllegalArgumentException.class,
                 () -> new ActorArtifactV1.UnsignedReceipt(
                         "Worker",
+                        Ast.ActorKind.PRIVATE,
+                        Ast.ActorBoundary.IPC,
+                        ActorArtifactV1.ArtifactFormat.STATIC_LIBRARY,
+                        ActorArtifactV1.CompilerBackend.JAVA_GRAALVM,
+                        "0.1",
+                        "a".repeat(40),
+                        "x86_64-unknown-linux-gnu",
+                        "ores-ipc-v1",
+                        "builder",
+                        artifact.length,
+                        digest,
+                        digest,
+                        digest,
+                        ActorArtifactV1.capabilityDigest(Set.of()),
+                        Set.of()));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new ActorArtifactV1.UnsignedReceipt(
+                        "Worker",
+                        Ast.ActorKind.PRIVATE,
+                        Ast.ActorBoundary.FFI,
+                        ActorArtifactV1.ArtifactFormat.NATIVE_EXECUTABLE,
+                        ActorArtifactV1.CompilerBackend.JAVA_GRAALVM,
+                        "0.1",
+                        "a".repeat(40),
+                        "x86_64-unknown-linux-gnu",
+                        "ores-ffi-v1",
+                        "builder",
+                        artifact.length,
+                        digest,
+                        digest,
+                        digest,
+                        ActorArtifactV1.capabilityDigest(Set.of()),
+                        Set.of()));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new ActorArtifactV1.UnsignedReceipt(
+                        "Worker",
                         Ast.ActorKind.UNTRUSTED,
                         Ast.ActorBoundary.FFI,
                         ActorArtifactV1.ArtifactFormat.STATIC_LIBRARY,
-                        "java-graalvm",
+                        ActorArtifactV1.CompilerBackend.JAVA_GRAALVM,
                         "0.1",
                         "a".repeat(40),
                         "x86_64-unknown-linux-gnu",
@@ -344,7 +417,7 @@ final class ActorArtifactV1Test {
                         Ast.ActorKind.PRIVATE,
                         Ast.ActorBoundary.IPC,
                         ActorArtifactV1.ArtifactFormat.NATIVE_EXECUTABLE,
-                        "java-graalvm",
+                        ActorArtifactV1.CompilerBackend.JAVA_GRAALVM,
                         "0.1",
                         "a".repeat(40),
                         "x86_64-unknown-linux-gnu",
@@ -371,7 +444,7 @@ final class ActorArtifactV1Test {
                 boundary == Ast.ActorBoundary.FFI
                         ? ActorArtifactV1.ArtifactFormat.STATIC_LIBRARY
                         : ActorArtifactV1.ArtifactFormat.NATIVE_EXECUTABLE,
-                "java-graalvm",
+                ActorArtifactV1.CompilerBackend.JAVA_GRAALVM,
                 "0.1.0",
                 "a".repeat(40),
                 "x86_64-unknown-linux-gnu",
@@ -395,10 +468,14 @@ final class ActorArtifactV1Test {
                 receipt.actorBoundary(),
                 receipt.artifactFormat(),
                 receipt.compilerBackend(),
+                receipt.compilerVersion(),
+                receipt.compilerGitCommit(),
                 receipt.targetTriple(),
                 receipt.abi(),
+                receipt.artifactSha256(),
                 receipt.messageAbiSha256(),
-                receipt.stateSchemaSha256());
+                receipt.stateSchemaSha256(),
+                receipt.capabilityPolicySha256());
     }
 
     private static ActorArtifactV1.SignedReceipt signed(
