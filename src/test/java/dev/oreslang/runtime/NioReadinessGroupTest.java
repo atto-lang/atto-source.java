@@ -508,10 +508,12 @@ final class NioReadinessGroupTest {
                                 "partial-write rearm corrupted bytes on socket " + i);
                     }
                     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-                    while (group.activeWriteLeases() != 0
+                    while ((group.activeWriteLeases() != 0 || group.pendingCount() != 0)
                             && System.nanoTime() < deadline) Thread.sleep(1);
                     assertEquals(0, group.activeWriteLeases(),
                             "write lease survived full write round " + round);
+                    assertEquals(0, group.pendingCount(),
+                            "kernel readiness watch survived full write round " + round);
                 }
                 assertEquals(0, group.pendingCount());
                 assertEquals(0, group.activeWriteLeases());
