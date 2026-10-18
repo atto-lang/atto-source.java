@@ -17,6 +17,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     private final List<ExecutorService> lanes;
     private final int[] cpus;
     private final Semaphore queueSlots;
+    private final int queueCapacity;
     private final AtomicInteger nextLane = new AtomicInteger();
     private final AtomicInteger nextHostLane = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -26,6 +27,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         if (parallelism < 1 || capacity < 1) throw new IllegalArgumentException("invalid lane limits");
         this.cpus = cpus.clone();
         for (int cpu : cpus) NativeCarrierExecutor.requireAllowedCpu(cpu);
+        this.queueCapacity = capacity;
         this.queueSlots = new Semaphore(capacity);
         var created = new ArrayList<ExecutorService>();
         try {
@@ -131,6 +133,38 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
                 count += nativeLane.getStartedCarrierCount();
             } else if (lane instanceof java.util.concurrent.ThreadPoolExecutor pool) {
                 count += pool.getPoolSize();
+            }
+        }
+        return count;
+    }
+
+    int activeCarrierCount() {
+        int count = 0;
+        for (var lane : lanes) {
+            if (lane instanceof NativeCarrierExecutor nativeLane) {
+                count += nativeLane.getActiveCount();
+            } else if (lane instanceof java.util.concurrent.ThreadPoolExecutor pool) {
+                count += pool.getActiveCount();
+            }
+        }
+        return count;
+    }
+
+    int queuedTaskCount() {
+        return queueCapacity - queueSlots.availablePermits();
+    }
+
+    int queueCapacity() { return queueCapacity; }
+
+    int maximumCarrierCount() {
+        int count = 0;
+        for (var lane : lanes) {
+            if (lane instanceof NativeCarrierExecutor nativeLane) {
+                count += nativeLane.getMaximumPoolSize();
+            } else if (lane instanceof java.util.concurrent.ThreadPoolExecutor pool) {
+                count += pool.getMaximumPoolSize();
+            } else {
+                count += 1;
             }
         }
         return count;
