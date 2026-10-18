@@ -269,6 +269,8 @@ public final class GitHubWebhookActorV1 {
                                 receive.treeProof().treeSha());
 
                 int matched = 0;
+                String matchedRunId = null;
+                GitHubCiCorrelationV1.Result matchedResult = null;
                 String lastReason =
                         "no registered run matched CI identity";
                 for (var expectation : expectations.values()) {
@@ -280,24 +282,36 @@ public final class GitHubWebhookActorV1 {
                         continue;
                     }
                     matched++;
+                    matchedRunId = expectation.runId();
+                    matchedResult = result;
+                }
+
+                if (matched == 1) {
                     emit(
                             context,
                             new Matched(
-                                    expectation.runId(),
+                                    matchedRunId,
                                     verified.deliveryId(),
                                     verified.payloadSha256(),
                                     observed.workflowRunId(),
                                     receive.treeProof().receiptRef(),
-                                    result.event()));
-                }
-
-                if (matched == 0) {
+                                    matchedResult.event()));
+                } else if (matched == 0) {
                     emit(
                             context,
                             new Unmatched(
                                     verified.deliveryId(),
                                     verified.payloadSha256(),
                                     lastReason));
+                } else {
+                    emit(
+                            context,
+                            new Unmatched(
+                                    verified.deliveryId(),
+                                    verified.payloadSha256(),
+                                    "ambiguous CI correlation matched "
+                                            + matched
+                                            + " registered runs"));
                 }
                 return;
             }
