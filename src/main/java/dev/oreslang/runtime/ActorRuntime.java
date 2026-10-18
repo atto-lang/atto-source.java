@@ -932,6 +932,12 @@ public final class ActorRuntime implements AutoCloseable {
                     carrierPermitPool,
                     OresCarrierPermitPool.Domain.UNTRUSTED);
 
+            boolean observerBorrowingSafe = carrierBudget != null
+                    && carrierPermitPool != null
+                    && System.getProperty("ores.actor.affinity", "lane").trim().equals("none")
+                    && !usesNativeCarriers(privatePool)
+                    && !usesNativeCarriers(sharedPool)
+                    && !usesNativeCarriers(untrustedPool);
             int observerWorkers = carrierBudget == null
                     ? Math.max(
                             1,
@@ -944,9 +950,11 @@ public final class ActorRuntime implements AutoCloseable {
                                                     dispatcherConfig.sharedParallelism()))))
                     : Math.min(
                             dispatcherConfig.maxActors(),
-                            Math.min(
-                                    MAX_LIFECYCLE_OBSERVER_WORKERS,
-                                    carrierBudget.borrowingMaximumPerDomain()));
+                            observerBorrowingSafe
+                                    ? Math.min(
+                                            MAX_LIFECYCLE_OBSERVER_WORKERS,
+                                            carrierBudget.borrowingMaximumPerDomain())
+                                    : carrierBudget.lifecycleObserverMaximum());
             ThreadFactory lifecycleFactory = carrierPermitPool == null
                     ? namedFactory("ores-lifecycle-observer-")
                     : carrierPermitPool.threadFactory(
