@@ -109,6 +109,30 @@ public final class PostgresDurableWorkflowGate {
     }
 
     /**
+     * Return DUPLICATE for a matching installation-wide delivery, including
+     * after its original workflow has advanced. Fail closed if a delivery ID
+     * is reused with conflicting signed routing information.
+     */
+    private static Admission seenDelivery(Connection c, String tenant, long installationId,
+                                          long repositoryId, String sha, String ref,
+                                          String deliveryId) throws SQLException {
+        try (PreparedStatement p=c.prepareStatement(
+                "SELECT tenant_id,repository_id,expected_sha,expected_ref" +
+                " FROM ores_durable_github_delivery WHERE installation_id=? AND delivery_id=?")) {
+            p.setLong(1,installationId);
+            p.setString(2,deliveryId);
+            try (ResultSet result=p.executeQuery()) {
+                if (!result.next()) return null;
+                if (!tenant.equals(result.getString(1)) || repositoryId!=result.getLong(2) ||
+                        !sha.equals(result.getString(3)) || !ref.equals(result.getString(4))) {
+                    throw new IllegalStateException("conflicting GitHub delivery identity");
+                }
+                return Admission.DUPLICATE;
+            }
+        }
+    }
+
+    /**
      * Called AFTER verifying the GitHub HMAC signature over the raw bytes.
      * Tenant must be resolved by trusted installation policy, not parsed from
      * the webhook body. Expected SHA/ref, actor state and quota are checked
@@ -122,6 +146,9 @@ public final class PostgresDurableWorkflowGate {
            rawBody==null || rawBody.length<1 || rawBody.length>1_048_576)
             throw new IllegalArgumentException("invalid verified event");
         return transaction(c -> {
+            Admission earlier=seenDelivery(c,authorizedTenant,installationId,
+                    repositoryId,sha,ref,deliveryId);
+            if(earlier!=null)return earlier;
             DurableActorStore.Address actor;
             long actualVersion;
             // First find the candidate WITHOUT locking the expectation.
@@ -175,6 +202,23 @@ public final class PostgresDurableWorkflowGate {
                     r.next();
                     if(r.getLong(1)>=256 || r.getLong(2)+rawBody.length>32L*1024L*1024L)
                         throw new IllegalStateException("webhook inbox quota exhausted");
+                }
+            }
+            // This global ledger insert and actor inbox insert commit together.
+            // It also serializes concurrent replay across different actor routes.
+            try(PreparedStatement p=c.prepareStatement(
+                    "INSERT INTO ores_durable_github_delivery" +
+                    "(installation_id,delivery_id,repository_id,tenant_id,expected_sha," +
+                    "expected_ref,workflow_id,run_id,node_id)" +
+                    " VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING")) {
+                p.setLong(1,installationId);p.setString(2,deliveryId);
+                p.setLong(3,repositoryId);p.setString(4,authorizedTenant);
+                p.setString(5,sha);p.setString(6,ref);
+                p.setString(7,actor.workflowId());p.setString(8,actor.runId());
+                p.setString(9,actor.nodeId());
+                if(p.executeUpdate()!=1) {
+                    return seenDelivery(c,authorizedTenant,installationId,
+                        repositoryId,sha,ref,deliveryId);
                 }
             }
             try(PreparedStatement p=c.prepareStatement(
