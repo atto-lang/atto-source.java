@@ -61,6 +61,7 @@ enum {
 
 typedef struct {
     pid_t pid;
+    int pidfd;
     int data_write_fd;
     int data_read_fd;
     int control_write_fd;
@@ -270,6 +271,32 @@ static int ores_memfd_create(const char *name, unsigned int flags) {
 #endif
 }
 
+static int ores_pidfd_open(pid_t pid) {
+#if defined(SYS_pidfd_open)
+    return (int)syscall(SYS_pidfd_open, pid, 0U);
+#else
+    (void)pid;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+static int ores_pidfd_send_signal(int pidfd, int signal_number) {
+#if defined(SYS_pidfd_send_signal)
+    return (int)syscall(
+            SYS_pidfd_send_signal,
+            pidfd,
+            signal_number,
+            NULL,
+            0U);
+#else
+    (void)pidfd;
+    (void)signal_number;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
 /*
  * glibc 2.34+ exposes this GNU extension. A weak declaration makes the native
  * library load on older Linux runtimes; launch then fails closed instead of
@@ -341,14 +368,35 @@ static int add_dup(
     return posix_spawn_file_actions_adddup2(actions, source, target);
 }
 
-static void kill_and_reap(pid_t pid) {
-    if (pid <= 0) return;
-    if (kill(-pid, SIGKILL) != 0 && errno != ESRCH) {
+static void kill_and_reap(pid_t pid, int pidfd) {
+    if (pid <= 0) {
+        close_fd(&pidfd);
+        return;
+    }
+
+    /*
+     * Keep process identity anchored by pidfd. Once pidfd exists, signalling
+     * cannot accidentally target a later PID reuse. The process-group kill is
+     * best-effort cleanup for trusted PRIVATE workers that spawned helpers.
+     */
+    if (pidfd >= 0) {
+        int probe = ores_pidfd_send_signal(pidfd, 0);
+        if (probe == 0) {
+            (void)kill(-pid, SIGKILL);
+            if (ores_pidfd_send_signal(pidfd, SIGKILL) != 0
+                    && errno != ESRCH) {
+                (void)kill(pid, SIGKILL);
+            }
+        }
+    } else {
+        (void)kill(-pid, SIGKILL);
         (void)kill(pid, SIGKILL);
     }
+
     int status;
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
     }
+    close_fd(&pidfd);
 }
 
 static int spawn_exact_object(
@@ -597,6 +645,7 @@ Java_dev_oreslang_runtime_NativeActorIpcTransportV1_nativeLaunch(
     int control_in[2] = {-1, -1};
     int control_out[2] = {-1, -1};
     pid_t pid = -1;
+    int pidfd = -1;
     ores_ipc_process *process = NULL;
 
     executable_fd =
@@ -644,6 +693,11 @@ Java_dev_oreslang_runtime_NativeActorIpcTransportV1_nativeLaunch(
                 &pid) != 0) {
         goto fail;
     }
+    pidfd = ores_pidfd_open(pid);
+    if (pidfd < 0) {
+        // Exact process identity is mandatory for safe lifecycle control.
+        goto fail;
+    }
 
     /* Parent retains only its four transport endpoints + bootstrap writer. */
     close_fd(&executable_fd);
@@ -670,6 +724,7 @@ Java_dev_oreslang_runtime_NativeActorIpcTransportV1_nativeLaunch(
         goto fail;
     }
     process->pid = pid;
+    process->pidfd = pidfd;
     process->data_write_fd = data_in[1];
     process->data_read_fd = data_out[0];
     process->control_write_fd = control_in[1];
@@ -686,6 +741,7 @@ Java_dev_oreslang_runtime_NativeActorIpcTransportV1_nativeLaunch(
     control_in[1] = -1;
     control_out[0] = -1;
     pid = -1;
+    pidfd = -1;
     return (jlong)(intptr_t)process;
 
 fail: {
@@ -704,7 +760,12 @@ fail: {
         close_pipe_pair(data_out);
         close_pipe_pair(control_in);
         close_pipe_pair(control_out);
-        if (pid > 0) kill_and_reap(pid);
+        if (pid > 0) {
+            kill_and_reap(pid, pidfd);
+            pidfd = -1;
+        } else {
+            close_fd(&pidfd);
+        }
 
         char message[256];
         snprintf(
@@ -746,8 +807,18 @@ Java_dev_oreslang_runtime_NativeActorIpcTransportV1_nativeIsAlive(
 #if defined(__linux__)
     ores_ipc_process *process =
             (ores_ipc_process *)(intptr_t)handle;
-    if (process == NULL || process->pid <= 0) return JNI_FALSE;
-    if (kill(process->pid, 0) == 0 || errno == EPERM) return JNI_TRUE;
+    if (process == NULL || process->pid <= 0 || process->pidfd < 0) {
+        return JNI_FALSE;
+    }
+    struct pollfd descriptor;
+    descriptor.fd = process->pidfd;
+    descriptor.events = POLLIN;
+    descriptor.revents = 0;
+    int result;
+    do {
+        result = poll(&descriptor, 1, 0);
+    } while (result < 0 && errno == EINTR);
+    if (result == 0) return JNI_TRUE;
     return JNI_FALSE;
 #else
     (void)handle;
@@ -989,8 +1060,10 @@ Java_dev_oreslang_runtime_NativeActorIpcTransportV1_nativeClose(
     close_fd(&process->control_write_fd);
     close_fd(&process->control_read_fd);
     pid_t pid = process->pid;
+    int pidfd = process->pidfd;
     process->pid = -1;
-    kill_and_reap(pid);
+    process->pidfd = -1;
+    kill_and_reap(pid, pidfd);
     destroy_process_locks(process);
     secure_zero(process, sizeof(*process));
     free(process);
