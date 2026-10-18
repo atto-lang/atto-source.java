@@ -20,7 +20,7 @@ import java.util.Optional;
  * re-issued: a supervisor must reconcile the remote system and explicitly mark
  * the effect completed or safe to retry.</p>
  */
-public final class WorkflowJournalV1 {
+public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
 
     public enum EffectState {
         PENDING,
@@ -59,6 +59,25 @@ public final class WorkflowJournalV1 {
             int ambiguousEffects,
             int completedEffects,
             int abandonedEffects) { }
+
+    /**
+     * Complete serializable state required to reconstruct the reference store.
+     * Persistent adapters should encode this data explicitly rather than using
+     * Java object serialization.
+     */
+    public record PersistentState(
+            String runId,
+            Integer maxIterations,
+            long nextSequence,
+            long nextClaimNumber,
+            long lastObservedMillis,
+            List<DurableDevLoopV1.JournalEntry> journal,
+            List<EffectSnapshot> effects) {
+        public PersistentState {
+            journal = List.copyOf(Objects.requireNonNull(journal, "journal"));
+            effects = List.copyOf(Objects.requireNonNull(effects, "effects"));
+        }
+    }
 
     private static final long MAX_LEASE_MILLIS =
             7L * 24L * 60L * 60L * 1000L;
@@ -397,6 +416,157 @@ public final class WorkflowJournalV1 {
                 ambiguous,
                 completed,
                 abandoned);
+    }
+
+    public synchronized PersistentState persistentState() {
+        return new PersistentState(
+                runId,
+                maxIterations,
+                nextSequence,
+                nextClaimNumber,
+                lastObservedMillis,
+                List.copyOf(journal),
+                effects());
+    }
+
+    /**
+     * Restore a journal from explicitly decoded persistent state and re-verify
+     * every journal transition before applying persisted effect lifecycle data.
+     */
+    public static WorkflowJournalV1 restore(PersistentState state) {
+        Objects.requireNonNull(state, "state");
+        if (state.runId() == null) {
+            if (state.maxIterations() != null
+                    || state.nextSequence() != 1L
+                    || !state.journal().isEmpty()
+                    || !state.effects().isEmpty()) {
+                throw new IllegalStateException(
+                        "empty persisted workflow state is internally inconsistent");
+            }
+            WorkflowJournalV1 empty = new WorkflowJournalV1();
+            empty.nextClaimNumber = state.nextClaimNumber();
+            empty.lastObservedMillis = state.lastObservedMillis();
+            return empty;
+        }
+        if (state.maxIterations() == null) {
+            throw new IllegalStateException(
+                    "persisted workflow run lacks iteration policy");
+        }
+
+        DurableDevLoopV1 machine =
+                new DurableDevLoopV1(state.runId(), state.maxIterations());
+        WorkflowJournalV1 restored = new WorkflowJournalV1();
+        for (DurableDevLoopV1.JournalEntry recorded : state.journal()) {
+            DurableDevLoopV1.Transition transition =
+                    machine.accept(recorded.eventId(), recorded.event());
+            if (!transition.journalEntry().equals(recorded)) {
+                throw new IllegalStateException(
+                        "persisted journal failed deterministic replay at sequence "
+                                + recorded.sequence());
+            }
+            restored.append(transition);
+        }
+
+        if (restored.nextSequence != state.nextSequence()) {
+            throw new IllegalStateException(
+                    "persisted nextSequence does not match reconstructed journal");
+        }
+
+        Map<String, EffectSnapshot> persistedEffects =
+                new LinkedHashMap<>();
+        for (EffectSnapshot snapshot : state.effects()) {
+            EffectSnapshot prior =
+                    persistedEffects.putIfAbsent(snapshot.effectKey(), snapshot);
+            if (prior != null) {
+                throw new IllegalStateException(
+                        "duplicate persisted effect key " + snapshot.effectKey());
+            }
+        }
+        if (!restored.effects.keySet().equals(persistedEffects.keySet())) {
+            throw new IllegalStateException(
+                    "persisted effect keys do not match reconstructed workflow");
+        }
+
+        for (Map.Entry<String, MutableEffect> entry
+                : restored.effects.entrySet()) {
+            EffectSnapshot persisted = persistedEffects.get(entry.getKey());
+            MutableEffect effect = entry.getValue();
+            if (!effect.command.equals(persisted.command())) {
+                throw new IllegalStateException(
+                        "persisted effect command mismatch for "
+                                + entry.getKey());
+            }
+            validatePersistedEffect(persisted);
+            effect.state = persisted.state();
+            effect.attempts = persisted.attempts();
+            effect.workerId = persisted.workerId();
+            effect.claimToken = persisted.claimToken();
+            effect.leaseUntilMillis = persisted.leaseUntilMillis();
+            effect.receiptRef = persisted.receiptRef();
+            effect.reconciliationRef = persisted.reconciliationRef();
+            effect.retryAllowed = persisted.retryAllowed();
+        }
+
+        if (!Objects.equals(restored.runId, state.runId())
+                || !Objects.equals(
+                        restored.maxIterations, state.maxIterations())) {
+            throw new IllegalStateException(
+                    "persisted run identity/policy mismatch after reconstruction");
+        }
+        if (state.nextClaimNumber() <= 0) {
+            throw new IllegalStateException(
+                    "persisted nextClaimNumber must be positive");
+        }
+        if (state.lastObservedMillis() < -1L) {
+            throw new IllegalStateException(
+                    "persisted lastObservedMillis is invalid");
+        }
+        restored.nextClaimNumber = state.nextClaimNumber();
+        restored.lastObservedMillis = state.lastObservedMillis();
+        return restored;
+    }
+
+    private static void validatePersistedEffect(EffectSnapshot effect) {
+        Objects.requireNonNull(effect.effectKey(), "effectKey");
+        Objects.requireNonNull(effect.command(), "command");
+        Objects.requireNonNull(effect.state(), "state");
+        if (effect.attempts() < 0) {
+            throw new IllegalStateException(
+                    "persisted effect attempts cannot be negative");
+        }
+        switch (effect.state()) {
+            case CLAIMED -> {
+                if (effect.workerId() == null
+                        || effect.claimToken() == null
+                        || effect.leaseUntilMillis() <= 0) {
+                    throw new IllegalStateException(
+                            "claimed persisted effect lacks live claim metadata");
+                }
+            }
+            case PENDING, COMPLETED, ABANDONED -> {
+                if (effect.workerId() != null
+                        || effect.claimToken() != null
+                        || effect.leaseUntilMillis() != 0L) {
+                    throw new IllegalStateException(
+                            effect.state()
+                                    + " persisted effect retained claim metadata");
+                }
+            }
+            case AMBIGUOUS -> {
+                // Ambiguity deliberately retains the expired claim identity so
+                // reconciliation has evidence about the uncertain attempt.
+                if (effect.claimToken() == null
+                        || effect.leaseUntilMillis() <= 0) {
+                    throw new IllegalStateException(
+                            "ambiguous persisted effect lacks claim evidence");
+                }
+            }
+        }
+        if (effect.state() == EffectState.COMPLETED
+                && effect.receiptRef() == null) {
+            throw new IllegalStateException(
+                    "completed persisted effect lacks receipt");
+        }
     }
 
     /**
