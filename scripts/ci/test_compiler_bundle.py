@@ -14,6 +14,19 @@ INFO = {'build_mode': 'jvm', 'default_execution_mode': 'jit',
         'guest_execution': 'runtime-selected'}
 
 
+class WorkflowActionPinTests(unittest.TestCase):
+    def test_external_actions_are_immutable_commit_pinned(self):
+        import re
+        source = (Path(__file__).resolve().parents[2]
+                  / '.github/workflows/compiler-bundle-proof.yml').read_text()
+        uses = re.findall(r'^\s*(?:-\s*)?uses:\s+([^\s#]+)', source, re.MULTILINE)
+        self.assertGreaterEqual(len(uses), 3)
+        for value in uses:
+            with self.subTest(action=value):
+                self.assertRegex(value, r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$')
+        self.assertIn('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02', uses)
+
+
 class BundleTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

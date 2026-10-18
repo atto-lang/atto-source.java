@@ -101,7 +101,7 @@ jobs:
           print('REAL_JAVA_CLI_SOURCE_CHECKS_PASS not_ml_guest_evidence=true')
           PYCODE
       - name: Store short-lived artifact in original private repository only
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: private-source-org-jvm-bundle-unattested
           path: ${{ runner.temp }}/oreslang-compiler-bundle/
