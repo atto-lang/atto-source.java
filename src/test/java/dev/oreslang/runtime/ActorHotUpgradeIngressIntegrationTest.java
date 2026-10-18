@@ -117,6 +117,25 @@ final class ActorHotUpgradeIngressIntegrationTest {
     }
 
     @Test
+    void supervisorTerminationStillWorksWhenUpgradeFreezeIsOutstanding()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            var freeze = runtime.freezeUserIngressForHotUpgrade(actor);
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                    "upgrade freeze must not intercept lifecycle CONTROL");
+            assertFalse(freeze.schedulerDrained());
+            freeze.close();
+            freeze.close();
+            assertThrows(IllegalStateException.class,
+                    () -> runtime.freezeUserIngressForHotUpgrade(actor));
+        }
+    }
+
+    @Test
     void pendingMailMayDrainButLateUserAdmissionIsFenced() throws Exception {
         CountDownLatch firstEntered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
