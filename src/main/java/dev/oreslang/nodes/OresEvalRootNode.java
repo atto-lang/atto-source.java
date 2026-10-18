@@ -1323,8 +1323,13 @@ public final class OresEvalRootNode extends RootNode {
                             throw sourceFailure(resume.failure());
                         }
                         Object value = resume.value();
+                        // Future<void> resolves with a null payload. List.of(null)
+                        // throws before the guest callback or typed flatten
+                        // diagnostic can run; keep the single argument slot
+                        // while allowing the value itself to be null.
                         Object mapped = invoke(
-                                invokableInvocation(callback, List.of(value)));
+                                invokableInvocation(callback,
+                                        java.util.Collections.singletonList(value)));
 
                         if (observeSuccess) {
                             if (mapped != null) {
