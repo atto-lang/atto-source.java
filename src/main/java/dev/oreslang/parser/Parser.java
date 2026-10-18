@@ -754,7 +754,7 @@ public final class Parser {
         for (Ast.Annotation annotation : annotations) {
             if (!annotation.name().equals("ActorMiddleware")) {
                 throw error(previous(), "@" + annotation.name()
-                        + " on an actor would be ignored; only @ActorMiddleware is supported; "
+                        + " on an actor would be silently discarded; only @ActorMiddleware is supported; "
                         + "supervisor middleware must be configured at the trusted supervisor boundary");
             }
             if (seenMiddleware) {
