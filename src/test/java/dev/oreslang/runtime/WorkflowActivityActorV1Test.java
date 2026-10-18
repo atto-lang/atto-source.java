@@ -114,6 +114,41 @@ final class WorkflowActivityActorV1Test {
     }
 
     @Test
+    void claimLeasedToDifferentWorkerIsRejected()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = WorkflowActivityActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            var command = new DurableDevLoopV1.PushCode(
+                    1, "patch://one", "effect/push");
+            actor.send(new WorkflowActivityActorV1.Configure(
+                    "git-worker-b",
+                    WorkflowActivityProtocolV1.Kind.GIT,
+                    WorkflowActivityProtocolV1.requiredCapabilities(
+                            command)));
+            next(outputs);
+
+            actor.send(new WorkflowActivityActorV1.Dispatch(
+                    "run-1",
+                    new WorkflowJournalV1.Claim(
+                            command.effectKey(),
+                            command,
+                            "claim/current",
+                            1,
+                            1000L,
+                            "git-worker-a")));
+
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> actor.raw().getDone().get(
+                            5, TimeUnit.SECONDS));
+            assertTrue(actor.raw().failure().isPresent());
+        }
+    }
+
+    @Test
     void staleClaimOutcomeFailsWorkerActorInsteadOfCompletingNewAttempt()
             throws Exception {
         try (var runtime = new ActorRuntime()) {
