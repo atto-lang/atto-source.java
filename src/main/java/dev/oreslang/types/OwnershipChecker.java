@@ -2485,12 +2485,46 @@ public final class OwnershipChecker {
                 loop.add(s.bindingName());
                 scanStatements(s.body(), loop, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.ForStmt s) {
-                if (s.initializer() instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
-                if (s.condition() != null) scanExpr(s.condition(), blockLocals, outer, recursiveBinding, captures, false);
-                if (s.update() != null) scanExpr(s.update(), blockLocals, outer, recursiveBinding, captures, false);
-                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+                Set<String> loopLocals = new HashSet<>(blockLocals);
+                if (s.initializer() != null) {
+                    scanForInitializerCaptures(
+                            s.initializer(), loopLocals, outer, recursiveBinding, captures);
+                }
+                if (s.condition() != null) {
+                    scanExpr(s.condition(), loopLocals, outer, recursiveBinding, captures, false);
+                }
+                if (s.update() != null) {
+                    scanExpr(s.update(), loopLocals, outer, recursiveBinding, captures, false);
+                }
+                scanStatements(s.body(), loopLocals, outer, recursiveBinding, captures);
             }
         }
+    }
+
+    private void scanForInitializerCaptures(
+            Ast.Stmt initializer,
+            Set<String> loopLocals,
+            Scope outer,
+            String recursiveBinding,
+            CaptureSet captures) {
+        if (initializer instanceof Ast.BindingStmt binding) {
+            scanExpr(binding.initializer(), loopLocals, outer, recursiveBinding, captures, false);
+            loopLocals.add(binding.name());
+            return;
+        }
+        if (initializer instanceof Ast.DestructureStmt destructure) {
+            scanExpr(destructure.initializer(), loopLocals, outer, recursiveBinding, captures, false);
+            for (Ast.DestructureBinding binding : destructure.bindings()) {
+                if (!binding.isDiscard()) loopLocals.add(binding.name());
+            }
+            return;
+        }
+        if (initializer instanceof Ast.ExprStmt expression) {
+            scanExpr(expression.expression(), loopLocals, outer, recursiveBinding, captures, false);
+            return;
+        }
+        throw error("unsupported for-loop initializer in closure capture analysis: "
+                + initializer.getClass().getSimpleName());
     }
 
     private void scanExpr(Ast.Expr expr, Set<String> locals, Scope outer, String recursiveBinding, CaptureSet captures, boolean write) {
