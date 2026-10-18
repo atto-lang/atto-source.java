@@ -2358,6 +2358,11 @@ public final class TypeChecker {
                 rejectUnimportedClassNamespace(classNamespace);
                 return new ClassNamespace(qualifiedClassName(classNamespace));
             }
+            if (importedModuleNamespaces.contains(name.name())) {
+                throw new IllegalArgumentException(
+                        "imported module '" + name.name()
+                                + "' is a compile-time namespace, not a runtime value");
+            }
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findSingleFunction(name.name());
             if (fn != null) {
