@@ -42,6 +42,9 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     private final ActorRuntime owner;
     private final ActorPipelineRoutePlan graph;
     private final ActorPipelineRouteSession session;
+    /** Optional cooperative membership *selector*, never a source of new
+     * graph edges, return authority, or cancellation rights. */
+    private final ActorRuntime.ActorGroup routingGroup;
     private final Map<String, ActorRuntime.ActorRef<M>> targets;
     private final Map<ActorRuntime.ActorId, String> identities;
     private final Map<ActorPipelineRoutePlan.Edge, Integer> edges;
@@ -55,9 +58,26 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
             ActorPipelineRoutePlan plan,
             Map<String, ActorRuntime.ActorRef<M>> bindings,
             long generation, int maxActiveFrames) {
+        this(runtime, plan, bindings, generation, maxActiveFrames, null);
+    }
+
+    /** Supervisor-installed group policy. Only actual group members that
+     * are also connected graph targets may receive selected DATA. */
+    ActorPipelineCorrelatedMailboxRouter(
+            ActorRuntime runtime,
+            ActorPipelineRoutePlan plan,
+            Map<String, ActorRuntime.ActorRef<M>> bindings,
+            long generation, int maxActiveFrames,
+            ActorRuntime.ActorGroup group) {
         owner = Objects.requireNonNull(runtime);
         owner.requirePipelineRegistrationHostAuthority();
         graph = Objects.requireNonNull(plan);
+        if (group != null) {
+            if (!group.ownedByRuntime(owner))
+                throw new SecurityException("routing group belongs to a foreign runtime");
+            group.pipelineMemberSnapshot(); // must be live at registration
+        }
+        routingGroup = group;
         Objects.requireNonNull(bindings);
         Set<String> required = new HashSet<>();
         Map<ActorPipelineRoutePlan.Edge, Integer> indexed = new HashMap<>();
@@ -142,6 +162,49 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
         return frame;
     }
 
+    /** The group is snapshotted at selection, not on delivery or reply.
+     * A join/leave affects future selections only. A stopped destination
+     * still reports a real per-edge mailbox admission failure. */
+    private java.util.Set<String> groupEligible(String source) {
+        var edges = graph.forwardAll(source);
+        if (routingGroup == null)
+            return edges.stream().map(ActorPipelineRoutePlan.Edge::target)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        var members = routingGroup.pipelineMemberSnapshot();
+        var names = new HashSet<String>();
+        for (var edge : edges) {
+            var target = targets.get(edge.target());
+            if (target != null && members.contains(target.id()))
+                names.add(edge.target());
+        }
+        return Set.copyOf(names);
+    }
+
+    private List<ActorPipelineRoutePlan.Edge> selectedGroupEdges(
+            String source, Set<String> requested) {
+        var edges = graph.forwardAll(source);
+        var active = groupEligible(source);
+        if (requested != null) {
+            if (requested.isEmpty())
+                throw new IllegalArgumentException("selective fanout requires targets");
+            for (var name : requested) {
+                if (name == null || edges.stream().noneMatch(e -> e.target().equals(name)))
+                    throw new SecurityException("selected target is not a connected graph edge");
+                if (!active.contains(name))
+                    throw new IllegalStateException(
+                            "selected actor is not an active ActorGroup member");
+            }
+        }
+        var selected = new ArrayList<ActorPipelineRoutePlan.Edge>();
+        for (var edge : edges)
+            if (active.contains(edge.target())
+                    && (requested == null || requested.contains(edge.target())))
+                selected.add(edge);
+        if (selected.isEmpty())
+            throw new IllegalStateException("no eligible ActorGroup graph recipients");
+        return List.copyOf(selected);
+    }
+
     /** Read-only host observability; never an authority-bearing route handle. */
     Correlation currentCorrelation() {
         var frame = current();
@@ -160,7 +223,18 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     void forward(M value) {
         inLiveGeneration(() -> {
             var source = current();
-            sendChild(session.forward(source), value);
+            Objects.requireNonNull(value, "pipeline payload");
+            ActorPipelineRouteSession.MailFrame child;
+            if (routingGroup == null) {
+                child = session.forward(source);
+            } else {
+                var edges = selectedGroupEdges(source.receiver(), null);
+                if (edges.size() != 1)
+                    throw new IllegalArgumentException(
+                            "ambiguous group forward; use selective fanout or round robin");
+                child = session.forwardTo(source, edges.getFirst().target());
+            }
+            sendChild(child, value);
             ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
@@ -169,7 +243,12 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     void forwardRoundRobin(M value) {
         inLiveGeneration(() -> {
             var source = current();
-            sendChild(session.forwardRoundRobin(source), value);
+            Objects.requireNonNull(value, "pipeline payload");
+            var child = routingGroup == null
+                    ? session.forwardRoundRobin(source)
+                    : session.forwardRoundRobinEligible(
+                            source, groupEligible(source.receiver()));
+            sendChild(child, value);
             ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
@@ -178,6 +257,10 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     void forwardTo(String target, M value) {
         inLiveGeneration(() -> {
             var source = current();
+            Objects.requireNonNull(value, "pipeline payload");
+            if (routingGroup != null && !groupEligible(source.receiver()).contains(target))
+                throw new IllegalStateException(
+                        "target is not an active ActorGroup graph member");
             sendChild(session.forwardTo(source, target), value);
             ActorPipelineRouteSession.retireDelivered(source);
             return null;
@@ -187,6 +270,16 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     void forwardByKey(String key, M value) {
         inLiveGeneration(() -> {
             var source = current();
+            Objects.requireNonNull(value, "pipeline payload");
+            // Stable-key selection uses the immutable graph's strict UTF-8
+            // contract. Do not silently rehash a key across a changing
+            // group: fail closed if its designated actor is no longer active.
+            if (routingGroup != null) {
+                var edge = graph.forwardByKey(source.receiver(), key);
+                if (!groupEligible(source.receiver()).contains(edge.target()))
+                    throw new IllegalStateException(
+                            "key-selected actor is not an active ActorGroup member");
+            }
             sendChild(session.forwardByKey(source, key), value);
             ActorPipelineRouteSession.retireDelivered(source);
             return null;
@@ -223,19 +316,30 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     /** Every recipient gets an independent admission result; earlier
      * successes are not rolled back when a later mailbox is full or stopped. */
     List<Admission> forwardAll(M value) {
+        return deliverSelected(value, null);
+    }
+
+    /** Explicit selective fanout intersects the requested *names* with the
+     * same immutable graph and, when configured, the current ActorGroup
+     * membership. Return one receipt for each selected graph edge. */
+    List<Admission> forwardSelected(Set<String> targets, M value) {
+        return deliverSelected(value, Set.copyOf(Objects.requireNonNull(targets)));
+    }
+
+    private List<Admission> deliverSelected(M value, Set<String> requested) {
         return inLiveGeneration(() -> {
         var frame = current();
         Objects.requireNonNull(value, "pipeline payload");
         // Allocate independent receipt slots and resolve the immutable edge
         // order BEFORE reserving any route frame. A failed host allocation
         // must never strand a live, undeliverable correlation child.
-        var out = graph.forwardAll(frame.receiver());
+        var out = selectedGroupEdges(frame.receiver(), requested);
         var result = new ArrayList<Admission>(out.size());
         // Allocate the read-only wrapper before any live correlation frame
         // or mailbox DATA publication. No final List.copyOf allocation
         // occurs after successful sends have become externally visible.
         var completed = Collections.unmodifiableList(result);
-        var children = session.forwardAll(frame);
+        var children = session.forwardSelected(frame, out);
         // Pre-materialize EVERY successful AND failed branch receipt before
         // the first mailbox send. Allocation pressure must not turn a
         // nontransactional branch rejection into loss of earlier receipts.
