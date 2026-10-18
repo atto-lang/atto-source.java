@@ -6934,6 +6934,11 @@ public final class TypeChecker {
         }
 
         Type concrete = resolve(param.type(), generics, self);
+        if (concrete instanceof Tuple) {
+            throw new IllegalArgumentException(
+                    "structural positional tuple parameters are parsed but not yet executable; "
+                            + "requires a nonescaping readonly tuple-view ABI");
+        }
         if (concrete instanceof Record) {
             // Inline structural shapes are already the canonical read-only
             // structural contract. They do not need a nominal class/interface
@@ -7858,6 +7863,11 @@ public final class TypeChecker {
             Map<String, Ast.TypeRef> metadata = namedTypeParameters(ref);
             validateCollectionMetadata("Tuple", metadata);
             List<Ast.TypeRef> elements = positionalTypeArguments(ref);
+            if (elements.stream().anyMatch(Ast.TypeRef::isOmittableTupleSlot)) {
+                throw new IllegalArgumentException(
+                        "omittable tuple-tail syntax is parsed but not yet executable; "
+                                + "requires checked readonly tuple-view, Option and call-ABI lowering");
+            }
             validateFixedExtentMetadata("Tuple", metadata, elements.size());
             return new Tuple(elements.stream()
                     .map(element -> resolve(element, generics, self, allowNullMarker))
