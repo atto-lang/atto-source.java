@@ -72,6 +72,28 @@ public final class ActorPipelineRouteSessionSmoke {
         selectedLedger.complete(groupRoot);
         check(selectedLedger.outstanding() == 0,
                 "selective fanout or round-robin retained phantom frames");
+        selectedLedger.advanceGeneration(73);
+        var restarted = selectedLedger.ingress("source");
+        var restartChoice = selectedLedger.forwardRoundRobinEligible(
+                restarted, java.util.Set.of("worker-a", "worker-b"));
+        check(restartChoice.receiver().equals("worker-a"),
+                "quiescent generation change lost or failed to reset RR cursor");
+        selectedLedger.complete(restartChoice);
+        selectedLedger.complete(restarted);
+        var cancelling = selectedLedger.ingress("source");
+        check(selectedLedger.abortAndAdvanceGeneration(74) == 1,
+                "abort did not retire the last source frame");
+        reject(() -> selectedLedger.forwardRoundRobin(cancelling),
+                "old-generation source used live RR cursor");
+        var afterAbort = selectedLedger.ingress("source");
+        var abortChoice = selectedLedger.forwardRoundRobinEligible(
+                afterAbort, java.util.Set.of("worker-a", "worker-b"));
+        check(abortChoice.receiver().equals("worker-a"),
+                "abort generation discarded preallocated RR cursor state");
+        selectedLedger.complete(abortChoice);
+        selectedLedger.complete(afterAbort);
+        check(selectedLedger.outstanding() == 0,
+                "generation reset left orphan group frames");
 
         var ledger = new ActorPipelineRouteSession(plan, 7, 8);
         reject(() -> ledger.ingress("worker-a"), "internal worker must not originate flow");
