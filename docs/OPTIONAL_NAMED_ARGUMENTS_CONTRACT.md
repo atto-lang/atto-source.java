@@ -252,3 +252,29 @@ messages)`, `log(omit, "first", "second")` omits `prefix` while
 providing TWO rest elements. The compiler must preserve actual source
 expression indexes `[0, 1]` for those elements—`omit` cannot create
 a hole in the expression-evaluation permutation.
+
+
+## Underscore omission alias
+
+In call argument item position, a standalone `_` is an exact syntactic
+alias of `omit`. Both parse as `OmittedArgument`, with NO runtime value,
+NO expression evaluation and NO effect/borrow/move. They consume one
+optional fixed formal slot, without changing the dense source-index map
+of actual evaluated expressions.
+
+```oreslang
+log(3, _, "first", "second");    // optional label omitted; two rest values
+log(3, omit, "first");           // identical semantics
+log(3, None, "first");           // explicit Option<string>.None VALUE
+log(priority: 3, label: _);     // omission of named optional fixed slot
+```
+
+The underscore token remains a wildcard in pattern contexts, and a
+discard/wildcard where separately supported, but **never** becomes a
+general-purpose undefined value or implicit assignment. Parser checks
+must recognize a **bare** `_` only at a complete call argument item
+(not a member access or part of a longer expression). It is rejected
+for required formals and every variadic/rest tail element. The formatter
+may prefer `_` as the canonical call spelling, but must preserve
+the semantic difference from `None`. Tests must cover duplicate
+binding, named omission, typed `None`, and evaluation ordering.
