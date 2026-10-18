@@ -467,6 +467,7 @@ public final class TypeChecker {
                 // direct-call specialization because polymorphic function
                 // values are not implemented.
                 if (fn.kind() == Ast.CallableKind.FNC
+                        && !fn.suspends()
                         && fn.genericParameters().isEmpty()
                         && callableCounts.getOrDefault(fn.name(), 0) == 1) {
                     mergeMember(members, fn.name(), signature, "module " + module.name());
@@ -667,7 +668,15 @@ public final class TypeChecker {
         currentGenerator = fn.generator();
         currentAsyncCallable = fn.async();
         boolean previousMaySuspend = currentMaySuspend;
-        currentMaySuspend = fn.async() || fn.suspends();
+        // The module's root main runs inside a VM-owned root Task, and
+        // remains an intentional compatibility boundary for existing source
+        // programs that await without an explicit suspends modifier.
+        // Other ordinary callables must declare the effect themselves.
+        currentMaySuspend = fn.async() || fn.suspends()
+                || (module.equals(Parser.ROOT_MODULE)
+                    && fn.name().equals("main")
+                    && fn.actorKind() == Ast.ActorKind.NONE
+                    && fn.parameters().isEmpty());
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
@@ -1457,6 +1466,8 @@ public final class TypeChecker {
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
+            boolean previousAsyncCallable = currentAsyncCallable;
+            currentAsyncCallable = method.async();
             currentMaySuspend = method.async() || method.suspends();
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
@@ -1465,6 +1476,7 @@ public final class TypeChecker {
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
                 currentMaySuspend = previousMaySuspend;
+                currentAsyncCallable = previousAsyncCallable;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -1663,6 +1675,10 @@ public final class TypeChecker {
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
+        if (stmt instanceof Ast.TaskBlockStmt
+                || (stmt instanceof Ast.BindingStmt binding && binding.initializer() instanceof Ast.TaskExpr)) {
+            throw new IllegalArgumentException("nb Task blocks require ownership-safe capture and scheduler lowering; source execution is not enabled");
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             boolean namedInference = binding.inferredTypeName() != null;
             Type declaredAhead = namedInference || binding.declaredType() == null
@@ -1988,8 +2004,8 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> afterIterable = env.initializationSnapshot();
             Type element;
             if (loop.asyncIteration()) {
-                if (!currentAsyncCallable) {
-                    throw new IllegalArgumentException("'for await' is only valid inside an async fnc/routine or async generator");
+                if (!currentMaySuspend) {
+                    throw new IllegalArgumentException("'for await' requires an async or suspends caller (or VM-owned root main)");
                 }
                 element = asyncIterableElementType(iterable);
             } else {
@@ -2009,8 +2025,8 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> afterIterable = env.initializationSnapshot();
             Type element;
             if (loop.asyncIteration()) {
-                if (!currentAsyncCallable) {
-                    throw new IllegalArgumentException("'for await' is only valid inside an async fnc/routine or async generator");
+                if (!currentMaySuspend) {
+                    throw new IllegalArgumentException("'for await' requires an async or suspends caller (or VM-owned root main)");
                 }
                 element = asyncIterableElementType(iterable);
             } else {
@@ -2053,6 +2069,18 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.SuspendsLambdaExpr) {
+            throw new IllegalArgumentException("suspends lambda requires suspension-effect callable typing and continuation lowering; this callable does not create a Task or Future");
+        }
+        if (expr instanceof Ast.TaskLambdaExpr) {
+            throw new IllegalArgumentException("async task lambda requires Task<T> return inference, owned argument captures, and scheduled continuation lowering; executable source is not enabled");
+        }
+        if (expr instanceof Ast.AsyncLambdaExpr) {
+            throw new IllegalArgumentException("async lambda requires Future<T> lowering; returning nb Task<T> would produce Future<Task<T>> without implicit flattening");
+        }
+        if (expr instanceof Ast.TaskExpr) {
+            throw new IllegalArgumentException("nb Task blocks require ownership-safe capture and scheduler lowering; source execution is not enabled");
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");
@@ -2125,6 +2153,11 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("routine '" + fn.name()
                             + "' is direct-call-only and cannot be used as a first-class callable value; "
                             + "wrap the call in an explicit lambda when a callback is required");
+                }
+                if (fn.suspends()) {
+                    throw new IllegalArgumentException("suspends function '" + fn.name()
+                            + "' cannot be used as an ordinary Fnc value until callable "
+                            + "types preserve suspension effects; use an explicit direct call");
                 }
                 if (!fn.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException(
@@ -3477,6 +3510,13 @@ public final class TypeChecker {
                                 "generic static function '" + klass.name() + "." + fn.name()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
+                    // Ordinary Fnc values do not encode the suspends effect.
+                    // Direct static calls are resolved earlier with effect admission.
+                    if (fn.suspends()) {
+                        throw new IllegalArgumentException("suspends static function '" + klass.name()
+                                + "." + fn.name() + "' cannot be used as an ordinary Fnc value "
+                                + "until callable types preserve suspension effects");
+                    }
                     // Generator declarations are deliberately restricted to top-level/module
                     // callables, so class static functions cannot produce generator activations.
                     return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
@@ -3662,7 +3702,18 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            if (!currentMaySuspend) {
+                throw new IllegalArgumentException(
+                        "await requires an async or suspends caller (or the VM-owned root main); a plain synchronous lambda cannot inherit the suspension effect");
+            }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
+            if (awaitedType instanceof Named task
+                    && task.name().equals("Task")
+                    && task.arguments().size() == 1) {
+                // Awaiting one Task joins only this Task; nested Task<Task<T>>
+                // requires another explicit await. No implicit flattening.
+                return task.arguments().getFirst();
+            }
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
                     && named.arguments().size() == 1) {
@@ -3676,7 +3727,7 @@ public final class TypeChecker {
                 return actorRef;
             }
             throw new IllegalArgumentException(
-                    "await requires Future<T> or ActorRef<T>; got " + awaitedType);
+                    "await requires Task<T>, Future<T> or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
             Type element = channelElementType(
@@ -3882,8 +3933,16 @@ public final class TypeChecker {
             defineImplicitArguments(lambdaEnv, parameters);
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+            boolean previousMaySuspend = currentMaySuspend;
+            boolean previousAsyncCallable = currentAsyncCallable;
             Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
+            // Plain lambdas execute synchronously within their caller. Never
+            // allow one to borrow a suspends/async declaration's effect.
+            // Explicit suspends lambdas will retain a distinct effect type
+            // once their lowering is implemented.
+            currentMaySuspend = false;
+            currentAsyncCallable = false;
             // A lambda checked within a constructor runs on invocation, not
             // necessarily during initialization. It must never inherit the
             // constructor's one-time fixed-field initialization privilege.
@@ -3903,6 +3962,8 @@ public final class TypeChecker {
                 env.restoreInitialization(outerInitialization);
                 currentClassOwner = previousClassOwner;
                 currentConstructorOwner = previousConstructorOwner;
+                currentMaySuspend = previousMaySuspend;
+                currentAsyncCallable = previousAsyncCallable;
             }
             return new Function(parameters, result);
         }
@@ -4223,6 +4284,11 @@ public final class TypeChecker {
                                 + "' must be specialized by a direct call; polymorphic function values are not supported yet");
             }
             requireClassMemberVisible(fn.visibility(), findDeclaringClass(klass, fn, new LinkedHashSet<>()), "static function", fn.name());
+            if (fn.suspends()) {
+                throw new IllegalArgumentException("suspends static function '" + klass.name()
+                        + "." + fn.name() + "' cannot be passed as an ordinary Fnc callback "
+                        + "until function signatures carry suspension effects");
+            }
             return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
         }
 
@@ -4556,8 +4622,12 @@ public final class TypeChecker {
         defineImplicitArguments(lambdaEnv, List.of(declared));
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+        boolean previousMaySuspend = currentMaySuspend;
+        boolean previousAsyncCallable = currentAsyncCallable;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
+        currentMaySuspend = false;
+        currentAsyncCallable = false;
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
@@ -4569,6 +4639,8 @@ public final class TypeChecker {
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
+            currentMaySuspend = previousMaySuspend;
+            currentAsyncCallable = previousAsyncCallable;
         }
     }
 
@@ -4603,8 +4675,12 @@ public final class TypeChecker {
         defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+        boolean previousMaySuspend = currentMaySuspend;
+        boolean previousAsyncCallable = currentAsyncCallable;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
+        currentMaySuspend = false;
+        currentAsyncCallable = false;
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
@@ -4620,6 +4696,8 @@ public final class TypeChecker {
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
+            currentMaySuspend = previousMaySuspend;
+            currentAsyncCallable = previousAsyncCallable;
         }
         if (lambda.blockBody() != null
                 && expected.result() != Primitive.VOID

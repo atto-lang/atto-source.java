@@ -152,6 +152,10 @@ public final class ReturnCleanupChecker {
                 }
             } else if (stmt instanceof Ast.ExprStmt expression) {
                 expression(expression.expression(), scope, inDefer, state);
+            } else if (stmt instanceof Ast.TaskBlockStmt task) {
+                // A fire-and-continue block owns its lexical return/cleanup
+                // scope. Its return may never escape or rebind the caller.
+                callable(task.body(), List.of(), scope);
             } else if (stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ContinueStmt) {
                 // A break/continue targeting a loop outside finally would
                 // discard a pending return just like a return in finally.
@@ -270,6 +274,22 @@ public final class ReturnCleanupChecker {
         }
     }
 
+    /**
+     * Validate the nested callable at definition time, including expression
+     * bodies; those can themselves contain TaskExpr or nested lambdas.
+     * The child scope binds formal parameters without inheriting the
+     * caller's return/finally state.
+     */
+    private static void inspectLambda(Ast.LambdaExpr lambda, Scope parent) {
+        if (lambda.blockBody() != null) {
+            callable(lambda.blockBody(), lambda.parameters(), parent);
+            return;
+        }
+        Scope captured = new Scope(parent);
+        for (Ast.Param parameter : lambda.parameters()) captured.define(parameter.name());
+        expression(lambda.expressionBody(), captured, false, new State());
+    }
+
     private static void expression(Ast.Expr expr, Scope scope, boolean inDefer, State state) {
         if (expr == null) return;
         if (expr instanceof Ast.AssignExpr assignment) {
@@ -284,11 +304,28 @@ public final class ReturnCleanupChecker {
             }
             expression(assignment.target(), scope, inDefer, state);
             expression(assignment.value(), scope, inDefer, state);
+        } else if (expr instanceof Ast.TaskExpr task) {
+            // The child Task has its own return/defer/finally boundaries.
+            // Scan it independently, never treating its returned local as
+            // a returned binding of the invoking lambda/caller.
+            callable(task.body(), List.of(), scope);
+        } else if (expr instanceof Ast.TaskLambdaExpr taskLambda) {
+            // The entire body is a distinct Task-owned callable, including
+            // its return, defer and finally scopes. Never attribute its
+            // return to an enclosing immediately invoked lambda.
+            inspectLambda(taskLambda.lambda(), scope);
+        } else if (expr instanceof Ast.AsyncLambdaExpr asyncLambda) {
+            // Ordinary async lambdas also own an independent return scope;
+            // an nb expression body creates a *nested* Task scope.
+            inspectLambda(asyncLambda.lambda(), scope);
+        } else if (expr instanceof Ast.SuspendsLambdaExpr suspendable) {
+            // May suspend within the CALLER's Task, but its returns and
+            // finally/defer obligations are lexical to the lambda.
+            inspectLambda(suspendable.lambda(), scope);
         } else if (expr instanceof Ast.LambdaExpr lambda) {
             // A return inside a nested lambda returns from that lambda, not
             // from the enclosing finally or function.
-            callable(lambda.blockBody() == null ? List.of() : lambda.blockBody(),
-                    lambda.parameters(), scope);
+            inspectLambda(lambda, scope);
             // The lambda is only a value here. Its effects are analyzed
             // when a deferred callback (or an inline callee) invokes it.
             // Otherwise dormant nested lambdas cause false rebind reports.

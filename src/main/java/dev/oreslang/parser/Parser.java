@@ -119,7 +119,7 @@ public final class Parser {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
                 if (match(MODULE)) {
-                    if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
+                    if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
                             || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
                         throw error(previous(), "modules do not accept declaration modifiers");
                     }
@@ -1700,6 +1700,38 @@ public final class Parser {
             throw error(peek(), "typed exceptional effect '" + peek().lexeme()
                     + "' requires checked exception and supervision lowering; source effect is not yet enabled");
         }
+        // Standalone lightweight tasks are distinct from nonblocking select
+        // and nonblocking channel operations. Only the explicit `do nb`
+        // statement discards its handle; expression `nb {}` returns Task<T>.
+        if (check(DO) && checkNext(NB)
+                && current + 2 < tokens.size()
+                && tokens.get(current + 2).type() == LBRACE) {
+            advance(); // do
+            advance(); // nb
+            Ast.TaskBlockStmt statement = new Ast.TaskBlockStmt(parseBlock());
+            match(SEMICOLON);
+            return statement;
+        }
+        if (check(DO) && isContextualIdentifierAt(current + 1, "task")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 2).type() == LBRACE) {
+            advance(); // do
+            advance(); // contextual task
+            Ast.TaskBlockStmt statement = new Ast.TaskBlockStmt(parseBlock());
+            match(SEMICOLON);
+            return statement;
+        }
+        if (check(NB) && isContextualIdentifierAt(current + 1, "task")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 2).type() == LBRACE) {
+            throw error(peek(), "bare 'nb task { ... }' must be bound to Task<T>; use 'do task { ... }' to discard its handle");
+        }
+        if (check(NB) && checkNext(LBRACE)) {
+            throw error(peek(), "bare 'nb { ... }' must be bound to Task<T>; use 'do task { ... }' to discard its handle");
+        }
+        if (isContextualIdentifier("task") && checkNext(LBRACE)) {
+            throw error(peek(), "bare 'task { ... }' must be used as an expression; use 'do task { ... }' to discard its handle");
+        }
         // The value-producing static select expression is not lowered yet.
         // Preserve historical statement sources until expression migration
         // provides an executable replacement; do-select stays procedural.
@@ -3278,7 +3310,14 @@ public final class Parser {
             if (match(READCH)) return parseChannelOperation(Ast.ChannelOperation.READ, Ast.WaitMode.NONBLOCKING);
             if (match(WRITECH)) return parseChannelOperation(Ast.ChannelOperation.WRITE, Ast.WaitMode.NONBLOCKING);
             if (match(SELECT)) return parseDynamicSelect(Ast.WaitMode.NONBLOCKING);
-            throw error(previous(), "'nb' must prefix readch, writech, select, or cb writech");
+            // 'nb task { ... }' is a redundant but valid spelling of one
+            // Task launch, never an additional scheduling or cancellation tier.
+            if (isContextualIdentifier("task") && checkNext(LBRACE)) {
+                advance();
+                return new Ast.TaskExpr(parseBlock());
+            }
+            if (check(LBRACE)) return new Ast.TaskExpr(parseBlock());
+            throw error(previous(), "'nb' must prefix a task block, task {}, readch, writech, select, or cb writech");
         }
 
         if (check(TRY) && current + 1 < tokens.size()) {
@@ -3541,7 +3580,62 @@ public final class Parser {
         }
     }
 
+    /**
+     * Do not consume a normal function call named suspend(...). The short
+     * modifier is contextual only when a pipe parameter list or typed
+     * "(...)->" lambda follows it.
+     */
+    private boolean looksLikeContextualSuspendLambda() {
+        if (!isContextualIdentifier("suspend")) return false;
+        if (checkNext(PIPE)) return true;
+        if (!checkNext(LPAREN)) return false;
+        int depth = 0;
+        for (int i = current + 1; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LPAREN) depth++;
+            else if (type == RPAREN && --depth == 0) {
+                return i + 1 < tokens.size()
+                        && tokens.get(i + 1).type() == ARROW;
+            }
+        }
+        return false;
+    }
+
     private Ast.Expr parsePrimary() {
+        // 'suspends' is a callable effect, not a scheduler instruction.
+        // Unlike async task it creates NO Task/Future; the caller's Task
+        // executes its body and may cooperatively suspend. Preserve the AST
+        // effect until typed suspension-aware function values are implemented.
+        // 'suspend' is a contextual spelling only before lambda parameters.
+        if (check(SUSPENDS) || looksLikeContextualSuspendLambda()) {
+            advance();
+            Ast.LambdaExpr body;
+            if (check(PIPE)) body = parsePipeLambda(false);
+            else if (check(LPAREN) && looksLikeLambda()) body = parseLambda(false);
+            else throw error(peek(),
+                    "'suspends' must prefix a callable lambda; 'suspends task' is redundant, use 'async task'");
+            return new Ast.SuspendsLambdaExpr(body);
+        }
+        // Keep `async` lambda identity explicit in the AST. Ordinary async
+        // lambdas yield Future<R>; `async task` means the whole body is a
+        // single scheduled Task<R>, not Future<Task<R>>.
+        if (match(ASYNC)) {
+            boolean task = matchContextualKeyword("task");
+            Ast.LambdaExpr body;
+            if (check(PIPE)) body = parsePipeLambda(false);
+            else if (check(LPAREN) && looksLikeLambda()) body = parseLambda(false);
+            else throw error(peek(), task
+                    ? "'async task' must prefix a lambda parameter list"
+                    : "'async' in expression position must prefix a lambda parameter list");
+            return task ? new Ast.TaskLambdaExpr(body) : new Ast.AsyncLambdaExpr(body);
+        }
+        // New canonical spelling of the lightweight Task expression.
+        // Keep the legacy 'nb {}' spelling source compatible, and keep
+        // 'task' contextual to avoid capturing ordinary task identifiers.
+        if (isContextualIdentifier("task") && checkNext(LBRACE)) {
+            advance();
+            return new Ast.TaskExpr(parseBlock());
+        }
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
@@ -4073,6 +4167,12 @@ public final class Parser {
      * legal variable/parameter names. Grammar productions opt into their keyword
      * meaning explicitly at switch/select arms and match guards.</p>
      */
+    private boolean isContextualIdentifierAt(int position, String keyword) {
+        return position >= 0 && position < tokens.size()
+                && tokens.get(position).type() == IDENT
+                && tokens.get(position).lexeme().equals(keyword);
+    }
+
     private boolean matchContextualKeyword(String... keywords) {
         if (!check(IDENT)) return false;
         String lexeme = peek().lexeme();

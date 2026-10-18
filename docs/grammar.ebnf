@@ -182,6 +182,7 @@ statement       = binding_decl
                 | try_stmt
                 | select_stmt
                 | defer_stmt
+                | task_stmt
                 | for_stmt
                 | while_stmt
                 | loop_stmt
@@ -189,6 +190,7 @@ statement       = binding_decl
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
 defer_stmt      = "defer" expression stmt_terminator ;
+task_stmt       = "do" ( "task" | "nb" ) block [ ";" ] ; (* fire-and-continue, no handle *)
 block_stmt      = "block" block ;
 break_stmt      = "break" stmt_terminator ;
 continue_stmt   = "continue" stmt_terminator ;
@@ -287,7 +289,8 @@ additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
 unary           = [ "!" | "-" | "+" | "await" ] postfix
                 | "&" [ "mut" ] unary
-                | channel_expr ;
+                | channel_expr
+                | task_expr ;
 
 channel_expr    = [ channel_wait_mode ] "readch" unary
                 | [ channel_wait_mode ] "writech" unary "," expression
@@ -306,6 +309,7 @@ member_name     = IDENT | "stop" | "do" | "done"
 index_suffix    = "[" expression "]" ;
 argument_list   = expression { "," expression } ;
 
+task_expr       = ( "task" | "nb" | "nb" "task" ) block ; (* value Task<T>, both forms equivalent; lowering gated *) ;
 primary         = literal
                 | callable_name
                 | "self"
@@ -318,7 +322,16 @@ primary         = literal
                 | explicit_struct_literal
                 | "(" expression ")" ;
 
-lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda ) ;
+lambda          = ( [ "nlex" ] | "async" [ "task" ] | ( "suspends" | "suspend" ) )
+                  ( pipe_lambda | typed_legacy_lambda ) ;
+(* 'suspends |...|' runs within the caller's Task and returns R, not a
+   new Task<R> or Future<R>. It requires suspension-effect callable typing
+   and continuation lowering, so source execution is currently gated.
+   A plain lambda has no suspension effect even when defined inside a
+   suspends/async function. An async lambda returns Future<R>; an async task
+   lambda creates exactly one Task<R>. These effects do not auto-flatten:
+   async |...| -> task {...} yields Future<Task<R>>, while
+   async task |...| -> task {...} yields Task<Task<R>>. *)
 pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" lambda_body ;
 lambda_param    = IDENT | type_ref IDENT ;
 typed_legacy_lambda
