@@ -67,6 +67,17 @@ final class StaticModuleNamespaceConfinementTest {
     }
 
     @Test
+    void namespaceMarkerCannotBeErasedIntoUnknownOrAny() {
+        var namespace = new dev.oreslang.types.Types.ModuleNamespace("Catalog");
+        assertFalse(dev.oreslang.types.Types.isAssignable(
+                namespace, dev.oreslang.types.Types.Unknown.INSTANCE));
+        assertFalse(dev.oreslang.types.Types.isAssignable(
+                dev.oreslang.types.Types.Unknown.INSTANCE, namespace));
+        assertFalse(dev.oreslang.types.Types.isAssignable(
+                namespace, new dev.oreslang.types.Types.Generic("T")));
+    }
+
+    @Test
     void importedModuleAliasIsNotAnOrdinaryValue() {
         java.util.Map<String, String> sources = new java.util.LinkedHashMap<>();
         sources.put("catalog.ores", MODULE);
