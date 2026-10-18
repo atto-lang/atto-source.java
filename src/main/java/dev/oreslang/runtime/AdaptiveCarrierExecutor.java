@@ -179,7 +179,46 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
     private static final class NoGrowthTurn implements Runnable {
         private final Runnable command;
         private NoGrowthTurn(Runnable command) { this.command = command; }
-        @Override public void run() { command.run(); }
+        @Override public void run() { runContained(command); }
+    }
+
+    private static final class ContainedTurn implements Runnable {
+        private final Runnable command;
+        private ContainedTurn(Runnable command) { this.command = command; }
+        @Override public void run() { runContained(command); }
+    }
+
+    /**
+     * Runtime carrier boundary: ordinary task failure is reported to the
+     * thread's uncaught-exception handler without killing the physical worker.
+     * Killing a permit-owning ThreadPoolExecutor worker can synchronously
+     * request its replacement before the old worker has physically exited and
+     * returned its global permit, stranding queued work at a full budget.
+     *
+     * Host-fatal VM/thread/linkage errors still escape and retain fail-fast
+     * semantics rather than being converted into recoverable task failures.
+     */
+    private static void runContained(Runnable command) {
+        try {
+            command.run();
+        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+            throw fatal;
+        } catch (RuntimeException | AssertionError failure) {
+            dispatchUncaught(failure);
+        }
+    }
+
+    private static void dispatchUncaught(Throwable failure) {
+        Thread current = Thread.currentThread();
+        Thread.UncaughtExceptionHandler handler = current.getUncaughtExceptionHandler();
+        if (handler == null) handler = Thread.getDefaultUncaughtExceptionHandler();
+        if (handler == null) return;
+        try {
+            handler.uncaughtException(current, failure);
+        } catch (RuntimeException | Error ignored) {
+            // Runtime failure containment must not turn an observer failure
+            // into physical carrier retirement.
+        }
     }
 
     @Override public List<Runnable> shutdownNow() {
@@ -197,8 +236,13 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
 
             ArrayList<Runnable> abandoned = new ArrayList<>(drained.size());
             for (Runnable task : drained) {
-                abandoned.add(task instanceof NoGrowthTurn wrapper
-                        ? wrapper.command : task);
+                if (task instanceof NoGrowthTurn wrapper) {
+                    abandoned.add(wrapper.command);
+                } else if (task instanceof ContainedTurn wrapper) {
+                    abandoned.add(wrapper.command);
+                } else {
+                    abandoned.add(task);
+                }
             }
             return List.copyOf(abandoned);
         } finally {
@@ -221,7 +265,7 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
             int target = Math.min(getMaximumPoolSize(), Math.max(minimum, demand));
             if (getCorePoolSize() < target) setCorePoolSize(target);
             try {
-                super.execute(task);
+                super.execute(new ContainedTurn(task));
                 admittedTurns = demand;
             } catch (RuntimeException | Error rejected) {
                 int priorTarget = Math.min(getMaximumPoolSize(),
