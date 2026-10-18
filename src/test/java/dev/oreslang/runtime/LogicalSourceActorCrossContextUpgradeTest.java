@@ -185,6 +185,67 @@ final class LogicalSourceActorCrossContextUpgradeTest {
     }
 
     @Test
+    void actorGroupMembershipBlocksCrossContextMigrationUntilReleased() throws Exception {
+        String v1 = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 1; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { return; }
+                """;
+        String v2 = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 999; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { val version = 2; return; }
+                """;
+
+        try (HotReloadManager manager =
+                     new HotReloadManager(IsolatePolicy.developer(),
+                             ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("group-v1.ores", v1);
+            var second = manager.stageActorGeneration("group-v2.ores", v2);
+            try (LogicalSourceActorRouterV1 router =
+                         LogicalSourceActorRouterV1.spawn(
+                                 first,
+                                 ActorRuntime.ActorKind.SHARED,
+                                 "Counter",
+                                 WAIT)) {
+                ActorRuntime runtime =
+                        first.linkActorGeneration("Counter").runtime();
+                var group = runtime.createActorGroup();
+                group.join(
+                        router.physicalRefForTesting(),
+                        group.joinCapability());
+                assertTrue(group.contains(router.physicalRefForTesting()));
+
+                assertThrows(IllegalStateException.class,
+                        () -> router.upgradeTo(second, WAIT),
+                        "v1 must not silently discard ActorGroup membership");
+                assertEquals(1L, router.ref().incarnation());
+
+                // Closing an ordinary cooperation group removes membership but
+                // does not stop unrelated members; migration can then proceed.
+                group.close();
+                assertTrue(router.upgradeTo(second, WAIT));
+                router.ref().send(1L);
+                assertEquals(2L, next(router.ref()));
+            }
+        }
+    }
+
+    @Test
     void pendingOldOutputReaderBlocksMigrationUntilCancelled() throws Exception {
         String v1 = """
                 define actor Counter as
