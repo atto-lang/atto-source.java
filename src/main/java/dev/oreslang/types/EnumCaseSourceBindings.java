@@ -37,6 +37,23 @@ public final class EnumCaseSourceBindings {
         }
     }
 
+    /**
+     * Offline AST proof that a syntactic nullary enum literal could select one
+     * exact source-declaration target at compile time. The raw call AST can be
+     * forged and is NOT an expression-typed result of production TypeChecker.
+     * In particular, real lexical shadowing/import resolution is outstanding.
+     */
+    public record StagedLiteralBinding(
+            Ast.CallExpr call, Candidate target, String staticSlotId) {
+        public StagedLiteralBinding {
+            Objects.requireNonNull(call, "call");
+            Objects.requireNonNull(target, "target");
+            if (!target.signature().symbolId().equals(staticSlotId)) {
+                throw new IllegalArgumentException("binding symbol does not match selected declaration");
+            }
+        }
+    }
+
     public static final class Proof {
         private final Map<Key, List<Candidate>> families;
         private final Map<String, EnumInfo> enums;
@@ -61,6 +78,61 @@ public final class EnumCaseSourceBindings {
          * A proven tag is a value representation, never a runtime overload key.
          */
         public Map<String, EnumTag32Plan> nullaryTagLayouts() { return nullaryTagLayouts; }
+
+        /**
+         * Source-AST nullary-literal selector, **offline only**. This is
+         * intentionally narrower than actual expression resolution: module
+         * free-function calls; no imports, method dispatch, parameters,
+         * variable aliases, lexical shadowing, captured values or transforms.
+         *
+         * A runtime must never execute this result without the independent
+         * production TypeChecker/ownership linking and trusted call binding.
+         */
+        public StagedLiteralBinding bindStagedNullaryLiteralCall(
+                Key key, Ast.CallExpr call) {
+            Objects.requireNonNull(key, "key");
+            Objects.requireNonNull(call, "call");
+            if (key.domain() != Domain.MODULE
+                    || !(call.callee() instanceof Ast.NameExpr callee)
+                    || !key.name().equals(callee.name())
+                    || call.typeArgumentsPresent()
+                    || !call.typeArguments().isEmpty()
+                    || call.arguments().size() != key.arity()) {
+                throw new IllegalArgumentException(
+                        "offline literal binding requires direct nongeneric module call");
+            }
+            List<Candidate> candidates = families.get(key);
+            if (candidates == null) {
+                throw new IllegalArgumentException("unproven enum overload family");
+            }
+            List<Parameter> staticArgs = new ArrayList<>();
+            for (Ast.Expr argument : call.arguments()) {
+                if (!(argument instanceof Ast.MemberExpr member)
+                        || !(member.receiver() instanceof Ast.NameExpr sourceOwner)) {
+                    throw new IllegalArgumentException(
+                            "offline selector requires direct syntactic nullary enum cases");
+                }
+                String enumId = key.owner() + "." + sourceOwner.name();
+                EnumTag32Plan layout = nullaryTagLayouts.get(enumId);
+                if (layout == null) {
+                    throw new IllegalArgumentException(
+                            "missing certified local nullary AOT case layout");
+                }
+                layout.constantTag(member.member()); // case presence; no dynamic dispatch
+                staticArgs.add(Parameter.enumCase(enumId, member.member()));
+            }
+            Signature chosen = EnumCaseOverloadPolicy.selectStatic(
+                    candidates.stream().map(Candidate::signature).toList(),
+                    enums, staticArgs);
+            for (Candidate candidate : candidates) {
+                if (candidate.signature() == chosen) {
+                    return new StagedLiteralBinding(
+                            call, candidate, candidate.signature().symbolId());
+                }
+            }
+            throw new IllegalStateException(
+                    "selected static case target was not a source declaration");
+        }
 
         /**
          * SOURCE-FREE / OFFLINE ORACLE ONLY. These TypeRef values are
