@@ -4,6 +4,9 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.math.BigInteger;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -58,6 +61,12 @@ final class SourceActorCheckpointCodecV1 {
     static byte[] encode(List<Field> fields, Map<String, Object> values) {
         Objects.requireNonNull(fields, "fields");
         Objects.requireNonNull(values, "values");
+        if (values.size() != fields.size())
+            throw new SecurityException("source actor state contains hidden/missing fields");
+        for (Field field : fields) {
+            if (!values.containsKey(field.name()))
+                throw new SecurityException("source actor state missing field: " + field.name());
+        }
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.writeBytes(MAGIC);
         writeU32(out, fields.size());
@@ -69,10 +78,8 @@ final class SourceActorCheckpointCodecV1 {
             Object value = values.get(field.name());
             switch (field.type()) {
                 case "int" -> {
-                    if (!(value instanceof Number number))
-                        throw new SecurityException("actor int field has nonnumeric runtime value: " + field.name());
                     out.write(1);
-                    writeI64(out, number.longValue());
+                    writeI64(out, exactInt64(value, field.name()));
                 }
                 case "bool" -> {
                     if (!(value instanceof Boolean flag))
@@ -142,7 +149,7 @@ final class SourceActorCheckpointCodecV1 {
                         throw new IllegalArgumentException("truncated source actor string");
                     byte[] text = new byte[(int) length];
                     in.get(text);
-                    yield new String(text, StandardCharsets.UTF_8);
+                    yield strictUtf8(text);
                 }
                 default -> throw new AssertionError(field.type());
             };
@@ -151,6 +158,38 @@ final class SourceActorCheckpointCodecV1 {
         if (in.hasRemaining())
             throw new SecurityException("trailing bytes in source actor checkpoint state");
         return restored;
+    }
+
+    private static long exactInt64(Object value, String field) {
+        if (value instanceof Byte v) return v.longValue();
+        if (value instanceof Short v) return v.longValue();
+        if (value instanceof Integer v) return v.longValue();
+        if (value instanceof Long v) return v;
+        if (value instanceof BigInteger v) {
+            try {
+                return v.longValueExact();
+            } catch (ArithmeticException overflow) {
+                throw new SecurityException(
+                        "actor int field exceeds signed int64 checkpoint range: " + field,
+                        overflow);
+            }
+        }
+        throw new SecurityException(
+                "actor int field has non-integral runtime value: " + field);
+    }
+
+    private static String strictUtf8(byte[] bytes) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes))
+                    .toString();
+        } catch (CharacterCodingException malformed) {
+            throw new SecurityException(
+                    "source actor checkpoint contains noncanonical UTF-8",
+                    malformed);
+        }
     }
 
     private static short readI16(ByteBuffer in) {
