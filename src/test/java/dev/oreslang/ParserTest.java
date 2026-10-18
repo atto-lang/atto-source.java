@@ -1741,4 +1741,84 @@ final class ParserTest {
                 """));
     }
 
+
+    @Test
+    void checkedNonOptionalReturnMatchRequiresExplicitCallerReturn() {
+        Ast.Program explicit = Parser.parse("""
+                pub fnc choose(bool flag): int {
+                    return match flag over
+                        on true -> 10
+                        on false -> 20
+                    end
+                }
+                """);
+        assertInstanceOf(Ast.ReturnStmt.class,
+                ((Ast.FunctionDecl) explicit.modules().getFirst()
+                        .declarations().getFirst()).body().getFirst());
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(explicit));
+    }
+
+    @Test
+    void inferredValueMatchInFinalBindingDoesNotReturnFromFunction() {
+        Ast.Program implicit = Parser.parse("""
+                pub fnc choose(bool flag): int {
+                    const value = match flag over
+                        on true -> 10
+                        on false -> 20
+                    end;
+                }
+                """);
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.checkTypes(implicit));
+        assertTrue(error.getMessage().contains("explicitly return"), error::toString);
+    }
+
+    @Test
+    void returnedValueMatchCannotSkipFiniteBooleanCase() {
+        Ast.Program nonExhaustive = Parser.parse("""
+                pub fnc choose(bool flag): int {
+                    return match flag over
+                        on true -> 10
+                    end
+                }
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(nonExhaustive));
+    }
+
+    @Test
+    void nestedMatchArmProducesLocalValueNotOuterControlFlow() {
+        Ast.Program nested = Parser.parse("""
+                pub fnc choose(bool a, bool b): int {
+                    return match a over
+                        on true -> match b over
+                            on true -> 1
+                            on false -> 2
+                        end
+                        on false -> 3
+                    end
+                }
+                """);
+        Ast.MatchExpr outer = assertInstanceOf(Ast.MatchExpr.class,
+                ((Ast.ReturnStmt) ((Ast.FunctionDecl) nested.modules()
+                        .getFirst().declarations().getFirst())
+                        .body().getFirst()).value());
+        assertInstanceOf(Ast.MatchExpr.class, outer.arms().getFirst().value());
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(nested));
+    }
+
+    @Test
+    void nonVoidClassMethodCannotImplicitlyReturnLastExpression() {
+        Ast.Program program = Parser.parse("""
+                define class Counter as
+                    pub answer(): int {
+                        42;
+                    }
+                end
+                """);
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.checkTypes(program));
+        assertTrue(error.getMessage().contains("explicitly return"), error::toString);
+    }
+
 }
