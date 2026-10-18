@@ -21,24 +21,22 @@ public final class NamedCallPositionalProjection {
 
     public static final class Result {
         private final LiteralNamedCallPreflight.Result original;
-        private final Ast.Program checkedPositionalProgram;
-        private final Ast.CallExpr projectedCall;
+        private final int checkedScalarFormalCount;
 
-        private Result(LiteralNamedCallPreflight.Result original,
-                       Ast.Program checkedPositionalProgram, Ast.CallExpr projectedCall) {
+        private Result(LiteralNamedCallPreflight.Result original, int count) {
             this.original = Objects.requireNonNull(original);
-            this.checkedPositionalProgram = Objects.requireNonNull(checkedPositionalProgram);
-            this.projectedCall = Objects.requireNonNull(projectedCall);
+            if (count <= 0 || count != original.recipe().abiSlots().size()) {
+                throw new IllegalArgumentException("invalid scalar projection width");
+            }
+            this.checkedScalarFormalCount = count;
         }
 
         public LiteralNamedCallPreflight.Result original() { return original; }
-        public Ast.Program checkedPositionalProgram() { return checkedPositionalProgram; }
-        public Ast.CallExpr projectedCall() { return projectedCall; }
+        public int checkedScalarFormalCount() { return checkedScalarFormalCount; }
 
-        /** Passing a related positional program does not enable staged calls. */
         public void requireExecutable() {
             throw new IllegalStateException(
-                    "positional projection is not an executable named-call proof");
+                    "checked positional projection is not named-call execution authority");
         }
     }
 
@@ -150,8 +148,9 @@ public final class NamedCallPositionalProjection {
 
         // Only ordinary, existing positional call semantics are checked.
         // This is NOT the staged call and the returned AST is never executed.
-        Ast.Program checked = TypeChecker.check(positionalProgram);
-        return new Result(original, checked, positional);
+        TypeChecker.check(positionalProgram);
+        // Only issue a non-executable receipt, never a runnable replacement AST.
+        return new Result(original, declaredOrder.size());
     }
 
     private static Ast.TypeRef scalarLiteralType(Ast.LiteralExpr literal) {

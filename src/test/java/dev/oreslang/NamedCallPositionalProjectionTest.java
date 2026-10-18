@@ -35,12 +35,10 @@ final class NamedCallPositionalProjectionTest {
         Ast.Program original = parse("int a, bool c", "c: true, a: 7", "return a;");
         var preview = preview(original);
         var checked = assertDoesNotThrow(() -> NamedCallPositionalProjection.check(preview));
-        assertNotSame(original, checked.checkedPositionalProgram());
-        assertEquals(2, checked.projectedCall().arguments().size());
-        assertSame(preview.call().arguments().get(1).value(),
-                checked.projectedCall().arguments().get(0));
-        assertSame(preview.call().arguments().get(0).value(),
-                checked.projectedCall().arguments().get(1));
+        assertSame(preview, checked.original());
+        assertEquals(2, checked.checkedScalarFormalCount());
+        assertEquals(List.of(1, 0), preview.recipe().abiSlots().stream()
+                .map(dev.oreslang.types.OptionalCallTempLowering.AbiSlot::tempIndex).toList());
         assertSame(preview.call(),
                 ((Ast.BindingStmt) preview.caller().body().getFirst()).initializer());
         assertThrows(IllegalStateException.class, checked::requireExecutable);
