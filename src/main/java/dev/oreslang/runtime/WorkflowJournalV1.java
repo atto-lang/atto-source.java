@@ -625,9 +625,14 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
                         "duplicate persisted effect key " + snapshot.effectKey());
             }
         }
-        if (!restored.effects.keySet().equals(persistedEffects.keySet())) {
+        List<String> reconstructedEffectOrder =
+                List.copyOf(restored.effects.keySet());
+        List<String> persistedEffectOrder = state.effects().stream()
+                .map(EffectSnapshot::effectKey)
+                .toList();
+        if (!reconstructedEffectOrder.equals(persistedEffectOrder)) {
             throw new IllegalStateException(
-                    "persisted effect keys do not match reconstructed workflow");
+                    "persisted effect order does not match reconstructed workflow");
         }
 
         HashSet<Long> activeClaimNumbers = new HashSet<>();
