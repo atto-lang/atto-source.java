@@ -127,6 +127,41 @@ public final class OptionalCallShapeBinder {
     }
 
     /**
+     * Conservative v1 admission check for an existing callable overload domain.
+     * An optional declaration accepts a supplied-argument COUNT interval
+     * [number of required slots, total slots]. Any interval intersecting
+     * another declaration's interval is rejected at declaration/link time,
+     * even if their label sets appear disjoint. This preserves deterministic
+     * arity-only dispatch until cross-backend call-shape proofs exist.
+     *
+     * <p>Nonoptional/nonoptional signature collision rules (including the
+     * separately staged nominal enum exception) remain with the caller.
+     */
+    public static void requireNonOverlappingOptionalArityIntervals(
+            List<List<Parameter>> signatures) {
+        Objects.requireNonNull(signatures, "signatures");
+        for (List<Parameter> signature : signatures) {
+            checkedParameters(Objects.requireNonNull(signature, "signature"));
+        }
+        for (int i = 0; i < signatures.size(); i++) {
+            List<Parameter> a = signatures.get(i);
+            long aRequired = a.stream().filter(p -> !p.optional()).count();
+            for (int j = i + 1; j < signatures.size(); j++) {
+                List<Parameter> b = signatures.get(j);
+                long bRequired = b.stream().filter(p -> !p.optional()).count();
+                if (aRequired == a.size() && bRequired == b.size()) {
+                    continue; // ordinary exact-arity policy remains separate
+                }
+                if (Math.max(aRequired, bRequired) <= Math.min(a.size(), b.size())) {
+                    throw new IllegalArgumentException(
+                            "overlapping optional supplied-arity intervals for declarations "
+                                    + i + " and " + j);
+                }
+            }
+        }
+    }
+
+    /**
      * Resolve a family structurally, by labels and required slots ONLY.
      * Full declared arity is retained for the ordinary callable ABI selector.
      * If omitted optionals make two declarations match, reject ambiguity;
@@ -140,6 +175,7 @@ public final class OptionalCallShapeBinder {
             List<Argument> arguments) {
         Objects.requireNonNull(signatures, "signatures");
         Objects.requireNonNull(arguments, "arguments");
+        requireNonOverlappingOptionalArityIntervals(signatures);
         Selection selected = null;
         List<Integer> valid = new ArrayList<>();
         for (int i = 0; i < signatures.size(); i++) {
