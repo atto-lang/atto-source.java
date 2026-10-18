@@ -76,13 +76,13 @@ The companion `async-testing` proof repo contains runtime refinement checks over
 
 ## Independent TLA+/TLC tier
 
-`DurableWorkflowV1.tla` is an independently authored specification of the
+`docs/formal/DurableWorkflowV1.tla` is an independently authored specification of the
 workflow effect/delivery crash window. It does **not** call into or translate
 the Java reducer. The model carries explicit claim generations, retry
 authority, ambiguity, reconciliation, delivery sealing, cancellation, and a
 settlement counter.
 
-`DurableWorkflowV1.cfg` asks TLC to exhaustively check a finite
+`docs/formal/DurableWorkflowV1.cfg` asks TLC to exhaustively check a finite
 `MaxAttempts = 2` instance for type safety, terminal monotonicity,
 at-most-once settlement, claim-generation/ABA safety, and the key rule that
 revoked ambiguous authority can never become runnable again.
@@ -98,7 +98,13 @@ to normalize away.
 mvn -B -Dtest='Formal*ModelCheckTest' test
 ```
 
-No additional model-checking dependency is required for the Java finite-state explorer. The independent TLA+ tier uses a pinned or locally supplied TLA2Tools jar; for example:\n\n```sh\njava -cp \"$TLA2TOOLS_JAR\" tlc2.TLC -config formal/DurableWorkflowV1.cfg formal/DurableWorkflowV1.tla\n```\n
+No additional model-checking dependency is required for the Java finite-state explorer. The independent TLA+ tier is wired into the existing checksum-pinned TLA+ Tools v1.7.4 CI job. To run the same model manually:
+
+```sh
+cd docs/formal
+java -cp "$TLA2TOOLS_JAR" tlc2.TLC -workers 1 -config DurableWorkflowV1.cfg DurableWorkflowV1.tla
+```
+
 ## Next formal targets
 
 The next models should cover:
