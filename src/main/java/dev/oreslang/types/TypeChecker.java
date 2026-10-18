@@ -3627,10 +3627,7 @@ public final class TypeChecker {
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
                     && named.arguments().size() == 1) {
-                // An await adopts nested Future completions transitively.
-                // Keep Future<Future<T>> distinct as a value type: only
-                // the explicit await operation collapses its layers.
-                return innermostBuiltinPayload(awaitedType, "Future");
+                return named.arguments().getFirst();
             }
             if (awaitedType instanceof Named actorRef
                     && actorRef.name().equals("ActorRef")) {
@@ -5927,27 +5924,15 @@ public final class TypeChecker {
             case "onSuccess" -> new Function(
                     List.of(new Function(List.of(element), Primitive.VOID)),
                     named);
+            // A Future<Future<T>> can be flattened only by an explicit
+            // combinator. Plain await remains parametric: await Future<T> : T.
+            case "flatten" -> element instanceof Named inner
+                    && inner.name().equals("Future")
+                    && inner.arguments().size() == 1
+                    ? new Function(List.of(), element)
+                    : null;
             default -> null;
         };
-    }
-
-    /**
-     * Type of a deep unwrap/await operation, without rewriting the underlying
-     * generic type. Option<Option<T>> retains its independent outer and inner
-     * absence states until the user explicitly asks to unwrap it.
-     */
-    private Type innermostBuiltinPayload(Type payload, String builtin) {
-        int depth = 0;
-        while (payload instanceof Named named
-                && named.name().equals(builtin)
-                && named.arguments().size() == 1) {
-            if (++depth > 256) {
-                throw new IllegalArgumentException(
-                        builtin + " nesting exceeds the 256-layer unwrap limit");
-            }
-            payload = named.arguments().getFirst();
-        }
-        return payload;
     }
 
     private Type builtinOptionResultMember(Type receiver, String member) {
@@ -5956,8 +5941,14 @@ public final class TypeChecker {
             Type element = named.arguments().getFirst();
             return switch (member) {
                 case "is_some", "is_none" -> new Function(List.of(), Primitive.BOOL);
-                case "unwrap" -> new Function(
-                        List.of(), innermostBuiltinPayload(element, "Option"));
+                case "unwrap" -> new Function(List.of(), element);
+                // Preserve Some(None) vs None until the programmer explicitly
+                // chooses to collapse a nested Option layer.
+                case "flatten" -> element instanceof Named inner
+                        && inner.name().equals("Option")
+                        && inner.arguments().size() == 1
+                        ? new Function(List.of(), element)
+                        : null;
                 case "unwrap_safe" -> new Function(
                         List.of(),
                         new Named("Result", List.of(element, new Named("OptionUnwrapError", List.of()))));
