@@ -28,8 +28,8 @@ test("every actual invalid guest uses parser-positive then semantic rejection",(
   assert.match(body,/assertEquals\("", output\.toString/);
 });
 test("guest fixture SHA and separately pinned output prevent silent drift",()=>{
-  assert.match(java,/7b14a0ed95b6d957cce86814b62a733615a5675a/);
-  assert.match(java,/029f88f5a174c1269a784ab4cc44b67e348156d1/);
+  assert.match(java,/4597a2860fb5aaf0be5cf1dda5c16eaa93c5d8b2/);
+  assert.match(java,/b602f9821817696f16499af1a74cb22d49a0ecab/);
   assert.match(java,/assertEquals\(expected, stdout\.toString/);
 });
 
@@ -39,7 +39,7 @@ test("typed actor JUnit contract pins four Results and negative-success golden",
   for(const error of ["INVALID_INPUT","INVALID_GRADIENT","UNSAFE_CANDIDATE"]){
     assert(java.includes('return Err(\\\"'+error+'\\\")'));
   }
-  assert.match(java,/self\.eval_affine\(3, 3, 2, -2, 101, 1\)/);
+  assert.match(java,/self\.eval_affine\(3, 3, 2, -2, 101, 1, 202\)/);
   assert.match(java,/assertEquals\(expected, stdout\.toString/);
 });
 
@@ -51,8 +51,8 @@ test("guest CI source pins match actual fixture blobs and JUnit gate", () => {
   const workflow = readFileSync(new URL("../.github/workflows/ml-scalar-actor-guest.yml", import.meta.url), "utf8");
   const fixtureSha = gitBlobSha(readFileSync(new URL("./fixtures/ml-actor-state-scalar.ores", import.meta.url)));
   const goldenSha = gitBlobSha(readFileSync(new URL("./golden/ml-actor-state-scalar.stdout", import.meta.url)));
-  assert.equal(fixtureSha, "7b14a0ed95b6d957cce86814b62a733615a5675a");
-  assert.equal(goldenSha, "029f88f5a174c1269a784ab4cc44b67e348156d1");
+  assert.equal(fixtureSha, "4597a2860fb5aaf0be5cf1dda5c16eaa93c5d8b2");
+  assert.equal(goldenSha, "b602f9821817696f16499af1a74cb22d49a0ecab");
   assert.match(java, new RegExp(fixtureSha));
   assert.match(java, new RegExp(goldenSha));
   assert.match(workflow, new RegExp(fixtureSha));
@@ -99,4 +99,10 @@ test("Java compiled fixture requires internal lifecycle completion rather than e
   assert.match(java,/demo_finish_ready/);
   assert.match(java,/final_result\.is_err/);
   assert.match(java,/mail\.value ==/); // the Java gate explicitly prohibits raw after command
+});
+
+test("graph epoch authority is separately checked in guest gate",()=>{
+  assert.match(java,/STALE_GRAPH/);
+  assert.match(java,/graph_id: int = 202/);
+  assert.match(java,/wrong_graph/);
 });
