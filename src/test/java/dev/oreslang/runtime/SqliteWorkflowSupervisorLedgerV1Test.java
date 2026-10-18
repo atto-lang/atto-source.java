@@ -312,6 +312,28 @@ final class SqliteWorkflowSupervisorLedgerV1Test {
     }
 
     @Test
+    void cancellationReasonIsImmutableAndSameReasonIsIdempotent() {
+        Path db = tempDir.resolve("cancel-reason.db");
+
+        try (var ledger =
+                SqliteWorkflowSupervisorLedgerV1.open(
+                        db, "run-cancel-reason", POLICY, 100L)) {
+            var first = ledger.cancel("operator");
+            assertTrue(first.cancelled());
+            assertEquals("operator", first.cancellationReason());
+
+            assertEquals(first, ledger.cancel("operator"));
+
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> ledger.cancel("budget"));
+            assertEquals(
+                    "operator",
+                    ledger.usage().cancellationReason());
+        }
+    }
+
+    @Test
     void ciBudgetCannotBeResetByReopeningLedger() {
         Path db = tempDir.resolve("ci-budget.db");
 
