@@ -231,7 +231,7 @@ public final class IncrementalCompiler {
             // Public enum case names, ordered tags and exact payload types
             // are a nominal source ABI even while executable enum lowering
             // remains gated. Changes must invalidate source importers.
-            abi.append("pub enum ").append(enumDecl.name()).append('\\n');
+            abi.append("pub enum ").append(enumDecl.name()).append('\n');
             for (Ast.EnumCase variant : enumDecl.cases()) {
                 String name = variant.name();
                 String payload = variant.payload() == null
@@ -239,7 +239,7 @@ public final class IncrementalCompiler {
                 abi.append(" enum-case ").append(name.length()).append(':')
                         .append(name).append('#').append(variant.tag())
                         .append('(').append(payload.length()).append(':')
-                        .append(payload).append(")\\n");
+                        .append(payload).append(")\n");
             }
             return;
         }
