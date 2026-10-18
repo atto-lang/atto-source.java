@@ -55,9 +55,93 @@ index_snapshot="$(mktemp /tmp/oreslang-source-index.XXXXXXXX)" || {
   echo "SOURCE_TREE_INDEX_ERROR; cannot allocate index snapshot" >&2
   exit 68
 }
-trap 'rm -f -- "$index_snapshot"' EXIT
+tree_snapshot="$(mktemp /tmp/oreslang-committed-tree.XXXXXXXX)" || {
+  echo "SOURCE_TREE_INDEX_ERROR; cannot allocate committed-tree snapshot" >&2
+  exit 68
+}
+trap 'rm -f -- "$index_snapshot" "$tree_snapshot"' EXIT
 if ! git ls-files --stage -z -- "$status_path" > "$index_snapshot"; then
   echo "SOURCE_TREE_INDEX_ERROR; index enumeration failed" >&2
+  exit 68
+fi
+# An index enumerator may return success while silently omitting some or
+# every tracked path. A byte-hash loop over that partial list would otherwise
+# issue a false-positive SOURCE_TREE_VERIFIED receipt. Independently compare
+# every stage-0 index entry with the immutable committed tree manifest.
+if ! git ls-tree -r -z HEAD -- "$status_path" > "$tree_snapshot"; then
+  echo "SOURCE_TREE_INDEX_ERROR; cannot enumerate committed source tree" >&2
+  exit 68
+fi
+if ! python3 -I - "$index_snapshot" "$tree_snapshot" "$status_path" <<'PYVERIFY'
+import os, pathlib, sys
+
+def records(filename, tree):
+    data = pathlib.Path(filename).read_bytes()
+    if not data or len(data) > 8 * 1024 * 1024 or not data.endswith(b"\0"):
+        raise ValueError("incomplete or empty Git manifest")
+    rows = []
+    for entry in data[:-1].split(b"\0"):
+        header, sep, path = entry.partition(b"\t")
+        fields = header.split(b" ")
+        if not sep or not path or len(fields) != 3:
+            raise ValueError("malformed Git manifest record")
+        mode, middle, last = fields
+        if tree:
+            if middle != b"blob":
+                raise ValueError("non-blob committed entry")
+            sha = last
+        else:
+            if last != b"0":
+                raise ValueError("non-zero Git index stage")
+            sha = middle
+        if mode not in (b"100644", b"100755") or len(sha) != 40 or any(
+                c not in b"0123456789abcdef" for c in sha):
+            raise ValueError("invalid committed/index entry mode or hash")
+        rows.append((path, mode, sha))
+    if len(set(row[0] for row in rows)) != len(rows):
+        raise ValueError("duplicate Git manifest path")
+    return sorted(rows)
+
+try:
+    index = records(sys.argv[1], False)
+    committed = records(sys.argv[2], True)
+    if index != committed:
+        raise ValueError("index differs from committed tree")
+
+    # Check the actual filesystem independently of Git's untracked listing:
+    # a successful-but-incomplete `git ls-files --others` must not conceal
+    # additional input files or directories that Maven could later read.
+    expected_files = {path for path, _mode, _blob in committed}
+    expected_dirs = set()
+    for path in expected_files:
+        parent = os.path.dirname(path)
+        while parent and parent != b".":
+            expected_dirs.add(parent)
+            parent = os.path.dirname(parent)
+
+    base = os.path.normpath(os.fsencode(sys.argv[3]))
+    def fail_walk(error):
+        raise ValueError("cannot enumerate working-tree directory") from error
+    for here, directories, files in os.walk(
+            base, topdown=True, followlinks=False, onerror=fail_walk):
+        if base == b"." and here == b".":
+            # Only Git's metadata root is exempt, including worktree .git files.
+            directories[:] = [name for name in directories if name != b".git"]
+            files = [name for name in files if name != b".git"]
+        for name in directories:
+            path = os.path.normpath(os.path.join(here, name))
+            if path not in expected_dirs:
+                raise ValueError("unexpected working-tree directory")
+        for name in files:
+            path = os.path.normpath(os.path.join(here, name))
+            if path not in expected_files:
+                raise ValueError("unexpected working-tree file")
+except (OSError, ValueError) as exc:
+    print("SOURCE_TREE_INDEX_MISMATCH: " + str(exc), file=sys.stderr)
+    sys.exit(1)
+PYVERIFY
+then
+  echo "SOURCE_TREE_INDEX_ERROR; Git index enumeration does not match committed tree" >&2
   exit 68
 fi
 tab="$(printf '\t')"
