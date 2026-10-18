@@ -677,6 +677,26 @@ final class WorkflowJournalV1Test {
     }
 
     @Test
+    void independentClaimsWithSamePublicMetadataUseDifferentOpaqueTokens() {
+        var firstLoop = new DurableDevLoopV1("run-token-random", 3);
+        var secondLoop = new DurableDevLoopV1("run-token-random", 3);
+        var firstStore = started(firstLoop);
+        var secondStore = started(secondLoop);
+
+        var first = firstStore.claimNext(
+                "worker-a", 100L, 100L).orElseThrow();
+        var second = secondStore.claimNext(
+                "worker-a", 100L, 100L).orElseThrow();
+
+        assertEquals(first.effectKey(), second.effectKey());
+        assertEquals(first.attempt(), second.attempt());
+        assertEquals(first.leaseUntilMillis(), second.leaseUntilMillis());
+        assertNotEquals(first.claimToken(), second.claimToken());
+        assertTrue(first.claimToken().contains("/nonce/"));
+        assertTrue(second.claimToken().contains("/nonce/"));
+    }
+
+    @Test
     void persistedClaimTokenCannotBeRelabeledAcrossEffectOrAttempt() {
         var loop = new DurableDevLoopV1("run-token-tamper", 3);
         var store = started(loop);
