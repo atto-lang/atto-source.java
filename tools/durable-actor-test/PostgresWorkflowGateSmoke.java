@@ -54,6 +54,10 @@ public final class PostgresWorkflowGateSmoke {
         check(gate.admitSignedPush(key,push)==PostgresDurableWorkflowGate.Admission.DUPLICATE,
             "duplicate delivery ignored atomically");
         check(gate.admitSignedPush(key,new PostgresDurableWorkflowGate.SignedPush(
+            9,10,ref,sha,"different-delivery-same-logical-push",bytes("another-signed-delivery"))) ==
+            PostgresDurableWorkflowGate.Admission.STALE,
+            "one logical expected event cannot enqueue twice with different delivery IDs");
+        check(gate.admitSignedPush(key,new PostgresDurableWorkflowGate.SignedPush(
             9,10,ref,"b".repeat(40),"delivery-b",bytes("wrong"))) ==
             PostgresDurableWorkflowGate.Admission.STALE,"reject uncorrelated push");
         check(gate.admitSignedPush(key,new PostgresDurableWorkflowGate.SignedPush(
