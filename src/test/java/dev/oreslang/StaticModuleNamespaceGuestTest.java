@@ -42,7 +42,7 @@ final class StaticModuleNamespaceGuestTest {
 
     @Test
     void directNamespaceValueFailsBeforeGuestExecution() {
-        assertThrows(Exception.class, () -> evaluate(MODULE + """
+        Exception rejected = assertThrows(Exception.class, () -> evaluate(MODULE + """
                 define module app as
                   pub fnc main(): void {
                   const escaped = Catalog;
@@ -51,6 +51,8 @@ final class StaticModuleNamespaceGuestTest {
                   }
                 end
                 """));
+        assertTrue(rejected.getMessage().contains("compile-time namespace"),
+                rejected.toString());
     }
 
     @Test
@@ -64,6 +66,8 @@ final class StaticModuleNamespaceGuestTest {
                   }
                 end
                 """));
+        assertTrue(rejected.getMessage().contains("not a writable let binding"),
+                rejected.toString());
     }
 
     private static String evaluate(String program) throws Exception {
