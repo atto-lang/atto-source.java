@@ -42,6 +42,19 @@ snapshots while preserving unrelated destination workflows and files.
 Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated.
 
+**Committed tree binding (proposed, not yet merged):** Before any source blob
+upload, the publisher requires an explicit Git-tracked subdirectory of its
+trusted checkout and runs the exact HEAD subtree verifier. It then independently
+hashes the descriptor-read source bytes as a canonical Git tree and requires
+that digest to equal the committed source tree. After uploading to an approved
+private destination, it also requires the server-returned isolated subtree
+Git SHA to match *before* creating a destination root tree, commit or ref.
+Untracked/ignored/modified source and a copy outside the trusted checkout
+fail closed. This proves byte-level tree identity, **not** authorization of a
+feature branch, protected-main provenance, CODEOWNER approval or safe private
+destination access. The repository's default source-transfer allowlist remains
+empty until independently reviewed and merged.
+
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
 checkout**, and walks the source **through directory file descriptors** to
