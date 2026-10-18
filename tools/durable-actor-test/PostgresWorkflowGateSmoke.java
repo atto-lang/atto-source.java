@@ -77,6 +77,18 @@ public final class PostgresWorkflowGateSmoke {
         rejects(()->store.acquireLease(key,UUID.randomUUID()),"cannot steal healthy actor");
         check(!store.renewLease(key,1,UUID.randomUUID()),"incorrect owner cannot renew");
         check(store.renewLease(key,1,owner),"holder can renew");
+        // Having the correct epoch does not grant ownership.
+        var intruder=UUID.randomUUID();
+        rejects(()->store.commitOwnedTurn(new DurableActorStore.Turn(
+            key,1,0,"delivery-1",
+            new DurableActorStore.Snapshot(0,1,"code-v1",1,bytes("intruder")),
+            List.of()),intruder),"other owner cannot commit at current epoch");
+        rejects(()->store.hibernateLease(key,1,intruder),
+            "other owner cannot hibernate current epoch");
+        rejects(()->gate.claimNext(key,1,intruder,UUID.randomUUID()),
+            "other owner cannot claim at current epoch");
+        check(store.renewLease(key,1,owner),
+            "intrusion did not invalidate valid lease");
 
         var outbound=new DurableActorStore.Outbound("op-1","workflow:run:sha:1",bytes("request"));
         var outbound2=new DurableActorStore.Outbound("op-2","workflow:run:sha:2",bytes("request2"));
@@ -91,6 +103,20 @@ public final class PostgresWorkflowGateSmoke {
         var claim=gate.claimNext(key,1,owner,UUID.randomUUID());
         check(claim!=null && claim.intent().intentId().equals("op-1") && claim.attempts()==1,
             "fenced claim");
+        try(Connection c=ds.getConnection();PreparedStatement p=c.prepareStatement(
+            "SELECT o.claim_until<=a.lease_until FROM ores_durable_outbox o "+
+            "JOIN ores_durable_actor a USING(tenant_id,workflow_id,run_id,node_id) "+
+            "WHERE o.tenant_id=? AND o.workflow_id=? AND o.run_id=? "+
+            "AND o.node_id=? AND o.intent_id=?")){
+            p.setString(1,key.tenantId());p.setString(2,key.workflowId());
+            p.setString(3,key.runId());p.setString(4,key.nodeId());
+            p.setString(5,"op-1");
+            try(var r=p.executeQuery()){
+                check(r.next()&&r.getBoolean(1),"claim deadline bounded by activation lease");
+            }
+        }
+        rejects(()->gate.recordReceipt(key,1,intruder,claim,"forged-receipt"),
+            "other owner cannot acknowledge a claimed operation");
         var second=gate.claimNext(key,1,owner,UUID.randomUUID());
         check(second!=null && second.intent().intentId().equals("op-2"),"second independent claim");
         check(gate.claimNext(key,1,owner,UUID.randomUUID())==null,
