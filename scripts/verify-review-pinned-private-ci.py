@@ -239,7 +239,7 @@ def active_rows(path):
                                for byte in raw):
         raise Denied("private CI ledger contains noncanonical bytes")
     return [line for line in raw.decode("ascii").split("\n")
-            if line.strip() and not line.lstrip().startswith("#")]
+            if line and not line.startswith("#")]
 
 def parse_destination_entry(destination_file):
     rows = active_rows(destination_file)
