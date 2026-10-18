@@ -100,7 +100,10 @@ by unrelated actor churn.
 A runtime may also expose a bounded global terminal journal. That journal:
 - is diagnostic only and may drop under observer backpressure;
 - never blocks finalization;
-- exposes explicit drop counters;
+- exposes explicit drop counters, classified by producer contention, bounded
+  capacity pressure, or sequence exhaustion; the classified counts must sum
+  exactly to the aggregate drop count, including records admitted before the
+  sequence fence is exhausted but discarded later during drain;
 - preserves declared sequence ordering under concurrent actor death;
 - preserves that same FIFO-to-sequence ordering when multiple trusted supervisor
   consumers drain concurrently; dequeue and sequence assignment are one
