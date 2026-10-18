@@ -319,21 +319,22 @@ define actor VersionedScalarStage as
             return;
         fi
         if mail.value == "high_grad2"; do
-            self.print_outcome(self.accumulate(2, 2, 2, 10000, 101, 1));
-            return;
-        fi
-        if mail.value == "high_commit"; do
-            // Internal recovery policy: no externally addressed cancel command.
-            // The compensator itself rechecks full fan-in and unsafe candidate.
-            val Result<int, String> outcome = self.commit(2, 2, 101, 1);
-            self.print_outcome(outcome);
-            stdio.println(self.version());
-            if outcome.is_err(); do
-                val Result<int, String> recovery = self.cancel_rejected(2, 2, 101, 1);
-                if recovery.is_err(); do
-                    stdio.println("CANCEL_REJECTED");
-                else
-                    stdio.println(recovery.unwrap());
+            // A completed gradient fan-in drives the actor-owned optimizer
+            // lifecycle; no mailbox command can directly request commit or cancel.
+            val Result<int, String> final_gradient = self.accumulate(2, 2, 2, 10000, 101, 1);
+            self.print_outcome(final_gradient);
+            if !final_gradient.is_err(); do
+                val Result<int, String> outcome = self.commit(2, 2, 101, 1);
+                self.print_outcome(outcome);
+                stdio.println(self.version());
+                if outcome.is_err(); do
+                    // Re-checks unsafe candidate, full fan-in and all epoch fences.
+                    val Result<int, String> recovery = self.cancel_rejected(2, 2, 101, 1);
+                    if recovery.is_err(); do
+                        stdio.println("CANCEL_REJECTED");
+                    else
+                        stdio.println(recovery.unwrap());
+                    fi
                 fi
             fi
             return;
@@ -380,7 +381,6 @@ pub async routine main(): void {
     worker.send("high_forward2");
     worker.send("high_grad1");
     worker.send("high_grad2");
-    worker.send("high_commit");
     worker.send("stale_after_cancel");
     worker.send("new_forward");
     worker.send("new_negative_forward");
