@@ -121,6 +121,151 @@ final class WorkflowSupervisorActorV1Test {
     }
 
     @Test
+    void supervisorCancellationTerminatesDurableWorkflowFirst()
+            throws Exception {
+        Path workflowDb = tempDir.resolve("cancel-workflow.db");
+        Path supervisorDb = tempDir.resolve("cancel-supervisor.db");
+        var loop = new DurableDevLoopV1("run-cancel-authority", 3);
+        try (var workflow = SqliteWorkflowJournalV1.open(workflowDb)) {
+            workflow.append(loop.accept(
+                    "start",
+                    new DurableDevLoopV1.Start("goal")));
+        }
+
+        var policy = new WorkflowSupervisorPolicyV1.Policy(
+                10_000L,
+                1_000L,
+                3,
+                2_000_000L,
+                1,
+                false);
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = WorkflowSupervisorActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new WorkflowSupervisorActorV1.Configure(
+                    supervisorDb.toString(),
+                    "run-cancel-authority",
+                    policy,
+                    100L,
+                    workflowDb.toString()));
+            next(outputs);
+
+            actor.send(new WorkflowSupervisorActorV1.Cancel(
+                    "operator request"));
+            var cancelled = assertInstanceOf(
+                    WorkflowSupervisorActorV1.UsagePublished.class,
+                    next(outputs));
+            assertTrue(cancelled.usage().cancelled());
+            assertEquals(
+                    "operator request",
+                    cancelled.usage().cancellationReason());
+
+            actor.send(new WorkflowSupervisorActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
+        }
+
+        try (var workflow = SqliteWorkflowJournalV1.open(workflowDb)) {
+            var snapshot = workflow.replayDevLoop().machine().snapshot();
+            assertEquals(
+                    DurableDevLoopV1.Phase.CANCELLED,
+                    snapshot.phase());
+            assertEquals("operator request", snapshot.cancelReason());
+            assertEquals(
+                    WorkflowJournalV1.EffectState.ABANDONED,
+                    workflow.effect(
+                            "devloop/run-cancel-authority/iteration/1/code")
+                            .orElseThrow()
+                            .state());
+            assertEquals(
+                    WorkflowJournalV1.EffectState.PENDING,
+                    workflow.effect(
+                            "devloop/run-cancel-authority/cancel")
+                            .orElseThrow()
+                            .state());
+        }
+    }
+
+    @Test
+    void configureRepairsLedgerAfterWorkflowCancellationCommittedFirst()
+            throws Exception {
+        Path workflowDb = tempDir.resolve("cancel-repair-workflow.db");
+        Path supervisorDb = tempDir.resolve("cancel-repair-supervisor.db");
+        var loop = new DurableDevLoopV1("run-cancel-repair", 3);
+        try (var workflow = SqliteWorkflowJournalV1.open(workflowDb)) {
+            workflow.append(loop.accept(
+                    "start",
+                    new DurableDevLoopV1.Start("goal")));
+            var machine = workflow.replayDevLoop().machine();
+            workflow.append(machine.accept(
+                    "supervisor-cancel",
+                    new DurableDevLoopV1.Cancel(
+                            "crash-window cancellation")));
+        }
+
+        var policy = new WorkflowSupervisorPolicyV1.Policy(
+                10_000L,
+                1_000L,
+                3,
+                2_000_000L,
+                1,
+                false);
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = WorkflowSupervisorActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new WorkflowSupervisorActorV1.Configure(
+                    supervisorDb.toString(),
+                    "run-cancel-repair",
+                    policy,
+                    100L,
+                    workflowDb.toString()));
+            var ready = assertInstanceOf(
+                    WorkflowSupervisorActorV1.Ready.class,
+                    next(outputs));
+            assertTrue(ready.usage().cancelled());
+            assertEquals(
+                    "crash-window cancellation",
+                    ready.usage().cancellationReason());
+
+            actor.send(new WorkflowSupervisorActorV1.Admit(
+                    WorkflowActivityProtocolV1.Kind.CODING,
+                    200L,
+                    1L,
+                    1L,
+                    0,
+                    false));
+            var admission = assertInstanceOf(
+                    WorkflowSupervisorActorV1.AdmissionEvaluated.class,
+                    next(outputs));
+            assertEquals(
+                    WorkflowSupervisorPolicyV1.Decision.CANCEL,
+                    admission.admission().decision());
+
+            actor.send(new WorkflowSupervisorActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
+        }
+
+        try (var ledger =
+                    SqliteWorkflowSupervisorLedgerV1.open(
+                            supervisorDb,
+                            "run-cancel-repair",
+                            policy,
+                            100L)) {
+            assertTrue(ledger.usage().cancelled());
+            assertEquals(
+                    "crash-window cancellation",
+                    ledger.usage().cancellationReason());
+        }
+    }
+
+    @Test
     void supervisorUsesDurableAmbiguityInsteadOfCallerReportedCount()
             throws Exception {
         Path db = tempDir.resolve("supervisor-durable-ambiguity.db");
