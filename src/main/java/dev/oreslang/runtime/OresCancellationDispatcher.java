@@ -14,6 +14,13 @@ final class OresCancellationDispatcher {
 
     private static final class Dispatch {
         private final ArrayDeque<OresCancellationSource> pending = new ArrayDeque<>();
+        private final ArrayDeque<OresCancellationSource> toNotify = new ArrayDeque<>();
+
+        private boolean enqueue(OresCancellationSource source) {
+            if (!source.claimCancellation()) return false;
+            pending.addLast(source);
+            return true;
+        }
         private Throwable failure;
 
         private void record(Throwable problem) {
