@@ -9,7 +9,7 @@ Cross-backend behavioral parity and value-producing static-select lowering are N
 | --- | --- | --- |
 | `void` | successful completion with **no** user-language value | **No** |
 | `Future<void>` | observable pending/success/failure/cancellation of a valueless operation | **Yes** |
-| `Option<void>` | `Some()`: success/presence, versus `None`: absence or a recoverable trap result | **Yes** |
+| `Option<void>` | `Some` presence tag (no payload), versus `None`: absence or a recoverable trap result | **Yes** |
 | `Result<void,E>` | `Ok()` versus `Err(E)` | **Yes** |
 | `Future<Option<T>>` | asynchronous operation returning an optional result | **Yes** |
 
@@ -20,10 +20,12 @@ must not escape as guest `undefined`. User code must not bind an expression
 of type `void` to a value slot, even when the declared type is `void`.
 
 `Option<void>` is retained intentionally: existing `trap fnc ...: void`
-code returns `Some()` upon success and `None` for an ordinary recoverable
+code returns a `Some` presence tag upon success and `None` for an ordinary recoverable
 failure. Changing it to `void` or an automatic `None` would destroy a
 meaningful success/failure distinction. The same holds for
 `Result<void,E>`; its `Ok()` carries no payload.
+The tag name `Some` here describes its runtime variant; this contract does
+not introduce an unverified zero-argument source `Some()` constructor.
 
 `Unit` remains a **separate, unimplemented first-class type proposal**.
 If it is introduced, it must have a concrete sole inhabitant and
@@ -53,7 +55,7 @@ trap fnc admitted(): void { return; }
 fnc success(): Result<void, String> { return Ok(); }
 
 fnc check(): void {
-  const Option<void> admission = admitted(); // Some() on success
+  const Option<void> admission = admitted(); // Some presence tag on success
   const Result<void, String> outcome = success();
   const bool present = admission.is_some();
   const bool succeeded = outcome.is_ok();
