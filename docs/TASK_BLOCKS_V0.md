@@ -167,3 +167,36 @@ The Java ownership checker now treats `task {}`, `nb {}`, `do task {}` and `do n
 It rejects borrowed captures, by-value borrowed arguments to immediately invoked `async task` and `async` lambdas, escaping actor self, captured MutexGuards, Task launch from active protected critical sections, and ordinary borrows held over `await`. Task execution does not inherit an enclosing constructor's partial-init privilege or actor state lock. Task lambda arguments must be owned/copy-safe before the caller stack frame exits.
 
 The type checker also recognizes the intended `await Task<T> -> T` rule, without flattening `Task<Task<T>>`. **These are static admission improvements, not enabled Task lowering.** Existing `OresScheduler` supports nonparking resumable `Await` steps, while the Java runtime Task handle draft adds tests for a single carrier progressing other work during a wait. Actual Oreslang source-frame transformation, actor-owned Task admission, physical quiescence before resource reclamation, and exact-head GraalVM/LLVM runtime parity are still release blockers. Do not remove the TypeChecker fail-closed gate based on these tests alone.
+
+
+## Task and `suspends` are independent effects (October 18, 2026)
+
+- `suspends fnc foo(...): T` may yield **the caller's current Task**. Calling `foo` does not launch another Task or wrap `T` in `Future<T>`. Its caller must be declared `suspends` or `async`; the special root `main` runs on an existing VM-owned Task and remains permitted to `await`, matching existing Oreslang programs.
+- `task { ... }` and `nb { ... }` each launch a **new Task<T>** whose body is intrinsically suspension-capable. Their creation does not suspend the parent; an explicit `await` joins one Task and yields `T`. `do task { ... }` remains supervised even when the handle is discarded.
+- `async task |...| -> body` schedules the whole body as one `Task<T>`. It is suspension-capable even though it needs no redundant `suspends` modifier. `async |...| -> body` instead returns `Future<T>`, and a returned inner Task is still an explicit `Future<Task<T>>`.
+- `suspends |...| -> body` (contextual alias `suspend |...|`) denotes a **caller-executed suspendable lambda**, not a new Task. Parser/AST now retain `SuspendsLambdaExpr` separately. This source form remains type-checker gated until suspension-effect function types, nonparking call-frame lowering and lifetime proofs are implemented.
+- Plain `|...| -> body` is synchronous even when nested inside an `async` or `suspends` declaration; it cannot inherit the enclosing function's permission to `await` or invoke a `suspends` function. The type checker saves/restores `currentMaySuspend` and `currentAsyncCallable` on lambda boundaries.
+- `for await` is permitted where suspension is allowed (including `suspends` callables), without requiring the separate `async` Future-producing declaration effect.
+- `async suspends`, `suspends task |...|`, and `async task suspends |...|` do **not** create new scheduler modes. They are rejected rather than implicitly flattening Tasks or diluting the effect contract.
+
+```oreslang
+suspends fnc fetch_blocking(int key): int {
+    // May suspend the current Task; does not create another Task.
+    return key + 1;
+}
+
+pub fnc main(): void {
+    // Illustrative *future* source support: one owned Task, not a Future.
+    let Task<int> job = (async task |int key| -> {
+        return fetch_blocking(key);
+    })(5);
+
+    // Root main may await because it is already a VM-owned Task.
+    let int result = await job;
+    return;
+}
+```
+
+The `async task` example is **not executable yet**. Its Task-owned capture frame must be materialized before the parent stack returns. `await` and `suspends` are suspension boundaries: no ordinary live lexical borrow, MutexGuard or actor-private pointer may outlive such a boundary. A `suspends` call executed *inside* a Task never receives implicit actor permissions or ownership of the caller's heap.
+
+The Java parser and type checker now preserve the effect boundaries for existing synchronous/async/suspends callables, while `task {}`, `async task`, `async` lambda and `suspends` lambda source execution remain gated. LLVM continues to fail closed for unsupported native lambda/Task lowering. Runnable GraalVM/LLVM parity requires exact-head executable tests.
