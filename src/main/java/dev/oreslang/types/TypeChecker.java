@@ -1217,6 +1217,15 @@ public final class TypeChecker {
                         + klass.name() + " is " + klass.actorKind() + " but parent "
                         + resolvedParent.name() + " is " + resolvedParent.actorKind());
             }
+            if (resolvedParent != null
+                    && klass.actorKind() != Ast.ActorKind.NONE
+                    && klass.actorBoundary() != resolvedParent.actorBoundary()) {
+                throw new IllegalArgumentException(
+                        "actor boundary must be preserved across inheritance: "
+                                + klass.name() + " is " + klass.actorBoundary()
+                                + " but parent " + resolvedParent.name()
+                                + " is " + resolvedParent.actorBoundary());
+            }
             if (resolvedParent != null && resolvedParent.constructor() != null) {
                 throw new IllegalArgumentException(
                         "class '" + klass.name() + "' cannot extend '" + resolvedParent.name()
