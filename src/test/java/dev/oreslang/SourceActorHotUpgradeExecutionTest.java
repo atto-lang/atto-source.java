@@ -211,6 +211,13 @@ final class SourceActorHotUpgradeExecutionTest {
                     leftOres.linkedCodeUnit("left-counter.ores");
             ActorRuntime.ActorCodeExecutor foreign = (ActorRuntime.ActorCodeExecutor)
                     rightOres.linkedCodeUnit("right-counter.ores");
+            assertThrows(SecurityException.class, () ->
+                    leftOres.actors().spawnCodeActor(
+                            ActorRuntime.ActorKind.SHARED,
+                            leftOres.isolatePolicy(),
+                            foreign,
+                            "Counter"),
+                    "raw source actor spawn must reject a foreign evaluator domain");
             ActorRuntime.ActorRef<Object> ref = leftOres.actors().spawnCodeActor(
                     ActorRuntime.ActorKind.SHARED,
                     leftOres.isolatePolicy(),
