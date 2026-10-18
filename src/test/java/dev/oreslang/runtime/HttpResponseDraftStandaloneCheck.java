@@ -32,6 +32,12 @@ public final class HttpResponseDraftStandaloneCheck {
             rejected(() -> HttpResponseDraft.text("", status, List.of()));
             check(!HttpResponseDraft.empty(status, List.of()).hasBody(), "bodyless status");
         }
+        for (int status : List.of(0, 100, 199, 600)) {
+            rejected(() -> HttpResponseDraft.empty(status, List.of()));
+        }
+        for (String value : List.of("injected\\r\\nHeader: yes", "nul\\u0000byte", "wide\\u0100")) {
+            rejected(() -> HttpResponseDraft.empty(200, List.of(Map.entry("X-Test", value))));
+        }
         for (String name : List.of("Transfer-Encoding", "Content-Length", "Trailer", "Connection", "Bad Name")) {
             rejected(() -> HttpResponseDraft.text("x", 200, List.of(Map.entry(name, "y"))));
         }
@@ -82,6 +88,11 @@ public final class HttpResponseDraftStandaloneCheck {
                     HttpResponse.BodyHandlers.ofByteArray());
             check(head.statusCode() == 200 && head.body().length == 0, "HEAD body suppression");
             check(opened.get() == 0, "stream must open lazily");
+            HttpResponse<byte[]> headStream = client.send(HttpRequest.newBuilder(base.resolve("/stream"))
+                    .method("HEAD", HttpRequest.BodyPublishers.noBody()).build(),
+                    HttpResponse.BodyHandlers.ofByteArray());
+            check(headStream.statusCode() == 200 && headStream.body().length == 0, "HEAD streaming suppression");
+            check(opened.get() == 0, "HEAD must not open response stream");
             HttpResponse<String> stream = client.send(HttpRequest.newBuilder(base.resolve("/stream")).build(),
                     HttpResponse.BodyHandlers.ofString());
             check(stream.statusCode() == 200 && stream.body().equals("alpha-beta"), "chunked stream");
