@@ -1107,6 +1107,7 @@ public final class ActorRuntime implements AutoCloseable {
         void routeForwardRoundRobin(Object value);
         void routeForwardTo(String target, Object value);
         void routeForwardByKey(String key, Object value);
+        List<Map<String, Object>> routeForwardAll(Object value);
         void routeBackward(Object value);
         void routeReply(Object value);
     }
@@ -3851,6 +3852,21 @@ public final class ActorRuntime implements AutoCloseable {
     public void routeCurrentPipelineReply(Object value) {
         currentPipelineTurnAuthority().routeReply(Objects.requireNonNull(
                 value, "pipeline payload"));
+    }
+
+    /** Guest fan-out accepts only reusable immutable scalar DATA until the
+     * aggregate move/copy/borrow checker can prove safe per-recipient copies.
+     * Authentication and scalar rejection happen before publication. */
+    public List<Map<String, Object>> routeCurrentPipelineForwardAll(Object value) {
+        PipelineTurnAuthority authority = currentPipelineTurnAuthority();
+        if (!(value instanceof String || value instanceof Boolean
+                || value instanceof Byte || value instanceof Short
+                || value instanceof Integer || value instanceof Long
+                || value instanceof BigInteger)) {
+            throw new IllegalArgumentException(
+                    "self.forward_all requires immutable int/bool/string DATA");
+        }
+        return authority.routeForwardAll(value);
     }
 
     void requirePipelineRegistrationHostAuthority() {
