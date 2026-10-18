@@ -9,20 +9,21 @@ import static org.junit.jupiter.api.Assertions.*;
 final class WorkflowJournalV1Test {
 
     @Test
-    void appendAtomicallyRegistersJournalEntryAndPendingEffect() {
+    void appendAtomicallyRegistersVerifiedTransitionAndPendingEffect() {
         var loop = new DurableDevLoopV1("run-store", 3);
         var store = new WorkflowJournalV1();
 
-        var transition = loop.accept(
+        store.append(loop.accept(
                 "start",
-                new DurableDevLoopV1.Start("repair runtime"));
-        store.append(transition);
+                new DurableDevLoopV1.Start("repair runtime")));
 
         var snapshot = store.snapshot();
         assertEquals("run-store", snapshot.runId());
+        assertEquals(3, snapshot.maxIterations());
         assertEquals(1, snapshot.journalEntries());
         assertEquals(1, snapshot.pendingEffects());
         assertEquals(0, snapshot.claimedEffects());
+        assertEquals(0, snapshot.abandonedEffects());
 
         var effect = store.effects().getFirst();
         assertEquals(
@@ -36,19 +37,17 @@ final class WorkflowJournalV1Test {
     }
 
     @Test
-    void claimedEffectCompletesWithReceiptAndIsNeverClaimedAgain() {
+    void claimedEffectCompletesBeforeLeaseDeadlineAndIsNeverClaimedAgain() {
         var loop = new DurableDevLoopV1("run-complete", 3);
-        var store = new WorkflowJournalV1();
-        store.append(loop.accept(
-                "start",
-                new DurableDevLoopV1.Start("goal")));
+        var store = started(loop);
 
         var claim = store.claimNext(
                 "worker-a", 1_000L, 100L).orElseThrow();
         store.complete(
                 claim.effectKey(),
                 claim.claimToken(),
-                "receipt://model/1");
+                "receipt://model/1",
+                1_099L);
 
         var effect = store.effect(
                 claim.effectKey()).orElseThrow();
@@ -56,16 +55,59 @@ final class WorkflowJournalV1Test {
                 effect.state());
         assertEquals("receipt://model/1", effect.receiptRef());
         assertTrue(store.claimNext(
-                "worker-b", 1_050L, 100L).isEmpty());
+                "worker-b", 1_100L, 100L).isEmpty());
+    }
+
+    @Test
+    void completionAtOrAfterLeaseDeadlineFailsClosedAsAmbiguous() {
+        var loop = new DurableDevLoopV1("run-late-complete", 3);
+        var store = started(loop);
+
+        var claim = store.claimNext(
+                "worker-a", 1_000L, 50L).orElseThrow();
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> store.complete(
+                        claim.effectKey(),
+                        claim.claimToken(),
+                        "receipt://too-late",
+                        1_050L));
+
+        var effect = store.effect(
+                claim.effectKey()).orElseThrow();
+        assertEquals(WorkflowJournalV1.EffectState.AMBIGUOUS,
+                effect.state());
+        assertNull(effect.receiptRef());
+        assertTrue(store.claimNext(
+                "worker-b", 1_051L, 50L).isEmpty());
+    }
+
+    @Test
+    void releaseAfterLeaseDeadlineAlsoRequiresReconciliation() {
+        var loop = new DurableDevLoopV1("run-late-release", 3);
+        var store = started(loop);
+
+        var claim = store.claimNext(
+                "worker-a", 100L, 20L).orElseThrow();
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> store.releaseUnexecuted(
+                        claim.effectKey(),
+                        claim.claimToken(),
+                        "worker://claims-not-started",
+                        120L));
+
+        assertEquals(
+                WorkflowJournalV1.EffectState.AMBIGUOUS,
+                store.effect(claim.effectKey()).orElseThrow().state());
     }
 
     @Test
     void expiredClaimBecomesAmbiguousAndNeverBlindlyRetries() {
         var loop = new DurableDevLoopV1("run-ambiguous", 3);
-        var store = new WorkflowJournalV1();
-        store.append(loop.accept(
-                "start",
-                new DurableDevLoopV1.Start("goal")));
+        var store = started(loop);
 
         var first = store.claimNext(
                 "worker-a", 1_000L, 50L).orElseThrow();
@@ -95,10 +137,7 @@ final class WorkflowJournalV1Test {
     @Test
     void ambiguousEffectCanBeResolvedAsCompletedWithoutRetry() {
         var loop = new DurableDevLoopV1("run-reconcile", 3);
-        var store = new WorkflowJournalV1();
-        store.append(loop.accept(
-                "start",
-                new DurableDevLoopV1.Start("goal")));
+        var store = started(loop);
 
         var claim = store.claimNext(
                 "worker-a", 10L, 10L).orElseThrow();
@@ -124,19 +163,17 @@ final class WorkflowJournalV1Test {
     }
 
     @Test
-    void positivelyUnexecutedClaimCanBeReleasedWithoutAmbiguity() {
+    void positivelyUnexecutedLiveClaimCanBeReleasedAndRetried() {
         var loop = new DurableDevLoopV1("run-release", 3);
-        var store = new WorkflowJournalV1();
-        store.append(loop.accept(
-                "start",
-                new DurableDevLoopV1.Start("goal")));
+        var store = started(loop);
 
         var first = store.claimNext(
                 "worker-a", 100L, 100L).orElseThrow();
         store.releaseUnexecuted(
                 first.effectKey(),
                 first.claimToken(),
-                "worker://sandbox/start-failed");
+                "worker://sandbox/start-failed",
+                150L);
 
         var pending = store.effect(
                 first.effectKey()).orElseThrow();
@@ -144,9 +181,66 @@ final class WorkflowJournalV1Test {
                 pending.state());
 
         var second = store.claimNext(
-                "worker-b", 101L, 100L).orElseThrow();
+                "worker-b", 151L, 100L).orElseThrow();
         assertEquals(2, second.attempt());
         assertEquals(first.effectKey(), second.effectKey());
+    }
+
+    @Test
+    void cancellationAbandonsPriorPendingEffectsButKeepsCancelEffectRunnable() {
+        var loop = new DurableDevLoopV1("run-cancel-effects", 3);
+        var store = started(loop);
+
+        store.append(loop.accept(
+                "cancel",
+                new DurableDevLoopV1.Cancel("operator request")));
+
+        var effects = store.effects();
+        assertEquals(2, effects.size());
+        assertEquals(WorkflowJournalV1.EffectState.ABANDONED,
+                effects.get(0).state());
+        assertInstanceOf(
+                DurableDevLoopV1.RequestCode.class,
+                effects.get(0).command());
+        assertEquals(WorkflowJournalV1.EffectState.PENDING,
+                effects.get(1).state());
+        assertInstanceOf(
+                DurableDevLoopV1.CancelWork.class,
+                effects.get(1).command());
+        assertEquals(1, store.snapshot().abandonedEffects());
+
+        var claim = store.claimNext(
+                "worker-cancel", 1_000L, 100L).orElseThrow();
+        assertInstanceOf(
+                DurableDevLoopV1.CancelWork.class,
+                claim.command());
+    }
+
+    @Test
+    void cancellationDoesNotPretendAlreadyClaimedEffectWasCancelled() {
+        var loop = new DurableDevLoopV1("run-cancel-claimed", 3);
+        var store = started(loop);
+        var active = store.claimNext(
+                "worker-a", 100L, 100L).orElseThrow();
+
+        store.append(loop.accept(
+                "cancel",
+                new DurableDevLoopV1.Cancel("operator request")));
+
+        assertEquals(
+                WorkflowJournalV1.EffectState.CLAIMED,
+                store.effect(active.effectKey()).orElseThrow().state());
+
+        var cancel = store.claimNext(
+                "worker-cancel", 101L, 100L).orElseThrow();
+        assertInstanceOf(
+                DurableDevLoopV1.CancelWork.class,
+                cancel.command());
+
+        assertEquals(1, store.expireClaims(200L));
+        assertEquals(
+                WorkflowJournalV1.EffectState.AMBIGUOUS,
+                store.effect(active.effectKey()).orElseThrow().state());
     }
 
     @Test
@@ -180,9 +274,6 @@ final class WorkflowJournalV1Test {
         var replayed = store.replayDevLoop();
         assertEquals(loop.snapshot(), replayed.machine().snapshot());
         assertEquals(loop.journal(), replayed.machine().journal());
-        assertEquals(DurableDevLoopV1.Phase.CODING,
-                replayed.machine().snapshot().phase());
-        assertEquals(2, replayed.machine().snapshot().iteration());
 
         List<String> storedKeys = store.effects().stream()
                 .map(WorkflowJournalV1.EffectSnapshot::effectKey)
@@ -194,40 +285,96 @@ final class WorkflowJournalV1Test {
         assertEquals(storedKeys, replayedKeys);
     }
 
+    @Test
+    void forgedTransitionCommandsAreRejectedByIndependentReducerReplay() {
+        var loop = new DurableDevLoopV1("run-forged-command", 3);
+        var genuine = loop.accept(
+                "start",
+                new DurableDevLoopV1.Start("goal"));
+        var forgedCommand = new DurableDevLoopV1.RequestCode(
+                1,
+                "goal",
+                null,
+                "attacker/chosen/effect");
+        var forged = new DurableDevLoopV1.Transition(
+                genuine.journalEntry(),
+                genuine.snapshot(),
+                List.of(forgedCommand));
+        var store = new WorkflowJournalV1();
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> store.append(forged));
+        assertNull(store.snapshot().runId());
+        assertTrue(store.effects().isEmpty());
+    }
+
+    @Test
+    void forgedReducerSnapshotIsRejectedBeforeJournalMutation() {
+        var loop = new DurableDevLoopV1("run-forged-snapshot", 3);
+        var genuine = loop.accept(
+                "start",
+                new DurableDevLoopV1.Start("goal"));
+        var s = genuine.snapshot();
+        var forgedSnapshot = new DurableDevLoopV1.Snapshot(
+                s.runId(),
+                DurableDevLoopV1.Phase.WAITING_FOR_CI,
+                s.iteration(),
+                s.maxIterations(),
+                s.goal(),
+                s.currentPatchRef(),
+                sha('f'),
+                s.lastReportRef(),
+                s.lastFailureRef(),
+                s.lastBugReportRef(),
+                s.cancelReason(),
+                s.nextSequence(),
+                s.uniqueDeliveryIds(),
+                s.journalEntries());
+        var forged = new DurableDevLoopV1.Transition(
+                genuine.journalEntry(),
+                forgedSnapshot,
+                genuine.commands());
+        var store = new WorkflowJournalV1();
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> store.append(forged));
+        assertNull(store.snapshot().runId());
+        assertEquals(0, store.snapshot().journalEntries());
+    }
 
     @Test
     void persistedIterationBudgetCannotChangeDuringRun() {
         var loop = new DurableDevLoopV1("run-policy", 3);
-        var store = new WorkflowJournalV1();
-        store.append(loop.accept(
-                "start",
-                new DurableDevLoopV1.Start("goal")));
+        var store = started(loop);
 
-        var entry = new DurableDevLoopV1.JournalEntry(
-                2L,
-                "policy-change",
-                new DurableDevLoopV1.Start("other"),
-                DurableDevLoopV1.Disposition.REJECTED);
+        var genuineRejected = loop.accept(
+                "wrong-event",
+                new DurableDevLoopV1.Start("other"));
+        var s = genuineRejected.snapshot();
         var badSnapshot = new DurableDevLoopV1.Snapshot(
-                "run-policy",
-                DurableDevLoopV1.Phase.CODING,
-                1,
+                s.runId(),
+                s.phase(),
+                s.iteration(),
                 4,
-                "goal",
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                3L,
-                2,
-                2);
+                s.goal(),
+                s.currentPatchRef(),
+                s.expectedCommitSha(),
+                s.lastReportRef(),
+                s.lastFailureRef(),
+                s.lastBugReportRef(),
+                s.cancelReason(),
+                s.nextSequence(),
+                s.uniqueDeliveryIds(),
+                s.journalEntries());
 
         assertThrows(
                 IllegalArgumentException.class,
                 () -> store.append(new DurableDevLoopV1.Transition(
-                        entry, badSnapshot, List.of())));
+                        genuineRejected.journalEntry(),
+                        badSnapshot,
+                        genuineRejected.commands())));
         assertEquals(3, store.snapshot().maxIterations());
         assertEquals(1, store.snapshot().journalEntries());
     }
@@ -235,10 +382,7 @@ final class WorkflowJournalV1Test {
     @Test
     void journalClockCannotMoveBackwards() {
         var loop = new DurableDevLoopV1("run-clock", 3);
-        var store = new WorkflowJournalV1();
-        store.append(loop.accept(
-                "start",
-                new DurableDevLoopV1.Start("goal")));
+        var store = started(loop);
         var claim = store.claimNext(
                 "worker-a", 100L, 50L).orElseThrow();
 
@@ -252,103 +396,66 @@ final class WorkflowJournalV1Test {
 
     @Test
     void outOfOrderJournalEntryFailsClosedWithoutPartialAppend() {
+        var loop = new DurableDevLoopV1("run-order", 3);
+        var first = loop.accept(
+                "start",
+                new DurableDevLoopV1.Start("goal"));
+        var second = loop.accept(
+                "code",
+                new DurableDevLoopV1.CodeChanged(1, "patch://1"));
         var store = new WorkflowJournalV1();
-        var command = new DurableDevLoopV1.RequestCode(
-                1, "goal", null, "devloop/run-x/iteration/1/code");
-        var bad = fakeTransition(
-                "run-x", 2L, command);
 
         assertThrows(
                 IllegalStateException.class,
-                () -> store.append(bad));
-        assertNull(store.snapshot().runId(),
-                "failed first append must not partially bind the store");
+                () -> store.append(second));
+        assertNull(store.snapshot().runId());
         assertEquals(0, store.snapshot().journalEntries());
         assertTrue(store.effects().isEmpty());
-    }
 
-    @Test
-    void stableEffectKeyCollisionFailsBeforeJournalMutation() {
-        var store = new WorkflowJournalV1();
-        var first = new DurableDevLoopV1.RequestCode(
-                1, "goal", null, "effect/shared");
-        var second = new DurableDevLoopV1.PushCode(
-                1, "patch://different", "effect/shared");
-
-        store.append(fakeTransition("run-collision", 1L, first));
-
-        assertThrows(
-                IllegalStateException.class,
-                () -> store.append(fakeTransition(
-                        "run-collision", 2L, second)));
-
-        assertEquals(1, store.snapshot().journalEntries());
-        assertEquals(1, store.effects().size());
-        assertEquals(first, store.effects().getFirst().command());
+        store.append(first);
+        store.append(second);
+        assertEquals(2, store.snapshot().journalEntries());
     }
 
     @Test
     void nonAppliedTransitionCannotSmuggleSideEffectIntoOutbox() {
-        var store = new WorkflowJournalV1();
+        var loop = new DurableDevLoopV1("run-rejected", 3);
+        var rejected = loop.accept(
+                "wrong-first-event",
+                new DurableDevLoopV1.CodeChanged(
+                        1, "patch://illegal"));
+        assertEquals(
+                DurableDevLoopV1.Disposition.REJECTED,
+                rejected.journalEntry().disposition());
+
         var command = new DurableDevLoopV1.RequestCode(
                 1, "goal", null, "effect/rejected");
-
-        var entry = new DurableDevLoopV1.JournalEntry(
-                1L,
-                "event-1",
-                new DurableDevLoopV1.Start("goal"),
-                DurableDevLoopV1.Disposition.REJECTED);
-        var snapshot = fakeSnapshot("run-rejected", 1L);
-
-        var transition = new DurableDevLoopV1.Transition(
-                entry, snapshot, List.of(command));
+        var forged = new DurableDevLoopV1.Transition(
+                rejected.journalEntry(),
+                rejected.snapshot(),
+                List.of(command));
+        var store = new WorkflowJournalV1();
 
         assertThrows(
                 IllegalStateException.class,
-                () -> store.append(transition));
+                () -> store.append(forged));
         assertEquals(0, store.snapshot().journalEntries());
         assertTrue(store.effects().isEmpty());
+    }
+
+    private static WorkflowJournalV1 started(
+            DurableDevLoopV1 loop) {
+        var store = new WorkflowJournalV1();
+        store.append(loop.accept(
+                "start",
+                new DurableDevLoopV1.Start("goal")));
+        return store;
     }
 
     private static void append(
             WorkflowJournalV1 store,
             DurableDevLoopV1.Transition transition) {
         store.append(transition);
-    }
-
-    private static DurableDevLoopV1.Transition fakeTransition(
-            String runId,
-            long sequence,
-            DurableDevLoopV1.Command command) {
-        var entry = new DurableDevLoopV1.JournalEntry(
-                sequence,
-                "event-" + sequence,
-                new DurableDevLoopV1.Start("goal"),
-                DurableDevLoopV1.Disposition.APPLIED);
-        return new DurableDevLoopV1.Transition(
-                entry,
-                fakeSnapshot(runId, sequence),
-                List.of(command));
-    }
-
-    private static DurableDevLoopV1.Snapshot fakeSnapshot(
-            String runId,
-            long sequence) {
-        return new DurableDevLoopV1.Snapshot(
-                runId,
-                DurableDevLoopV1.Phase.CODING,
-                1,
-                3,
-                "goal",
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                sequence + 1L,
-                (int) sequence,
-                (int) sequence);
     }
 
     private static String sha(char value) {
