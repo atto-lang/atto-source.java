@@ -73,6 +73,14 @@ public final class ImportRules {
         if (imported.path() == null || imported.path().isBlank()) {
             throw new IllegalArgumentException("import path cannot be empty");
         }
+        if (imported.lexicalModule() != null) {
+            String module = imported.lexicalModule();
+            if (module.length() > 512
+                    || !module.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                throw new IllegalArgumentException(
+                        "invalid lexical import module '" + module + "'");
+            }
+        }
         if (imported.path().length() > 4096 || imported.path().chars().anyMatch(Character::isISOControl)) {
             throw new IllegalArgumentException("import path contains invalid control characters or is too long");
         }
