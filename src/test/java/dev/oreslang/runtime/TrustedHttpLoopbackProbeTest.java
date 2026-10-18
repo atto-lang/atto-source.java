@@ -123,6 +123,7 @@ final class TrustedHttpLoopbackProbeTest {
                 assertEquals(TrustedUntrustedNetworkQuota.Status.TOO_MANY_IN_FLIGHT,
                         gate.tryStartHttp(child, parent, tenant).status());
                 broker.close();
+                broker.close(); // retry pending-host cancellation without new I/O
                 assertTrue(broker.getStatus().isCompletedExceptionally());
                 boolean settled = false;
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
