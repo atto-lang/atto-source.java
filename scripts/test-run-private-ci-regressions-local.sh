@@ -172,7 +172,7 @@ if __name__ == "__main__": unittest.main()
 PY
 if PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
 grep -q PRIVATE_CI_TEST_INVENTORY_MISSING_LOAD_TESTS "$root/out"
-! grep -q '^PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1
+if grep -q PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED "$root/out"; then exit 1; fi
 echo 'PASS: a single passing test without full discovery cannot produce a success receipt'
 make_fixture
 python3 - "$fixture/test-publish-private-ci-source.py" <<'PY'
@@ -185,8 +185,7 @@ file.write_text(content.replace("range(96)", "range(1)"))
 PY
 if PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
 grep -q PRIVATE_CI_TEST_INVENTORY_REJECTED "$root/out"
-! grep -q '^PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1
- "$root/out"
+if grep -q PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED "$root/out"; then exit 1; fi
 echo 'PASS: shortened suite with valid load_tests is rejected'
 make_fixture
 mkdir -p "$root/poisoned-PATH"
