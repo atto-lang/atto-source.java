@@ -6011,6 +6011,11 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "channel capability is execution-domain local and cannot cross actor mailboxes");
         }
+        if (value instanceof HttpResponseDraft) {
+            throw new SecurityException(
+                    "HTTP response drafts are single-use, request-scoped capabilities; "
+                    + "they cannot cross actor mailboxes");
+        }
         if (value == null || isScalar(value)
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof Shared<?>
