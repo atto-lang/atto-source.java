@@ -116,6 +116,16 @@ public final class CheckedScalarInvocationWitness {
         ResultSite site = null;
         boolean callerReturned = false;
         for (Ast.Stmt statement : caller.body()) {
+            // A scalar literal initializer says nothing about a mutable
+            // binding's loan/move or rebinding effects. This narrow witness
+            // cannot certify let/val or forged mutable const locals; require
+            // the full ownership checker for those call environments.
+            if (statement instanceof Ast.BindingStmt binding
+                    && (binding.kind() != Ast.BindingKind.CONST
+                        || binding.mutableReferent())) {
+                throw new IllegalArgumentException(
+                        "mutable caller binding requires ownership/effect proof");
+            }
             // The lexical preview accepts only linear top-level statements.
             // A typed binding unrelated to this call must still have an
             // independently valid scalar literal result; it cannot smuggle
