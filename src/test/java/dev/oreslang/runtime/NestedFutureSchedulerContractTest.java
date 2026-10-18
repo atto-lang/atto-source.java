@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -43,6 +44,44 @@ final class NestedFutureSchedulerContractTest {
     }
 
     @Test
+    void outerFailureStopsBeforeSubscribingToInnerFuture() throws Exception {
+        OresFuture<OresFuture<Integer>> outer = new OresFuture<>();
+        OresFuture<Integer> inner = new OresFuture<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> derived = scheduler.start(nestedTask(outer));
+            awaitWaiters(outer, 1);
+            assertTrue(outer.failFromRuntime(new IllegalStateException("outer-failed")));
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> derived.get(3, TimeUnit.SECONDS));
+            assertTrue(failure.getCause().getMessage().contains("nested source failed"),
+                    failure.toString());
+            assertEquals(0, inner.pendingRuntimeWaiterCount());
+            assertFalse(inner.isDone());
+            assertEquals(0, outer.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test
+    void innerFailurePropagatesWithoutRetryingOrCancellingProducer() throws Exception {
+        OresFuture<OresFuture<Integer>> outer = new OresFuture<>();
+        OresFuture<Integer> inner = new OresFuture<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> derived = scheduler.start(nestedTask(outer));
+            awaitWaiters(outer, 1);
+            assertTrue(outer.completeFromRuntime(inner));
+            awaitWaiters(inner, 1);
+            assertTrue(inner.failFromRuntime(new IllegalArgumentException("inner-failed")));
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> derived.get(3, TimeUnit.SECONDS));
+            assertTrue(failure.getCause().getMessage().contains("nested source failed"),
+                    failure.toString());
+            assertEquals(0, inner.pendingRuntimeWaiterCount());
+            assertFalse(outer.isCancelled());
+            assertFalse(inner.isCancelled());
+        }
+    }
+
+    @Test
     void eachFutureLayerResumesThroughOwningScheduler() throws Exception {
         OresFuture<OresFuture<Integer>> outer = new OresFuture<>();
         OresFuture<Integer> inner = new OresFuture<>();
@@ -80,6 +119,9 @@ final class NestedFutureSchedulerContractTest {
             int pc;
             @Override
             public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
+                if (resume.failure() != null) {
+                    throw new IllegalStateException("nested source failed", resume.failure());
+                }
                 if (pc++ == 0) return OresScheduler.await(outer);
                 if (pc == 2) return OresScheduler.await((OresFuture<?>) resume.value());
                 return OresScheduler.done((Integer) resume.value());
