@@ -33,6 +33,8 @@ class BundleReceiptTests(unittest.TestCase):
         self.tree = git(self.repo, 'show', '-s', '--format=%T', 'HEAD')
         self.bundle = root / 'bundle'
         (self.bundle / 'lib').mkdir(parents=True)
+        (self.bundle / 'native').mkdir()
+        (self.bundle / 'native' / 'liboresthread.so').write_bytes(b'synthetic native library')
         with ZipFile(self.bundle / 'oreslang-source.jar', 'w') as jar:
             jar.writestr('dev/oreslang/launcher/OresMain.class', b'synthetic')
         with ZipFile(self.bundle / 'lib' / 'dependency.jar', 'w') as jar:
@@ -55,7 +57,7 @@ exit 9
         result = self.capture()
         self.assertTrue(result['negative_check'])
         self.assertFalse(result['independent_provenance_attested'])
-        self.assertEqual(len(result['bundle_files']), 3)
+        self.assertEqual(len(result['bundle_files']), 4)
 
     def test_source_commit_mismatch(self):
         with self.assertRaisesRegex(ValueError, 'wrong source commit'):
