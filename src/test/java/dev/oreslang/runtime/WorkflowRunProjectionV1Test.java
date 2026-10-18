@@ -94,6 +94,29 @@ final class WorkflowRunProjectionV1Test {
         assertEquals(5L, projection.lastTransitionSequence());
     }
 
+
+    @Test
+    void cancellationProjectsAbandonedNotStartedEffects() {
+        var loop = new DurableDevLoopV1("run-ui-cancel", 4);
+        var store = new WorkflowJournalV1();
+        append(store, loop.accept(
+                "start",
+                new DurableDevLoopV1.Start("goal")));
+        append(store, loop.accept(
+                "cancel",
+                new DurableDevLoopV1.Cancel("operator request")));
+
+        var projection = WorkflowRunProjectionV1.from(
+                loop.snapshot(), store.snapshot());
+
+        assertEquals(DurableDevLoopV1.Phase.CANCELLED,
+                projection.phase());
+        assertTrue(projection.terminal());
+        assertEquals(1, projection.abandonedEffects());
+        assertEquals(1, projection.pendingEffects(),
+                "cancel effect remains runnable");
+    }
+
     @Test
     void projectionFailsClosedOnReducerJournalRevisionSkew() {
         var loop = new DurableDevLoopV1("run-ui-skew", 4);
