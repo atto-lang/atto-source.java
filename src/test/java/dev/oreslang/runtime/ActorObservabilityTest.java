@@ -594,6 +594,52 @@ final class ActorObservabilityTest {
     }
 
     @Test
+    void contendedTerminalDiagnosticLockDropsWithoutStallingFinalization()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            Field lockField =
+                    ActorRuntime.class.getDeclaredField("supervisionEventQueueLock");
+            lockField.setAccessible(true);
+            var diagnosticLock =
+                    (java.util.concurrent.locks.ReentrantLock) lockField.get(runtime);
+            var held = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            Thread holder = new Thread(() -> {
+                diagnosticLock.lock();
+                try {
+                    held.countDown();
+                    release.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    diagnosticLock.unlock();
+                }
+            }, "terminal-diagnostic-lock-holder");
+            holder.start();
+            assertTrue(held.await(3, TimeUnit.SECONDS));
+
+            try {
+                var actor = runtime.<String>spawnShared(
+                        () -> (message, context) -> { });
+                actor.stop();
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                        "diagnostic lock contention must not stall actor finalization");
+                assertTrue(actor.terminalState().isPresent(),
+                        "authoritative per-ref terminal state must survive a dropped journal event");
+                assertEquals(1L, runtime.runtimeStats().normalTerminations());
+                assertTrue(runtime.supervisionEventsDropped() >= 1L,
+                        "contended diagnostic publication must be counted as a drop");
+            } finally {
+                release.countDown();
+                holder.join(3_000L);
+            }
+            assertFalse(holder.isAlive());
+            assertTrue(runtime.pollTerminationEvent().isEmpty(),
+                    "failed publication must not fabricate a journal entry");
+        }
+    }
+
+    @Test
     void exhaustedDiagnosticSequenceFailsClosedWithoutWrappingOrBlockingTermination()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
