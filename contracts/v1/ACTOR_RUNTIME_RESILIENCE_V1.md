@@ -45,6 +45,14 @@ physical threads, and hidden restart/replay behavior.
 - Ordinary throw follows local catch/trap semantics.
 - raise is explicit escalation according to the language recover/defer contract.
 - panic is actor-fatal, not VM-fatal merely because one actor failed.
+- Explicit source/runtime failure control has a stable typed boundary identity:
+  THROW, RAISE, or PANIC. Unknown Java/runtime failures remain
+  RUNTIME_FAILURE; supervision must never guess language semantics from
+  exception messages or arbitrary class-name substrings.
+- A retained terminal record exposes that typed identity without retaining
+  mutable guest payloads. Rich future supervisor payloads must cross through
+  the normal ownership/copying rules rather than by retaining exception-owned
+  guest objects.
 - Structured cancellation is control flow and cannot be swallowed as an
   ordinary guest exception.
 - Host-fatal VM/linkage/thread-death class failures may be rethrown only after
@@ -204,7 +212,7 @@ reserve diagnostic capacity and then die before publishing the record.
 
 | Backend | Status |
 | --- | --- |
-| Java/GraalVM | Active draft implements bounded mail/control, structured cancellation, single-flight execution, continuation fairness, typed send rejection, snapshots/stats, retained terminal state, ordered bounded terminal telemetry, watchdog isolation and two-phase finalization. Terminal ready/DONE/output/exit observers use a lazy bounded lifecycle-observer domain; actor capacity remains charged until that bundle retires, and runtime close fences in-flight finalization handoff before observer-domain shutdown. When `ores.runtime.carriers.global.max` is configured, CONTROL + PRIVATE + SHARED + UNTRUSTED + lifecycle-observer execution carriers share one 5..256 permit coordinator with one protected reserve per domain. JVM non-affine CONTROL/actor/lifecycle pools can borrow idle permits up to the safe per-domain ceiling, with coherent held/free and denial-reason telemetry. Affine/native pools remain conservative pending individual native carrier retirement acknowledgment (#1303). NIO/watchdog/user-owned scheduler threads remain separately accounted host resources. Source supervisor callbacks remain a release gate. |
+| Java/GraalVM | Active draft implements bounded mail/control, structured cancellation, single-flight execution, continuation fairness, typed send rejection, snapshots/stats, retained terminal state, ordered bounded terminal telemetry, watchdog isolation and two-phase finalization. Terminal ready/DONE/output/exit observers use a lazy bounded lifecycle-observer domain; actor capacity remains charged until that bundle retires, and runtime close fences in-flight finalization handoff before observer-domain shutdown. When `ores.runtime.carriers.global.max` is configured, CONTROL + PRIVATE + SHARED + UNTRUSTED + lifecycle-observer execution carriers share one 5..256 permit coordinator with one protected reserve per domain. JVM non-affine CONTROL/actor/lifecycle pools can borrow idle permits up to the safe per-domain ceiling, with coherent held/free and denial-reason telemetry. Affine/native pools remain conservative pending individual native carrier retirement acknowledgment (#1303). NIO/watchdog/user-owned scheduler threads remain separately accounted host resources. Stable THROW/RAISE/PANIC runtime identities are now present and retained terminal metadata exposes a typed failure view; source throw/raise lowering and authoritative supervisor callback admission remain release gates. |
 | LLVM | Native actor/group and RT/thread-accounting primitives exist. The host scheduler now retains immutable generation-bound terminal metadata for explicit STOP and VM/runtime retirement, including accepted/processed user-message accounting and domain-fenced lookup. Callback failure has no typed return channel yet, so FAILED classification, source supervision, terminal diagnostics/journaling and the full observability/fairness contract remain parity work. |
 | .NET | Contract target only; no source-runtime parity claim from this file. |
 | WASM | Contract target; fail closed where threads/native isolation are unavailable. |
