@@ -70,6 +70,7 @@ final class TrustedUntrustedNetworkQuotaTest {
                 TrustedUntrustedNetworkQuota.Policy.initialDefault(), now::get);
         List<TrustedUntrustedNetworkQuota.Lease> sockets = new ArrayList<>();
         for (int i = 0; i < 10; i++) {
+            now.set(i * 100_000_000L);
             var admitted = quota.tryOpenTcp();
             assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, admitted.status());
             sockets.add(admitted.lease());
@@ -90,7 +91,7 @@ final class TrustedUntrustedNetworkQuotaTest {
     void closeAndConcurrentAdmissionAreRaceSafe() throws Exception {
         AtomicLong now = new AtomicLong();
         var quota = new TrustedUntrustedNetworkQuota(
-                TrustedUntrustedNetworkQuota.Policy.initialDefault(), now::get);
+                new TrustedUntrustedNetworkQuota.Policy(10, 2, 10, 10, 10, 10), now::get);
         AtomicInteger admitted = new AtomicInteger();
         var leases = new ConcurrentLinkedQueue<TrustedUntrustedNetworkQuota.Lease>();
         CountDownLatch start = new CountDownLatch(1);
