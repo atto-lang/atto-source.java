@@ -859,6 +859,13 @@ public final class OresScheduler implements AutoCloseable {
                             "cyclic Future await dependency detected"));
                     return;
                 }
+                // Cancellation might have revoked this task before the graph
+                // edge was installed. Recheck admission before fast-path
+                // observation so terminal results cannot strand an edge.
+                if (phase.get() != WAITING) {
+                    removeAwaitDependency(completion);
+                    return;
+                }
                 // Hot path: terminal Futures are immutable. Observe their
                 // already-published terminal state directly and enqueue the
                 // continuation for a fresh dispatch without allocating a
@@ -905,7 +912,10 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void deliverAwaitCompletion(Object value, Throwable failure) {
-            if (phase.get() == TERMINAL) return;
+            if (phase.get() == TERMINAL) {
+                removeAwaitDependency(completion);
+                return;
+            }
 
             Resume resume = Resume.completed(
                     value,
