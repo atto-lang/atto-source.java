@@ -108,4 +108,44 @@ final class OresCancellationSourceTest {
             assertEquals(0, upstream.notification().pendingRuntimeWaiterCount());
         }
     }
+
+    @Test
+    void concurrentUpstreamCancellationsPublishOneTerminalEvent() throws Exception {
+        for (int iteration = 0; iteration < 64; iteration++) {
+            try (OresCancellationSource first = new OresCancellationSource();
+                 OresCancellationSource second = new OresCancellationSource();
+                 OresCancellationSource linked =
+                         OresCancellationSource.linked(first.token(), second.token())) {
+                AtomicInteger deliveries = new AtomicInteger();
+                linked.token().onCancellationRequested(deliveries::incrementAndGet);
+                CountDownLatch fire = new CountDownLatch(1);
+                Thread left = Thread.ofVirtual().start(() -> {
+                    try {
+                        fire.await();
+                        first.cancel();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                });
+                Thread right = Thread.ofVirtual().start(() -> {
+                    try {
+                        fire.await();
+                        second.cancel();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                });
+                fire.countDown();
+                left.join();
+                right.join();
+                assertTrue(linked.isCancellationRequested());
+                assertEquals(1, deliveries.get());
+                assertEquals(0, first.notification().pendingRuntimeWaiterCount());
+                assertEquals(0, second.notification().pendingRuntimeWaiterCount());
+            }
+        }
+    }
+
 }
