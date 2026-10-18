@@ -125,6 +125,10 @@ public final class AnnotationExpander {
         for (Ast.FieldDecl field : klass.fields()) {
             String jsonKey = fromJsonKey(field);
             if (jsonKey == null) continue;
+            if (field.isStatic()) {
+                throw new IllegalArgumentException("@FromJson is not valid on static class field '"
+                        + klass.name() + "." + field.name() + "'");
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException("@FromJson is not valid on actor state field '"
                         + klass.name() + "." + field.name() + "'");
@@ -158,6 +162,7 @@ public final class AnnotationExpander {
                 klass.genericParameters(),
                 klass.parents(),
                 klass.interfaces(),
+                klass.staticContracts(),
                 klass.fields(),
                 klass.constructor(),
                 methods);
