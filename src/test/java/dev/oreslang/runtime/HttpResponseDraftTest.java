@@ -6,6 +6,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -84,6 +87,38 @@ class HttpResponseDraftTest {
         HttpResponseDraft draft = HttpResponseDraft.text("hello");
         assertThrows(SecurityException.class, () -> ActorRuntime.freeze(draft));
         assertThrows(SecurityException.class, () -> ActorRuntime.freeze(List.of(List.of(draft))));
+    }
+
+    @Test void abortAndWriterCloseStreamExactlyOnceUnderContention() throws Exception {
+        for (int attempt = 0; attempt < 20; attempt++) {
+            AtomicInteger underlyingCloses = new AtomicInteger();
+            HttpResponseDraft response = HttpResponseDraft.streaming(() -> new ByteArrayInputStream(
+                    "owned".getBytes(StandardCharsets.UTF_8)) {
+                @Override public void close() throws java.io.IOException {
+                    underlyingCloses.incrementAndGet();
+                    super.close();
+                }
+            }, 200, List.of());
+            response.claim();
+            var input = response.openBody();
+            var ready = new CountDownLatch(8);
+            var start = new CountDownLatch(1);
+            try (var pool = Executors.newFixedThreadPool(8)) {
+                var jobs = new ArrayList<java.util.concurrent.Future<?>>();
+                for (int i = 0; i < 8; i++) jobs.add(pool.submit(() -> {
+                    ready.countDown();
+                    if (!start.await(3, TimeUnit.SECONDS))
+                        throw new IllegalStateException("stream close start barrier timed out");
+                    input.close();
+                    return null;
+                }));
+                assertTrue(ready.await(3, TimeUnit.SECONDS));
+                start.countDown();
+                for (var job : jobs) job.get(3, TimeUnit.SECONDS);
+            }
+            assertEquals(1, underlyingCloses.get(), "close iteration " + attempt);
+            assertThrows(IllegalStateException.class, response::openBody);
+        }
     }
 
     @Test void streamProducerIsLazyAndSingleUse() throws Exception {
