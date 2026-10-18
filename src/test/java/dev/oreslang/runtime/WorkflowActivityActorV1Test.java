@@ -24,7 +24,7 @@ final class WorkflowActivityActorV1Test {
                                     1,
                                     "goal",
                                     null,
-                                    "effect/code"))));
+                                    "devloop/run-1/iteration/1/code"))));
             assertInstanceOf(
                     WorkflowActivityActorV1.Ready.class,
                     next(outputs));
@@ -78,7 +78,7 @@ final class WorkflowActivityActorV1Test {
 
             var command = new DurableDevLoopV1.CancelWork(
                     "operator",
-                    "effect/cancel");
+                    "devloop/run-1/cancel");
             actor.send(new WorkflowActivityActorV1.Configure(
                     "cancel-1",
                     WorkflowActivityProtocolV1.Kind.CANCELLATION,
@@ -122,7 +122,7 @@ final class WorkflowActivityActorV1Test {
             var outputs = actor.outputs();
 
             var command = new DurableDevLoopV1.PushCode(
-                    1, "patch://one", "effect/push");
+                    1, "patch://one", "devloop/run-1/iteration/1/push");
             actor.send(new WorkflowActivityActorV1.Configure(
                     "git-worker-b",
                     WorkflowActivityProtocolV1.Kind.GIT,
