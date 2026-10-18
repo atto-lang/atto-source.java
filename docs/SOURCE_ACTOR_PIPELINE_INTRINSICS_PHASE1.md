@@ -123,9 +123,12 @@ ActorGroup is a cooperation/membership domain, NOT a new mailbox,
 scheduler, transport credential, or authority to send outside the graph.
 The group does not need to manage a worker's lifecycle to select it.
 
-At each routing attempt, the host takes a group-membership snapshot and
-**intersects actual member ActorIds with the immutable DAG's connected
-recipients and already-bound ActorRefs**. An actor's matching name alone
+At each routing attempt, the host reads a **copy-on-write immutable
+membership snapshot** via a nonblocking atomic reference. Group join/leave,
+actor termination and group close publish snapshots under the existing
+membership mutation lock; the actor routing turn itself never acquires that
+lock. The router **intersects actual member ActorIds with the immutable
+DAG's connected recipients and already-bound ActorRefs**. An actor's matching name alone
 is never sufficient. An actor joining or leaving changes *future*
 selection snapshots; once DATA is admitted, its generation, actor path,
 and return/reply destination remain sealed, even if membership changes.
