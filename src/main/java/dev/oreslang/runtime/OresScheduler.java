@@ -434,7 +434,8 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
         private final AtomicInteger inFlightDispatches = new AtomicInteger();
-        private final AtomicBoolean physicalRetirementPublished = new AtomicBoolean();
+        // 0=pending, 1=cleanup in progress, 2=cleanup physically complete.
+        private final AtomicInteger physicalRetirementState = new AtomicInteger();
         private final Runnable onPhysicallyRetired;
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
@@ -559,13 +560,18 @@ public final class OresScheduler implements AutoCloseable {
 
         private void publishPhysicalRetirementIfReady() {
             if (phase.get() != TERMINAL || inFlightDispatches.get() != 0) return;
-            if (!physicalRetirementPublished.compareAndSet(false, true)) return;
+            if (!physicalRetirementState.compareAndSet(0, 1)) return;
             try {
                 onPhysicallyRetired.run();
             } catch (RuntimeException | Error cleanupFailure) {
                 // Cleanup failure must not publish a successful terminal result
                 // while protected state may still need recovery.
                 terminalOutcome.set(new TerminalFailure<>(cleanupFailure));
+            } finally {
+                // Mark DONE only after callback cleanup has physically returned.
+                // Another thread may be simultaneously trying to publish.
+                physicalRetirementState.set(2);
+                publishTerminalIfReady();
             }
         }
 
@@ -709,7 +715,7 @@ public final class OresScheduler implements AutoCloseable {
             // admitted dispatch is still unwinding. Public completion must
             // follow physical cleanup, even if the result is already known.
             if (phase.get() != TERMINAL || completion.isDone()
-                    || !physicalRetirementPublished.get()) return;
+                    || physicalRetirementState.get() != 2) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
             if (outcome instanceof TerminalSuccess<?> success) {
                 @SuppressWarnings("unchecked")
