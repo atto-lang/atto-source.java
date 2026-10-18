@@ -1807,6 +1807,18 @@ public final class TypeChecker {
         return env;
     }
 
+    private Type typeOfNamespaceMemberReceiver(
+            Ast.Expr receiver, Env env, Set<String> generics, Type self) {
+        if (receiver instanceof Ast.NameExpr name && env.lookup(name.name()) == null) {
+            Ast.ModuleDecl module = modules.get(name.name());
+            if (module != null) {
+                rejectUnimportedModuleNamespace(name.name());
+                return moduleShape(module);
+            }
+        }
+        return typeOf(receiver, env, generics, self);
+    }
+
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
