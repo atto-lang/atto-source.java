@@ -20,7 +20,10 @@ files=(check-private-ci-destination.sh test-private-ci-destination.sh
        test-publish-private-ci-source.py test-private-ci-merged-main.py
        test-private-ci-review-coverage.py
        run-private-ci-regressions-local.sh
-       test-run-private-ci-regressions-local.sh)
+       test-run-private-ci-regressions-local.sh
+       ../.github/CODEOWNERS
+       ../.github/private-ci-approved-repositories.txt
+       ../.github/workflows/private-ci-mirror-preflight.yml)
 for file in "${files[@]}"; do
   if [[ ! -f "$script_dir/$file" || -L "$script_dir/$file" ]]; then
     printf 'PRIVATE_CI_MISSING_OR_SYMLINKED_FILE: %s\n' "$file" >&2
