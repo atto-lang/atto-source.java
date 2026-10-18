@@ -481,10 +481,13 @@ public final class DurableDevLoopActorV1 {
                 this.store = opened;
                 this.runId = open.runId();
                 this.maxIterations = open.maxIterations();
-                accepted = true;
                 emit(context, new Opened(projection()));
+                accepted = true;
             } finally {
                 if (!accepted) {
+                    this.store = null;
+                    this.runId = null;
+                    this.maxIterations = 0;
                     opened.close();
                 }
             }
