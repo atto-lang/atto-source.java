@@ -726,9 +726,14 @@ Java_dev_oreslang_runtime_NativeActorIpcTransportV1_nativePid(
         jlong handle) {
     (void)env;
     (void)cls;
+#if defined(__linux__)
     ores_ipc_process *process =
             (ores_ipc_process *)(intptr_t)handle;
     return process == NULL ? 0 : (jlong)process->pid;
+#else
+    (void)handle;
+    return 0;
+#endif
 }
 
 JNIEXPORT jboolean JNICALL
