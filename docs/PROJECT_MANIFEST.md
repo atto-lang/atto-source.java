@@ -60,7 +60,17 @@ hosted-compile fallback; it is **not** a working freestanding backend.
 The next compiler milestone is trusted canonical `core/*`, `alloc/*`,
 `actor/*`, `otp/*` and `std/*` source resolution plus effect inference.
 The existing `std/core` is a hosted compatibility module, not a freestanding
-core import. The target-profile validator draft must not be called with
+core import.
+Bare `core/*`, `alloc/*`, `actor/*`, and `otp/*` import roots are now
+reserved against filesystem and `ORESLANG_PATH` fallback. Until the canonical
+compiler-owned source registries are implemented, the Java loader rejects
+imports from these roots with an explicit error. This prevents a project file
+from impersonating an allocation-free `core` module or trusted actor runtime.
+Application-local relative paths such as `./core/utility` remain ordinary
+filesystem imports, and the legacy `std/core` compatibility module remains
+compiler-owned. Projects previously using **bare** `core/...` or `actor/...`
+as application-package paths must rename them or use explicit relative paths;
+this is a deliberate namespace-compatibility change. The target-profile validator draft must not be called with
 arbitrary user-produced source-unit labels as authority.
 
 See [target profile draft #16](https://github.com/ores-truffle-oreslang/oreslang-target-profiles/pull/16)
