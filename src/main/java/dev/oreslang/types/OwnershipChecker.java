@@ -1020,6 +1020,12 @@ public final class OwnershipChecker {
                 }
                 case "copy" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
+                    if (source.type != null && source.type.isBorrow()
+                            && isPrimitiveCopyType(source.type.borrowedTarget())) {
+                        // Read the loan but return independent immutable data.
+                        // The source binding keeps its existing loan/lifetime.
+                        yield new ValueInfo(source.type.borrowedTarget(), ValueKind.COPY, null);
+                    }
                     if (source.kind != ValueKind.COPY) {
                         throw error(
                                 "rt copy of move-only values requires the Symbol.rtCopy copy-contract lowering; "
@@ -3659,6 +3665,16 @@ public final class OwnershipChecker {
         if (type == null) return ValueKind.MOVE_ONLY;
         if (type.isBorrow()) return type.mutableBorrow() ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW;
         return isCopyType(type) ? ValueKind.COPY : ValueKind.MOVE_ONLY;
+    }
+
+    private boolean isPrimitiveCopyType(Ast.TypeRef type) {
+        if (type == null || type.isBorrow() || !type.arguments().isEmpty()) return false;
+        return switch (type.name()) {
+            case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
+                    "f32","f64","float","decimal","complex64","complex128","complex",
+                    "bool","Bool","string","String" -> true;
+            default -> false;
+        };
     }
 
     private boolean isCopyType(Ast.TypeRef type) {
