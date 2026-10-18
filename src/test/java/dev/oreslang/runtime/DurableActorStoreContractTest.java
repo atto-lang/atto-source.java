@@ -53,6 +53,16 @@ final class DurableActorStoreContractTest {
                 () -> new DurableActorStore.Turn(KEY, 1, 0, "event", old, List.of()));
         var turn = new DurableActorStore.Turn(KEY, 1, 0, "event", next, List.of());
         assertEquals(1, turn.nextSnapshot().stateVersion());
+        var intentA = new DurableActorStore.Outbound("a", "same-key", new byte[]{1});
+        var intentB = new DurableActorStore.Outbound("b", "same-key", new byte[]{2});
+        var intentC = new DurableActorStore.Outbound("a", "other-key", new byte[]{3});
+        assertThrows(IllegalArgumentException.class,
+                () -> new DurableActorStore.Turn(KEY, 1, 0, "event", next, List.of(intentA, intentB)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DurableActorStore.Turn(KEY, 1, 0, "event", next, List.of(intentA, intentC)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DurableActorStore.Turn(KEY, 1, Long.MAX_VALUE, "event", next, List.of()));
+
         assertThrows(IllegalArgumentException.class,
                 () -> new DurableActorStore.Activation(0, old, List.of(), List.of()));
         assertThrows(IllegalArgumentException.class,
