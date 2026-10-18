@@ -14,8 +14,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /** Each depth exercises the actual guest parser, checker, and evaluator. */
 final class NestedOptionDepthConformanceTest {
     @Test
-    void unwrapAllHandlesOneThroughEightStaticLayers() throws Exception {
-        for (int depth = 1; depth <= 8; depth++) {
+    void unwrapAllHandlesOneThroughThirtyTwoStaticLayers() throws Exception {
+        for (int depth = 1; depth <= 32; depth++) {
             String type = "int";
             String initializer = "42";
             for (int i = 0; i < depth; i++) {
