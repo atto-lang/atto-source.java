@@ -7,8 +7,8 @@ import java.util.Objects;
 /** Long-running actor facade over the durable workflow supervisor ledger. */
 public final class WorkflowSupervisorActorV1 {
 
-    public sealed interface Message permits Configure, Admit,
-            Cancel, QueryUsage, Shutdown { }
+    public sealed interface Message permits Configure, Admit, Reserve,
+            SettleUsage, Cancel, QueryUsage, Shutdown { }
 
     public record Configure(
             String databasePath,
@@ -54,6 +54,33 @@ public final class WorkflowSupervisorActorV1 {
             boolean protectedWrite) implements Message {
         public Admit {
             activity = Objects.requireNonNull(activity, "activity");
+        }
+    }
+
+    public record Reserve(
+            String effectKey,
+            WorkflowActivityProtocolV1.Kind activity,
+            long nowMillis,
+            long estimatedModelTokens,
+            long estimatedSpendMicros,
+            int currentAmbiguousEffects,
+            boolean protectedWrite) implements Message {
+        public Reserve {
+            effectKey = requireText(effectKey, "effectKey");
+            activity = Objects.requireNonNull(activity, "activity");
+        }
+    }
+
+    public record SettleUsage(
+            String effectKey,
+            long actualModelTokens,
+            long actualSpendMicros) implements Message {
+        public SettleUsage {
+            effectKey = requireText(effectKey, "effectKey");
+            if (actualModelTokens < 0 || actualSpendMicros < 0) {
+                throw new IllegalArgumentException(
+                        "actual usage cannot be negative");
+            }
         }
     }
 
