@@ -185,6 +185,95 @@ final class SqliteWorkflowJournalV1Test {
     }
 
     @Test
+    void atomicOutcomeFaultBeforeCommitRollsBackReceiptAndEventTogether() {
+        Path db = tempDir.resolve("atomic-before-commit.db");
+        seedStarted(db, "run-atomic-before");
+        WorkflowJournalV1.Claim claim;
+        try (var store = SqliteWorkflowJournalV1.open(db)) {
+            claim = store.claimNext(
+                    "worker-a", 100L, 100L).orElseThrow();
+        }
+
+        try (var store = SqliteWorkflowJournalV1.open(
+                db,
+                point -> {
+                    if (point
+                            == SqliteWorkflowJournalV1.FaultPoint.BEFORE_COMMIT) {
+                        throw new SimulatedCrash(point);
+                    }
+                })) {
+            assertThrows(
+                    SimulatedCrash.class,
+                    () -> store.completeAndAppend(
+                            claim.effectKey(),
+                            claim.claimToken(),
+                            "receipt://code/1",
+                            150L,
+                            "code-1",
+                            new DurableDevLoopV1.CodeChanged(
+                                    1, "patch://one")));
+        }
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            assertEquals(1, reopened.journal().size());
+            assertEquals(
+                    DurableDevLoopV1.Phase.CODING,
+                    reopened.replayDevLoop().machine().snapshot().phase());
+            var effect = reopened.effect(
+                    claim.effectKey()).orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.CLAIMED,
+                    effect.state());
+            assertNull(effect.receiptRef());
+        }
+    }
+
+    @Test
+    void atomicOutcomeFaultAfterCommitRecoversReceiptAndEventTogether() {
+        Path db = tempDir.resolve("atomic-after-commit.db");
+        seedStarted(db, "run-atomic-after");
+        WorkflowJournalV1.Claim claim;
+        try (var store = SqliteWorkflowJournalV1.open(db)) {
+            claim = store.claimNext(
+                    "worker-a", 100L, 100L).orElseThrow();
+        }
+
+        try (var store = SqliteWorkflowJournalV1.open(
+                db,
+                point -> {
+                    if (point
+                            == SqliteWorkflowJournalV1.FaultPoint.AFTER_COMMIT) {
+                        throw new SimulatedCrash(point);
+                    }
+                })) {
+            assertThrows(
+                    SimulatedCrash.class,
+                    () -> store.completeAndAppend(
+                            claim.effectKey(),
+                            claim.claimToken(),
+                            "receipt://code/1",
+                            150L,
+                            "code-1",
+                            new DurableDevLoopV1.CodeChanged(
+                                    1, "patch://one")));
+        }
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            assertEquals(2, reopened.journal().size());
+            assertEquals(
+                    DurableDevLoopV1.Phase.WAITING_FOR_PUSH,
+                    reopened.replayDevLoop().machine().snapshot().phase());
+            var effect = reopened.effect(
+                    claim.effectKey()).orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.COMPLETED,
+                    effect.state());
+            assertEquals("receipt://code/1", effect.receiptRef());
+            assertEquals(1, reopened.snapshot().pendingEffects());
+        }
+    }
+
+    @Test
     void faultAfterCommitRecoversNewStateRatherThanOldState() {
         Path db = tempDir.resolve("after-commit.db");
         seedStarted(db, "run-after-commit");
