@@ -62,3 +62,30 @@ mailbox/outbox quota, and verified webhook/claim races. Node host tests cover
 raw-body HMAC and fail-closed ingress. This does not replace Java 21 Maven,
 JUnit, GraalVM guest runtime, distributed worker, network partition, or
 cryptographic snapshot codec testing.
+
+## Second hardening audit: cross-actor delivery and owner binding
+
+- Outbox claim/finish now receive proof of the **current actor store's lease
+  ownership** through a package-private transaction-bound check. An epoch
+  number alone is no longer accepted as dispatch authority. Host constructors
+  must pair the workflow gate with the owning `PostgresDurableActorStore`.
+- The `ores_durable_github_delivery` table records each GitHub App installation
+  and delivery ID independently of whichever workflow happened to be waiting.
+  Identical replay is idempotent even after workflow routing changes; conflicting
+  metadata for a reused ID fails closed. The ledger insert is in the same
+  transaction as inbox admission, so it rolls back with a failed enqueue.
+- Installations and tenant mappings still require a trusted authenticated
+  backend; no service boundary has been deployed. Keep the delivery ledger
+  long enough to meet the intended replay window; historical growth needs a
+  documented retention and archival policy.
+
+### Verification status for this revision
+
+Earlier scoped PostgreSQL run #39170003476 was green for the *preceding*
+revision. The new owner-bound dispatch and installation-wide delivery changes
+have added regression tests in `tools/durable-actor-test/PostgresWorkflowGateSmoke.java`,
+but a connector source-transfer restriction prevented sending all updated
+SQL/test files to the alternative private CI repository. **Do not attribute
+that older green run to these new changes.** Exact-head database execution is
+still outstanding until source-side Actions are funded or an authorized CI
+mechanism can run the full updated test.
