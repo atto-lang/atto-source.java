@@ -3277,6 +3277,11 @@ public final class TypeChecker {
             if (httpMember != null) return httpMember;
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
+            if (sumReceiver instanceof Named future
+                    && future.name().equals("Future")) {
+                throw new IllegalArgumentException(
+                        "unknown Future member '" + member.member() + "'");
+            }
             if (sumReceiver instanceof Named actorRef
                     && actorRef.name().equals("ActorRef")) {
                 actorClassForRef(actorRef);
