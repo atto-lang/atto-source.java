@@ -7970,7 +7970,8 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object readStaticField(Ast.ClassDecl klass, String name) {
             synchronized (staticFieldValues) {
-                LinkedHashMap<String, Object> fields = staticFields(klass);
+                LinkedHashMap<String, Object> fields = staticFieldValues.get(klass);
+                if (fields == null) fields = staticFields(klass);
                 if (!fields.containsKey(name)) {
                     throw new IllegalArgumentException(
                             "unknown static field " + klass.name() + "." + name);
@@ -7979,7 +7980,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (value == UNINITIALIZED_FIELD) {
                     throw new IllegalStateException(
                             "static field '" + klass.name() + "." + name
-                                    + "' is read before initialization");
+                                    + "' is read before initialization; "
+                                    + "static initializers may reference only earlier initialized fields");
                 }
                 return value;
             }
