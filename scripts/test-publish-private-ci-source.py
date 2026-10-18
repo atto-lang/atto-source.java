@@ -488,6 +488,27 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         pub.trusted_github_cli()
                     valid[path] = old
 
+    def test_github_api_absolute_cli_and_sanitized_environment(self):
+        from unittest.mock import Mock
+        parameters = {"PATH": "/tmp/fixtures", "GH_TOKEN": "fixture-token",
+                      "LD_PRELOAD": "/tmp/fixtures/module.so",
+                      "LD_LIBRARY_PATH": "/tmp/fixtures",
+                      "DYLD_INSERT_LIBRARIES": "/tmp/fixtures/module.dylib",
+                      "BASH_ENV": "/tmp/fixtures/script"}
+        with patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"):
+            with patch.dict(pub.os.environ, parameters):
+                with patch.object(pub.subprocess, "run", return_value=Mock(
+                        returncode=0, stdout='{"valid":true}')) as called:
+                    self.assertTrue(pub.gh_api("repos/trusted/ci")["valid"])
+        self.assertEqual(called.call_args.args[0][:2], ["/usr/bin/gh", "api"])
+        environment = called.call_args.kwargs["env"]
+        self.assertEqual(environment["PATH"], "/usr/bin:/bin")
+        self.assertEqual(environment["GH_HOST"], "github.com")
+        self.assertEqual(environment["GH_TOKEN"], "fixture-token")
+        for key in ("LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES",
+                    "BASH_ENV"):
+            self.assertNotIn(key, environment)
+
     def test_real_github_reviews_list_parser(self):
         with patch.object(pub, 'trusted_github_cli', return_value='/usr/bin/gh'):
             from unittest.mock import Mock
