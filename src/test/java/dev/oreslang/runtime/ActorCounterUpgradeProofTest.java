@@ -95,6 +95,12 @@ final class ActorCounterUpgradeProofTest {
                     }));
             assertEquals(image('a'), proof.image());
             assertEquals(1, proof.epoch());
+            assertThrows(SecurityException.class,
+                    () -> proof.upgrade(image('b'), V2, value -> value + 1),
+                    "same-schema restoration must preserve the exact counter value");
+            assertEquals(image('a'), proof.image());
+            assertEquals(1, proof.epoch());
+            assertEquals(42, proof.value());
             ref.send(1);
             processed(runtime, ref);
             assertEquals(43, proof.value(), "old code remains active after rollback");
