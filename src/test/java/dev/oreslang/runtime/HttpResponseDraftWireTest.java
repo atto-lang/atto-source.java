@@ -18,6 +18,48 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class HttpResponseDraftWireTest {
+    @Test @Timeout(15)
+    void failingBodySupplierNeverEmitsSuccessHeadersAndHeadIsLazy() throws Exception {
+        AtomicInteger opened = new AtomicInteger();
+        AtomicInteger rejected = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 8);
+        var workers = Executors.newVirtualThreadPerTaskExecutor();
+        server.setExecutor(workers);
+        server.createContext("/", exchange -> {
+            try {
+                HttpResponseDraft response = HttpResponseDraft.streaming(() -> {
+                    opened.incrementAndGet();
+                    throw new IllegalStateException("stream supplier failed");
+                }, 200, List.of());
+                response.writeTo(exchange, () -> false, ignored -> { });
+            } catch (IllegalStateException expected) {
+                rejected.incrementAndGet();
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        try (HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(4)).build()) {
+            URI url = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/");
+            HttpResponse<byte[]> head = client.send(
+                    HttpRequest.newBuilder(url).timeout(Duration.ofSeconds(4))
+                            .method("HEAD", HttpRequest.BodyPublishers.noBody()).build(),
+                    HttpResponse.BodyHandlers.ofByteArray());
+            assertEquals(200, head.statusCode());
+            assertEquals(0, head.body().length);
+            assertEquals(0, opened.get(), "HEAD must not evaluate producer");
+            assertThrows(java.io.IOException.class, () -> client.send(
+                    HttpRequest.newBuilder(url).timeout(Duration.ofSeconds(4)).build(),
+                    HttpResponse.BodyHandlers.ofByteArray()));
+            assertTrue(opened.get() >= 1, "GET must try to open supplier");
+            assertEquals(opened.get(), rejected.get(),
+                    "every failing producer must reject before headers");
+        } finally {
+            server.stop(0);
+            workers.shutdownNow();
+        }
+    }
+
     @Test @Timeout(20)
     void actualHttp11ResponseFramesAndLazyStream() throws Exception {
         AtomicInteger streamOpens = new AtomicInteger();
