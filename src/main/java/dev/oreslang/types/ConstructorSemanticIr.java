@@ -355,6 +355,7 @@ public final class ConstructorSemanticIr {
             CaptureBindingId bindingId,
             String debugName,
             Types.Type type,
+            CaptureOrigin origin,
             CaptureAccess access,
             CaptureTransfer transfer,
             Set<CallableCapability> capabilities) {
@@ -364,16 +365,49 @@ public final class ConstructorSemanticIr {
                 throw new IllegalArgumentException("capture debug name cannot be blank");
             }
             Objects.requireNonNull(type, "capture type");
+            Objects.requireNonNull(origin, "capture origin");
             Objects.requireNonNull(access, "capture access");
             Objects.requireNonNull(transfer, "capture transfer");
             capabilities = Set.copyOf(capabilities);
+
+            if (origin == CaptureOrigin.RECURSIVE_SELF) {
+                if (access != CaptureAccess.READ) {
+                    throw new IllegalArgumentException(
+                            "recursive callable self slot cannot be an outer mutable capture");
+                }
+                if (transfer != CaptureTransfer.LEXICAL_SLOT_ALIAS) {
+                    throw new IllegalArgumentException(
+                            "recursive callable self slot must retain its lexical fixpoint cell");
+                }
+                if (!capabilities.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "recursive callable self slot cannot carry outer ownership/capability metadata");
+                }
+            }
+        }
+
+        /** Compatibility constructor: ordinary resolved captures are external bindings. */
+        public ResolvedCaptureBinding(
+                CaptureBindingId bindingId,
+                String debugName,
+                Types.Type type,
+                CaptureAccess access,
+                CaptureTransfer transfer,
+                Set<CallableCapability> capabilities) {
+            this(bindingId, debugName, type, CaptureOrigin.EXTERNAL_BINDING,
+                    access, transfer, capabilities);
+        }
+
+        public boolean participatesInExternalOwnership() {
+            return origin == CaptureOrigin.EXTERNAL_BINDING;
         }
 
         public ResolvedCaptureBinding merge(ResolvedCaptureBinding other) {
             Objects.requireNonNull(other, "other capture binding");
             if (!bindingId.equals(other.bindingId)
                     || !debugName.equals(other.debugName)
-                    || !type.equals(other.type)) {
+                    || !type.equals(other.type)
+                    || origin != other.origin) {
                 throw new IllegalArgumentException(
                         "cannot merge inconsistent semantic capture bindings");
             }
@@ -384,6 +418,7 @@ public final class ConstructorSemanticIr {
                     bindingId,
                     debugName,
                     type,
+                    origin,
                     access.merge(other.access),
                     transfer.merge(other.transfer),
                     mergedCapabilities);
@@ -415,13 +450,19 @@ public final class ConstructorSemanticIr {
             return new CapturePlan(List.of());
         }
 
+        public List<ResolvedCaptureBinding> externalOwnershipBindings() {
+            return bindings.stream()
+                    .filter(ResolvedCaptureBinding::participatesInExternalOwnership)
+                    .toList();
+        }
+
         public boolean capturesBorrow() {
-            return bindings.stream().anyMatch(binding ->
+            return externalOwnershipBindings().stream().anyMatch(binding ->
                     binding.capabilities().contains(CallableCapability.BORROWED));
         }
 
         public boolean capturesConstructionState() {
-            return bindings.stream().anyMatch(binding ->
+            return externalOwnershipBindings().stream().anyMatch(binding ->
                     binding.capabilities().contains(CallableCapability.CONSTRUCTION_SCOPED));
         }
 
