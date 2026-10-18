@@ -1,0 +1,144 @@
+package dev.oreslang.types;
+
+import dev.oreslang.ast.Ast;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+
+/**
+ * A checker-issued, deliberately NARROW lexical + scalar type witness.
+ *
+ * <p>This proves an original same-module call's selected declaration, exact
+ * source literal types and immediate expression-result context. It does not
+ * perform the full TypeChecker pass, model subtyping or generics, prove
+ * ownership/effects or generate a runnable Option<T> ABI. Consequently the
+ * ordinary compiler/runtime staged-call rejection MUST remain in place.
+ *
+ * <p>Only TypeChecker can issue this factory-owned witness; callers cannot
+ * provide asserted TypeRefs or substitute a different call-site AST.
+ */
+public final class CheckedScalarInvocationWitness {
+    public enum ResultSite { BINDING, RETURN, EXPRESSION_STATEMENT }
+
+    private final SameModuleLiteralInvocation lexical;
+    private final Ast.FunctionDecl selected;
+    private final Ast.TypeRef resultType;
+    private final ResultSite resultSite;
+    private final List<Ast.TypeRef> checkedLiteralTypes;
+
+    private CheckedScalarInvocationWitness(SameModuleLiteralInvocation lexical,
+                                           Ast.FunctionDecl selected,
+                                           Ast.TypeRef resultType,
+                                           ResultSite site,
+                                           List<Ast.TypeRef> checkedLiteralTypes) {
+        this.lexical = Objects.requireNonNull(lexical);
+        this.selected = Objects.requireNonNull(selected);
+        this.resultType = Objects.requireNonNull(resultType);
+        this.resultSite = Objects.requireNonNull(site);
+        this.checkedLiteralTypes = List.copyOf(checkedLiteralTypes);
+    }
+
+    public SameModuleLiteralInvocation lexical() { return lexical; }
+    public Ast.FunctionDecl selectedDeclaration() { return selected; }
+    public Ast.TypeRef resultType() { return resultType; }
+    public ResultSite resultSite() { return resultSite; }
+    public List<Ast.TypeRef> checkedLiteralTypes() { return checkedLiteralTypes; }
+    public BoundInvocation.Readiness readiness() {
+        return BoundInvocation.Readiness.SHAPE_ONLY;
+    }
+    public void requireExecutable() {
+        throw new IllegalStateException(
+                "scalar type preview is not an ownership/effect/Option ABI execution proof");
+    }
+
+    /**
+     * Package-private issuance entry point, called by TypeChecker only.
+     * No external type claims are accepted. Literal types are independently
+     * derived from the exact AST supplied to the lexical witness.
+     */
+    static CheckedScalarInvocationWitness issueFromTypeChecker(
+            Ast.Program program, Ast.FunctionDecl caller, Ast.StagedCallExpr call) {
+        SameModuleLiteralInvocation lexical =
+                SameModuleLiteralInvocation.inspect(program, caller, call);
+        if (!(lexical.bound().selectedDeclaration() instanceof Ast.FunctionDecl selected)) {
+            throw new IllegalArgumentException("selected target is not an original module function");
+        }
+        if (selected.returnType() == null || !exactScalarOrVoid(selected.returnType())) {
+            throw new IllegalArgumentException(
+                    "callee return type requires full semantic type resolution");
+        }
+        for (Ast.Param formal : selected.parameters()) {
+            if (formal.structural() || formal.mutable()
+                    || !exactScalar(formal.valueType())) {
+                throw new IllegalArgumentException(
+                        "formal type/ownership requires full compiler resolution");
+            }
+        }
+        // Indexes are source expressions, not raw call items. Each omission has
+        // NO expression and no type; typed None is not inferred from an AST name.
+        List<Ast.TypeRef> literalTypes = new ArrayList<>();
+        for (Ast.CallArgument item : call.arguments()) {
+            if (item.omitted()) continue;
+            if (item.spread() || !(item.value() instanceof Ast.LiteralExpr literal)) {
+                throw new IllegalArgumentException(
+                        "nonliteral source requires full checker type/effect analysis");
+            }
+            literalTypes.add(OptionalCallLiteralStage.exactScalarLiteralType(literal));
+        }
+        if (!literalTypes.equals(lexical.bound().assertedSourceTypes())) {
+            throw new IllegalArgumentException(
+                    "derived literal types disagree with original declaration binding");
+        }
+
+        int sites = 0;
+        ResultSite site = null;
+        for (Ast.Stmt statement : caller.body()) {
+            if (statement instanceof Ast.BindingStmt binding
+                    && binding.initializer() == call) {
+                if (selected.returnType().name().equals("void")) {
+                    throw new IllegalArgumentException("void call cannot initialize a value binding");
+                }
+                Ast.TypeRef declared = binding.declaredType();
+                if (declared != null && !declared.name().equals("$infer$")
+                        && (!exactScalar(declared)
+                            || !declared.equals(selected.returnType()))) {
+                    throw new IllegalArgumentException(
+                            "binding declared type differs from selected callable result");
+                }
+                site = ResultSite.BINDING;
+                sites++;
+            } else if (statement instanceof Ast.ReturnStmt returned
+                    && returned.value() == call) {
+                if (caller.returnType() == null
+                        || !exactScalar(caller.returnType())
+                        || !caller.returnType().equals(selected.returnType())) {
+                    throw new IllegalArgumentException(
+                            "caller return type differs from selected callable result");
+                }
+                site = ResultSite.RETURN;
+                sites++;
+            } else if (statement instanceof Ast.ExprStmt expression
+                    && expression.expression() == call) {
+                site = ResultSite.EXPRESSION_STATEMENT;
+                sites++;
+            }
+        }
+        if (sites != 1) {
+            throw new IllegalArgumentException(
+                    "call must occupy one unambiguous immediate result context");
+        }
+        return new CheckedScalarInvocationWitness(
+                lexical, selected, selected.returnType(), site, literalTypes);
+    }
+
+    private static boolean exactScalar(Ast.TypeRef t) {
+        return t != null && !t.inferArguments() && t.arguments().isEmpty()
+                && !t.isBorrow() && !t.isOmittableFormal()
+                && List.of("int", "float", "bool", "string").contains(t.name());
+    }
+
+    private static boolean exactScalarOrVoid(Ast.TypeRef t) {
+        return exactScalar(t) || (t != null && !t.inferArguments()
+                && t.arguments().isEmpty() && "void".equals(t.name()));
+    }
+}
