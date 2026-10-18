@@ -129,12 +129,31 @@ public final class ConstructorSemanticIr {
             ConstructionRegionId region,
             ConstructionPhase phase,
             ConstructorFlowState fields,
-            List<CleanupEdge> pendingCleanups) {
+            List<CleanupEdge> pendingCleanups,
+            Set<String> fixedFields) {
         public ConstructionState {
             Objects.requireNonNull(region, "construction region");
             Objects.requireNonNull(phase, "construction phase");
             Objects.requireNonNull(fields, "constructor field state");
             pendingCleanups = List.copyOf(pendingCleanups);
+            fixedFields = Set.copyOf(fixedFields);
+            if (!fields.snapshot().keySet().containsAll(fixedFields)) {
+                throw new IllegalArgumentException("fixed constructor field not present in state");
+            }
+        }
+
+        /** Compatibility constructor: all tracked fields are immutable. */
+        public ConstructionState(
+                ConstructionRegionId region,
+                ConstructionPhase phase,
+                ConstructorFlowState fields,
+                List<CleanupEdge> pendingCleanups) {
+            this(region, phase, fields, pendingCleanups, fields.snapshot().keySet());
+        }
+
+        public ConstructionState withFixedFields(Set<String> fieldsRequiringExactlyOneWrite) {
+            return new ConstructionState(
+                    region, phase, fields, pendingCleanups, fieldsRequiringExactlyOneWrite);
         }
 
         public ConstructionState transitionTo(ConstructionPhase next) {
@@ -142,17 +161,17 @@ public final class ConstructorSemanticIr {
                 throw new IllegalArgumentException(
                         "construction phase cannot move backward from " + phase + " to " + next);
             }
-            return new ConstructionState(region, next, fields, pendingCleanups);
+            return new ConstructionState(region, next, fields, pendingCleanups, fixedFields);
         }
 
         public ConstructionState withFields(ConstructorFlowState nextFields) {
-            return new ConstructionState(region, phase, nextFields, pendingCleanups);
+            return new ConstructionState(region, phase, nextFields, pendingCleanups, fixedFields);
         }
 
         public ConstructionState withCleanup(CleanupEdge cleanup) {
             java.util.ArrayList<CleanupEdge> next = new java.util.ArrayList<>(pendingCleanups);
             next.add(Objects.requireNonNull(cleanup, "cleanup"));
-            return new ConstructionState(region, phase, fields, next);
+            return new ConstructionState(region, phase, fields, next, fixedFields);
         }
 
         public ConstructionState join(ConstructionState other) {
@@ -169,15 +188,21 @@ public final class ConstructorSemanticIr {
                 throw new IllegalArgumentException(
                         "cleanup-stack join requires identical registered cleanup edges");
             }
+            if (!fixedFields.equals(other.fixedFields)) {
+                throw new IllegalArgumentException(
+                        "cannot join construction states with different immutable field contracts");
+            }
             return new ConstructionState(
                     region,
                     phase,
                     fields.join(other.fields),
-                    pendingCleanups);
+                    pendingCleanups,
+                    fixedFields);
         }
 
         public boolean publishable() {
-            return phase == ConstructionPhase.CONSTRUCTED && fields.completeExactlyOnce();
+            return phase == ConstructionPhase.CONSTRUCTED
+                    && fields.completeWithFixedFields(fixedFields);
         }
     }
 
