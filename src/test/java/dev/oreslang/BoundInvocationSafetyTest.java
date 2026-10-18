@@ -82,4 +82,63 @@ final class BoundInvocationSafetyTest {
             assertTrue(failure.getMessage().contains("receiver erasure"), failure::toString);
         }
     }
+
+    @Test
+    void selectedFormalsAndCallItemOriginsSurviveReorderedMultipleOmissions() {
+        Ast.ModuleDecl module = Parser.parse("""
+                define module app as
+                    pub fnc work(int a, string? b, bool? c, int d): int { return a; }
+                end
+                """).modules().getFirst();
+        Ast.Expr effectD = new Ast.CallExpr(new Ast.NameExpr("effectD"), List.of());
+        Ast.Expr effectA = new Ast.CallExpr(new Ast.NameExpr("effectA"), List.of());
+        Ast.StagedCallExpr call = new Ast.StagedCallExpr(
+                new Ast.NameExpr("work"), List.of(), false, List.of(
+                        Ast.CallArgument.named("d", effectD),
+                        Ast.CallArgument.omit("c"),
+                        Ast.CallArgument.omit("b"),
+                        Ast.CallArgument.named("a", effectA)));
+        BoundInvocation bound = BoundInvocation.bindModuleFunction(
+                module, call, List.of(INT, INT));
+
+        assertSame(module.declarations().getFirst(), bound.selectedDeclaration());
+        assertEquals(List.of(call.callee(), effectD, effectA),
+                bound.schedule().evaluationOrder());
+        assertEquals(List.of("a", "b", "c", "d"),
+                bound.schedule().abiSlots().stream()
+                        .map(slot -> slot.formalName()).toList());
+        assertEquals(List.of(1, -1, -1, 0),
+                bound.schedule().abiSlots().stream()
+                        .map(slot -> slot.evaluatedSourceIndex()).toList());
+        assertEquals(List.of(3, 2, 1, 0),
+                bound.schedule().abiSlots().stream()
+                        .map(slot -> slot.originalCallItemIndex()).toList());
+        assertEquals(8, bound.schedule().steps().size());
+        assertEquals(BoundInvocation.Readiness.SHAPE_ONLY, bound.readiness());
+        assertThrows(IllegalStateException.class, bound::requireExecutable);
+    }
+
+    @Test
+    void callerAssertedOptionTypeCanProduceOnlyNonExecutablePreview() {
+        Ast.ModuleDecl module = Parser.parse("""
+                define module app as
+                    pub fnc work(Option<int> required): int { return 1; }
+                end
+                """).modules().getFirst();
+        Ast.TypeRef optionInt = new Ast.TypeRef("Option", List.of(INT), false);
+        Ast.StagedCallExpr call = new Ast.StagedCallExpr(
+                new Ast.NameExpr("work"), List.of(), false,
+                List.of(Ast.CallArgument.named("required", new Ast.NameExpr("None"))));
+        BoundInvocation bound = BoundInvocation.bindModuleFunction(
+                module, call, List.of(optionInt));
+        assertEquals(1, bound.schedule().abiSlots().size());
+        assertEquals(0, bound.schedule().abiSlots().getFirst().originalCallItemIndex());
+        assertEquals(dev.oreslang.types.OptionalCallAbiPreview.Action.PASS_REQUIRED,
+                bound.schedule().abiSlots().getFirst().action());
+        // A caller's exact-looking type claim is not a checked expression,
+        // ownership loan or authorization. No executable token exists here.
+        assertThrows(IllegalStateException.class, bound::requireExecutable);
+        assertThrows(UnsupportedOperationException.class,
+                () -> bound.assertedSourceTypes().clear());
+    }
 }
