@@ -456,12 +456,17 @@ public final class Ast {
             TypeRef type,
             List<Annotation> annotations,
             Expr initializer,
-            boolean mutableReferent) implements Decl {
+            boolean mutableReferent,
+            boolean isStatic) implements Decl {
         public FieldDecl { annotations = List.copyOf(annotations); }
+        public FieldDecl(String name, Visibility visibility, BindingKind bindingKind, TypeRef type,
+                         List<Annotation> annotations, Expr initializer, boolean mutableReferent) {
+            this(name, visibility, bindingKind, type, annotations, initializer, mutableReferent, false);
+        }
         public FieldDecl(String name, Visibility visibility, BindingKind bindingKind, TypeRef type,
                          List<Annotation> annotations, Expr initializer) {
             this(name, visibility, bindingKind, type, annotations, initializer,
-                    bindingKind == BindingKind.VAL);
+                    bindingKind == BindingKind.VAL, false);
         }
         public FieldDecl(String name, Visibility visibility, BindingKind bindingKind, TypeRef type, Expr initializer) {
             this(name, visibility, bindingKind, type, List.of(), initializer);
