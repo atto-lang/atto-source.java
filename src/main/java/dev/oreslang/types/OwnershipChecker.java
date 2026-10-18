@@ -1353,6 +1353,15 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        // Scheduled callable invocation must validate captures AND by-value
+        // arguments at the spawn boundary. Treating these as dynamic calls
+        // would silently admit borrowed operands and actor-private aliases.
+        if (call.callee() instanceof Ast.TaskLambdaExpr task) {
+            return checkScheduledLambdaCall(task.lambda(), call.arguments(), scope, true);
+        }
+        if (call.callee() instanceof Ast.AsyncLambdaExpr async) {
+            return checkScheduledLambdaCall(async.lambda(), call.arguments(), scope, false);
+        }
         // A constructor owns an unpublished, incompletely initialized object.
         // Calling any instance method on self can transitively read absent
         // fields, publish the receiver or invoke suspension. No transitive
@@ -1782,6 +1791,48 @@ public final class OwnershipChecker {
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    /**
+     * Admission of an immediately invoked scheduled lambda is deliberately
+     * ownership-strict: args are evaluated once, left-to-right, and any
+     * non-Copy argument transfers its exclusive owner before scheduling.
+     * No borrowed, guard-bearing, constructor self, or actor self capability
+     * can survive into the independently scheduled Task/Future activation.
+     *
+     * The result element remains inferred in this phase; TypeChecker owns
+     * the exact generic Task<T>/Future<T> inference and source execution gate.
+     */
+    private ValueInfo checkScheduledLambdaCall(
+            Ast.LambdaExpr lambda, List<Ast.Expr> arguments, Scope scope,
+            boolean task) {
+        if (lambda.parameters().size() != arguments.size()) {
+            throw error("async/Task lambda expected " + lambda.parameters().size()
+                    + " arguments but received " + arguments.size());
+        }
+        rejectBorrowedScheduledParameters(lambda);
+        checkLambda(lambda, scope, null);
+        for (int i = 0; i < arguments.size(); i++) {
+            ValueInfo value = checkExpr(arguments.get(i), scope, true);
+            if (isBorrowValue(value) || containsBorrowType(value.type)) {
+                throw error("async/Task argument " + i
+                        + " cannot be borrowed; move/copy/share an owned value");
+            }
+            if (containsMutexGuardType(value.type)) {
+                throw error("async/Task argument " + i
+                        + " cannot transfer a MutexGuard into scheduled work");
+            }
+        }
+        Ast.TypeRef result = Ast.TypeRef.inferred();
+        // An async callable whose expression returns a Task is a future
+        // of the Task, not a flattened single Task. Do not guess the
+        // result type of arbitrary ordinary lambdas here.
+        if (!task && lambda.expressionBody() instanceof Ast.TaskExpr) {
+            result = new Ast.TypeRef("Task", List.of(result), false);
+        }
+        return new ValueInfo(
+                new Ast.TypeRef(task ? "Task" : "Future", List.of(result), false),
+                ValueKind.MOVE_ONLY, null);
     }
 
     private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Scope scope) {
