@@ -33,3 +33,20 @@ Status: **draft, host API only, stacked on stage-1 PR #1402**.
 ## Merge discipline
 
 PR #1402 is stage 1. This change is stacked on the head of #1402 and must not merge into main before stage 1, real compiler CI, and security approval. It is intentionally a host integration scaffold, **not** a claim of complete cancellable Oreslang source Tasks.
+
+
+## Second race/retention hardening pass — 2026-10-18
+
+The follow-up audit corrected three independent lifecycle risks:
+
+1. **Completed-child retention:** `TaskCancellation.retire()` now atomically unlinks a physically completed Task token from its previous owner. `TaskHandle.maybePublish()` calls it after observing both the final result and scheduler quiescence, before publishing the final done witness. Thus long-lived `TaskScope` instances no longer retain all successful short-lived child tokens. `TaskScope.liveCancellationChildren()` exposes a package-private diagnostic count for regression tests. The global GRAPH_LOCK remains a scalability limitation, not a production throughput claim.
+2. **CancellationException outcome race:** only a cancelled result Future or a runtime-private `CancelledAtResume` exception can produce a Cancelled outcome. An arbitrary guest-thrown `CancellationException` remains Failed even if a cancellation request subsequently arrives. A parent already cancelled before the Task's result Future is bound still produces Cancelled, without executing guest code.
+3. **Misleading nonparking guarantee:** `TaskScope.close()` documentation now correctly says it requests cancellation without joining, but host subscribers/revokers can still execute synchronously and delay return.
+
+**Committed regression inventory:** 22 `TaskHandleTest` and 12 `TaskScopeTest` JUnit methods in this stacked PR (34 total); stage 1 #1402 contains 15 cancellation-tree JUnit methods. The new scope tests exercise 500 completed Tasks, completed-child cancellation after scope shutdown, and 200 cancellation-versus-physical-exit races with zero retained owned nodes. The new handle test repeats 100 parent-cancel-before-admission cases and verifies that guest execution never starts.
+
+**Reproducible isolated local evidence:** OpenJDK 21 simplified Java host scheduler/Future harness compiled and passed 2,750 iterations across five model exercises: 300 running cancellation/quiescence, 250 two-child scope shutdown/join, 1,500 completed-child unlinking, 500 cancellation-versus-exit races, and 200 cancelled-parent-before-bind admissions. The harness also checked guest-thrown cancellation exception classification. These are not actual repository Maven/JUnit/GraalVM executions and do not prove production scheduler correctness. The only compiler warning was Java's deprecation-for-removal notice for `ThreadDeath` in the existing stage-1 cancellation code.
+
+**CI and security:** Exact-head source CI still needs a runner that executes steps. A cross-organization source mirror is NOT authorized while private-source publishing issue #962 remains open. Never transfer this private tree to a public, internal, or unapproved private repository; resetting temporary refs does not erase historical Git objects (#832).
+
+**Remaining release blockers:** Real exact-head Java/GraalVM source tests; shutdown-vs-scope-admission; actor/root-owned scope installation and child-failure supervision; authorized cross-scope adoption; true bounded cancellation callback latency if source semantics require it; LLVM/source-conformance parity. Do not merge before verifying these gates.
