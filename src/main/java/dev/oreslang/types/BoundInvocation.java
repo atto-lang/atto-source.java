@@ -173,15 +173,9 @@ public final class BoundInvocation {
                 throw new IllegalArgumentException(
                         "nonliteral argument requires lexical compiler type and effect proof");
             }
-            Object value = literal.value();
-            String primitive;
-            if (value instanceof Long) primitive = "int";
-            else if (value instanceof Double) primitive = "float";
-            else if (value instanceof Boolean) primitive = "bool";
-            else if (value instanceof String) primitive = "string";
-            else throw new IllegalArgumentException(
-                    "unknown or null literal lacks exact compiler type proof");
-            types.add(Ast.TypeRef.simple(primitive));
+            // Reuse the same independent AST literal type oracle as
+            // OptionalCallAbiPreview; separate implementations can drift.
+            types.add(OptionalCallLiteralStage.exactScalarLiteralType(literal));
         }
         return List.copyOf(types);
     }
