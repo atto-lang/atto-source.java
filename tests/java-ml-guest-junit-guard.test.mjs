@@ -27,7 +27,7 @@ test("every actual invalid guest uses parser-positive then semantic rejection",(
   assert.match(body,/assertEquals\("", output\.toString/);
 });
 test("guest fixture SHA and separately pinned output prevent silent drift",()=>{
-  assert.match(java,/4ae673f093a16538da784d15819debbef439b0db/);
-  assert.match(java,/9921f755979832f6b20e20923cc94f6f3bf6e05b/);
+  assert.match(java,/26a3cb34b126185d56f5d2c7ff370cab953b0b4b/);
+  assert.match(java,/867f4ca71a20b58b1f35e239d4bef160f7ef5342/);
   assert.match(java,/assertEquals\(expected, stdout\.toString/);
 });
