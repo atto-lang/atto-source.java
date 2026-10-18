@@ -40,6 +40,9 @@ public final class OwnershipChecker {
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
+    /** Private aliases needed only to interpret fields on explicitly linked public classes. */
+    private final IdentityHashMap<Ast.ClassDecl, Map<String, Ast.TypeAliasDecl>> linkedClassAliases =
+            new IdentityHashMap<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -63,8 +66,20 @@ public final class OwnershipChecker {
     /** Reuse only public, explicitly linked class layouts for cross-file loans. */
     public static Ast.Program checkWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses) {
-        if (linkedClasses == null) {
-            throw new IllegalArgumentException("linked public classes cannot be null");
+        return checkWithImportedClasses(program, linkedClasses, Map.of());
+    }
+
+    /**
+     * Linked private aliases are metadata for resolving public foreign field
+     * layouts only. They never enter the importer's source-visible type namespace.
+     */
+    public static Ast.Program checkWithImportedClasses(
+            Ast.Program program,
+            Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
+        if (linkedClasses == null || linkedAliases == null) {
+            throw new IllegalArgumentException(
+                    "linked public classes/aliases cannot be null");
         }
         OwnershipChecker checker = new OwnershipChecker(program);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
@@ -83,6 +98,21 @@ public final class OwnershipChecker {
                         "linked ownership class was not uniquely imported: " + name);
             }
             checker.classes.put(name, declaration);
+
+            Map<String, Ast.TypeAliasDecl> aliases =
+                    linkedAliases.getOrDefault(name, Map.of());
+            for (Map.Entry<String, Ast.TypeAliasDecl> alias : aliases.entrySet()) {
+                if (alias.getKey() == null || alias.getValue() == null
+                        || !alias.getKey().equals(alias.getValue().name())) {
+                    throw new IllegalArgumentException(
+                            "invalid private linked ownership field type alias");
+                }
+            }
+            checker.linkedClassAliases.put(declaration, Map.copyOf(aliases));
+        }
+        if (!linkedClasses.keySet().containsAll(linkedAliases.keySet())) {
+            throw new IllegalArgumentException(
+                    "orphaned linked ownership class field alias metadata");
         }
         checker.validate(program);
         return program;
@@ -3664,16 +3694,19 @@ public final class OwnershipChecker {
         return containsCallableCaptureType(
                 type,
                 new LinkedHashSet<>(),
-                java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+                java.util.Collections.newSetFromMap(new IdentityHashMap<>()),
+                Map.of());
     }
 
     private boolean containsCallableCaptureType(
             Ast.TypeRef type,
             Set<Ast.ClassDecl> seenClasses,
-            Set<Ast.TypeAliasDecl> seenAliases) {
+            Set<Ast.TypeAliasDecl> seenAliases,
+            Map<String, Ast.TypeAliasDecl> fieldAliases) {
         if (type == null) return false;
         if (type.isBorrow()) {
-            return containsCallableCaptureType(type.borrowedTarget(), seenClasses, seenAliases);
+            return containsCallableCaptureType(
+                    type.borrowedTarget(), seenClasses, seenAliases, fieldAliases);
         }
         if (type.name().equals("Fnc")
                 || type.name().equals("Function")
@@ -3682,14 +3715,21 @@ public final class OwnershipChecker {
         }
         if (type.isRecordType()) {
             for (Ast.TypeRef member : type.recordMembers().values()) {
-                if (containsCallableCaptureType(member, seenClasses, seenAliases)) return true;
+                if (containsCallableCaptureType(
+                        member, seenClasses, seenAliases, fieldAliases)) {
+                    return true;
+                }
             }
         }
         for (Ast.TypeRef argument : type.arguments()) {
-            if (containsCallableCaptureType(argument, seenClasses, seenAliases)) return true;
+            if (containsCallableCaptureType(
+                    argument, seenClasses, seenAliases, fieldAliases)) {
+                return true;
+            }
         }
 
-        Ast.TypeAliasDecl alias = findTypeAlias(type.name());
+        Ast.TypeAliasDecl alias = fieldAliases.get(type.name());
+        if (alias == null) alias = findTypeAlias(type.name());
         if (alias != null) {
             if (!seenAliases.add(alias)) return false;
             try {
@@ -3697,7 +3737,7 @@ public final class OwnershipChecker {
                         alias.target(),
                         genericBindings(alias.genericParameters(), type.arguments()));
                 return containsCallableCaptureType(
-                        expanded, seenClasses, seenAliases);
+                        expanded, seenClasses, seenAliases, fieldAliases);
             } finally {
                 seenAliases.remove(alias);
             }
@@ -3713,7 +3753,12 @@ public final class OwnershipChecker {
                         genericBindings(
                                 field.owner().genericParameters(),
                                 field.ownerType().arguments()));
-                if (containsCallableCaptureType(fieldType, seenClasses, seenAliases)) return true;
+                Map<String, Ast.TypeAliasDecl> aliasesForField =
+                        linkedClassAliases.getOrDefault(field.owner(), Map.of());
+                if (containsCallableCaptureType(
+                        fieldType, seenClasses, seenAliases, aliasesForField)) {
+                    return true;
+                }
             }
             return false;
         } finally {
