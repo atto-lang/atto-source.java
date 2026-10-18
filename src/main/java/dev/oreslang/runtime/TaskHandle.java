@@ -103,8 +103,7 @@ public final class TaskHandle<T> {
         Throwable unwrapped = failure == null ? null : OresFuture.unwrap(failure);
         if (unwrapped == null) {
             outcome = new Success<>(value);
-        } else if (source.isCancelled() || (cancellation.isCancelled()
-                && unwrapped instanceof CancellationException)) {
+        } else if (source.isCancelled()) {
             outcome = new Cancelled<>(Objects.requireNonNullElse(
                     cancellation.cancellationReason(), "cancelled"));
         } else {
@@ -122,6 +121,10 @@ public final class TaskHandle<T> {
         if (!quiescent.get() || outcome == null) return;
         if (!published.compareAndSet(false, true)) return;
         revoker.close();
+        // The scheduler has confirmed physical quiescence and the result
+        // has settled. Unlink the completed task from a long-lived scope
+        // before notifying host subscribers, which can block synchronously.
+        cancellation.retire();
         done.completeFromRuntime(outcome);
     }
 
