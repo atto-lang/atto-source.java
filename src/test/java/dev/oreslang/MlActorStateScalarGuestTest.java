@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * GUEST execution gate for the actual Oreslang ML scalar actor-state fixture.
  *
  * The .ores fixture was copied byte-for-byte from oreslang-ml's stacked
- * actor-state PR #7 (Git blob 164bbae8cd4663d83224c7f433028f251d0d661d).
+ * actor-state PR #7 (Git blob 555dfe5602e28c93b02c0b398a428ef412c13b58).
  * This JUnit class requires an actual GraalVM Oreslang context evaluation;
  * pure host-side arithmetic is explicitly NOT accepted as execution evidence.
  *
@@ -44,7 +44,7 @@ final class MlActorStateScalarGuestTest {
 
     @Test void compiledActorStageHasOneStateSchemaAndDeclaredEffects() throws Exception {
         String text = source();
-        assertEquals("164bbae8cd4663d83224c7f433028f251d0d661d",
+        assertEquals("555dfe5602e28c93b02c0b398a428ef412c13b58",
                 gitBlobSha(text), "ML fixture drifted from pinned source Git blob");
         assertDoesNotThrow(() -> verify(text));
         assertEquals(1, count(text, "    state {"));
@@ -53,6 +53,12 @@ final class MlActorStateScalarGuestTest {
         assertTrue(text.contains("with state.read, state.write"));
         assertTrue(text.contains("using state.read("));
         assertTrue(text.contains("private eval_affine("));
+        assertTrue(text.contains("issued_first: bool"));
+        assertTrue(text.contains("issued_second: bool"));
+        assertTrue(text.contains("input_first: int"));
+        assertTrue(text.contains("input_second: int"));
+        assertTrue(text.contains("s.input_first * upstream"));
+        assertTrue(text.contains("s.input_second * upstream"));
         assertFalse(text.contains("private forward("));
         assertTrue(text.contains("using state.write(critical "));
         assertTrue(text.contains("self.handle_state(critical read "));
