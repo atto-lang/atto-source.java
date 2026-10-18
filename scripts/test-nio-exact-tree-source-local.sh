@@ -75,6 +75,16 @@ if [[ -L "$root/target" || -L "$EVIDENCE_DIR" ||
   printf 'ERROR: target/, receipt directory or receipt file symlink is forbidden.\n' >&2
   exit 68
 fi
+# Git can hide modified tracked content from status when the index carries
+# assume-unchanged or skip-worktree flags. An immutable HEAD/tree check is
+# meaningless if such entries are allowed in the tested worktree.
+# -v prints "H " for ordinary tracked paths; reject every other tag, including
+# lower-case assume-unchanged and upper-case S sparse/skip-worktree.
+unsafe_index_entries="$(git ls-files -v | LC_ALL=C awk 'substr($0,1,2) != "H " {print}')"
+if [[ -n "$unsafe_index_entries" ]]; then
+  printf 'ERROR: Git index contains hidden/sparse tracked entries; refusing exact-tree qualification.\n' >&2
+  exit 72
+fi
 if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   printf 'ERROR: dirty or untracked source checkout, refusing to run tests.\n' >&2
   exit 67
@@ -136,6 +146,10 @@ fi
 stage=postflight-source-identity
 [[ "$(git rev-parse --verify 'HEAD^{commit}')" == "$EXPECTED_COMMIT" ]]
 [[ "$(git rev-parse --verify 'HEAD^{tree}')" == "$EXPECTED_TREE" ]]
+[[ -z "$(git ls-files -v | LC_ALL=C awk 'substr($0,1,2) != "H " {print}')" ]] || {
+  printf 'ERROR: Git index flags changed during qualification.\n' >&2
+  exit 72
+}
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] || {
   printf 'ERROR: tracked or untracked source changed during qualification.\n' >&2
   exit 70
