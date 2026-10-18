@@ -69,6 +69,23 @@ final class WorkflowPrivateActorStateV1 {
         }
     }
 
+    static final class ScrubbableOutput
+            extends java.io.ByteArrayOutputStream {
+
+        byte[] snapshotAndWipe() {
+            try {
+                return toByteArray();
+            } finally {
+                wipe();
+            }
+        }
+
+        void wipe() {
+            Arrays.fill(buf, (byte) 0);
+            reset();
+        }
+    }
+
     static byte[] encodeUtf8(String value) {
         Objects.requireNonNull(value, "value");
         try {
