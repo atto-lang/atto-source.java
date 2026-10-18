@@ -45,4 +45,40 @@ rm source/new.ores
 printf 'outside subtree\n' > other.txt
 assert_status 0 'other destination files excluded from subtree' "$expected" source
 assert_status 67 'root proof notices non-source modifications' "$(git rev-parse 'HEAD^{tree}')" .
+git restore -- other.txt
+# Normal git diff ignores files explicitly marked assume-unchanged or
+# skip-worktree. The checked source bytes must still match the Git tree.
+git update-index --assume-unchanged source/main.ores
+printf 'hidden modification\n' > source/main.ores
+assert_status 67 'assume-unchanged does not bypass byte proof' "$expected" source
+git update-index --no-assume-unchanged source/main.ores
+git restore -- source/main.ores
+git update-index --skip-worktree source/main.ores
+printf 'hidden skip-worktree modification\n' > source/main.ores
+assert_status 67 'skip-worktree does not bypass byte proof' "$expected" source
+git update-index --no-skip-worktree source/main.ores
+git restore -- source/main.ores
+chmod +x source/main.ores
+assert_status 67 'executable mode drift rejected' "$expected" source
+chmod -x source/main.ores
+assert_status 0 'clean checkout recovers after hidden changes' "$expected" source
+# A tree can contain untrusted symlink and submodule entries.
+ln -s main.ores source/shortcut.ores
+git add source/shortcut.ores
+git commit -qm linked
+symlink_tree="$(git rev-parse 'HEAD:source')"
+assert_status 68 'tracked symlink rejected' "$symlink_tree" source
+git rm -q source/shortcut.ores
+git commit -qm unlink
+# Filenames may contain literal newlines; never split git index output on them.
+printf 'odd file\n' > 
+source/line\nbreak.ores'
+git add source
+git commit -qm odd-name
+odd_tree="$(git rev-parse 'HEAD:source')"
+assert_status 0 'newline filename verified correctly' "$odd_tree" source
+git update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",source/fake-submodule
+git commit -qm gitlink
+link_tree="$(git rev-parse 'HEAD:source')"
+assert_status 67 'gitlink/submodule rejected' "$link_tree" source
 echo 'SOURCE_TREE_GATE_TESTS_PASS'
