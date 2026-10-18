@@ -101,21 +101,22 @@ final class DurableDevLoopV1Test {
     }
 
     @Test
-    void duplicateDeliveryIdIsNoOpEvenWhenPayloadDiffers() {
+    void exactDuplicateDeliveryIdAndPayloadIsNoOp() {
         var loop = readyForCi("run-dupe", 3, sha('a'));
+        var event = new DurableDevLoopV1.CiCompleted(
+                sha('a'),
+                DurableDevLoopV1.CiConclusion.SUCCESS,
+                "artifact://tests");
 
         var first = loop.accept(
                 "gh-delivery-77",
-                new DurableDevLoopV1.CiCompleted(
-                        sha('a'),
-                        DurableDevLoopV1.CiConclusion.SUCCESS,
-                        "artifact://tests"));
+                event);
         assertEquals(DurableDevLoopV1.Phase.EVALUATING,
                 first.snapshot().phase());
 
         var duplicate = loop.accept(
                 "gh-delivery-77",
-                new DurableDevLoopV1.EvaluationPassed(sha('a')));
+                event);
         assertEquals(DurableDevLoopV1.Disposition.DUPLICATE,
                 duplicate.journalEntry().disposition());
         assertEquals(DurableDevLoopV1.Phase.EVALUATING,
