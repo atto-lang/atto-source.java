@@ -1,6 +1,6 @@
 # Review-pinned external admission for private CI
 
-Status: **authorization-only candidate fallback; no export is implemented or authorized.**
+Status: **draft dispatcher implemented; no private-source export is authorized.**
 
 The read-only verifier and the separate source-writing review-pinned dispatcher
 are implemented and hardened on PR #1217. The dispatcher is intentionally
@@ -12,6 +12,27 @@ This mode exists because the current GitHub plan does not provide branch
 protection or repository rulesets for these private repositories. It does not
 pretend an unprotected branch is protected. Instead, it removes mutable branch
 state from the authorization decision.
+
+## Canonical authorization-ledger and repository-identity validation
+
+Destination approval rows use `owner/repo <ASCII numeric ID>` and source snapshot
+approval rows use `<40 lowercase hex source SHA> <40 lowercase hex tree SHA>
+<ASCII numeric ID>`, with exactly one ASCII space between fields. Only
+empty lines and column-zero `#` comments are ignored; tabs, padded rows,
+Unicode digits, plus signs, leading zeros, and underscore-separated IDs
+are rejected rather than normalized.
+
+Live destination metadata must supply an exact integer repository ID and
+literal JSON booleans `private: true`, `archived: false`, and `disabled:
+false`. Missing, stringified, or otherwise ill-typed fields deny admission.
+These checks agree with the checked-in protected policy workflow. The source
+preflight requires at least **56** review-pinned verifier regression methods,
+fully executed and successful in **three** no-skip rounds.
+
+This validation does not authorize the publisher. Independent reviews,
+both incident closures and bound resume approvals, immutable source tuple,
+approved private destination, carrier identity and live revocation remain
+mandatory before any confidential source bytes are read or transferred.
 
 ## Independent reviewer policy v2
 
