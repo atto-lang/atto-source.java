@@ -309,7 +309,7 @@ member_name     = IDENT | "stop" | "do" | "done"
 index_suffix    = "[" expression "]" ;
 argument_list   = expression { "," expression } ;
 
-task_expr       = ( "task" | "nb" ) block ; (* value Task<T>, both forms equivalent; lowering gated *) ;
+task_expr       = ( "task" | "nb" | "nb" "task" ) block ; (* value Task<T>, both forms equivalent; lowering gated *) ;
 primary         = literal
                 | callable_name
                 | "self"
