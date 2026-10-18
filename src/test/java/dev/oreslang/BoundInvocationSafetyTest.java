@@ -141,4 +141,59 @@ final class BoundInvocationSafetyTest {
         assertThrows(UnsupportedOperationException.class,
                 () -> bound.assertedSourceTypes().clear());
     }
+
+    @Test
+    void literalOnlyBindingDerivesTypesFromAstWithoutCallerClaims() {
+        Ast.ModuleDecl module = Parser.parse("""
+                define module app as
+                    pub fnc work(int a, string? b, bool c): int { return a; }
+                end
+                """).modules().getFirst();
+        Ast.StagedCallExpr literalCall = new Ast.StagedCallExpr(
+                new Ast.NameExpr("work"), List.of(), false, List.of(
+                        Ast.CallArgument.named("c", new Ast.LiteralExpr(true)),
+                        Ast.CallArgument.omit("b"),
+                        Ast.CallArgument.named("a", new Ast.LiteralExpr(7L))));
+        var bound = BoundInvocation.bindLiteralModuleFunction(module, literalCall);
+        assertEquals(List.of(Ast.TypeRef.simple("bool"), INT),
+                bound.assertedSourceTypes());
+        assertEquals(List.of(2, 1, 0),
+                bound.schedule().abiSlots().stream()
+                        .map(slot -> slot.originalCallItemIndex()).toList());
+        assertEquals(BoundInvocation.Readiness.SHAPE_ONLY, bound.readiness());
+        assertThrows(IllegalStateException.class, bound::requireExecutable);
+
+        Ast.StagedCallExpr variableCall = new Ast.StagedCallExpr(
+                new Ast.NameExpr("work"), List.of(), false, List.of(
+                        Ast.CallArgument.named("c", new Ast.NameExpr("looksBoolean")),
+                        Ast.CallArgument.omit("b"),
+                        Ast.CallArgument.named("a", new Ast.LiteralExpr(7L))));
+        assertThrows(IllegalArgumentException.class,
+                () -> BoundInvocation.bindLiteralModuleFunction(module, variableCall));
+        Ast.StagedCallExpr nullCall = new Ast.StagedCallExpr(
+                new Ast.NameExpr("work"), List.of(), false, List.of(
+                        Ast.CallArgument.named("c", new Ast.LiteralExpr(null)),
+                        Ast.CallArgument.omit("b"),
+                        Ast.CallArgument.named("a", new Ast.LiteralExpr(7L))));
+        assertThrows(IllegalArgumentException.class,
+                () -> BoundInvocation.bindLiteralModuleFunction(module, nullCall));
+    }
+
+    @Test
+    void literalOnlyClassAndConstructorPathsRemainNonExecutable() {
+        Ast.ClassDecl klass = concreteBox();
+        Ast.StagedCallExpr method = new Ast.StagedCallExpr(
+                new Ast.MemberExpr(new Ast.NameExpr("box"), "echo"),
+                List.of(), false, List.of(
+                        Ast.CallArgument.named("v", new Ast.LiteralExpr(9L))));
+        BoundInvocation methodBound = BoundInvocation.bindLiteralClassMethod(klass, method);
+        assertEquals(List.of(INT), methodBound.assertedSourceTypes());
+        assertThrows(IllegalStateException.class, methodBound::requireExecutable);
+
+        BoundInvocation constructorBound =
+                BoundInvocation.bindLiteralClassConstructor(klass, construction());
+        assertEquals(2, constructorBound.schedule().steps().size() - 2);
+        assertEquals(BoundInvocation.Readiness.SHAPE_ONLY, constructorBound.readiness());
+        assertThrows(IllegalStateException.class, constructorBound::requireExecutable);
+    }
 }
