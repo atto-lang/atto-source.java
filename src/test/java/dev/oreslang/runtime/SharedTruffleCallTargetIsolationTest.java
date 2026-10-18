@@ -34,16 +34,18 @@ final class SharedTruffleCallTargetIsolationTest {
         try (Engine engine = Engine.newBuilder(OresLanguage.ID).build()) {
             Context first = Context.newBuilder(OresLanguage.ID).engine(engine).build();
             Context second = Context.newBuilder(OresLanguage.ID).engine(engine).build();
+            boolean firstClosed = false;
             try {
                 assertSame(first.getEngine(), second.getEngine());
                 assertNotSame(first, second);
                 assertDoesNotThrow(() -> first.eval(source));
                 assertDoesNotThrow(() -> second.eval(source));
                 first.close();
+                firstClosed = true;
                 assertDoesNotThrow(() -> second.eval(source),
                         "retiring one Context must not invalidate another evaluator");
             } finally {
-                first.close(true);
+                if (!firstClosed) first.close(true);
                 second.close(true);
             }
         }
