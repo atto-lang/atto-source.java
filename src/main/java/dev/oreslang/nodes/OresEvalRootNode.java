@@ -1259,7 +1259,8 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "detached source block task requires actor execution");
             }
-            task.initialBlockEnv = env.snapshot();
+            task.initialBlockEnv = env.snapshotCaptures(
+                    LambdaCapturePlanner.capturesBlock(body));
             OresFuture<Object> future = context.actors().startActorTask(task);
             context.actors().ownCurrentActorFuture(future);
             return future;
@@ -9067,16 +9068,6 @@ public final class OresEvalRootNode extends RootNode {
             return cp;
         }
 
-        private Env snapshot() {
-            Env cp = new Env(
-                    parent == null ? null : parent.snapshot(),
-                    descendantsNonLexical,
-                    accessClass,
-                    null,
-                    lexicalModule);
-            cp.slots.putAll(slots);
-            return cp;
-        }
         private boolean hasLiveMutexGuards() {
             Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
             for (Slot slot : slots.values()) {
