@@ -54,6 +54,10 @@ public final class EnumVariantOverloadPolicySmoke {
         for (Signature declared : family) {
             compiledBodies.put(EnumVariantOverloadPolicy.symbol(declared), "a".repeat(64));
         }
+        Signature virtual = new Signature("file::Class", Domain.INSTANCE, "f", List.of(n));
+        var virtualFamily = EnumVariantOverloadPolicy.prepare(List.of(virtual));
+        rejected(() -> EnumVariantOverloadPolicy.sealAotImage(virtualFamily,
+                Map.of(EnumVariantOverloadPolicy.symbol(virtual), "a".repeat(64))));
         var aot = EnumVariantOverloadPolicy.sealAotImage(compiled, compiledBodies);
         eq(family.size(), aot.definitionCount());
         var relocA = aot.relocate(compiled.bind(List.of(a, n)));
