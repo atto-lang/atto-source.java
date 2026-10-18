@@ -179,6 +179,18 @@ final class EnumCaseSourceBindingsTest {
     }
 
     @Test
+    void moduleFunctionCannotMaskTheEnumNamespace() {
+        Ast.Program parsed = Parser.parse("""
+                define enum Foo as A, B end
+                fnc Foo(): int { return 1; }
+                fnc use(Foo.A a): void {}
+                fnc use(Foo.B a): void {}
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> EnumCaseSourceBindings.compileLocalProof(parsed));
+    }
+
+    @Test
     void scalarAliasesAreCanonicalizedBeforeSelection() {
         Ast.Program parsed = Parser.parse("""
                 define enum Foo as A, B end
