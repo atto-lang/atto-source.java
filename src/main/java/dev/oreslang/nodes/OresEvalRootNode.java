@@ -4331,15 +4331,22 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean invocationDeclaresAsync(Invocation invocation) {
+            // A synchronous source call lowered to a task returns an INTERNAL
+            // completion Future. Unwrap that task exactly once at the call site,
+            // preserving any declared Future as the resulting guest value.
+            // Explicit async calls expose their task Future directly.
             return switch (invocation.kind()) {
-                case FUNCTION, FUNCTION_BODY ->
-                        ((Ast.FunctionDecl) invocation.target()).async()
-                                || ((Ast.FunctionDecl) invocation.target()).returnType().name().equals("Future");
-                case METHOD, STATIC_FUNCTION, STATIC_FUNCTION_BODY ->
-                        ((Ast.MethodDecl) invocation.target()).async()
-                                || ((Ast.MethodDecl) invocation.target()).returnType().name().equals("Future");
-                // Builtin Future-returning APIs are values, not suspended
-                // guest source calls. Their consumers explicitly await them.
+                case FUNCTION, FUNCTION_BODY -> {
+                    Ast.FunctionDecl fn = (Ast.FunctionDecl) invocation.target();
+                    yield fn.async() || (fn.returnType().name().equals("Future")
+                            && !invocation.owner().functionContainsPotentialSuspension(fn));
+                }
+                case METHOD, STATIC_FUNCTION, STATIC_FUNCTION_BODY -> {
+                    Ast.MethodDecl method = (Ast.MethodDecl) invocation.target();
+                    yield method.async() || (method.returnType().name().equals("Future")
+                            && !invocation.owner().methodContainsPotentialSuspension(method));
+                }
+                // Builtin Future-returning APIs remain explicit guest values.
                 case INVOKABLE -> true;
             };
         }

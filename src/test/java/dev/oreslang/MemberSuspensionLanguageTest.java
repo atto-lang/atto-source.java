@@ -124,6 +124,46 @@ final class MemberSuspensionLanguageTest {
     }
 
     @Test
+    void importedDeclaredFutureMethodsAndFunctionsRemainRegisterAndReturn() throws Exception {
+        Files.writeString(temp.resolve("marker.ores"), """
+                define module marker
+                  pub define class Marker as end
+                end
+                """);
+        assertEquals("42\n43\n44\n45", run("""
+                import class Marker from './marker.ores';
+                define module app
+                  fnc pending(Channel<int> input): Future<int> { return nb readch input; }
+                  define class Reader as
+                    val Channel<int> input;
+                    constructor(Channel<int> input) { self.input = input; }
+                    pub pending(): Future<int> { return self.register(); }
+                    pub register(): Future<int> { return nb readch self.input; }
+                  end
+                  pub async fnc main(): void {
+                    val Channel<int> input = Channel.new<int>(0);
+                    val reader = new Reader(input);
+                    val Future<int> first = reader.pending();
+                    writech input, 42;
+                    stdio.println(await first);
+                    val Future<int> second = pending(input);
+                    writech input, 43;
+                    stdio.println(await second);
+                    // Exercise both completed-analysis cache hits. Futures must
+                    // remain values, not become implicit blocking awaits.
+                    val Future<int> third = reader.pending();
+                    writech input, 44;
+                    stdio.println(await third);
+                    val Future<int> fourth = pending(input);
+                    writech input, 45;
+                    stdio.println(await fourth);
+                    return;
+                  }
+                end
+                """));
+    }
+
+    @Test
     void builtinIteratorFutureDoesNotBecomeAnImplicitAwait() throws Exception {
         assertEquals("ok", run("""
                 define module app
