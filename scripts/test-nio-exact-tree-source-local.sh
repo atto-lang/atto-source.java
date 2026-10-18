@@ -146,6 +146,7 @@ mkdir -p "$EVIDENCE_DIR"
 stage=targeted-junit
 touch "$EVIDENCE_DIR/targeted-start.marker"
 mvn -B -ntp -Dores.runtime.carriers=native \
+  -DskipTests=false -Dmaven.test.skip=false -DfailIfNoTests=true \
   '-Dtest=VmNioTcpListenerTest,NativeNetStdlibTest,NioReadinessGroupTest,NativeNioFutureReactorTest,OresSchedulerTest,OresCarrierPermitPoolTest,OresFuturesTest,OresFutureCallbackTest' \
   test 2>&1 | tee "$EVIDENCE_DIR/targeted-junit.log"
 stage=targeted-report-audit

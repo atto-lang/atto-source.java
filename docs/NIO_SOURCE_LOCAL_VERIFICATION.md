@@ -120,7 +120,13 @@ pre-execution marker; `scripts/nio_verify_surefire_evidence.py` requires
 non-skipped testcases and checks all eight named targeted suites, including
 for the subsequent full `verify` phase. Maven exit code zero without a new
 JUnit report, missing test classes, malformed XML, or skipped-only suites
-fails the source-local gate (exit 76). The full suite has not been executed
+fails the source-local gate (exit 76). The report parser also rejects symlinked
+reports, contradictory `tests`/`skipped`/`failures`/`errors` counters, and
+reports whose filename impersonates a mandatory suite without an executed
+testcase of that class. Run source-free adversarial verifier checks with
+`python3 -m unittest discover -s scripts -p test_nio_evidence_verifier.py -v`.
+The targeted test invocation explicitly disables Maven test-skipping flags.
+The full suite has not been executed
 on a real runner; this is an evidence safeguard, not certification. It then
 runs `mvn -B -ntp -Dores.runtime.carriers=native verify`. An explicitly
 requested `--native-aot` also runs

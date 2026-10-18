@@ -50,7 +50,7 @@ elif name == 'mvn':
             reports.mkdir(parents=True, exist_ok=True)
             for suite in suites:
                 (reports / ('TEST-dev.oreslang.' + suite + '.xml')).write_text(
-                    '<testsuite><testcase classname="dev.oreslang.' + suite +
+                    '<testsuite tests="1" skipped="0" failures="0" errors="0"><testcase classname="dev.oreslang.' + suite +
                     '" name="synthetic"/></testsuite>\\n')
 else: sys.exit(98)
 '''

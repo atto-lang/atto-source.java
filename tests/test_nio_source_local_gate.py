@@ -73,7 +73,7 @@ if [ "${FAKE_NO_REPORTS:-0}" != 1 ]; then
   if [ "${FAKE_NO_VERIFY_REPORTS:-0}" != 1 ] || [ "$*" != "-B -ntp -Dores.runtime.carriers=native verify" ]; then
     mkdir -p target/surefire-reports
     for suite in VmNioTcpListenerTest NativeNetStdlibTest NioReadinessGroupTest NativeNioFutureReactorTest OresSchedulerTest OresCarrierPermitPoolTest OresFuturesTest OresFutureCallbackTest; do
-      printf '<testsuite><testcase classname="dev.oreslang.%s" name="synthetic"/></testsuite>\n' "$suite" > "target/surefire-reports/TEST-dev.oreslang.$suite.xml"
+      printf '<testsuite tests="1" skipped="0" failures="0" errors="0"><testcase classname="dev.oreslang.%s" name="synthetic"/></testsuite>\n' "$suite" > "target/surefire-reports/TEST-dev.oreslang.$suite.xml"
     done
   fi
 fi
