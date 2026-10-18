@@ -168,10 +168,10 @@ public final class Parser {
                 }
 
                 if (match(ENUM)) {
-                    validateNoModifiers(modifiers, "enums");
+                    validateOnlyVisibilityModifiers(modifiers, "enums");
                     rejectCallableStructuralAnnotation(annotations, "enums");
                     rejectDiscardedDeclarationAnnotations(annotations, "enums");
-                    rootDeclarations.add(parseTaggedEnum());
+                    rootDeclarations.add(parseTaggedEnum(modifiers.visibility));
                     continue;
                 }
                 if (match(MATCH)) {
@@ -367,10 +367,10 @@ public final class Parser {
                 return parseTypeAlias(modifiers.visibility);
             }
             if (match(ENUM)) {
-                validateNoModifiers(modifiers, "enums");
+                validateOnlyVisibilityModifiers(modifiers, "enums");
                 rejectCallableStructuralAnnotation(annotations, "enums");
                 rejectDiscardedDeclarationAnnotations(annotations, "enums");
-                return parseTaggedEnum();
+                return parseTaggedEnum(modifiers.visibility);
             }
             if (match(MATCH)) {
                 consume(PATTERN, "expected 'pattern' after 'define match'");
@@ -549,7 +549,7 @@ public final class Parser {
      * declarations; the ordinary expression grammar remains whitespace neutral.
      * A variant may carry a type and an explicit stable positive integer tag.
      */
-    private Ast.EnumDecl parseTaggedEnum() {
+    private Ast.EnumDecl parseTaggedEnum(Ast.Visibility visibility) {
         String name = consume(IDENT, "expected enum name").lexeme();
         consume(AS, "expected 'as' after enum name");
         List<Ast.EnumCase> cases = new ArrayList<>();
@@ -591,7 +591,7 @@ public final class Parser {
         }
         consume(END, "expected 'end' after enum " + name);
         if (cases.isEmpty()) throw error(previous(), "enum must declare at least one case");
-        return new Ast.EnumDecl(name, cases);
+        return new Ast.EnumDecl(name, visibility, cases);
     }
 
     private Ast.PatternDecl parseNamedPattern() {
@@ -796,8 +796,9 @@ public final class Parser {
     }
 
     private void validateOnlyVisibilityModifiers(Modifiers modifiers, String context) {
-        if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
+                || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
+                || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
             throw error(previous(), context + " accept only private/pub visibility modifiers");
         }
     }
