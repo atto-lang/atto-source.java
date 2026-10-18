@@ -2,7 +2,6 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayDeque;
 import java.util.IdentityHashMap;
-import java.util.Objects;
 import java.util.concurrent.CancellationException;
 
 /**
@@ -138,12 +137,6 @@ public final class CriticalGate {
                 }
                 synchronousOwner = Thread.currentThread();
             }
-        }
-
-        /** Attach after scheduler start; already-settled completions run this too. */
-        public void releaseOnCompletion(OresFuture<?> completion) {
-            Objects.requireNonNull(completion, "completion")
-                    .whenCompleteRuntime((value, failure) -> close());
         }
 
         public boolean isHeld() {
