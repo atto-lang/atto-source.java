@@ -165,6 +165,11 @@ public final class OwnershipChecker {
                 throw error("field '" + klass.name() + "." + field.name()
                         + "' cannot store a borrowed reference; class/actor fields must own, copy, share, or proxy their state");
             }
+            if (field.isStatic() && fieldType != null && !isCopyType(fieldType)) {
+                throw error("static field '" + klass.name() + "." + field.name()
+                        + "' must currently contain copy/share-safe data; "
+                        + "global move-only ownership has no sound transfer protocol");
+            }
         }
 
         // An initializer is executable code, not merely a type expression.
