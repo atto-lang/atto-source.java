@@ -21,6 +21,8 @@ final class NestedFutureSchedulerContractTest {
             awaitWaiters(outer, 1);
             assertTrue(derived.cancel(false));
             awaitWaiters(outer, 0);
+            assertFalse(OresScheduler.hasAwaitDependency(derived),
+                    "cancelled outer await retained a dependency");
             assertFalse(outer.isCancelled());
             assertTrue(outer.completeFromRuntime(inner));
             assertTrue(inner.completeFromRuntime(42));
@@ -39,6 +41,8 @@ final class NestedFutureSchedulerContractTest {
             awaitWaiters(inner, 1);
             assertTrue(derived.cancel(false));
             awaitWaiters(inner, 0);
+            assertFalse(OresScheduler.hasAwaitDependency(derived),
+                    "cancelled inner await retained a dependency");
             assertFalse(inner.isCancelled());
             assertTrue(inner.completeFromRuntime(42));
             assertTrue(derived.isCancelled());
