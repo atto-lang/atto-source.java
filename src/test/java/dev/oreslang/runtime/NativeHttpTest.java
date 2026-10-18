@@ -319,6 +319,50 @@ class NativeHttpTest {
         }
     }
 
+    @Test
+    void physicalExecutorShutdownVisitsEverySiblingAndFatalFailureDominates() {
+        final class ProbeExecutor extends AbstractExecutorService {
+            final java.util.concurrent.atomic.AtomicInteger shutdownCalls =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            final Throwable shutdownFailure;
+            ProbeExecutor(Throwable shutdownFailure) {
+                this.shutdownFailure = shutdownFailure;
+            }
+            @Override public void shutdown() { shutdownCalls.incrementAndGet(); }
+            @Override public List<Runnable> shutdownNow() {
+                shutdownCalls.incrementAndGet();
+                if (shutdownFailure instanceof RuntimeException runtime) throw runtime;
+                if (shutdownFailure instanceof Error error) throw error;
+                return List.of();
+            }
+            @Override public boolean isShutdown() { return shutdownCalls.get() != 0; }
+            @Override public boolean isTerminated() { return true; }
+            @Override public boolean awaitTermination(long timeout, TimeUnit unit) {
+                return true;
+            }
+            @Override public void execute(Runnable command) {
+                throw new RejectedExecutionException("probe executor");
+            }
+        }
+
+        var ordinary = new IllegalStateException("ordinary shutdown failure");
+        var fatal = new LinkageError("fatal shutdown failure");
+        var first = new ProbeExecutor(ordinary);
+        var second = new ProbeExecutor(fatal);
+
+        LinkageError observed = assertThrows(
+                LinkageError.class,
+                () -> NativeHttp.shutdownAndAwaitPhysicalExit(
+                        TimeUnit.SECONDS.toNanos(1), first, second));
+        assertSame(fatal, observed);
+        assertEquals(1, first.shutdownCalls.get(),
+                "first sibling must be visited exactly once");
+        assertEquals(1, second.shutdownCalls.get(),
+                "later sibling must still be visited after earlier failure");
+        assertTrue(List.of(observed.getSuppressed()).contains(ordinary),
+                "fatal failure must preserve earlier ordinary cleanup evidence");
+    }
+
     @Test void shutdownPublishesTerminalStateEvenWhenAbortCleanupThrows() {
         var publication = new java.util.concurrent.atomic.AtomicInteger();
         var aborted = new IllegalStateException("abort failed");
