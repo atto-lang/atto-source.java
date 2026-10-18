@@ -67,10 +67,6 @@ final class ActorTurnWatchdogTest {
         AtomicBoolean release = new AtomicBoolean();
         CountDownLatch entered = new CountDownLatch(1);
         try (ActorRuntime runtime = new ActorRuntime()) {
-            var queuedField = ActorRuntime.class.getDeclaredField("watchdogNoticesQueued");
-            queuedField.setAccessible(true);
-            ((AtomicInteger) queuedField.get(runtime)).set(1_024);
-
             var actor = runtime.<String>spawnShared(() -> (message, context) -> {
                 entered.countDown();
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
@@ -85,6 +81,13 @@ final class ActorTurnWatchdogTest {
                 context.self().stop();
             });
 
+            var notices = watchdogNotices(runtime);
+            for (int i = 0; i < 1_024; ++i) {
+                assertTrue(notices.offer(new ActorRuntime.WatchdogNotice(
+                        actor.id(), ActorRuntime.ActorKind.SHARED, i, i)));
+            }
+            assertEquals(1_024, runtime.schedulerSnapshot().watchdogNoticeBacklog());
+
             actor.send("busy");
             assertTrue(entered.await(3, TimeUnit.SECONDS));
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
@@ -92,9 +95,24 @@ final class ActorTurnWatchdogTest {
             assertTrue(runtime.watchdogOverruns() >= 1);
             assertTrue(runtime.watchdogNoticesDropped() >= 1,
                     "full diagnostic capacity must drop rather than contend with the actor");
+            assertEquals(1_024, runtime.schedulerSnapshot().watchdogNoticeBacklog(),
+                    "a dropped notice must not fabricate or leak a separate capacity reservation");
+
+            assertTrue(runtime.pollWatchdogNotice().isPresent());
+            assertEquals(1_023, runtime.schedulerSnapshot().watchdogNoticeBacklog(),
+                    "published queue depth is the only watchdog-capacity accounting");
         } finally {
             release.set(true);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static java.util.concurrent.ArrayBlockingQueue<ActorRuntime.WatchdogNotice>
+            watchdogNotices(ActorRuntime runtime) throws ReflectiveOperationException {
+        var field = ActorRuntime.class.getDeclaredField("watchdogNotices");
+        field.setAccessible(true);
+        return (java.util.concurrent.ArrayBlockingQueue<ActorRuntime.WatchdogNotice>)
+                field.get(runtime);
     }
 
     @Test
