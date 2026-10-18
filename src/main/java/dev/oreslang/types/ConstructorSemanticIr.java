@@ -325,13 +325,13 @@ public final class ConstructorSemanticIr {
      * <p>{@code debugName} exists only for diagnostics. Shadowed declarations may
      * share the same source spelling but must carry distinct binding ids.</p>
      */
-    public record CaptureBinding(
+    public record ResolvedCaptureBinding(
             CaptureBindingId bindingId,
             String debugName,
             Types.Type type,
             CaptureAccess access,
             Set<CallableCapability> capabilities) {
-        public CaptureBinding {
+        public ResolvedCaptureBinding {
             Objects.requireNonNull(bindingId, "capture binding id");
             if (debugName == null || debugName.isBlank()) {
                 throw new IllegalArgumentException("capture debug name cannot be blank");
@@ -341,7 +341,7 @@ public final class ConstructorSemanticIr {
             capabilities = Set.copyOf(capabilities);
         }
 
-        public CaptureBinding merge(CaptureBinding other) {
+        public ResolvedCaptureBinding merge(ResolvedCaptureBinding other) {
             Objects.requireNonNull(other, "other capture binding");
             if (!bindingId.equals(other.bindingId)
                     || !debugName.equals(other.debugName)
@@ -352,7 +352,7 @@ public final class ConstructorSemanticIr {
             java.util.LinkedHashSet<CallableCapability> mergedCapabilities =
                     new java.util.LinkedHashSet<>(capabilities);
             mergedCapabilities.addAll(other.capabilities);
-            return new CaptureBinding(
+            return new ResolvedCaptureBinding(
                     bindingId,
                     debugName,
                     type,
@@ -368,11 +368,11 @@ public final class ConstructorSemanticIr {
      * Re-running a spelling-based free-variable walk in a backend is not
      * authoritative. The plan never grants actor/network transport authority.</p>
      */
-    public record CapturePlan(List<CaptureBinding> bindings) {
+    public record CapturePlan(List<ResolvedCaptureBinding> bindings) {
         public CapturePlan {
             bindings = List.copyOf(bindings);
             java.util.HashSet<CaptureBindingId> ids = new java.util.HashSet<>();
-            for (CaptureBinding binding : bindings) {
+            for (ResolvedCaptureBinding binding : bindings) {
                 Objects.requireNonNull(binding, "capture binding");
                 if (!ids.add(binding.bindingId())) {
                     throw new IllegalArgumentException(
@@ -398,13 +398,13 @@ public final class ConstructorSemanticIr {
 
         public CapturePlan merge(CapturePlan other) {
             Objects.requireNonNull(other, "other capture plan");
-            java.util.LinkedHashMap<CaptureBindingId, CaptureBinding> merged =
+            java.util.LinkedHashMap<CaptureBindingId, ResolvedCaptureBinding> merged =
                     new java.util.LinkedHashMap<>();
             for (CaptureBinding binding : bindings) {
                 merged.put(binding.bindingId(), binding);
             }
-            for (CaptureBinding binding : other.bindings) {
-                merged.merge(binding.bindingId(), binding, CaptureBinding::merge);
+            for (ResolvedCaptureBinding binding : other.bindings) {
+                merged.merge(binding.bindingId(), binding, ResolvedCaptureBinding::merge);
             }
             return new CapturePlan(List.copyOf(merged.values()));
         }
