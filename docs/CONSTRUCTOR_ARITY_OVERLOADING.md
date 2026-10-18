@@ -146,3 +146,22 @@ without Maven. Neither JUnit nor the complete guest-runtime GC/reachability
 and Native Image tests have passed on this exact branch head yet. Retain
 security issue #1267 until those release gates run successfully and any
 captures escaping through async callbacks are separately audited.
+
+
+### Expression-match capture parity gate
+
+The Java ownership checker and evaluator must agree about every value a
+lexical closure retains. The previous ownership `scanExpr` visitor skipped
+`Ast.MatchExpr`, while the runtime planner traversed its arms. This could
+omit borrow/move validation for values referenced only inside a value-match
+arm or its guard. The ownership visitor now checks the subject, guard,
+arm value, and correctly scoped pattern bindings. The
+`OwnershipMatchExpressionCaptureTest` uses the actual ownership checker
+and runtime planner, including a negative borrowed-loan escape case.
+
+A source inventory now finds 24/24 current expression AST variants covered
+in both capture visitors (except the deliberately non-capturing literal
+variant). This is a static coverage check, **not** proof of the absence of
+semantic mismatches or of executed JUnit tests. Future AST variants must
+carry cross-visitor tests and fail closed until the shared resolved-binding
+semantic IR replaces duplicated walking logic.
