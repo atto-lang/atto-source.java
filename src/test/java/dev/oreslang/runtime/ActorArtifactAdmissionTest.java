@@ -23,6 +23,8 @@ final class ActorArtifactAdmissionTest {
     private static final String MESSAGE_ABI = "55".repeat(32);
     private static final String STATE_SCHEMA = "66".repeat(32);
     private static final String WIRE_CODEC = "77".repeat(32);
+    private static final ActorArtifactAdmission.TrustedBuildAttestationPolicy
+            TRUST_ATTESTATION = ignored -> { };
 
     @Test
     void exactSignedArtifactMintsOpaquePathlessCapability() throws Exception {
@@ -38,10 +40,11 @@ final class ActorArtifactAdmissionTest {
                 manifest,
                 executable,
                 attestation,
+                TRUST_ATTESTATION,
                 (builder, keyId) -> keys.getPublic(),
                 target,
-                IsolatePolicy.developer(),
-                IsolatePolicy.developer());
+                supervisorPolicy(),
+                privateWorkerPolicy());
 
         assertEquals("ImageWorker", artifact.actorTypeName());
         assertEquals(Ast.ActorKind.PRIVATE, artifact.actorKind());
@@ -80,10 +83,11 @@ final class ActorArtifactAdmissionTest {
                         manifest,
                         tampered,
                         attestation("ImageWorker", manifest),
+                        TRUST_ATTESTATION,
                         (builder, keyId) -> keys.getPublic(),
                         targetPolicy(),
-                        IsolatePolicy.developer(),
-                        IsolatePolicy.developer()));
+                        supervisorPolicy(),
+                        privateWorkerPolicy()));
         assertTrue(failure.getMessage().contains("sha256")
                         || failure.getMessage().contains("size"),
                 failure.getMessage());
@@ -116,10 +120,11 @@ final class ActorArtifactAdmissionTest {
                         mutated,
                         executable,
                         attestation("ImageWorker", mutated),
+                        TRUST_ATTESTATION,
                         (builder, keyId) -> keys.getPublic(),
                         targetPolicy(),
-                        IsolatePolicy.developer(),
-                        IsolatePolicy.developer()));
+                        supervisorPolicy(),
+                        privateWorkerPolicy()));
         assertTrue(failure.getMessage().contains("signature"), failure.getMessage());
     }
 
@@ -137,10 +142,11 @@ final class ActorArtifactAdmissionTest {
                         manifest,
                         executable,
                         attestation("ImageWorker", manifest),
+                        TRUST_ATTESTATION,
                         (builder, keyId) -> null,
                         targetPolicy(),
-                        IsolatePolicy.developer(),
-                        IsolatePolicy.developer()));
+                        supervisorPolicy(),
+                        privateWorkerPolicy()));
         assertTrue(failure.getMessage().contains("not trusted"), failure.getMessage());
     }
 
@@ -179,10 +185,11 @@ final class ActorArtifactAdmissionTest {
                         manifest,
                         executable,
                         substituted,
+                        TRUST_ATTESTATION,
                         (builder, keyId) -> keys.getPublic(),
                         targetPolicy(),
-                        IsolatePolicy.developer(),
-                        IsolatePolicy.developer()));
+                        supervisorPolicy(),
+                        privateWorkerPolicy()));
         assertTrue(failure.getMessage().contains("actor type"), failure.getMessage());
     }
 
@@ -195,8 +202,9 @@ final class ActorArtifactAdmissionTest {
         assertThrows(SecurityException.class, () -> ActorArtifactAdmission.admitIpcActor(java.util.UUID.randomUUID(), 
                 "ImageWorker", Ast.ActorKind.PRIVATE, unknown, executable,
                 attestation("ImageWorker", unknown),
+                TRUST_ATTESTATION,
                 (builder, keyId) -> keys.getPublic(), targetPolicy(),
-                IsolatePolicy.developer(), IsolatePolicy.developer()));
+                supervisorPolicy(), privateWorkerPolicy()));
 
         var network = sign(manifest(executable, List.of("network")), keys);
         SecurityException excess = assertThrows(
@@ -204,8 +212,9 @@ final class ActorArtifactAdmissionTest {
                 () -> ActorArtifactAdmission.admitIpcActor(java.util.UUID.randomUUID(), 
                         "ImageWorker", Ast.ActorKind.PRIVATE, network, executable,
                         attestation("ImageWorker", network),
+                        TRUST_ATTESTATION,
                         (builder, keyId) -> keys.getPublic(), targetPolicy(),
-                        IsolatePolicy.developer(), IsolatePolicy.developer()));
+                        supervisorPolicy(), privateWorkerPolicy()));
         assertTrue(excess.getMessage().contains("outside worker policy"), excess.getMessage());
     }
 
@@ -221,9 +230,10 @@ final class ActorArtifactAdmissionTest {
                 manifest,
                 executable,
                 attestation("HostileWorker", Ast.ActorKind.UNTRUSTED, manifest),
+                TRUST_ATTESTATION,
                 (builder, keyId) -> keys.getPublic(),
                 targetPolicy(),
-                IsolatePolicy.developer(),
+                supervisorPolicy(),
                 IsolatePolicy.untrustedActor()));
 
         SecurityException nonAdversarial = assertThrows(
@@ -234,10 +244,11 @@ final class ActorArtifactAdmissionTest {
                         manifest,
                         executable,
                         attestation("HostileWorker", Ast.ActorKind.UNTRUSTED, manifest),
+                        TRUST_ATTESTATION,
                         (builder, keyId) -> keys.getPublic(),
                         targetPolicy(),
-                        IsolatePolicy.developer(),
-                        IsolatePolicy.developer().withoutCapabilities(
+                        supervisorPolicy(),
+                        privateWorkerPolicy().withoutCapabilities(
                                 IsolatePolicy.Capability.STDIN,
                                 IsolatePolicy.Capability.STDOUT,
                                 IsolatePolicy.Capability.PROCESS_INFO,
@@ -266,17 +277,19 @@ final class ActorArtifactAdmissionTest {
         assertThrows(SecurityException.class, () -> ActorArtifactAdmission.admitIpcActor(java.util.UUID.randomUUID(), 
                 "ImageWorker", Ast.ActorKind.PRIVATE, manifest, executable,
                 attestation("ImageWorker", manifest),
+                TRUST_ATTESTATION,
                 (builder, keyId) -> keys.getPublic(), wrongTarget,
-                IsolatePolicy.developer(), IsolatePolicy.developer()));
+                supervisorPolicy(), privateWorkerPolicy()));
 
         IsolatePolicy noLoad =
-                IsolatePolicy.developer().withoutCapabilities(
+                supervisorPolicy().withoutCapabilities(
                         IsolatePolicy.Capability.HOT_CODE_LOAD);
         SecurityException authority = assertThrows(
                 SecurityException.class,
                 () -> ActorArtifactAdmission.admitIpcActor(java.util.UUID.randomUUID(), 
                         "ImageWorker", Ast.ActorKind.PRIVATE, manifest, executable,
                         attestation("ImageWorker", manifest),
+                        TRUST_ATTESTATION,
                         (builder, keyId) -> keys.getPublic(), targetPolicy(),
                         noLoad, IsolatePolicy.developer()));
         assertTrue(authority.getMessage().contains("HOT_CODE_LOAD"), authority.getMessage());
@@ -320,10 +333,10 @@ final class ActorArtifactAdmissionTest {
                     attestation,
                     (builder, keyId) -> keys.getPublic(),
                     targetPolicy(),
-                    IsolatePolicy.developer());
+                    privateWorkerPolicy());
             assertTrue(runtime.ownsActorArtifact(artifact));
             assertEquals(
-                    ActorArtifactAdmission.workerPolicyDigest(IsolatePolicy.developer()),
+                    ActorArtifactAdmission.workerPolicyDigest(privateWorkerPolicy()),
                     artifact.workerPolicySha256());
             try (ActorRuntime other = new ActorRuntime(supervisor)) {
                 assertFalse(other.ownsActorArtifact(artifact),
@@ -346,6 +359,21 @@ final class ActorArtifactAdmissionTest {
         assertTrue(canonical.contains("\"provenance\":{\"builder_id\":\"trusted-builder-1\"}"));
         assertFalse(canonical.contains("\"signature\""),
                 "signature member must be omitted from signed payload");
+    }
+
+    private static IsolatePolicy supervisorPolicy() {
+        return IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.IPC,
+                IsolatePolicy.Capability.CHILD_PROCESS);
+    }
+
+    private static IsolatePolicy privateWorkerPolicy() {
+        return new IsolatePolicy(
+                Set.of(),
+                64L * 1024 * 1024,
+                128,
+                java.time.Duration.ofSeconds(5),
+                false);
     }
 
     private static ActorArtifactAdmission.TargetPolicy targetPolicy() {
