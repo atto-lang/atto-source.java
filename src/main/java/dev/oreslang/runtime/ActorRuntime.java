@@ -323,17 +323,33 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public record SupervisorFailureSignal(
             ActorId supervisorId,
+            long supervisorGeneration,
             Optional<ActorId> supervisorMessageSender,
             long supervisorMessageSequence,
+            Optional<ActorCausalOrigin> upstreamCause,
             ActorTerminalState childTerminal) {
         public SupervisorFailureSignal {
             Objects.requireNonNull(supervisorId, "supervisorId");
+            if (supervisorGeneration < 0L) {
+                throw new IllegalArgumentException(
+                        "supervisor generation cannot be negative");
+            }
             supervisorMessageSender = supervisorMessageSender == null
                     ? Optional.empty() : supervisorMessageSender;
             Objects.requireNonNull(supervisorMessageSender, "supervisorMessageSender");
             if (supervisorMessageSequence < -1L) {
                 throw new IllegalArgumentException(
                         "supervisor message sequence must be >= -1");
+            }
+            upstreamCause = upstreamCause == null
+                    ? Optional.empty() : upstreamCause;
+            Objects.requireNonNull(upstreamCause, "upstreamCause");
+            if (upstreamCause.isPresent()
+                    && (supervisorMessageSender.isEmpty()
+                        || !supervisorMessageSender.get()
+                                .equals(upstreamCause.get().actorId()))) {
+                throw new IllegalArgumentException(
+                        "supervisor upstream cause must match message sender");
             }
             Objects.requireNonNull(childTerminal, "childTerminal");
             if (childTerminal.terminationKind() != ActorTerminationKind.FAILED) {
@@ -371,21 +387,32 @@ public final class ActorRuntime implements AutoCloseable {
      * <p>All mutable fields are owned by the parent ActorCell lifecycle lock.
      */
     private static final class SupervisorFailureSlot {
+        private final long supervisorGeneration;
         private final Optional<ActorId> causeSender;
         private final long causeSequence;
+        private final Optional<ActorCausalOrigin> upstreamCause;
         private ActorTerminalState terminal;
         private SupervisorFailureSlot next;
         private boolean reserved;
         private boolean queued;
 
         private SupervisorFailureSlot(
+                long supervisorGeneration,
                 Optional<ActorId> causeSender,
-                long causeSequence) {
+                long causeSequence,
+                Optional<ActorCausalOrigin> upstreamCause) {
+            if (supervisorGeneration < 0L) {
+                throw new IllegalArgumentException(
+                        "supervisor generation cannot be negative");
+            }
+            this.supervisorGeneration = supervisorGeneration;
             this.causeSender = causeSender == null ? Optional.empty() : causeSender;
             if (causeSequence < -1L) {
                 throw new IllegalArgumentException("cause sequence must be >= -1");
             }
             this.causeSequence = causeSequence;
+            this.upstreamCause = upstreamCause == null
+                    ? Optional.empty() : upstreamCause;
         }
     }
 
@@ -1948,16 +1975,24 @@ public final class ActorRuntime implements AutoCloseable {
             Runnable release,
             Runnable continuation,
             ActorId sender,
+            ActorCausalOrigin causalOrigin,
             long sequence) implements AutoCloseable {
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
                 ActorId sender,
+                ActorCausalOrigin causalOrigin,
                 long sequence) {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
-            return new MessageEnvelope(value, release, null, sender, sequence);
+            if (causalOrigin != null
+                    && (sender == null || !sender.equals(causalOrigin.actorId()))) {
+                throw new IllegalArgumentException(
+                        "message causal origin must match sender identity");
+            }
+            return new MessageEnvelope(
+                    value, release, null, sender, causalOrigin, sequence);
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
@@ -1965,6 +2000,7 @@ public final class ActorRuntime implements AutoCloseable {
                     null,
                     null,
                     Objects.requireNonNull(continuation, "continuation"),
+                    null,
                     null,
                     -1L);
         }
@@ -2100,6 +2136,30 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Fixed-size causal identity for one actor input turn.
+     *
+     * <p>This deliberately contains no recursive parent pointer and no guest
+     * payload. Transport carries at most one upstream stamp so observability
+     * metadata cannot grow with call/message depth.</p>
+     */
+    public record ActorCausalOrigin(
+            ActorId actorId,
+            long generation,
+            long messageSequence) {
+        public ActorCausalOrigin {
+            Objects.requireNonNull(actorId, "actorId");
+            if (generation < 0L) {
+                throw new IllegalArgumentException(
+                        "actor causal generation cannot be negative");
+            }
+            if (messageSequence < -1L) {
+                throw new IllegalArgumentException(
+                        "actor causal message sequence must be >= -1");
+            }
+        }
+    }
+
+    /**
      * Immutable metadata for one admitted actor mailbox message.
      *
      * <p>The payload has already crossed the runtime transport boundary:
@@ -2112,15 +2172,34 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId recipient,
             Optional<ActorId> sender,
             long sequence,
+            Optional<ActorCausalOrigin> causalOrigin,
             M value) {
         public ActorInboxMail {
             Objects.requireNonNull(recipient, "recipient");
             sender = sender == null ? Optional.empty() : sender;
             Objects.requireNonNull(sender, "sender");
+            causalOrigin = causalOrigin == null ? Optional.empty() : causalOrigin;
+            Objects.requireNonNull(causalOrigin, "causalOrigin");
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
+            if (causalOrigin.isPresent()) {
+                if (sender.isEmpty()
+                        || !sender.get().equals(causalOrigin.get().actorId())) {
+                    throw new IllegalArgumentException(
+                            "actor mailbox causal origin must match sender identity");
+                }
+            }
             Objects.requireNonNull(value, "actor mailbox values cannot be null; use Option<T>");
+        }
+
+        /** Java-host compatibility constructor for mail without causal metadata. */
+        public ActorInboxMail(
+                ActorId recipient,
+                Optional<ActorId> sender,
+                long sequence,
+                M value) {
+            this(recipient, sender, sequence, Optional.empty(), value);
         }
     }
 
@@ -6129,7 +6208,16 @@ public final class ActorRuntime implements AutoCloseable {
             release = () -> cell.releaseSharedMailbox(bytes);
         }
 
-        ActorId sender = currentActorId().orElse(null);
+        ActorCell<?> senderCell = currentActor.get();
+        ActorId sender = senderCell == null ? null : senderCell.ref.id();
+        ActorCausalOrigin causalOrigin = senderCell == null
+                ? null
+                : new ActorCausalOrigin(
+                        senderCell.ref.id(),
+                        senderCell.ref.generation(),
+                        senderCell.activeMail == null
+                                ? -1L
+                                : senderCell.activeMail.sequence());
         MessageEnvelope envelope = null;
         List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
         boolean admitted = false;
@@ -6164,7 +6252,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 exhausted);
                     }
                     envelope = MessageEnvelope.message(
-                            prepared, release, sender, sequence);
+                            prepared, release, sender, causalOrigin, sequence);
                     if (!cell.mailbox.tryWrite(envelope)) {
                         mailboxFullRejections.incrementAndGet();
                         throw new ActorMailboxFullException(ref.id());
@@ -7971,10 +8059,14 @@ public final class ActorRuntime implements AutoCloseable {
             this.supervisorFailureSlot = parent == null
                     ? null
                     : new SupervisorFailureSlot(
+                            parent.ref.generation(),
                             parentMail == null
                                     ? Optional.empty()
                                     : parentMail.sender(),
-                            parentMail == null ? -1L : parentMail.sequence());
+                            parentMail == null ? -1L : parentMail.sequence(),
+                            parentMail == null
+                                    ? Optional.empty()
+                                    : parentMail.causalOrigin());
             int mailboxCapacity = policy.maxMailboxMessages() >
                             Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
                     ? Integer.MAX_VALUE
@@ -8626,8 +8718,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             return new SupervisorFailureSignal(
                     ref.id(),
+                    slot.supervisorGeneration,
                     slot.causeSender,
                     slot.causeSequence,
+                    slot.upstreamCause,
                     terminal);
         }
 
@@ -9115,6 +9209,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     ref.id(),
                                     Optional.ofNullable(activeEnvelope.sender()),
                                     activeEnvelope.sequence(),
+                                    Optional.ofNullable(activeEnvelope.causalOrigin()),
                                     (M) activeEnvelope.value());
                             activeMail = mail;
                             try {
