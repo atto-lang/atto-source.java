@@ -6292,12 +6292,17 @@ public final class OresEvalRootNode extends RootNode {
                             t, stages, env, index + 1, values, created, continuation);
                     return;
                 }
+                ActorRuntime.ActorStream stream;
                 try {
-                    continuation.accept(t, createActorStream(values), null);
+                    stream = createActorStream(values);
                 } catch (RuntimeException | Error bindingFailure) {
                     rollbackInlinePipeSpawns(created, bindingFailure);
                     continuation.accept(t, null, bindingFailure);
+                    return;
                 }
+                // The pipeline is published: a downstream continuation failure
+                // must not retroactively revoke successfully bound actors.
+                continuation.accept(t, stream, null);
             });
         }
 
