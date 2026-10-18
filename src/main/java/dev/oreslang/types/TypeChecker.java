@@ -146,7 +146,7 @@ public final class TypeChecker {
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
         // Neither the normal nor import-aware checker may permit unlinked enum
         // declarations into annotation expansion or typecheck collections.
-        CallerRoleContracts.Index roleIndex = CallerRoleContracts.validate(program);
+        CallerRoleContracts.validate(program);
         rejectUnlinkedEnumAndPatternDeclarations(program);
         program = AnnotationExpander.expand(program);
         ReturnCleanupChecker.check(program);
@@ -170,7 +170,7 @@ public final class TypeChecker {
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
         // Linked class/type-alias resolution is never proof of an enum/pattern
         // type. Keep parity with checkTypesWithDiagnostics before any rewrite.
-        CallerRoleContracts.Index roleIndex = CallerRoleContracts.validate(program);
+        CallerRoleContracts.validate(program);
         rejectUnlinkedEnumAndPatternDeclarations(program);
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
