@@ -33,7 +33,9 @@ public final class CallerRoleContracts {
         }
 
         public boolean isRestricted(Object declaration) {
-            return permitted.containsKey(declaration);
+            // Unknown linked/rewritten declarations carrying policy are
+            // restricted by default; loss of index linkage cannot clear it.
+            return permitted.containsKey(declaration) || hasPolicyAnnotation(declaration, "CallableBy");
         }
 
         /**
@@ -110,6 +112,15 @@ public final class CallerRoleContracts {
                         rejectOtherTargets(field.annotations(), "field '" + klass.name() + "." + field.name() + "'");
                     }
                     for (Ast.MethodDecl method : klass.methods()) {
+                        // Instance dispatch can target a subclass override even
+                        // after the syntax checker bound a base declaration.
+                        // Keep annotated instance methods unavailable until a
+                        // sealed-vtable/override-compatibility proof exists.
+                        if (has(method.annotations(), "CallableBy") && !method.isStatic()) {
+                            throw new IllegalArgumentException("@CallableBy instance methods require sealed virtual dispatch/override policy; "
+                                    + "only static fnc is admitted in this staged compiler contract: '"
+                                    + klass.name() + "." + method.name() + "'");
+                        }
                         if (has(method.annotations(), "CallableBy")
                                 && (method.isAbstract()
                                     || (klass.actorKind() != Ast.ActorKind.NONE
