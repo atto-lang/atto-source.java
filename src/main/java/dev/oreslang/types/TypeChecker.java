@@ -2346,6 +2346,13 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "cannot spawn abstract actor '" + actorClass.name() + "'");
                 }
+                if (actorClass.actorBoundary() != Ast.ActorBoundary.LOCAL) {
+                    throw new IllegalArgumentException(
+                            "spawn of " + actorClass.actorBoundary().name().toLowerCase()
+                                    + " actor '" + actorClass.name()
+                                    + "' is fail-closed until authenticated artifact admission "
+                                    + "and backend boundary lowering are implemented");
+                }
                 if (!created.arguments().isEmpty()) {
                     throw new IllegalArgumentException(
                             "actor '" + actorClass.name()
