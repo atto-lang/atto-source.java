@@ -1,5 +1,7 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
 import dev.oreslang.types.OptionalCallShapeBinder;
 import dev.oreslang.types.OptionalCallShapeBinder.Argument;
 import dev.oreslang.types.OptionalCallShapeBinder.Parameter;
@@ -112,6 +114,44 @@ final class OptionalCallShapeBinderTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new Plan(List.of(0, -1, 1), -1,
                         List.of(), List.of(1), List.of(0, 0)));
+    }
+
+    @Test
+    void parsedCallItemsBindWithoutErasingRawOmissionPositions() {
+        Ast.Program program = Parser.parse(
+                "pub fnc test(): void { const v = f(c: sideC(), b: _, a: sideA()); return; }");
+        Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                program.modules().getFirst().declarations().getFirst();
+        Ast.BindingStmt binding = (Ast.BindingStmt) fn.body().getFirst();
+        Ast.StagedCallExpr call = (Ast.StagedCallExpr) binding.initializer();
+        Plan plan = OptionalCallShapeBinder.bind(FOO,
+                OptionalCallShapeBinder.parsedArgumentShapes(call.arguments()));
+        assertEquals(List.of(1, -1, 0), plan.sourceIndexByParameter());
+        assertEquals(List.of(0, 2), plan.callItemIndexByEvaluatedSource());
+        assertEquals(List.of(1), plan.omittedCallItemIndices());
+        assertEquals(2, plan.suppliedArgumentCount());
+    }
+
+    @Test
+    void syntheticCallItemAstCannotBypassBindingAndSpreadGates() {
+        Ast.CallArgument value = Ast.CallArgument.value(new Ast.LiteralExpr(3L));
+        Ast.CallArgument omission = Ast.CallArgument.omit(null);
+        assertEquals(Argument.positionalOmission(),
+                OptionalCallShapeBinder.parsedArgumentShapes(List.of(omission)).getFirst());
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.CallArgument.value(null));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.CallArgument(null, new Ast.LiteralExpr(3L), true, false));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.StagedCallExpr(new Ast.NameExpr("f"),
+                        List.of(), false, List.of(value)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.StagedCallExpr(new Ast.NameExpr("f"),
+                        List.of(), false, List.of(
+                                Ast.CallArgument.named("a", new Ast.LiteralExpr(1L)), value)));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.parsedArgumentShapes(List.of(
+                        Ast.CallArgument.spread(new Ast.NameExpr("values")))));
     }
 
     @Test
