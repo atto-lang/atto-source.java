@@ -16,6 +16,9 @@ define actor Source as
     receive(ActorMail<PipeMessages> mail): void {
         match mail.value over
             on Signal.Data n -> {
+                stdio.stdout.write("SRC_FORWARD_");
+                stdio.stdout.write(n);
+                stdio.stdout.write("|");
                 self.forward(Signal.Data(n));
             }
             on Signal.Result n -> {
@@ -35,9 +38,15 @@ define actor Transform as
     receive(ActorMail<PipeMessages> mail): void {
         match mail.value over
             on Signal.Data n -> {
+                stdio.stdout.write("TRANSFORM_FORWARD_");
+                stdio.stdout.write(n + 1);
+                stdio.stdout.write("|");
                 self.forward(Signal.Data(n + 1));
             }
             on Signal.Result n -> {
+                stdio.stdout.write("TRANSFORM_BACKWARD_");
+                stdio.stdout.write(n + 1);
+                stdio.stdout.write("|");
                 self.backward(Signal.Result(n + 1));
                 self.end();
             }
@@ -50,6 +59,9 @@ define actor Sink as
     receive(ActorMail<PipeMessages> mail): void {
         match mail.value over
             on Signal.Data n -> {
+                stdio.stdout.write("SINK_BACKWARD_");
+                stdio.stdout.write(n + 1);
+                stdio.stdout.write("|");
                 self.backward(Signal.Result(n + 1));
                 self.end();
             }
