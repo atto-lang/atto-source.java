@@ -154,7 +154,13 @@ public final class GeneratorRuntime {
                 engine.awaitProducerExit();
                 return OresFuture.completed(Step.doneStep());
             }
-            return runtime.submit(engine::next);
+            // An async pull always returns an OresFuture, including when
+            // scheduler admission itself rejects before any guest work starts.
+            try {
+                return runtime.submit(engine::next);
+            } catch (java.util.concurrent.RejectedExecutionException rejected) {
+                return OresFuture.failed(rejected);
+            }
         }
 
         @Override
