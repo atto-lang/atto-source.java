@@ -11,6 +11,23 @@ import static org.junit.jupiter.api.Assertions.*;
 /** One untrusted Graal isolate for many actor groups, not one per actor. */
 final class SharedUntrustedIsolatePoolTest {
     @Test
+    void retirementFailureMergePreservesVmFatalIdentityAndSuppressedEvidence() {
+        var ordinary = new IllegalStateException("ordinary context close");
+        var fatal = new LinkageError("fatal engine close");
+        Throwable merged = SharedUntrustedIsolatePool.mergeRetirementFailure(
+                ordinary, fatal);
+        assertSame(fatal, merged);
+        assertTrue(java.util.List.of(fatal.getSuppressed()).contains(ordinary));
+
+        var later = new IllegalArgumentException("later sibling");
+        assertSame(fatal, SharedUntrustedIsolatePool.mergeRetirementFailure(
+                merged, later));
+        assertTrue(java.util.List.of(fatal.getSuppressed()).contains(later));
+        assertSame(fatal, assertThrows(LinkageError.class,
+                () -> SharedUntrustedIsolatePool.rethrowRetirementFailure(fatal)));
+    }
+
+    @Test
     void boundedPoolSettingsRequireSafeResourceLimits() {
         assertThrows(IllegalArgumentException.class,
                 () -> SharedUntrustedIsolatePool.validateConfiguration(1024, 1));
