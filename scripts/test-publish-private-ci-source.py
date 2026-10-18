@@ -156,7 +156,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": A},
-            "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
+            "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test", "object": {"type": "commit", "sha": A}},
         }
         if route not in mapping:
             raise AssertionError("unexpected or cross-repository GitHub API route " + route)
@@ -1009,6 +1009,37 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[2][2]["base_tree"], B)
         self.assertEqual(writes[3][2]["tree"], E)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
+
+    def test_created_ci_ref_acknowledgement_must_match_exact_commit(self):
+        # GitHub must acknowledge the attested commit, not merely the ref name.
+        expected = self.expected_source_tree()
+        original = self.fake_api
+        variants = [
+            {"ref": "refs/heads/ci/oreslang-test"},
+            {"ref": "refs/heads/ci/oreslang-test", "object": None},
+            {"ref": "refs/heads/ci/oreslang-test",
+             "object": {"type": "commit", "sha": B}},
+            {"ref": "refs/heads/ci/oreslang-test",
+             "object": {"type": "tag", "sha": A}},
+            {"ref": "refs/heads/ci/oreslang-test",
+             "object": {"type": "commit", "sha": "invalid"}},
+        ]
+        for response in variants:
+            with self.subTest(response=response):
+                self.route_calls.clear()
+                def api(route, method="GET", payload=None):
+                    if route == "repos/trusted/ci/git/refs" and method == "POST":
+                        self.route_calls.append((method, route, payload))
+                        return response
+                    return original(route, method, payload)
+                self.mock_source_tree = expected
+                with patch.object(pub, "gh_api", side_effect=api):
+                    with self.assertRaisesRegex(pub.Denied, "attested CI commit"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, expected, 1286, A)
+                posts = [route for method, route, _ in self.route_calls
+                         if method == "POST" and route.endswith("/git/refs")]
+                self.assertEqual(len(posts), 1)
 
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
         # Assume base_tree contains a stale private-oreslang-source/secret.ores.
