@@ -108,6 +108,34 @@ final class EnumNullaryStagedLiteralBindingTest {
     }
 
     @Test
+    void parsedBooleanStringAndFloatConstantsPreserveExactScalarSlots() {
+        Ast.Program program = Parser.parse("""
+                define enum Foo as A, B end
+                fnc handle(Foo.A a, bool flag, string text, float score): void {}
+                fnc handle(Foo.B a, bool flag, string text, float score): void {}
+                fnc main(): void { handle(Foo.B, true, "ok", 1.25); }
+                """);
+        var proof = EnumCaseSourceBindings.compileLocalProof(program);
+        Key key = new Key(MODULE, "local_unit.__root__", "handle", 4);
+        var main = program.modules().getFirst().declarations().stream()
+                .filter(d -> d instanceof Ast.FunctionDecl fn && fn.name().equals("main"))
+                .map(d -> (Ast.FunctionDecl) d).findFirst().orElseThrow();
+        var stmt = assertInstanceOf(Ast.ExprStmt.class, main.body().getFirst());
+        var parsedCall = assertInstanceOf(Ast.CallExpr.class, stmt.expression());
+        var target = proof.bindStagedNullaryLiteralCall(key, parsedCall);
+        assertEquals("Foo.B", target.target().function()
+                .parameters().getFirst().type().name());
+        assertEquals(target.target().signature().symbolId(), target.staticSlotId());
+        assertThrows(IllegalArgumentException.class, () ->
+                proof.bindStagedNullaryLiteralCall(key, new Ast.CallExpr(
+                        new Ast.NameExpr("handle"), List.of(
+                                new Ast.MemberExpr(new Ast.NameExpr("Foo"), "B"),
+                                new Ast.LiteralExpr(Boolean.TRUE),
+                                new Ast.LiteralExpr("ok"),
+                                new Ast.LiteralExpr(Double.NaN)))));
+    }
+
+    @Test
     void rejectedShapesNeverFallbackToDynamicMultimethod() {
         Ast.Program program = Parser.parse("""
                 define enum Foo as A, B end
