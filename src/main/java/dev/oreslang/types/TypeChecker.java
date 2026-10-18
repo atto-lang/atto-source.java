@@ -3256,6 +3256,8 @@ public final class TypeChecker {
                 Ast.FunctionDecl moduleFunction = findSingleQualifiedFunction(
                         namespace.name() + "." + member.member());
                 if (moduleFunction != null) {
+                    callerRoleContracts.rejectReification(
+                            moduleFunction, namespace.name() + "." + member.member());
                     if (moduleFunction.kind() == Ast.CallableKind.ROUTINE) {
                         throw new IllegalArgumentException("routine '" + namespace.name() + "." + member.member()
                                 + "' is direct-call-only and cannot be used as a first-class callable value; "
