@@ -20,7 +20,6 @@ root="$(git rev-parse --show-toplevel)" || exit 65
 cd "$root"
 START_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 EVIDENCE_DIR="$root/target/nio-exact-tree-gate"
-mkdir -p "$EVIDENCE_DIR"
 status=FAIL
 stage=source-identity
 actual_commit=unverified
@@ -32,8 +31,13 @@ finish() {
   local code=$?
   trap - EXIT
   if (( code == 0 )); then status=PASS; fi
-  # Maven clean removes target/, including preexisting evidence. Always
-  # recreate this directory so even a clean-stage failure writes a receipt.
+  # A dirty checkout can contain an ignored target/ symlink before any
+  # preflight. Never follow it when writing a failure receipt (or logs).
+  if [[ -L "$root/target" || -L "$EVIDENCE_DIR" ]]; then
+    printf 'ERROR: refusing to write qualification evidence through a symlink.\n' >&2
+    exit "$code"
+  fi
+  # Maven clean may remove target/; restore the receipt directory on failure.
   mkdir -p "$EVIDENCE_DIR"
   # This receipt is unsigned and does not replace runner/job-step provenance.
   {
@@ -62,8 +66,8 @@ if [[ "$actual_commit" != "$EXPECTED_COMMIT" || "$actual_tree" != "$EXPECTED_TRE
   printf 'ERROR: exact source commit/tree mismatch, refusing to run tests.\n' >&2
   exit 66
 fi
-if [[ -L "$root/target" ]]; then
-  printf 'ERROR: target/ symlink is forbidden in source-local qualification.\n' >&2
+if [[ -L "$root/target" || -L "$EVIDENCE_DIR" ]]; then
+  printf 'ERROR: target/ or receipt directory symlink is forbidden.\n' >&2
   exit 68
 fi
 if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
