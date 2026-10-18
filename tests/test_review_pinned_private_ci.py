@@ -433,6 +433,45 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                 f"{MOD.CARRIER_REPO} {MOD.CARRIER_REPO_ID}\n"
                 f"other/repo {MOD.CARRIER_REPO_ID}\n")))
 
+    def test_destination_ledger_rejects_noncanonical_numeric_aliases(self):
+        # Python int() accepts all of these representations of the same ID.
+        for alias in ("+1357615104", "01357615104", "1_357_615_104",
+                      "１３５７６１５１０４"):
+            with self.subTest(alias=alias):
+                path = self.write("noncanonical-destination.txt",
+                                  f"{MOD.CARRIER_REPO} {alias}\n")
+                with self.assertRaises(MOD.Denied):
+                    MOD.parse_destination_entry(path)
+
+    def test_snapshot_ledger_rejects_noncanonical_numeric_aliases(self):
+        for alias in ("+1357615104", "01357615104", "1_357_615_104",
+                      "１３５７６１５１０４"):
+            with self.subTest(alias=alias):
+                path = self.write("noncanonical-snapshot.txt",
+                                  f"{SOURCE_COMMIT} {SOURCE_TREE} {alias}\n")
+                with self.assertRaises(MOD.Denied):
+                    MOD.parse_snapshot_entry(path)
+
+    def test_destination_ledger_rejects_whitespace_normalization(self):
+        canonical = f"{MOD.CARRIER_REPO} {MOD.CARRIER_REPO_ID}"
+        for row in (" " + canonical, canonical + " ", "\t" + canonical,
+                    canonical.replace(" ", "\t"),
+                    canonical.replace(" ", "  ")):
+            with self.subTest(row=row):
+                path = self.write("whitespace-destination.txt", row + "\n")
+                with self.assertRaises(MOD.Denied):
+                    MOD.parse_destination_entry(path)
+
+    def test_snapshot_ledger_rejects_whitespace_normalization(self):
+        canonical = f"{SOURCE_COMMIT} {SOURCE_TREE} {MOD.CARRIER_REPO_ID}"
+        for row in (" " + canonical, canonical + " ", "\t" + canonical,
+                    canonical.replace(" ", "\t"),
+                    canonical.replace(" ", "  ")):
+            with self.subTest(row=row):
+                path = self.write("whitespace-snapshot.txt", row + "\n")
+                with self.assertRaises(MOD.Denied):
+                    MOD.parse_snapshot_entry(path)
+
     def test_wrong_destination_id_denied(self):
         def mutate(fx):
             d = {"id": 1, "full_name": MOD.CARRIER_REPO, "private": True,
