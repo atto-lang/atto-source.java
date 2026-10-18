@@ -387,6 +387,15 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
+     * Host-runtime opt-in for a cancellable Task with a distinct physical
+     * quiescence barrier. This does not change existing Future semantics.
+     * Source Task syntax and structured actor scopes require separate lowering.
+     */
+    public <T> TaskHandle<T> startTracked(Task<T> task) {
+        return TaskHandle.start(this, task);
+    }
+
+    /**
      * Trusted runtime lifecycle hook. A cancelled Future can settle before
      * the current guest carrier has physically exited; this callback fires
      * only after task execution is quiescent (or before it ever started).
