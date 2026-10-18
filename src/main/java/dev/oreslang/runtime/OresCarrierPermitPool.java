@@ -191,7 +191,14 @@ final class OresCarrierPermitPool {
             try {
                 super.start();
             } catch (RuntimeException | Error startFailure) {
-                if (state.compareAndSet(STARTING, RELEASED)) releasePermit();
+                // If the JVM still reports NEW, no physical Java worker was
+                // published and the permit can be rolled back synchronously.
+                // Any non-NEW/ambiguous state keeps the permit attached to the
+                // thread so run() owns the eventual exactly-once release.
+                if (getState() == State.NEW
+                        && state.compareAndSet(STARTING, RELEASED)) {
+                    releasePermit();
+                }
                 throw startFailure;
             }
         }
