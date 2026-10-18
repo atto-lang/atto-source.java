@@ -6,6 +6,7 @@ import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.types.OptionalCallShapeBinder;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -59,6 +60,9 @@ public final class OresEvalRootNode extends RootNode {
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
         super(language);
+        // Defend the direct-AST root API as well as the public compiler path.
+        // Do not let an unlowered T? formal reach actor/runtime initialization.
+        OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(program);
         this.program = program;
         this.codeUnitId = codeUnitId;
     }
