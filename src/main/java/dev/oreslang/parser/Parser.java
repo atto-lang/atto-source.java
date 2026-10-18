@@ -504,7 +504,16 @@ public final class Parser {
         String name = consume(IDENT, "expected class name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
-        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+        List<Ast.TypeRef> interfaces = new ArrayList<>();
+        List<Ast.TypeRef> staticContracts = new ArrayList<>();
+        if (match(IMPLEMENTS, IMPL)) {
+            do {
+                boolean staticSide = match(STATIC);
+                Ast.TypeRef implemented = parseTypeRef();
+                if (staticSide) staticContracts.add(implemented);
+                else interfaces.add(implemented);
+            } while (match(COMMA));
+        }
         consume(AS, "expected 'as' after class header");
         boolean braceStyle = match(LBRACE);
         Token.Type classTerminator = braceStyle ? RBRACE : END;
@@ -543,7 +552,7 @@ public final class Parser {
             }
             if (isBindingKind(peek().type())) {
                 validateClassFieldModifiers(mods);
-                Ast.FieldDecl field = parseField(annotations, mods.visibility);
+                Ast.FieldDecl field = parseField(annotations, mods.visibility, mods.isStatic);
                 if (field.bindingKind() == Ast.BindingKind.CONST
                         && field.initializer() == null) {
                     throw error(previous(), "final/const class field '" + field.name()
@@ -554,7 +563,7 @@ public final class Parser {
             }
             if (check(IDENT) && checkNext(COLON)) {
                 validateClassFieldModifiers(mods);
-                fields.add(parseColonField(annotations, mods.visibility));
+                fields.add(parseColonField(annotations, mods.visibility, mods.isStatic));
                 continue;
             }
             // Type-first fields accept ':' canonically and '=' for compatibility.
@@ -562,7 +571,7 @@ public final class Parser {
             if ((isContextualIdentifier("final") && (checkNext(IDENT) || checkNext(MUT)))
                     || looksLikeTypeFirstClassField()) {
                 validateClassFieldModifiers(mods);
-                fields.add(parseTypeFirstClassField(annotations, mods.visibility));
+                fields.add(parseTypeFirstClassField(annotations, mods.visibility, mods.isStatic));
                 continue;
             }
 
@@ -598,7 +607,7 @@ public final class Parser {
                         : "expected 'end' to close class " + name);
         return new Ast.ClassDecl(
                 name, visibility, isAbstract, Ast.ActorKind.NONE, generics,
-                parents, interfaces, fields, constructor, methods);
+                parents, interfaces, staticContracts, fields, constructor, methods);
     }
 
     private Ast.ConstructorDecl parseConstructor(
@@ -651,9 +660,11 @@ public final class Parser {
     }
 
     private void validateClassFieldModifiers(Modifiers modifiers) {
-        if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
-            throw error(peek(), "class fields accept only private/pub visibility modifiers");
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
+                || modifiers.nonLexical || modifiers.trapped || modifiers.isAbstract
+                || modifiers.shared || modifiers.untrusted) {
+            throw error(peek(),
+                    "class fields accept only private/pub visibility and optional static modifiers");
         }
     }
 
