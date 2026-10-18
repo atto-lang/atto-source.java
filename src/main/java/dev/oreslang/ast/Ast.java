@@ -41,6 +41,8 @@ public final class Ast {
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
     public enum ActorKind { NONE, PRIVATE, SHARED, UNTRUSTED }
+    /** Orthogonal physical/ABI boundary. Trust/heap policy remains ActorKind. */
+    public enum ActorBoundary { LOCAL, IPC, FFI }
 
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
@@ -323,6 +325,7 @@ public final class Ast {
             Visibility visibility,
             boolean isAbstract,
             ActorKind actorKind,
+            ActorBoundary actorBoundary,
             List<String> genericParameters,
             List<TypeRef> parents,
             List<TypeRef> interfaces,
@@ -330,6 +333,12 @@ public final class Ast {
             ConstructorDecl constructor,
             List<MethodDecl> methods) implements Decl {
         public ClassDecl {
+            actorKind = java.util.Objects.requireNonNull(actorKind, "actor kind");
+            actorBoundary = java.util.Objects.requireNonNull(actorBoundary, "actor boundary");
+            if (actorKind == ActorKind.NONE && actorBoundary != ActorBoundary.LOCAL) {
+                throw new IllegalArgumentException(
+                        "ordinary classes cannot carry an actor boundary");
+            }
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
@@ -337,26 +346,42 @@ public final class Ast {
             methods = List.copyOf(methods);
         }
 
+        /** Compatibility constructor: all existing actors/classes are local. */
+        public ClassDecl(
+                String name,
+                Visibility visibility,
+                boolean isAbstract,
+                ActorKind actorKind,
+                List<String> genericParameters,
+                List<TypeRef> parents,
+                List<TypeRef> interfaces,
+                List<FieldDecl> fields,
+                ConstructorDecl constructor,
+                List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, ActorBoundary.LOCAL,
+                    genericParameters, parents, interfaces, fields, constructor, methods);
+        }
+
         /** Compatibility constructor for pre-constructor AST producers. */
         public ClassDecl(String name, boolean isAbstract, ActorKind actorKind,
                          List<String> genericParameters, List<TypeRef> parents,
                          List<TypeRef> interfaces, List<FieldDecl> fields,
                          List<MethodDecl> methods) {
-            this(name, Visibility.PRIVATE, isAbstract, actorKind, genericParameters,
-                    parents, interfaces, fields, null, methods);
+            this(name, Visibility.PRIVATE, isAbstract, actorKind, ActorBoundary.LOCAL,
+                    genericParameters, parents, interfaces, fields, null, methods);
         }
 
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<TypeRef> parents, List<TypeRef> interfaces,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, Visibility.PRIVATE, isAbstract, ActorKind.NONE, genericParameters,
-                    parents, interfaces, fields, null, methods);
+            this(name, Visibility.PRIVATE, isAbstract, ActorKind.NONE, ActorBoundary.LOCAL,
+                    genericParameters, parents, interfaces, fields, null, methods);
         }
 
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, Visibility.PRIVATE, isAbstract, ActorKind.NONE, genericParameters,
-                    List.of(), List.of(), fields, null, methods);
+            this(name, Visibility.PRIVATE, isAbstract, ActorKind.NONE, ActorBoundary.LOCAL,
+                    genericParameters, List.of(), List.of(), fields, null, methods);
         }
     }
 
