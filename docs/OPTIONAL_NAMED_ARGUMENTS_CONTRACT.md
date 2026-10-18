@@ -278,3 +278,40 @@ for required formals and every variadic/rest tail element. The formatter
 may prefer `_` as the canonical call spelling, but must preserve
 the semantic difference from `None`. Tests must cover duplicate
 binding, named omission, typed `None`, and evaluation ordering.
+
+## Contextual '_' call item: same semantics as 'omit'
+
+`_` is the concise, **contextual call-item alias** for `omit`:
+`foo(3, _, true)` and `foo(3, omit, true)` normalize to the same
+`ArgumentItem.Omit`, with zero evaluated argument expressions for that
+slot, and no borrowed, moved or default value. Named `foo(b: _)` is
+equivalent to `foo(b: omit)`. Both consume a specific optional fixed
+formal slot, preserve exactly-once evaluation of other source expressions,
+and inject a typed `Option<T>.None` in the callee.
+
+Do **not** erase the distinction between these omission markers and an
+explicit `None` *value expression* (`Option<T>.None`), which is supplied,
+typed and recorded as `explicit_none` in call metadata. The callee can
+observe the same `Option<T>.None` in both cases, but metadata retains
+`implicit_omit`, `explicit_omit` and `explicit_none`. The `_`
+spelling does not introduce a first-class runtime value, partial function
+application, a null conversion or an unbound identifier. Existing
+destructuring/match wildcard `_` remains unchanged.
+
+```oreslang
+pub fnc log(int priority, string? label, ...string messages): void {}
+
+log(3, _, "first", "second");       // label omitted, rest length 2
+log(3, omit, "first", "second");    // identical binding
+log(3, None, "first");             // explicit Option.None value
+log(priority: 3, label: _);        // named omission, rest length 0
+log(priority: 3);                  // implicit omission
+```
+
+Contextual-only grammar: the token `_` is special only as the entire
+positional or named call argument item. The formatter may retain either
+spelling without affecting semantics. Reject `_` on required or variadic
+rest parameters; reject empty comma holes, `void` and `null` in lieu
+of omissions. No runtime guest-language support is established by pure
+binder tests: parser/AST, type/ownership/Option lowering, constructor
+handling, and Java/LLVM parity remain gated.
