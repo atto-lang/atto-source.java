@@ -4,8 +4,10 @@
 This branch does **not** enable executable enum declarations. Java's public
 TypeChecker, OwnershipChecker, TreeShaker and guest evaluator intentionally
 reject enum/pattern declarations pending full runtime lowering. LLVM parity
-and cross-file symbol import/link signatures are not implemented. This is an
-API correctness/compiler guidance contract, **not an authentication boundary**.
+and authenticated cross-file symbol import/link signatures are not implemented.
+The incremental compiler now hashes staged policy and public enum schema
+metadata, but **does not** treat that hash as importer authorization. This is
+an API correctness/compiler guidance contract, **not an authentication boundary**.
 
 ## Spelling and meaning
 
@@ -59,8 +61,11 @@ TypeChecker now hooks the index into direct function/routine, module-qualified,
 static method and nominal instance-method branches. The index derives the
 current caller's role set **only from the identity of its checked declaration**:
 user-provided role strings or sets cannot authorize calls. Unindexed guarded
-AST targets and reified function values fail closed. Lambda body checking
-clears its caller identity to avoid inheriting authority.
+AST targets and reified function values fail closed. Lambda and deferred
+expression checking clears the current caller identity to avoid inheriting
+authority. Module namespace values are rejected when they would expose a
+protected public function through an erased record-shaped callable field;
+verified direct module-qualified calls remain admitted by the role index.
 
 **Staged restriction:** `@CallableBy` is rejected on all instance methods,
 including private methods, until actual virtual dispatch and override-policy
@@ -68,19 +73,42 @@ preservation have a proven sealed method contract. `@CallerRole` on ordinary
 instance methods and `@CallableBy` on static class functions are supported by
 the standalone static index; the executable enum frontend remains gated.
 
+## Incremental ABI and import boundary
+
+- `IncrementalCompiler.abiDigest` uses a versioned **v3** fingerprint for
+  exported `@CallerRole` and `@CallableBy` metadata on public functions and
+  methods. Role argument ordering is canonicalized for a stable digest.
+  Public nominal enum case name, wire tag, payload type and declaration
+  visibility also affect the exported source ABI. These fingerprints enable
+  cache invalidation; they are **not** authenticated call-site metadata.
+- `ImportGraph.validateLinkedImports` currently **rejects** cross-source
+  import of a protected public function or class static method, and module or
+  wildcard imports that expose one. A plain exported sibling function can
+  still be imported. This deliberately blocks a loss of `@CallableBy` when
+  an importer only sees an erased function signature.
+- Future policy-bearing imported declarations require exact source identity,
+  authenticated linker-bound symbol IDs, verified role enum provenance and
+  override-compatible policy. Do not relax the import rejection based on a
+  matching string, JSON schema or unsourced hash alone.
+- New parser-only tests cover ABI invalidation, nominal enum tag/schema changes,
+  namespace erasure, and protected import denial. The tests are committed but
+  must not be described as executed until JDK25 CI actually runs them.
+
 **Important remaining soundness gates** (not assertions of support):
 
 1. Enable real enum lowering and TypeChecker admission only after typed enum
    values, sealed case identities, imported declarations and native backends
    produce matching proofs.
 2. Bind all indirect calls and method references to authenticated declarations
-   or reject them. Ensure module callable projections, overload erasure,
-   callbacks and generic specialization cannot drop the policy.
+   or reject them. The erased module-namespace path is now forbidden where
+   guarded public functions are exposed; prove all other callable projections,
+   overload erasure, callbacks and generic specialization cannot drop policy.
 3. Prove inherited/overridden virtual method and interface dispatch may not
    weaken the caller restrictions; reject policy-bearing overridable methods
    until compatible override checks are implemented.
-4. Isolate roles in every asynchronous, generator, actor and deferred callable
-   activation, not merely ordinary lambdas.
+4. Prove identity isolation on every asynchronous, generator, actor and deferred
+   callable activation. Ordinary lambda and defer-expression checking now
+   clear the caller, but this is not full guest/runtime conformance.
 5. Retain policy symbol identities and ABI fingerprints through tree-shaking,
    serialization, hot reload, incremental compilation, AOT and cross-file link.
 6. Introduce LLVM/Wasm/.NET/Forge conformance and positive/negative executable
