@@ -2,6 +2,8 @@ name: Private CI destination policy self-test
 on:
   pull_request:
     paths:
+      - '.github/workflows/private-ci-exact-head-ephemeral.yml'
+      - 'tests/test_private_ci_exact_head_ephemeral.py'
       - 'scripts/check-private-ci-destination.sh'
       - 'scripts/test-private-ci-destination.sh'
       - 'scripts/run-in-private-ci-destination.sh'
@@ -24,6 +26,8 @@ on:
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
   push:
     paths:
+      - '.github/workflows/private-ci-exact-head-ephemeral.yml'
+      - 'tests/test_private_ci_exact_head_ephemeral.py'
       - 'scripts/check-private-ci-destination.sh'
       - 'scripts/test-private-ci-destination.sh'
       - 'scripts/run-in-private-ci-destination.sh'
@@ -66,7 +70,13 @@ jobs:
             scripts/verify-review-pinned-private-ci.py \
             tests/test_review_pinned_private_ci.py \
             scripts/dispatch-review-pinned-private-ci.py \
-            tests/test_review_pinned_dispatcher.py
+            tests/test_review_pinned_dispatcher.py \
+            tests/test_private_ci_exact_head_ephemeral.py
+      - name: Validate source-only ephemeral runner admission policy
+        run: |
+          set -euo pipefail
+          python3 -I tests/test_private_ci_exact_head_ephemeral.py
+
       - name: Execute destination-policy fail-closed Bash suite
         run: |
           set -euo pipefail
