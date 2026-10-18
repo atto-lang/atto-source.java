@@ -440,6 +440,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
     /** Read-only parent-observable streams retained until drained/runtime close. */
+    /** Owning OresContext identity for real source executors; null for standalone host runtimes. */
+    private volatile Object sourceActorDomain;
+
     private final Set<ActorOutputStream<?>> actorOutputStreams =
             ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
@@ -546,6 +549,21 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
+
+    /**
+     * Context bootstrap hook. Exactly one OresContext may bind a runtime's
+     * source executor domain; guest code has no access to this authority.
+     */
+    void bindSourceActorDomain(Object domain) {
+        Objects.requireNonNull(domain, "domain");
+        synchronized (runtimeLifecycleLock) {
+            if (sourceActorDomain != null && sourceActorDomain != domain)
+                throw new IllegalStateException(
+                        "ActorRuntime is already bound to another source actor domain");
+            sourceActorDomain = domain;
+        }
+    }
+
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
@@ -4142,6 +4160,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
         SharedCodeImageStore.CodeImage image =
                 Objects.requireNonNull(executor.codeImage(), "executor codeImage");
+        Object domain = sourceActorDomain;
+        if (domain != null && executor.actorUpgradeDomain() != domain) {
+            throw new SecurityException(
+                    "source actor executor belongs to another OresContext/runtime domain");
+        }
         return spawnInternal(
                 kind,
                 policy,
@@ -5418,6 +5441,11 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(transfer, "transfer");
         Objects.requireNonNull(candidate, "candidate");
         transfer.requireOpen();
+        Object targetDomain = sourceActorDomain;
+        if (targetDomain != null && candidate.actorUpgradeDomain() != targetDomain) {
+            throw new SecurityException(
+                    "candidate source actor executor belongs to another target runtime domain");
+        }
 
         String nextCode = canonicalSha256(
                 candidate.actorCodeSha256(transfer.actorTypeName),
