@@ -44,8 +44,9 @@ public final class TypeChecker {
             "Symbol", "Array", "List", "Vector", "Slice",
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
-            "ActorOutputStream", "Option", "Result", "Mutex",
-            "SharedMutex", "Channel", "Future", "Fnc", "Function");
+            "ActorOutputStream", "Option", "Result", "TrapResult", "TrapError",
+            "RecoverySignal", "Error", "Mutex", "SharedMutex", "Channel", "Future",
+            "Fnc", "Function");
 
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
@@ -192,7 +193,7 @@ public final class TypeChecker {
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
-                "self", "null"));
+                "TrapResult", "TrapError", "RecoverySignal", "Error", "self", "null"));
 
         for (Ast.ModuleDecl module : program.modules()) {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
@@ -232,16 +233,26 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    rejectCompilerOwnedTypeName(klass.name());
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    rejectCompilerOwnedTypeName(iface.name());
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    rejectCompilerOwnedTypeName(alias.name());
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
                 }
             }
+        }
+    }
+
+    private void rejectCompilerOwnedTypeName(String name) {
+        if (Set.of("TrapResult", "TrapError", "RecoverySignal", "Error").contains(name)) {
+            throw new IllegalArgumentException(
+                    "'" + name + "' is a compiler-owned type name and cannot be declared by user code");
         }
     }
 
@@ -1719,6 +1730,7 @@ public final class TypeChecker {
                                 "Result", "Future", "ActorId", "ActorKind",
                                 "ActorMail", "ActorOutput", "ActorOutputStream",
                                 "MutexGuard", "Mutex", "SharedMutex", "Channel",
+                                "TrapResult", "TrapError", "RecoverySignal", "Error",
                                 "Generator", "AsyncGenerator", "Iterator", "AsyncIterator",
                                 "IteratorResult", "Fnc", "Function").contains(name)
                         || findClass(name) != null || findInterface(name) != null
@@ -1750,6 +1762,14 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
             Type source = deref(typeOf(destructure.initializer(), env, generics, self));
+            if (source instanceof Named named && named.name().equals("TrapResult")) {
+                checkTrapResultDestructure(destructure, named, env);
+                return;
+            }
+            if (containsNestedDestructure(destructure.pattern())) {
+                throw new IllegalArgumentException(
+                        "nested destructuring is currently supported only for TrapResult values");
+            }
             if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
                 List<Type> elementTypes = sequenceDestructureTypes(source, destructure.bindings());
                 for (int i = 0; i < destructure.bindings().size(); i++) {
@@ -1783,6 +1803,21 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.ContinueStmt) {
             if (loopDepth == 0) throw new IllegalArgumentException("'continue' may only appear inside loop or for");
+            return;
+        }
+        if (stmt instanceof Ast.ThrowStmt thrown) {
+            requireNonVoidControlPayload(
+                    typeOf(thrown.value(), env, generics, self), "throw");
+            return;
+        }
+        if (stmt instanceof Ast.RaiseStmt raised) {
+            requireNonVoidControlPayload(
+                    typeOf(raised.value(), env, generics, self), "raise");
+            return;
+        }
+        if (stmt instanceof Ast.PanicStmt panicked) {
+            requireNonVoidControlPayload(
+                    typeOf(panicked.value(), env, generics, self), "panic");
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
@@ -1824,7 +1859,14 @@ public final class TypeChecker {
             }
             return;
         }
-        if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
+        if (stmt instanceof Ast.ExprStmt expression) {
+            Type expressionType = deref(typeOf(expression.expression(), env, generics, self));
+            if (isTrapResultType(expressionType)) {
+                throw new IllegalArgumentException(
+                        "trap result cannot be discarded; bind both success and error slots");
+            }
+            return;
+        }
         if (stmt instanceof Ast.DeferStmt defer) {
             if (defer.expression() instanceof Ast.LambdaExpr lambda && !lambda.parameters().isEmpty()) {
                 throw new IllegalArgumentException(
@@ -1832,7 +1874,11 @@ public final class TypeChecker {
             }
             Map<Env.Binding, Set<String>> beforeDefer = env.initializationSnapshot();
             try {
-                typeOf(defer.expression(), env, generics, self);
+                Type deferredType = deref(typeOf(defer.expression(), env, generics, self));
+                if (isTrapResultType(deferredType)) {
+                    throw new IllegalArgumentException(
+                            "defer cannot discard a trap result; destructure it before deferring work");
+                }
             } finally {
                 // Defer executes later; checking its expression now must not
                 // establish definite-initialization facts for following code.
@@ -1907,6 +1953,25 @@ public final class TypeChecker {
 
             env.mergeInitialization(List.of(normalExit, caughtExit));
             checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
+            return;
+        }
+        if (stmt instanceof Ast.RecoverStmt recovered) {
+            Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
+            env.restoreInitialization(before);
+            checkBlock(recovered.body(), env, generics, expectedReturn, self);
+            Map<Env.Binding, Set<String>> normalExit = env.initializationSnapshot();
+
+            env.restoreInitialization(before);
+            Env catchEnv = new Env(env);
+            catchEnv.define(
+                    recovered.signalName(),
+                    new Named("RecoverySignal", List.of()),
+                    Ast.BindingKind.VAL);
+            checkBlock(recovered.catchBody(), catchEnv, generics, expectedReturn, self);
+            Map<Env.Binding, Set<String>> recoveredExit = env.initializationSnapshot();
+
+            env.mergeInitialization(List.of(normalExit, recoveredExit));
+            checkBlock(recovered.finallyBody(), env, generics, expectedReturn, self);
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
@@ -2219,6 +2284,11 @@ public final class TypeChecker {
             requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
             Type source = deref(typeOf(cast.value(), env, generics, self));
             Type target = deref(resolve(cast.targetType(), generics, self));
+            if (target instanceof Named named
+                    && Set.of("TrapResult", "TrapError", "RecoverySignal").contains(named.name())) {
+                throw new IllegalArgumentException(
+                        named.name() + " is compiler-managed and cannot be forged with a cast");
+            }
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible cast: " + source + " cannot be cast to " + target);
             }
@@ -3525,6 +3595,25 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Error") && findClass("Error") == null) {
+                if (created.arguments().size() > 1) {
+                    throw new IllegalArgumentException("Error constructor accepts zero or one message argument");
+                }
+                if (!created.arguments().isEmpty()) {
+                    requireAssignable(
+                            typeOf(created.arguments().getFirst(), env, generics, self),
+                            Primitive.STRING,
+                            "Error message");
+                }
+                return new Named("Error", List.of());
+            }
+            if (created.type().name().equals("TrapResult")) {
+                throw new IllegalArgumentException("TrapResult is compiler-managed and cannot be constructed directly");
+            }
+            if (created.type().name().equals("TrapError")
+                    || created.type().name().equals("RecoverySignal")) {
+                throw new IllegalArgumentException(created.type().name() + " is compiler-managed and cannot be constructed directly");
+            }
             // Guest Symbols are immutable keys, not fresh reference capabilities.
             // Do not silently reinterpret the historical STABLE constructor.
             if (created.type().name().equals("Symbol") && findClass("Symbol") == null) {
@@ -4838,6 +4927,25 @@ public final class TypeChecker {
             return result;
         }
         if (receiver instanceof Named named) {
+            if (named.name().equals("Error") && findClass("Error") == null) {
+                if (writing) throw new IllegalArgumentException("Error.message is immutable");
+                if (member.member().equals("message")) return Primitive.STRING;
+                throw new IllegalArgumentException("unknown Error member '" + member.member() + "'");
+            }
+            if (named.name().equals("TrapError")) {
+                if (writing) throw new IllegalArgumentException("TrapError fields are immutable");
+                return switch (member.member()) {
+                    case "kind", "message" -> Primitive.STRING;
+                    default -> throw new IllegalArgumentException("unknown TrapError member '" + member.member() + "'");
+                };
+            }
+            if (named.name().equals("RecoverySignal")) {
+                if (writing) throw new IllegalArgumentException("RecoverySignal fields are immutable");
+                return switch (member.member()) {
+                    case "kind", "message" -> Primitive.STRING;
+                    default -> throw new IllegalArgumentException("unknown RecoverySignal member '" + member.member() + "'");
+                };
+            }
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
                 ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
@@ -6835,7 +6943,70 @@ public final class TypeChecker {
     }
 
     private Type trapResult(boolean trapped, Type result) {
-        return trapped ? new Named("Option", List.of(result)) : result;
+        return trapped ? new Named("TrapResult", List.of(result)) : result;
+    }
+
+    private void requireNonVoidControlPayload(Type type, String keyword) {
+        if (type == Primitive.VOID) {
+            throw new IllegalArgumentException(keyword + " requires a non-void payload");
+        }
+    }
+
+    private boolean isTrapResultType(Type type) {
+        return type instanceof Named named
+                && named.name().equals("TrapResult")
+                && named.arguments().size() == 1;
+    }
+
+    private boolean containsNestedDestructure(Ast.DestructurePattern pattern) {
+        if (pattern instanceof Ast.DestructureBindingPattern) return false;
+        Ast.NestedDestructurePattern nested = (Ast.NestedDestructurePattern) pattern;
+        return nested.children().stream().anyMatch(child ->
+                child instanceof Ast.NestedDestructurePattern
+                        || containsNestedDestructure(child));
+    }
+
+    private void checkTrapResultDestructure(
+            Ast.DestructureStmt destructure, Named source, Env env) {
+        if (source.arguments().size() != 1
+                || destructure.kind() != Ast.DestructureKind.SEQUENCE
+                || !(destructure.pattern() instanceof Ast.NestedDestructurePattern root)
+                || root.children().size() != 2
+                || !(root.children().get(1) instanceof Ast.DestructureBindingPattern errorPattern)) {
+            throw new IllegalArgumentException(
+                    "TrapResult destructuring requires [success, error] with exactly two slots");
+        }
+
+        Ast.DestructureBinding errorBinding = errorPattern.binding();
+        if (errorBinding.isDiscard() || errorBinding.rest()) {
+            throw new IllegalArgumentException(
+                    "trap error slot cannot be discarded or used as a rest binding");
+        }
+
+        Type successType = source.arguments().getFirst();
+        Type successBundle = new Tuple(
+                successType == Primitive.VOID ? List.of() : List.of(successType),
+                TupleKind.TUPLE);
+        Type successSlotType = new Named("Option", List.of(successBundle));
+        Type errorSlotType = new Named("Option", List.of(new Named("TrapError", List.of())));
+
+        Ast.DestructurePattern successPattern = root.children().getFirst();
+        if (successPattern instanceof Ast.DestructureBindingPattern successBinding) {
+            defineDestructureBinding(env, successBinding.binding(), successSlotType);
+        } else if (successPattern instanceof Ast.NestedDestructurePattern nestedSuccess
+                && nestedSuccess.kind() == Ast.DestructureKind.SEQUENCE
+                && nestedSuccess.children().size() == 1
+                && nestedSuccess.children().getFirst() instanceof Ast.DestructureBindingPattern single) {
+            if (single.binding().rest()) {
+                throw new IllegalArgumentException("nested TrapResult success binding cannot be a rest binding");
+            }
+            defineDestructureBinding(
+                    env, single.binding(), new Named("Option", List.of(successType)));
+        } else {
+            throw new IllegalArgumentException(
+                    "nested TrapResult success syntax must be [const [value], const error]");
+        }
+        defineDestructureBinding(env, errorBinding, errorSlotType);
     }
 
     private Function trapFunctionType(Ast.FunctionDecl fn, Set<String> generics, Type self) {
@@ -7014,10 +7185,20 @@ public final class TypeChecker {
                     rejectStaticClassGenericReferences(arm.body(), classGenerics, klass, method);
                 }
                 rejectStaticClassGenericReferences(switched.defaultBody(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.ThrowStmt thrown) {
+                rejectStaticClassGenericReferences(thrown.value(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.RaiseStmt raised) {
+                rejectStaticClassGenericReferences(raised.value(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.PanicStmt panicked) {
+                rejectStaticClassGenericReferences(panicked.value(), classGenerics, klass, method);
             } else if (statement instanceof Ast.TryStmt attempted) {
                 rejectStaticClassGenericReferences(attempted.body(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(attempted.catchBody(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(attempted.finallyBody(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.RecoverStmt recovered) {
+                rejectStaticClassGenericReferences(recovered.body(), classGenerics, klass, method);
+                rejectStaticClassGenericReferences(recovered.catchBody(), classGenerics, klass, method);
+                rejectStaticClassGenericReferences(recovered.finallyBody(), classGenerics, klass, method);
             } else if (statement instanceof Ast.SelectStmt selected) {
                 for (Ast.SelectArm arm : selected.arms()) {
                     rejectStaticClassGenericReferences(
@@ -7995,6 +8176,18 @@ public final class TypeChecker {
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
                 yield new Named("Option", List.of(element));
             }
+            case "TrapResult" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException("TrapResult requires exactly one explicit type argument");
+                }
+                yield new Named("TrapResult", List.of(resolve(ref.arguments().getFirst(), generics, self, true)));
+            }
+            case "TrapError", "RecoverySignal", "Error" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(ref.name() + " does not accept type arguments");
+                }
+                yield new Named(ref.name(), List.of());
+            }
             case "Result" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 2) {
                     throw new IllegalArgumentException("Result requires exactly two explicit type arguments");
@@ -8352,7 +8545,15 @@ public final class TypeChecker {
 
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
-        for (String name : names) if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        for (String name : names) {
+            if (Set.of("TrapResult", "TrapError", "RecoverySignal", "Error").contains(name)) {
+                throw new IllegalArgumentException(
+                        "'" + name + "' is compiler-owned and cannot be used as a generic parameter in " + owner);
+            }
+            if (!result.add(name)) {
+                throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+            }
+        }
         return result;
     }
 
@@ -8369,7 +8570,10 @@ public final class TypeChecker {
 
     private boolean definitelyReturns(List<Ast.Stmt> body) {
         for (Ast.Stmt stmt : body) {
-            if (stmt instanceof Ast.ReturnStmt) return true;
+            if (stmt instanceof Ast.ReturnStmt
+                    || stmt instanceof Ast.ThrowStmt
+                    || stmt instanceof Ast.RaiseStmt
+                    || stmt instanceof Ast.PanicStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && !containsBreakForCurrentLoop(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
@@ -8389,6 +8593,10 @@ public final class TypeChecker {
             if (stmt instanceof Ast.TryStmt attempted) {
                 if (definitelyReturns(attempted.finallyBody())) return true;
                 if (definitelyReturns(attempted.body()) && definitelyReturns(attempted.catchBody())) return true;
+            }
+            if (stmt instanceof Ast.RecoverStmt recovered) {
+                if (definitelyReturns(recovered.finallyBody())) return true;
+                if (definitelyReturns(recovered.body()) && definitelyReturns(recovered.catchBody())) return true;
             }
         }
         return false;
@@ -8416,6 +8624,10 @@ public final class TypeChecker {
                 if (containsBreakForCurrentLoop(attempted.body())
                         || containsBreakForCurrentLoop(attempted.catchBody())
                         || containsBreakForCurrentLoop(attempted.finallyBody())) return true;
+            } else if (stmt instanceof Ast.RecoverStmt recovered) {
+                if (containsBreakForCurrentLoop(recovered.body())
+                        || containsBreakForCurrentLoop(recovered.catchBody())
+                        || containsBreakForCurrentLoop(recovered.finallyBody())) return true;
             }
         }
         return false;
