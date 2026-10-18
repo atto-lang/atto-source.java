@@ -125,7 +125,7 @@ final class MlActorStateScalarGuestTest {
                     .mimeType(OresLanguage.MIME_TYPE).build();
             assertDoesNotThrow(() -> context.eval(executable));
         }
-        assertEquals("ORES_TYPED_RESULT_PASS\\n",
+        assertEquals("ORES_TYPED_RESULT_PASS\n",
                 stdout.toString(StandardCharsets.UTF_8));
     }
 
