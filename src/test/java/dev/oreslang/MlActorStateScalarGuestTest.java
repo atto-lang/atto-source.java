@@ -1,0 +1,170 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.ActorStateContract;
+import dev.oreslang.types.DeclaredEffectVerifier;
+import dev.oreslang.types.TypeChecker;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * GUEST execution gate for the actual Oreslang ML scalar actor-state fixture.
+ *
+ * The .ores fixture was copied byte-for-byte from oreslang-ml's stacked
+ * actor-state PR #7 (Git blob 5c61549af7fe9d9fc373ec5e4482c177334fd675).
+ * This JUnit class requires an actual GraalVM Oreslang context evaluation;
+ * pure host-side arithmetic is explicitly NOT accepted as execution evidence.
+ *
+ * Stacked onto the canonical Java with/using reconciliation branch. Do not
+ * infer that LLVM, GPU tensor VJP, or multi-stage actor routing are tested.
+ */
+final class MlActorStateScalarGuestTest {
+    private static final Path FIXTURE =
+            Path.of("tests", "fixtures", "ml-actor-state-scalar.ores");
+
+    private static String source() throws Exception {
+        return Files.readString(FIXTURE);
+    }
+
+    private static void verify(String text) {
+        Ast.Program program = Parser.parse(text);
+        ActorStateContract.verify(program);
+        DeclaredEffectVerifier.verify(program);
+        TypeChecker.checkTypes(program);
+    }
+
+    @Test void compiledActorStageHasOneStateSchemaAndDeclaredEffects() throws Exception {
+        String text = source();
+        assertDoesNotThrow(() -> verify(text));
+        assertEquals(1, count(text, "    state {"));
+        assertFalse(text.contains("self.state."));
+        assertTrue(text.contains("with state.read"));
+        assertTrue(text.contains("with state.read, state.write"));
+        assertTrue(text.contains("using state.read("));
+        assertTrue(text.contains("using state.write(critical "));
+        assertTrue(text.contains("self.handle_state(critical read "));
+        assertTrue(text.contains("self.handle_state(critical write "));
+    }
+
+    @Test void actualGuestForwardBackwardDuplicateAndCommitMatchPinnedOutput() throws Exception {
+        String text = source();
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(stdout).build()) {
+            Source executable = Source.newBuilder(OresLanguage.ID, text,
+                    "ml-actor-state-scalar.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            // The real guest actor mailbox, state subsystem and scheduler
+            // must execute here. A missing feature fails the test.
+            assertDoesNotThrow(() -> context.eval(executable));
+        }
+        assertEquals("20\n30\n2\n-4\n-2\n5\n5\n2\n-1\n10\n",
+                stdout.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test void readEffectsDoNotGrantStateWriteAndLoanCannotEscape() {
+        assertRejected("""
+                define actor Stage as
+                    state { weight: int = 10; }
+                    private invalid(): int with state.read {
+                        return using state.read(|s| -> {
+                            s.weight = 13;
+                            return s.weight;
+                        });
+                    }
+                end
+                """);
+        assertRejected("""
+                define actor Stage as
+                    state { weight: int = 10; }
+                    private invalid(): int with state.read {
+                        return using state.read(|s| -> {
+                            return s;
+                        });
+                    }
+                end
+                """);
+    }
+
+    @Test void undeclaredWriteEffectCannotBeSmuggledThroughCritical() {
+        assertRejected("""
+                define actor Stage as
+                    state { weight: int = 10; }
+                    private invalid(): int with state.read {
+                        return self.handle_state(critical write |s| -> {
+                            s.weight = s.weight + 1;
+                            return s.weight;
+                        });
+                    }
+                end
+                """);
+        assertRejected("""
+                define actor Stage as
+                    state { weight: int = 10; }
+                    private invalid(): int with state.read, state.write {
+                        return using state.write(|s| -> {
+                            s.weight = 42;
+                            return s.weight;
+                        });
+                    }
+                end
+                """);
+    }
+
+    @Test void oneStateOnlyAndDirectStateFieldAccessAreSealed() {
+        assertRejected("""
+                define actor Stage as
+                    state { weight: int = 10; }
+                    state { version: int = 1; }
+                end
+                """);
+        assertRejected("""
+                define actor Stage as
+                    state { weight: int = 10; }
+                    private invalid(): int with state.read {
+                        return self.state.weight;
+                    }
+                end
+                """);
+        assertRejected("""
+                define actor Stage as
+                    state { weight: int = 10; }
+                    val int extra = 3;
+                end
+                """);
+    }
+
+    @Test void liveLoanCannotCooperateOrAwait() {
+        assertRejected("""
+                define actor Stage as
+                    state { weight: int = 10; }
+                    private invalid(): int with state.read {
+                        return using state.read(|s| -> {
+                            rt cooperate;
+                            return s.weight;
+                        });
+                    }
+                end
+                """);
+    }
+
+    private static void assertRejected(String text) {
+        assertThrows(IllegalArgumentException.class, () -> verify(text));
+    }
+
+    private static int count(String haystack, String needle) {
+        int count = 0, from = 0;
+        while ((from = haystack.indexOf(needle, from)) >= 0) {
+            count++;
+            from += needle.length();
+        }
+        return count;
+    }
+}
