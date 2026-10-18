@@ -68,6 +68,10 @@ final class ActorDurableQuiescenceTest {
         try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(2, 2, 1, 32))) {
             var actor = runtime.<String>spawnShared(() -> (message, ctx) -> { });
+            var uninitialized = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> runtime.requestDurableQuiescence(actor).get(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, uninitialized.getCause());
+            actor.ready().get(3, TimeUnit.SECONDS);
             var proof = runtime.requestDurableQuiescence(actor)
                     .get(3, TimeUnit.SECONDS);
             assertTrue(proof.valid());
@@ -149,6 +153,7 @@ final class ActorDurableQuiescenceTest {
         try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(2, 2, 1, 32))) {
             var actor = runtime.<String>spawnShared(() -> (message, ctx) -> { });
+            actor.ready().get(3, TimeUnit.SECONDS);
             var check = runtime.requestDurableQuiescence(actor)
                     .thenApply(proof -> {
                         assertFalse(ActorRuntime.isActorCarrierThread());
