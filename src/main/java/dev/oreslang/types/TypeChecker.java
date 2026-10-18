@@ -4110,6 +4110,9 @@ public final class TypeChecker {
             }
 
             for (Ast.FieldDecl field : klass.fields()) {
+                // Static class storage is namespace state, not part of an
+                // instance value crossing a channel/async boundary.
+                if (field.isStatic()) continue;
                 Type fieldType = resolveSharedGeneric(classFieldType(klass, field), classBindings);
                 if (containsChannelCallable(fieldType, seen, classBindings)) return true;
             }
@@ -4182,6 +4185,9 @@ public final class TypeChecker {
             }
 
             for (Ast.FieldDecl field : klass.fields()) {
+                // Static class storage is namespace state, not part of an
+                // instance value crossing a channel/async boundary.
+                if (field.isStatic()) continue;
                 Type fieldType = resolveSharedGeneric(classFieldType(klass, field), classBindings);
                 if (containsChannelBorrow(fieldType, seen, classBindings)) return true;
             }
