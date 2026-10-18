@@ -237,6 +237,12 @@ public final class SqliteWorkflowJournalV1
     }
 
     @Override
+    public synchronized WorkflowJournalStoreV1.ReadView readView() {
+        refresh();
+        return delegate.readView();
+    }
+
+    @Override
     public synchronized void close() {
         if (closed) return;
         closed = true;
