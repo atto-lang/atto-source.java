@@ -117,7 +117,8 @@ public final class IncrementalCompiler {
                     // their declarations are never executed in the importer.
                     checked = TypeChecker.checkTypesWithImportedClasses(
                             Parser.parse(normalized.get(id)), linked.classes(), linked.aliases());
-                    OwnershipChecker.checkWithImportedClasses(checked, linked.classes());
+                    OwnershipChecker.checkWithImportedClasses(
+                            checked, linked.classes(), linked.aliases());
                 } catch (IllegalArgumentException invalid) {
                     throw new IllegalArgumentException(
                             "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
