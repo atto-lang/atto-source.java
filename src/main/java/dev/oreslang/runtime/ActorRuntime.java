@@ -933,20 +933,20 @@ public final class ActorRuntime implements AutoCloseable {
                             Math.min(
                                     MAX_LIFECYCLE_OBSERVER_WORKERS,
                                     carrierBudget.borrowingMaximumPerDomain()));
-            lifecycleObservers = new ThreadPoolExecutor(
+            ThreadFactory lifecycleFactory = carrierPermitPool == null
+                    ? namedFactory("ores-lifecycle-observer-")
+                    : carrierPermitPool.threadFactory(
+                            OresCarrierPermitPool.Domain.LIFECYCLE,
+                            "ores-lifecycle-observer-");
+            lifecycleObservers = new AdaptiveCarrierExecutor(
+                    0,
                     observerWorkers,
-                    observerWorkers,
-                    30L,
-                    TimeUnit.SECONDS,
-                    new ArrayBlockingQueue<>(dispatcherConfig.maxActors()),
-                    carrierPermitPool == null
-                            ? namedFactory("ores-lifecycle-observer-")
-                            : carrierPermitPool.threadFactory(
-                                    OresCarrierPermitPool.Domain.LIFECYCLE,
-                                    "ores-lifecycle-observer-"),
-                    new ThreadPoolExecutor.AbortPolicy());
+                    dispatcherConfig.maxActors(),
+                    lifecycleFactory);
             // Preserve the runtime's zero-thread cold start. Lifecycle workers
             // exist only while terminal observers actually need execution.
+            // AdaptiveCarrierExecutor also reconciles any factory-created NEW
+            // worker abandoned by a failed JDK thread-container start.
             lifecycleObservers.allowCoreThreadTimeOut(true);
         } catch (RuntimeException | Error failure) {
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ACTOR_DISPATCHER_FAILED, 1L);
