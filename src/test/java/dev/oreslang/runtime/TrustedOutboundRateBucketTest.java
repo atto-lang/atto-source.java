@@ -56,12 +56,32 @@ final class TrustedOutboundRateBucketTest {
                 () -> new TrustedOutboundRateBucket(0, 5, clock::get));
         assertThrows(IllegalArgumentException.class,
                 () -> new TrustedOutboundRateBucket(20, Long.MAX_VALUE, clock::get));
-        assertThrows(IllegalStateException.class,
-                () -> new TrustedOutboundRateBucket(20, 5, () -> -1));
         var bucket = new TrustedOutboundRateBucket(20, 5, clock::get);
         assertThrows(IllegalArgumentException.class, () -> bucket.tryConsume(0));
         assertThrows(IllegalArgumentException.class, () -> bucket.tryConsume(6));
         assertThrows(IllegalArgumentException.class, () -> bucket.rollbackUnpublished(-1));
+    }
+
+    @Test
+    void negativeNanoTimeOriginAndSignedWrapAreValid() {
+        // System.nanoTime has no guaranteed nonnegative origin.
+        AtomicLong clock = new AtomicLong(-100);
+        var bucket = new TrustedOutboundRateBucket(1_000_000_000L, 5, clock::get);
+        assertTrue(bucket.tryConsume(5));
+        clock.set(-98);
+        assertEquals(2L, bucket.remaining());
+        clock.set(-99); // backwards movement must not refill.
+        assertEquals(2L, bucket.remaining());
+        clock.set(-97);
+        assertEquals(3L, bucket.remaining());
+
+        AtomicLong wrap = new AtomicLong(Long.MAX_VALUE - 2);
+        var wrapped = new TrustedOutboundRateBucket(1_000_000_000L, 5, wrap::get);
+        assertTrue(wrapped.tryConsume(5));
+        wrap.set(Long.MIN_VALUE + 1); // positive four-nanosecond interval
+        assertEquals(4L, wrapped.remaining());
+        wrap.set(Long.MIN_VALUE + 2);
+        assertEquals(5L, wrapped.remaining());
     }
 
     @Test
