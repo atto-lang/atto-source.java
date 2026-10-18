@@ -2500,6 +2500,17 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.NameExpr functionName
                     && env.lookup(functionName.name()) == null) {
+                if (currentClassOwner != null
+                        && currentClassOwner.actorBoundary() == Ast.ActorBoundary.FFI
+                        && currentClassOwner.foreignDeclarations().stream()
+                                .anyMatch(foreign ->
+                                        foreign.name().equals(functionName.name()))) {
+                    throw new IllegalArgumentException(
+                            "foreign call '" + currentClassOwner.name() + "."
+                                    + functionName.name()
+                                    + "' is declared but runtime lowering is not enabled; "
+                                    + "FFI calls require the bounded foreign executor and generation lease backend");
+                }
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
                         "function " + functionName.name());
