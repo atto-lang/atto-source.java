@@ -122,6 +122,89 @@ final class OresCarrierBudgetTest {
         }
     }
 
+    @Test void budgetedJvmActorDomainCanBorrowIdleGlobalPermits() throws Exception {
+        String previous = System.getProperty(OresCarrierBudget.PROPERTY);
+        String previousBackend = System.getProperty("ores.runtime.carriers");
+        String previousAffinity = System.getProperty("ores.actor.affinity");
+        try {
+            System.setProperty(OresCarrierBudget.PROPERTY, "8");
+            System.setProperty("ores.runtime.carriers", "java");
+            System.setProperty("ores.actor.affinity", "none");
+            OresVM vm = OresVM.create(Runnable::run);
+            CountDownLatch entered = new CountDownLatch(4);
+            CountDownLatch release = new CountDownLatch(1);
+            ActorRuntime actors = null;
+            try {
+                OresCarrierBudget budget = vm.carrierBudget();
+                assertNotNull(budget);
+                assertEquals(4, budget.borrowingMaximumPerDomain());
+
+                var config = new ActorRuntime.DispatcherConfig(
+                        budget.privateMaximum(),
+                        budget.sharedMaximum(),
+                        16,
+                        32);
+                actors = new ActorRuntime(
+                        IsolatePolicy.developer(),
+                        config,
+                        ActorRuntime.TurnExecutor.direct(),
+                        ActorRuntime.ControlDispatcher.unavailable(),
+                        budget,
+                        vm.carrierPermitPool());
+
+                var refs = new java.util.ArrayList<ActorRuntime.ActorRef<String>>();
+                for (int i = 0; i < 4; i++) {
+                    var ref = actors.<String>spawnShared(() -> (message, context) -> {
+                        entered.countDown();
+                        try {
+                            release.await(5, TimeUnit.SECONDS);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                    });
+                    refs.add(ref);
+                    ref.send("block");
+                }
+
+                assertTrue(entered.await(3, TimeUnit.SECONDS),
+                        "shared actor domain should borrow two idle permits beyond its preferred slice");
+                var scheduler = actors.schedulerSnapshot();
+                assertEquals(4, scheduler.sharedDomain().maximumCarriers());
+                assertEquals(4, scheduler.sharedDomain().activeCarriers());
+
+                var global = actors.globalCarrierPressure().orElseThrow();
+                assertEquals(8, global.maximum());
+                assertEquals(4, global.held());
+                assertEquals(4, global.free());
+                assertEquals(4, global.sharedHeld());
+                assertEquals(0, global.privateHeld());
+                assertEquals(0, global.untrustedHeld());
+                assertEquals(0, global.lifecycleHeld());
+                assertEquals(0, global.controlHeld());
+                assertEquals(0L, global.deniedCapacity());
+                assertEquals(0L, global.deniedReserveProtection());
+
+                release.countDown();
+                for (var ref : refs) {
+                    ref.drain().get(5, TimeUnit.SECONDS);
+                    ref.stop();
+                    assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+                }
+            } finally {
+                release.countDown();
+                if (actors != null) actors.close();
+                vm.close();
+            }
+        } finally {
+            if (previous == null) System.clearProperty(OresCarrierBudget.PROPERTY);
+            else System.setProperty(OresCarrierBudget.PROPERTY, previous);
+            if (previousBackend == null) System.clearProperty("ores.runtime.carriers");
+            else System.setProperty("ores.runtime.carriers", previousBackend);
+            if (previousAffinity == null) System.clearProperty("ores.actor.affinity");
+            else System.setProperty("ores.actor.affinity", previousAffinity);
+        }
+    }
+
     @Test void forgedBudgetCannotOvercommitOrEraseRequiredReserves() {
         assertThrows(IllegalArgumentException.class,
                 () -> new OresCarrierBudget(5, 0, 1, 1, 1, 1));
