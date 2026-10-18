@@ -397,3 +397,22 @@ presence or standalone reference checker passes.
 Release gates remain full Option<T> ABI and effect/borrow checking, unique
 target selection, checked constructor and actor lifecycle binding, native
 LLVM parity, and green JDK25/GraalVM and LLVM CI tied to exact source trees.
+
+### Staged static selection and direct Truffle-root safety
+
+The binder's `selectParsed(declarationSignatures, sourceItems)` selects a
+disjoint arity domain at compilation time and rejects any overlap before
+argument labels can influence overload identity. It verifies the resulting
+immutable plan against the original AST; actual expression evaluation is
+still gated. `evaluatedExpressionsInSourceOrder` yields the source expression
+references in lexical order only after that plan correspondence is proved.
+
+The public compiler entry point, imported-class type/ownership checker paths,
+lambda checks, and now the direct `OresEvalRootNode` AST constructor all
+reject unlowered `T?` declarations. This closes a path where callers could
+construct a runtime root without first using the normal checked compiler API.
+
+These safeguards **do not imply** that named/optional invocation is
+executable or that JUnit/compiler CI has passed. The protected source
+organization currently lacks step-backed test evidence for the candidate
+head; private source transfer requires the separately reviewed allowlist.
