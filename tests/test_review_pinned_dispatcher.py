@@ -363,6 +363,41 @@ class DispatcherTest(unittest.TestCase):
         finally:
             MOD.PUB.gh_api=old_api; MOD.PUB.gh_api_no_content=old_no
 
+
+    def test_cleanup_exact_authorization_ref_removes_only_exact_commit(self):
+        commit="a"*40; branch="ci/authorized-"+commit
+        old_api=MOD.PUB.gh_api; old_no=MOD.PUB.gh_api_no_content; old_list=MOD.api_list
+        calls=[0]; removed=[]
+        try:
+            def listing(route):
+                calls[0]+=1
+                return ([{"ref":"refs/heads/"+branch}] if calls[0]==1 else [])
+            MOD.api_list=listing
+            MOD.PUB.gh_api=lambda route:{
+                "ref":"refs/heads/"+branch,
+                "object":{"sha":commit,"type":"commit"}
+            }
+            MOD.PUB.gh_api_no_content=lambda route,method="POST",payload=None: removed.append((route,method))
+            MOD.cleanup_exact_authorization_ref_if_present(commit)
+            self.assertEqual(removed,[(f"repos/{MOD.CARRIER_REPO}/git/refs/heads/{branch}","DELETE")])
+        finally:
+            MOD.PUB.gh_api=old_api; MOD.PUB.gh_api_no_content=old_no; MOD.api_list=old_list
+
+    def test_cleanup_authorization_ref_refuses_foreign_commit(self):
+        commit="a"*40; branch="ci/authorized-"+commit
+        old_api=MOD.PUB.gh_api; old_no=MOD.PUB.gh_api_no_content; old_list=MOD.api_list
+        try:
+            MOD.api_list=lambda route:[{"ref":"refs/heads/"+branch}]
+            MOD.PUB.gh_api=lambda route:{
+                "ref":"refs/heads/"+branch,
+                "object":{"sha":"b"*40,"type":"commit"}
+            }
+            MOD.PUB.gh_api_no_content=lambda *args,**kwargs: self.fail("must not delete foreign authorization ref")
+            with self.assertRaisesRegex(MOD.Denied,"authorization ref cleanup refused"):
+                MOD.cleanup_exact_authorization_ref_if_present(commit)
+        finally:
+            MOD.PUB.gh_api=old_api; MOD.PUB.gh_api_no_content=old_no; MOD.api_list=old_list
+
     def test_payload_readback_rejects_duplicate_protected_entries(self):
         import hashlib
         r=receipt()
