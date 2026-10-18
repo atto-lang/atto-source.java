@@ -209,6 +209,13 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
         synchronized (lock) {
             requireOpenLocked();
             if (dispatchFrozen) return null;
+            // Bound sparse out-of-order completion metadata. Completed messages
+            // refund transport credits, but they must not permit the dispatch
+            // sequence to run arbitrarily far ahead of one stuck low sequence.
+            // This keeps completedBeyondWatermark bounded by maxMessages.
+            if (highestDispatchedSequence - completionWatermark >= maxMessages) {
+                return null;
+            }
             Envelope envelope = queued.pollFirst();
             if (envelope == null) return null;
 
@@ -266,6 +273,10 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                     completionWatermark++;
                 }
             } else if (messageSequence > completionWatermark) {
+                if (completedBeyondWatermark.size() >= maxMessages) {
+                    throw new IllegalStateException(
+                            "logical completion gap metadata exceeded bounded dispatch window");
+                }
                 if (!completedBeyondWatermark.add(messageSequence)) {
                     throw new IllegalStateException(
                             "duplicate sparse logical completion");
