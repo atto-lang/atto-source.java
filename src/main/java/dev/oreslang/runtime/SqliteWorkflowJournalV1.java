@@ -95,6 +95,9 @@ public final class SqliteWorkflowJournalV1
                     "failed to open workflow SQLite journal "
                             + this.databasePath,
                     failure);
+        } catch (RuntimeException | Error failure) {
+            closeAfterFailedOpen();
+            throw failure;
         }
     }
 
@@ -249,17 +252,16 @@ public final class SqliteWorkflowJournalV1
             return result;
         } catch (RuntimeException | Error failure) {
             if (!committed) {
-                rollbackQuietly();
-                reloadAfterRollback();
+                rollbackAndReloadOrInvalidate(failure);
             }
             throw failure;
         } catch (SQLException failure) {
-            if (!committed) {
-                rollbackQuietly();
-                reloadAfterRollback();
-            }
-            throw new IllegalStateException(
+            IllegalStateException wrapped = new IllegalStateException(
                     "workflow SQLite mutation failed", failure);
+            if (!committed) {
+                rollbackAndReloadOrInvalidate(wrapped);
+            }
+            throw wrapped;
         }
     }
 
@@ -641,12 +643,27 @@ public final class SqliteWorkflowJournalV1
         }
     }
 
-    private void rollbackQuietly() {
+    private void rollbackAndReloadOrInvalidate(
+            Throwable originalFailure) {
         try {
             execute("ROLLBACK");
+        } catch (SQLException rollbackFailure) {
+            originalFailure.addSuppressed(rollbackFailure);
+            invalidateConnection();
+            return;
+        }
+        reloadAfterRollback();
+    }
+
+    private void invalidateConnection() {
+        closed = true;
+        Connection doomed = connection;
+        connection = null;
+        if (doomed == null) return;
+        try {
+            doomed.close();
         } catch (SQLException ignored) {
-            // Preserve the original failure. A subsequent reload will surface
-            // any database-level corruption instead of masking it here.
+            // The original mutation/rollback failure remains authoritative.
         }
     }
 
