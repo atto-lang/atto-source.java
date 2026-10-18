@@ -90,6 +90,28 @@ class SurefireEvidenceTests(unittest.TestCase):
         self.marker.symlink_to(outside)
         self.check()
 
+    def test_missing_testcase_name_is_rejected(self):
+        p = self.report(SUITES[0])
+        p.write_text(p.read_text().replace(' name="synthetic"', ''))
+        self.check()
+
+    def test_whitespace_only_testcase_name_is_rejected(self):
+        p = self.report(SUITES[0])
+        p.write_text(p.read_text().replace('name="synthetic"', 'name="   "'))
+        self.check()
+
+    def test_orphan_failure_element_is_rejected(self):
+        p = self.report(SUITES[0])
+        p.write_text(p.read_text().replace('</testsuite>',
+                                           '<failure message="outside-case"/></testsuite>'))
+        self.check()
+
+    def test_orphan_error_under_testsuites_root_is_rejected(self):
+        p = self.report(SUITES[0])
+        p.write_text('<testsuites>' + p.read_text() +
+                     '<error message="outside-suite"/></testsuites>')
+        self.check()
+
     def test_testsuites_wrapper_counter_mismatch_rejected(self):
         suite = SUITES[0]
         p = self.report(suite)

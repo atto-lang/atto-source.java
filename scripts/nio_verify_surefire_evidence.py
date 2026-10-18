@@ -59,6 +59,10 @@ def check_report(path: Path) -> tuple[int, set[str]]:
         raise ValueError('unexpected JUnit XML root')
     if not suites:
         raise ValueError('no JUnit suites')
+    # A malformed XML file may embed failures/errors outside testcase nodes,
+    # even if suite summary counters falsely claim zero failures.
+    if any(local(node.tag) in ('failure', 'error') for node in root.iter()):
+        raise ValueError('JUnit XML contains a failure/error element')
     executed = 0
     names: set[str] = set()
     for suite in suites:
@@ -71,6 +75,9 @@ def check_report(path: Path) -> tuple[int, set[str]]:
             errors += 'error' in children
             if 'skipped' in children:
                 continue
+            # A classname without a named testcase is not execution evidence.
+            if not case.attrib.get('name', '').strip():
+                raise ValueError('executed JUnit testcase has no name')
             # A report filename is not evidence of the class actually run.
             identity = case.attrib.get('classname', '')
             name = identity.rsplit('.', 1)[-1].split('$', 1)[0]
