@@ -887,3 +887,27 @@ reviewed and approved.
 TypeChecker.inspectStagedScalarInvocation returns a non-executable CheckedScalarInvocationWitness. It derives literal value types from the original AST, selects an exact same-module declaration, checks a narrow scalar/void result-context contract, and rejects unverified caller signatures. The proof keeps BoundInvocation and OptionalCallTempLowering source-order mappings. It accepts no arbitrary claimed types.
 
 This is a SHAPE_ONLY preview: requireExecutable() always throws, and full compiler/runtime gates stay closed until semantic, ownership, effect, and Option ABI lowering are verified. Tests are committed but have not passed JDK25 Maven CI. See CheckedScalarInvocationWitnessTest.
+
+
+## Checker-issued scalar witness: deliberately checked callee body
+
+`CheckedScalarInvocationWitness` must not interpret an AST-declared scalar
+return type as proof that the selected implementation has that type. As a
+strictly non-executable interim guard, issuance now requires the selected
+ordinary module function to have exactly one return statement, containing
+either an exact matching primitive literal or an unmodified required scalar
+formal with exactly matching declared return type. A `void` callee must have
+a single bare `return;`. A `T?`/Option-valued formal, computed return,
+recursive call, other statements, incorrect return literal or non-returning
+body requires the full semantic/effect checker and fails this preview.
+
+This is **not** a general Oreslang function-body type checker or a runtime
+execution authorization. It cannot establish generic substitution, borrow
+lifetimes, effect safety, complete lexical scope, or an executable `Option<T>`
+ABI. `readiness()` stays `SHAPE_ONLY` and `requireExecutable()` rejects.
+The Java TypeChecker, OwnershipChecker and interpreter retain their separate
+fail-closed staged-call gates. The added source JUnit methods do not
+constitute a green executable test suite until real CI executes them.
+
+The stacked PR was merged with the latest parent to pick up checks rejecting
+class/interface/type-alias collisions in the parser-owned candidate preview.
