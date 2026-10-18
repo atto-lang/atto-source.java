@@ -79,6 +79,32 @@ final class ExecutionGraphChannelV1Test {
     }
 
     @Test
+    void inlineCpuExecutorFailsWithoutRegisteringChannelWrite() {
+        var output = new ChannelRuntime.Channel<Long>(1);
+        var completion = ExecutionGraphChannelV1.publishOne(constant(42L), output, Runnable::run);
+        var cause = assertThrows(CompletionException.class, completion::join).getCause();
+        assertInstanceOf(IllegalStateException.class, cause);
+        assertEquals(0, output.pendingRegistrations());
+        assertTrue(output.tryRead().isEmpty());
+        output.close();
+    }
+
+    @Test
+    void inlineThenRejectPreservesSchedulerFailureWithoutPublication() {
+        var output = new ChannelRuntime.Channel<Long>(1);
+        var completion = ExecutionGraphChannelV1.publishOne(constant(42L), output, job -> {
+            job.run();
+            throw new java.util.concurrent.RejectedExecutionException("channel executor rejected");
+        });
+        var cause = assertThrows(CompletionException.class, completion::join).getCause();
+        assertInstanceOf(java.util.concurrent.RejectedExecutionException.class, cause);
+        assertEquals("channel executor rejected", cause.getMessage());
+        assertEquals(0, output.pendingRegistrations());
+        assertTrue(output.tryRead().isEmpty());
+        output.close();
+    }
+
+    @Test
     void gpuPlansCannotPublishThroughCpuChannelAsHostData() {
         var g = new ExecutionGraphV1.Builder();
         var plan = g.build(g.downloadI64(g.uploadI64(g.cpuI64(1))));
