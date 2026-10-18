@@ -57,6 +57,18 @@ final class MarketingActorPipelineConformanceTest {
     }
 
     @Test
+    void evidenceRegistryPinsThisFixtureWithoutClaimingBackendVerification() throws Exception {
+        String receipt = Files.readString(
+                Path.of("contracts/conformance/language-motion-v1.json"),
+                StandardCharsets.UTF_8);
+        assertTrue(receipt.contains("\\"source_blob_sha1\\": \\"" + FIXTURE_GIT_BLOB_SHA + "\\""));
+        assertTrue(receipt.contains("\\"java_status\\": \\"pending_ci\\""));
+        assertTrue(receipt.contains("\\"not_in_main\\": true"));
+        assertFalse(receipt.matches("(?s).*\\\"java_status\\\"\\s*:\\s*\\\"verified\\\".*"));
+        assertFalse(receipt.matches("(?s).*\\\"llvm_status\\\"\\s*:\\s*\\\"verified\\\".*"));
+    }
+
+    @Test
     void infixThreeActorPipelineDeliversForwardAndBackwardAndSettlesDone() throws Exception {
         assertEquals("PIPE_3_RESULT_8", execute(program()));
     }
