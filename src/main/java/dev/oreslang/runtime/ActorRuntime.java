@@ -586,6 +586,11 @@ public final class ActorRuntime implements AutoCloseable {
                 workerPolicy);
     }
 
+    /** Trusted runtime affinity check used by the future IPC launcher. */
+    boolean ownsActorArtifact(ActorArtifact<?> artifact) {
+        return artifact != null && artifact.admittedForRuntime(runtimeInstanceId);
+    }
+
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
