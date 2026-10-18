@@ -50,7 +50,7 @@ public final class CheckedLiteralOptionAbi {
     public record SomeValue(Ast.TypeRef elementType, CapturedScalar scalar)
             implements AbiValue {
         public SomeValue {
-            Objects.requireNonNull(elementType, "Some<T> element type");
+            requireScalarElementType(elementType);
             Objects.requireNonNull(scalar, "Some<T> payload");
             if (!elementType.equals(scalar.type())) {
                 throw new IllegalArgumentException("Some<T> payload type mismatch");
@@ -63,25 +63,45 @@ public final class CheckedLiteralOptionAbi {
 
     public record NoneValue(Ast.TypeRef elementType) implements AbiValue {
         public NoneValue {
-            Objects.requireNonNull(elementType, "None<T> element type");
+            requireScalarElementType(elementType);
         }
         @Override public Ast.TypeRef calleeType() {
             return new Ast.TypeRef("Option", List.of(elementType), false);
         }
     }
 
-    /** Immutable evidence of source captures and formal-order ABI values. */
-    public record Preview(List<CapturedScalar> sourceTemps, List<AbiValue> abiSlots) {
-        public Preview {
-            sourceTemps = List.copyOf(sourceTemps);
-            abiSlots = List.copyOf(abiSlots);
+    /**
+     * Factory-owned immutable snapshot. A public record constructor would
+     * allow a consumer to forge a "checked" preview from arbitrary values.
+     * Only materialize() may create this evidence object.
+     */
+    public static final class Preview {
+        private final List<CapturedScalar> sourceTemps;
+        private final List<AbiValue> abiSlots;
+
+        private Preview(List<CapturedScalar> sourceTemps, List<AbiValue> abiSlots) {
+            this.sourceTemps = List.copyOf(sourceTemps);
+            this.abiSlots = List.copyOf(abiSlots);
         }
+
+        public List<CapturedScalar> sourceTemps() { return sourceTemps; }
+        public List<AbiValue> abiSlots() { return abiSlots; }
         public BoundInvocation.Readiness readiness() {
             return BoundInvocation.Readiness.SHAPE_ONLY;
         }
         public void requireExecutable() {
             throw new IllegalStateException(
                     "literal Option ABI materialization is not an executable guest call");
+        }
+    }
+
+    private static void requireScalarElementType(Ast.TypeRef type) {
+        Objects.requireNonNull(type, "Option<T> element type");
+        if (type.inferArguments() || !type.arguments().isEmpty()
+                || type.isBorrow() || type.isOmittableFormal()
+                || !List.of("int", "float", "bool", "string").contains(type.name())) {
+            throw new IllegalArgumentException(
+                    "literal Option ABI requires an exact concrete scalar element type");
         }
     }
 

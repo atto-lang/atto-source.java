@@ -133,4 +133,45 @@ final class CheckedLiteralOptionAbiTest {
         }
     }
 
+
+    @Test
+    void previewCanOnlyBeIssuedByTheMaterializer() {
+        assertEquals(0, CheckedLiteralOptionAbi.Preview.class.getConstructors().length,
+                "public preview constructors would allow forged checked ABI evidence");
+        var preview = prepare(program("target(enabled: true, a: 7)"));
+        assertEquals(BoundInvocation.Readiness.SHAPE_ONLY, preview.readiness());
+        assertThrows(IllegalStateException.class, preview::requireExecutable);
+    }
+
+    @Test
+    void typedNoneRejectsVoidNestedGenericOptionalAndBorrowElements() {
+        for (Ast.TypeRef invalid : List.of(
+                Ast.TypeRef.simple("void"),
+                Ast.TypeRef.simple("Option"),
+                new Ast.TypeRef("Option", List.of(Ast.TypeRef.simple("int")), false),
+                new Ast.TypeRef("string", List.of(Ast.TypeRef.simple("int")), false),
+                Ast.TypeRef.inferred())) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new CheckedLiteralOptionAbi.NoneValue(invalid),
+                    "invalid None<T> element: " + invalid);
+        }
+        assertEquals(new Ast.TypeRef("Option", List.of(Ast.TypeRef.simple("bool")), false),
+                new CheckedLiteralOptionAbi.NoneValue(Ast.TypeRef.simple("bool")).calleeType());
+    }
+
+    @Test
+    void optionalPayloadMustHaveExactConcreteScalarElementType() {
+        var payload = new CheckedLiteralOptionAbi.CapturedScalar(
+                Ast.TypeRef.simple("int"), 12L);
+        assertThrows(IllegalArgumentException.class,
+                () -> new CheckedLiteralOptionAbi.SomeValue(Ast.TypeRef.simple("void"), payload));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CheckedLiteralOptionAbi.SomeValue(
+                        new Ast.TypeRef("Option", List.of(Ast.TypeRef.simple("int")), false),
+                        payload));
+        assertEquals(new Ast.TypeRef("Option", List.of(Ast.TypeRef.simple("int")), false),
+                new CheckedLiteralOptionAbi.SomeValue(
+                        Ast.TypeRef.simple("int"), payload).calleeType());
+    }
+
 }
