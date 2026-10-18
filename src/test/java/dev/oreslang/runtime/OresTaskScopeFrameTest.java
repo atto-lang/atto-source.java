@@ -315,4 +315,24 @@ final class OresTaskScopeFrameTest {
         }
     }
 
+
+    @Test
+    void cancelledParentScopeRejectsChildButReleasesItsAcquiredCodePin() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            assertTrue(scope.cancel());
+            AtomicInteger releases = new AtomicInteger();
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> scope.startCompilerFrame(scheduler,
+                            resume -> new OresScheduler.Done<>(9),
+                            () -> releases.incrementAndGet()));
+            assertEquals(1, releases.get(),
+                    "cancelled scope must retire a never-admitted child pin");
+            assertDoesNotThrow(scope::close);
+            assertEquals(1, releases.get(),
+                    "a rejected child cannot be retired a second time");
+        }
+    }
+
 }
