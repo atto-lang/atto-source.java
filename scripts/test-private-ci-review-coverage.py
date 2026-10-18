@@ -7,6 +7,7 @@ This test itself MUST be both CODEOWNED and a workflow path-filter input.
 from pathlib import Path
 import re
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 OWNER = "@ORESoftware"
@@ -36,6 +37,8 @@ def owner_matches(pattern, path):
 
 
 def validate(codeowners, workflow):
+    if len(SECURITY_PATHS) != len(set(SECURITY_PATHS)):
+        raise ValueError("duplicated security manifest entry")
     entries = []
     for raw in codeowners.splitlines():
         line = raw.strip()
@@ -108,6 +111,12 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
             "      - 'tools/verify-exact-source-tree.sh'\n", "", 1)
         with self.assertRaisesRegex(ValueError, "does not trigger"):
             validate(self.owners, damaged)
+
+    def test_duplicate_manifest_entry_is_rejected(self):
+        with patch(__name__ + ".SECURITY_PATHS",
+                   SECURITY_PATHS + ("tools/verify-exact-source-tree.sh",)):
+            with self.assertRaisesRegex(ValueError, "duplicated security manifest"):
+                validate(self.owners, self.workflow)
 
     def test_duplicate_trigger_is_rejected(self):
         beginning, separator, push_block = self.workflow.partition("  push:\n")
