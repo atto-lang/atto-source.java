@@ -111,8 +111,9 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                ActorPrelude actorPrelude = parseActorPrelude();
                 if (match(ACTOR, ISOACTOR)) {
-                    rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
+                    rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations, actorPrelude));
                     continue;
                 }
                 if (modifiers.shared) {
@@ -304,8 +305,9 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            ActorPrelude actorPrelude = parseActorPrelude();
             if (match(ACTOR, ISOACTOR)) {
-                return parseDefinedActorClass(previous(), modifiers, annotations);
+                return parseDefinedActorClass(previous(), modifiers, annotations, actorPrelude);
             }
             if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
@@ -692,7 +694,8 @@ public final class Parser {
     private Ast.ClassDecl parseDefinedActorClass(
             Token actorToken,
             Modifiers modifiers,
-            List<Ast.Annotation> annotations) {
+            List<Ast.Annotation> annotations,
+            ActorPrelude prelude) {
         modifiers = mergeModifiers(modifiers, parseModifiers());
         Ast.ActorKind kind = resolveActorKind(
                 actorToken, actorToken.type() == ISOACTOR, modifiers);
@@ -703,8 +706,70 @@ public final class Parser {
                     "actor class declarations accept only visibility and actor-kind modifiers");
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-        rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-        return parseActorClass(kind, modifiers.visibility);
+        return parseActorClass(kind, modifiers.visibility, prelude, annotations);
+    }
+
+    private record ActorPrelude(
+            Ast.ActorReplyRole replyRole, Ast.ActorTransport transport, boolean serial) {
+        private static final ActorPrelude DEFAULT =
+                new ActorPrelude(Ast.ActorReplyRole.STREAM, Ast.ActorTransport.MAIL, false);
+    }
+
+    /** Contextual actor protocol modifiers do not reserve names globally. */
+    private ActorPrelude parseActorPrelude() {
+        boolean serial = false;
+        Ast.ActorReplyRole role = Ast.ActorReplyRole.STREAM;
+        Ast.ActorTransport transport = Ast.ActorTransport.MAIL;
+        boolean roleSeen = false;
+        boolean transportSeen = false;
+        boolean consumed = false;
+        while (check(IDENT)) {
+            String word = peek().lexeme();
+            if (word.equals("serial")) {
+                if (serial) throw error(peek(), "duplicate serial actor modifier");
+                serial = true;
+            } else if (word.equals("unary") || word.equals("stream")) {
+                if (roleSeen) throw error(peek(), "duplicate/conflicting actor reply role");
+                roleSeen = true;
+                role = word.equals("unary") ? Ast.ActorReplyRole.UNARY : Ast.ActorReplyRole.STREAM;
+            } else if (List.of("http", "ipc", "tcp", "ffi", "proxy", "websocket").contains(word)) {
+                if (transportSeen) throw error(peek(), "duplicate/conflicting actor transport");
+                transportSeen = true;
+                transport = switch (word) {
+                    case "http" -> Ast.ActorTransport.HTTP;
+                    case "ipc" -> Ast.ActorTransport.IPC;
+                    case "tcp" -> Ast.ActorTransport.TCP;
+                    case "ffi" -> Ast.ActorTransport.FFI;
+                    case "proxy" -> Ast.ActorTransport.PROXY;
+                    default -> Ast.ActorTransport.WEBSOCKET;
+                };
+            } else {
+                break;
+            }
+            advance();
+            consumed = true;
+        }
+        if (consumed && !check(ACTOR) && !check(ISOACTOR))
+            throw error(peek(), "actor protocol modifiers must precede 'actor'");
+        return new ActorPrelude(role, transport, serial);
+    }
+
+    private List<String> parseActorClauseItems(String clause) {
+        boolean parenthesized = match(LPAREN);
+        List<String> items = new ArrayList<>();
+        do {
+            StringBuilder item = new StringBuilder(consume(IDENT,
+                    "expected capability/effect name in actor " + clause + " clause").lexeme());
+            while (match(DOT)) {
+                item.append('.').append(consume(IDENT,
+                        "expected identifier after '.' in actor " + clause).lexeme());
+            }
+            if (items.contains(item.toString()))
+                throw error(previous(), "duplicate actor " + clause + " entry '" + item + "'");
+            items.add(item.toString());
+        } while (match(COMMA));
+        if (parenthesized) consume(RPAREN, "expected ')' after actor " + clause + " clause");
+        return List.copyOf(items);
     }
 
     private boolean matchContextualIdentifier(String lexeme) {
@@ -730,10 +795,58 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
+        return parseActorClass(actorKind, visibility, ActorPrelude.DEFAULT, List.of());
+    }
+
+    private Ast.ClassDecl parseActorClass(
+            Ast.ActorKind actorKind, Ast.Visibility visibility,
+            ActorPrelude prelude, List<Ast.Annotation> annotations) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+
+        List<String> requirements = List.of();
+        List<String> effects = List.of();
+        boolean seenRequires = false;
+        boolean seenWith = false;
+        while (isContextualIdentifier("requires") || isContextualIdentifier("with")) {
+            if (matchContextualIdentifier("requires")) {
+                if (seenRequires) throw error(previous(), "duplicate actor requires clause");
+                seenRequires = true;
+                requirements = parseActorClauseItems("requires");
+            } else {
+                matchContextualIdentifier("with");
+                if (seenWith) throw error(previous(), "duplicate actor with clause");
+                seenWith = true;
+                effects = parseActorClauseItems("with");
+            }
+        }
+        Ast.ActorDirection direction = prelude.transport() == Ast.ActorTransport.MAIL
+                ? Ast.ActorDirection.LOCAL
+                : (prelude.transport() == Ast.ActorTransport.FFI || prelude.transport() == Ast.ActorTransport.PROXY
+                    ? Ast.ActorDirection.OUTBOUND : Ast.ActorDirection.INBOUND);
+        boolean directionAnnotationSeen = false;
+        for (Ast.Annotation annotation : annotations) {
+            Ast.ActorDirection requested = switch (annotation.name()) {
+                case "Inbound" -> Ast.ActorDirection.INBOUND;
+                case "Outbound" -> Ast.ActorDirection.OUTBOUND;
+                case "Duplex" -> Ast.ActorDirection.DUPLEX;
+                default -> throw error(peek(), "actor annotation @" + annotation.name()
+                        + " has no compiler-enforced transport semantics; declaration rejected");
+            };
+            if (!annotation.arguments().isEmpty())
+                throw error(peek(), "@" + annotation.name() + " does not accept arguments");
+            if (directionAnnotationSeen)
+                throw error(peek(), "conflicting/duplicate actor transport direction annotations");
+            if (prelude.transport() == Ast.ActorTransport.MAIL)
+                throw error(peek(), "transport direction annotation requires a transport actor");
+            direction = requested;
+            directionAnnotationSeen = true;
+        }
+        Ast.ActorSpecialization specialization = new Ast.ActorSpecialization(
+                prelude.replyRole(), prelude.transport(), direction, prelude.serial(),
+                requirements, effects, annotations);
 
         boolean braceStyle = match(LBRACE);
         if (!braceStyle) match(AS);
@@ -802,7 +915,8 @@ public final class Parser {
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(
-                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods);
+                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
+                specialization);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
