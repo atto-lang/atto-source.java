@@ -208,7 +208,7 @@ public final class IncrementalCompiler {
     static String abiDigest(Ast.Program program) {
         // Version bump invalidates older cache entries whose ABI omitted
         // the authorization annotations on exported declarations.
-        StringBuilder abi = new StringBuilder("ores-abi-v4-role-enum-dependencies\n");
+        StringBuilder abi = new StringBuilder("ores-abi-v5-precise-role-enum-dependencies\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
         for (Ast.ModuleDecl module : program.modules()) {
@@ -220,27 +220,15 @@ public final class IncrementalCompiler {
                     abi.append('\n');
                 }
             }
-            // When a public callable exposes a role policy, even a private
-            // local enum can define the meaning of an exported role. Bind its
-            // schema to the importer's invalidation key rather than letting a
-            // wire-tag/payload edit reuse stale dependent compilation results.
-            boolean hasPublicRolePolicy = module.declarations().stream().anyMatch(decl -> {
-                if (decl instanceof Ast.FunctionDecl fn) {
-                    return fn.visibility() == Ast.Visibility.PUBLIC
-                            && hasCallerRoleMetadata(fn.annotations());
-                }
-                if (decl instanceof Ast.ClassDecl klass
-                        && klass.visibility() == Ast.Visibility.PUBLIC) {
-                    return klass.methods().stream().anyMatch(method ->
-                            method.visibility() == Ast.Visibility.PUBLIC
-                                    && hasCallerRoleMetadata(method.annotations()));
-                }
-                return false;
-            });
+            // A private enum is part of the imported ABI ONLY if an exported
+            // callable explicitly references its cases in caller-role metadata.
+            // Including every private enum causes needless invalidation and
+            // exposes unrelated implementation-only schema changes.
+            java.util.Set<String> roleEnums = publicRoleEnumDependencies(module);
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.EnumDecl e
                         && e.visibility() != Ast.Visibility.PUBLIC
-                        && hasPublicRolePolicy) {
+                        && roleEnums.contains(e.name())) {
                     appendEnumAbi(abi, e);
                 } else appendAbi(abi, decl);
             }
@@ -359,12 +347,51 @@ public final class IncrementalCompiler {
         }
     }
 
-    private static boolean hasCallerRoleMetadata(List<Ast.Annotation> annotations) {
-        for (Ast.Annotation annotation : annotations) {
-            if (annotation.name().equals("CallerRole")
-                    || annotation.name().equals("CallableBy")) return true;
+    /** Exact local enum dependencies of exported caller-role annotations. */
+    private static java.util.Set<String> publicRoleEnumDependencies(Ast.ModuleDecl module) {
+        java.util.Set<String> localEnumNames = new java.util.HashSet<>();
+        for (Ast.Decl decl : module.declarations()) {
+            if (decl instanceof Ast.EnumDecl e) localEnumNames.add(e.name());
         }
-        return false;
+        java.util.Set<String> referenced = new java.util.HashSet<>();
+        for (Ast.Decl decl : module.declarations()) {
+            if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC) {
+                addRoleEnumDependencies(referenced, fn.annotations(), module.name(), localEnumNames);
+            } else if (decl instanceof Ast.ClassDecl klass
+                    && klass.visibility() == Ast.Visibility.PUBLIC) {
+                for (Ast.MethodDecl method : klass.methods()) {
+                    if (method.visibility() == Ast.Visibility.PUBLIC) {
+                        addRoleEnumDependencies(
+                                referenced, method.annotations(), module.name(), localEnumNames);
+                    }
+                }
+            }
+        }
+        return java.util.Set.copyOf(referenced);
+    }
+
+    private static void addRoleEnumDependencies(
+            java.util.Set<String> referenced, List<Ast.Annotation> annotations,
+            String moduleName, java.util.Set<String> localEnumNames) {
+        for (Ast.Annotation annotation : annotations) {
+            if (!annotation.name().equals("CallerRole")
+                    && !annotation.name().equals("CallableBy")) continue;
+            for (Ast.TypeRef argument : annotation.arguments()) {
+                if (argument == null) continue; // Bad metadata is rejected by the type checker.
+                String role = argument.name();
+                if (role == null) continue;
+                int lastDot = role.lastIndexOf('.');
+                if (lastDot <= 0) continue;
+                String owner = role.substring(0, lastDot);
+                String localName = owner.startsWith(moduleName + ".")
+                        ? owner.substring(moduleName.length() + 1) : owner;
+                if (localEnumNames.contains(localName)
+                        && (owner.equals(localName)
+                            || owner.equals(moduleName + "." + localName))) {
+                    referenced.add(localName);
+                }
+            }
+        }
     }
 
     private static String classMethodAbi(Ast.MethodDecl method) {
