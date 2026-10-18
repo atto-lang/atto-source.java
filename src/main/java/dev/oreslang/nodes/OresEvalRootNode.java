@@ -6071,6 +6071,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
+                throw new IllegalArgumentException(
+                        "staged named/optional calls have no runtime lowering");
+            }
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
                 for (Ast.MatchValueArm arm : valueMatch.arms()) {
