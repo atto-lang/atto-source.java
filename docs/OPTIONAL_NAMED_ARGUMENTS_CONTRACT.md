@@ -506,19 +506,19 @@ this is not a green Java, GraalVM or LLVM runtime feature.
 
 ## Literal-derived argument proof (draft Java PR #1335)
 
-The compiler-only \`OptionalCallLiteralStage.prepareDirectLiteralCall\` checks a
+The compiler-only `OptionalCallLiteralStage.prepareDirectLiteralCall` checks a
 deliberately narrow, independently typeable source subset: supplied values must
-be literal \`int\` (Long), \`float\` (Double), \`bool\` (Boolean), or \`string\`
+be literal `int` (Long), `float` (Double), `bool` (Boolean), or `string`
 (String) AST nodes, or omitted call items. The literal type is derived from
 the AST instead of accepting caller assertions, then the existing original
 call-item binder, type-exact ABI preview and lexical-evaluation schedule are
-applied. Supplied \`T\` to \`T?\` plans \`WRAP_SOME\`; omission plans
-\`INJECT_NONE\` without evaluating a source expression.
+applied. Supplied `T` to `T?` plans `WRAP_SOME`; omission plans
+`INJECT_NONE` without evaluating a source expression.
 
-General \`OptionalCallAbiPreview.prepareExact\` also rejects a scalar
-literal claimed to have a different exact TypeRef, not merely \`null\`.
+General `OptionalCallAbiPreview.prepareExact` also rejects a scalar
+literal claimed to have a different exact TypeRef, not merely `null`.
 Complex/symbol/custom literal categories remain gated until they have
-independent canonical source-type proofs. Plain \`None\` is not a primitive
+independent canonical source-type proofs. Plain `None` is not a primitive
 literal: it remains a typed expression requiring normal resolver proof,
 never an implicit omission.
 

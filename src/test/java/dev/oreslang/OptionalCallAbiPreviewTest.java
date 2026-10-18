@@ -383,4 +383,31 @@ final class OptionalCallAbiPreviewTest {
                         numeric, valid, plan, List.of(INT)).abiSlots().getFirst().action());
     }
 
+
+    @Test
+    void nestedUnprovedOptionPayloadsCannotEnterPreviewOrAbiSlot() {
+        List<Ast.TypeRef> unsafePayloads = List.of(
+                Ast.TypeRef.simple("Unknown"),
+                Ast.TypeRef.simple("void"),
+                Ast.TypeRef.inferred(),
+                Ast.TypeRef.borrowed(INT, false),
+                Ast.TypeRef.simple("null"));
+        for (Ast.TypeRef payload : unsafePayloads) {
+            Ast.TypeRef forgedOption = new Ast.TypeRef("Option", List.of(payload), false);
+            List<Ast.Param> required = List.of(new Ast.Param(forgedOption, "value"));
+            List<Ast.CallArgument> source = List.of(
+                    Ast.CallArgument.named("value", new Ast.NameExpr("candidate")));
+            var plan = OptionalCallShapeBinder.bindParsed(
+                    OptionalCallShapeBinder.declaredParameterShapes(required), source);
+            assertThrows(IllegalArgumentException.class,
+                    () -> OptionalCallAbiPreview.prepareExact(
+                            required, source, plan, List.of(forgedOption)),
+                    "nested unresolved Option payload must fail closed: " + payload);
+            assertThrows(IllegalArgumentException.class,
+                    () -> new OptionalCallAbiPreview.Slot(
+                            0, "value", forgedOption,
+                            OptionalCallAbiPreview.Action.PASS_REQUIRED, 0, 0));
+        }
+    }
+
 }
