@@ -961,7 +961,7 @@ public final class Ast {
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, SpawnExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -1047,6 +1047,17 @@ public final class Ast {
 
     public record NewExpr(TypeRef type, List<Expr> arguments) implements Expr {
         public NewExpr { arguments = List.copyOf(arguments); }
+    }
+
+    /**
+     * Source `spawn ActorType(...)` is an actor operation, never ordinary
+     * construction and never a guest-visible runtime string intrinsic.
+     */
+    public record SpawnExpr(TypeRef actorType, List<Expr> arguments) implements Expr {
+        public SpawnExpr {
+            actorType = java.util.Objects.requireNonNull(actorType, "spawn actor type");
+            arguments = List.copyOf(arguments);
+        }
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
