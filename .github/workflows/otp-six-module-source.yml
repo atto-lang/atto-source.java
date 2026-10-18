@@ -11,6 +11,10 @@ on:
       - 'src/test/java/dev/oreslang/runtime/NativeOtpAdmissionBoundariesTest.java'
       - 'src/test/java/dev/oreslang/runtime/NativeOtpPolicyHardeningTest.java'
       - 'src/test/java/dev/oreslang/runtime/NativeOtpCanonicalImportTest.java'
+      - 'src/main/java/dev/oreslang/runtime/GenServerReplyLedger.java'
+      - 'src/main/java/dev/oreslang/runtime/GenServerCallPort.java'
+      - 'src/test/java/dev/oreslang/runtime/GenServerCallPortTest.java'
+      - 'docs/OTP_GENSERVER_RUNTIME_BRIDGE.md'
       - 'docs/OTP_SIX_MODULE_SOURCE_FOUNDATION.md'
       - '.github/workflows/otp-six-module-source.yml'
   workflow_dispatch:
@@ -35,5 +39,5 @@ jobs:
       - name: Execute six OTP source slices
         run: >
           mvn -B -ntp
-          -Dtest=NativeOtpBehaviorSlicesTest,NativeOtpGenServerProtocolTest,NativeOtpSupervisorPolicyTest,NativeOtpAdmissionBoundariesTest,NativeOtpPolicyHardeningTest,NativeOtpCanonicalImportTest
+          -Dtest=NativeOtpBehaviorSlicesTest,NativeOtpGenServerProtocolTest,NativeOtpSupervisorPolicyTest,NativeOtpAdmissionBoundariesTest,NativeOtpPolicyHardeningTest,NativeOtpCanonicalImportTest,GenServerCallPortTest
           test
