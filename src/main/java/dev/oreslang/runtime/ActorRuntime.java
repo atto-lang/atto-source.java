@@ -7,6 +7,10 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -1323,6 +1327,53 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorOwnedGuestState state,
                 ActorInboxMail<Object> mail,
                 ActorContext<Object> context) throws Exception;
+
+        /**
+         * Compiler/runtime structural receipt for same-schema hot upgrade.
+         * This is NOT an artifact signature. Production native loaders must
+         * independently authenticate executable bytes before they can run.
+         */
+        default String actorCodeSha256(String actorTypeName) {
+            throw new UnsupportedOperationException(
+                    "actor executor does not support hot-upgrade code receipts");
+        }
+
+        /** Deterministic compiler-owned persistent-state layout fingerprint. */
+        default String actorStateSchemaSha256(String actorTypeName) {
+            throw new UnsupportedOperationException(
+                    "actor executor does not support hot-upgrade state schemas");
+        }
+
+        /** Deterministic receive/message contract fingerprint. */
+        default String actorMessageAbiSha256(String actorTypeName) {
+            throw new UnsupportedOperationException(
+                    "actor executor does not support hot-upgrade message ABI receipts");
+        }
+
+        /**
+         * Serialize persistent actor-owned state only. No guest callbacks,
+         * suspension, I/O, FFI, capabilities or raw runtime handles are
+         * permitted while this compiler-private hook executes.
+         */
+        default byte[] snapshotActorState(
+                String actorTypeName,
+                ActorOwnedGuestState state,
+                ActorContext<Object> context) {
+            throw new UnsupportedOperationException(
+                    "actor executor does not support state snapshot");
+        }
+
+        /**
+         * Restore into a fresh actor-owned state object for the candidate code
+         * image. Must not mutate the old state or invoke guest callbacks.
+         */
+        default ActorOwnedGuestState restoreActorState(
+                String actorTypeName,
+                byte[] snapshot,
+                ActorContext<Object> context) {
+            throw new UnsupportedOperationException(
+                    "actor executor does not support state restore");
+        }
     }
 
     public interface ActorContext<M> {
@@ -4913,6 +4964,169 @@ public final class ActorRuntime implements AutoCloseable {
         return new ActorTerminatedException(ref.id(), ref.kind(), ref.terminationCause.get());
     }
 
+    /**
+     * Compiler-private v1 source-actor hot upgrade: exact state schema and
+     * message ABI only. The same logical ActorRef and mailbox stay in place.
+     *
+     * <p>The actor is first sealed and physically drained. Snapshot/restore
+     * hooks are compiler-owned, synchronous and forbidden from invoking guest
+     * callbacks or I/O. The candidate is not published until its restored
+     * state re-snapshots byte-for-byte identically to the old state.</p>
+     *
+     * <p>This Java path does not authenticate native executable bytes and does
+     * not make untrusted code safe to dlopen. Native backends need a separate
+     * pre-execution artifact-authentication boundary.</p>
+     */
+    boolean upgradeSourceActorSameSchema(
+            ActorRef<Object> ref,
+            ActorCodeExecutor proposed) {
+        requireSupervisorContext("hot-upgrade source actor");
+        Objects.requireNonNull(ref, "ref");
+        Objects.requireNonNull(proposed, "proposed");
+        if (!ref.ownedBy(this))
+            throw new ActorInvalidReferenceException(
+                    "ActorRef belongs to a different ActorRuntime");
+        ActorCell<?> raw = actors.get(ref.id());
+        if (raw == null) throw terminated(ref);
+
+        try (HotUpgradeIngressFreeze freeze = freezeUserIngressForHotUpgrade(ref)) {
+            if (!freeze.schedulerDrained()) return false;
+            @SuppressWarnings("unchecked")
+            ActorCell<Object> cell = (ActorCell<Object>) raw;
+            synchronized (cell.lifecycleLock) {
+                if (closed.get() || cell.stopped.get() || cell.finalized
+                        || cell.endRequested || cell.forceKillFenced)
+                    throw terminated(ref);
+                if (cell.codeExecutor == null || cell.codeActorState == null)
+                    throw new IllegalStateException(
+                            "hot source upgrade requires an initialized source actor");
+                if (!freeze.schedulerDrained())
+                    return false;
+
+                ActorCodeExecutor current = cell.codeExecutor;
+                SharedCodeImageStore.CodeImage currentImage = cell.codeImage;
+                SharedCodeImageStore.CodeImage candidateImage =
+                        Objects.requireNonNull(proposed.codeImage(), "candidate code image");
+                if (candidateImage == currentImage)
+                    throw new IllegalArgumentException(
+                            "candidate source actor code image is identical to active image");
+
+                String oldCode = canonicalSha256(
+                        current.actorCodeSha256(cell.codeActorType), "active code digest");
+                String nextCode = canonicalSha256(
+                        proposed.actorCodeSha256(cell.codeActorType), "candidate code digest");
+                if (oldCode.equals(nextCode))
+                    throw new IllegalArgumentException(
+                            "candidate source actor code digest is identical to active code");
+
+                String oldSchema = canonicalSha256(
+                        current.actorStateSchemaSha256(cell.codeActorType),
+                        "active state schema digest");
+                String nextSchema = canonicalSha256(
+                        proposed.actorStateSchemaSha256(cell.codeActorType),
+                        "candidate state schema digest");
+                if (!oldSchema.equals(nextSchema))
+                    throw new SecurityException(
+                            "v1 source actor upgrade cannot change persistent state schema");
+
+                String oldMessage = canonicalSha256(
+                        current.actorMessageAbiSha256(cell.codeActorType),
+                        "active message ABI digest");
+                String nextMessage = canonicalSha256(
+                        proposed.actorMessageAbiSha256(cell.codeActorType),
+                        "candidate message ABI digest");
+                if (!oldMessage.equals(nextMessage))
+                    throw new SecurityException(
+                            "v1 source actor upgrade cannot change message ABI");
+
+                if (cell.sourceCodeEpoch <= 0 || cell.sourceCodeEpoch == Long.MAX_VALUE)
+                    throw new IllegalStateException("source actor code epoch exhausted");
+                String capabilities = actorPolicySha256(cell.policy);
+                ActorCheckpointEnvelopeV1.Header header =
+                        new ActorCheckpointEnvelopeV1.Header(
+                                ref.id().value(),
+                                cell.sourceCodeEpoch,
+                                oldCode,
+                                oldSchema,
+                                oldMessage,
+                                capabilities);
+
+                ActorContext<Object> activeContext = cell.sourceUpgradeContext(currentImage);
+                byte[] payload = Objects.requireNonNull(
+                        current.snapshotActorState(
+                                cell.codeActorType,
+                                cell.codeActorState,
+                                activeContext),
+                        "active source actor snapshot");
+                byte[] wire = ActorCheckpointEnvelopeV1.encode(
+                        new ActorCheckpointEnvelopeV1.Snapshot(header, payload));
+                byte[] verified = ActorCheckpointEnvelopeV1.decode(wire, header).stateBytes();
+
+                ActorContext<Object> candidateContext =
+                        cell.sourceUpgradeContext(candidateImage);
+                ActorOwnedGuestState restored = Objects.requireNonNull(
+                        proposed.restoreActorState(
+                                cell.codeActorType,
+                                verified,
+                                candidateContext),
+                        "candidate source actor restore returned null state");
+                if (!restored.ownerActorId().equals(ref.id()))
+                    throw new SecurityException(
+                            "restored source actor state changed logical actor ownership");
+
+                byte[] candidateSnapshot = Objects.requireNonNull(
+                        proposed.snapshotActorState(
+                                cell.codeActorType,
+                                restored,
+                                candidateContext),
+                        "candidate source actor re-snapshot");
+                if (!java.util.Arrays.equals(verified, candidateSnapshot))
+                    throw new SecurityException(
+                            "same-schema source actor restore changed persistent state bytes");
+
+                // Single lifecycle-monitor commit: dispatch observes either the
+                // complete old triple or the complete candidate triple.
+                cell.codeImage = candidateImage;
+                cell.codeExecutor = proposed;
+                cell.codeActorState = restored;
+                cell.sourceCodeEpoch++;
+                return true;
+            }
+        }
+    }
+
+    private static String canonicalSha256(String digest, String label) {
+        if (digest == null || digest.length() != 64) {
+            throw new IllegalArgumentException(label + " must be lowercase SHA-256");
+        }
+        for (int i = 0; i < digest.length(); i++) {
+            char ch = digest.charAt(i);
+            if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')))
+                throw new IllegalArgumentException(label + " must be lowercase SHA-256");
+        }
+        return digest;
+    }
+
+    private static String actorPolicySha256(IsolatePolicy policy) {
+        String capabilities = policy.capabilities().stream()
+                .map(Enum::name)
+                .sorted()
+                .reduce((a, b) -> a + "," + b)
+                .orElse("");
+        String canonical = capabilities
+                + "|" + policy.maxHeapBytes()
+                + "|" + policy.maxMailboxMessages()
+                + "|" + policy.maxWallTime().toNanos()
+                + "|" + policy.adversarial();
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256")
+                            .digest(canonical.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
     /** Non-cancellable observer over all mail accepted before this call.
      * This is a processed-message barrier, not an actor termination barrier.
      * Self-drain of unprocessed mail fails closed to prevent a scheduling
@@ -6791,14 +7005,16 @@ public final class ActorRuntime implements AutoCloseable {
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
-        /** Exact immutable source image whitelisted for this actor, if any. */
-        private final SharedCodeImageStore.CodeImage codeImage;
-        /** Shared compiler/interpreter code executor; never exposed to guest source. */
-        private final ActorCodeExecutor codeExecutor;
+        /** Current immutable source image whitelisted for this actor, if any. */
+        private volatile SharedCodeImageStore.CodeImage codeImage;
+        /** Current compiler/interpreter code executor; never exposed to guest source. */
+        private volatile ActorCodeExecutor codeExecutor;
         /** Closed-world source actor declaration selected for this actor. */
         private final String codeActorType;
         /** Mutable source actor state, created on this actor's dispatcher. */
-        private ActorOwnedGuestState codeActorState;
+        private volatile ActorOwnedGuestState codeActorState;
+        /** Monotonic source executable incarnation; lifecycleLock-owned. */
+        private long sourceCodeEpoch = 1L;
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
@@ -6920,6 +7136,25 @@ public final class ActorRuntime implements AutoCloseable {
             this.memorySlice = isPrivateKind(kind)
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
+        }
+
+        @SuppressWarnings("unchecked")
+        private ActorContext<Object> sourceUpgradeContext(
+                SharedCodeImageStore.CodeImage image) {
+            return new ActorContext<>() {
+                @Override public ActorRef<Object> self() {
+                    return (ActorRef<Object>) (ActorRef<?>) ref;
+                }
+                @Override public ActorRuntime runtime() { return ActorRuntime.this; }
+                @Override public IsolatePolicy policy() { return policy; }
+                @Override public ActorKind kind() { return kind; }
+                @Override public Optional<ActorMemorySlice> privateMemory() {
+                    return Optional.ofNullable(memorySlice);
+                }
+                @Override public Optional<SharedCodeImageStore.CodeImage> codeImage() {
+                    return Optional.of(image);
+                }
+            };
         }
 
         private long nextStaticSelectTicket(Object selectSite) {
