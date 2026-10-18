@@ -226,6 +226,23 @@ public final class IncrementalCompiler {
     }
 
     private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
+        if (decl instanceof Ast.EnumDecl enumDecl) {
+            if (enumDecl.visibility() != Ast.Visibility.PUBLIC) return;
+            // Public enum case names, ordered tags and exact payload types
+            // are a nominal source ABI even while executable enum lowering
+            // remains gated. Changes must invalidate source importers.
+            abi.append("pub enum ").append(enumDecl.name()).append('\\n');
+            for (Ast.EnumCase variant : enumDecl.cases()) {
+                String name = variant.name();
+                String payload = variant.payload() == null
+                        ? "<nullary>" : typeRef(variant.payload());
+                abi.append(" enum-case ").append(name.length()).append(':')
+                        .append(name).append('#').append(variant.tag())
+                        .append('(').append(payload.length()).append(':')
+                        .append(payload).append(")\\n");
+            }
+            return;
+        }
         if (decl instanceof Ast.FunctionDecl fn) {
             if (fn.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append(fn.actorKind()).append(' ');
