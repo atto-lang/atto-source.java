@@ -33,6 +33,8 @@ public final class ActorArtifactAdmission {
 
     private static final Pattern SHA256 = Pattern.compile("[0-9a-f]{64}");
     private static final Pattern GIT_COMMIT = Pattern.compile("[0-9a-f]{40}([0-9a-f]{24})?");
+    private static final int MAX_MANIFEST_TEXT_CHARS = 512;
+    private static final int MAX_CAPABILITY_NAME_CHARS = 64;
 
     private ActorArtifactAdmission() { }
 
@@ -90,9 +92,16 @@ public final class ActorArtifactAdmission {
             List<String> requiredCapabilities) {
         public Policy {
             requiredCapabilities = List.copyOf(requiredCapabilities);
+            if (requiredCapabilities.size() > IsolatePolicy.Capability.values().length) {
+                throw new IllegalArgumentException(
+                        "artifact capability list exceeds runtime capability vocabulary");
+            }
             HashSet<String> unique = new HashSet<>();
             for (String capability : requiredCapabilities) {
                 requireText(capability, "required capability");
+                if (capability.length() > MAX_CAPABILITY_NAME_CHARS) {
+                    throw new IllegalArgumentException("required capability name is too long");
+                }
                 if (!unique.add(capability)) {
                     throw new IllegalArgumentException(
                             "duplicate required capability '" + capability + "'");
@@ -245,16 +254,21 @@ public final class ActorArtifactAdmission {
         Objects.requireNonNull(actorKind, "actor kind");
         Objects.requireNonNull(manifest, "manifest");
         exactArtifactBytes = Objects.requireNonNull(exactArtifactBytes, "artifact bytes");
-        // Take ownership before any digest, trust callback or policy check.
-        // Caller-owned mutable storage must never be hashed and cloned in
-        // separate phases.
-        byte[] admittedBytes = exactArtifactBytes.clone();
         Objects.requireNonNull(attestation, "attestation");
         Objects.requireNonNull(attestationPolicy, "attestation policy");
         Objects.requireNonNull(keyPolicy, "key policy");
         Objects.requireNonNull(targetPolicy, "target policy");
         Objects.requireNonNull(supervisorPolicy, "supervisor policy");
         Objects.requireNonNull(workerPolicy, "worker policy");
+        // Bound the second copy before taking ownership. The caller has
+        // already allocated its input, but admission must not amplify an
+        // oversized input into another equally large heap object.
+        if (exactArtifactBytes.length > targetPolicy.maxArtifactBytes()) {
+            throw new SecurityException("artifact exceeds admission size limit");
+        }
+        // Take ownership before any digest or trust callback. Caller-owned
+        // mutable storage must never be hashed and cloned in separate phases.
+        byte[] admittedBytes = exactArtifactBytes.clone();
 
         if (actorKind != Ast.ActorKind.PRIVATE && actorKind != Ast.ActorKind.UNTRUSTED) {
             throw new SecurityException("IPC artifact requires PRIVATE or UNTRUSTED actor kind");
@@ -621,7 +635,16 @@ public final class ActorArtifactAdmission {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(label + " cannot be blank");
         }
+        if (value.length() > MAX_MANIFEST_TEXT_CHARS) {
+            throw new IllegalArgumentException(label + " is too long");
+        }
         requireValidUnicode(value, label);
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isISOControl(ch)) {
+                throw new IllegalArgumentException(label + " contains a control character");
+            }
+        }
         return value;
     }
 
