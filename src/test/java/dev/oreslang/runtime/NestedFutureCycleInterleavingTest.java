@@ -102,6 +102,102 @@ final class NestedFutureCycleInterleavingTest {
         }
     }
 
+    @Test
+    void simultaneousFourSchedulerCycleCleansEveryDependency() throws Exception {
+        final int length = 4;
+        CountDownLatch allEntered = new CountDownLatch(length);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicReferenceArray<OresFuture<Integer>> owners =
+                new AtomicReferenceArray<>(length);
+        OresScheduler[] schedulers = new OresScheduler[length];
+        try {
+            for (int i = 0; i < length; i++) {
+                schedulers[i] = new OresScheduler(1);
+            }
+            for (int i = 0; i < length; i++) {
+                final int index = i;
+                owners.set(i, schedulers[i].start(resume -> {
+                    if (resume.initial()) {
+                        allEntered.countDown();
+                        if (!release.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("four-way cycle barrier expired");
+                        }
+                        return OresScheduler.await(owners.get((index + 1) % length));
+                    }
+                    if (resume.failure() != null) {
+                        throw new IllegalStateException("upstream cycle failed",
+                                resume.failure());
+                    }
+                    return OresScheduler.done((Integer) resume.value());
+                }));
+            }
+            assertTrue(allEntered.await(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            release.countDown();
+            int actualCycleDetections = 0;
+            for (int i = 0; i < length; i++) {
+                final int index = i;
+                ExecutionException failure = assertThrows(ExecutionException.class,
+                        () -> owners.get(index).get(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+                if (containsCycleDiagnostic(failure)) actualCycleDetections++;
+            }
+            assertTrue(actualCycleDetections >= 1,
+                    "the actual dependency cycle must be diagnosed");
+            for (int i = 0; i < length; i++) {
+                assertFalse(OresScheduler.hasAwaitDependency(owners.get(i)),
+                        "terminated four-way cycle retained a graph edge");
+                assertEquals(0, owners.get(i).pendingRuntimeWaiterCount(),
+                        "terminated four-way cycle retained a waiter");
+            }
+        } finally {
+            release.countDown();
+            for (OresScheduler scheduler : schedulers) {
+                if (scheduler != null) scheduler.close();
+            }
+        }
+    }
+
+    @Test
+    void cancellingSharedConsumerDetachesWithoutRevokingOtherConsumer()
+            throws Exception {
+        OresFuture<Integer> producer = new OresFuture<>();
+        try (OresScheduler firstScheduler = new OresScheduler(1);
+             OresScheduler secondScheduler = new OresScheduler(1)) {
+            OresFuture<Integer> first = firstScheduler.start(resume -> {
+                if (resume.initial()) return OresScheduler.await(producer);
+                if (resume.failure() != null) throw new IllegalStateException(resume.failure());
+                return OresScheduler.done((Integer) resume.value());
+            });
+            OresFuture<Integer> second = secondScheduler.start(resume -> {
+                if (resume.initial()) return OresScheduler.await(producer);
+                if (resume.failure() != null) throw new IllegalStateException(resume.failure());
+                return OresScheduler.done((Integer) resume.value());
+            });
+            awaitRegisteredObservers(producer, 2);
+            assertTrue(OresScheduler.hasAwaitDependency(first));
+            assertTrue(OresScheduler.hasAwaitDependency(second));
+            assertTrue(first.cancel(false));
+            assertFalse(OresScheduler.hasAwaitDependency(first));
+            assertEquals(1, producer.pendingRuntimeWaiterCount(),
+                    "cancelling one consumer must only release its own observer");
+            assertFalse(producer.isCancelled());
+            assertTrue(producer.completeFromRuntime(37));
+            assertEquals(37, second.get(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            assertTrue(first.isCancelled());
+            assertFalse(OresScheduler.hasAwaitDependency(second));
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+        }
+    }
+
+    private static void awaitRegisteredObservers(OresFuture<?> producer, int count) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS);
+        while (producer.pendingRuntimeWaiterCount() != count
+                && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertEquals(count, producer.pendingRuntimeWaiterCount(),
+                "scheduler must install the required observers");
+    }
+
     private static boolean containsCycleDiagnostic(Throwable failure) {
         for (Throwable cursor = failure; cursor != null; cursor = cursor.getCause()) {
             if (String.valueOf(cursor.getMessage()).contains(
