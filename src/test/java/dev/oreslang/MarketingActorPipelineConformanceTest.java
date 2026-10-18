@@ -20,7 +20,7 @@ final class MarketingActorPipelineConformanceTest {
     private static final Path FIXTURE =
             Path.of("examples/marketing-actor-pipeline-three-stage.ores");
     // Exact git blob recorded in contracts/conformance/language-motion-v1.json.
-    private static final String FIXTURE_GIT_BLOB_SHA = "REPLACE_SHA";
+    private static final String FIXTURE_GIT_BLOB_SHA = "87136de0c131a20ca3891d88f6b69f0d13177b3a";
 
     private static String program() throws Exception {
         return Files.readString(FIXTURE, StandardCharsets.UTF_8);
