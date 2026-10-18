@@ -60,6 +60,35 @@ public final class OresTaskScope implements AutoCloseable {
         }
     }
 
+    /**
+     * Compiler-only continuation entry point. The Task's *result* may settle
+     * on cancellation before its guest frame finishes; scope membership is
+     * therefore retained until the scheduler's physical quiescence callback.
+     *
+     * The scheduler owns resumed turns and never parks a carrier on await.
+     * Do not expose this method to guest source without the owning context's
+     * capture, actor-affinity, permission and fuel admission checks.
+     */
+    <T> OresTask<T> startCompilerFrame(
+            OresScheduler scheduler, OresScheduler.Task<T> frame) {
+        Objects.requireNonNull(scheduler, "scheduler");
+        Objects.requireNonNull(frame, "frame");
+        synchronized (gate) {
+            ensureAdmitting();
+            OresFuture<Void> exited = new OresFuture<>();
+            OresFuture<T> completion = scheduler.start(
+                    frame, () -> exited.completeFromRuntime(null));
+            OresTask<T> child = new OresTask<>(completion, exited);
+            tasks.add(child);
+            child.getDone().whenCompleteRuntime((ignored, failure) -> {
+                synchronized (gate) {
+                    tasks.remove(child);
+                }
+            });
+            return child;
+        }
+    }
+
     /** A discarded-handle Task is still owned and always reports failures. */
     public void submitDetached(
             AsyncRuntime.Task<?> work,
@@ -111,9 +140,12 @@ public final class OresTaskScope implements AutoCloseable {
     /** Cancel and join all descendants before releasing the scope owner. */
     @Override
     public void close() {
-        if (ActorRuntime.inActorExecution() || AsyncRuntime.isAsyncCarrierThread()) {
+        if (ActorRuntime.inActorExecution()
+                || AsyncRuntime.isAsyncCarrierThread()
+                || OresScheduler.isSchedulerCarrierThread()
+                || OresScheduler.current() != null) {
             throw new IllegalStateException(
-                    "TaskScope.close cannot block a guest actor or task carrier");
+                    "TaskScope.close cannot block an actor, async carrier or scheduler task turn");
         }
         cancel();
         final boolean owner;
