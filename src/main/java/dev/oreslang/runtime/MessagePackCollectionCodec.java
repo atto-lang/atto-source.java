@@ -95,16 +95,33 @@ public final class MessagePackCollectionCodec {
         EncodedMailboxFrame encodeForMailbox(Object value, ScratchBudget scratch);
     }
 
-    public record MailboxSchema(String schemaId, Shape shape) implements MailboxWireCodec {
-        public MailboxSchema {
+    public static final class MailboxSchema implements MailboxWireCodec {
+        private final String schemaId;
+        private final Shape shape;
+        private final byte[] descriptorHash;
+
+        public MailboxSchema(String schemaId, Shape shape) {
             checkSchemaId(schemaId);
-            Objects.requireNonNull(shape, "mailbox shape");
-            // Force recursive quota/structural verification at binding time.
-            shapeDigest(shape);
+            this.schemaId = schemaId;
+            this.shape = Objects.requireNonNull(shape, "mailbox shape");
+            // Schema shape is immutable compiler/runtime metadata. Compute the
+            // potentially large descriptor exactly once at bind construction,
+            // never on each mailbox send/receive where it would escape the
+            // transient codec reservation.
+            this.descriptorHash = shapeDigest(shape);
         }
 
+        public String schemaId() { return schemaId; }
+        public Shape shape() { return shape; }
+
+        @Override
         public byte[] encode(Object value) {
-            return MessagePackCollectionCodec.encode(schemaId, shape, value);
+            return MessagePackCollectionCodec.encodeForMailbox(
+                    schemaId,
+                    shape,
+                    value,
+                    descriptorHash,
+                    ScratchBudget.NONE).bytes();
         }
 
         @Override
@@ -112,11 +129,37 @@ public final class MessagePackCollectionCodec {
                 Object value,
                 ScratchBudget scratch) {
             return MessagePackCollectionCodec.encodeForMailbox(
-                    schemaId, shape, value, scratch);
+                    schemaId,
+                    shape,
+                    value,
+                    descriptorHash,
+                    scratch);
         }
 
+        @Override
         public Object decode(byte[] bytes) {
-            return MessagePackCollectionCodec.decode(schemaId, shape, bytes);
+            return MessagePackCollectionCodec.decode(
+                    schemaId,
+                    shape,
+                    descriptorHash,
+                    bytes);
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof MailboxSchema schema
+                    && schemaId.equals(schema.schemaId)
+                    && shape.equals(schema.shape);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(schemaId, shape);
+        }
+
+        @Override
+        public String toString() {
+            return "MailboxSchema[schemaId=" + schemaId + ", shape=" + shape + "]";
         }
     }
 
@@ -236,12 +279,28 @@ public final class MessagePackCollectionCodec {
             Shape shape,
             Object value,
             ScratchBudget scratch) {
+        return encodeForMailbox(
+                schemaId,
+                shape,
+                value,
+                shapeDigest(shape),
+                scratch);
+    }
+
+    static EncodedMailboxFrame encodeForMailbox(
+            String schemaId,
+            Shape shape,
+            Object value,
+            byte[] descriptorHash,
+            ScratchBudget scratch) {
         checkSchemaId(schemaId);
         Objects.requireNonNull(shape, "shape");
+        Objects.requireNonNull(descriptorHash, "shape digest");
         Objects.requireNonNull(scratch, "scratch budget");
+        if (descriptorHash.length != 32)
+            throw new IllegalArgumentException("shape digest must be SHA-256");
         Writer writer = new Writer(scratch);
         try {
-            byte[] descriptorHash = shapeDigest(shape);
             writer.addDecodedBytes(
                     Math.addExact(128L, Math.multiplyExact(2L, schemaId.length())));
             writer.arrayHeader(4);
@@ -282,12 +341,22 @@ public final class MessagePackCollectionCodec {
     }
 
     public static Object decode(String schemaId, Shape shape, byte[] bytes) {
+        return decode(schemaId, shape, shapeDigest(shape), bytes);
+    }
+
+    static Object decode(
+            String schemaId,
+            Shape shape,
+            byte[] expectedDigest,
+            byte[] bytes) {
         checkSchemaId(schemaId);
         Objects.requireNonNull(shape, "shape");
+        Objects.requireNonNull(expectedDigest, "shape digest");
         Objects.requireNonNull(bytes, "bytes");
+        if (expectedDigest.length != 32)
+            throw new IllegalArgumentException("shape digest must be SHA-256");
         if (bytes.length > MAX_BYTES) throw new IllegalArgumentException("message exceeds maximum byte size");
         Reader reader = new Reader(bytes);
-        byte[] expectedDigest = shapeDigest(shape);
         if (reader.arrayHeader() != 4) throw new IllegalArgumentException("invalid message envelope arity");
         if (reader.signedInt() != VERSION) throw new IllegalArgumentException("unsupported message format version");
         String actualSchema = reader.string();
