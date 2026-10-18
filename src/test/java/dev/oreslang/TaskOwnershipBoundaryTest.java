@@ -135,4 +135,19 @@ final class TaskOwnershipBoundaryTest {
                 let job = (async task |int a, string b| -> a)(5);
                 """, "expected 2 arguments");
     }
+    @Test
+    void firstClassTaskLambdaValueCannotBypassArgumentBorrowCheck() {
+        reject("""
+                let launch = async task |int a| -> a;
+                """, "scheduled lambda values require typed callable ownership metadata");
+    }
+
+    @Test
+    void firstClassOrdinaryAsyncLambdaValueAlsoFailsClosed() {
+        reject("""
+                let launch = async |int a| -> a;
+                """, "scheduled lambda values require typed callable ownership metadata");
+    }
+
+
 }
