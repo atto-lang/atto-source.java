@@ -468,42 +468,48 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
-        nativeIo.close();
-        http.close();
-        RuntimeException failure = null;
+        // Phase 1: ownership and physical quiescence. Never release a
+        // scheduler, context, or code generation while guest frames can still
+        // execute against them. A failed quiescence / generation-retirement
+        // fence must quarantine the remaining owner resources.
         try {
-            // Cancel and physically join source frames before VM root
-            // scheduler/carriers or shared code images can be reclaimed.
             compilerTaskScope.close();
-        } catch (RuntimeException scopeFailure) {
-            failure = scopeFailure;
+        } catch (RuntimeException | Error scopeFailure) {
+            throw new IllegalStateException(
+                    "Task scope retirement incomplete; VM and code-image teardown aborted",
+                    scopeFailure);
         }
+
         try {
             asyncRuntime.close();
-        } catch (RuntimeException asyncFailure) {
-            if (failure == null) failure = asyncFailure;
-            else failure.addSuppressed(asyncFailure);
+        } catch (RuntimeException | Error asyncFailure) {
+            throw new IllegalStateException(
+                    "async carriers not quiescent; VM and code-image teardown aborted",
+                    asyncFailure);
         }
+
+        // Phase 2: dispose providers and actor owners after Task/async
+        // quiescence. A failure here also prevents VM/code-image reclamation.
+        nativeIo.close();
+        http.close();
         try {
             actors.close();
-        } catch (RuntimeException actorFailure) {
-            if (failure == null) failure = actorFailure;
-            else failure.addSuppressed(actorFailure);
+        } catch (RuntimeException | Error actorFailure) {
+            throw new IllegalStateException(
+                    "actor shutdown incomplete; VM and code-image teardown aborted",
+                    actorFailure);
         }
-        try {
-            vm.close();
-        } catch (RuntimeException vmFailure) {
-            if (failure == null) failure = vmFailure;
-            else failure.addSuppressed(vmFailure);
-        } finally {
-            synchronized (this) {
-                linkedCodeUnits.clear();
-                linkedImportResolutions.clear();
-                sharedCodeImages.close();
-            }
-            garbageCollector.close();
-            output.flush();
+
+        // Phase 3: reclaim the runtime only after the owners above closed.
+        // Do not run image reclamation in a finally block around vm.close():
+        // if the VM cannot stop its workers, the images must stay pinned.
+        vm.close();
+        synchronized (this) {
+            linkedCodeUnits.clear();
+            linkedImportResolutions.clear();
+            sharedCodeImages.close();
         }
-        if (failure != null) throw failure;
+        garbageCollector.close();
+        output.flush();
     }
 }
