@@ -37,6 +37,18 @@ final class ActorProtocolDeclarationGateTest {
     }
 
     @Test
+    void serialTransportCombinationsDoNotFallBackToMailboxActors() {
+        for (String transport : List.of("http", "ipc", "tcp", "ffi", "proxy", "websocket")) {
+            String source = "define serial " + transport + " actor Worker as end";
+            Ast.ClassDecl klass = actor(source);
+            assertTrue(klass.actorSpecialization().serial(), source);
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+            assertTrue(error.getMessage().contains("runtime-owned binding"), error.getMessage());
+        }
+    }
+
+    @Test
     void serialUnaryHttpIsOrthogonalAndFailsClosed() {
         Ast.ClassDecl klass = actor("""
                 @Outbound
