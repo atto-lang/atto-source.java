@@ -15,6 +15,34 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
     @Test
+    void nameFirstOptionalFormalAndStandaloneOwnershipAdmissionAreFailClosed() {
+        Ast.Program parsed = Parser.parse("""
+                pub fnc work(label: string?, required: Option<int>): void {
+                    return;
+                }
+                """);
+        Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        assertTrue(fn.parameters().getFirst().optional());
+        assertEquals(Ast.TypeRef.simple("string"),
+                fn.parameters().getFirst().valueType());
+        assertFalse(fn.parameters().get(1).optional());
+        assertEquals("Option", fn.parameters().get(1).type().name());
+        IllegalArgumentException ownership = assertThrows(
+                IllegalArgumentException.class, () -> OwnershipChecker.check(parsed));
+        assertTrue(ownership.getMessage().contains("Option<T> ABI"),
+                ownership::toString);
+    }
+
+    @Test
+    void nestedTQuestionIsNotAnImplicitOptionalTypeEverywhere() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "pub fnc x(string?? label): void { return; }"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "pub fnc x(): void { const value: string? = \"hello\"; return; }"));
+    }
+
+    @Test
     void optionalFormalSyntaxPreservesUnderlyingAndCalleeOptionType() {
         Ast.Program parsed = Parser.parse("""
                 pub fnc staged(string? label, Option<int> required, int count): void {
