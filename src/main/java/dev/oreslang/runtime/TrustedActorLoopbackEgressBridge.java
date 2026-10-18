@@ -119,8 +119,9 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
      * Single-consumer poll; consumes terminal state so completed tickets
      * cannot build up indefinitely or be replayed.
      */
-    private Poll pollBoundTicket(long id) {
+    private synchronized Poll pollBoundTicket(long id) {
         requireBoundActorTurn();
+        if (closed || !runtime.isAlive(actor)) throw new SecurityException("binding revoked");
         AtomicReference<Poll> slot = tickets.get(id);
         if (slot == null) throw new SecurityException("invalid egress ticket");
         Poll result = slot.get();
