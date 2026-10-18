@@ -335,8 +335,16 @@ lifetime rules as static `nb select` arms:
   so callback nesting cannot revive a moved owner or conceal an alias;
 - a pre-built lexical callable cannot itself be captured across the actor-turn
   boundary yet: its hidden closure environment may contain live Slot aliases.
-  Construct such a lambda inside the deferred body instead, so the deferred
-  body's own resolved/snapshotted data captures are authoritative.
+  This check is recursive through arrays/tuples/records, nominal class fields,
+  local type aliases, and private alias metadata attached to explicitly linked
+  public classes. Those foreign private aliases remain proof metadata only and
+  never become names visible to importer source;
+- if ownership cannot resolve an inferred nominal field layout, detached
+  capture fails closed rather than assuming the field cannot hide a callable.
+  The shared semantic CapturePlan/field-type IR should eventually replace this
+  conservative boundary;
+- construct a lambda inside the deferred body instead when it closes over the
+  deferred body's already-admitted/snapshotted data.
 
 A nonblocking write with **no callback** does not detach a source-language arm;
 it transfers its outbound payload but does not capture unrelated locals.
