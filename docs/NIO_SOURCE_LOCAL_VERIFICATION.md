@@ -144,6 +144,7 @@ never access or export private Oreslang sources and **are not runtime tests**:
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_nio_source_local_gate.py' -v
+python3 -m unittest discover -s tests -p 'test_nio_gate_git_inspection.py' -v
 python3 -m unittest discover -s tests -p 'test_nio_surefire_evidence.py' -v
 python3 scripts/test-nio-exact-tree-source-local-selftest.py
 ```
@@ -174,6 +175,18 @@ stale classes, symlinked evidence paths, locally disabled Git file-mode
 tracking, toolchain mismatch, interrupted Maven phases and the successful
 optional native-image invocation. The gate refuses
 these unsafe cases before it can claim a JUnit or exact-tree test result.
+
+### Git inspection errors must fail closed
+
+Git returning a nonzero exit from `status --porcelain` or the ignored-file
+`ls-files` scan is **not** an empty clean checkout. Previously, those exit
+codes were swallowed by command substitutions inside conditional tests: a
+synthetic failing Git wrapper could still produce `result=PASS`. The gate
+now captures both scans separately before inspecting output, and exits 75
+on Git inspection errors in preflight or postflight. The dedicated
+`tests/test_nio_gate_git_inspection.py` runs four error-injection regressions
+plus one clean synthetic control (5/5 in the local pre-commit check). These
+remain synthetic tests; they do not compile private Oreslang runtime source.
 
 ## Evidence, trust boundary and interpretation
 

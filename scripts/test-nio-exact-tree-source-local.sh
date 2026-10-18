@@ -93,14 +93,24 @@ unexpected_ignored_files() {
   git -c core.fsmonitor=false ls-files --others --ignored --exclude-standard |
     LC_ALL=C awk 'index($0, "target/") != 1 { print }'
 }
-if [[ -n "$(unexpected_ignored_files)" ]]; then
+# Command substitutions used directly in [[ ... ]] mask nonzero Git exits.
+# Query separately and fail closed when Git cannot inspect the checkout.
+ignored_files="$(unexpected_ignored_files)" || {
+  printf 'ERROR: Git ignored-file inspection failed; refusing qualification.\n' >&2
+  exit 75
+}
+if [[ -n "$ignored_files" ]]; then
   printf 'ERROR: ignored non-build files can affect exact-tree qualification.\n' >&2
   exit 74
 fi
 # Ignore repository-local overrides that can hide a tracked executable-bit
 # mutation, even though HEAD/tree and default git status appear unchanged.
 # Disable filesystem monitor caching for identity verification as well.
-if [[ -n "$(git -c core.fileMode=true -c core.fsmonitor=false status --porcelain --untracked-files=all)" ]]; then
+checkout_status="$(git -c core.fileMode=true -c core.fsmonitor=false status --porcelain --untracked-files=all)" || {
+  printf 'ERROR: Git status inspection failed; refusing qualification.\n' >&2
+  exit 75
+}
+if [[ -n "$checkout_status" ]]; then
   printf 'ERROR: dirty or untracked source checkout, refusing to run tests.\n' >&2
   exit 67
 fi
@@ -184,11 +194,19 @@ stage=postflight-source-identity
   printf 'ERROR: Git index flags changed during qualification.\n' >&2
   exit 72
 }
-[[ -z "$(git -c core.fileMode=true -c core.fsmonitor=false status --porcelain --untracked-files=all)" ]] || {
+checkout_status="$(git -c core.fileMode=true -c core.fsmonitor=false status --porcelain --untracked-files=all)" || {
+  printf 'ERROR: postflight Git status inspection failed.\n' >&2
+  exit 75
+}
+[[ -z "$checkout_status" ]] || {
   printf 'ERROR: tracked or untracked source changed during qualification.\n' >&2
   exit 70
 }
-[[ -z "$(unexpected_ignored_files)" ]] || {
+ignored_files="$(unexpected_ignored_files)" || {
+  printf 'ERROR: postflight Git ignored-file inspection failed.\n' >&2
+  exit 75
+}
+[[ -z "$ignored_files" ]] || {
   printf 'ERROR: ignored non-build files appeared during qualification.\n' >&2
   exit 74
 }
