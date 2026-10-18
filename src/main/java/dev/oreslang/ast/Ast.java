@@ -41,6 +41,32 @@ public final class Ast {
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
     public enum ActorKind { NONE, PRIVATE, SHARED, UNTRUSTED }
+    /** Orthogonal source-actor protocol dimensions; not an executable transport binding. */
+    public enum ActorReplyRole { STREAM, UNARY }
+    public enum ActorTransport { MAIL, HTTP, IPC, TCP, FFI, PROXY, WEBSOCKET }
+    public enum ActorDirection { LOCAL, INBOUND, OUTBOUND, DUPLEX }
+
+    public record ActorSpecialization(
+            ActorReplyRole replyRole,
+            ActorTransport transport,
+            ActorDirection direction,
+            boolean serial,
+            List<String> requirements,
+            List<String> effects,
+            List<Annotation> annotations) {
+        public ActorSpecialization {
+            if (replyRole == null || transport == null || direction == null)
+                throw new IllegalArgumentException("actor protocol dimensions cannot be null");
+            requirements = List.copyOf(requirements);
+            effects = List.copyOf(effects);
+            annotations = List.copyOf(annotations);
+        }
+
+        public static ActorSpecialization defaultSpec() {
+            return new ActorSpecialization(ActorReplyRole.STREAM, ActorTransport.MAIL,
+                    ActorDirection.LOCAL, false, List.of(), List.of(), List.of());
+        }
+    }
 
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
@@ -328,13 +354,25 @@ public final class Ast {
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
-            List<MethodDecl> methods) implements Decl {
+            List<MethodDecl> methods,
+            ActorSpecialization actorSpecialization) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            if (actorSpecialization == null)
+                throw new IllegalArgumentException("actor specialization must not be null");
+        }
+
+        /** Compatibility constructor for AST producers without actor protocol metadata. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract, ActorKind actorKind,
+                         List<String> genericParameters, List<TypeRef> parents,
+                         List<TypeRef> interfaces, List<FieldDecl> fields,
+                         ConstructorDecl constructor, List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, genericParameters, parents,
+                    interfaces, fields, constructor, methods, ActorSpecialization.defaultSpec());
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
