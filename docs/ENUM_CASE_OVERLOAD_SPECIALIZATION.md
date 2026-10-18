@@ -75,3 +75,47 @@ The source-owned `contracts/v2/test_enum_case_slot_abi_vectors.py` fixture was f
 Private source transfer into another GitHub organization is **not currently permitted**: security incident [platform-conformance #22](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/issues/22) and follow-up private-carrier incident #77 remain unresolved. Destination privacy, runner capacity, or a matching Git tree are insufficient for export approval. Do not mirror private source without the protected, independently approved authorization process.
 
 **Current status:** the draft branches now include a real enum parser/AST, a source-AST-to-host-only proof adapter, Java/C++ static overload oracles, shared exhaustive finite relation fixtures, defensive type/ownership/runtime/optimizer rejection of unlinked enum AST, and native guest source fail-closed diagnostics. This is **not executable enum-case overloading**. The source-AST adapter derives tentative identities from source spellings, not typechecker-authenticated linked declarations; it is unsafe for runtime dispatch. Real TypeChecker/OwnershipChecker selected-call binding, enum values, virtual slot mapping, imports, LLVM guest lowering, and exact-tree test evidence remain mandatory. Java #1049's staged enum AST (`EnumCase(name,payload,int tag)`) and older Java #907's enum AST (`EnumVariant(name,record,long tag)`) are incompatible and require a reviewed semantic migration, never an old-branch wholesale overwrite.
+
+## 2026-10-17 AOT value representation and AST security follow-up
+
+This draft now has a **compiler-only nullary enum tag32 layout** derived from
+real parsed `Ast.EnumDecl` data through `EnumCaseSourceBindings.compileLocalProof`.
+For a locally resolved `Foo`, each nullary `Foo.A` is represented as its
+positive 32-bit declared wire tag in a statically typed i32 register. The
+compiler must retain the **nominal type identity separately**; numeric tag
+equality across two unrelated enums never establishes value or overload
+interchangeability. The tag is a *value*, never the runtime overload selector.
+
+Java `EnumTag32Plan` and LLVM `EnumTag32Layout.hpp` now share a canonical
+schema-byte encoding: SHA-256 over length-prefixed UTF-8 version, full
+qualified nominal ID, case count, and declaration-ordered case IDs with
+big-endian signed-positive i32 wire tags. This digest is for **AOT cache
+invalidation**, not callable ABI overload identity; it changes on wire tag,
+case, or enum identity modifications. The `eos2` overload symbol still keys
+on canonical enum/case *declaration* IDs, **not** numeric tags.
+
+The Java source AST now validates enum and named-pattern identifiers at direct
+record construction, not solely through the parser: scanner-compatible BMP
+identifier character rules, malformed Unicode/invisibles, pattern owner/case
+shape and 512-byte canonical symbol segments are checked before a proof may
+be constructed. This is a lexical hygiene gate, not a substitute for an
+authoritative import/typechecker resolver.
+
+The **first executable native-guest step remains unimplemented**:
+LLVM Parser.hpp has no enum/variant source AST or native enum-expression
+lowering; TypeChecker currently rejects enum declarations as syntax-only;
+there is no checked `Foo.A` to typed register to exact overload call pipeline.
+The new Java plan is only for fully nullary local enums, and native name
+parity currently covers ASCII IDs only. General payloads, imported enums,
+actor messages, inherited methods and Unicode cross-backend semantic parity
+must remain fail-closed.
+
+Local exact-blob isolated component results: Java `EnumAstIdentity` 33 checks
+and `EnumTag32Plan` 21 checks under JDK21 strict warnings; native
+`EnumTag32Layout.hpp` passed its golden/vector host smoke under Clang C++17
+debug and optimized, and GCC C++17 optimized `-Werror`. Canonical fixture
+`local_unit.__root__.Foo{A=5,B=17,C=31}` has schema SHA-256
+`d1348f4be12ad08ecddbd97fda273dcaf65b0c492958ef69f74e477f87112844`.
+**These tests do not establish Graal JDK25 guest execution, Native Image,
+LLVM native guest execution, CTest/ASan, or Actions success.**
+
