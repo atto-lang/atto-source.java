@@ -104,6 +104,24 @@ final class NestedOptionFutureExtractionLanguageTest {
     }
 
         @Test
+    void rejectsErasedOptionUnwrapAllAndRetainsSingleLayerExtraction() {
+        String rejected = """
+                fnc extract(Option<Any> value): Any {
+                  return value.unwrap_all();
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(rejected));
+
+        String accepted = """
+                fnc extract(Option<Any> value): Any {
+                  return value.unwrap();
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(accepted));
+    }
+
+    @Test
     void futureFlattenAwaitsOuterThenInnerViaScheduler() throws Exception {
         String program = """
                 async fnc base(): int {
