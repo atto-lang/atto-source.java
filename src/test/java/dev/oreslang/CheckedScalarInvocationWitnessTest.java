@@ -180,6 +180,22 @@ final class CheckedScalarInvocationWitnessTest {
                 () -> TypeChecker.inspectStagedScalarInvocation(parsed, calling, call(calling)));
     }
 
+    @Test
+    void malformedInferenceTypeCannotSatisfyExplicitResultBinding() {
+        Ast.Program original = program();
+        Ast.FunctionDecl source = caller(original);
+        Ast.StagedCallExpr invoked = call(source);
+        Ast.TypeRef malformed = new Ast.TypeRef("$infer$",
+                List.of(Ast.TypeRef.simple("bool")), false);
+        Ast.BindingStmt binding = new Ast.BindingStmt(
+                Ast.BindingKind.CONST, malformed, "result", invoked);
+        Ast.FunctionDecl changed = withBody(source,
+                List.of(binding, new Ast.ReturnStmt(null)));
+        Ast.Program modified = withCaller(original, changed);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.inspectStagedScalarInvocation(modified, changed, invoked));
+    }
+
     private static Ast.FunctionDecl withBody(Ast.FunctionDecl source, List<Ast.Stmt> body) {
         return new Ast.FunctionDecl(
                 source.name(), source.kind(), source.visibility(), source.async(),
