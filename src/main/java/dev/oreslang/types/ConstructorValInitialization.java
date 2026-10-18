@@ -43,9 +43,13 @@ public final class ConstructorValInitialization {
         // Even classes with no blank val slots must not publish constructing
         // self. Ownership checks must not be the only protection: run the
         // constructor expression walker independently for every constructor.
+        Set<String> localMethods = new java.util.HashSet<>();
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic()) localMethods.add(method.name());
+        }
         Set<Integer> checkedArities = new java.util.HashSet<>();
         for (Ast.ConstructorDecl constructor : klass.constructors()) {
-            checkConstructor(klass, constructor, required, fixed, checkedArities);
+            checkConstructor(klass, constructor, required, fixed, localMethods, checkedArities);
         }
     }
 
@@ -62,6 +66,7 @@ public final class ConstructorValInitialization {
             Ast.ConstructorDecl constructor,
             Set<String> required,
             Set<String> fixed,
+            Set<String> localMethods,
             Set<Integer> checkedArities) {
         List<Ast.ConstructorDecl> chain = new ArrayList<>();
         Ast.ConstructorDecl current = constructor;
@@ -73,7 +78,7 @@ public final class ConstructorValInitialization {
         }
         for (int index = chain.size() - 1; index >= 0; index--) {
             Ast.ConstructorDecl frame = chain.get(index);
-            State entry = new State(required, fixed);
+            State entry = new State(required, fixed, localMethods);
             if (ConstructorDelegation.isDelegating(frame)) {
                 for (String field : required) entry.write(field);
             }
@@ -88,14 +93,16 @@ public final class ConstructorValInitialization {
     private static final class State {
         ConstructorFlowState flow;
         final Set<String> fixed;
-        State(Set<String> required, Set<String> fixed) {
-            this(ConstructorFlowState.blank(required), Set.copyOf(fixed));
+        final Set<String> localMethods;
+        State(Set<String> required, Set<String> fixed, Set<String> localMethods) {
+            this(ConstructorFlowState.blank(required), Set.copyOf(fixed), Set.copyOf(localMethods));
         }
-        State(ConstructorFlowState flow, Set<String> fixed) {
+        State(ConstructorFlowState flow, Set<String> fixed, Set<String> localMethods) {
             this.flow = flow;
             this.fixed = fixed;
+            this.localMethods = localMethods;
         }
-        State copy() { return new State(flow, fixed); }
+        State copy() { return new State(flow, fixed, localMethods); }
         boolean initialized(String field) { return flow.definitelyInitialized(field); }
         boolean maybeInitialized(String field) { return flow.maybeInitialized(field); }
         void write(String field) { flow = flow.write(field); }
@@ -258,6 +265,14 @@ public final class ConstructorValInitialization {
         if (node instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr receiver
                 && receiver.name().equals("self")) {
+            // Method references also carry a receiver and must not turn
+            // a partial object into a bound callback. Parent methods that
+            // are not locally declared remain covered by the runtime guard.
+            if (state.localMethods.contains(member.member())) {
+                throw new IllegalArgumentException(
+                        "constructor for '" + klass + "' cannot reference instance method '"
+                                + member.member() + "' on constructing self");
+            }
             // A direct field projection is not publication of the receiver itself.
             if (required.contains(member.member()) && !state.initialized(member.member())) {
                 throw error(klass, member.member(), "is read before constructor initialization");
@@ -319,6 +334,16 @@ public final class ConstructorValInitialization {
             return;
         }
         if (node instanceof Ast.CallExpr item) {
+            // MemberExpr(self, name) is otherwise treated as a field projection
+            // by the scanner, which could accidentally admit virtual dispatch
+            // into derived fields that are still uninitialized.
+            if (item.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr receiver
+                    && receiver.name().equals("self")) {
+                throw new IllegalArgumentException(
+                        "constructor for '" + klass + "' cannot dispatch instance method '"
+                                + member.member() + "' on constructing self");
+            }
             scan(item.callee(), state, required, klass, immediate);
             scan(item.arguments(), state, required, klass, immediate);
             return;
