@@ -20,12 +20,15 @@ case "$os" in
     output="target/native/liboresipc.so"
     shared_flags="-shared"
     linker_hardening="-Wl,-z,relro,-z,now"
+    platform_warnings=""
     ;;
   Darwin)
     jni_os="darwin"
     output="target/native/liboresipc.dylib"
     shared_flags="-dynamiclib"
     linker_hardening=""
+    # Non-Linux JNI entrypoints intentionally compile as fail-closed stubs.
+    platform_warnings="-Wno-unused-function"
     ;;
   *)
     echo "native IPC actor transport build currently supports Linux/macOS hosts; got $os" >&2
@@ -44,6 +47,7 @@ mkdir -p target/native
   -Wall \
   -Wextra \
   -Werror \
+  $platform_warnings \
   -fstack-protector-strong \
   -fno-omit-frame-pointer \
   $shared_flags \
