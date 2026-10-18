@@ -97,8 +97,11 @@ CI.
 
 ## Payload construction
 
-**Not yet implemented.** These are mandatory requirements for the future
-review-pinned dispatcher, not evidence that a writer currently exists.
+**Implemented as unapproved draft code only; private export remains denied.**
+The dispatcher and its adversarial tests exist on the review-pinned integration
+candidate, but no reviewed approval, source-local execution receipt or incident
+closure has authorized their use. The following requirements must be checked
+on the exact approved code head before any write.
 
 The dispatcher must create a **new** branch only if
 `ci/oreslang-<source-tree-sha>` does not already exist. Reuse, force-update or
