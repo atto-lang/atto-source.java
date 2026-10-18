@@ -214,6 +214,12 @@ public final class HttpResponseDraftStandaloneCheck {
                 Thread.sleep(10);
             check(aggregateRejects.get() >= 2,
                     "combined header limits enforced, observed=" + aggregateRejects.get());
+            HttpResponse<String> retried = client.send(
+                    HttpRequest.newBuilder(base.resolve("/preflight-retry")).build(),
+                    HttpResponse.BodyHandlers.ofString());
+            check(retried.statusCode() == 200 && retried.body().equals("after correction"),
+                    "rejected preflight must not consume the response");
+            check(preflightRetries.get() == 1, "preflight completed once after correction");
         } finally {
             server.stop(0);
             workers.shutdownNow();
