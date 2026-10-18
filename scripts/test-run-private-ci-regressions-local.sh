@@ -97,4 +97,8 @@ if bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then 
 ! grep -q '^PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1$' "$root/out"
 ! grep -q '^PRIVATE_CI_REVIEW_COVERAGE_PASSED=1$' "$root/out"
 echo 'PASS: failed review-coverage verifier cannot create a success receipt'
-echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=10' 
+make_fixture
+if PYTHON=/bin/true bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
+grep -q PRIVATE_CI_UNSAFE_PYTHON_OVERRIDE "$root/out"
+echo 'PASS: /bin/true cannot masquerade as a passing Python interpreter'
+echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=11' 
