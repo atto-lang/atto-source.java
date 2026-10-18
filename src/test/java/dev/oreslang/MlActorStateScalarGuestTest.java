@@ -98,6 +98,37 @@ final class MlActorStateScalarGuestTest {
         assertEquals(expected, stdout.toString(StandardCharsets.UTF_8));
     }
 
+    @Test void actualGuestTypedResultSeparatesNegativeSuccessAndError() throws Exception {
+        // This is deliberately a small independent compiler guest fixture,
+        // not a Java host evaluation of the Result numerical semantics.
+        String text = """
+                pub routine main(): void {
+                    val Result<int, String> negative = Ok(-8);
+                    val Result<int, String> rejected = Err("INVALID_INPUT");
+                    if negative.is_err() || negative.unwrap() != -8; do
+                        stdio.println("TYPED_RESULT_FAIL");
+                        return;
+                    fi
+                    if !rejected.is_err(); do
+                        stdio.println("TYPED_RESULT_FAIL");
+                        return;
+                    fi
+                    stdio.println("ORES_TYPED_RESULT_PASS");
+                    return;
+                }
+                """;
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(stdout).build()) {
+            Source executable = Source.newBuilder(OresLanguage.ID, text,
+                    "ml-typed-result.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            assertDoesNotThrow(() -> context.eval(executable));
+        }
+        assertEquals("ORES_TYPED_RESULT_PASS\\n",
+                stdout.toString(StandardCharsets.UTF_8));
+    }
+
     @Test void readEffectsDoNotGrantStateWriteAndLoanCannotEscape() {
         assertRejected("""
                 define actor Stage as
