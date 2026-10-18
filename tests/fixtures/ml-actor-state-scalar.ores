@@ -244,6 +244,16 @@ define actor VersionedScalarStage as
         return self.handle_state(critical read |s| -> s.version);
     }
 
+    // Demo lifecycle check, not an authenticated supervisor permission.
+    // Terminate only after both final-step forward contexts are issued.
+    private demo_finish_ready(): bool with state.read {
+        return self.handle_state(critical read |s| ->
+            s.run_id == 101 && s.incarnation == 1
+            && s.step == 3 && s.version == 3
+            && s.issued_first && s.issued_second
+            && s.pending_gradients == 0);
+    }
+
     // ActorRef callers ONLY send messages; they never invoke actor user methods.
     receive(ActorMail<String> mail): void {
         if mail.value == "orphan"; do
@@ -348,12 +358,12 @@ define actor VersionedScalarStage as
             return;
         fi
         if mail.value == "new_negative_forward"; do
-            self.print_outcome(self.eval_affine(3, 3, 2, -2, 101, 1));
-            return;
-        fi
-        if mail.value == "after"; do
-            stdio.println(self.weight_snapshot() * 2);
-            self.end();
+            val Result<int, String> final_result = self.eval_affine(3, 3, 2, -2, 101, 1);
+            self.print_outcome(final_result);
+            if !final_result.is_err() && self.demo_finish_ready(); do
+                stdio.println(self.weight_snapshot() * 2);
+                self.end();
+            fi
             return;
         fi
         return;
@@ -384,7 +394,6 @@ pub async routine main(): void {
     worker.send("stale_after_cancel");
     worker.send("new_forward");
     worker.send("new_negative_forward");
-    worker.send("after");
     await worker.get_done();
     return;
 }
