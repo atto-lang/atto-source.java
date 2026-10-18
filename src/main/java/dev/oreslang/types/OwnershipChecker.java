@@ -53,6 +53,7 @@ public final class OwnershipChecker {
     }
 
     public static Ast.Program check(Ast.Program program) {
+        OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(program);
         OwnershipChecker checker = new OwnershipChecker(program);
         checker.validate(program);
         return program;
@@ -64,6 +65,7 @@ public final class OwnershipChecker {
         if (linkedClasses == null) {
             throw new IllegalArgumentException("linked public classes cannot be null");
         }
+        OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(program);
         OwnershipChecker checker = new OwnershipChecker(program);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
