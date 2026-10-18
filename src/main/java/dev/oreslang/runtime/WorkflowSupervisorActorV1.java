@@ -192,6 +192,17 @@ public final class WorkflowSupervisorActorV1 {
                                     "supervisor workflow database run id "
                                             + "does not match configuration");
                         }
+                        if (snapshot.runId() != null) {
+                            DurableDevLoopV1.Snapshot reducer =
+                                    workflowOpened.replayDevLoop()
+                                            .machine()
+                                            .snapshot();
+                            if (reducer.phase()
+                                    == DurableDevLoopV1.Phase.CANCELLED
+                                    && !opened.usage().cancelled()) {
+                                opened.cancel(reducer.cancelReason());
+                            }
+                        }
                     }
                     this.ledger = opened;
                     this.workflowStore = workflowOpened;
@@ -214,6 +225,35 @@ public final class WorkflowSupervisorActorV1 {
             requireConfigured();
 
             if (message instanceof Admit admit) {
+                if (workflowStore != null) {
+                    DurableDevLoopV1.Snapshot workflow =
+                            workflowStore.replayDevLoop()
+                                    .machine()
+                                    .snapshot();
+                    if (isTerminal(workflow.phase())) {
+                        WorkflowSupervisorPolicyV1.Usage usage =
+                                ledger.usage();
+                        String reason = switch (workflow.phase()) {
+                            case CANCELLED ->
+                                    usage.cancelled()
+                                            ? usage.cancellationReason()
+                                            : "workflow_cancelled";
+                            case FAILED -> "workflow_failed";
+                            case COMPLETED -> "workflow_completed";
+                            default -> throw new IllegalStateException(
+                                    "non-terminal workflow reached terminal guard");
+                        };
+                        emit(
+                                context,
+                                new AdmissionEvaluated(
+                                        new WorkflowSupervisorPolicyV1.Admission(
+                                                WorkflowSupervisorPolicyV1.Decision.CANCEL,
+                                                usage,
+                                                reason)));
+                        return;
+                    }
+                }
+
                 emit(
                         context,
                         new AdmissionEvaluated(
@@ -231,10 +271,31 @@ public final class WorkflowSupervisorActorV1 {
             }
 
             if (message instanceof Cancel cancel) {
-                emit(
-                        context,
-                        new UsagePublished(
-                                ledger.cancel(cancel.reason())));
+                WorkflowSupervisorPolicyV1.Usage usage;
+                if (workflowStore == null) {
+                    usage = ledger.cancel(cancel.reason());
+                } else {
+                    DurableDevLoopV1 machine =
+                            workflowStore.replayDevLoop().machine();
+                    DurableDevLoopV1.Snapshot workflow =
+                            machine.snapshot();
+                    if (!isTerminal(workflow.phase())) {
+                        workflowStore.append(machine.accept(
+                                "supervisor-cancel",
+                                new DurableDevLoopV1.Cancel(
+                                        cancel.reason())));
+                        usage = ledger.cancel(cancel.reason());
+                    } else if (workflow.phase()
+                            == DurableDevLoopV1.Phase.CANCELLED) {
+                        usage = ledger.usage().cancelled()
+                                ? ledger.usage()
+                                : ledger.cancel(
+                                        workflow.cancelReason());
+                    } else {
+                        usage = ledger.usage();
+                    }
+                }
+                emit(context, new UsagePublished(usage));
                 return;
             }
 
@@ -478,6 +539,13 @@ public final class WorkflowSupervisorActorV1 {
                 decodeUsage(map.get("usage")),
                 WorkflowActorWireV1.nullableString(
                         map, "reason"));
+    }
+
+    private static boolean isTerminal(
+            DurableDevLoopV1.Phase phase) {
+        return phase == DurableDevLoopV1.Phase.COMPLETED
+                || phase == DurableDevLoopV1.Phase.FAILED
+                || phase == DurableDevLoopV1.Phase.CANCELLED;
     }
 
     private static String requireText(String value, String name) {
