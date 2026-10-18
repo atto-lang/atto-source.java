@@ -195,6 +195,43 @@ reproducible via `bash scripts/test-http-response-preflight.sh`.
 standalone test**; the source repo's JDK25 CI still requires an admitted runner.
 The repository's reviewed private-source mirror allowlist remains empty.
 
+## Committed close-once regression and real-socket cancellation proof
+
+The response body is now wrapped in `CloseOnceInputStream`, using an
+`AtomicBoolean` to guarantee that the underlying producer's `close()` is
+called at most once even when the asynchronous abort cleanup and normal
+response writer both close the same stream. This is separate from the
+one-time response handoff and one-time wire-emission guards.
+
+Evidence pinned to exact committed Java blobs:
+
+- `HttpResponseDraft.java`: `0fb24ab2d287e88c85127f2c84613b380a5efc92`.
+- `HttpResponseCloseRaceCheck.java`: `bfb0404e5476e4681f00bd6950522181749f297c`.
+- `HttpResponseAbortRaceWireCheck.java`: `198ca4aaeb8cd26483eb0d6f040baec90f02af59`.
+- `HttpResponsePreflightCheck.java`: `b595672e59315964d191bdd457243c226bbee796`.
+- `HttpResponseDraftStandaloneCheck.java`: `dbb2d15a2143ef4ada21614b4a5b507d5c735790`.
+
+Run all four no-Maven tests together with
+`bash scripts/test-http-response-hardening.sh` (Java 21+).
+Five consecutive local passes completed **500 eight-carrier response-close
+races**, **125 loopback HTTP cancellation/close races**, and all preflight
+retry/regular HTTP wire checks. Against the unpatched source, the close-race
+regression detected eight delegate close invocations; this establishes test
+sensitivity rather than merely a happy-path assertion.
+
+The close-once contention test is also part of `HttpResponseDraftTest`, so it
+will run in normal Maven/JUnit CI when runners are available. The JUnit
+addition itself has **not** yet executed in Maven; source-org JDK25 Actions
+still fail before executing any job steps.
+
+**Still open:** end-to-end actor death, request deadline vs actual wire
+commitment, stream supplier blocking/failure, guest source parsing/typing,
+Graal Native Image, and LLVM parity. The candidate private GraalVM JDK25
+runner `opto-sync-test/go-java-validation` has succeeded on source-free
+canaries but cannot receive private source without the protected-main
+security approval tracked in issues #1368 and #1409. No cross-org source
+mirror has been performed.
+
 ## Next implementation gates
 
 1. Establish a private, authorized CI runner; the source repository's checked-in
