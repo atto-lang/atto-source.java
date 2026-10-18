@@ -77,3 +77,44 @@ constructor(self, int value, ((AnyCallable cb) => void) cb) {
 A future explicitly scoped/no-escape callable contract may admit synchronous
 borrowed callbacks, but ordinary `Fnc`/`AnyCallable` parameters are escaping
 unless proven otherwise. No such no-escape exception is part of this change.
+
+
+## `AnyCallable`, transport safety, and spoofing (security audit)
+
+`AnyCallable` is a **sealed compiler intrinsic top type for reifiable
+function values**, implemented as a type-system singleton. It is *not* a
+user-definable interface, trait, class, `impl` target, marker annotation,
+structural `call` convention, or serialization capability. Its hierarchy
+is `Fnc<signature> <: AnyCallable <: Any` (including compatible reifiable
+lambdas/static functions); methods, non-reifiable `routine` declarations,
+ordinary objects with a `call` member, and class constructor objects do
+not automatically become callable. The erased `AnyCallable` type has no
+known invocation signature and **must not be called or accessed as an object**
+until a safe, explicitly checked narrower callable signature is proven.
+Captures stay subject to their own lifetime/ownership rules.
+
+- Actor mailbox DATA and generic network/persistence codecs are *separate*
+  from local callable values. Neither `AnyCallable` nor any `Fnc<...>`,
+  closure, static function, callable-containing collection/record/union,
+  pointer, codec implementation object, or nominal host capability is
+  `Sendable` or `Serializable` merely because it is a valid local value.
+- `Sendable<T>` is compiler-only ownership/transfer evidence, not a
+  user-implementable trait. `Serializable<T, F>` requires a distinct
+  pinned format codec and independently granted I/O permission. Actor
+  DATA additionally requires a receiver-pinned `ActorMessageCodec<T>`
+  and atomic admission; supervisor CONTROL is runtime-authorized only.
+- Reject module-qualified or imported lookalikes (`mod.AnyCallable`,
+  `mod.NetworkCodec`, `mod.ActorRef`) and unsupported unknown nominal
+  types, even when hidden inside `List`, tuples, records, generics,
+  Option/Result, or async task arguments. No source-level trait name or
+  user-provided schema ID can manufacture ownership or CONTROL authority.
+- Native LLVM, WASM, .NET, and Forge must explicitly **reject** unimplemented
+  erased callable semantics at type-check/lowering time, rather than
+  silently treating them as an `Any`, ordinary object, FFI pointer,
+  or sendable serialized data.
+
+This feature branch includes focused JUnit checks for the erased callable
+subtype relation, prohibition of implicit invocation and arbitrary
+properties, reserved intrinsic names, nested actor-data capability rejection,
+and preservation of legitimate in-process callable use. Independent JDK 25,
+Native Image and cross-backend conformance are still required.
