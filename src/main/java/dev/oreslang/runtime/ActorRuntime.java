@@ -5354,6 +5354,27 @@ public final class ActorRuntime implements AutoCloseable {
 
             synchronized (cell.lifecycleLock) {
                 if (!freeze.schedulerDrained()) return Optional.empty();
+                if (cell.parent != null) {
+                    throw new IllegalStateException(
+                            "cross-context actor upgrade v1 supports root actors only; "
+                                    + "parent/supervision lineage cannot yet be rebound");
+                }
+                if (cell.managedByGroup.get() != null) {
+                    throw new IllegalStateException(
+                            "cross-context actor upgrade v1 cannot transfer an ActorGroup-managed worker");
+                }
+                synchronized (groupMembershipLock) {
+                    Set<ActorGroupId> memberships = groupMemberships.get(ref.id());
+                    Set<ActorGroupId> created = createdGroupsByActor.get(ref.id());
+                    if (memberships != null && !memberships.isEmpty()) {
+                        throw new IllegalStateException(
+                                "cross-context actor upgrade v1 cannot transfer ActorGroup membership");
+                    }
+                    if (created != null && !created.isEmpty()) {
+                        throw new IllegalStateException(
+                                "cross-context actor upgrade v1 cannot transfer actor-created groups");
+                    }
+                }
                 if (cell.outputChannel.size() != 0
                         || cell.outputChannel.pendingRegistrations() != 0) {
                     throw new IllegalStateException(
