@@ -94,6 +94,21 @@ public final class EnumCaseSourceBindings {
         for (Ast.ModuleDecl module : program.modules()) {
             String owner = scope + "." + module.name();
             Map<String, String> moduleEnums = new LinkedHashMap<>();
+            // The offline oracle must not assign two independent declarations
+            // the same supposed nominal owner, even if the production checker
+            // would later reject that source for a separate reason.
+            Set<String> nominalNames = new LinkedHashSet<>();
+            for (Ast.Decl decl : module.declarations()) {
+                String nominal = null;
+                if (decl instanceof Ast.EnumDecl d) nominal = d.name();
+                else if (decl instanceof Ast.ClassDecl d) nominal = d.name();
+                else if (decl instanceof Ast.InterfaceDecl d) nominal = d.name();
+                else if (decl instanceof Ast.TypeAliasDecl d) nominal = d.name();
+                if (nominal != null && !nominalNames.add(nominal)) {
+                    throw new IllegalArgumentException(
+                            "duplicate/ambiguous nominal name in module: " + nominal);
+                }
+            }
             for (Ast.Decl decl : module.declarations()) {
                 if (!(decl instanceof Ast.EnumDecl en)) continue;
                 String id = owner + "." + en.name();
@@ -235,7 +250,7 @@ public final class EnumCaseSourceBindings {
         }
         return switch (name) {
             case "int", "bool", "string", "String", "float", "f64" ->
-                    Parameter.fixed(name.equals("String") ? "string" : name);
+                    Parameter.fixed(canonicalScalar(name));
             default -> throw new IllegalArgumentException(
                     "unproven ordinary parameter type in case overload family: " + name);
         };
@@ -263,7 +278,18 @@ public final class EnumCaseSourceBindings {
                 if (info.cases().contains(caseName)) return Parameter.enumCase(identity, caseName);
             }
         }
-        if (name.equals("String")) name = "string";
-        return Parameter.fixed(name);
+        return Parameter.fixed(canonicalScalar(name));
+    }
+
+    private static String canonicalScalar(String name) {
+        // This is intentionally narrower than all Oreslang numeric types.
+        // Expand only after a shared native/JVM width-aware ABI decision.
+        return switch (name) {
+            case "String" -> "string";
+            case "f64" -> "float";
+            case "int", "bool", "string", "float" -> name;
+            default -> throw new IllegalArgumentException(
+                    "unproven or noncanonical fixed scalar: " + name);
+        };
     }
 }
