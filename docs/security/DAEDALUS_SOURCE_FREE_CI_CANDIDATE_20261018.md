@@ -9,9 +9,17 @@
 - API evidence at assessment: `private=true`, `visibility=private`, `archived=false`, `disabled=false`, `allow_forking=false`.
 - Hosted Ubuntu 24 runner really executed a source-free capacity probe:
   https://github.com/daedalus-fab/daedalus-fab-e2e/actions/runs/39176858740
-- Source-free Java/GraalVM/LLVM toolchain canary:
-  https://github.com/daedalus-fab/daedalus-fab-e2e/actions/workflows/oreslang-zero-source-toolchain-canary.yml
-  (independent toolchain verification; results must be checked on exact run)
+- **Source-free JDK25/GraalVM/LLVM toolchain canary PASSED with executed job steps:**
+  https://github.com/daedalus-fab/daedalus-fab-e2e/actions/runs/39177869748
+  at exact carrier head `bdebc0e37125c6ac1d97c471b07cd9e1855141c7`.
+  - GraalVM `javac 25.0.4`, Maven `3.10.0`, Native Image `25.0.4`;
+    synthetic Java returned 42 on the JVM and after actual Native Image compilation.
+  - Clang `18.1.3` generated and executed a synthetic LLVM IR binary;
+    CMake/CTest executed a synthetic native test (`1/1` passing).
+  - Verified actual job logs contain `GRAALVM_JDK25_JAVA_AND_NATIVE_IMAGE_EXECUTED=1`
+    and `LLVM_CLANG_CMAKE_CTEST_EXECUTED=1`.
+  - **Not a compiler qualification:** no Oreslang source, JUnit compiler suite, or
+    native Oreslang CTest fixtures were transferred or executed.
 - Source repository: `ores-truffle-oreslang/oreslang-source.java`, ID `1400792274`.
 - Target draft source PRs: Java #1406, LLVM #654. Their source heads, trees and authorization receipts are distinct.
 - At assessment, `main` in the Java and LLVM source repositories is **unprotected**. Their source-org Actions jobs fail before recording steps.
