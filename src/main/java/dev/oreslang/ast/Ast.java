@@ -324,6 +324,28 @@ public final class Ast {
         }
     }
 
+    public record ForeignDecl(
+            String name,
+            boolean suspends,
+            List<Param> parameters,
+            TypeRef returnType,
+            String symbolIdentity) {
+        public ForeignDecl {
+            if (name == null || name.isBlank())
+                throw new IllegalArgumentException("foreign declaration name cannot be blank");
+            parameters = List.copyOf(parameters);
+            returnType = java.util.Objects.requireNonNull(
+                    returnType, "foreign declaration return type");
+            if (symbolIdentity == null || symbolIdentity.isBlank())
+                throw new IllegalArgumentException("foreign symbol identity cannot be blank");
+            if (!suspends)
+                throw new IllegalArgumentException(
+                        "foreign declarations v1 must be suspending");
+        }
+
+        public int arity() { return parameters.size(); }
+    }
+
     public record ClassDecl(
             String name,
             Visibility visibility,
@@ -335,6 +357,7 @@ public final class Ast {
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
+            List<ForeignDecl> foreignDeclarations,
             List<MethodDecl> methods) implements Decl {
         public ClassDecl {
             actorKind = java.util.Objects.requireNonNull(actorKind, "actor kind");
@@ -344,6 +367,7 @@ public final class Ast {
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
+            foreignDeclarations = List.copyOf(foreignDeclarations);
             methods = List.copyOf(methods);
 
             boolean legal = switch (actorBoundary) {
@@ -365,6 +389,29 @@ public final class Ast {
                 throw new IllegalArgumentException(
                         "external actors v1 cannot be generic or inherit/implement types");
             }
+            if (!foreignDeclarations.isEmpty()
+                    && actorBoundary != ActorBoundary.FFI) {
+                throw new IllegalArgumentException(
+                        "foreign declarations are only valid inside ffi actors");
+            }
+        }
+
+        /** Boundary-aware constructor for AST producers without foreign declarations. */
+        public ClassDecl(
+                String name,
+                Visibility visibility,
+                boolean isAbstract,
+                ActorKind actorKind,
+                ActorBoundary actorBoundary,
+                List<String> genericParameters,
+                List<TypeRef> parents,
+                List<TypeRef> interfaces,
+                List<FieldDecl> fields,
+                ConstructorDecl constructor,
+                List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, actorBoundary,
+                    genericParameters, parents, interfaces, fields, constructor,
+                    List.of(), methods);
         }
 
         /** Compatibility constructor for existing actor-aware AST producers. */
@@ -381,7 +428,7 @@ public final class Ast {
                 List<MethodDecl> methods) {
             this(name, visibility, isAbstract, actorKind, ActorBoundary.LOCAL,
                     genericParameters, parents, interfaces, fields, constructor,
-                    methods);
+                    List.of(), methods);
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
@@ -390,7 +437,7 @@ public final class Ast {
                          List<TypeRef> interfaces, List<FieldDecl> fields,
                          List<MethodDecl> methods) {
             this(name, Visibility.PRIVATE, isAbstract, actorKind, ActorBoundary.LOCAL,
-                    genericParameters, parents, interfaces, fields, null, methods);
+                    genericParameters, parents, interfaces, fields, null, List.of(), methods);
         }
 
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
