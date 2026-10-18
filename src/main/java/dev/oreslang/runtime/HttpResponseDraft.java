@@ -40,6 +40,7 @@ public final class HttpResponseDraft {
     private final boolean bodyPresent;
     private final AtomicBoolean handedOff = new AtomicBoolean();
     private final AtomicBoolean bodyOpened = new AtomicBoolean();
+    private final AtomicBoolean emissionStarted = new AtomicBoolean();
 
     private HttpResponseDraft(int status, List<Map.Entry<String, String>> headers,
                               byte[] bytes, Supplier<? extends InputStream> stream,
