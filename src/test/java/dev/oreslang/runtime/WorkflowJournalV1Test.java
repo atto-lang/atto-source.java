@@ -677,6 +677,46 @@ final class WorkflowJournalV1Test {
     }
 
     @Test
+    void persistedRetryAuthorityCannotOverrideJournalRevocation() {
+        var loop = new DurableDevLoopV1("run-retry-tamper", 3);
+        var store = started(loop);
+        store.append(loop.accept(
+                "cancel",
+                new DurableDevLoopV1.Cancel("operator")));
+
+        var state = store.persistentState();
+        var effects = new java.util.ArrayList<>(state.effects());
+        var original = effects.getFirst();
+        assertFalse(original.retryAllowed());
+
+        effects.set(
+                0,
+                new WorkflowJournalV1.EffectSnapshot(
+                        original.effectKey(),
+                        original.command(),
+                        original.state(),
+                        original.attempts(),
+                        original.workerId(),
+                        original.claimToken(),
+                        original.leaseUntilMillis(),
+                        original.receiptRef(),
+                        original.reconciliationRef(),
+                        true));
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> WorkflowJournalV1.restore(
+                        new WorkflowJournalV1.PersistentState(
+                                state.runId(),
+                                state.maxIterations(),
+                                state.nextSequence(),
+                                state.nextClaimNumber(),
+                                state.lastObservedMillis(),
+                                state.journal(),
+                                effects)));
+    }
+
+    @Test
     void outOfOrderJournalEntryFailsClosedWithoutPartialAppend() {
         var loop = new DurableDevLoopV1("run-order", 3);
         var first = loop.accept(
