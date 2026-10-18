@@ -29,6 +29,7 @@ public final class TaskScope implements AutoCloseable {
     /** Atomically admit a child or reject a scope which has started closing. */
     public <T> TaskHandle<T> startTask(OresScheduler.Task<T> task) {
         Objects.requireNonNull(task, "task");
+        TaskHandle<T> child;
         synchronized (admissionLock) {
             if (sealed) {
                 throw new RejectedExecutionException("TaskScope is sealed");
@@ -37,14 +38,20 @@ public final class TaskScope implements AutoCloseable {
             // must never consume a scope join slot indefinitely.
             active++;
             try {
-                TaskHandle<T> child = TaskHandle.start(scheduler, task, cancellation);
-                child.getDone().whenCompleteRuntime((outcome, failure) -> childDone());
-                return child;
+                // Reserve the join slot before starting the scheduler task.
+                // Its result may already be terminal by the time we subscribe.
+                child = TaskHandle.start(scheduler, task, cancellation);
             } catch (RuntimeException | Error admissionFailure) {
                 active--;
                 throw admissionFailure;
             }
         }
+        // OresFuture may invoke already-terminal subscribers synchronously.
+        // Never register under admissionLock: childDone() can publish the
+        // scope's done Future and call arbitrary observers immediately.
+        // A concurrent seal/cancel still sees the reserved active slot.
+        child.getDone().whenCompleteRuntime((outcome, failure) -> childDone());
+        return child;
     }
 
     private void childDone() {
