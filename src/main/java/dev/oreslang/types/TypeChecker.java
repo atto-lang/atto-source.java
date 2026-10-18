@@ -3627,7 +3627,10 @@ public final class TypeChecker {
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
                     && named.arguments().size() == 1) {
-                return named.arguments().getFirst();
+                // An await adopts nested Future completions transitively.
+                // Keep Future<Future<T>> distinct as a value type: only
+                // the explicit await operation collapses its layers.
+                return innermostBuiltinPayload(awaitedType, "Future");
             }
             if (awaitedType instanceof Named actorRef
                     && actorRef.name().equals("ActorRef")) {
@@ -5928,13 +5931,33 @@ public final class TypeChecker {
         };
     }
 
+    /**
+     * Type of a deep unwrap/await operation, without rewriting the underlying
+     * generic type. Option<Option<T>> retains its independent outer and inner
+     * absence states until the user explicitly asks to unwrap it.
+     */
+    private Type innermostBuiltinPayload(Type payload, String builtin) {
+        int depth = 0;
+        while (payload instanceof Named named
+                && named.name().equals(builtin)
+                && named.arguments().size() == 1) {
+            if (++depth > 256) {
+                throw new IllegalArgumentException(
+                        builtin + " nesting exceeds the 256-layer unwrap limit");
+            }
+            payload = named.arguments().getFirst();
+        }
+        return payload;
+    }
+
     private Type builtinOptionResultMember(Type receiver, String member) {
         if (!(receiver instanceof Named named)) return null;
         if (named.name().equals("Option") && named.arguments().size() == 1) {
             Type element = named.arguments().getFirst();
             return switch (member) {
                 case "is_some", "is_none" -> new Function(List.of(), Primitive.BOOL);
-                case "unwrap" -> new Function(List.of(), element);
+                case "unwrap" -> new Function(
+                        List.of(), innermostBuiltinPayload(element, "Option"));
                 case "unwrap_safe" -> new Function(
                         List.of(),
                         new Named("Result", List.of(element, new Named("OptionUnwrapError", List.of()))));
