@@ -3,6 +3,9 @@ package dev.oreslang.runtime;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Set;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import org.graalvm.polyglot.PolyglotException;
 
 /**
  * Canonical host-facing Oreslang error renderer.
@@ -21,6 +24,7 @@ public final class OresDiagnosticRenderer {
 
     public static String renderText(Throwable failure) {
         if (failure == null) throw new NullPointerException("failure");
+        failure = diagnosticRoot(failure);
         StringBuilder out = new StringBuilder();
         Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         appendTextFailure(out, failure, seen, 0, false);
@@ -205,6 +209,24 @@ public final class OresDiagnosticRenderer {
             appendJsonString(out, bounded(site.codeGenerationId(), MAX_TYPE_CHARS));
         }
         out.append('}');
+    }
+
+    private static Throwable diagnosticRoot(Throwable failure) {
+        Throwable current = failure;
+        for (int i = 0; i < 16; i++) {
+            Throwable next = null;
+            if ((current instanceof CompletionException || current instanceof ExecutionException)
+                    && current.getCause() != null) {
+                next = current.getCause();
+            } else if (current instanceof PolyglotException polyglot
+                    && polyglot.isHostException()) {
+                Throwable host = polyglot.asHostException();
+                if (host != current) next = host;
+            }
+            if (next == null || next == current) break;
+            current = next;
+        }
+        return current;
     }
 
     private static String typeName(Throwable failure) {
