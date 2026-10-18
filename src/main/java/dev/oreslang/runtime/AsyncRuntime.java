@@ -238,6 +238,13 @@ public final class AsyncRuntime implements AutoCloseable {
 
     @Override
     public synchronized void close() {
+        // A guest/async task cannot wait for its own physical carrier exit.
+        // Reject before sealing shutdown so an external CONTROL caller can
+        // still initiate and retry the real physical quiescence barrier.
+        if (isAsyncCarrierThread()) {
+            throw new IllegalStateException(
+                    "async runtime physical shutdown cannot join its own carrier");
+        }
         if (closed.compareAndSet(false, true)) executor.shutdownNow();
 
         boolean interrupted = false;
