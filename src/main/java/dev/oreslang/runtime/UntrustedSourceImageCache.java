@@ -124,8 +124,13 @@ final class UntrustedSourceImageCache {
             return entry.source;
         }
 
-        @Override public void close() {
-            if (closed.compareAndSet(false, true)) owner.release(entry);
+        @Override public synchronized void close() {
+            if (closed.get()) return;
+            // Do not publish successful lease retirement before the cache's
+            // actual reference count has been decremented. A failed release
+            // must remain retryable without losing source lifetime authority.
+            owner.release(entry);
+            closed.set(true);
         }
     }
 }
