@@ -1,8 +1,10 @@
 package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.HexFormat;
 import java.util.concurrent.TimeUnit;
 
@@ -12,6 +14,9 @@ import javax.crypto.spec.SecretKeySpec;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class GitHubWebhookActorV1Test {
+
+    @TempDir
+    Path tempDir;
 
     @Test
     void sharedIngressAuthenticatesAndEmitsExactCiMatch()
@@ -266,6 +271,84 @@ final class GitHubWebhookActorV1Test {
                     GitHubWebhookActorV1.Unmatched.class,
                     next(outputs));
             assertTrue(unmatched.reason().contains("tree"));
+
+            actor.send(new GitHubWebhookActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void durableIngressRestoresCorrelationAndExactRedeliveryAfterRestart()
+            throws Exception {
+        Path db = tempDir.resolve("webhook-restart.db");
+        byte[] secret =
+                "0123456789abcdef0123456789abcdef"
+                        .getBytes(StandardCharsets.UTF_8);
+        String commit = sha('a');
+        String tree = sha('b');
+        byte[] body = workflowRunBody(
+                "org/repo",
+                commit,
+                47L,
+                "ci",
+                "success",
+                "https://github.example/actions/runs/47");
+        var headers = new GitHubWebhookSecurityV1.Headers(
+                "sha256=" + hmac(secret, body),
+                "delivery-restart",
+                "workflow_run");
+        var proof = new GitHubWorkflowRunPayloadV1.GitTreeProof(
+                commit,
+                tree,
+                "tree-proof://47");
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = GitHubWebhookActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new GitHubWebhookActorV1.Configure(
+                    secret, db.toString()));
+            next(outputs);
+            actor.send(new GitHubWebhookActorV1.RegisterRun(
+                    new GitHubCiCorrelationV1.Expectation(
+                            "run-restart",
+                            "org/repo",
+                            commit,
+                            tree,
+                            "ci")));
+            next(outputs);
+
+            actor.send(new GitHubWebhookActorV1.ReceiveCiWebhook(
+                    headers, body, proof));
+            var first = assertInstanceOf(
+                    GitHubWebhookActorV1.Matched.class,
+                    next(outputs));
+            assertEquals("run-restart", first.runId());
+
+            actor.send(new GitHubWebhookActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
+        }
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = GitHubWebhookActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new GitHubWebhookActorV1.Configure(
+                    secret, db.toString()));
+            next(outputs);
+
+            // No RegisterRun message: correlation was restored from SQLite.
+            actor.send(new GitHubWebhookActorV1.ReceiveCiWebhook(
+                    headers, body, proof));
+            var replayed = assertInstanceOf(
+                    GitHubWebhookActorV1.Matched.class,
+                    next(outputs));
+            assertEquals("run-restart", replayed.runId());
+            assertEquals("delivery-restart", replayed.deliveryId());
 
             actor.send(new GitHubWebhookActorV1.Shutdown());
             next(outputs);
