@@ -26,10 +26,7 @@ public final class EnumV2Migration {
             if (name == null || name.isBlank() || wireTag <= 0L) {
                 throw new IllegalArgumentException("invalid legacy enum case or tag");
             }
-            if (closedRecordPayload != null && !closedRecordPayload.isRecordType()) {
-                throw new IllegalArgumentException(
-                        "legacy enum payload must be an explicit closed record type");
-            }
+            validateLegacyRecordPayload(closedRecordPayload);
         }
     }
 
@@ -83,14 +80,27 @@ public final class EnumV2Migration {
         Objects.requireNonNull(modern, "modern");
         List<LegacyVariant> converted = new ArrayList<>(modern.cases().size());
         for (Ast.EnumCase variant : modern.cases()) {
-            if (variant.payload() != null && !variant.payload().isRecordType()) {
-                throw new IllegalArgumentException(
-                        "v2 scalar/generic enum payload cannot be represented by legacy record enum");
-            }
+            validateLegacyRecordPayload(variant.payload());
             converted.add(new LegacyVariant(
                     variant.name(), variant.payload(), (long) variant.tag()));
         }
         return new LegacyEnum(modern.name(), modern.visibility(), converted);
+    }
+
+    private static void validateLegacyRecordPayload(Ast.TypeRef payload) {
+        if (payload == null) return;
+        // A readonly record cannot be rewritten to a legacy mutable record
+        // without changing the ownership contract, even when its fields match.
+        if (!payload.isRecordType() || payload.isReadonlyRecordType()) {
+            throw new IllegalArgumentException(
+                    "legacy enum payload requires a mutable closed record type");
+        }
+        try {
+            payload.recordMembers();
+        } catch (RuntimeException malformed) {
+            throw new IllegalArgumentException(
+                    "malformed record payload cannot be migrated", malformed);
+        }
     }
 
     /** Compare schemas without relying on runtime tag inspection. */
