@@ -2,8 +2,12 @@ name: ML scalar actor compiled guest gate (private source)
 on:
   pull_request:
     paths:
+      - "src/main/**"
       - "src/test/java/dev/oreslang/MlActorStateScalarGuestTest.java"
       - "tests/fixtures/ml-actor-state-scalar.ores"
+      - "tests/golden/ml-actor-state-scalar.stdout"
+      - "stdlib/**"
+      - "pom.xml"
       - ".github/workflows/ml-scalar-actor-guest.yml"
   workflow_dispatch:
 permissions:
