@@ -331,9 +331,15 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                         "logical proxy capacity accounting underflow");
             }
 
-            // Commit the completion only after every failure condition above
-            // has been checked, so rejected completions cannot partially refund
-            // credits or remove an outstanding envelope.
+            // TreeSet insertion may allocate. Reserve sparse-completion
+            // metadata before refunding credits/removing the delivery: if an
+            // allocation fails, it must remain outstanding and retryable.
+            if (sparseCompletion && !completedBeyondWatermark.add(messageSequence)) {
+                throw new IllegalStateException(
+                        "duplicate sparse logical completion");
+            }
+
+            // No allocation-bearing insertion remains on the commit path.
             outstanding.remove(messageSequence);
             retainedMessages = nextRetainedMessages;
             retainedBytes = nextRetainedBytes;
@@ -345,8 +351,6 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                                 completionWatermark + 1L)) {
                     completionWatermark++;
                 }
-            } else {
-                completedBeyondWatermark.add(messageSequence);
             }
             checkStructuralInvariantsLocked();
             lock.notifyAll();
