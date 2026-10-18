@@ -261,21 +261,12 @@ public final class SqliteWorkflowJournalV1
             WorkflowJournalV1.PersistentState before =
                     candidate.persistentState();
 
+            final T result;
             try {
-                T result = operation.apply(candidate);
-                persistState(candidate.persistentState());
-
-                faultInjector.hit(FaultPoint.BEFORE_COMMIT);
-                execute("COMMIT");
-                transactionResolved = true;
-                delegate = candidate;
-
-                faultInjector.hit(FaultPoint.AFTER_COMMIT);
-                return result;
+                result = operation.apply(candidate);
             } catch (RuntimeException | Error semanticFailure) {
                 WorkflowJournalV1.PersistentState after =
                         candidate.persistentState();
-
                 if (!after.equals(before)) {
                     try {
                         persistState(after);
@@ -283,7 +274,12 @@ public final class SqliteWorkflowJournalV1
                         execute("COMMIT");
                         transactionResolved = true;
                         delegate = candidate;
-                        faultInjector.hit(FaultPoint.AFTER_COMMIT);
+                        try {
+                            faultInjector.hit(FaultPoint.AFTER_COMMIT);
+                        } catch (RuntimeException | Error postCommitFailure) {
+                            semanticFailure.addSuppressed(
+                                    postCommitFailure);
+                        }
                     } catch (RuntimeException | Error
                             | SQLException persistenceFailure) {
                         if (!transactionResolved) {
@@ -294,13 +290,21 @@ public final class SqliteWorkflowJournalV1
                         semanticFailure.addSuppressed(
                                 persistenceFailure);
                     }
-                } else if (!transactionResolved) {
-                    rollbackAndReloadOrInvalidate(
-                            semanticFailure);
+                } else {
+                    rollbackAndReloadOrInvalidate(semanticFailure);
                     transactionResolved = true;
                 }
                 throw semanticFailure;
             }
+
+            persistState(candidate.persistentState());
+            faultInjector.hit(FaultPoint.BEFORE_COMMIT);
+            execute("COMMIT");
+            transactionResolved = true;
+            delegate = candidate;
+
+            faultInjector.hit(FaultPoint.AFTER_COMMIT);
+            return result;
         } catch (RuntimeException | Error failure) {
             if (!transactionResolved && connection != null) {
                 rollbackAndReloadOrInvalidate(failure);
