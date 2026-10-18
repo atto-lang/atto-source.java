@@ -216,6 +216,36 @@ final class WorkflowJournalV1Test {
                 claim.command());
     }
 
+
+    @Test
+    void lateRejectedEventCannotAbandonPendingTerminalEffect() {
+        var loop = new DurableDevLoopV1("run-terminal-preserve", 3);
+        var store = started(loop);
+
+        append(store, loop.accept(
+                "cancel",
+                new DurableDevLoopV1.Cancel("operator request")));
+        var cancelKey = store.effects().get(1).effectKey();
+        assertEquals(
+                WorkflowJournalV1.EffectState.PENDING,
+                store.effect(cancelKey).orElseThrow().state());
+
+        append(store, loop.accept(
+                "late-code",
+                new DurableDevLoopV1.CodeChanged(
+                        1, "patch://late")));
+        assertEquals(
+                WorkflowJournalV1.EffectState.PENDING,
+                store.effect(cancelKey).orElseThrow().state());
+
+        var claim = store.claimNext(
+                "worker-cancel", 1_000L, 100L).orElseThrow();
+        assertEquals(cancelKey, claim.effectKey());
+        assertInstanceOf(
+                DurableDevLoopV1.CancelWork.class,
+                claim.command());
+    }
+
     @Test
     void cancellationDoesNotPretendAlreadyClaimedEffectWasCancelled() {
         var loop = new DurableDevLoopV1("run-cancel-claimed", 3);
