@@ -628,6 +628,7 @@ public final class TreeShaker {
                         klass.interfaces(),
                         fields,
                         constructor,
+                        klass.foreignDeclarations(),
                         methods);
             }
             return declaration;
