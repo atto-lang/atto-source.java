@@ -1822,6 +1822,17 @@ public final class OwnershipChecker {
         boolean option = receiverType.name().equals("Option") && receiverType.arguments().size() == 1;
         boolean result = receiverType.name().equals("Result") && receiverType.arguments().size() == 2;
         boolean future = receiverType.name().equals("Future") && receiverType.arguments().size() == 1;
+        if (extracting && (option || result || (future && member.member().equals("flatten")))
+                && receiver.kind == ValueKind.MOVE_ONLY
+                && (member.receiver() instanceof Ast.MemberExpr
+                        || member.receiver() instanceof Ast.IndexExpr)) {
+            // checkExpr(projectedPlace, false) does not record a field/element move.
+            // Extracting a move-only payload here would leave an owned alias in
+            // the container, permitting double extraction or use-after-move.
+            // Fail closed until partial-place moves and field drop flags exist.
+            throw error("cannot extract move-only Option/Result/Future from a projected "
+                    + "field or index; use an owned local or an explicit checked move");
+        }
         if (member.member().equals("flatten") && future) {
             Ast.TypeRef inner = receiverType.arguments().getFirst();
             if (!inner.name().equals("Future") || inner.arguments().size() != 1) return null;
