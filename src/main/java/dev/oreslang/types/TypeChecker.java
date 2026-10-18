@@ -5924,6 +5924,15 @@ public final class TypeChecker {
             case "onSuccess" -> new Function(
                     List.of(new Function(List.of(element), Primitive.VOID)),
                     named);
+            case "flatten" -> {
+                if (!(element instanceof Named inner)
+                        || !inner.name().equals("Future")
+                        || inner.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Future.flatten requires Future<Future<T>>, got " + named);
+                }
+                yield new Function(List.of(), element);
+            }
             default -> null;
         };
     }
@@ -5935,6 +5944,24 @@ public final class TypeChecker {
             return switch (member) {
                 case "is_some", "is_none" -> new Function(List.of(), Primitive.BOOL);
                 case "unwrap" -> new Function(List.of(), element);
+                case "unwrap_all" -> {
+                    Type innermost = element;
+                    while (innermost instanceof Named inner
+                            && inner.name().equals("Option")
+                            && inner.arguments().size() == 1) {
+                        innermost = inner.arguments().getFirst();
+                    }
+                    yield new Function(List.of(), innermost);
+                }
+                case "flatten" -> {
+                    if (!(element instanceof Named inner)
+                            || !inner.name().equals("Option")
+                            || inner.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "Option.flatten requires Option<Option<T>>, got " + named);
+                    }
+                    yield new Function(List.of(), element);
+                }
                 case "unwrap_safe" -> new Function(
                         List.of(),
                         new Named("Result", List.of(element, new Named("OptionUnwrapError", List.of()))));
