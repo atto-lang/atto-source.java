@@ -173,74 +173,102 @@ public final class ActorIpcSessionV1 {
                 requireNonZeroBytes(hostNonce, NONCE_BYTES, "hostNonce");
         byte[] worker =
                 requireNonZeroBytes(workerNonce, NONCE_BYTES, "workerNonce");
-        if (MessageDigest.isEqual(host, worker)) {
-            throw new IllegalArgumentException(
-                    "host and worker nonces must be independently generated");
+        byte[] transcript = null;
+        byte[] transcriptDigest = null;
+        byte[] saltInput = null;
+        byte[] salt = null;
+        byte[] prk = null;
+        byte[] proofInfo = null;
+        byte[] proofKey = null;
+        byte[] hostProofInput = null;
+        byte[] workerProofInput = null;
+        byte[] hostProof = null;
+        byte[] workerProof = null;
+        try {
+            if (MessageDigest.isEqual(host, worker)) {
+                throw new IllegalArgumentException(
+                        "host and worker nonces must be independently generated");
+            }
+
+            transcript = transcript(context, host, worker);
+            transcriptDigest = sha256(transcript);
+
+            // HKDF-Extract: nonces/transcript-derived salt, bootstrap secret IKM.
+            saltInput = concat(
+                    "ORES-IPC-HKDF-SALT-V1\0".getBytes(StandardCharsets.US_ASCII),
+                    host,
+                    worker,
+                    transcriptDigest);
+            salt = sha256(saltInput);
+            prk = hmac(salt, secret);
+
+            ChannelSecrets h2wData =
+                    channel(
+                            context,
+                            prk,
+                            transcriptDigest,
+                            "host-to-worker/data",
+                            ActorIpcFrameV1.Lane.DATA);
+            ChannelSecrets w2hData =
+                    channel(
+                            context,
+                            prk,
+                            transcriptDigest,
+                            "worker-to-host/data",
+                            ActorIpcFrameV1.Lane.DATA);
+            ChannelSecrets h2wControl =
+                    channel(
+                            context,
+                            prk,
+                            transcriptDigest,
+                            "host-to-worker/control",
+                            ActorIpcFrameV1.Lane.CONTROL);
+            ChannelSecrets w2hControl =
+                    channel(
+                            context,
+                            prk,
+                            transcriptDigest,
+                            "worker-to-host/control",
+                            ActorIpcFrameV1.Lane.CONTROL);
+
+            proofInfo = info(transcriptDigest, "handshake-proof");
+            proofKey = hkdfExpand(prk, proofInfo, KEY_BYTES);
+            hostProofInput = concat(
+                    "host-ready\0".getBytes(StandardCharsets.US_ASCII),
+                    transcriptDigest);
+            workerProofInput = concat(
+                    "worker-ready\0".getBytes(StandardCharsets.US_ASCII),
+                    transcriptDigest);
+            hostProof = hmac(proofKey, hostProofInput);
+            workerProof = hmac(proofKey, workerProofInput);
+
+            // EstablishedSession and ChannelSecrets defensively copy every
+            // retained secret below, so all derivation scratch can be wiped.
+            return new EstablishedSession(
+                    h2wData,
+                    w2hData,
+                    h2wControl,
+                    w2hControl,
+                    hostProof,
+                    workerProof,
+                    transcriptDigest);
+        } finally {
+            wipe(
+                    secret,
+                    host,
+                    worker,
+                    transcript,
+                    transcriptDigest,
+                    saltInput,
+                    salt,
+                    prk,
+                    proofInfo,
+                    proofKey,
+                    hostProofInput,
+                    workerProofInput,
+                    hostProof,
+                    workerProof);
         }
-
-        byte[] transcript = transcript(context, host, worker);
-        byte[] transcriptDigest = sha256(transcript);
-
-        // HKDF-Extract: nonces/transcript-derived salt, bootstrap secret IKM.
-        byte[] salt = sha256(concat(
-                "ORES-IPC-HKDF-SALT-V1\0".getBytes(StandardCharsets.US_ASCII),
-                host,
-                worker,
-                transcriptDigest));
-        byte[] prk = hmac(salt, secret);
-
-        ChannelSecrets h2wData =
-                channel(
-                        context,
-                        prk,
-                        transcriptDigest,
-                        "host-to-worker/data",
-                        ActorIpcFrameV1.Lane.DATA);
-        ChannelSecrets w2hData =
-                channel(
-                        context,
-                        prk,
-                        transcriptDigest,
-                        "worker-to-host/data",
-                        ActorIpcFrameV1.Lane.DATA);
-        ChannelSecrets h2wControl =
-                channel(
-                        context,
-                        prk,
-                        transcriptDigest,
-                        "host-to-worker/control",
-                        ActorIpcFrameV1.Lane.CONTROL);
-        ChannelSecrets w2hControl =
-                channel(
-                        context,
-                        prk,
-                        transcriptDigest,
-                        "worker-to-host/control",
-                        ActorIpcFrameV1.Lane.CONTROL);
-
-        byte[] proofKey = hkdfExpand(
-                prk,
-                info(transcriptDigest, "handshake-proof"),
-                KEY_BYTES);
-        byte[] hostProof = hmac(
-                proofKey,
-                concat(
-                        "host-ready\0".getBytes(StandardCharsets.US_ASCII),
-                        transcriptDigest));
-        byte[] workerProof = hmac(
-                proofKey,
-                concat(
-                        "worker-ready\0".getBytes(StandardCharsets.US_ASCII),
-                        transcriptDigest));
-
-        return new EstablishedSession(
-                h2wData,
-                w2hData,
-                h2wControl,
-                w2hControl,
-                hostProof,
-                workerProof,
-                transcriptDigest);
     }
 
     public static boolean verifyHostProof(
@@ -269,25 +297,37 @@ public final class ActorIpcSessionV1 {
             byte[] transcriptDigest,
             String label,
             ActorIpcFrameV1.Lane lane) {
-        byte[] key = hkdfExpand(
-                prk,
-                info(transcriptDigest, label + "/key"),
-                KEY_BYTES);
-        byte[] sessionId = Arrays.copyOf(
-                hkdfExpand(
-                        prk,
-                        info(transcriptDigest, label + "/session"),
-                        KEY_BYTES),
-                SESSION_ID_BYTES);
-        return new ChannelSecrets(
-                new ActorIpcFrameV1.SessionBinding(
-                        context.logicalActorId(),
-                        context.incarnation(),
-                        context.routeEpoch(),
-                        lane,
-                        sessionId,
-                        context.messageAbiSha256()),
-                key);
+        byte[] keyInfo = null;
+        byte[] key = null;
+        byte[] sessionInfo = null;
+        byte[] sessionMaterial = null;
+        byte[] sessionId = null;
+        byte[] messageAbi = null;
+        try {
+            keyInfo = info(transcriptDigest, label + "/key");
+            key = hkdfExpand(prk, keyInfo, KEY_BYTES);
+            sessionInfo = info(transcriptDigest, label + "/session");
+            sessionMaterial = hkdfExpand(prk, sessionInfo, KEY_BYTES);
+            sessionId = Arrays.copyOf(sessionMaterial, SESSION_ID_BYTES);
+            messageAbi = context.messageAbiSha256();
+            return new ChannelSecrets(
+                    new ActorIpcFrameV1.SessionBinding(
+                            context.logicalActorId(),
+                            context.incarnation(),
+                            context.routeEpoch(),
+                            lane,
+                            sessionId,
+                            messageAbi),
+                    key);
+        } finally {
+            wipe(
+                    keyInfo,
+                    key,
+                    sessionInfo,
+                    sessionMaterial,
+                    sessionId,
+                    messageAbi);
+        }
     }
 
     private static byte[] transcript(
@@ -333,24 +373,33 @@ public final class ActorIpcSessionV1 {
         if (length <= 0 || length > 255 * DIGEST_BYTES) {
             throw new IllegalArgumentException("invalid HKDF output length");
         }
-        ByteArrayOutputStream result = new ByteArrayOutputStream(length);
+        byte[] result = new byte[length];
         byte[] previous = new byte[0];
+        int offset = 0;
         int counter = 1;
-        while (result.size() < length) {
-            byte[] block = hmac(
-                    prk,
-                    concat(
-                            previous,
-                            info,
-                            new byte[] {(byte) counter}));
-            int take = Math.min(
-                    block.length,
-                    length - result.size());
-            result.write(block, 0, take);
-            previous = block;
-            counter++;
+        try {
+            while (offset < length) {
+                byte[] input = concat(
+                        previous,
+                        info,
+                        new byte[] {(byte) counter});
+                byte[] block;
+                try {
+                    block = hmac(prk, input);
+                } finally {
+                    wipe(input);
+                }
+                wipe(previous);
+                int take = Math.min(block.length, length - offset);
+                System.arraycopy(block, 0, result, offset, take);
+                offset += take;
+                previous = block;
+                counter++;
+            }
+            return result;
+        } finally {
+            wipe(previous);
         }
-        return result.toByteArray();
     }
 
     private static byte[] hmac(
@@ -419,6 +468,14 @@ public final class ActorIpcSessionV1 {
         byte[] encoded = value.getBytes(StandardCharsets.UTF_8);
         out.writeInt(encoded.length);
         out.write(encoded);
+    }
+
+    private static void wipe(byte[]... values) {
+        for (byte[] value : values) {
+            if (value != null) {
+                Arrays.fill(value, (byte) 0);
+            }
+        }
     }
 
     private static byte[] concat(byte[]... values) {
