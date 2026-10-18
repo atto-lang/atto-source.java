@@ -122,17 +122,18 @@ public final class DurableDevLoopCoordinatorV1 implements AutoCloseable {
 
     public synchronized WorkflowRunProjectionV1 projection() {
         ensureOpen();
-        verifyStoreIdentity();
-        DurableDevLoopV1.ReplayResult replay = store.replayDevLoop();
+        WorkflowJournalStoreV1.ReadView view = store.readView();
+        verifyStoreIdentity(view.storeSnapshot());
         return WorkflowRunProjectionV1.from(
-                replay.machine().snapshot(),
-                store.snapshot());
+                view.replay().machine().snapshot(),
+                view.storeSnapshot());
     }
 
     public synchronized DurableDevLoopV1.Snapshot workflowSnapshot() {
         ensureOpen();
-        verifyStoreIdentity();
-        return store.replayDevLoop().machine().snapshot();
+        WorkflowJournalStoreV1.ReadView view = store.readView();
+        verifyStoreIdentity(view.storeSnapshot());
+        return view.replay().machine().snapshot();
     }
 
     public synchronized WorkflowJournalV1.StoreSnapshot storeSnapshot() {
@@ -161,8 +162,9 @@ public final class DurableDevLoopCoordinatorV1 implements AutoCloseable {
         if (snapshot.runId() == null) {
             return new DurableDevLoopV1(runId, maxIterations);
         }
-        verifyStoreIdentity(snapshot);
-        return store.replayDevLoop().machine();
+        WorkflowJournalStoreV1.ReadView view = store.readView();
+        verifyStoreIdentity(view.storeSnapshot());
+        return view.replay().machine();
     }
 
     private void verifyStoreIdentity() {
