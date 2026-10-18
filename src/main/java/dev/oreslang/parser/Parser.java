@@ -2805,6 +2805,16 @@ public final class Parser {
     }
 
     private Ast.MatchStmt parseMatch(boolean procedural) {
+        return parseMatch(procedural, false);
+    }
+
+    /**
+     * A value match admits an expression after its slim-arrow, but only
+     * because it is itself an expression. No arm can implicitly return from
+     * the enclosing function: a function still needs an explicit
+     * 'return match ...' statement on all normally completing paths.
+     */
+    private Ast.MatchStmt parseMatch(boolean procedural, boolean valueArms) {
         // Canonical match is ordered and spells its boundary explicitly:
         //   match value over
         //     on Pattern -> { ... }
@@ -2871,7 +2881,28 @@ public final class Parser {
             if (!match(ARROW) && !braced) {
                 throw error(peek(), "match arms in 'over ... end' use '->'");
             }
-            List<Ast.Stmt> body = parseBlock();
+            List<Ast.Stmt> body;
+            if (valueArms && !check(LBRACE)) {
+                // Arrow expressions are local values of MatchExpr, never
+                // statements or implicit returns from the caller. Wrap one
+                // expression in a synthetic arm-local ReturnStmt solely for
+                // compatibility with the existing MatchValueArm conversion.
+                // Braced '{ return value; }' arms retain their old spelling.
+                if (check(RETURN) || check(ON) || isContextualIdentifier("on")
+                        || check(END) || (braced && check(RBRACE))) {
+                    throw error(peek(), "value match arm requires an expression after '->'");
+                }
+                Ast.Expr value = parseExpression();
+                match(SEMICOLON);
+                if (!(isContextualIdentifier("on") || check(END)
+                        || (braced && check(RBRACE)))) {
+                    throw error(peek(),
+                            "value match arm must end at the next 'on' or match boundary");
+                }
+                body = List.of(new Ast.ReturnStmt(value));
+            } else {
+                body = parseBlock();
+            }
             arms.add(new Ast.MatchArm(pattern, guard, body));
         }
         if (braced) consume(RBRACE, "expected '}' to close braced match");
@@ -2908,7 +2939,7 @@ public final class Parser {
             declaredResult = parseTypeRef();
             consume(GT, "match result parameter requires exactly one type argument and closing '>'");
         }
-        Ast.MatchStmt parsed = parseMatch(true);
+        Ast.MatchStmt parsed = parseMatch(true, true);
         List<Ast.MatchValueArm> valueArms = new ArrayList<>();
         for (Ast.MatchArm arm : parsed.arms()) {
             if (arm.body().size() != 1

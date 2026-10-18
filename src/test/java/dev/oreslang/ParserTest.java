@@ -1659,4 +1659,86 @@ final class ParserTest {
     }
 
 
+
+
+    @Test
+    void explicitReturnMatchAcceptsArrowExpressionsWithoutImplicitFunctionReturn() {
+        Ast.Program parsed = Parser.parse("""
+                pub fnc greet(string? name): string {
+                    return match name over
+                        on Some(n) -> n
+                        on None -> "anonymous"
+                    end
+                }
+                """);
+        Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        assertEquals(1, fn.body().size());
+        Ast.ReturnStmt returned = assertInstanceOf(Ast.ReturnStmt.class,
+                fn.body().getFirst());
+        Ast.MatchExpr value = assertInstanceOf(Ast.MatchExpr.class, returned.value());
+        assertEquals(2, value.arms().size());
+        assertInstanceOf(Ast.NameExpr.class, value.arms().getFirst().value());
+        assertEquals("anonymous",
+                ((Ast.LiteralExpr) value.arms().getLast().value()).value());
+        // The current T? ABI is still staged: parsing is not permission to
+        // execute the function until ownership and Option lowering are proven.
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(parsed));
+    }
+
+    @Test
+    void returnMatchStillAcceptsBracedExplicitReturnArms() {
+        Ast.Program parsed = Parser.parse("""
+                pub fnc select(bool which): int {
+                    return match which over
+                        on true -> { return 1; }
+                        on false -> { return 2; }
+                    end;
+                }
+                """);
+        Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        Ast.MatchExpr match = assertInstanceOf(Ast.MatchExpr.class,
+                ((Ast.ReturnStmt) fn.body().getFirst()).value());
+        assertEquals(2, match.arms().size());
+        assertEquals(1L, ((Ast.LiteralExpr) match.arms().getFirst().value()).value());
+    }
+
+    @Test
+    void nonVoidTailExpressionCannotImplicitlyReturn() {
+        Ast.Program parsed = Parser.parse("""
+                pub fnc bad(): int {
+                    42;
+                }
+                """);
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.checkTypes(parsed));
+        assertTrue(error.getMessage().contains("explicitly return"), error::toString);
+    }
+
+    @Test
+    void valueMatchArmsMustContainExactlyOneExpression() {
+        for (String bad : List.of(
+                "on Some(n) -> on None -> 0",
+                "on Some(n) -> return n; on None -> 0",
+                "on Some(n) -> n; extra; on None -> 0")) {
+            String source = "pub fnc f(Option<int> x): int { return match x over "
+                    + bad + " end; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(source), bad);
+        }
+    }
+
+    @Test
+    void proceduralMatchCannotBeReturnedAsAnExpression() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub fnc bad(int x): int {
+                    return do match x over
+                        on _ -> { return 1; }
+                    end;
+                }
+                """));
+    }
+
 }
