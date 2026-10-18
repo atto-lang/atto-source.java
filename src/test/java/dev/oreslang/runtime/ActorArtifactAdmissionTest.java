@@ -509,6 +509,50 @@ final class ActorArtifactAdmissionTest {
     }
 
     @Test
+    void runtimeOwnedArtifactOpensOnlyRuntimeOwnedAuthenticatedSession()
+            throws Exception {
+        byte[] executable = "ELF-session-bound".getBytes(StandardCharsets.UTF_8);
+        KeyPair keys = keyPair();
+        var manifest = sign(manifest(executable, List.of()), keys);
+        var attestation = attestation("ImageWorker", manifest);
+        IsolatePolicy supervisor = supervisorPolicy();
+        UUID logicalActorId = UUID.randomUUID();
+
+        try (ActorRuntime runtime = new ActorRuntime(supervisor);
+             ActorRuntime other = new ActorRuntime(supervisor)) {
+            ActorArtifact<Object> artifact = runtime.admitIpcActorArtifact(
+                    "ImageWorker",
+                    Ast.ActorKind.PRIVATE,
+                    manifest,
+                    executable,
+                    attestation,
+                    TRUST_ATTESTATION,
+                    (builder, keyId) -> keys.getPublic(),
+                    targetPolicy(),
+                    privateWorkerPolicy());
+
+            try (ActorIpcSessionV1 session =
+                         runtime.openIpcSession(artifact, logicalActorId, 7, 11)) {
+                assertEquals(logicalActorId, session.logicalActorId());
+                assertEquals(7, session.incarnation());
+                assertEquals(11, session.routeEpoch());
+                assertEquals(artifact.codeGenerationId(), session.codeGenerationId());
+                assertFalse(session.ready());
+            }
+
+            SecurityException foreign = assertThrows(
+                    SecurityException.class,
+                    () -> other.openIpcSession(
+                            artifact,
+                            logicalActorId,
+                            7,
+                            11));
+            assertTrue(foreign.getMessage().contains("not admitted by this runtime"),
+                    foreign.getMessage());
+        }
+    }
+
+    @Test
     void canonicalUnsignedManifestHasDeterministicSortedObjectKeys() throws Exception {
         byte[] executable = "ELF-canonical".getBytes(StandardCharsets.UTF_8);
         var manifest = manifest(executable, List.of("filesystem.read", "stdout"));
