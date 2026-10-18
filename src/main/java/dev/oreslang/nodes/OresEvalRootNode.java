@@ -9021,6 +9021,28 @@ public final class OresEvalRootNode extends RootNode {
             if (parent != null) { parent.assign(name, value); return; }
             throw new IllegalArgumentException("unknown binding " + name);
         }
+        /**
+         * Flatten only lexically referenced slots into a new closure frame.
+         * Preserve Slot identity for intentionally mutable captures, but
+         * never retain an unrelated parent Env or an implicit receiver.
+         * Lookup chooses the nearest shadowing declaration, so shadowed
+         * outer capabilities cannot leak into a local closure.
+         */
+        private Env snapshotCaptures(java.util.Set<String> names) {
+            Env cp = new Env(null, descendantsNonLexical, accessClass, null,
+                    lexicalModule, lexicalContainerClass);
+            for (String name : names) {
+                for (Env cursor = this; cursor != null; cursor = cursor.parent) {
+                    Slot slot = cursor.slots.get(name);
+                    if (slot != null) {
+                        cp.slots.put(name, slot);
+                        break;
+                    }
+                }
+            }
+            return cp;
+        }
+
         private Env snapshot() {
             Env cp = new Env(
                     parent == null ? null : parent.snapshot(),
