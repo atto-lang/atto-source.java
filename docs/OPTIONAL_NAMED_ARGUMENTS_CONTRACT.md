@@ -880,3 +880,10 @@ has passed **source-free synthetic canaries** only. Protected `main` lists
 no approved private CI destination, and security-review PR #1326 remains
 draft. No private compiler source may be mirrored there before the policy is
 reviewed and approved.
+
+
+## Static scalar context witness
+
+TypeChecker.inspectStagedScalarInvocation returns a non-executable CheckedScalarInvocationWitness. It derives literal value types from the original AST, selects an exact same-module declaration, checks a narrow scalar/void result-context contract, and rejects unverified caller signatures. The proof keeps BoundInvocation and OptionalCallTempLowering source-order mappings. It accepts no arbitrary claimed types.
+
+This is a SHAPE_ONLY preview: requireExecutable() always throws, and full compiler/runtime gates stay closed until semantic, ownership, effect, and Option ABI lowering are verified. Tests are committed but have not passed JDK25 Maven CI. See CheckedScalarInvocationWitnessTest.
