@@ -129,7 +129,10 @@ catch-all (`_` or a binding pattern) locally; richer finite-domain
 exhaustiveness remains owned by the general match checker.
 
 Loop backedges, exceptional edges and deferred cleanups must be represented
-explicitly before they may establish required-field initialization. A backend
+explicitly before they may establish required-field initialization.
+Pending cleanups are tracked in LIFO order: `completeCleanup(edge)` may
+only discharge the newest registered edge. Publication is rejected until
+all cleanups have been discharged and every required field is initialized. A backend
 must fail closed rather than infer initialization from syntax alone.
 
 ## Construction suspension
