@@ -23,6 +23,7 @@ public final class EnumCaseOverloadPolicy {
     public static final int MAX_ARITY = 64;
     public static final int MAX_CANDIDATES = 128;
     public static final int MAX_CASES = 1024;
+    public static final int MAX_ENUMS = 4096;
     /** Initially admitted non-discriminator values are proven scalar primitives only. */
     private static final Set<String> FIXED_SCALARS =
             Set.of("bool", "int", "string", "float");
@@ -126,6 +127,9 @@ public final class EnumCaseOverloadPolicy {
         Objects.requireNonNull(candidates, "candidates");
         Objects.requireNonNull(certifiedEnums, "certifiedEnums");
         List<Signature> copy = List.copyOf(candidates);
+        if (certifiedEnums.size() > MAX_ENUMS) {
+            throw new IllegalArgumentException("enum registry proof budget exceeded");
+        }
         Map<String, EnumInfo> registry = Map.copyOf(certifiedEnums);
         if (copy.isEmpty() || copy.size() > MAX_CANDIDATES) {
             throw new IllegalArgumentException("empty or oversize overload family");
