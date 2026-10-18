@@ -50,6 +50,59 @@ public final class GenServerReplyLedgerSmoke {
             }
             yes(wins.get() == 1 && concurrent.pendingCount() == 0);
         }
-        System.out.println("GENSERVER_LEDGER_250_RACES_PASS");
+        // Close-vs-reply must settle exactly one side: either the reply
+        // consumes the ticket or close discards it, never both or neither.
+        for (int iteration = 0; iteration < 250; iteration++) {
+            var concurrent = new GenServerReplyLedger(1);
+            var ticket = concurrent.register(actor);
+            var ready = new CountDownLatch(1);
+            var replied = new AtomicInteger();
+            var discarded = new AtomicInteger();
+            try (var executor = Executors.newFixedThreadPool(2)) {
+                var x = executor.submit(() -> {
+                    ready.await();
+                    if (concurrent.tryReply(ticket, actor)) replied.incrementAndGet();
+                    return null;
+                });
+                var y = executor.submit(() -> {
+                    ready.await();
+                    discarded.set(concurrent.close());
+                    return null;
+                });
+                ready.countDown(); x.get(); y.get();
+            }
+            yes(replied.get() + discarded.get() == 1);
+            yes(concurrent.pendingCount() == 0);
+            yes(!concurrent.retire(ticket) && !concurrent.tryReply(ticket, actor));
+        }
+        // Close-vs-register must never admit a ticket after close, and any
+        // registration that wins the lock must be discarded by close.
+        for (int iteration = 0; iteration < 250; iteration++) {
+            var concurrent = new GenServerReplyLedger(1);
+            var ready = new CountDownLatch(1);
+            var admitted = new AtomicInteger();
+            var rejected = new AtomicInteger();
+            var discarded = new AtomicInteger();
+            try (var executor = Executors.newFixedThreadPool(2)) {
+                var x = executor.submit(() -> {
+                    ready.await();
+                    try { concurrent.register(actor); admitted.incrementAndGet(); }
+                    catch (IllegalStateException closed) { rejected.incrementAndGet(); }
+                    return null;
+                });
+                var y = executor.submit(() -> {
+                    ready.await();
+                    discarded.set(concurrent.close());
+                    return null;
+                });
+                ready.countDown(); x.get(); y.get();
+            }
+            yes(admitted.get() + rejected.get() == 1);
+            yes(discarded.get() == admitted.get());
+            yes(concurrent.pendingCount() == 0);
+            try { concurrent.register(actor); throw new AssertionError("closed postrace"); }
+            catch (IllegalStateException expected) { /* correct */ }
+        }
+        System.out.println("GENSERVER_LEDGER_750_RACES_PASS");
     }
 }
