@@ -315,9 +315,9 @@ final class ActorObservabilityTest {
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             // Publish one real immutable payload, then use the exact same
-            // object as inert filler. ArrayBlockingQueue capacity admission is
-            // atomic with publication, so there is no producer-reservation
-            // state to forge.
+            // object as inert filler. The production journal enforces its
+            // bound under its own try-lock admission; this fixture fills the
+            // quiescent deque directly to exercise the full-capacity path.
             var seed = runtime.<String>spawnShared(
                     () -> (message, context) -> { });
             seed.stop();
@@ -327,12 +327,12 @@ final class ActorObservabilityTest {
                     ActorRuntime.class.getDeclaredField("supervisionEvents");
             eventsField.setAccessible(true);
             @SuppressWarnings("unchecked")
-            var events = (java.util.concurrent.ArrayBlockingQueue<Object>)
+            var events = (java.util.ArrayDeque<Object>)
                     eventsField.get(runtime);
-            Object payload = events.peek();
+            Object payload = events.peekFirst();
             assertNotNull(payload);
-            while (events.offer(payload)) {
-                // Fill exactly to the journal's fixed capacity.
+            while (events.size() < 4_096) {
+                events.addLast(payload);
             }
             assertEquals(4_096, events.size());
 
@@ -524,11 +524,11 @@ final class ActorObservabilityTest {
                     ActorRuntime.class.getDeclaredField("supervisionEvents");
             eventsField.setAccessible(true);
             @SuppressWarnings("unchecked")
-            var events = (java.util.concurrent.ArrayBlockingQueue<Object>)
+            var events = (java.util.ArrayDeque<Object>)
                     eventsField.get(runtime);
             assertEquals(count, events.size());
 
-            Object firstPayload = events.peek();
+            Object firstPayload = events.peekFirst();
             assertNotNull(firstPayload);
             var actorIdAccessor = firstPayload.getClass().getDeclaredMethod("actorId");
             actorIdAccessor.setAccessible(true);
