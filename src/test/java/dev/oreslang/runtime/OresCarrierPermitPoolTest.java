@@ -189,20 +189,48 @@ final class OresCarrierPermitPoolTest {
                 "transaction rollback and idempotent close must leave no permit leak");
     }
 
-    @Test void thrownWorkerStillReturnsPermitAfterExecutorRetiresIt() throws Exception {
+    @Test void ordinaryTaskFailureDoesNotRetirePermitOwningWorkerOrStrandQueue()
+            throws Exception {
         var permits = new OresCarrierPermitPool(5);
-        var ran = new CountDownLatch(1);
-        try (var workers = new AdaptiveCarrierExecutor(
+        var failedTurnRan = new CountDownLatch(1);
+        var queuedTurnRan = new CountDownLatch(1);
+        var releaseQueuedTurn = new CountDownLatch(1);
+        var firstCarrier = new java.util.concurrent.atomic.AtomicReference<Thread>();
+        var secondCarrier = new java.util.concurrent.atomic.AtomicReference<Thread>();
+
+        var workers = new AdaptiveCarrierExecutor(
                 0,
                 1,
                 8,
                 permits.threadFactory(
-                        OresCarrierPermitPool.Domain.PRIVATE, "permit-throw-"))) {
+                        OresCarrierPermitPool.Domain.PRIVATE, "permit-failure-"));
+        try {
             workers.execute(() -> {
-                ran.countDown();
-                throw new AssertionError("synthetic worker failure");
+                firstCarrier.set(Thread.currentThread());
+                failedTurnRan.countDown();
+                throw new AssertionError("synthetic ordinary task failure");
             });
-            assertTrue(ran.await(2, TimeUnit.SECONDS));
+            workers.execute(() -> {
+                secondCarrier.set(Thread.currentThread());
+                queuedTurnRan.countDown();
+                try {
+                    releaseQueuedTurn.await(3, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+
+            assertTrue(failedTurnRan.await(2, TimeUnit.SECONDS));
+            assertTrue(queuedTurnRan.await(2, TimeUnit.SECONDS),
+                    "ordinary task failure must not strand queued work");
+            assertSame(firstCarrier.get(), secondCarrier.get(),
+                    "contained ordinary failure must preserve the physical carrier");
+            assertEquals(1, permits.held(OresCarrierPermitPool.Domain.PRIVATE));
+            assertEquals(1, workers.startedWorkerCount());
+        } finally {
+            releaseQueuedTurn.countDown();
+            workers.shutdownNow();
+            assertTrue(workers.awaitTermination(3, TimeUnit.SECONDS));
         }
         assertEquals(0, permits.totalHeld());
         assertEquals(0, permits.held(OresCarrierPermitPool.Domain.PRIVATE));
