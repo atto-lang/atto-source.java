@@ -456,10 +456,25 @@ public final class ActorRuntime implements AutoCloseable {
         /** Only call after the persistent hibernate transaction succeeds. */
         public void stopAfterHibernate() {
             requireSupervisorContext("complete durable actor hibernate");
-            if (!valid()) throw new IllegalStateException("durable execution proof was revoked");
-            // stop seals the mailbox before this proof releases scheduling.
+            synchronized (cell.lifecycleLock) {
+                // Serialize the irreversible stop with a competing close().
+                // No second scheduler can begin between proof validation and
+                // publication of the termination fence.
+                if (released.get() || cell.durableQuiescence != this
+                        || !cell.durableFreezeRequested || cell.carrierActive
+                        || cell.scheduled.get() || cell.activeTurns != 0
+                        || cell.stopped.get() || cell.finalized) {
+                    throw new IllegalStateException("durable execution proof was revoked");
+                }
+                released.set(true);
+                cell.stopped.set(true);
+                cell.sealing = true;
+                cell.durableQuiescence = null;
+            }
+            // Never call user/observer callbacks while holding lifecycleLock.
+            // terminateTree finalizes this actor; stopped=true already
+            // prevents close(), schedule() and stale dispatch replay.
             cell.stop();
-            close();
         }
     }
 
@@ -480,12 +495,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null) {
             return CompletableFuture.failedFuture(new IllegalStateException("unknown actor"));
         }
-        CompletableFuture<DurableQuiescence> future = new CompletableFuture<>() {
-            @Override public boolean cancel(boolean mayInterruptIfRunning) {
-                // Dropping a callback cannot silently unfreeze a durable actor.
-                return false;
-            }
-        };
+        // Never expose the authoritative completion object. A caller can
+        // complete(), cancel() or obtrudeValue() on a CompletableFuture;
+        // its copy must not be able to invent or cancel a freeze grant.
+        CompletableFuture<DurableQuiescence> future = new CompletableFuture<>();
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized || cell.durableFreezeRequested
                     || cell.sourceReceiveSuspended || cell.finalCleanupActive) {
@@ -496,7 +509,7 @@ public final class ActorRuntime implements AutoCloseable {
             cell.durableFreezePending = future;
         }
         cell.publishDurableQuiescence();
-        return future;
+        return future.copy();
     }
 
     private final UUID runtimeInstanceId = UUID.randomUUID();
@@ -7665,7 +7678,8 @@ public final class ActorRuntime implements AutoCloseable {
                 future = durableFreezePending;
                 durableFreezePending = null;
                 if (stopped.get() || finalized || sourceReceiveSuspended
-                        || activeMail != null || !pendingOperations.isEmpty()
+                        || activeMail != null || !continuationMailbox.isEmpty()
+                        || !pendingOperations.isEmpty()
                         || activeUntrustedSourceTaskCount != 0
                         || activeUntrustedTimedAdmissions != 0) {
                     failure = new IllegalStateException(
