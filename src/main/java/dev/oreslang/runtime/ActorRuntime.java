@@ -5004,8 +5004,12 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = actors.get(ref.id());
         if (cell == null) throw terminated(ref);
         synchronized (cell.lifecycleLock) {
-            if (closed.get() || cell.stopped.get() || cell.finalized || cell.sealing)
+            if (closed.get() || cell.stopped.get() || cell.finalized
+                    || cell.sealing || cell.endRequested)
                 throw terminated(ref);
+            if (cell.forceKillFenced)
+                throw new IllegalStateException(
+                        "actor external work cannot start during force cancellation");
             if (cell.upgradeIngressTicket != null)
                 throw new ActorSealedException(ref.id());
             if (cell.hotUpgradeExternalPins == Integer.MAX_VALUE)
