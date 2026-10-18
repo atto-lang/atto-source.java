@@ -62,6 +62,11 @@ final class ActorPipelineRouteSession {
         private final MailFrame returnParent;
         // Guarded by the owning session monitor.
         private boolean rollbackConsumed;
+        // Set at the exact mailbox enqueue linearization point. Unlike
+        // active-frame membership, this flag is monotonic and survives
+        // normal delivery/STOP frame retirement. Published DATA can NEVER
+        // be restored to its source even after a later runtime failure.
+        private boolean mailboxPublished;
         private MailFrame(ActorPipelineRouteSession session, long generation,
                           long flowId, long routeId, List<String> actorPath) {
             this(session, generation, flowId, routeId, actorPath,
@@ -151,6 +156,26 @@ final class ActorPipelineRouteSession {
     /** VM-only validation for host-reported immutable correlation metadata. */
     synchronized void requireLive(MailFrame frame) {
         requireActive(frame);
+    }
+
+    /** Called only after a successful bounded mailbox tryWrite, while the
+     * recipient lifecycle lock still serializes STOP and envelope cleanup. */
+    static void markMailboxPublished(MailFrame frame) {
+        if (frame != null) frame.session.markPublished(frame);
+    }
+
+    private synchronized void markPublished(MailFrame frame) {
+        requireActive(frame);
+        if (frame.mailboxPublished)
+            throw new IllegalStateException("route frame already published");
+        frame.mailboxPublished = true;
+    }
+
+    static boolean wasMailboxPublished(MailFrame frame) {
+        Objects.requireNonNull(frame, "route frame");
+        synchronized (frame.session) {
+            return frame.mailboxPublished;
+        }
     }
 
     /** Final DATA admission guard independent of the high-level router.
@@ -362,6 +387,7 @@ final class ActorPipelineRouteSession {
                 || !rejected.returning
                 || rejected.returnParent != original
                 || rejected.rollbackConsumed
+                || rejected.mailboxPublished
                 || original.flowId != rejected.flowId
                 || !original.actorPath.equals(rejected.actorPath)
                 || active.containsKey(original)) {
