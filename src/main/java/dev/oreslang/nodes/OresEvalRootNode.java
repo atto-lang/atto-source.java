@@ -6872,6 +6872,14 @@ public final class OresEvalRootNode extends RootNode {
                             ((Number) args.get(3)).intValue(), ((Number) args.get(4)).intValue());
                     };
                     case "claim" -> (Invokable) args -> context.http().claim(requireStringArg(args, "http.claim"));
+                    case "response_empty" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof Number status) || !isIntegral(status))
+                            throw new IllegalArgumentException("http.response_empty requires one integral status");
+                        long code = status.longValue();
+                        if (code < 200 || code > 599)
+                            throw new IllegalArgumentException("HTTP status must be in 200..599");
+                        return HttpResponseDraft.empty((int) code, List.of());
+                    };
                     case "response" -> (Invokable) args -> {
                         if (args.size() != 3 || !(args.get(0) instanceof Number status) || !isIntegral(status))
                             throw new IllegalArgumentException("http.response requires status, content-type and text body");
