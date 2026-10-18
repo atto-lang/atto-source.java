@@ -92,8 +92,11 @@ final class ActorUpgradeEpochGate implements AutoCloseable {
             throw new IllegalStateException("actor is closed or upgrade-frozen");
         if (pins == Integer.MAX_VALUE)
             throw new IllegalStateException("actor pin limit exhausted");
+        // Allocate the lease BEFORE charging a pin. On OOME (or any
+        // allocation failure), the supervisor must not strand reclamation.
+        Lease lease = new Lease(this, epoch);
         ++pins;
-        return new Lease(this, epoch);
+        return lease;
     }
 
     synchronized boolean permits(Lease lease) {
