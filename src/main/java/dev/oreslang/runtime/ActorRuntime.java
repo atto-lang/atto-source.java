@@ -593,6 +593,41 @@ public final class ActorRuntime implements AutoCloseable {
         return artifact != null && artifact.admittedForRuntime(runtimeInstanceId);
     }
 
+    /**
+     * Create authenticated IPC session state for one logical route. This does
+     * not spawn a process or allocate a transport; the future launcher must
+     * separately claim the one-shot bootstrap material and bind it to the
+     * exact admitted executable.
+     */
+    public ActorIpcSessionV1 openIpcSession(
+            ActorArtifact<?> artifact,
+            UUID logicalActorId,
+            long incarnation,
+            long routeEpoch) {
+        requireSupervisorContext("open authenticated IPC actor session");
+        if (closed.get()) {
+            throw new IllegalStateException("actor runtime is closed");
+        }
+        if (!ownsActorArtifact(artifact)) {
+            throw new SecurityException(
+                    "actor artifact was not admitted by this runtime");
+        }
+        for (IsolatePolicy.Capability capability : List.of(
+                IsolatePolicy.Capability.ACTOR_SPAWN,
+                IsolatePolicy.Capability.IPC,
+                IsolatePolicy.Capability.CHILD_PROCESS)) {
+            if (!policyCeiling.allows(capability)) {
+                throw new SecurityException(
+                        capability + " capability required to open IPC actor session");
+            }
+        }
+        return ActorIpcSessionV1.create(
+                artifact,
+                Objects.requireNonNull(logicalActorId, "logicalActorId"),
+                incarnation,
+                routeEpoch);
+    }
+
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
