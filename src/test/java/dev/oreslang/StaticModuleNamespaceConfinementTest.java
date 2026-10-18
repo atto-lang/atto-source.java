@@ -15,6 +15,25 @@ final class StaticModuleNamespaceConfinementTest {
             """;
 
     @Test
+    void moduleBindingsAcceptBothNameFirstAndTypeFirstDeclarations() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module Catalog as
+                    pub const version: int = 4;
+                    pub const int legacyVersion = 5;
+                    pub let counter: int = 0;
+                end
+                define module app as
+                    pub fnc main(): void {
+                        const x = Catalog.version;
+                        const y = Catalog.legacyVersion;
+                        Catalog.counter = x + y;
+                        return;
+                    }
+                end
+                """)));
+    }
+
+    @Test
     void directStaticModuleMembersRemainAvailable() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(MODULE + """
                 routine main(): void {
