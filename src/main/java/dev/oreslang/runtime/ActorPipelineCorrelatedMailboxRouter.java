@@ -45,6 +45,17 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     /** Optional cooperative membership *selector*, never a source of new
      * graph edges, return authority, or cancellation rights. */
     private final ActorRuntime.ActorGroup routingGroup;
+    /** Snapshot identity changes on membership mutation. Cache only
+     * derivative recipient eligibility, never any guest route authority. */
+    private static final class GroupEligibleSnapshot {
+        final Set<ActorRuntime.ActorId> members;
+        final Set<String> enabledNames;
+        GroupEligibleSnapshot(Set<ActorRuntime.ActorId> members, Set<String> enabledNames) {
+            this.members = members;
+            this.enabledNames = enabledNames;
+        }
+    }
+    private volatile GroupEligibleSnapshot cachedGroupEligibility;
     private final Map<String, ActorRuntime.ActorRef<M>> targets;
     private final Map<ActorRuntime.ActorId, String> identities;
     private final Map<ActorPipelineRoutePlan.Edge, Integer> edges;
@@ -165,19 +176,24 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     /** The group is snapshotted at selection, not on delivery or reply.
      * A join/leave affects future selections only. A stopped destination
      * still reports a real per-edge mailbox admission failure. */
-    private java.util.Set<String> groupEligible(String source) {
-        var edges = graph.forwardAll(source);
-        if (routingGroup == null)
-            return edges.stream().map(ActorPipelineRoutePlan.Edge::target)
-                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    private Set<String> groupEligible(String source) {
+        // Source edge validation is performed by the caller's immutable DAG
+        // lookup. Only graph-bound targets are ever present in this cache.
+        if (routingGroup == null) return targets.keySet();
         var members = routingGroup.pipelineMemberSnapshot();
+        var cached = cachedGroupEligibility;
+        if (cached != null && cached.members == members)
+            return cached.enabledNames;
+        // Compute at most once per observed membership snapshot per router.
+        // Concurrent writers may duplicate this pure work, never publish
+        // an unverified target or mutate an already-read immutable view.
         var names = new HashSet<String>();
-        for (var edge : edges) {
-            var target = targets.get(edge.target());
-            if (target != null && members.contains(target.id()))
-                names.add(edge.target());
-        }
-        return Set.copyOf(names);
+        for (var entry : targets.entrySet())
+            if (members.contains(entry.getValue().id()))
+                names.add(entry.getKey());
+        var ready = Set.copyOf(names);
+        cachedGroupEligibility = new GroupEligibleSnapshot(members, ready);
+        return ready;
     }
 
     private List<ActorPipelineRoutePlan.Edge> selectedGroupEdges(
