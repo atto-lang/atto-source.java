@@ -138,6 +138,55 @@ public final class BoundInvocation {
     }
 
     /**
+     * Narrow self-derived source-type facts for literal-only call arguments.
+     * Unlike assertedSourceTypes, these originate from the literal AST itself.
+     * Non-literals (including NameExpr("None"), variables and side-effectful
+     * calls) MUST be resolved by the real lexical TypeChecker, not guessed.
+     *
+     * This is still SHAPE_ONLY because scope/visibility, effects, ownership and
+     * runtime Option<T> ABI proofs do not follow from knowing a literal's type.
+     */
+    public static BoundInvocation bindLiteralModuleFunction(
+            Ast.ModuleDecl module, Ast.StagedCallExpr call) {
+        Objects.requireNonNull(call, "call");
+        return bindModuleFunction(module, call, checkedLiteralTypes(call.arguments()));
+    }
+
+    public static BoundInvocation bindLiteralClassMethod(
+            Ast.ClassDecl owner, Ast.StagedCallExpr call) {
+        Objects.requireNonNull(call, "call");
+        return bindClassMethod(owner, call, checkedLiteralTypes(call.arguments()));
+    }
+
+    public static BoundInvocation bindLiteralClassConstructor(
+            Ast.ClassDecl owner, Ast.StagedNewExpr call) {
+        Objects.requireNonNull(call, "call");
+        return bindClassConstructor(owner, call, checkedLiteralTypes(call.arguments()));
+    }
+
+    private static List<Ast.TypeRef> checkedLiteralTypes(List<Ast.CallArgument> items) {
+        List<Ast.TypeRef> types = new ArrayList<>();
+        for (Ast.CallArgument item : items) {
+            Objects.requireNonNull(item, "source call item");
+            if (item.omitted()) continue;
+            if (item.spread() || !(item.value() instanceof Ast.LiteralExpr literal)) {
+                throw new IllegalArgumentException(
+                        "nonliteral argument requires lexical compiler type and effect proof");
+            }
+            Object value = literal.value();
+            String primitive;
+            if (value instanceof Long) primitive = "int";
+            else if (value instanceof Double) primitive = "float";
+            else if (value instanceof Boolean) primitive = "bool";
+            else if (value instanceof String) primitive = "string";
+            else throw new IllegalArgumentException(
+                    "unknown or null literal lacks exact compiler type proof");
+            types.add(Ast.TypeRef.simple(primitive));
+        }
+        return List.copyOf(types);
+    }
+
+    /**
      * Resolve only a direct or explicitly module-qualified function in the
      * real parsed owner. This does NOT prove the caller can access the module.
      */
