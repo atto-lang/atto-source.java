@@ -43,15 +43,26 @@ public final class EnumCaseSourceBindings {
      * forged and is NOT an expression-typed result of production TypeChecker.
      * In particular, real lexical shadowing/import resolution is outstanding.
      */
-    public record StagedLiteralBinding(
-            Ast.CallExpr call, Candidate target, String staticSlotId) {
-        public StagedLiteralBinding {
-            Objects.requireNonNull(call, "call");
-            Objects.requireNonNull(target, "target");
+    public static final class StagedLiteralBinding {
+        private final Ast.CallExpr call;
+        private final Candidate target;
+        private final String staticSlotId;
+
+        // Only the enclosing compiler proof can create a staged binding.
+        // Public records would allow a consumer to forge a selected target.
+        private StagedLiteralBinding(
+                Ast.CallExpr call, Candidate target, String staticSlotId) {
+            this.call = Objects.requireNonNull(call, "call");
+            this.target = Objects.requireNonNull(target, "target");
             if (!target.signature().symbolId().equals(staticSlotId)) {
-                throw new IllegalArgumentException("binding symbol does not match selected declaration");
+                throw new IllegalArgumentException(
+                        "binding symbol does not match selected declaration");
             }
+            this.staticSlotId = staticSlotId;
         }
+        public Ast.CallExpr call() { return call; }
+        public Candidate target() { return target; }
+        public String staticSlotId() { return staticSlotId; }
     }
 
     public static final class Proof {
