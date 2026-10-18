@@ -113,4 +113,32 @@ final class OresTaskScopeFrameTest {
             assertNull(AsyncRuntime.await(task.getDone()));
         }
     }
+    @Test
+    void cancelledScopedFrameCannotResumeAfterLateDependencyCompletion() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            CountDownLatch entered = new CountDownLatch(1);
+            AtomicInteger lateResumes = new AtomicInteger();
+            OresFuture<Integer> dependency = new OresFuture<>();
+            OresTask<Integer> child = scope.startCompilerFrame(scheduler, resume -> {
+                if (resume.initial()) {
+                    entered.countDown();
+                    return new OresScheduler.Await<Integer>(dependency);
+                }
+                lateResumes.incrementAndGet();
+                return new OresScheduler.Done<>(17);
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            assertTrue(scope.cancel());
+            assertNull(AsyncRuntime.await(child.getDone()));
+            assertTrue(child.isCancelled());
+            dependency.completeFromRuntime(99);
+            // The scheduler's physical-exit barrier must also fence any
+            // previously registered completion callback from re-entry.
+            assertEquals(0, lateResumes.get());
+        }
+    }
+
+
 }
