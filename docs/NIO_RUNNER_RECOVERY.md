@@ -4,15 +4,22 @@ Status: **BLOCKED — no executed compiler/runtime CI steps as of 2026-10-18**.
 This document is an operator handoff, not permission to export private source,
 proof of a successful compiler build, or a reason to merge the draft PRs.
 
-## Immutable heads to qualify
+## Independently pin exact heads and trees before qualification
 
-| Repository | Integration PR | Current SHA | Git tree |
-| --- | --- | --- | --- |
-| `ores-truffle-oreslang/oreslang-source.java` | #1396 | `5c4dbf3b2ff34e58dfd979770a04ba4b8163b162` | `618bac525641867baa3c1e0b2d525b213b1281a4` |
-| `ores-truffle-oreslang/oreslang-source.llvm` | #638 | `4e4a7c8b6fa15d59bb36fb8c553798056dc05b15` | `e8345fbf4088a4bbd7ef56c59031d6c95ea0c488` |
+Source repositories: `oreslang-source.java` PR #1396 and
+`oreslang-source.llvm` PR #638, both in `ores-truffle-oreslang`.
+The audit observed Java head `5c4dbf3b2ff34e58dfd979770a04ba4b8163b162`
+before this documentation was committed, and LLVM head
+`4e4a7c8b6fa15d59bb36fb8c553798056dc05b15`. **These are historical
+snapshots, not live run parameters.** Every new commit changes the head and
+possibly its tree.
 
-Re-read PR heads immediately before any run. A changed head invalidates these
-pins; regenerate the complete evidence rather than silently reusing old logs.
+Before running anything, an administrator must obtain the **current** PR head
+SHA and corresponding Git tree SHA from an independently reviewed GitHub
+record. Provide both via `APPROVED_JAVA_HEAD`/`APPROVED_JAVA_TREE` or
+`APPROVED_LLVM_HEAD`/`APPROVED_LLVM_TREE`; never silently substitute local
+`HEAD` for an independently approved value. Require exact equality before
+the build and again in the source-local validation gate.
 
 ## Runner failure observations (not a confirmed root cause)
 
@@ -55,12 +62,12 @@ for approved build dependencies. The gate verifies exact HEAD/tree,
 raw tracked bytes, Maven test XML and source checkout consistency.
 
 ```bash
-git rev-parse --verify HEAD
-git rev-parse --verify HEAD^{tree}
+: "${APPROVED_JAVA_HEAD:?Set the independently reviewed PR head SHA}"
+: "${APPROVED_JAVA_TREE:?Set the independently reviewed Git tree SHA}"
+test "$(git rev-parse --verify HEAD^{commit})" = "$APPROVED_JAVA_HEAD"
+test "$(git rev-parse --verify HEAD^{tree})" = "$APPROVED_JAVA_TREE"
 bash scripts/test-nio-exact-tree-source-local.sh \
-  5c4dbf3b2ff34e58dfd979770a04ba4b8163b162 \
-  618bac525641867baa3c1e0b2d525b213b1281a4 \
-  --native-aot
+  "$APPROVED_JAVA_HEAD" "$APPROVED_JAVA_TREE" --native-aot
 ```
 
 Then execute the existing full `ci.yml` profile (JVM, Native Image AOT,
@@ -79,10 +86,12 @@ above, GCC, Clang, ASan/UBSan runtimes, CMake, CTest and matching LLVM dev
 dependencies. Run both compiler CI and the native NIO lifecycle sanitizer gate.
 
 ```bash
-git rev-parse --verify HEAD
-git rev-parse --verify HEAD^{tree}
-export ORES_NIO_EXPECT_HEAD=4e4a7c8b6fa15d59bb36fb8c553798056dc05b15
-export ORES_NIO_EXPECT_TREE=e8345fbf4088a4bbd7ef56c59031d6c95ea0c488
+: "${APPROVED_LLVM_HEAD:?Set the independently reviewed PR head SHA}"
+: "${APPROVED_LLVM_TREE:?Set the independently reviewed Git tree SHA}"
+test "$(git rev-parse --verify HEAD^{commit})" = "$APPROVED_LLVM_HEAD"
+test "$(git rev-parse --verify HEAD^{tree})" = "$APPROVED_LLVM_TREE"
+export ORES_NIO_EXPECT_HEAD="$APPROVED_LLVM_HEAD"
+export ORES_NIO_EXPECT_TREE="$APPROVED_LLVM_TREE"
 bash scripts/test-native-vm-nio-host-sanitizers.sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 cmake --build build --parallel 2
