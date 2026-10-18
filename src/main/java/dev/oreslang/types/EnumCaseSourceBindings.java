@@ -40,19 +40,27 @@ public final class EnumCaseSourceBindings {
     public static final class Proof {
         private final Map<Key, List<Candidate>> families;
         private final Map<String, EnumInfo> enums;
+        private final Map<String, EnumTag32Plan> nullaryTagLayouts;
 
         // Keep the compiler-verified proof unforgeable by ordinary callers.
         // A public record constructor would let a host bypass lexical binding.
         private Proof(Map<Key, List<Candidate>> families,
-                      Map<String, EnumInfo> enums) {
+                      Map<String, EnumInfo> enums,
+                      Map<String, EnumTag32Plan> nullaryTagLayouts) {
             Map<Key, List<Candidate>> immutable = new LinkedHashMap<>();
             families.forEach((key, candidates) -> immutable.put(key, List.copyOf(candidates)));
             this.families = Map.copyOf(immutable);
             this.enums = Map.copyOf(enums);
+            this.nullaryTagLayouts = Map.copyOf(nullaryTagLayouts);
         }
 
         public Map<Key, List<Candidate>> families() { return families; }
         public Map<String, EnumInfo> enums() { return enums; }
+        /**
+         * Compiler-only 32-bit tagged constant plans for fully nullary enums.
+         * A proven tag is a value representation, never a runtime overload key.
+         */
+        public Map<String, EnumTag32Plan> nullaryTagLayouts() { return nullaryTagLayouts; }
 
         /**
          * SOURCE-FREE / OFFLINE ORACLE ONLY. These TypeRef values are
@@ -90,6 +98,7 @@ public final class EnumCaseSourceBindings {
         if (scope.isBlank()) throw new IllegalArgumentException("blank source namespace");
         // This stage never invents module identities from short case spellings.
         Map<String, EnumInfo> enums = new LinkedHashMap<>();
+        Map<String, EnumTag32Plan> nullaryTagLayouts = new LinkedHashMap<>();
         Map<String, Map<String, String>> localEnums = new HashMap<>();
         for (Ast.ModuleDecl module : program.modules()) {
             String owner = scope + "." + module.name();
@@ -119,15 +128,22 @@ public final class EnumCaseSourceBindings {
                 Set<String> cases = new LinkedHashSet<>();
                 int prior = 0;
                 boolean eligible = true;
+                boolean nullary = true;
+                List<EnumTag32Plan.CaseTag> caseTags = new ArrayList<>();
                 for (Ast.EnumCase entry : en.cases()) {
                     if (entry.tag() <= prior || !cases.add(entry.name())) {
                         throw new IllegalArgumentException("duplicate/unordered enum case identity or tag");
                     }
                     prior = entry.tag();
+                    caseTags.add(new EnumTag32Plan.CaseTag(entry.name(), entry.tag()));
+                    if (entry.payload() != null) nullary = false;
                     if (!eligiblePayload(entry.payload())) eligible = false;
                 }
                 // Record constructor enforces case-name limits and nonempty.
                 enums.put(id, new EnumInfo(id, List.copyOf(cases), eligible));
+                if (nullary && caseTags.size() <= EnumTag32Plan.MAX_CASES) {
+                    nullaryTagLayouts.put(id, new EnumTag32Plan(id, caseTags));
+                }
             }
             if (localEnums.putIfAbsent(owner, Map.copyOf(moduleEnums)) != null) {
                 throw new IllegalArgumentException("duplicate module declaration");
@@ -205,7 +221,7 @@ public final class EnumCaseSourceBindings {
                     candidates.stream().map(Candidate::signature).toList(), enums);
             families.put(key, List.copyOf(candidates));
         }
-        return new Proof(families, enums);
+        return new Proof(families, enums, nullaryTagLayouts);
     }
 
     private record Pending(List<Ast.Param> parameters, Ast.FunctionDecl function,
