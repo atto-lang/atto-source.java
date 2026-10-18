@@ -95,6 +95,100 @@ final class OresCarrierPermitPoolTest {
                 "executor worker-loop exit must return the permit exactly once");
     }
 
+    @Test void reserveDeniedGrowthQueuesOnExistingCarrierInsteadOfLosingWork()
+            throws Exception {
+        var permits = new OresCarrierPermitPool(5);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var queuedRan = new CountDownLatch(1);
+
+        var workers = new AdaptiveCarrierExecutor(
+                0,
+                4,
+                8,
+                permits.threadFactory(
+                        OresCarrierPermitPool.Domain.SHARED, "permit-shared-"));
+        try {
+            workers.execute(() -> {
+                entered.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            assertEquals(1, permits.held(OresCarrierPermitPool.Domain.SHARED));
+
+            assertDoesNotThrow(() -> workers.execute(queuedRan::countDown),
+                    "reserve-protected carrier growth must degrade to queueing");
+            assertFalse(queuedRan.await(100, TimeUnit.MILLISECONDS),
+                    "queued turn must wait for the existing carrier");
+            var pressure = permits.snapshot();
+            assertEquals(1L, pressure.deniedReserveProtection());
+            assertEquals(0L, pressure.deniedCapacity());
+            assertEquals(1, pressure.sharedHeld());
+
+            release.countDown();
+            assertTrue(queuedRan.await(2, TimeUnit.SECONDS),
+                    "existing carrier must eventually execute reserve-protected queued work");
+        } finally {
+            release.countDown();
+            workers.shutdownNow();
+            assertTrue(workers.awaitTermination(3, TimeUnit.SECONDS));
+        }
+        assertEquals(0, permits.totalHeld());
+    }
+
+    @Test void denialReasonsAndTransactionalRollbackRemainReconciled() {
+        var permits = new OresCarrierPermitPool(8);
+        var first = permits.tryAcquire(OresCarrierPermitPool.Domain.CONTROL);
+        assertNotNull(first);
+        try {
+            assertNull(permits.tryAcquireMany(OresCarrierPermitPool.Domain.CONTROL, 4),
+                    "transaction must fail when its final permit would steal a reserve");
+            var afterRollback = permits.snapshot();
+            assertEquals(1, afterRollback.totalHeld());
+            assertEquals(1, afterRollback.controlHeld());
+            assertEquals(1L, afterRollback.deniedReserveProtection());
+            assertEquals(0L, afterRollback.deniedCapacity());
+
+            var held = new ArrayList<OresCarrierPermitPool.Permit>();
+            try {
+                for (var domain : List.of(
+                        OresCarrierPermitPool.Domain.PRIVATE,
+                        OresCarrierPermitPool.Domain.SHARED,
+                        OresCarrierPermitPool.Domain.UNTRUSTED,
+                        OresCarrierPermitPool.Domain.LIFECYCLE)) {
+                    var permit = permits.tryAcquire(domain);
+                    assertNotNull(permit);
+                    held.add(permit);
+                }
+                while (permits.totalHeld() < permits.maximum()) {
+                    var permit = permits.tryAcquire(OresCarrierPermitPool.Domain.PRIVATE);
+                    assertNotNull(permit);
+                    held.add(permit);
+                }
+                assertNull(permits.tryAcquire(OresCarrierPermitPool.Domain.SHARED));
+                var full = permits.snapshot();
+                assertEquals(8, full.totalHeld());
+                assertEquals(0, full.free());
+                assertEquals(1L, full.deniedCapacity());
+                assertEquals(
+                        full.controlHeld() + full.privateHeld() + full.sharedHeld()
+                                + full.untrustedHeld() + full.lifecycleHeld(),
+                        full.totalHeld());
+            } finally {
+                held.forEach(OresCarrierPermitPool.Permit::close);
+            }
+        } finally {
+            first.close();
+            first.close();
+        }
+        assertEquals(0, permits.totalHeld(),
+                "transaction rollback and idempotent close must leave no permit leak");
+    }
+
     @Test void thrownWorkerStillReturnsPermitAfterExecutorRetiresIt() throws Exception {
         var permits = new OresCarrierPermitPool(5);
         var ran = new CountDownLatch(1);
