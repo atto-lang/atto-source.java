@@ -1,5 +1,7 @@
 package dev.oreslang.types;
 
+import dev.oreslang.ast.Ast;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -57,6 +59,29 @@ public final class OptionalCallShapeBinder {
             }
             return new Argument(label, true);
         }
+    }
+
+    /**
+     * Canonical bridge from the parser-owned CallArgument AST to the pure
+     * shape binder. Explicit omissions have no source expression. Spread
+     * lowering is deliberately gated pending typed collection/ownership proof.
+     */
+    public static List<Argument> parsedArgumentShapes(List<Ast.CallArgument> sourceItems) {
+        Objects.requireNonNull(sourceItems, "sourceItems");
+        List<Argument> shapes = new ArrayList<>(sourceItems.size());
+        for (Ast.CallArgument item : sourceItems) {
+            Objects.requireNonNull(item, "call item");
+            if (item.spread()) {
+                throw new IllegalArgumentException(
+                        "spread call items require separately checked typed lowering");
+            }
+            shapes.add(item.omitted()
+                    ? item.label() == null ? Argument.positionalOmission()
+                                           : Argument.namedOmission(item.label())
+                    : item.label() == null ? Argument.positional()
+                                           : Argument.named(item.label()));
+        }
+        return List.copyOf(shapes);
     }
 
     public record Parameter(String name, boolean optional, boolean variadic) {
