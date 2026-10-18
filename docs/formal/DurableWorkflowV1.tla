@@ -25,7 +25,6 @@ VARIABLES
     retryAllowed,
     attempts,
     delivery,
-    journalEntries,
     generation,
     claimGeneration,
     settledGeneration,
@@ -33,9 +32,8 @@ VARIABLES
     revocationSeen
 
 vars ==
-    << phase, effect, retryAllowed, attempts, delivery, journalEntries,
-       generation, claimGeneration, settledGeneration, settlementCount,
-       revocationSeen >>
+    << phase, effect, retryAllowed, attempts, delivery, generation,
+       claimGeneration, settledGeneration, settlementCount, revocationSeen >>
 
 Init ==
     /\ phase = "ACTIVE"
@@ -43,7 +41,6 @@ Init ==
     /\ retryAllowed = TRUE
     /\ attempts = 0
     /\ delivery = "NONE"
-    /\ journalEntries = 0
     /\ generation = 0
     /\ claimGeneration = 0
     /\ settledGeneration = 0
@@ -59,7 +56,7 @@ Claim ==
     /\ attempts' = attempts + 1
     /\ generation' = generation + 1
     /\ claimGeneration' = generation + 1
-    /\ UNCHANGED << phase, retryAllowed, delivery, journalEntries,
+    /\ UNCHANGED << phase, retryAllowed, delivery,
                      settledGeneration, settlementCount, revocationSeen >>
 
 CompleteLiveClaim ==
@@ -70,12 +67,12 @@ CompleteLiveClaim ==
     /\ settlementCount' = settlementCount + 1
     /\ claimGeneration' = 0
     /\ revocationSeen' = TRUE
-    /\ UNCHANGED << phase, attempts, delivery, journalEntries, generation >>
+    /\ UNCHANGED << phase, attempts, delivery, generation >>
 
 ExpireClaim ==
     /\ effect = "CLAIMED"
     /\ effect' = "AMBIGUOUS"
-    /\ UNCHANGED << phase, retryAllowed, attempts, delivery, journalEntries,
+    /\ UNCHANGED << phase, retryAllowed, attempts, delivery,
                      generation, claimGeneration, settledGeneration,
                      settlementCount, revocationSeen >>
 
@@ -83,7 +80,7 @@ ReconcileSafeToRetry ==
     /\ effect = "AMBIGUOUS"
     /\ effect' = IF retryAllowed THEN "PENDING" ELSE "ABANDONED"
     /\ claimGeneration' = 0
-    /\ UNCHANGED << phase, retryAllowed, attempts, delivery, journalEntries,
+    /\ UNCHANGED << phase, retryAllowed, attempts, delivery,
                      generation, settledGeneration, settlementCount,
                      revocationSeen >>
 
@@ -95,12 +92,11 @@ ReconcileCompleted ==
     /\ settlementCount' = settlementCount + 1
     /\ claimGeneration' = 0
     /\ revocationSeen' = TRUE
-    /\ UNCHANGED << phase, attempts, delivery, journalEntries, generation >>
+    /\ UNCHANGED << phase, attempts, delivery, generation >>
 
 EarlyReject ==
     /\ delivery = "NONE"
     /\ delivery' = "RETRYABLE_REJECTED"
-    /\ journalEntries' = journalEntries + 1
     /\ UNCHANGED << phase, effect, retryAllowed, attempts, generation,
                      claimGeneration, settledGeneration, settlementCount,
                      revocationSeen >>
@@ -111,7 +107,6 @@ CausalOutcome ==
     /\ effect' = IF effect = "PENDING" THEN "ABANDONED" ELSE effect
     /\ retryAllowed' = FALSE
     /\ delivery' = "SEALED"
-    /\ journalEntries' = journalEntries + 1
     /\ revocationSeen' = TRUE
     /\ UNCHANGED << phase, attempts, generation, claimGeneration,
                      settledGeneration, settlementCount >>
@@ -122,31 +117,23 @@ RetryRejectedAsOutcome ==
     /\ effect' = IF effect = "PENDING" THEN "ABANDONED" ELSE effect
     /\ retryAllowed' = FALSE
     /\ delivery' = "SEALED"
-    /\ journalEntries' = journalEntries + 1
     /\ revocationSeen' = TRUE
     /\ UNCHANGED << phase, attempts, generation, claimGeneration,
                      settledGeneration, settlementCount >>
 
 ExactDuplicate ==
     /\ delivery = "SEALED"
-    /\ journalEntries' = journalEntries + 1
-    /\ UNCHANGED << phase, effect, retryAllowed, attempts, delivery,
-                     generation, claimGeneration, settledGeneration,
-                     settlementCount, revocationSeen >>
+    /\ UNCHANGED vars
 
 ConflictingReuse ==
     /\ delivery # "NONE"
-    /\ journalEntries' = journalEntries + 1
-    /\ UNCHANGED << phase, effect, retryAllowed, attempts, delivery,
-                     generation, claimGeneration, settledGeneration,
-                     settlementCount, revocationSeen >>
+    /\ UNCHANGED vars
 
 Cancel ==
     /\ phase = "ACTIVE"
     /\ phase' = "TERMINAL"
     /\ effect' = IF effect = "PENDING" THEN "ABANDONED" ELSE effect
     /\ retryAllowed' = FALSE
-    /\ journalEntries' = journalEntries + 1
     /\ revocationSeen' = TRUE
     /\ UNCHANGED << attempts, delivery, generation, claimGeneration,
                      settledGeneration, settlementCount >>
@@ -172,7 +159,6 @@ TypeOK ==
     /\ retryAllowed \in BOOLEAN
     /\ attempts \in 0..MaxAttempts
     /\ delivery \in DeliveryStates
-    /\ journalEntries \in Nat
     /\ generation \in Nat
     /\ claimGeneration \in Nat
     /\ settledGeneration \in Nat
