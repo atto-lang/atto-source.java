@@ -181,20 +181,20 @@ final class DurableDevLoopEndToEndV1Test {
                             "ci")));
             nextWebhook(webhookOut);
 
-            byte[] failBody =
-                    "{\"conclusion\":\"failure\",\"iteration\":1}"
-                            .getBytes(StandardCharsets.UTF_8);
+            byte[] failBody = workflowRunBody(
+                    "org/repo",
+                    commit1,
+                    1001L,
+                    "ci",
+                    "failure",
+                    "https://github.example/actions/runs/1001");
             webhook.send(new GitHubWebhookActorV1.ReceiveCiWebhook(
                     headers(webhookSecret, failBody, "delivery-ci-1"),
                     failBody,
-                    new GitHubCiCorrelationV1.Observed(
-                            "org/repo",
+                    new GitHubWorkflowRunPayloadV1.GitTreeProof(
                             commit1,
                             tree1,
-                            1001L,
-                            "ci",
-                            GitHubCiCorrelationV1.Conclusion.FAILURE,
-                            "artifact://ci/1")));
+                            "tree-proof://1001")));
             var ci1Matched = assertInstanceOf(
                     GitHubWebhookActorV1.Matched.class,
                     nextWebhook(webhookOut));
@@ -302,20 +302,20 @@ final class DurableDevLoopEndToEndV1Test {
 
             var ci2 = claim(workflow, workflowOut, "dispatcher", 360L);
             dispatch(ci, ci2);
-            byte[] successBody =
-                    "{\"conclusion\":\"success\",\"iteration\":2}"
-                            .getBytes(StandardCharsets.UTF_8);
+            byte[] successBody = workflowRunBody(
+                    "org/repo",
+                    commit2,
+                    1002L,
+                    "ci",
+                    "success",
+                    "https://github.example/actions/runs/1002");
             webhook.send(new GitHubWebhookActorV1.ReceiveCiWebhook(
                     headers(webhookSecret, successBody, "delivery-ci-2"),
                     successBody,
-                    new GitHubCiCorrelationV1.Observed(
-                            "org/repo",
+                    new GitHubWorkflowRunPayloadV1.GitTreeProof(
                             commit2,
                             tree2,
-                            1002L,
-                            "ci",
-                            GitHubCiCorrelationV1.Conclusion.SUCCESS,
-                            "artifact://ci/2")));
+                            "tree-proof://1002")));
             var ci2Matched = assertInstanceOf(
                     GitHubWebhookActorV1.Matched.class,
                     nextWebhook(webhookOut));
@@ -562,6 +562,28 @@ final class DurableDevLoopEndToEndV1Test {
                 WorkflowActivityActorV1.Stopping.class,
                 nextActivity(actor.outputs()));
         actor.raw().getDone().get(5, TimeUnit.SECONDS);
+    }
+
+    private static byte[] workflowRunBody(
+            String repository,
+            String commit,
+            long runId,
+            String workflow,
+            String conclusion,
+            String htmlUrl) {
+        String json = "{"
+                + "\"action\":\"completed\","
+                + "\"repository\":{"
+                + "\"full_name\":\"" + repository + "\"},"
+                + "\"workflow_run\":{"
+                + "\"id\":" + runId + ","
+                + "\"name\":\"" + workflow + "\","
+                + "\"head_sha\":\"" + commit + "\","
+                + "\"status\":\"completed\","
+                + "\"conclusion\":\"" + conclusion + "\","
+                + "\"html_url\":\"" + htmlUrl + "\""
+                + "}}";
+        return json.getBytes(StandardCharsets.UTF_8);
     }
 
     private static GitHubWebhookSecurityV1.Headers headers(
