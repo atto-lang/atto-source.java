@@ -25,9 +25,9 @@ final class ActorArtifactManifestJsonV1Test {
     @Test
     void rejectsDuplicateDecodedKeysAtAnyDepth() {
         for (String json : new String[]{
-                "{"a":1,"a":2}",
-                "{"a":1,"\\u0061":2}",
-                "{"nested":{"x":0,"x":1}}"
+                "{\"a\":1,\"a\":2}",
+                "{\"a\":1,\"\\u0061\":2}",
+                "{\"nested\":{\"x\":0,\"x\":1}}"
         }) {
             IllegalArgumentException failure = assertThrows(
                     IllegalArgumentException.class,
@@ -47,13 +47,13 @@ final class ActorArtifactManifestJsonV1Test {
                                 (byte) 0xc3, 0x28, '"', '}'}));
 
         for (String json : new String[]{
-                "{"x":"\\uD800"}",
-                "{"\\uDFFF":1}",
-                "{"x":NaN}",
-                "{"x":Infinity}",
-                "{"x":-Infinity}",
-                "{"x":1e10000}",
-                "{"x":-1e10000}"
+                "{\"x\":\"\\uD800\"}",
+                "{\"\\uDFFF\":1}",
+                "{\"x\":NaN}",
+                "{\"x\":Infinity}",
+                "{\"x\":-Infinity}",
+                "{\"x\":1e10000}",
+                "{\"x\":-1e10000}"
         }) {
             assertThrows(
                     IllegalArgumentException.class,
@@ -71,8 +71,8 @@ final class ActorArtifactManifestJsonV1Test {
                 () -> ActorArtifactManifestJsonV1.parse(
                         deep.getBytes(StandardCharsets.UTF_8)));
 
-        byte[] oversized = (""" + "x".repeat(
-                ActorArtifactManifestJsonV1.MAX_MANIFEST_BYTES + 1) + """)
+        byte[] oversized = ("\"" + "x".repeat(
+                ActorArtifactManifestJsonV1.MAX_MANIFEST_BYTES + 1) + "\"")
                 .getBytes(StandardCharsets.UTF_8);
         assertThrows(
                 IllegalArgumentException.class,
@@ -81,15 +81,15 @@ final class ActorArtifactManifestJsonV1Test {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> ActorArtifactManifestJsonV1.parse(
-                        "{"ok":true}{"unsafe":true}"
+                        "{\"ok\":true}{\"unsafe\":true}"
                                 .getBytes(StandardCharsets.UTF_8)));
     }
 
     @Test
     void rejectsUnknownMissingAndWrongTypedSchemaFields() {
         String unknown = validJson().replace(
-                ""schema_version"",
-                ""runtime_codegen":true,"schema_version"");
+                "\"schema_version\"",
+                "\"runtime_codegen\":true,\"schema_version\"");
         IllegalArgumentException unknownFailure = assertThrows(
                 IllegalArgumentException.class,
                 () -> ActorArtifactManifestJsonV1.parse(
@@ -98,7 +98,7 @@ final class ActorArtifactManifestJsonV1Test {
                 unknownFailure.getMessage());
 
         String missing = validJson().replace(
-                ""expanded_sha256":"" + "2".repeat(64) + "",",
+                "\"expanded_sha256\":\"" + "2".repeat(64) + "\",",
                 "");
         IllegalArgumentException missingFailure = assertThrows(
                 IllegalArgumentException.class,
@@ -108,8 +108,8 @@ final class ActorArtifactManifestJsonV1Test {
                 missingFailure.getMessage());
 
         String wrongBoolean = validJson().replace(
-                ""runtime_guest_compilation":false",
-                ""runtime_guest_compilation":0");
+                "\"runtime_guest_compilation\":false",
+                "\"runtime_guest_compilation\":0");
         assertThrows(
                 IllegalArgumentException.class,
                 () -> ActorArtifactManifestJsonV1.parse(
@@ -119,8 +119,9 @@ final class ActorArtifactManifestJsonV1Test {
     @Test
     void rejectsFractionalUnsafeAndZeroArtifactSizes() {
         for (String size : new String[]{"1.5", "9007199254740992", "0"}) {
-            String json = validJson().replace(""size_bytes":8192",
-                    ""size_bytes":" + size);
+            String json = validJson().replace(
+                    "\"size_bytes\": 8192",
+                    "\"size_bytes\": " + size);
             assertThrows(
                     IllegalArgumentException.class,
                     () -> ActorArtifactManifestJsonV1.parse(
@@ -132,23 +133,24 @@ final class ActorArtifactManifestJsonV1Test {
     @Test
     void rejectsDuplicateCapabilitiesAndUnknownEnumValues() {
         String duplicateCaps = validJson().replace(
-                "["filesystem.read"]",
-                "["filesystem.read","filesystem.read"]");
+                "[\"filesystem.read\"]",
+                "[\"filesystem.read\",\"filesystem.read\"]");
         assertThrows(
                 IllegalArgumentException.class,
                 () -> ActorArtifactManifestJsonV1.parse(
                         duplicateCaps.getBytes(StandardCharsets.UTF_8)));
 
-        String badBackend = validJson().replace(""backend":"llvm"",
-                ""backend":"jit"");
+        String badBackend = validJson().replace(
+                "\"backend\": \"llvm\"",
+                "\"backend\": \"jit\"");
         assertThrows(
                 IllegalArgumentException.class,
                 () -> ActorArtifactManifestJsonV1.parse(
                         badBackend.getBytes(StandardCharsets.UTF_8)));
 
         String badFormat = validJson().replace(
-                ""format":"native-executable"",
-                ""format":"script"");
+                "\"format\": \"native-executable\"",
+                "\"format\": \"script\"");
         assertThrows(
                 IllegalArgumentException.class,
                 () -> ActorArtifactManifestJsonV1.parse(
@@ -160,7 +162,7 @@ final class ActorArtifactManifestJsonV1Test {
         byte[] bytes = validJson().getBytes(StandardCharsets.UTF_8);
         var manifest = ActorArtifactManifestJsonV1.parse(bytes);
         java.util.Arrays.fill(bytes, (byte) 'x');
-        assertEquals("llvm", manifest.compiler().backend().manifestName());
+        assertEquals(ActorArtifactAdmission.Backend.LLVM, manifest.compiler().backend());
         assertEquals("4".repeat(64), manifest.artifact().fileSha256());
     }
 
