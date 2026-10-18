@@ -82,6 +82,42 @@ final class PersistentActorMapUpdateCostTest {
     }
 
     @Test
+    void deepNestedOrdinaryMapsCompareWithoutStackOverflow() {
+        var persistent = nested(8192);
+        java.util.Map<String, Object> ordinary = java.util.Map.of();
+        for (int i = 0; i < 8192; i++)
+            ordinary = java.util.Map.of("next", ordinary);
+        var actual = ordinary;
+        assertTrue(assertDoesNotThrow(() -> persistent.equals(actual)),
+                "comparison with a standard nested Map must not delegate recursive equals");
+        assertEquals(assertDoesNotThrow(persistent::hashCode),
+                assertDoesNotThrow(actual::hashCode),
+                "persistent and ordinary Maps must produce compatible hashes");
+    }
+
+    @Test
+    void differingNestedOrdinaryMapsReturnFalseWithoutRecursion() {
+        var persistent = nested(4096);
+        java.util.Map<String, Object> ordinary = java.util.Map.of("unexpected", 1);
+        for (int i = 0; i < 4096; i++)
+            ordinary = java.util.Map.of("next", ordinary);
+        var actual = ordinary;
+        assertFalse(assertDoesNotThrow(() -> persistent.equals(actual)));
+    }
+
+    @Test
+    void plainNullAndNonmapComparisonRemainsFalse() {
+        var persistent = PersistentActorMap.empty().with("n", 1);
+        assertFalse(persistent.equals(null));
+        assertFalse(persistent.equals("not-a-map"));
+        assertFalse(persistent.equals(java.util.Map.of("n", nullSafeMismatch())));
+    }
+
+    private static Object nullSafeMismatch() {
+        return "different";
+    }
+
+    @Test
     void standardMapHashAndEqualityContractsRemainCompatible() {
         var child = nested(512);
         var parent = PersistentActorMap.empty()
