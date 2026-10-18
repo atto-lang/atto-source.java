@@ -411,17 +411,46 @@ public final class TypeChecker {
         }
     }
 
+    private void inLexicalModule(String module, Runnable action) {
+        String previousModule = currentLexicalModule;
+        currentLexicalModule = module;
+        try {
+            action.run();
+        } finally {
+            currentLexicalModule = previousModule;
+        }
+    }
+
     private void validate(Ast.Program program) {
         // Local overload identity must be validated before class-shape
         // construction. Otherwise same-name/same-arity declarations whose
         // types differ can fail later as a generic structural conflict before
         // the language's arity-only overload rule is diagnosed.
-        for (Ast.ClassDecl klass : classOwners.keySet()) validateLocalClassOverloads(klass);
-        for (Ast.ClassDecl klass : classOwners.keySet()) validateInheritedClassOverloads(klass);
-        for (Ast.ClassDecl klass : classOwners.keySet()) validateAbstractMethodSlots(klass);
-        for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) validateInterfaceAritySlots(iface, new LinkedHashSet<>());
-        for (Ast.ClassDecl klass : classOwners.keySet()) classShape(klass, new LinkedHashSet<>());
-        for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+        for (Ast.ClassDecl klass : classOwners.keySet()) {
+            inLexicalModule(classOwners.get(klass), () -> validateLocalClassOverloads(klass));
+        }
+        for (Ast.ClassDecl klass : classOwners.keySet()) {
+            inLexicalModule(classOwners.get(klass), () -> validateInheritedClassOverloads(klass));
+        }
+        for (Ast.ClassDecl klass : classOwners.keySet()) {
+            inLexicalModule(classOwners.get(klass), () -> validateAbstractMethodSlots(klass));
+        }
+        for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) {
+            inLexicalModule(
+                    interfaceOwners.get(iface),
+                    () -> validateInterfaceAritySlots(iface, new LinkedHashSet<>()));
+        }
+        for (Ast.ClassDecl klass : classOwners.keySet()) {
+            inLexicalModule(classOwners.get(klass), () -> classShape(klass, new LinkedHashSet<>()));
+        }
+        for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) {
+            inLexicalModule(
+                    interfaceOwners.get(iface),
+                    () -> interfaceShape(
+                            iface,
+                            Set.copyOf(iface.genericParameters()),
+                            new LinkedHashSet<>()));
+        }
 
         for (Ast.ModuleDecl module : program.modules()) {
             String previousModule = currentLexicalModule;
