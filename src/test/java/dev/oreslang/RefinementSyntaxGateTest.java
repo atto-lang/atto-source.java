@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.RefinementRules;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -17,6 +18,52 @@ final class RefinementSyntaxGateTest {
         Ast.Program program = Parser.parse(source);
         return assertInstanceOf(Ast.TypeAliasDecl.class,
                 program.modules().getFirst().declarations().getFirst());
+    }
+
+
+    @Test void inclusiveLengthRangeIsCheckedAtAllAvailableBoundaries() {
+        // Parser-time contradiction detection is mandatory even while source
+        // refinement construction remains deliberately fail-closed.
+        Ast.TypeAliasDecl bounded = alias(
+                "type X = string with length gte 4 and length lte 7;");
+        RefinementRules.Interval interval = RefinementRules.normalize(
+                bounded.target(), bounded.refinement().bounds());
+        assertEquals(4L, interval.min());
+        assertEquals(7L, interval.max());
+
+        var descriptor = RefinementRules.descriptor(
+                null, bounded.target(), bounded.refinement());
+        for (String accepted : new String[] {"abcd", "abcdefg", "😀abc", "😀abcdef"}) {
+            assertTrue(RefinementRules.accepts(bounded.target(), bounded.refinement(), accepted));
+            assertTrue(descriptor.accepts(accepted));
+            assertTrue(RefinementRules.tryFrom(
+                    bounded.name(), bounded.target(), bounded.refinement(), accepted).ok());
+        }
+        for (String rejected : new String[] {"abc", "abcdefgh", "😀ab", "😀abcdefg"}) {
+            assertFalse(RefinementRules.accepts(bounded.target(), bounded.refinement(), rejected));
+            assertFalse(descriptor.accepts(rejected));
+            assertFalse(RefinementRules.tryFrom(
+                    bounded.name(), bounded.target(), bounded.refinement(), rejected).ok());
+        }
+
+        for (String impossible : new String[] {
+                "type X = string with length gte 4 and length lte 3;",
+                "type X = string with length >= 4 and length <= 3;",
+                "type X = string with length lte 3 and length gte 4;",
+                "@MinLength(4) @MaxLength(3) type X = string;"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(impossible), impossible);
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> RefinementRules.normalize(bounded.target(), List.of(
+                        new Ast.RefinementBound("length", "gte", 4),
+                        new Ast.RefinementBound("length", "lte", 3))));
+        IllegalArgumentException notExecutable = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(
+                        "type X = string with length gte 4 and length lte 7;"));
+        assertTrue(notExecutable.getMessage().contains("not yet executable"),
+                notExecutable::getMessage);
     }
 
     @Test void annotationsAndWithNormalizeToSameBounds() {
