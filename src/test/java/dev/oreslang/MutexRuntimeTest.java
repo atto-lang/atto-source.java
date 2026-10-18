@@ -724,8 +724,16 @@ final class MutexRuntimeTest {
 
             assertTrue(validationEntered.await(2, TimeUnit.SECONDS));
             allowFailure.countDown();
-            for (int i = 0; i < 500 && doomed.failure().isEmpty(); i++) Thread.yield();
-            assertTrue(doomed.failure().isPresent());
+            // Scheduling of the failed actor is asynchronous. A fixed 500
+            // Thread.yield() spin can finish before the dispatcher runs at all
+            // on a loaded CI machine. Wait for the actual failure event with
+            // a bounded monotonic deadline instead of asserting scheduling.
+            long untilFailure = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (doomed.failure().isEmpty() && System.nanoTime() < untilFailure) {
+                Thread.sleep(1);
+            }
+            assertTrue(doomed.failure().isPresent(),
+                    "failed actor admission must observe actual termination");
 
             releaseValidation.countDown();
             sender.join();

@@ -3,6 +3,8 @@ package dev.oreslang.compiler;
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -104,7 +106,23 @@ public final class IncrementalCompiler {
                 continue;
             }
 
-            Ast.Program checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+            Ast.Program checked;
+            LinkedClasses linked = linkedPublicClasses(
+                    id, parsed.get(id), parsed, normalizedImportResolutions);
+            if (linked.classes().isEmpty()) {
+                checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+            } else {
+                try {
+                    // Foreign layouts are used for type and ownership proofs;
+                    // their declarations are never executed in the importer.
+                    checked = TypeChecker.checkTypesWithImportedClasses(
+                            Parser.parse(normalized.get(id)), linked.classes(), linked.aliases());
+                    OwnershipChecker.checkWithImportedClasses(checked, linked.classes());
+                } catch (IllegalArgumentException invalid) {
+                    throw new IllegalArgumentException(
+                            "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
+                }
+            }
             CompiledUnit unit = new CompiledUnit(
                     id,
                     packageId(id, checked),
@@ -125,6 +143,62 @@ public final class IncrementalCompiler {
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
                 initializationGroups);
+    }
+
+    private record LinkedClasses(
+            Map<String, Ast.ClassDecl> classes,
+            Map<String, Map<String, Ast.TypeAliasDecl>> aliases) { }
+
+    private static LinkedClasses linkedPublicClasses(
+            String unitId,
+            Ast.Program importer,
+            Map<String, Ast.Program> parsed,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, Ast.ClassDecl> linked = new LinkedHashMap<>();
+        LinkedHashMap<String, Map<String, Ast.TypeAliasDecl>> aliases = new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : importer.imports()) {
+            if (imported.kind() != Ast.ImportKind.CLASS || imported.wildcard()) continue;
+            String sourceId = ImportGraph.resolveImportUnitId(
+                    unitId, imported, parsed.keySet(), importResolutions);
+            if (sourceId == null) continue; // external resolution remains opaque
+            Ast.Program source = parsed.get(sourceId);
+            if (source == null) {
+                throw new IllegalArgumentException("missing linked class source '" + sourceId + "'");
+            }
+            for (String name : imported.names()) {
+                Ast.ClassDecl resolved = null;
+                Map<String, Ast.TypeAliasDecl> classAliases = Map.of();
+                for (Ast.ModuleDecl module : source.modules()) {
+                    for (Ast.Decl declaration : module.declarations()) {
+                        if (declaration instanceof Ast.ClassDecl klass
+                                && klass.name().equals(name)
+                                && klass.visibility() == Ast.Visibility.PUBLIC) {
+                            if (resolved != null) {
+                                throw new IllegalArgumentException(
+                                        "ambiguous linked public class '" + name + "'");
+                            }
+                            resolved = klass;
+                            LinkedHashMap<String, Ast.TypeAliasDecl> moduleAliases = new LinkedHashMap<>();
+                            for (Ast.Decl companion : module.declarations()) {
+                                if (companion instanceof Ast.TypeAliasDecl alias
+                                        && moduleAliases.putIfAbsent(alias.name(), alias) != null) {
+                                    throw new IllegalArgumentException(
+                                            "duplicate type alias in linked class module: " + alias.name());
+                                }
+                            }
+                            classAliases = Map.copyOf(moduleAliases);
+                        }
+                    }
+                }
+                if (resolved == null || linked.putIfAbsent(name, resolved) != null) {
+                    throw new IllegalArgumentException(
+                            "missing or duplicate public linked class '" + name
+                                    + "' in source unit '" + unitId + "'");
+                }
+                aliases.put(name, classAliases);
+            }
+        }
+        return new LinkedClasses(Map.copyOf(linked), Map.copyOf(aliases));
     }
 
     public synchronized void clear() {
@@ -157,7 +231,7 @@ public final class IncrementalCompiler {
             if (fn.generator()) abi.append("generator ");
             if (fn.structural()) abi.append("structural ");
             abi.append(fn.kind()).append(" pub ").append(fn.name());
-            appendGenerics(abi, fn.genericParameters());
+            appendGenericSpecs(abi, fn.genericSpecs());
             appendParams(abi, fn.parameters());
             abi.append("=>").append(typeRef(fn.returnType())).append('\n');
             return;
@@ -209,6 +283,8 @@ public final class IncrementalCompiler {
             return;
         }
         if (decl instanceof Ast.InterfaceDecl iface) {
+            // Private contracts/traits/interfaces are not part of the imported ABI.
+            if (iface.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append("interface ").append(iface.visibility()).append(' ').append(iface.name());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");
@@ -226,7 +302,8 @@ public final class IncrementalCompiler {
             return;
         }
         if (decl instanceof Ast.TypeAliasDecl alias) {
-            abi.append("type ").append(alias.name());
+            if (alias.visibility() != Ast.Visibility.PUBLIC) return;
+            abi.append("pub type ").append(alias.name());
             appendGenerics(abi, alias.genericParameters());
             abi.append('=').append(typeRef(alias.target())).append('\n');
             return;
@@ -260,6 +337,20 @@ public final class IncrementalCompiler {
         appendParams(out, fn.parameters());
         out.append("=>").append(typeRef(fn.returnType())).append('\n');
         return out.toString();
+    }
+
+    /** Generic defaults are public source-ABI, even when execution is erased. */
+    private static void appendGenericSpecs(
+            StringBuilder abi, List<Ast.GenericParameter> specs) {
+        abi.append('<');
+        for (Ast.GenericParameter spec : specs) {
+            abi.append(spec.name());
+            if (spec.defaultType() != null) {
+                abi.append('=').append(typeRef(spec.defaultType()));
+            }
+            abi.append(',');
+        }
+        abi.append('>');
     }
 
     private static void appendGenerics(StringBuilder abi, List<String> generics) {

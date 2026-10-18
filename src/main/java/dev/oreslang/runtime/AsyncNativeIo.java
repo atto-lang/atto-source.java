@@ -52,6 +52,7 @@ public final class AsyncNativeIo implements AutoCloseable {
         // operation remains owned by the context until completion or context close.
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
         if (closed || admitted.size() >= limit) {
+            CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
             result.failFromRuntime(new RejectedExecutionException(
                     closed ? "I/O context closed" : "I/O admission capacity exhausted"));
             return result;
@@ -66,6 +67,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                 try {
                     value = work.call();
                 } catch (Throwable failure) {
+                    CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 1L);
                     synchronized (this) { admitted.remove(result); }
                     SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
                     result.failFromRuntime(failure);
@@ -80,6 +82,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                 result.completeFromRuntime(value);
             });
         } catch (RuntimeException failure) {
+            CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
             admitted.remove(result);
             result.failFromRuntime(failure);
         }

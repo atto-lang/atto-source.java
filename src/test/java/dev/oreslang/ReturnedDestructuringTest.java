@@ -557,9 +557,9 @@ final class ReturnedDestructuringTest {
     void staticallyTypedIterableRestUsesDeclaredIteratorShape() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Vector<T> as
-                  let Array<T> items = new Array<T>();
+                  let mut Array<T> items = new Array<T>();
 
-                  pub add(T value): void {
+                  pub add(mut self)(T value): void {
                     self.items.add(value);
                     return;
                   }
@@ -570,7 +570,7 @@ final class ReturnedDestructuringTest {
                 end
 
                 fnc vector(): Vector<int> {
-                  let Vector<int> values = new Vector<int>();
+                  let mut Vector<int> values = new Vector<int>();
                   values.add(4);
                   values.add(5);
                   values.add(6);
