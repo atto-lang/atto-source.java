@@ -7,19 +7,12 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Any, AnyCallable, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
+    public sealed interface Type permits Primitive, AnyCallable, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
     }
 
-    /**
-     * Erased top type for ordinary owned runtime values.
-     * Borrow capabilities and class namespaces are deliberately excluded so
-     * erasure cannot extend a lexical lifetime or turn compile-time metadata
-     * into a storable runtime value. Concrete callables remain ordinary values.
-     */
-    public enum Any implements Type { INSTANCE }
 
     /** Erased supertype of reifiable callable values. It is not itself directly invocable. */
     public enum AnyCallable implements Type { INSTANCE }
@@ -135,7 +128,6 @@ public final class Types {
      */
     public static boolean areProvablyDisjoint(Type first, Type second) {
         if (first == Unknown.INSTANCE || second == Unknown.INSTANCE
-                || first == Any.INSTANCE || second == Any.INSTANCE
                 || first == AnyCallable.INSTANCE || second == AnyCallable.INSTANCE
                 || first instanceof Generic || second instanceof Generic) return false;
         if (first.equals(second)) return false;
@@ -183,7 +175,7 @@ public final class Types {
     }
 
     private static boolean containsUncertainType(Type type) {
-        if (type == Unknown.INSTANCE || type == Any.INSTANCE || type == AnyCallable.INSTANCE
+        if (type == Unknown.INSTANCE || type == AnyCallable.INSTANCE
                 || type instanceof Generic) return true;
         if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Not not) return containsUncertainType(not.excluded());
@@ -201,16 +193,10 @@ public final class Types {
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
-        if (to == Any.INSTANCE) {
-            return from != Primitive.VOID
-                    && !(from instanceof Borrow)
-                    && !(from instanceof ClassNamespace);
-        }
-        if (from == Any.INSTANCE) return false;
         if (to == AnyCallable.INSTANCE) {
             return from instanceof Function || from == AnyCallable.INSTANCE;
         }
-        if (from == AnyCallable.INSTANCE) return false;
+        if (from == AnyCallable.INSTANCE) return to == Unknown.INSTANCE;
         // Complements must be checked before permissive Unknown/Generic rules.
         // No compiler pass may turn uncertainty into a negative-type proof.
         if (to instanceof Not negative) {

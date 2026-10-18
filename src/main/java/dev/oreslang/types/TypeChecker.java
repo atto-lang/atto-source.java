@@ -6,7 +6,6 @@ import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
-import dev.oreslang.types.Types.Any;
 import dev.oreslang.types.Types.AnyCallable;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
@@ -49,7 +48,7 @@ public final class TypeChecker {
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Mutex",
             "SharedMutex", "Channel", "Future", "Fnc", "Function",
-            "Any", "AnyCallable");
+            "AnyCallable");
 
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
@@ -195,7 +194,7 @@ public final class TypeChecker {
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
-                "self", "null"));
+                "AnyCallable", "self", "null"));
 
         for (Ast.ModuleDecl module : program.modules()) {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
@@ -252,9 +251,9 @@ public final class TypeChecker {
     }
 
     private static void rejectErasedBuiltinTypeRedeclaration(String name, String kind) {
-        if (name.equals("Any") || name.equals("AnyCallable")) {
+        if (name.equals("AnyCallable")) {
             throw new IllegalArgumentException(
-                    kind + " '" + name + "' conflicts with compiler-builtin erased type " + name);
+                    kind + " '" + name + "' conflicts with compiler-builtin erased callable type");
         }
     }
 
@@ -944,7 +943,6 @@ public final class TypeChecker {
         }
     }
     private void checkClass(String module, Ast.ClassDecl klass) {
-        // Validate MUST/MAY initialization independently of normal local-variable flow.
         ConstructorValInitialization.check(klass);
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
@@ -1735,7 +1733,7 @@ public final class TypeChecker {
                                 "ActorMail", "ActorOutput", "ActorOutputStream",
                                 "MutexGuard", "Mutex", "SharedMutex", "Channel",
                                 "Generator", "AsyncGenerator", "Iterator", "AsyncIterator",
-                                "IteratorResult", "Fnc", "Function").contains(name)
+                                "IteratorResult", "Fnc", "Function", "AnyCallable").contains(name)
                         || findClass(name) != null || findInterface(name) != null
                         || findTypeAlias(name) != null || modules.containsKey(name)) {
                     throw new IllegalArgumentException(
@@ -3189,10 +3187,6 @@ public final class TypeChecker {
             }
             Type callee = typeOf(call.callee(), env, generics, self);
             Type callableView = callee instanceof Borrow borrow ? borrow.target() : callee;
-            if (callableView == Any.INSTANCE) {
-                throw new IllegalArgumentException(
-                        "Any is an erased value type and is not callable; narrow to a concrete Fnc signature first");
-            }
             if (callableView == AnyCallable.INSTANCE) {
                 throw new IllegalArgumentException(
                         "AnyCallable proves only that a value is callable; its signature is erased and must be narrowed before invocation");
@@ -3381,10 +3375,9 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("unknown function member '" + member.member()
                         + "'; invoke directly or spread a statically known tuple with f(...args)");
             }
-            if (sumReceiver == Any.INSTANCE || sumReceiver == AnyCallable.INSTANCE) {
+            if (sumReceiver == AnyCallable.INSTANCE) {
                 throw new IllegalArgumentException(
-                        (sumReceiver == AnyCallable.INSTANCE ? "AnyCallable" : "Any")
-                                + " is erased and has no statically known members");
+                        "AnyCallable is erased and has no statically known members");
             }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (isStringLike(sumReceiver)) {
@@ -3939,7 +3932,7 @@ public final class TypeChecker {
             Set<Ast.ClassDecl> seen,
             Map<String, Type> genericBindings) {
         type = deref(type);
-        if (type instanceof Function || type == Any.INSTANCE || type == AnyCallable.INSTANCE) return true;
+        if (type instanceof Function || type == AnyCallable.INSTANCE) return true;
         if (type instanceof SelfType receiverSelf) {
             return containsChannelCallable(receiverSelf.bound(), seen, genericBindings);
         }
@@ -4944,7 +4937,7 @@ public final class TypeChecker {
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
         }
-        if (type == Unknown.INSTANCE || type == Any.INSTANCE || type == AnyCallable.INSTANCE
+        if (type == Unknown.INSTANCE || type == AnyCallable.INSTANCE
                 || type instanceof Generic || type instanceof SelfType
                 || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) {
             throw new IllegalArgumentException(
@@ -5038,7 +5031,7 @@ public final class TypeChecker {
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
-        if (type == Unknown.INSTANCE || type == Any.INSTANCE || type == AnyCallable.INSTANCE
+        if (type == Unknown.INSTANCE || type == AnyCallable.INSTANCE
                 || type instanceof SelfType || type instanceof Borrow
                 || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
@@ -5897,7 +5890,7 @@ public final class TypeChecker {
         if (ref.isBorrow() || ref.isTupleType() || ref.isRecordType() || ref.isStringLiteral()
                 || ref.name().equals("$infer$") || ref.name().equals("self")
                 || ref.name().equals("Fnc") || ref.name().equals("Function")
-                || ref.name().equals("Any") || ref.name().equals("AnyCallable")) {
+                || ref.name().equals("AnyCallable")) {
             throw new IllegalArgumentException(
                     operator + " requires a nominal/runtime-reifiable type; use 'matches' for structural patterns");
         }
@@ -7529,7 +7522,7 @@ public final class TypeChecker {
     }
 
     private boolean containsUnknown(Type type) {
-        if (type == Unknown.INSTANCE || type == Any.INSTANCE || type == AnyCallable.INSTANCE) return true;
+        if (type == Unknown.INSTANCE || type == AnyCallable.INSTANCE) return true;
         if (type instanceof SelfType receiverSelf) return containsUnknown(receiverSelf.bound());
         if (type instanceof Borrow borrow) return containsUnknown(borrow.target());
         if (type instanceof ListType list) return containsUnknown(list.element());
@@ -8016,12 +8009,6 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
-            case "Any" -> {
-                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
-                    throw new IllegalArgumentException("Any does not accept type arguments");
-                }
-                yield Any.INSTANCE;
-            }
             case "AnyCallable" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException("AnyCallable does not accept type arguments");
@@ -8337,16 +8324,12 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
-        if (expected == Any.INSTANCE) {
-            return actual != Primitive.VOID
-                    && !(actual instanceof Borrow)
-                    && !(actual instanceof ClassNamespace);
-        }
-        if (actual == Any.INSTANCE) return expected == Any.INSTANCE;
         if (expected == AnyCallable.INSTANCE) {
             return actual instanceof Function || actual == AnyCallable.INSTANCE;
         }
-        if (actual == AnyCallable.INSTANCE) return expected == Any.INSTANCE;
+        if (actual == AnyCallable.INSTANCE) {
+            return expected == Unknown.INSTANCE;
+        }
         if (containsRecursiveAliasRef(actual) || containsRecursiveAliasRef(expected)) {
             return recursiveAliasAssignable(actual, expected, new HashSet<>());
         }
