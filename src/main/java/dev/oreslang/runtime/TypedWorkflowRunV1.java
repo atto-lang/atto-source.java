@@ -103,9 +103,62 @@ public final class TypedWorkflowRunV1 {
                             + "total edge traversals");
         }
 
+        validateSingleTokenFlow(graph, snapshot);
+
         run.currentNode = snapshot.currentNode();
         run.revision = snapshot.revision();
         return run;
+    }
+
+    private static void validateSingleTokenFlow(
+            TypedWorkflowGraphV1 graph,
+            Snapshot snapshot) {
+        LinkedHashMap<String, Long> balance = new LinkedHashMap<>();
+        for (String nodeId : graph.nodes().keySet()) {
+            balance.put(nodeId, 0L);
+        }
+
+        for (var entry : snapshot.traversalCounts().entrySet()) {
+            int count = entry.getValue();
+            if (count == 0) continue;
+
+            TypedWorkflowGraphV1.Edge edge = graph.edges().stream()
+                    .filter(candidate ->
+                            edgeKey(candidate).equals(entry.getKey()))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException(
+                            "persisted traversal references unknown edge "
+                                    + entry.getKey()));
+
+            balance.put(
+                    edge.fromNode(),
+                    Math.subtractExact(
+                            balance.get(edge.fromNode()),
+                            count));
+            balance.put(
+                    edge.toNode(),
+                    Math.addExact(
+                            balance.get(edge.toNode()),
+                            count));
+        }
+
+        for (String nodeId : graph.nodes().keySet()) {
+            long expected = 0L;
+            if (nodeId.equals(graph.startNode())) {
+                expected--;
+            }
+            if (nodeId.equals(snapshot.currentNode())) {
+                expected++;
+            }
+            if (balance.get(nodeId) != expected) {
+                throw new IllegalStateException(
+                        "persisted traversal counts cannot produce "
+                                + "current node "
+                                + snapshot.currentNode()
+                                + ": flow mismatch at "
+                                + nodeId);
+            }
+        }
     }
 
     public synchronized Transition advance(
