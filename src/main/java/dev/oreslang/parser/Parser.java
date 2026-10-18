@@ -897,8 +897,12 @@ public final class Parser {
                         "interface-field annotations are not represented by the current AST and must not be silently discarded");
             }
 
-            Ast.BindingKind fieldBindingKind = Ast.BindingKind.VAL;
-            boolean fieldMutableReferent = true;
+            // Module/static contract fields are readable-only unless a binding
+            // kind is written explicitly. Instance interfaces retain their
+            // historical final-reference default.
+            Ast.BindingKind fieldBindingKind =
+                    moduleContract ? null : Ast.BindingKind.VAL;
+            boolean fieldMutableReferent = !moduleContract;
             if (isBindingKind(peek().type())) {
                 fieldBindingKind = parseBindingKind();
                 fieldMutableReferent = parseReferentMutability(fieldBindingKind);
