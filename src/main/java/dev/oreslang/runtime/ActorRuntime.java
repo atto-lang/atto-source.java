@@ -282,6 +282,19 @@ public final class ActorRuntime implements AutoCloseable {
                     || droppedSequenceExhaustion < 0 || droppedTotal < 0) {
                 throw new IllegalArgumentException("invalid terminal journal statistics");
             }
+            final long classifiedDrops;
+            try {
+                classifiedDrops = Math.addExact(
+                        Math.addExact(droppedContention, droppedCapacity),
+                        droppedSequenceExhaustion);
+            } catch (ArithmeticException overflow) {
+                throw new IllegalArgumentException(
+                        "terminal journal drop classification overflow", overflow);
+            }
+            if (classifiedDrops != droppedTotal) {
+                throw new IllegalArgumentException(
+                        "terminal journal drop total does not match classified reasons");
+            }
         }
     }
 
