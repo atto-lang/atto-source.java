@@ -25,3 +25,13 @@ test("unsupported runtime paths reject before ordinary method typing",()=>{
   assert.match(source,/ActorStateContract\.verify\(program\)/);
   assert.match(source,/DeclaredEffectVerifier\.verify\(program\)/);
 });
+
+test("JUnit regression includes parser-positive semantic rejection and legacy positive control",()=>{
+  const java=readFileSync(new URL("../src/test/java/dev/oreslang/NominalActorBridgeFailClosedTest.java",import.meta.url),"utf8");
+  assert.match(java,/Parser\.parse\(ENUM\)/);
+  assert.match(java,/TypeChecker\.check\(parsed\)/);
+  assert.match(java,/not yet executable/);
+  assert.match(java,/enumTagAndCaseCollisionStillRejectBeforeExecutableAdmission/);
+  assert.match(java,/ordinaryNonNominalProgramsRemainAdmissible/);
+  assert.match(java,/assertDoesNotThrow\(\(\) -> TypeChecker\.check\(parsed\)\)/);
+});
