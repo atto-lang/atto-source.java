@@ -256,8 +256,10 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     }
 
     /**
-     * Single-consumer bootstrap transfer. A second process can never receive
-     * the same session key/challenge through this session object.
+     * Single-claim bootstrap transfer from the session to the trusted launcher.
+     * After this method returns, the session retains no bootstrap master/challenge
+     * copy. The trusted launcher owns the returned secret material and must close
+     * it after binding exactly one child bootstrap channel.
      */
     synchronized BootstrapMaterial claimBootstrapForTrustedLauncher() {
         requireNotTerminal("claim IPC bootstrap material");
