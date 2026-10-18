@@ -672,7 +672,7 @@ def verified_root_tree(repository, tree_sha):
         path, mode, kind = (entry.get("path"), entry.get("mode"),
                             entry.get("type"))
         if (not isinstance(path, str) or not path or "/" in path
-                or path in (".", "..") or "\\x00" in path
+                or path in (".", "..") or "\x00" in path
                 or path in result or kind not in modes
                 or mode not in modes[kind]):
             raise Denied("destination root tree read-back has ambiguous entries")
