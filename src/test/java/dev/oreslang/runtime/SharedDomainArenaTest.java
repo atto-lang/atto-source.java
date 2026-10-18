@@ -219,4 +219,45 @@ final class SharedDomainArenaTest {
                     () -> "handle exposes FFM segment field: " + field);
         }
     }
+    @Test
+    void runtimeCloseRetriesAfterPriorLogicalSealWithoutPhysicalRelease() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var domain = runtime.newSharedDomainArena(2);
+            assertEquals(16L, runtime.sharedMemoryBytes());
+            // Inject the exact interrupted-cleanup state: admission was
+            // already sealed, but the FFM region was not physically retired.
+            // The former retireFromRuntime() returned immediately here.
+            Field closingField = SharedDomainArena.class.getDeclaredField("closing");
+            closingField.setAccessible(true);
+            closingField.setBoolean(domain, true);
+            assertTrue(domain.closed());
+            assertFalse(domain.physicallyClosed());
+            domain.retireFromRuntime();
+            assertTrue(domain.physicallyClosed(),
+                    "sealed domain must still retry native physical release");
+            assertEquals(0L, runtime.sharedMemoryBytes());
+            domain.retireFromRuntime();
+            assertEquals(0L, runtime.sharedMemoryBytes(),
+                    "duplicate shutdown must not double-refund shared native bytes");
+        }
+    }
+
+    @Test
+    void idleRetirementCallbackDoesNotStayArmedAfterPhysicalQuiescence() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var domain = runtime.newSharedDomainArena(1);
+            var control = domain.takeControl();
+            assertTrue(domain.tryRetire(control));
+            Field field = SharedDomainArena.class.getDeclaredField("physicalRetirementArmed");
+            field.setAccessible(true);
+            assertFalse(field.getBoolean(domain),
+                    "immediate idle callback must release its one-shot registration");
+            assertTrue(domain.tryRetire(control));
+            assertTrue(domain.physicallyClosed());
+            assertEquals(0L, runtime.sharedMemoryBytes());
+        }
+    }
+
 }
