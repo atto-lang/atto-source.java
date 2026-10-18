@@ -142,14 +142,17 @@ public final class OresEvalRootNode extends RootNode {
         // Cache only complete root analyses: a recursive seen-set result is
         // path-dependent and must never be published as a declaration result.
         // Identity keys avoid recursively hashing record-based AST bodies.
-        private final Map<Object, Boolean> suspensionResults =
-                java.util.Collections.synchronizedMap(new IdentityHashMap<>());
-        private final Map<Ast.Stmt, Boolean> inlineStatementResults =
-                java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+        // Immutable analyses may be recomputed per carrier. Avoid one global
+        // monitor on every expression/statement evaluated by unrelated actors.
+        private final ThreadLocal<IdentityHashMap<Object, Boolean>> suspensionResults =
+                ThreadLocal.withInitial(IdentityHashMap::new);
+        private final ThreadLocal<IdentityHashMap<Ast.Stmt, Boolean>> inlineStatementResults =
+                ThreadLocal.withInitial(IdentityHashMap::new);
         // Cache immutable declaration metadata only; visibility and live field
         // values are checked on every access. Class identity is not AST equality.
-        private final Map<Ast.ClassDecl, java.util.concurrent.ConcurrentHashMap<String, Optional<OwnedField>>> fieldLookups =
-                java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+        private volatile Map<Ast.ClassDecl, java.util.concurrent.ConcurrentHashMap<String, Optional<OwnedField>>> fieldLookups =
+                java.util.Collections.unmodifiableMap(new IdentityHashMap<>());
+        private final Object fieldLookupPublication = new Object();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
@@ -1403,13 +1406,13 @@ public final class OresEvalRootNode extends RootNode {
         private boolean functionContainsPotentialSuspension(
                 Ast.FunctionDecl function) {
             if (function.suspends()) return true;
-            Boolean cached = suspensionResults.get(function);
+            Boolean cached = suspensionResults.get().get(function);
             if (cached != null) return cached;
             boolean result = functionContainsPotentialSuspension(
                     function,
                     java.util.Collections.newSetFromMap(
                             new IdentityHashMap<>()));
-            suspensionResults.put(function, result);
+            suspensionResults.get().put(function, result);
             return result;
         }
 
@@ -1551,11 +1554,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean cachedExpressionSuspension(Ast.Expr expr) {
-            Boolean cached = suspensionResults.get(expr);
+            Boolean cached = suspensionResults.get().get(expr);
             if (cached != null) return cached;
             boolean result = expressionContainsPotentialSuspension(expr,
                     java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
-            suspensionResults.put(expr, result);
+            suspensionResults.get().put(expr, result);
             return result;
         }
 
@@ -1728,7 +1731,7 @@ public final class OresEvalRootNode extends RootNode {
          * silently change its return value and actor protocol.
          */
         private boolean canExecuteStatementInline(Ast.Stmt stmt) {
-            Boolean cached = inlineStatementResults.get(stmt);
+            Boolean cached = inlineStatementResults.get().get(stmt);
             if (cached != null) return cached;
             // Analyze each immutable statement once, using a fresh recursive
             // seen set. Do not cache path-dependent recursive partial results.
@@ -1736,7 +1739,7 @@ public final class OresEvalRootNode extends RootNode {
                     && !containsSourceLoop(stmt)
                     && !statementContainsPotentialSuspension(stmt,
                             java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
-            inlineStatementResults.put(stmt, inline);
+            inlineStatementResults.get().put(stmt, inline);
             return inline;
         }
 
@@ -4948,10 +4951,10 @@ public final class OresEvalRootNode extends RootNode {
         private boolean methodContainsPotentialSuspension(
                 Ast.MethodDecl method) {
             if (method.suspends()) return true;
-            Boolean cached = suspensionResults.get(method);
+            Boolean cached = suspensionResults.get().get(method);
             if (cached != null) return cached;
             boolean result = analyzeMethodSuspension(method);
-            suspensionResults.put(method, result);
+            suspensionResults.get().put(method, result);
             return result;
         }
 
@@ -7991,9 +7994,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private OwnedField findField(Ast.ClassDecl klass, String name) {
-            java.util.concurrent.ConcurrentHashMap<String, Optional<OwnedField>> fields;
-            synchronized (fieldLookups) {
-                fields = fieldLookups.computeIfAbsent(klass, ignored -> new java.util.concurrent.ConcurrentHashMap<>());
+            java.util.concurrent.ConcurrentHashMap<String, Optional<OwnedField>> fields = fieldLookups.get(klass);
+            if (fields == null) {
+                synchronized (fieldLookupPublication) {
+                    fields = fieldLookups.get(klass);
+                    if (fields == null) {
+                        fields = new java.util.concurrent.ConcurrentHashMap<>();
+                        var published = new IdentityHashMap<>(fieldLookups);
+                        published.put(klass, fields);
+                        fieldLookups = java.util.Collections.unmodifiableMap(published);
+                    }
+                }
             }
             return fields.computeIfAbsent(name, key -> Optional.ofNullable(
                     findField(klass, key, declarationIdentitySet()))).orElse(null);
