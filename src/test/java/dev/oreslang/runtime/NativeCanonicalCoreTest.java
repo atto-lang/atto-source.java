@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import dev.oreslang.stdlib.CoreLibrarySources;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
@@ -22,6 +24,28 @@ final class NativeCanonicalCoreTest {
                 () -> CoreLibrarySources.freestandingCoreSource("core/missing"));
         assertThrows(IllegalArgumentException.class,
                 () -> CoreLibrarySources.freestandingCoreUnitId("core/../numeric"));
+    }
+
+    @Test
+    void hostedCompilerExecutesNumericCoreWithoutJavaSourceInterop() throws Exception {
+        Path entry = temp.resolve("run.ores");
+        Files.writeString(entry, """
+                import module numeric from "core/numeric";
+                pub routine main(): void {
+                    stdio.println(numeric.min_int(9, 4));
+                    stdio.println(numeric.clamp_int(15, 0, 10));
+                    return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        var build = LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), out, err);
+        assertTrue(build.units().containsKey("@core/numeric.ores"));
+        String stdout = out.toString(StandardCharsets.UTF_8);
+        assertTrue(stdout.contains("4"), () -> "stdout=" + stdout
+                + " stderr=" + err.toString(StandardCharsets.UTF_8));
+        assertTrue(stdout.contains("10"), () -> "stdout=" + stdout);
     }
 
     @Test
