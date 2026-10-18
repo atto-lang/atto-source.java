@@ -126,6 +126,11 @@ Runtime counters distinguish at minimum:
 - dropped terminal diagnostics;
 - lifecycle publication/cleanup anomalies.
 
+All monotonic runtime telemetry counters saturate at the largest representable
+host value (Long.MAX_VALUE on Java) instead of wrapping negative. Counter
+exhaustion may lose exact cardinality but must never make the diagnostic API
+invalid, ambiguous, or unavailable during extreme churn.
+
 Diagnostic producers never wait for diagnostic consumers or diagnostic
 producers. Bounded terminal journals and watchdog-notice queues must couple
 capacity admission with payload publication in one failure-atomic critical
