@@ -645,6 +645,41 @@ def git_tree_digest(files):
 
     return digest(root).hex()
 
+def verified_root_tree(repository, tree_sha):
+    """Read back a complete stored root tree; reject truncation and ambiguity.
+
+    GitHub's tree creation acknowledgement alone cannot prove that workflows
+    and non-source files were preserved. Compare the actual stored root entries
+    against the independently read destination baseline before commit/ref.
+    """
+    tree_sha = valid_sha(tree_sha)
+    observed = gh_api(f"repos/{repository}/git/trees/{tree_sha}")
+    entries = observed.get("tree")
+    if (observed.get("sha") != tree_sha
+            or observed.get("truncated") is not False
+            or not isinstance(entries, list)
+            or len(entries) > MAX_DIRECTORY_ENTRIES):
+        raise Denied("destination root tree read-back is missing or truncated")
+    result = {}
+    modes = {
+        "tree": ("040000",),
+        "blob": ("100644", "100755", "120000"),
+        "commit": ("160000",),
+    }
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise Denied("destination root tree read-back contains invalid entries")
+        path, mode, kind = (entry.get("path"), entry.get("mode"),
+                            entry.get("type"))
+        if (not isinstance(path, str) or not path or "/" in path
+                or path in (".", "..") or "\\x00" in path
+                or path in result or kind not in modes
+                or mode not in modes[kind]):
+            raise Denied("destination root tree read-back has ambiguous entries")
+        result[path] = (mode, kind, valid_sha(entry.get("sha")))
+    return result
+
+
 def publish(repository, source, branch, trusted_root, expected_tree=None,
             source_pr=None, source_commit=None, merged_pr=None):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
@@ -698,6 +733,8 @@ def publish(repository, source, branch, trusted_root, expected_tree=None,
     if not isinstance(base_tree_object, dict):
         raise Denied("destination default commit tree is malformed")
     base_tree = valid_sha(base_tree_object.get("sha"))
+    # Read the pinned parent tree before sending a single private source blob.
+    base_root_entries = verified_root_tree(repository, base_tree)
     def authorize_write():
         # Re-check the independently protected policy BEFORE each blob write:
         # revocation after the first upload must stop further orphaned blobs,
@@ -755,6 +792,14 @@ def publish(repository, source, branch, trusted_root, expected_tree=None,
                           {"path": PREFIX, "mode": "040000", "type": "tree",
                            "sha": isolated_sha}]})
     new_tree_sha = valid_sha(new_tree.get("sha"))
+    # Read the actual stored root tree, not just the POST acknowledgement.
+    # No non-source root path (notably .github/workflows) may be added, deleted,
+    # or silently replaced when the isolated source subtree is grafted in.
+    published_root_entries = verified_root_tree(repository, new_tree_sha)
+    expected_root_entries = dict(base_root_entries)
+    expected_root_entries[PREFIX] = ("040000", "tree", isolated_sha)
+    if published_root_entries != expected_root_entries:
+        raise Denied("destination root tree differs from the reviewed base")
     authorize_write()
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
         "message": "ci: source snapshot from approved private Oreslang checkout",
