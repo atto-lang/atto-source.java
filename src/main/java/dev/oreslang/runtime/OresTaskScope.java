@@ -30,6 +30,9 @@ public final class OresTaskScope implements AutoCloseable {
     private final Object gate = new Object();
     private final Set<OresTask<?>> tasks = new HashSet<>();
     private final Set<OresTaskScope> childScopes = new HashSet<>();
+    /** Directed cancellation observers; do not carry lifecycle ownership. */
+    private final List<OresCancellationToken.Registration> externalCancellation =
+            new ArrayList<>();
     private final CountDownLatch fullyJoined = new CountDownLatch(1);
     private boolean cancelled;
     private boolean joining;
@@ -116,6 +119,27 @@ public final class OresTaskScope implements AutoCloseable {
         }
     }
 
+    /**
+     * Request this scope's cancellation when the external token fires.
+     * This is a directed cancellation link, not ownership transfer:
+     * cancelling the scope never cancels the upstream source.
+     * Host/compiler-only; guest actor links require capability checks.
+     */
+    public void cancelWhen(OresCancellationToken token) {
+        Objects.requireNonNull(token, "token");
+        synchronized (gate) {
+            ensureAdmitting();
+        }
+        OresCancellationToken.Registration registration =
+                token.onCancellationRequested(this::cancel);
+        synchronized (gate) {
+            if (cancelled) registration.close();
+            else externalCancellation.add(registration);
+        }
+    }
+
+
+
     private void ensureAdmitting() {
         if (cancelled || runtime.isClosed())
             throw new RejectedExecutionException("TaskScope is cancelled or its runtime is closed");
@@ -151,13 +175,19 @@ public final class OresTaskScope implements AutoCloseable {
             OresTaskScope scope = pending.removeLast();
             final List<OresTaskScope> children;
             final List<OresTask<?>> owned;
+            final List<OresCancellationToken.Registration> inbound;
             synchronized (scope.gate) {
                 if (scope.cancelled) continue;
                 scope.cancelled = true;
                 if (scope == this) wonRoot = true;
                 children = new ArrayList<>(scope.childScopes);
                 owned = new ArrayList<>(scope.tasks);
+                inbound = new ArrayList<>(scope.externalCancellation);
+                scope.externalCancellation.clear();
             }
+            // Sever directed inbound links before delivering host callbacks;
+            // a cancelled scope must not remain retained by its old sources.
+            for (OresCancellationToken.Registration link : inbound) link.close();
             // Iterative traversal avoids recursive stack exhaustion with
             // deeply nested scope trees. Closure of the admission gate is
             // ordered before task revocation and callback delivery.
