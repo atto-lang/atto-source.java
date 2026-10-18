@@ -283,7 +283,7 @@ pub fnc check_fuzz_int_cases(
     return fail("fuzz samples must be between 1 and 4096");
   fi
 
-  let int state = seed % 2147483647;
+  let int state = seed % 2147483646;
   if state < 0; do
     state = 0 - state;
   fi
@@ -302,22 +302,19 @@ pub fnc check_fuzz_int_cases(
     if !outcome.passed; do
       // Try to minimize toward zero. A property must be deterministic and
       // side-effect-free for this shrink to be a useful reproduction.
-      let int smallest = generated;
-      loop {
-        if smallest == 0 {
-          break;
-        } fi
-        let int next = smallest / 2;
-        if next == smallest {
-          break;
-        } fi
-        let TestOutcome smaller = property(next);
-        if smaller.passed {
-          break;
-        } fi
-        smallest = next;
-        outcome = smaller;
-      }
+      // Bounded, deterministic candidate reduction. Integer / would
+      // produce float in Oreslang, so use an integer remainder instead.
+      let int reduced = generated % 10;
+      if reduced != generated; do
+        let TestOutcome smaller = property(reduced);
+        if !smaller.passed; do
+          outcome = smaller;
+        fi
+      fi
+      let TestOutcome zero_case = property(0);
+      if !zero_case.passed; do
+        outcome = zero_case;
+      fi
       if outcome.message == ""; do
         return fail("fuzz property failed: " + property_name);
       fi
