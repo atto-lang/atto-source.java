@@ -892,7 +892,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     api.assert_called_once_with("rate_limit")
 
     def test_core_api_budget_denies_before_creating_git_objects(self):
-        for remaining in (0, 100, 183, 184, 185, 186, None, "15000", True, -1):
+        required = pub.PER_WRITE_ADMISSION_READS + pub.FIXED_API_RESERVE
+        for remaining in (0, 100, required - 4, required - 3, required - 2,
+                          required - 1, None, "15000", True, -1):
             with self.subTest(remaining=remaining):
                 self.route_calls.clear()
                 self.api_core_remaining = remaining
@@ -902,8 +904,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.api_core_remaining = 15000
 
     def test_core_api_budget_at_exact_reserve_allows_synthetic_upload(self):
-        # One source file: 27 * 1 + 160 == 187 API requests reserved.
-        self.api_core_remaining = 187
+        # One text-only source tree reserves exactly one fully reauthorized
+        # write plus the fixed safety budget.
+        self.api_core_remaining = (
+            pub.PER_WRITE_ADMISSION_READS + pub.FIXED_API_RESERVE
+        )
         self.publish()
         self.assertTrue(any(method == "POST" for method, _, _ in self.route_calls))
 
@@ -1745,12 +1750,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(sum(len(batch) for batch in batches), len(files))
         self.assertEqual(sum(text is None for batch in batches
                              for _, _, _, text in batch), 1)
-        self.api_core_remaining = 184
+        required = pub.PER_WRITE_ADMISSION_READS + pub.FIXED_API_RESERVE
+        self.api_core_remaining = required - 1
         with self.assertRaisesRegex(pub.Denied, "insufficient GitHub core API budget"):
             self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
         self.route_calls.clear()
-        self.api_core_remaining = 185
+        self.api_core_remaining = required
         sha, count = self.publish()
         self.assertEqual((sha, count), (C, len(files)))
         uploads = [payload for method, route, payload in self.route_calls
@@ -1766,7 +1772,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         files = pub.collect_source(self.source, self.root)
         planned = pub.prepare_source_tree_batches(files)
         self.assertGreater(len(planned), 1)
-        self.api_core_remaining = 25 * max(1, len(planned) - 1) + 160
+        self.api_core_remaining = (
+            pub.PER_WRITE_ADMISSION_READS * max(1, len(planned) - 1)
+            + pub.FIXED_API_RESERVE
+        )
         partial = []
         original = self.fake_api
 
