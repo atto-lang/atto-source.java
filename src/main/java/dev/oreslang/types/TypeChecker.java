@@ -1245,13 +1245,23 @@ public final class TypeChecker {
         }
 
         for (Ast.FieldDecl field : klass.fields()) {
-            if (klass.actorKind() == Ast.ActorKind.NONE
-                    && field.initializer() != null
+            if (klass.actorKind() != Ast.ActorKind.NONE && field.isStatic()) {
+                throw new IllegalArgumentException(
+                        "actor '" + klass.name() + "' cannot declare static field '"
+                                + field.name()
+                                + "'; actor state and authority must remain actor-owned");
+            }
+            if (field.isStatic() && field.initializer() == null) {
+                throw new IllegalArgumentException(
+                        "static field '" + klass.name() + "." + field.name()
+                                + "' requires an initializer");
+            }
+            if (field.initializer() != null
                     && fieldInitializerMaySuspend(field.initializer())) {
-                throw new IllegalArgumentException("class field initializer '"
-                        + klass.name() + "." + field.name()
-                        + "' cannot await, select, call, or suspend during object construction "
-                        + "without a proven transitive effect bound");
+                throw new IllegalArgumentException(
+                        (field.isStatic() ? "static field initializer '" : "class field initializer '")
+                                + klass.name() + "." + field.name()
+                                + "' cannot await, select, call, or suspend without a proven transitive effect bound");
             }
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
@@ -1264,16 +1274,30 @@ public final class TypeChecker {
                 currentClassOwner = klass;
                 lexicalClassOrigin = klass;
                 try {
-                    Type actual = typeOf(field.initializer(), fieldInitializerEnv, classGenerics, self);
+                    Env initializerEnv = field.isStatic()
+                            ? new Env(null)
+                            : fieldInitializerEnv;
+                    Set<String> fieldGenerics = field.isStatic()
+                            ? Set.of()
+                            : classGenerics;
+                    Type fieldSelf = field.isStatic() ? null : self;
+                    Type actual = typeOf(
+                            field.initializer(), initializerEnv, fieldGenerics, fieldSelf);
                     requireReadonlyCapabilityPreserved(
                             actual,
                             fieldType,
-                            "field initializer " + klass.name() + "." + field.name());
+                            (field.isStatic() ? "static field initializer " : "field initializer ")
+                                    + klass.name() + "." + field.name());
                     requireMutableReferentCompatible(
                             actual,
                             field.mutableReferent(),
-                            "field '" + klass.name() + "." + field.name() + "'");
-                    requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
+                            (field.isStatic() ? "static field '" : "field '")
+                                    + klass.name() + "." + field.name() + "'");
+                    requireAssignable(
+                            actual,
+                            fieldType,
+                            (field.isStatic() ? "static field initializer " : "field initializer ")
+                                    + klass.name() + "." + field.name());
                 } finally {
                     currentClassOwner = previousClassOwner;
                     lexicalClassOrigin = previousLexicalClass;
