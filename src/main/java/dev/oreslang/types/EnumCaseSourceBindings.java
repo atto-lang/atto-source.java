@@ -205,15 +205,31 @@ public final class EnumCaseSourceBindings {
             // the same supposed nominal owner, even if the production checker
             // would later reject that source for a separate reason.
             Set<String> nominalNames = new LinkedHashSet<>();
+            Set<String> enumNames = new LinkedHashSet<>();
+            Set<String> valueNames = new LinkedHashSet<>();
             for (Ast.Decl decl : module.declarations()) {
                 String nominal = null;
-                if (decl instanceof Ast.EnumDecl d) nominal = d.name();
-                else if (decl instanceof Ast.ClassDecl d) nominal = d.name();
+                if (decl instanceof Ast.EnumDecl d) {
+                    nominal = d.name();
+                    enumNames.add(d.name());
+                } else if (decl instanceof Ast.ClassDecl d) nominal = d.name();
                 else if (decl instanceof Ast.InterfaceDecl d) nominal = d.name();
                 else if (decl instanceof Ast.TypeAliasDecl d) nominal = d.name();
+                else if (decl instanceof Ast.FunctionDecl d) valueNames.add(d.name());
+                else if (decl instanceof Ast.FieldDecl d) valueNames.add(d.name());
                 if (nominal != null && !nominalNames.add(nominal)) {
                     throw new IllegalArgumentException(
                             "duplicate/ambiguous nominal name in module: " + nominal);
+                }
+            }
+            for (String enumName : enumNames) {
+                // In a module, the lexical enum namespace cannot be silently
+                // replaced by an ordinary function or module binding.
+                // This host-only proof has no scope resolver, so deny the
+                // ambiguous spelling instead of inventing enum provenance.
+                if (valueNames.contains(enumName)) {
+                    throw new IllegalArgumentException(
+                            "enum value namespace shadowed in module: " + enumName);
                 }
             }
             for (Ast.Decl decl : module.declarations()) {
