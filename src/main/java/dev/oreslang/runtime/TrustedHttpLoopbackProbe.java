@@ -73,8 +73,15 @@ final class TrustedHttpLoopbackProbe implements AutoCloseable {
             // the returned dependent future cannot refund an active request.
             CompletableFuture<HttpResponse<Void>> host =
                     client.sendAsync(request, HttpResponse.BodyHandlers.discarding());
-            host.whenComplete((result, error) -> lease.close());
-            return host.thenApply(HttpResponse::statusCode);
+            // An isolated caller future must not own or cancel the host I/O.
+            // The host completion alone releases the in-flight permit.
+            CompletableFuture<Integer> caller = new CompletableFuture<>();
+            host.whenComplete((result, failure) -> {
+                lease.close();
+                if (failure != null) caller.completeExceptionally(failure);
+                else caller.complete(result.statusCode());
+            });
+            return caller;
         } catch (RuntimeException | Error failure) {
             lease.close();
             throw failure;
