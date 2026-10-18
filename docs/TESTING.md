@@ -93,6 +93,11 @@ deterministic guest scheduler:
 - `--fuzz` performs seeded repeated schedule-perturbation runs and passes
   `ORES_TEST_SEED` to the guest program environment for tests that explicitly
   use it. The host does not yet generate or shrink arbitrary guest input data.
+  Separately, native `stdlib/testing.ores` now provides
+  `check_fuzz_int_cases(name, seed, samples, property)`: bounded deterministic
+  integer generation (up to 4096 samples), with simple integer-only shrinking
+  candidates. See `examples/native-fuzz-testing.ores`. The guest property must
+  be deterministic/pure for replay and shrinking to be meaningful.
 - `--replay` verifies the sequence of checkpoint kinds and replays recorded
   *choices*. It fails closed on extra/missing/mismatched checkpoints, but does
   not promise bit-for-bit physical thread scheduling.
