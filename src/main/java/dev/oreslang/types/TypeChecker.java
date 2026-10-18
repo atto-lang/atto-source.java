@@ -1813,6 +1813,27 @@ public final class TypeChecker {
         return env;
     }
 
+    /**
+     * A module is a static namespace, never a guest value. Only explicit
+     * member receivers are allowed to use the compile-time shape needed for
+     * static lookup. The regular expression path rejects bare namespaces.
+     */
+    private Type typeOfStaticNamespaceReceiver(
+            Ast.Expr receiver, Env env, Set<String> generics, Type self) {
+        if (receiver instanceof Ast.NameExpr name && env.lookup(name.name()) == null) {
+            Ast.ModuleDecl module = modules.get(name.name());
+            if (module != null) {
+                rejectUnimportedModuleNamespace(name.name());
+                ModuleNamespace namespace = new ModuleNamespace(module.name());
+                return moduleShape(modules.get(namespace.moduleName()));
+            }
+            if (importedModuleNamespaces.contains(name.name())) {
+                return Unknown.INSTANCE; // linked module members are checked at link time
+            }
+        }
+        return typeOf(receiver, env, generics, self);
+    }
+
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
