@@ -221,7 +221,11 @@ public final class PostgresDurableWorkflowGate {
             }
             try(PreparedStatement p=c.prepareStatement(
                 "UPDATE ores_durable_outbox SET claim_token=?,claim_epoch=?,"+
-                "claim_until=clock_timestamp()+interval '60 seconds',"+
+                "claim_until=LEAST(clock_timestamp()+interval '60 seconds',"+
+                "(SELECT lease_until FROM ores_durable_actor a WHERE "+
+                "a.tenant_id=ores_durable_outbox.tenant_id AND "+
+                "a.workflow_id=ores_durable_outbox.workflow_id AND "+
+                "a.run_id=ores_durable_outbox.run_id AND a.node_id=ores_durable_outbox.node_id)),"+
                 "attempt_count=attempt_count+1 WHERE "+KEY+" AND intent_id=? AND receipt_id IS NULL")){
                 p.setObject(1,claimToken);p.setLong(2,epoch);key(p,3,a);p.setString(7,intent);
                 if(p.executeUpdate()!=1)throw new IllegalStateException("claim raced with receipt");
