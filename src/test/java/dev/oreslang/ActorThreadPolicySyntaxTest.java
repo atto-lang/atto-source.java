@@ -199,10 +199,10 @@ final class ActorThreadPolicySyntaxTest {
         // A correctly placed numeric separator is allowed even though
         // actor execution admission still limits the numeric range to 1..3.
         assertEquals(new Ast.ActorThreadPolicy(1, 1),
-                actor(Parser.parse("define actor Worker with threads(min: 0_1, max: 1) as end"))
+                actor("define actor Worker with threads(min: 0_1, max: 1) as end")
                         .actorThreads());
         assertEquals(new Ast.ActorThreadPolicy(1, 1),
-                actor(Parser.parse("@ActorThreads(min = 0_1, max = 1) define actor Worker as end"))
+                actor("@ActorThreads(min = 0_1, max = 1) define actor Worker as end")
                         .actorThreads());
     }
 
