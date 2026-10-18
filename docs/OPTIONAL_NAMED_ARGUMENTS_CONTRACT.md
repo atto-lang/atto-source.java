@@ -478,3 +478,27 @@ calls, omission origins, required-vs-optional `Option<T>`, exact `Some`
 lifting, immutable results, forged-plan rejection, and unsafe/unproved
 types. **These are committed JUnit tests, not green executed JUnit evidence.**
 Full compiler/type/ownership/runtime integration remains the next gate.
+
+## Compiler-only invocation-order preview (Java PR #1335)
+
+`OptionalCallAbiPreview.prepareStagedCallExact` and
+`prepareStagedConstructionExact` produce factory-owned *non-executable*
+`InvocationPreview` descriptions. Ordinary function/method calls contain the
+original callee AST expression as the **first** evaluation step; the callee
+expression includes any receiver evaluation. Every supplied call-item value
+then appears **exactly once in lexical source order**. An explicit `_` or
+`omit` contributes no evaluation step. Class constructors and actor spawns
+have no guest callee-expression step, and retain separate target kinds for
+future ownership/capability checks. Formal ABI slots are separately ordered
+by declaration, not by evaluation order.
+
+These factories rebuild the binding plan from the exact staged AST rather
+than trusting an externally supplied call-item list. A top-level
+`Ast.LiteralExpr(null)` is rejected even when its claimed type is forged.
+Rest/spread packing, explicit generic call type application and generic or
+borrowed construction targets remain rejected in these narrow previews.
+The independent selected owner, visibility, resolution, subtype/coercion,
+loan/move/effect checks, constructor self rules and executable Option ABI
+are **not proven by a preview**. The compiler, ownership checker and
+interpreter continue rejecting staged guest calls and `T?` formals;
+this is not a green Java, GraalVM or LLVM runtime feature.

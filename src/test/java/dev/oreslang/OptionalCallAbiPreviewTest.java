@@ -201,4 +201,99 @@ final class OptionalCallAbiPreviewTest {
                 () -> OptionalCallAbiPreview.prepareExact(
                         List.of(new Ast.Param(INT, "values")), restSource, restPlan, List.of(INT)));
     }
+
+    @Test
+    void stagedCallPreviewEvaluatesCalleeBeforeNamedSourceOrder() {
+        Ast.Expr receiver = new Ast.CallExpr(new Ast.NameExpr("getReceiver"), List.of());
+        Ast.Expr callee = new Ast.MemberExpr(receiver, "work");
+        Ast.Expr c = new Ast.CallExpr(new Ast.NameExpr("effectC"), List.of());
+        Ast.Expr a = new Ast.CallExpr(new Ast.NameExpr("effectA"), List.of());
+        Ast.StagedCallExpr call = new Ast.StagedCallExpr(callee, List.of(), false, List.of(
+                Ast.CallArgument.named("c", c),
+                Ast.CallArgument.omit("b"),
+                Ast.CallArgument.named("a", a)));
+        var preview = OptionalCallAbiPreview.prepareStagedCallExact(
+                call, formals(), List.of(BOOL, INT));
+        assertEquals(OptionalCallAbiPreview.InvocationKind.CALL, preview.kind());
+        assertSame(callee, preview.calleeExpression());
+        assertNull(preview.constructedType());
+        assertEquals(3, preview.evaluationOrder().size());
+        assertSame(callee, preview.evaluationOrder().get(0));
+        assertSame(c, preview.evaluationOrder().get(1));
+        assertSame(a, preview.evaluationOrder().get(2));
+        assertEquals(3, preview.arguments().fullArity());
+        assertEquals(List.of(2, 1, 0),
+                preview.arguments().abiSlots().stream()
+                        .map(OptionalCallAbiPreview.Slot::originalCallItemIndex).toList());
+        assertThrows(UnsupportedOperationException.class,
+                () -> preview.evaluationOrder().clear());
+    }
+
+    @Test
+    void stagedConstructionAndActorSpawnHaveNoGuestCalleeButRetainSourceOrder() {
+        Ast.Expr c = new Ast.NameExpr("third");
+        Ast.Expr a = new Ast.NameExpr("first");
+        List<Ast.CallArgument> source = List.of(
+                Ast.CallArgument.named("c", c),
+                Ast.CallArgument.omit("b"),
+                Ast.CallArgument.named("a", a));
+        for (boolean actor : List.of(false, true)) {
+            Ast.StagedNewExpr construction =
+                    new Ast.StagedNewExpr(Ast.TypeRef.simple("Worker"), source, actor);
+            var preview = OptionalCallAbiPreview.prepareStagedConstructionExact(
+                    construction, formals(), List.of(BOOL, INT));
+            assertEquals(actor ? OptionalCallAbiPreview.InvocationKind.ACTOR_SPAWN
+                               : OptionalCallAbiPreview.InvocationKind.CLASS_CONSTRUCTOR,
+                    preview.kind());
+            assertNull(preview.calleeExpression());
+            assertEquals(construction.type(), preview.constructedType());
+            assertEquals(2, preview.evaluationOrder().size());
+            assertSame(c, preview.evaluationOrder().get(0));
+            assertSame(a, preview.evaluationOrder().get(1));
+            assertEquals(3, preview.arguments().fullArity());
+        }
+    }
+
+    @Test
+    void stagedInvocationPreviewFailsClosedOnUnprovenGenericAndSpread() {
+        List<Ast.CallArgument> arguments = List.of(
+                Ast.CallArgument.named("a", new Ast.LiteralExpr(1L)),
+                Ast.CallArgument.named("c", new Ast.LiteralExpr(true)));
+        var genericCall = new Ast.StagedCallExpr(new Ast.NameExpr("f"),
+                List.of(INT), true, arguments);
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallAbiPreview.prepareStagedCallExact(
+                        genericCall, formals(), List.of(INT, BOOL)));
+        var genericConstruction = new Ast.StagedNewExpr(
+                new Ast.TypeRef("Box", List.of(INT), false), arguments, false);
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallAbiPreview.prepareStagedConstructionExact(
+                        genericConstruction, formals(), List.of(INT, BOOL)));
+
+        var spreadCall = new Ast.StagedCallExpr(new Ast.NameExpr("f"),
+                List.of(), false, List.of(
+                        Ast.CallArgument.spread(new Ast.NameExpr("values")),
+                        Ast.CallArgument.named("c", new Ast.LiteralExpr(true))));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallAbiPreview.prepareStagedCallExact(
+                        spreadCall, formals(), List.of(INT, BOOL)));
+    }
+
+    @Test
+    void literalNullCannotBeLaunderedByClaimedCheckedType() {
+        List<Ast.Param> required = List.of(new Ast.Param(INT, "a"));
+        List<Ast.CallArgument> items = List.of(
+                Ast.CallArgument.named("a", new Ast.LiteralExpr(null)));
+        var plan = OptionalCallShapeBinder.bindParsed(
+                OptionalCallShapeBinder.declaredParameterShapes(required), items);
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallAbiPreview.prepareExact(
+                        required, items, plan, List.of(INT)));
+        var staged = new Ast.StagedCallExpr(
+                new Ast.NameExpr("f"), List.of(), false, items);
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallAbiPreview.prepareStagedCallExact(
+                        staged, required, List.of(INT)));
+    }
+
 }

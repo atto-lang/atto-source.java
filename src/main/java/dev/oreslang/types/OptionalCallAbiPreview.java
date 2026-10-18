@@ -140,6 +140,16 @@ public final class OptionalCallAbiPreview {
             requireExactConcreteType(supplied);
         }
 
+        // A null LiteralExpr cannot become Some(null) merely because a caller
+        // supplied a forged claimed type. Real calls must still be checked by
+        // the independent type checker; this is an extra AST-level safeguard.
+        for (Ast.Expr expression : expressions) {
+            if (expression instanceof Ast.LiteralExpr literal && literal.value() == null) {
+                throw new IllegalArgumentException(
+                        "null literal cannot be used as a supplied optional/required value");
+            }
+        }
+
         Map<Integer, Integer> explicitOrigins = new HashMap<>();
         for (OptionalCallShapeBinder.OmittedCallItem omitted :
                 selectedPlan.omittedCallItemBindings()) {
@@ -186,6 +196,110 @@ public final class OptionalCallAbiPreview {
             slots.add(new Slot(i, formal.name(), abiType, action, sourceIndex, originalItem));
         }
         return new Preview(expressions, slots);
+    }
+
+
+    /**
+     * Non-executable call-target ordering. Ordinary calls evaluate the callee
+     * (including a method receiver) before any supplied argument. Constructors
+     * and actor spawns have no guest callee expression to evaluate. The
+     * compiler must still prove the selected owner, generics, effects and
+     * ownership before translating this recipe into executable IR.
+     */
+    public enum InvocationKind { CALL, CLASS_CONSTRUCTOR, ACTOR_SPAWN }
+
+    /**
+     * Factory-owned immutable recipe: target expression first when present,
+     * then supplied argument expressions in their original lexical order.
+     * Formal/ABI reordering occurs only through the separate slot table.
+     * This is not a runtime instruction stream or authorization to execute.
+     */
+    public static final class InvocationPreview {
+        private final InvocationKind kind;
+        private final Ast.Expr calleeExpression;
+        private final Ast.TypeRef constructedType;
+        private final Preview arguments;
+        private final List<Ast.Expr> evaluationOrder;
+
+        private InvocationPreview(InvocationKind kind, Ast.Expr calleeExpression,
+                                  Ast.TypeRef constructedType, Preview arguments) {
+            this.kind = Objects.requireNonNull(kind, "invocation kind");
+            this.arguments = Objects.requireNonNull(arguments, "argument preview");
+            if (kind == InvocationKind.CALL) {
+                this.calleeExpression = Objects.requireNonNull(calleeExpression, "call callee");
+                if (constructedType != null) {
+                    throw new IllegalArgumentException("ordinary call cannot have constructor type");
+                }
+                this.constructedType = null;
+            } else {
+                if (calleeExpression != null) {
+                    throw new IllegalArgumentException("constructor/actor spawn cannot have a call callee");
+                }
+                this.calleeExpression = null;
+                this.constructedType = Objects.requireNonNull(constructedType, "constructed type");
+            }
+            List<Ast.Expr> ordered = new ArrayList<>(
+                    arguments.sourceExpressions().size() + (calleeExpression == null ? 0 : 1));
+            if (calleeExpression != null) ordered.add(calleeExpression);
+            ordered.addAll(arguments.sourceExpressions());
+            this.evaluationOrder = List.copyOf(ordered);
+        }
+
+        public InvocationKind kind() { return kind; }
+        /** Nullable only for class construction or actor spawning. */
+        public Ast.Expr calleeExpression() { return calleeExpression; }
+        /** Nullable only for an ordinary call. */
+        public Ast.TypeRef constructedType() { return constructedType; }
+        public Preview arguments() { return arguments; }
+        public List<Ast.Expr> evaluationOrder() { return evaluationOrder; }
+    }
+
+    /**
+     * Bind a staged ordinary call directly from its AST, not an independently
+     * supplied source-item list. Explicit generic application is gated here:
+     * substituted type parameters have not been proven by this preview.
+     */
+    public static InvocationPreview prepareStagedCallExact(
+            Ast.StagedCallExpr call, List<Ast.Param> selectedFormals,
+            List<Ast.TypeRef> checkedSourceTypes) {
+        Objects.requireNonNull(call, "staged call");
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    "explicit generic call instantiation requires separate type substitution proof");
+        }
+        List<OptionalCallShapeBinder.Parameter> shapes =
+                OptionalCallShapeBinder.declaredParameterShapes(selectedFormals);
+        OptionalCallShapeBinder.Plan plan =
+                OptionalCallShapeBinder.bindParsed(shapes, call.arguments());
+        Preview arguments = prepareExact(
+                selectedFormals, call.arguments(), plan, checkedSourceTypes);
+        return new InvocationPreview(InvocationKind.CALL, call.callee(), null, arguments);
+    }
+
+    /**
+     * Class constructors and actor spawns share fixed-slot source ordering,
+     * but preserve distinct target kinds for future ownership/capability
+     * checks. Generic constructor instantiation and rest packs remain gated.
+     */
+    public static InvocationPreview prepareStagedConstructionExact(
+            Ast.StagedNewExpr construction, List<Ast.Param> selectedFormals,
+            List<Ast.TypeRef> checkedSourceTypes) {
+        Objects.requireNonNull(construction, "staged construction");
+        Ast.TypeRef type = construction.type();
+        if (type.inferArguments() || !type.arguments().isEmpty() || type.isBorrow()) {
+            throw new IllegalArgumentException(
+                    "generic or borrowed construction requires separate target type proof");
+        }
+        List<OptionalCallShapeBinder.Parameter> shapes =
+                OptionalCallShapeBinder.declaredParameterShapes(selectedFormals);
+        OptionalCallShapeBinder.Plan plan =
+                OptionalCallShapeBinder.bindParsed(shapes, construction.arguments());
+        Preview arguments = prepareExact(
+                selectedFormals, construction.arguments(), plan, checkedSourceTypes);
+        return new InvocationPreview(
+                construction.actorSpawn() ? InvocationKind.ACTOR_SPAWN
+                                          : InvocationKind.CLASS_CONSTRUCTOR,
+                null, type, arguments);
     }
 
     private static void requireExactConcreteType(Ast.TypeRef type) {
