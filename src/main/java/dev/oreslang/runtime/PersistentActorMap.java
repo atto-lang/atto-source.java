@@ -82,37 +82,43 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
     }
 
     /**
-     * A nested persistent map can have thousands of levels even though a
-     * *single* HAMT lookup is bounded. AbstractMap.equals/hashCode recurse
-     * through values and overflow the host call stack. Compare nested roots
-     * iteratively; preserve AbstractMap semantics for arbitrary other Maps.
+     * A persistent root compared with any Map must use an explicit work queue:
+     * delegating to AbstractMap.equals when the other map is ordinary Map.of
+     * still recurses once per nested PersistentActorMap and can overflow.
+     * Map's size/key/value contract is preserved for non-HAMT maps as well.
      */
-    private record EqualityPair(PersistentActorMap left, PersistentActorMap right) { }
+    private record EqualityPair(PersistentActorMap left, Map<?, ?> right) { }
 
     @Override
     public boolean equals(Object other) {
         if (other == this) return true;
-        if (!(other instanceof PersistentActorMap that)) return super.equals(other);
+        if (!(other instanceof Map<?, ?> that)) return false;
         var pending = new ArrayDeque<EqualityPair>();
         var visited = new IdentityHashMap<PersistentActorMap,
-                IdentityHashMap<PersistentActorMap, Boolean>>();
+                IdentityHashMap<Map<?, ?>, Boolean>>();
         pending.push(new EqualityPair(this, that));
         while (!pending.isEmpty()) {
             EqualityPair pair = pending.pop();
             if (pair.left == pair.right) continue;
             var matches = visited.computeIfAbsent(pair.left, ignored -> new IdentityHashMap<>());
             if (matches.put(pair.right, Boolean.TRUE) != null) continue;
-            if (pair.left.size() != pair.right.size()) return false;
-            for (Map.Entry<String, Object> entry : pair.left.entrySet()) {
-                Object rightValue = pair.right.get(entry.getKey());
-                if (rightValue == null) return false; // Null values cannot be stored.
-                Object leftValue = entry.getValue();
-                if (leftValue instanceof PersistentActorMap leftMap
-                        && rightValue instanceof PersistentActorMap rightMap) {
-                    pending.push(new EqualityPair(leftMap, rightMap));
-                } else if (!Objects.equals(leftValue, rightValue)) {
-                    return false;
+            try {
+                if (pair.left.size() != pair.right.size()) return false;
+                for (Map.Entry<String, Object> entry : pair.left.entrySet()) {
+                    Object rightValue = pair.right.get(entry.getKey());
+                    if (rightValue == null) return false; // Null values cannot be stored.
+                    Object leftValue = entry.getValue();
+                    if (leftValue instanceof PersistentActorMap leftMap
+                            && rightValue instanceof Map<?, ?> rightMap) {
+                        pending.push(new EqualityPair(leftMap, rightMap));
+                    } else if (!Objects.equals(leftValue, rightValue)) {
+                        return false;
+                    }
                 }
+            } catch (ClassCastException | NullPointerException ex) {
+                // Matches AbstractMap.equals for foreign Maps with restrictive
+                // or null-intolerant key lookup implementations.
+                return false;
             }
         }
         return true;
