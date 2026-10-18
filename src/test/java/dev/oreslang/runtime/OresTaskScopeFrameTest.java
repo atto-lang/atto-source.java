@@ -208,4 +208,69 @@ final class OresTaskScopeFrameTest {
             assertTrue(outer.isQuiescent());
         }
     }
+
+    @Test
+    void generationLeaseRemainsPinnedUntilPhysicalTaskTurnExits() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch permitExit = new CountDownLatch(1);
+            AtomicInteger generationPins = new AtomicInteger(1);
+            AtomicInteger releaseCallbacks = new AtomicInteger();
+            OresTask<Integer> child = scope.startCompilerFrame(
+                    scheduler,
+                    resume -> {
+                        entered.countDown();
+                        assertTrue(permitExit.await(3, TimeUnit.SECONDS));
+                        return new OresScheduler.Done<>(11);
+                    },
+                    () -> {
+                        assertEquals(1, generationPins.getAndDecrement(),
+                                "the generation image must still be pinned at physical exit");
+                        releaseCallbacks.incrementAndGet();
+                    });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            try {
+                assertTrue(child.cancel());
+                assertTrue(child.isCancelled());
+                assertEquals(1, generationPins.get(),
+                        "result cancellation must not release executing code");
+                assertFalse(child.isQuiescent());
+            } finally {
+                permitExit.countDown();
+            }
+            assertNull(AsyncRuntime.await(child.getDone()));
+            assertEquals(0, generationPins.get());
+            assertEquals(1, releaseCallbacks.get());
+        }
+    }
+
+    @Test
+    void generationReleaseFailurePropagatesAndCannotBeHiddenByTaskScope() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1)) {
+            OresTaskScope scope = new OresTaskScope(runtime);
+            AtomicInteger pinnedGeneration = new AtomicInteger(1);
+            AtomicInteger callbacks = new AtomicInteger();
+            OresTask<Integer> child = scope.startCompilerFrame(
+                    scheduler,
+                    resume -> new OresScheduler.Done<>(7),
+                    () -> {
+                        callbacks.incrementAndGet();
+                        throw new IllegalStateException("fault-injected generation release");
+                    });
+            assertEquals(7, AsyncRuntime.await(child.getAwaited()));
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> AsyncRuntime.await(child.getDone()));
+            assertTrue(failure.toString().contains("release"), failure::toString);
+            RuntimeException closure = assertThrows(RuntimeException.class, scope::close);
+            assertTrue(closure.toString().contains("retirement failed"),
+                    closure::toString);
+            assertEquals(1, pinnedGeneration.get(),
+                    "failed external release may never be mistaken for pin retirement");
+            assertEquals(1, callbacks.get(),
+                    "code-image release must not run twice on scope shutdown");
+        }
+    }
 }
