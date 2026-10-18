@@ -1,5 +1,7 @@
 package dev.oreslang.types;
 
+import java.nio.charset.StandardCharsets;
+import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -85,6 +87,29 @@ public final class EnumCaseOverloadPolicy {
         }
 
         public int arity() { return params.size(); }
+
+        /**
+         * Injective, deterministic compiler/linker slot identity.
+         * Enums are keyed by resolved declarations and CASE symbols, never
+         * source spellings from guest values or on-wire numeric tags.
+         */
+        public String symbolId() {
+            StringBuilder out = new StringBuilder("eos2");
+            encode(out, domain.name());
+            encode(out, owner);
+            encode(out, name);
+            out.append('a').append(arity()).append('_');
+            for (Parameter parameter : params) {
+                out.append(switch (parameter.kind()) {
+                    case FIXED -> 'F';
+                    case ENUM -> 'E';
+                    case CASE -> 'C';
+                });
+                encode(out, parameter.identity());
+                if (parameter.kind() == Kind.CASE) encode(out, parameter.caseName());
+            }
+            return out.toString();
+        }
     }
 
     /**
@@ -223,6 +248,11 @@ public final class EnumCaseOverloadPolicy {
         if (param.kind() == Kind.CASE && !declaration.cases().contains(param.caseName())) {
             throw new IllegalArgumentException("unknown case for resolved enum declaration");
         }
+    }
+
+    private static void encode(StringBuilder out, String value) {
+        byte[] utf8 = value.getBytes(StandardCharsets.UTF_8);
+        out.append(utf8.length).append('_').append(HexFormat.of().formatHex(utf8));
     }
 
     private static void qualified(String id) {
