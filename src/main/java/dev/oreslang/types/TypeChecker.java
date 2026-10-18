@@ -667,7 +667,12 @@ public final class TypeChecker {
         currentGenerator = fn.generator();
         currentAsyncCallable = fn.async();
         boolean previousMaySuspend = currentMaySuspend;
-        currentMaySuspend = fn.async() || fn.suspends();
+        // The module's root main runs inside a VM-owned root Task, and
+        // remains an intentional compatibility boundary for existing source
+        // programs that await without an explicit suspends modifier.
+        // Other ordinary callables must declare the effect themselves.
+        currentMaySuspend = fn.async() || fn.suspends()
+                || (fn.name().equals("main") && fn.parameters().isEmpty());
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
@@ -1457,6 +1462,8 @@ public final class TypeChecker {
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
+            boolean previousAsyncCallable = currentAsyncCallable;
+            currentAsyncCallable = method.async();
             currentMaySuspend = method.async() || method.suspends();
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
@@ -1465,6 +1472,7 @@ public final class TypeChecker {
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
                 currentMaySuspend = previousMaySuspend;
+                currentAsyncCallable = previousAsyncCallable;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -2057,6 +2065,9 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.SuspendsLambdaExpr) {
+            throw new IllegalArgumentException("suspends lambda requires suspension-effect callable typing and continuation lowering; this callable does not create a Task or Future");
+        }
         if (expr instanceof Ast.TaskLambdaExpr) {
             throw new IllegalArgumentException("async task lambda requires Task<T> return inference, owned argument captures, and scheduled continuation lowering; executable source is not enabled");
         }
@@ -3675,6 +3686,10 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            if (!currentMaySuspend) {
+                throw new IllegalArgumentException(
+                        "await requires an async or suspends caller (or the VM-owned root main); a plain synchronous lambda cannot inherit the suspension effect");
+            }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named task
                     && task.name().equals("Task")
@@ -3902,8 +3917,16 @@ public final class TypeChecker {
             defineImplicitArguments(lambdaEnv, parameters);
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+            boolean previousMaySuspend = currentMaySuspend;
+            boolean previousAsyncCallable = currentAsyncCallable;
             Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
+            // Plain lambdas execute synchronously within their caller. Never
+            // allow one to borrow a suspends/async declaration's effect.
+            // Explicit suspends lambdas will retain a distinct effect type
+            // once their lowering is implemented.
+            currentMaySuspend = false;
+            currentAsyncCallable = false;
             // A lambda checked within a constructor runs on invocation, not
             // necessarily during initialization. It must never inherit the
             // constructor's one-time fixed-field initialization privilege.
@@ -3923,6 +3946,8 @@ public final class TypeChecker {
                 env.restoreInitialization(outerInitialization);
                 currentClassOwner = previousClassOwner;
                 currentConstructorOwner = previousConstructorOwner;
+                currentMaySuspend = previousMaySuspend;
+                currentAsyncCallable = previousAsyncCallable;
             }
             return new Function(parameters, result);
         }
