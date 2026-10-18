@@ -207,10 +207,13 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
     private static void runContained(Runnable command) {
         try {
             command.run();
-        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
-            throw fatal;
         } catch (RuntimeException | AssertionError failure) {
             dispatchUncaught(failure);
+        } catch (Error fatal) {
+            // All non-AssertionError Error subclasses remain fail-fast,
+            // including VM/thread/linkage failures, without depending on the
+            // JDK-25-for-removal ThreadDeath type.
+            throw fatal;
         }
     }
 
