@@ -77,6 +77,12 @@ It uses `pipefail` so `tee` never converts a Maven failure into a pass.
 Checking only `git status` is insufficient: Git may deliberately hide
 modified tracked bytes behind those index flags while HEAD/tree SHA remain
 unchanged. Both flags are rejected on preflight and postflight.
+A local `core.fileMode=false` Git setting can similarly conceal a changed tracked
+executable bit while the commit/tree IDs stay fixed. The gate overrides the
+checkout configuration with `core.fileMode=true` and disables filesystem
+monitor caching during both identity checks. A source-free regression
+reproduced the original false-positive PASS, and the hardened script now
+rejects the same attack with exit 67 before Maven or exit 70 after Maven.
 
 **Clean-build fence:** Even an otherwise clean Git checkout may contain ignored
 `target/` compiler outputs. After checking source identity and JDK 25, the
@@ -115,8 +121,9 @@ python3 scripts/test-nio-exact-tree-source-local-selftest.py
 
 The regressions cover wrong commit/tree, hidden tracked source changes using
 `git update-index --assume-unchanged` and `--skip-worktree`, skipped-clean
-stale classes, symlinked evidence paths, toolchain mismatch, interrupted Maven
-phases and the successful optional native-image invocation. The gate refuses
+stale classes, symlinked evidence paths, locally disabled Git file-mode
+tracking, toolchain mismatch, interrupted Maven phases and the successful
+optional native-image invocation. The gate refuses
 these unsafe cases before it can claim a JUnit or exact-tree test result.
 
 ## Evidence, trust boundary and interpretation
