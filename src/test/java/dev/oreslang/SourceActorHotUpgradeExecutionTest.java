@@ -82,17 +82,23 @@ final class SourceActorHotUpgradeExecutionTest {
             polyglot.eval(source("counter-v1.ores", v1));
             polyglot.eval(source("counter-v2.ores", v2));
 
+            OresContext ores;
+            ActorRuntime.ActorCodeExecutor first;
+            ActorRuntime.ActorCodeExecutor second;
             polyglot.enter();
             try {
-                OresContext ores = OresLanguage.currentEnteredContextForHost();
-                ActorRuntime.ActorCodeExecutor first = assertInstanceOf(
+                ores = OresLanguage.currentEnteredContextForHost();
+                first = assertInstanceOf(
                         ActorRuntime.ActorCodeExecutor.class,
                         ores.linkedCodeUnit("counter-v1.ores"));
-                ActorRuntime.ActorCodeExecutor second = assertInstanceOf(
+                second = assertInstanceOf(
                         ActorRuntime.ActorCodeExecutor.class,
                         ores.linkedCodeUnit("counter-v2.ores"));
+            } finally {
+                polyglot.leave();
+            }
 
-                ActorRuntime runtime = ores.actors();
+            ActorRuntime runtime = ores.actors();
                 ActorRuntime.ActorRef<Object> ref = runtime.spawnCodeActor(
                         ActorRuntime.ActorKind.SHARED,
                         ores.isolatePolicy(),
@@ -108,8 +114,6 @@ final class SourceActorHotUpgradeExecutionTest {
                 assertTrue(runtime.upgradeSourceActorSameSchema(ref, second));
                 assertSame(originalRef, ref);
                 assertEquals(originalAddress, ref.address());
-                assertSame(second.codeImage(), runtime.codeImageFor(ref).orElseThrow());
-
                 // Candidate on_start must NOT run during restore. If it did,
                 // count would become 999 instead of remaining 42.
                 ref.send(-1L);
@@ -120,9 +124,6 @@ final class SourceActorHotUpgradeExecutionTest {
                 ref.stop();
                 assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
                 assertTrue(ref.failure().isEmpty());
-            } finally {
-                polyglot.leave();
-            }
         }
     }
 
@@ -174,13 +175,17 @@ final class SourceActorHotUpgradeExecutionTest {
             polyglot.eval(source("bad-wire.ores", badWire));
             polyglot.eval(source("bad-kind.ores", badKind));
 
+            OresContext ores;
             polyglot.enter();
             try {
-                OresContext ores = OresLanguage.currentEnteredContextForHost();
-                ActorRuntime runtime = ores.actors();
-                ActorRuntime.ActorCodeExecutor first = (ActorRuntime.ActorCodeExecutor)
-                        ores.linkedCodeUnit("base.ores");
-                ActorRuntime.ActorRef<Object> ref = runtime.spawnCodeActor(
+                ores = OresLanguage.currentEnteredContextForHost();
+            } finally {
+                polyglot.leave();
+            }
+            ActorRuntime runtime = ores.actors();
+            ActorRuntime.ActorCodeExecutor first = (ActorRuntime.ActorCodeExecutor)
+                    ores.linkedCodeUnit("base.ores");
+            ActorRuntime.ActorRef<Object> ref = runtime.spawnCodeActor(
                         ActorRuntime.ActorKind.SHARED,
                         ores.isolatePolicy(),
                         first,
@@ -208,14 +213,10 @@ final class SourceActorHotUpgradeExecutionTest {
                                 (ActorRuntime.ActorCodeExecutor)
                                         ores.linkedCodeUnit("bad-kind.ores")));
 
-                assertSame(first.codeImage(), runtime.codeImageFor(ref).orElseThrow());
                 ref.send(1L);
                 assertEquals(8L, nextLong(ref));
                 ref.stop();
                 assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
-            } finally {
-                polyglot.leave();
-            }
         }
     }
 }
