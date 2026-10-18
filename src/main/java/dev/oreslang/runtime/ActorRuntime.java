@@ -348,6 +348,10 @@ public final class ActorRuntime implements AutoCloseable {
             DispatcherPressure untrustedDomain,
             int lifecycleObserverCarriers,
             int lifecycleObserverBacklog,
+            int terminalJournalBacklog,
+            int terminalJournalCapacity,
+            int watchdogNoticeBacklog,
+            int watchdogNoticeCapacity,
             int liveActors,
             int reservedActorSlots) {
         public ActorSchedulerSnapshot {
@@ -356,8 +360,11 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(sharedDomain, "sharedDomain");
             Objects.requireNonNull(untrustedDomain, "untrustedDomain");
             if (lifecycleObserverCarriers < 0 || lifecycleObserverBacklog < 0
-                    || liveActors < 0 || reservedActorSlots < 0
-                    || liveActors > reservedActorSlots) {
+                    || terminalJournalBacklog < 0 || terminalJournalCapacity < 0
+                    || terminalJournalBacklog > terminalJournalCapacity
+                    || watchdogNoticeBacklog < 0 || watchdogNoticeCapacity < 0
+                    || watchdogNoticeBacklog > watchdogNoticeCapacity
+                    || liveActors < 0 || reservedActorSlots < 0) {
                 throw new IllegalArgumentException("invalid actor scheduler snapshot");
             }
         }
@@ -1148,6 +1155,10 @@ public final class ActorRuntime implements AutoCloseable {
                 dispatcherPressure(untrustedDispatcher, dispatcherConfig.maxActors()),
                 lifecycleObserverDispatcher.getPoolSize(),
                 lifecycleObserverDispatcher.getQueue().size(),
+                supervisionEvents.size(),
+                SUPERVISION_EVENT_CAPACITY,
+                watchdogNoticesQueued.get(),
+                WATCHDOG_NOTICE_CAPACITY,
                 actorCount.get(),
                 actorCapacityInUse.get());
     }
