@@ -139,8 +139,16 @@ never access or export private Oreslang sources and **are not runtime tests**:
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_nio_source_local_gate.py' -v
+python3 -m unittest discover -s tests -p 'test_nio_surefire_evidence.py' -v
 python3 scripts/test-nio-exact-tree-source-local-selftest.py
 ```
+
+The disposable test repositories now copy the **exact checked-in Surefire verifier**
+as a tracked source file, so mocked Maven success cannot pass by relying on
+an omitted test helper. The dedicated XML suite rejects suite-name identity
+substitution, contradictory counters, symlinks and entity declarations. XML
+parsing is capped at 32 MiB per report to reduce unbounded-memory exposure.
+These tests are source-free: no JDK25, JUnit, GraalVM or LLVM qualification.
 
 The regressions cover wrong commit/tree, hidden tracked source changes using
 `git update-index --assume-unchanged` and `--skip-worktree`, skipped-clean

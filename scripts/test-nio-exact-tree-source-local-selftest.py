@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 
 GATE = Path(__file__).with_name('test-nio-exact-tree-source-local.sh')
+VERIFIER = GATE.with_name('nio_verify_surefire_evidence.py')
 
 SHIM = '''#!/usr/bin/env python3
 import os, pathlib, shutil, sys
@@ -67,6 +68,7 @@ def scenario(name, code, setup=None, *, aot=False):
         repo, fakebin = root / 'repo', root / 'bin'
         repo.mkdir(); fakebin.mkdir(); (repo / 'scripts').mkdir()
         shutil.copy2(GATE, repo / 'scripts/gate.sh')
+        shutil.copy2(VERIFIER, repo / 'scripts/nio_verify_surefire_evidence.py')
         (repo / '.gitignore').write_text('target/\n')
         (repo / 'README.md').write_text('synthetic fixture\n')
         for tool in ('java', 'javac', 'mvn', 'native-image'):

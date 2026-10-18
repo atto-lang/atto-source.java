@@ -15,6 +15,7 @@ import unittest
 
 
 GATE = Path(__file__).resolve().parents[1] / "scripts" / "test-nio-exact-tree-source-local.sh"
+VERIFIER = GATE.with_name("nio_verify_surefire_evidence.py")
 
 
 def run(*args: str, cwd: Path, env: dict[str, str] | None = None):
@@ -40,6 +41,7 @@ class SourceLocalNioGateTests(unittest.TestCase):
                        cwd=self.root, check=True)
         (self.root / "scripts").mkdir()
         shutil.copyfile(GATE, self.root / "scripts" / GATE.name)
+        shutil.copyfile(VERIFIER, self.root / "scripts" / VERIFIER.name)
         (self.root / ".gitignore").write_text("target/\n")
         subprocess.run(["git", "add", "."], cwd=self.root, check=True)
         subprocess.run(["git", "commit", "-qm", "test immutable input"],

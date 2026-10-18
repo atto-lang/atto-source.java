@@ -9,6 +9,8 @@ from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
 
+MAX_XML_BYTES = 32 * 1024 * 1024
+
 EXPECTED = (
     'VmNioTcpListenerTest', 'NativeNetStdlibTest', 'NioReadinessGroupTest',
     'NativeNioFutureReactorTest', 'OresSchedulerTest',
@@ -32,7 +34,13 @@ def count(suite: ET.Element, field: str) -> int:
 
 def check_report(path: Path) -> tuple[int, set[str]]:
     try:
-        root = ET.parse(path).getroot()
+        size = path.stat().st_size
+        if size > MAX_XML_BYTES:
+            raise ValueError('Surefire XML exceeds bounded parse limit')
+        payload = path.read_bytes()
+        if b'<!DOCTYPE' in payload.upper() or b'<!ENTITY' in payload.upper():
+            raise ValueError('DOCTYPE/ENTITY is forbidden in Surefire evidence')
+        root = ET.fromstring(payload)
     except (ET.ParseError, OSError) as exc:
         raise ValueError(f'invalid XML: {exc}') from exc
     tag = local(root.tag)
@@ -57,7 +65,7 @@ def check_report(path: Path) -> tuple[int, set[str]]:
             if 'skipped' in children:
                 continue
             # A report filename is not evidence of the class actually run.
-            identity = case.attrib.get('classname') or suite.attrib.get('name', '')
+            identity = case.attrib.get('classname', '')
             name = identity.rsplit('.', 1)[-1].split('$', 1)[0]
             if name in EXPECTED:
                 names.add(name)
