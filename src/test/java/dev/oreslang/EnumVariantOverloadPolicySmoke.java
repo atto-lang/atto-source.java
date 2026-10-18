@@ -13,6 +13,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 
 /** Standalone release-active host policy smoke; not guest/compiler integration evidence. */
 public final class EnumVariantOverloadPolicySmoke {
@@ -100,7 +102,70 @@ public final class EnumVariantOverloadPolicySmoke {
         EnumVariantOverloadPolicy.admit(acrossArities);
         // Arity differences always remain separate.
         EnumVariantOverloadPolicy.admit(List.of(sig(n), sig(n, n), sig(n, n, n)));
+        exhaustivePairOracle(List.of(f, a, b, c, g,
+                EnumParameter.variant(bar, "A"), EnumParameter.variant(bar, "C"),
+                n, new Primitive("bool")));
         System.out.println("PASS: " + checks + " release-active enum overload policy checks (host-only)");
+    }
+
+    /** Independently compare admission to finite cartesian-product case sets. */
+    private static void exhaustivePairOracle(List<Parameter> types) {
+        List<Signature> signatures = new ArrayList<>();
+        for (Parameter x : types) {
+            for (Parameter y : types) signatures.add(sig(x, y));
+        }
+        for (int i = 0; i < signatures.size(); i++) {
+            for (int j = i + 1; j < signatures.size(); j++) {
+                Signature x = signatures.get(i);
+                Signature y = signatures.get(j);
+                boolean expected = oraclePair(x, y);
+                boolean admitted;
+                try {
+                    EnumVariantOverloadPolicy.admit(List.of(x, y));
+                    admitted = true;
+                } catch (IllegalArgumentException e) {
+                    admitted = false;
+                }
+                eq(expected, admitted);
+            }
+        }
+    }
+
+    private static boolean oraclePair(Signature a, Signature b) {
+        for (int i = 0; i < a.arity(); i++) {
+            Parameter x = a.parameters().get(i);
+            Parameter y = b.parameters().get(i);
+            if ((x instanceof Primitive || y instanceof Primitive) && !x.equals(y)) {
+                return false; // ordinary scalar differences cannot discriminate
+            }
+        }
+        Set<String> left = product(a);
+        Set<String> right = product(b);
+        if (left.equals(right)) return false;
+        Set<String> overlap = new HashSet<>(left);
+        overlap.retainAll(right);
+        return overlap.isEmpty() || left.containsAll(right) || right.containsAll(left);
+    }
+
+    private static Set<String> product(Signature s) {
+        Set<String> items = Set.of("");
+        for (Parameter p : s.parameters()) {
+            Set<String> next = new HashSet<>();
+            for (String prefix : items) {
+                for (String member : atoms(p)) next.add(prefix + "/" + member);
+            }
+            items = next;
+        }
+        return items;
+    }
+
+    private static Set<String> atoms(Parameter p) {
+        if (p instanceof Primitive primitive) return Set.of("P:" + primitive.id());
+        EnumParameter e = (EnumParameter) p;
+        if (e.caseId() != null) return Set.of(e.info().symbolId() + ":" + e.caseId());
+        Set<String> cases = new HashSet<>();
+        for (String v : e.info().cases().keySet()) cases.add(e.info().symbolId() + ":" + v);
+        return cases;
     }
 
     private static Signature sig(Parameter... parameters) {
