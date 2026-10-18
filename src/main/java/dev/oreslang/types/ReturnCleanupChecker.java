@@ -134,9 +134,8 @@ public final class ReturnCleanupChecker {
                     throw new IllegalArgumentException(
                             "return is not allowed inside finally; finally is cleanup-only");
                 }
-                if (trackReturns && ret.value() instanceof Ast.NameExpr name) {
-                    Binding returned = scope.resolve(name.name());
-                    if (returned != null) state.returned.add(returned);
+                if (trackReturns) {
+                    recordReturnedBinding(ret.value(), scope, state);
                 }
                 expression(ret.value(), scope, inDefer, state);
             } else if (stmt instanceof Ast.YieldStmt yielded) {
@@ -267,6 +266,32 @@ public final class ReturnCleanupChecker {
             statements(lambda.blockBody(), captured, false, true, false, state);
         } else {
             expression(lambda.expressionBody(), captured, true, state);
+        }
+    }
+
+    /**
+     * The pending return may be a variable selected by a value match or
+     * conditional expression. Each selected branch returns its value directly
+     * to the caller, so a later deferred rebinding of that same lexical
+     * binding is forbidden exactly as for an explicit 'return name;'.
+     *
+     * Only result-preserving branch shapes are followed. In particular,
+     * a binary expression computes a distinct result and must not cause
+     * an unrelated operand variable to be treated as the returned binding.
+     */
+    private static void recordReturnedBinding(Ast.Expr result, Scope scope, State state) {
+        if (result instanceof Ast.NameExpr name) {
+            Binding binding = scope.resolve(name.name());
+            if (binding != null) state.returned.add(binding);
+        } else if (result instanceof Ast.MatchExpr matched) {
+            for (Ast.MatchValueArm arm : matched.arms()) {
+                Scope armScope = new Scope(scope);
+                bindPattern(arm.pattern(), armScope);
+                recordReturnedBinding(arm.value(), armScope, state);
+            }
+        } else if (result instanceof Ast.ConditionalExpr conditional) {
+            recordReturnedBinding(conditional.whenTrue(), scope, state);
+            recordReturnedBinding(conditional.whenFalse(), scope, state);
         }
     }
 
