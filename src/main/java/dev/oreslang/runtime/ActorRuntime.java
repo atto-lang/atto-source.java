@@ -5468,6 +5468,12 @@ public final class ActorRuntime implements AutoCloseable {
                     if (!cell.mailbox.tryWrite(envelope)) {
                         throw new ActorMailboxFullException(ref.id());
                     }
+                    // The mailbox DATA has crossed the irrevocable
+                    // publication point. Mark the sealed frame before any
+                    // further mutex bookkeeping or scheduler operation can
+                    // fail. Never allow a later exception to make it
+                    // appear safe to restore the source/retry this message.
+                    ActorPipelineRouteSession.markMailboxPublished(pipelineFrame);
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
                     admitted = true;
