@@ -319,4 +319,80 @@ final class ConstructorSemanticIrTest {
         assertThrows(IllegalArgumentException.class, () -> state.completeCleanup(first));
     }
 
+
+    @Test
+    void capturePlanUsesResolvedIdentityNotSourceSpelling() {
+        var outer = new ConstructorSemanticIr.CaptureBinding(
+                new ConstructorSemanticIr.CaptureBindingId("root::fn#outer:x"),
+                "x",
+                Types.Primitive.INT,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                Set.of());
+        var inner = new ConstructorSemanticIr.CaptureBinding(
+                new ConstructorSemanticIr.CaptureBindingId("root::fn#block1:x"),
+                "x",
+                Types.Primitive.INT,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                Set.of());
+        var plan = new ConstructorSemanticIr.CapturePlan(List.of(outer, inner));
+        assertEquals(2, plan.bindings().size(),
+                "shadowed names are distinct semantic bindings");
+    }
+
+    @Test
+    void duplicateSemanticCaptureIdentityIsRejected() {
+        var id = new ConstructorSemanticIr.CaptureBindingId("root::fn#slot");
+        var first = new ConstructorSemanticIr.CaptureBinding(
+                id, "value", Types.Primitive.INT,
+                ConstructorSemanticIr.CaptureAccess.READ, Set.of());
+        var duplicate = new ConstructorSemanticIr.CaptureBinding(
+                id, "value", Types.Primitive.INT,
+                ConstructorSemanticIr.CaptureAccess.WRITE, Set.of());
+        assertThrows(IllegalArgumentException.class,
+                () -> new ConstructorSemanticIr.CapturePlan(List.of(first, duplicate)));
+    }
+
+    @Test
+    void capturePlanMergePromotesWriteAndUnionsCapabilities() {
+        var id = new ConstructorSemanticIr.CaptureBindingId("root::ctor#self");
+        var read = new ConstructorSemanticIr.CaptureBinding(
+                id, "self", Types.Unknown.INSTANCE,
+                ConstructorSemanticIr.CaptureAccess.READ,
+                Set.of(ConstructorSemanticIr.CallableCapability.CONSTRUCTION_SCOPED));
+        var write = new ConstructorSemanticIr.CaptureBinding(
+                id, "self", Types.Unknown.INSTANCE,
+                ConstructorSemanticIr.CaptureAccess.WRITE,
+                Set.of(ConstructorSemanticIr.CallableCapability.BORROWED));
+
+        var merged = new ConstructorSemanticIr.CapturePlan(List.of(read))
+                .merge(new ConstructorSemanticIr.CapturePlan(List.of(write)));
+        assertEquals(1, merged.bindings().size());
+        assertEquals(ConstructorSemanticIr.CaptureAccess.WRITE,
+                merged.bindings().getFirst().access());
+        assertTrue(merged.capturesBorrow());
+        assertTrue(merged.capturesConstructionState());
+        assertFalse(merged.actorDataAdmissible());
+    }
+
+    @Test
+    void inconsistentCaptureIdentityCannotBeMergedAcrossDifferentTypesOrNames() {
+        var id = new ConstructorSemanticIr.CaptureBindingId("root::fn#0");
+        var first = new ConstructorSemanticIr.CaptureBinding(
+                id, "first", Types.Primitive.INT,
+                ConstructorSemanticIr.CaptureAccess.READ, Set.of());
+        var wrongName = new ConstructorSemanticIr.CaptureBinding(
+                id, "second", Types.Primitive.INT,
+                ConstructorSemanticIr.CaptureAccess.READ, Set.of());
+        var wrongType = new ConstructorSemanticIr.CaptureBinding(
+                id, "first", Types.Primitive.STRING,
+                ConstructorSemanticIr.CaptureAccess.READ, Set.of());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new ConstructorSemanticIr.CapturePlan(List.of(first))
+                        .merge(new ConstructorSemanticIr.CapturePlan(List.of(wrongName))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ConstructorSemanticIr.CapturePlan(List.of(first))
+                        .merge(new ConstructorSemanticIr.CapturePlan(List.of(wrongType))));
+    }
+
 }
