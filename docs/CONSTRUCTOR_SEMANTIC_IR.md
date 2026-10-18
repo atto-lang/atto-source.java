@@ -263,6 +263,50 @@ Constructors do not become callable values. Instance methods do not silently
 become bound callables; an explicit lambda makes receiver capture visible to
 ownership analysis.
 
+## CapturePlan
+
+Callable and deferred-continuation capture analysis has one backend-neutral
+resolved representation:
+
+```text
+CapturePlan {
+  bindings: CaptureBinding[]
+}
+
+CaptureBinding {
+  binding_id: CaptureBindingId   // declaration identity, never source spelling
+  debug_name: String
+  type: Type
+  access: READ | WRITE
+  capabilities: CapabilitySet
+}
+```
+
+A source name is diagnostic metadata only. Two shadowed locals with the same
+spelling have distinct `CaptureBindingId` values. Reusing one binding id with a
+different name or type is an invalid compiler state.
+
+Joining control-flow/deferred alternatives merges captures by binding id. WRITE
+dominates READ and capability sets are unioned. Ownership checking validates
+this resolved plan before lowering; runtimes/backends consume the same plan.
+A backend must not run an independent spelling-based free-variable walk and
+silently retain extra environment state.
+
+This is especially important for detached actor continuations such as
+nonblocking select arms and channel callbacks: channel expressions and payloads
+are evaluated before registration, select result bindings are arm-local, and
+the continuation environment contains only resolved free bindings from the
+deferred body. Unused `self`, codec handles, actor CONTROL authority and other
+ambient locals must not be retained.
+
+`CapturePlan.actorDataAdmissible()` is always false. Serializable captured
+DATA does not make an executable closure, `AnyCallable`, callback ABI or
+continuation environment serializable or sendable.
+
+The current semantic-IR slice establishes this identity and merge contract.
+The Java ownership/runtime scanners still require migration to emit/consume
+the plan directly; until then cross-scanner parity tests are a release gate.
+
 ## RecursiveAliasType
 
 A recursive alias gets stable nominal identity before its body is resolved:
