@@ -173,15 +173,15 @@ def decode_contents_api_file(d,label,max_size):
             or type(d.get("size")) is not int or d["size"]<1 or d["size"]>max_size):
         raise Denied("reviewed file unavailable: "+label)
     encoded=d["content"]
-    if any(ch.isspace() and ch not in "\\r\\n" for ch in encoded):
+    if any(ch.isspace() and ch not in "\r\n" for ch in encoded):
         raise Denied("reviewed file has noncanonical base64 whitespace: "+label)
-    compact=encoded.replace("\\r","").replace("\\n","")
+    compact=encoded.replace("\r","").replace("\n","")
     try: raw=base64.b64decode(compact,validate=True)
     except Exception as exc: raise Denied("reviewed file is not canonical base64: "+label) from exc
     if base64.b64encode(raw).decode("ascii")!=compact:
         raise Denied("reviewed file has noncanonical base64 encoding: "+label)
     if len(raw)!=d["size"]: raise Denied("reviewed file size mismatch: "+label)
-    expected=hashlib.sha1(b"blob "+str(len(raw)).encode("ascii")+b"\\0"+raw).hexdigest()
+    expected=hashlib.sha1(b"blob "+str(len(raw)).encode("ascii")+b"\0"+raw).hexdigest()
     if require_sha(d.get("sha"),label+" blob")!=expected: raise Denied("reviewed file blob mismatch: "+label)
     return raw,expected
 
