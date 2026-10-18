@@ -4925,6 +4925,73 @@ public final class ActorRuntime implements AutoCloseable {
         return ref.done();
     }
 
+    /**
+     * Trusted-host-only ingress fence for a future actor hot upgrade.
+     *
+     * <p>It rejects NEW user messages while allowing work already committed to
+     * the mailbox, scheduled continuations and lifecycle CONTROL to drain.
+     * This is deliberately not a state snapshot, code switch, or proof that
+     * foreign FFI/timer/device leases have quiesced. A production supervisor
+     * must subsequently obtain those independent fences before upgrading.</p>
+     */
+    final class HotUpgradeIngressFreeze implements AutoCloseable {
+        private final ActorCell<?> cell;
+        private final Object ticket;
+        private final AtomicBoolean released = new AtomicBoolean();
+
+        private HotUpgradeIngressFreeze(ActorCell<?> cell, Object ticket) {
+            this.cell = cell;
+            this.ticket = ticket;
+        }
+
+        /** A scheduler/mailbox observation, NOT an executable-image retirement proof. */
+        boolean schedulerDrained() {
+            synchronized (cell.lifecycleLock) {
+                if (released.get() || cell.upgradeIngressTicket != ticket
+                        || cell.stopped.get() || cell.finalized) return false;
+                return !cell.carrierActive && cell.activeTurns == 0
+                        && !cell.scheduled.get()
+                        && cell.queuedMessages == 0
+                        && !cell.sourceReceiveSuspended
+                        && cell.activeMail == null
+                        && cell.pendingOperations.isEmpty();
+            }
+        }
+
+        @Override public void close() {
+            synchronized (cell.lifecycleLock) {
+                if (!released.compareAndSet(false, true)) return;
+                // An obsolete handle cannot undo another supervisor's seal.
+                if (cell.upgradeIngressTicket == ticket) {
+                    cell.upgradeIngressTicket = null;
+                }
+            }
+        }
+    }
+
+    /**
+     * Package-private: guest code and ordinary ActorRef senders cannot obtain
+     * an upgrade reservation. Never hold the actor monitor while waiting for
+     * schedulerDrained(); only the supervisor controls cancellation/deadlines.
+     */
+    HotUpgradeIngressFreeze freezeUserIngressForHotUpgrade(ActorRef<?> ref) {
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this))
+            throw new ActorInvalidReferenceException("ActorRef belongs to a different ActorRuntime");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) throw terminated(ref);
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || cell.sealing)
+                throw terminated(ref);
+            if (cell.upgradeIngressTicket != null)
+                throw new IllegalStateException("actor hot-upgrade ingress is already frozen");
+            final Object ticket = new Object();
+            cell.upgradeIngressTicket = ticket;
+            return new HotUpgradeIngressFreeze(cell, ticket);
+        }
+    }
+
     @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
         requireCallerRuntimeAffinity("send messages");
@@ -4941,7 +5008,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null || cell.stopped.get()) throw terminated(ref);
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
-            if (cell.sealing) throw new ActorSealedException(ref.id());
+            if (cell.sealing || cell.upgradeIngressTicket != null)
+                throw new ActorSealedException(ref.id());
             if (!cell.reserveMailboxSlot()) {
                 throw new ActorMailboxFullException(ref.id());
             }
@@ -5019,7 +5087,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cell.stopped.get() || cell.finalized) {
                         throw terminated(ref);
                     }
-                    if (cell.sealing) {
+                    if (cell.sealing || cell.upgradeIngressTicket != null) {
                         throw new ActorSealedException(ref.id());
                     }
                     if (cell.forceKillFenced) {
@@ -6641,6 +6709,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicBoolean stopped = new AtomicBoolean();
         /** Set under lifecycleLock by gracefulStop; no further user admissions. */
         private boolean sealing;
+        /** Supervisor-only opaque admission identity; no guest-code access. */
+        private Object upgradeIngressTicket;
         // Lifetime-affine structured owner: never transferred before physical
         // finalization, even if the original group closes during cancellation.
         private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
@@ -7564,6 +7634,7 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 stopped.set(true);
                 sealing = true;
+                upgradeIngressTicket = null;
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.
