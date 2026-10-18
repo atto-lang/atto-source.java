@@ -18,7 +18,7 @@ final class TaskSpellingSyntaxTest {
 
     @Test
     void taskAndLegacyNbHaveIdenticalAstAndReturnHandles() {
-        for (String keyword : new String[]{"task", "nb"}) {
+        for (String keyword : new String[]{"task", "nb", "nb task"}) {
             Ast.FunctionDecl function = main("let Task<int> job = "
                     + keyword + " { return 7; };");
             Ast.BindingStmt binding = assertInstanceOf(Ast.BindingStmt.class,
@@ -62,10 +62,18 @@ final class TaskSpellingSyntaxTest {
     }
 
     @Test
-    void nbTaskDoesNotPretendToBeADistinctSchedulerMode() {
-        assertThrows(IllegalArgumentException.class, () -> main("""
-                let Task<int> job = nb task { return 7; };
-                """));
+    void nbTaskIsAnAliasAndImmediateAwaitJoinsOneTask() {
+        Ast.FunctionDecl fn = main("let int answer = await nb task { return 7; };");
+        Ast.BindingStmt binding = assertInstanceOf(Ast.BindingStmt.class, fn.body().getFirst());
+        Ast.AwaitExpr awaited = assertInstanceOf(Ast.AwaitExpr.class, binding.initializer());
+        assertInstanceOf(Ast.TaskExpr.class, awaited.expression());
+    }
+
+    @Test
+    void bareNbTaskRequiresExplicitHandleOrDiscard() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> main("nb task { return 7; };"));
+        assertTrue(failure.getMessage().contains("do task"), failure::getMessage);
     }
 
     @Test
