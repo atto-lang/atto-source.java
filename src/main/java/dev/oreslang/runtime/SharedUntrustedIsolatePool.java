@@ -166,7 +166,9 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
                         groups.remove(this);
                     }
                 } catch (RuntimeException | Error error) {
-                    // No guest exception or native cause chain reaches the host.
+                    // Preserve fatal host VM identity, but never expose guest
+                    // exceptions, polyglot causes or private source details.
+                    if (VerifiedCloseFence.isVmFatal(error)) throw error;
                     throw new IllegalStateException("untrusted group retirement failed");
                 }
             });
@@ -245,28 +247,28 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
     private void retirePhysicalIsolate() {
         Set<Group> snapshot;
         synchronized (this) { snapshot = Set.copyOf(groups); }
-        RuntimeException failure = null;
+        Throwable failure = null;
         for (Group group : snapshot) {
             try {
                 group.close();
-            } catch (RuntimeException error) {
-                if (failure == null) failure = error;
-                else failure.addSuppressed(error);
+            } catch (RuntimeException | Error error) {
+                // Always attempt every sibling even when a close fails.
+                failure = VerifiedCloseFence.mergeRetirementFailure(failure, error);
             }
         }
         try {
             engine.close(true);
         } catch (RuntimeException | Error error) {
-            if (failure == null) {
-                failure = new IllegalStateException(
-                        "untrusted Engine close could not be confirmed");
-            }
+            // Engine close is always attempted. A VM-fatal failure must remain
+            // primary even if one group failed with an ordinary exception.
+            Throwable report = VerifiedCloseFence.isVmFatal(error)
+                    ? error
+                    : new IllegalStateException("untrusted Engine close could not be confirmed");
+            failure = VerifiedCloseFence.mergeRetirementFailure(failure, report);
         }
-        // A successful Engine.close alone is not sufficient: one failed
-        // Context close leaves its native/guest lifetime unproven. The
-        // process-global slot must remain denied until ALL close fences
-        // were confirmed, otherwise a second isolate can be admitted.
-        if (failure != null) throw failure;
+        // An Engine close alone cannot prove failed Contexts are retired;
+        // retain the singleton isolate admission slot after ANY close failure.
+        VerifiedCloseFence.rethrowRetirementFailure(failure);
         ISOLATE_SLOT.set(false);
     }
 }
