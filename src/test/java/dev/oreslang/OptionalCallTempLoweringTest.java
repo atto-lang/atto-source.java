@@ -192,4 +192,70 @@ final class OptionalCallTempLoweringTest {
         assertEquals(0, recipe.abiSlots().getFirst().tempIndex());
         assertThrows(IllegalStateException.class, recipe::requireExecutable);
     }
+
+    @Test
+    void explicitTemporaryPhasesSkipGuestStaticCalleeAndMaterializeAllFormalsLast() {
+        Ast.Expr sideC = new Ast.CallExpr(new Ast.NameExpr("effectC"), List.of());
+        Ast.Expr sideA = new Ast.CallExpr(new Ast.NameExpr("effectA"), List.of());
+        var staged = new Ast.StagedCallExpr(new Ast.NameExpr("work"),
+                List.of(), false, List.of(
+                    Ast.CallArgument.named("c", sideC),
+                    Ast.CallArgument.omit("b"),
+                    Ast.CallArgument.named("a", sideA)));
+        var recipe = OptionalCallTempLowering.from(
+                BoundInvocation.bindModuleFunction(module(), staged, List.of(BOOL, INT)));
+        var phases = recipe.steps().stream().map(OptionalCallTempLowering.Step::phase).toList();
+        assertEquals(List.of(
+                OptionalCallTempLowering.Phase.CAPTURE_ARGUMENT,
+                OptionalCallTempLowering.Phase.CAPTURE_ARGUMENT,
+                OptionalCallTempLowering.Phase.MATERIALIZE_ABI_SLOT,
+                OptionalCallTempLowering.Phase.MATERIALIZE_ABI_SLOT,
+                OptionalCallTempLowering.Phase.MATERIALIZE_ABI_SLOT,
+                OptionalCallTempLowering.Phase.INVOKE_SELECTED), phases);
+        assertEquals(List.of(0, 1, 0, 1, 2, -1),
+                recipe.steps().stream().map(OptionalCallTempLowering.Step::index).toList());
+        assertThrows(UnsupportedOperationException.class, () -> recipe.steps().clear());
+        assertThrows(IllegalStateException.class, recipe::requireExecutable);
+    }
+
+    @Test
+    void instanceReceiverIsOnlyFirstCaptureAndNeverCallableCalleeTemp() {
+        Ast.ClassDecl box = (Ast.ClassDecl) Parser.parse("""
+                define module app as
+                    define class Box as
+                        pub fnc work(int a, bool c): int { return a; }
+                    end
+                end
+                """).modules().getFirst().declarations().getFirst();
+        var source = new Ast.StagedCallExpr(
+                new Ast.MemberExpr(new Ast.NameExpr("box"), "work"),
+                List.of(), false, List.of(
+                    Ast.CallArgument.named("c", new Ast.LiteralExpr(true)),
+                    Ast.CallArgument.named("a", new Ast.LiteralExpr(8L))));
+        var recipe = OptionalCallTempLowering.from(
+                BoundInvocation.bindLiteralClassMethod(box, source));
+        assertEquals(List.of(
+                new OptionalCallTempLowering.Step(OptionalCallTempLowering.Phase.CAPTURE_RECEIVER, 0),
+                new OptionalCallTempLowering.Step(OptionalCallTempLowering.Phase.CAPTURE_ARGUMENT, 1),
+                new OptionalCallTempLowering.Step(OptionalCallTempLowering.Phase.CAPTURE_ARGUMENT, 2),
+                new OptionalCallTempLowering.Step(OptionalCallTempLowering.Phase.MATERIALIZE_ABI_SLOT, 0),
+                new OptionalCallTempLowering.Step(OptionalCallTempLowering.Phase.MATERIALIZE_ABI_SLOT, 1),
+                new OptionalCallTempLowering.Step(OptionalCallTempLowering.Phase.INVOKE_SELECTED, -1)),
+                recipe.steps());
+        assertThrows(IllegalStateException.class, recipe::requireExecutable);
+    }
+
+    @Test
+    void forgedPhaseIndexesAreRejectedBeforeBackendLowering() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new OptionalCallTempLowering.Step(OptionalCallTempLowering.Phase.CAPTURE_RECEIVER, 1));
+        assertThrows(IllegalArgumentException.class, () ->
+                new OptionalCallTempLowering.Step(OptionalCallTempLowering.Phase.CAPTURE_ARGUMENT, -1));
+        assertThrows(IllegalArgumentException.class, () ->
+                new OptionalCallTempLowering.Step(OptionalCallTempLowering.Phase.MATERIALIZE_ABI_SLOT, -1));
+        assertThrows(IllegalArgumentException.class, () ->
+                new OptionalCallTempLowering.Step(OptionalCallTempLowering.Phase.INVOKE_SELECTED, 0));
+        assertThrows(NullPointerException.class, () ->
+                new OptionalCallTempLowering.Step(null, 0));
+    }
 }
