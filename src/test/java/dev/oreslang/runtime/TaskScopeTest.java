@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.lang.reflect.Field;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -260,4 +261,39 @@ public class TaskScopeTest {
         scope.seal();
         scope.getDone().get(3, TimeUnit.SECONDS);
     }
+    @Test void alreadyTerminalChildNeverPublishesScopeDoneUnderAdmissionLock()
+            throws Exception {
+        // The inline runtime-owned dispatcher intentionally completes a
+        // child *before* startTask registers the terminal observer. This
+        // forces the otherwise timing-sensitive subscription path.
+        try (OresScheduler scheduler =
+                     OresScheduler.runtimeOwned("inline-task-scope-regression",
+                             1, Runnable::run)) {
+            TaskScope scope = scheduler.newTaskScope();
+            Field monitorField = TaskScope.class.getDeclaredField("admissionLock");
+            monitorField.setAccessible(true);
+            Object admissionMonitor = monitorField.get(scope);
+            AtomicInteger notifications = new AtomicInteger();
+            AtomicReference<Boolean> callbackHeldLock = new AtomicReference<>();
+            scope.getDone().whenCompleteRuntime((ignored, failure) -> {
+                notifications.incrementAndGet();
+                callbackHeldLock.set(Thread.holdsLock(admissionMonitor));
+            });
+
+            // The guest turn seals its own scope. Since the inline dispatcher
+            // completes before TaskScope subscribes to TaskHandle.getDone(),
+            // the callback is delivered synchronously at registration.
+            TaskHandle<Integer> child = scope.startTask(resume -> {
+                scope.seal();
+                return OresScheduler.done(7);
+            });
+            assertEquals(new TaskHandle.Success<>(7),
+                    child.getDone().get(3, TimeUnit.SECONDS));
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+            assertEquals(1, notifications.get());
+            assertEquals(Boolean.FALSE, callbackHeldLock.get(),
+                    "scope completion observers must not execute under admissionLock");
+        }
+    }
+
 }
