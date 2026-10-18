@@ -99,17 +99,33 @@ public final class OresTaskScope implements AutoCloseable {
         synchronized (gate) {
             ensureAdmitting();
             OresFuture<Void> exited = new OresFuture<>();
-            OresFuture<T> completion = scheduler.start(frame, () -> {
-                // The scheduler has already fenced the guest context/turn.
-                // A broken host release cannot be treated as a successful
-                // resource retirement; do not silently swallow its error.
+            OresFuture<T> completion;
+            try {
+                completion = scheduler.start(frame, () -> {
+                    // The scheduler has already fenced the guest context/turn.
+                    // A broken host release cannot be treated as a successful
+                    // resource retirement; do not silently swallow its error.
+                    try {
+                        onPhysicalExit.run();
+                        exited.completeFromRuntime(null);
+                    } catch (RuntimeException | Error failure) {
+                        exited.failFromRuntime(failure);
+                    }
+                });
+            } catch (RuntimeException | Error rejectedBeforeAdmission) {
+                // OresScheduler.start only throws before registering a
+                // TaskRunner (closed scheduler, admission limit or live-set
+                // registration failure). No guest code can be running, so
+                // this owner must retire its already-acquired generation pin.
+                // A post-registration enqueue error instead settles via the
+                // scheduler's onQuiescent callback and cannot enter here.
                 try {
                     onPhysicalExit.run();
-                    exited.completeFromRuntime(null);
-                } catch (RuntimeException | Error failure) {
-                    exited.failFromRuntime(failure);
+                } catch (RuntimeException | Error releaseFailure) {
+                    rejectedBeforeAdmission.addSuppressed(releaseFailure);
                 }
-            });
+                throw rejectedBeforeAdmission;
+            }
             OresTask<T> child = new OresTask<>(completion, exited);
             tasks.add(child);
             child.getDone().whenCompleteRuntime((ignored, failure) -> {
