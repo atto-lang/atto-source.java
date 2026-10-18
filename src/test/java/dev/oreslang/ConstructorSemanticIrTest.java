@@ -260,4 +260,28 @@ final class ConstructorSemanticIrTest {
                 () -> entry.withFields(ConstructorFlowState.blank(List.of())));
     }
 
+    @Test
+    void registeredConstructorCleanupMustCompleteInLifoOrder() {
+        ConstructorSemanticIr.ConstructionRegionId region =
+                new ConstructorSemanticIr.ConstructionRegionId("Example", 0, 0);
+        ConstructorSemanticIr.ConstructionState state =
+                new ConstructorSemanticIr.ConstructionState(
+                        region, ConstructorSemanticIr.ConstructionPhase.INITIALIZING,
+                        ConstructorFlowState.blank(List.of("x")).write("x"),
+                        List.of());
+        var first = new ConstructorSemanticIr.CleanupEdge(
+                ConstructorSemanticIr.CleanupKind.DEFER, "first");
+        var second = new ConstructorSemanticIr.CleanupEdge(
+                ConstructorSemanticIr.CleanupKind.FINALLY, "second");
+        var pending = state.withCleanup(first).withCleanup(second);
+        assertThrows(IllegalArgumentException.class, () -> pending.completeCleanup(first));
+        assertThrows(IllegalArgumentException.class,
+                () -> pending.transitionTo(ConstructorSemanticIr.ConstructionPhase.CONSTRUCTED));
+        var discharged = pending.completeCleanup(second).completeCleanup(first);
+        assertTrue(discharged.pendingCleanups().isEmpty());
+        assertTrue(discharged.transitionTo(ConstructorSemanticIr.ConstructionPhase.CONSTRUCTED)
+                .publishable());
+        assertThrows(IllegalArgumentException.class, () -> state.completeCleanup(first));
+    }
+
 }
