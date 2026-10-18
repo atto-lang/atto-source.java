@@ -323,6 +323,34 @@ final class NestedOptionFutureUnwrapTest {
         assertEquals("done", run(program));
     }
 
+    @Test
+    void flattenCannotMoveNestedFutureOutOfBorrowedReceiver() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        fnc bad(borrow Future<Future<int>> nested): void {
+                          val Future<int> extracted = nested.flatten();
+                          return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("borrow"), failure.getMessage());
+    }
+
+    @Test
+    void flattenCannotExtractNestedOptionFromBorrowedReceiver() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+
+                        fnc bad(borrow Option<Option<Box>> nested): void {
+                          val Option<Box> extracted = nested.flatten();
+                          return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("borrow"), failure.getMessage());
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "nested-option-future.ores")
