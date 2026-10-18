@@ -813,15 +813,19 @@ public final class ActorRuntime implements AutoCloseable {
             untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
                     dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-", carrierBudget);
 
-            int observerWorkers = Math.max(
-                    1,
-                    Math.min(
-                            MAX_LIFECYCLE_OBSERVER_WORKERS,
+            int observerWorkers = carrierBudget == null
+                    ? Math.max(
+                            1,
                             Math.min(
-                                    dispatcherConfig.maxActors(),
-                                    Math.max(
-                                            dispatcherConfig.privateParallelism(),
-                                            dispatcherConfig.sharedParallelism()))));
+                                    MAX_LIFECYCLE_OBSERVER_WORKERS,
+                                    Math.min(
+                                            dispatcherConfig.maxActors(),
+                                            Math.max(
+                                                    dispatcherConfig.privateParallelism(),
+                                                    dispatcherConfig.sharedParallelism()))))
+                    : Math.min(
+                            dispatcherConfig.maxActors(),
+                            carrierBudget.lifecycleObserverMaximum());
             lifecycleObservers = new ThreadPoolExecutor(
                     observerWorkers,
                     observerWorkers,
@@ -913,7 +917,8 @@ public final class ActorRuntime implements AutoCloseable {
 
     /** Number of currently created lifecycle-observer host workers.
      * Zero at cold start. These are bounded host callback workers, not actor,
-     * CONTROL or selector carriers, and are currently outside OresCarrierBudget.
+     * CONTROL or selector carriers. When a global OresCarrierBudget is
+     * configured, their maximum is reserved inside that same ceiling.
      */
     public int lifecycleObserverCarrierCount() {
         requireSupervisorContext("inspect lifecycle observer carriers");
