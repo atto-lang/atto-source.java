@@ -202,9 +202,9 @@ public final class NativeHttp implements AutoCloseable {
         private final Set<State> active = ConcurrentHashMap.newKeySet();
         private final OresFuture<?>[] waiters = new OresFuture<?>[16];
         private final ArrayDeque<Integer> waitingLanes = new ArrayDeque<>();
-        private boolean stopped, transportStopped;
+        private boolean stopped, transportStopped, serving;
         private OresFuture<Object> drained;
-        private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
+        private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong(), peakActive = new AtomicLong();
 
         private Server(HttpServer transport, int capacity, int bodyLimit, int deadlineMillis) {
             this.transport = transport; this.admission = new Semaphore(capacity);
@@ -232,6 +232,7 @@ public final class NativeHttp implements AutoCloseable {
         }
         public synchronized boolean accepting() { supervisor(); return !stopped; }
         public int port() { supervisor(); return transport.getAddress().getPort(); }
+        public long peakActive() { supervisor(); return peakActive.get(); }
         public long accepted() { supervisor(); return accepted.get(); }
         public long rejected() { supervisor(); return rejected.get(); }
         public long completed() { supervisor(); return completed.get(); }
@@ -239,8 +240,10 @@ public final class NativeHttp implements AutoCloseable {
 
         public OresFuture<Object> accept() { return acceptOn(0); }
         /** Independent bounded supervisor lanes; one outstanding accept per lane. */
-        public synchronized OresFuture<Object> acceptOn(int lane) {
+        public OresFuture<Object> acceptOn(int lane) { return acceptLane(lane, false); }
+        private synchronized OresFuture<Object> acceptLane(int lane, boolean dispatcher) {
             supervisor();
+            if (serving && !dispatcher) throw new IllegalStateException("HTTP server is owned by its dispatcher");
             if (lane < 0 || lane >= waiters.length) throw new IllegalArgumentException("HTTP accept lane must be 0..15");
             if (stopped) return OresFuture.failed(new IllegalStateException("HTTP server closed"));
             if (waiters[lane] != null) throw new IllegalStateException("only one pending HTTP accept per lane is permitted");
@@ -256,6 +259,57 @@ public final class NativeHttp implements AutoCloseable {
             waitingLanes.addLast(lane);
             return waiting;
         }
+        /** Explicit shared-supervisor dispatch; ordinary async payload rules are unchanged. */
+        public OresFuture<Object> serve(int lanes, java.util.function.Function<Exchange, OresFuture<Object>> dispatch) {
+            supervisor();
+            Objects.requireNonNull(dispatch, "dispatch");
+            if (lanes < 1 || lanes > waiters.length) throw new IllegalArgumentException("HTTP dispatch lanes must be 1..16");
+            if (context.isolatePolicy().adversarial()) throw new SecurityException("concurrent HTTP supervision requires a trusted server context");
+            synchronized (this) {
+                if (stopped || serving || !waitingLanes.isEmpty()) throw new IllegalStateException("HTTP server already accepting or closed");
+                serving = true;
+            }
+            OresFuture<Object> result = new OresFuture<>(() -> false, () -> { });
+            java.util.concurrent.atomic.AtomicInteger remaining = new java.util.concurrent.atomic.AtomicInteger(lanes);
+            try {
+                for (int lane = 0; lane < lanes; lane++) {
+                    final int id = lane;
+                    OresFuture<Object> task = context.vm().rootScheduler().start(new OresScheduler.Task<Object>() {
+                        private boolean accepting;
+                        private Exchange request;
+                        @Override public OresScheduler.Step<Object> resume(OresScheduler.Resume resume) {
+                            if (resume.failure() != null) {
+                                synchronized (Server.this) {
+                                    if (stopped && accepting) return OresScheduler.done(null);
+                                }
+                                if (request != null) request.state.abort(500);
+                                throw new CompletionException(resume.failure());
+                            }
+                            if (!resume.initial() && accepting) {
+                                accepting = false;
+                                request = (Exchange) resume.value();
+                                return OresScheduler.await(dispatch.apply(request));
+                            }
+                            request = null;
+                            accepting = true;
+                            return OresScheduler.await(acceptLane(id, true));
+                        }
+                    });
+                    task.whenCompleteRuntime((ignored, failure) -> {
+                        if (failure != null) {
+                            result.failFromRuntime(failure);
+                            shutdown(0);
+                        }
+                        if (remaining.decrementAndGet() == 0 && !result.isDone()) result.completeFromRuntime(null);
+                    });
+                }
+            } catch (RuntimeException failure) {
+                result.failFromRuntime(failure);
+                shutdown(0);
+            }
+            return result;
+        }
+
         private void receive(HttpExchange raw) {
             long perf = CorePerf.start();
             try {
@@ -267,6 +321,7 @@ public final class NativeHttp implements AutoCloseable {
                 synchronized (this) {
                     if (stopped) { admission.release(); reject(raw, 503); return; }
                     active.add(state); accepted.incrementAndGet();
+                    peakActive.accumulateAndGet(active.size(), Math::max);
                     State timed = state;
                     long schedulePerf = CorePerf.start();
                     state.deadline = timers.schedule(() -> timed.abort(504), deadlineMillis, TimeUnit.MILLISECONDS);

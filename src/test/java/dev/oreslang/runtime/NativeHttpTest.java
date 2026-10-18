@@ -16,6 +16,67 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void sharedSupervisorDispatchKeepsOneInstanceAndDrainsAllLanes() throws Exception {
+        String output = run("""
+            pub define class Dispatcher as
+              val HttpServer server;
+              val SharedMutex<Array<int>> count;
+              pub constructor(HttpServer server) {
+                self.server = server;
+                self.count = SharedMutex.new(arr[0]);
+              }
+              pub dispatch(HttpExchange mut request): void {
+                if request.target == "/stop"; then
+                  request.respond(200, "text/plain", "stop");
+                  self.server.shutdown(1000);
+                  return;
+                fi
+                if true; then
+                  val guard = self.count.lock();
+                  val int old = guard.get(0);
+                  guard.set(0, old + 1);
+                fi
+                request.respond(200, "text/plain", "ok");
+                return;
+              }
+              pub start(): Future<void> { return self.server.serve(self, "dispatch", 4); }
+              pub port(): int { return self.server.port; }
+              pub active(): int { return self.server.active; }
+              pub manual(): Future<HttpExchange> { return self.server.accept(); }
+              pub drain(): Future<void> { return self.server.shutdown(1000); }
+              pub requests(): int {
+                val guard = self.count.lock();
+                return guard.get(0);
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 20, 1024, 5000);
+              val dispatcher = new Dispatcher(server);
+              val serving = dispatcher.start();
+              stdio.println(dispatcher.port());
+              try { dispatcher.manual(); stdio.println("MANUAL ACCEPTED"); }
+              catch (err) { stdio.println("manual-rejected"); }
+              try { dispatcher.start(); stdio.println("DUPLICATE ACCEPTED"); }
+              catch (err) { stdio.println("duplicate-rejected"); }
+              await serving;
+              await dispatcher.drain();
+              stdio.println(dispatcher.requests());
+              stdio.println(dispatcher.active());
+              return;
+            }
+            """, port -> {
+                try (HttpClient client = HttpClient.newHttpClient()) {
+                    var jobs = new java.util.ArrayList<CompletableFuture<HttpResponse<String>>>();
+                    for (int i=0;i<12;i++) jobs.add(client.sendAsync(HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+port+"/"))
+                        .timeout(Duration.ofSeconds(8)).GET().build(), HttpResponse.BodyHandlers.ofString()));
+                    for (var job: jobs) assertEquals("ok", job.get(10,TimeUnit.SECONDS).body());
+                    assertEquals("stop", request(port,"GET","/stop","").body());
+                }
+            });
+        assertFalse(output.contains("ACCEPTED"), output);
+        assertTrue(output.contains("12\n0\n"), output);
+    }
+
     @Test void independentAcceptLanesDeliverUniqueExchangesAndCloseAllWaiters() throws Exception {
         String output = run("""
             pub async routine main(): void {

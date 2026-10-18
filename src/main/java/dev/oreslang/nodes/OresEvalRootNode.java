@@ -6751,9 +6751,25 @@ public final class OresEvalRootNode extends RootNode {
                     case "accepting" -> server.accepting();
                     case "active" -> (long) server.active();
                     case "accepted" -> server.accepted();
+                    case "peak_active" -> server.peakActive();
                     case "rejected" -> server.rejected();
                     case "completed" -> server.completed();
                     case "accept" -> (Invokable) args -> { requireZero(args, "http.accept"); return server.accept(); };
+                    case "serve" -> (Invokable) args -> {
+                        if (args.size() != 3 || !(args.getFirst() instanceof OresObject target) || !(args.get(1) instanceof String methodName))
+                            throw new IllegalArgumentException("HTTP serve requires a non-actor dispatcher, method name and lane count");
+                        if (target.owner.context != context || target.klass.actorKind() != Ast.ActorKind.NONE)
+                            throw new SecurityException("HTTP dispatcher must belong to this supervisor context and cannot be an actor");
+                        Ast.MethodDecl method = target.owner.findMethod(target.klass, CallableSelector.instance(methodName, 1));
+                        if (method == null || method.async() || !method.genericParameters().isEmpty()
+                                || (method.explicitReceiverType() != null && method.explicitReceiverType().mutableBorrow())
+                                || !method.parameters().getFirst().type().name().equals("HttpExchange")
+                                || !method.returnType().name().equals("void"))
+                            throw new IllegalArgumentException("HTTP dispatcher requires a readonly synchronous method (HttpExchange) -> void");
+                        target.owner.requireClassMemberVisible(method.visibility(), target.owner.declaringClass(method), null, "method", method.name());
+                        int lanes = Math.toIntExact(((Number) args.get(2)).longValue());
+                        return server.serve(lanes, request -> target.owner.startSourceMethodTask(method, target, List.of(request)));
+                    };
                     case "accept_on" -> (Invokable) args -> {
                         requireOne(args, "http.accept_on");
                         return server.acceptOn(Math.toIntExact(((Number) args.getFirst()).longValue()));
