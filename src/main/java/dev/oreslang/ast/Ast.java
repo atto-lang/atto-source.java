@@ -22,8 +22,30 @@ public final class Ast {
             List<String> names,
             boolean wildcard,
             String namespace,
-            String path) {
-        public ImportDecl { names = List.copyOf(names); }
+            String path,
+            String lexicalModule) {
+        public ImportDecl {
+            names = List.copyOf(names);
+            if (lexicalModule != null && lexicalModule.isBlank()) {
+                throw new IllegalArgumentException("import lexical module cannot be blank");
+            }
+        }
+
+        /**
+         * Compatibility constructor for file/root-scoped imports.
+         *
+         * A null lexicalModule denotes the synthetic root module. Named modules
+         * must carry their own module identity so imported bindings cannot leak
+         * into sibling module namespaces.
+         */
+        public ImportDecl(
+                ImportKind kind,
+                List<String> names,
+                boolean wildcard,
+                String namespace,
+                String path) {
+            this(kind, names, wildcard, namespace, path, null);
+        }
     }
 
     public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
