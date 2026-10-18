@@ -15,6 +15,18 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
     @Test
+    void omittedArgumentsFailClosedInAllConstructorAndCallPositions() {
+        for (String expression : List.of("f(_, 1)", "f(omit, 1)",
+                "f(x: 1)", "new Thing(_, 1)", "new Thing(x: 1)",
+                "spawn Worker(_, 1)", "spawn Worker(x: 1)")) {
+            String source = "pub fnc test(): void { const v = " + expression + "; return; }";
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(source), expression);
+            assertTrue(failure.getMessage().contains("not yet enabled"), failure::toString);
+        }
+    }
+
+    @Test
     void inlineTrapCannotHideExpressionBodiedLambdaMissingTerminator() {
         String invalid = """
                 pub fnc main(): void {
