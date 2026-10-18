@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
+/** Regression coverage for bounded Mailman sequence identity. */
 final class ActorGroupMailmanSequenceExhaustionTest {
     @Test
     void sequenceExhaustionFailsClosedWithoutLeakingFrozenPayloadAccounting()
