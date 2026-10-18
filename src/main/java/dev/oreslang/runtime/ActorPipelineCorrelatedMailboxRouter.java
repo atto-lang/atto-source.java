@@ -400,6 +400,16 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
                     // receipt was created before any branch publication.
                     result.add(prepared.get(next));
                 } catch (RuntimeException failure) {
+                    if (ActorPipelineRouteSession.wasMailboxPublished(child)) {
+                        // A post-enqueue error is never a rejected branch.
+                        // Preserve its sealed frame for the recipient; do
+                        // not falsely report failure and invite duplicate
+                        // retries under a different route identifier.
+                        ActorPipelineRouteSession.retireDelivered(frame);
+                        throw new IllegalStateException(
+                                "fanout DATA already published before runtime failure",
+                                failure);
+                    }
                     ActorPipelineRouteSession.retireDelivered(child);
                     var denied = rejected.get(next);
                     denied.failure().initCause(failure);
@@ -416,8 +426,11 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
             // error happened during receipt construction. A fatal error
             // during send is treated as terminal runtime failure; session
             // cleanup is idempotent and never claims a delivery succeeded.
-            for (int rest = next; rest < children.size(); rest++)
-                ActorPipelineRouteSession.retireDelivered(children.get(rest));
+            for (int rest = next; rest < children.size(); rest++) {
+                var child = children.get(rest);
+                if (!ActorPipelineRouteSession.wasMailboxPublished(child))
+                    ActorPipelineRouteSession.retireDelivered(child);
+            }
             throw failure;
         }
         });
