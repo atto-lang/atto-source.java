@@ -89,6 +89,8 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
+    // on_start is not a DATA receive and cannot own a sealed route frame.
+    private boolean currentActorStartupHook;
     private Ast.ClassDecl currentClassOwner;
     // Only an actual constructor may initialize an otherwise fixed, initially
     // absent class field. Class methods never inherit constructor privileges.
@@ -1552,7 +1554,9 @@ public final class TypeChecker {
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
+            boolean previousActorStartupHook = currentActorStartupHook;
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
+            currentActorStartupHook = actorStartupHook;
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
@@ -1561,6 +1565,7 @@ public final class TypeChecker {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
                 currentActorKind = previousActorKind;
+                currentActorStartupHook = previousActorStartupHook;
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
                 currentMaySuspend = previousMaySuspend;
@@ -2777,6 +2782,11 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 "self." + operation
                                         + " currently requires a SHARED actor routed receive");
+                    }
+                    if (currentActorStartupHook) {
+                        throw new IllegalArgumentException(
+                                "self." + operation
+                                        + " requires an admitted DATA receive; on_start is not routed mail");
                     }
                     if (operation.equals("forward_all")) {
                         throw new IllegalArgumentException(
