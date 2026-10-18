@@ -5093,6 +5093,29 @@ public final class TypeChecker {
             Set<String> generics,
             Type self,
             boolean writing) {
+        // Module member writes must preserve declared binding authority.
+        // A module namespace's structural lookup shape is not mutable data.
+        if (writing && member.receiver() instanceof Ast.NameExpr namespace
+                && env.lookup(namespace.name()) == null) {
+            Ast.ModuleDecl module = modules.get(namespace.name());
+            if (module != null) {
+                Ast.FieldDecl field = module.declarations().stream()
+                        .filter(decl -> decl instanceof Ast.FieldDecl)
+                        .map(decl -> (Ast.FieldDecl) decl)
+                        .filter(candidate -> candidate.name().equals(member.member()))
+                        .findFirst().orElse(null);
+                if (field == null || field.bindingKind() != Ast.BindingKind.LET) {
+                    throw new IllegalArgumentException(
+                            "module member '" + namespace.name() + "." + member.member()
+                                    + "' is not a writable let binding");
+                }
+            } else if (importedModuleNamespaces.contains(namespace.name())) {
+                throw new IllegalArgumentException(
+                        "cannot write imported module member '"
+                                + namespace.name() + "." + member.member()
+                                + "' without verified linked binding authority");
+            }
+        }
         Type rawReceiver;
         if (member.receiver() instanceof Ast.NameExpr name && env.lookup(name.name()) != null) {
             Env.Binding binding = env.lookup(name.name());
