@@ -277,7 +277,7 @@ ResolvedCaptureBinding {
   binding_id: CaptureBindingId   // declaration identity, never source spelling
   debug_name: String
   type: Type
-  origin: EXTERNAL_BINDING | RECURSIVE_SELF
+  origin: EXTERNAL_BINDING | RECURSIVE_SELF | CANONICAL_ACTOR_SELF
   access: READ | WRITE
   transfer: LEXICAL_SLOT_ALIAS
           | DETACHED_VALUE_SNAPSHOT
@@ -299,12 +299,21 @@ borrow/serialization/construction capability metadata. Reclassifying the same
 binding identity between `RECURSIVE_SELF` and `EXTERNAL_BINDING` is an invalid
 compiler state.
 
+`CANONICAL_ACTOR_SELF` is a runtime-proven semantic origin, not a name check.
+It is the only origin allowed to use `ACTOR_SELF_REBORROW`; it is READ-only and
+carries exactly `ACTOR_LOCAL` metadata. A local merely spelled `self` cannot
+mint the actor-turn lifetime exception, and a capture plan may contain at most
+one canonical actor-self binding.
+
 Joining control-flow/deferred alternatives merges captures by binding id. WRITE
 dominates READ, detached ownership-move dominates detached value-snapshot, and
 capability sets are unioned. Lexical-slot aliasing and detached transfer modes
 are deliberately incompatible, as is actor-self reborrow with ordinary data
-capture. Ownership checking validates this resolved plan before lowering;
-runtimes/backends consume the same plan.
+capture. Capture plans are canonicalized by stable binding identity after
+validation, so equivalent CFG joins do not depend on AST/branch traversal order
+for environment layout, hashing, caching, or backend lowering. Ownership
+checking validates this resolved plan before lowering; runtimes/backends consume
+the same plan.
 A backend must not run an independent spelling-based free-variable walk and
 silently retain extra environment state.
 
