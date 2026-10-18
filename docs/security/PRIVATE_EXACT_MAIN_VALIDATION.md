@@ -40,6 +40,55 @@ References:
 - https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches
 - https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets
 
+## Current hosted-runner quota diagnosis
+
+The current repository evidence strongly indicates a plan/quota boundary rather
+than a compiler or workflow defect:
+
+- GitHub's private-repository ruleset response requires an upgraded plan, which
+  is consistent with GitHub Free for organizations.
+- GitHub currently documents **2,000 GitHub-hosted Actions minutes/month** for
+  GitHub Free for organizations and **3,000 minutes/month** for GitHub Team.
+  Standard self-hosted runners do not consume that hosted-runner allowance.
+- Java run `38420671799` still executed real GraalVM/actor steps on
+  2026-10-13 and completed at approximately 15:26 UTC.
+- LLVM run `38420513593` executed all four x86/ARM ABI jobs and completed at
+  approximately 15:21 UTC.
+- LLVM run `38421758527`, created at 15:24 UTC, is the transition witness:
+  both ARM matrix jobs executed and passed while both x86 jobs completed
+  `failure` with `steps:null`.
+- Later LLVM runs, including `38423871260`, and Java run `38423484181`
+  show all jobs failing before execution. The same pre-runner symptom has
+  persisted across Java, LLVM, .NET, Wasm and Forge.
+
+This pattern is **high-confidence evidence of hosted-runner quota/spending
+admission being exhausted during the Oct 13 matrix**, but the exact billing
+annotation is still administrator-only evidence and must be checked before
+calling the cause formally confirmed.
+
+Administrator recovery order:
+
+1. Open GitHub billing/usage for the `ores-truffle-oreslang` organization and
+   inspect Actions minutes, metered-product budget/spending limits, payment
+   status and the failed run/check annotations around 2026-10-13 15:21–15:24
+   UTC.
+2. Upgrade to GitHub Team or Enterprise if private branch protection is
+   required. Do **not** make source public. Team also increases included hosted
+   Actions minutes, but this repository's execution volume may require an
+   explicit Actions budget above the included allowance.
+3. If hosted runners should remain bounded, prefer the reviewed disposable
+   repository-scoped self-hosted path below. GitHub documents standard
+   self-hosted runner execution as outside the hosted-minute allowance.
+4. Keep `github.ref_protected` fail-closed. A self-hosted runner is not a
+   substitute for trusted workflow governance.
+5. After the administrative change, first run one tiny source-local diagnostic
+   and require nonempty job steps/logs before spending minutes on Maven,
+   Native Image or five-backend matrices.
+
+Billing references:
+- https://docs.github.com/en/billing/concepts/product-billing/github-actions
+- https://github.com/team
+
 ## Administrator setup
 
 1. Before enabling either private runner, protect the trusted `main` branch
