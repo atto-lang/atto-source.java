@@ -64,11 +64,8 @@ def checked_repo(repository):
     if (not isinstance(result.get("full_name"), str)
             or result["full_name"].casefold() != repository.casefold()
             or result.get("visibility") != "private"
-            or result.get("private") is not True
-            or type(result.get("id")) is not int or result["id"] <= 0
-            or result.get("archived") is not False
-            or result.get("disabled") is not False):
-        raise Denied("destination identity, active status or private visibility changed")
+            or result.get("private") is not True):
+        raise Denied("destination identity or private visibility changed")
     return result
 
 
@@ -263,7 +260,6 @@ def publish(repository, source, branch, trusted_root):
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
     base = checked_repo(repository)
-    destination_id = base["id"]
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
         raise Denied("destination default branch is invalid")
@@ -274,9 +270,7 @@ def publish(repository, source, branch, trusted_root):
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
-        current = checked_repo(repository)
-        if current["id"] != destination_id:
-            raise Denied("destination repository numeric identity changed during transfer")
+        checked_repo(repository)
 
     elements = []
     for rel, data, mode in files:
