@@ -147,8 +147,9 @@ public final class GeneratorRuntime {
         }
 
         private synchronized Step<T> next() {
-            if (done || closed.get()) { awaitProducerExit(); return Step.doneStep(); }
+            // Failed producer admission must remain observable on every pull.
             throwIfBackingFailed();
+            if (done || closed.get()) { awaitProducerExit(); return Step.doneStep(); }
             startIfNeeded();
             throwIfBackingFailed();
             putResume();
@@ -174,20 +175,29 @@ public final class GeneratorRuntime {
         private void startIfNeeded() {
             synchronized (launchLock) {
                 if (closed.get() || !started.compareAndSet(false, true)) return;
-                OresFuture<Void> task = runtime.submit(() -> {
-                    try {
-                        takeResume();
-                        if (!closed.get()) {
-                            producer.run(this::emit);
+                OresFuture<Void> task;
+                try {
+                    task = runtime.submit(() -> {
+                        try {
+                            takeResume();
+                            if (!closed.get()) {
+                                producer.run(this::emit);
+                            }
+                            publish(new DoneEvent<>());
+                        } catch (CancellationException cancelled) {
+                            if (!closed.get()) publish(new FailedEvent<>(cancelled));
+                        } catch (Throwable failure) {
+                            if (!closed.get()) publish(new FailedEvent<>(failure));
                         }
-                        publish(new DoneEvent<>());
-                    } catch (CancellationException cancelled) {
-                        if (!closed.get()) publish(new FailedEvent<>(cancelled));
-                    } catch (Throwable failure) {
-                        if (!closed.get()) publish(new FailedEvent<>(failure));
-                    }
-                    return null;
-                });
+                        return null;
+                    });
+                } catch (RuntimeException | Error rejection) {
+                    // The producer never started, so no event can arrive.
+                    // Persist the denial rather than leaving a started
+                    // activation waiting indefinitely on an empty queue.
+                    backingFailure = rejection;
+                    return;
+                }
                 producerTask.set(task);
                 // Admission/context entry can fail before the producer body runs.
                 // Its catch block then never publishes an event. Deliver that
