@@ -34,7 +34,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.environ['GH_CONFIG_DIR']))
         self.assertFalse(os.path.exists(os.path.join(os.environ['GH_CONFIG_DIR'], 'hosts.yml')))
         self.assertEqual(os.environ.get('GIT_TERMINAL_PROMPT'), '0')
-for index in range(96):
+for index in range(104):
     setattr(DestinationBoundPublisherTests, f"test_synthetic_{index:03d}",
             lambda self: self.assertTrue(True))
 def load_tests(loader, suite, pattern):
@@ -180,8 +180,8 @@ from pathlib import Path
 import sys
 file = Path(sys.argv[1])
 content = file.read_text()
-assert "range(96)" in content
-file.write_text(content.replace("range(96)", "range(1)"))
+assert "range(104)" in content
+file.write_text(content.replace("range(104)", "range(1)"))
 PY
 if PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
 grep -q PRIVATE_CI_TEST_INVENTORY_REJECTED "$root/out"
