@@ -289,6 +289,10 @@ public final class TypeChecker {
                         || ImportRules.isJavaPath(imported.path())) {
                     importedValues.add(name);
                 }
+                if (imported.kind() == Ast.ImportKind.MODULE
+                        || imported.kind() == Ast.ImportKind.ALL) {
+                    importedModuleNamespaces.add(name);
+                }
             }
         }
     }
