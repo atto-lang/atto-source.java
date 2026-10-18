@@ -123,7 +123,10 @@ Runtime counters distinguish at minimum:
 - dropped terminal diagnostics;
 - lifecycle publication/cleanup anomalies.
 
-Diagnostic producers never wait for diagnostic consumers.
+Diagnostic producers never wait for diagnostic consumers. Bounded diagnostic
+queues must couple capacity admission with payload publication in one queue
+operation (or an equivalently failure-atomic primitive); a producer must not be
+able to reserve diagnostic capacity and then die before publishing the record.
 
 ## 8. Watchdog semantics
 
@@ -164,7 +167,8 @@ Diagnostic producers never wait for diagnostic consumers.
    prevent structured parent progress;
 9. cleanup/group/collector failure cannot strand registry removal;
 10. full diagnostic journals/watchdog queues drop with counters instead of
-    backpressuring actor execution;
+    backpressuring actor execution, and producer failure cannot leak diagnostic
+    capacity through a reserve-before-publish gap;
 11. concurrent actor death yields no duplicate terminal record and preserves
     declared global ordering;
 12. per-ref terminal metadata survives global-journal drops;
