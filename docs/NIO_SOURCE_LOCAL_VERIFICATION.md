@@ -33,6 +33,24 @@ workflow, change branch protection, or authorize a private-code mirror.
    package step. This helper is a runner command, not a runner provisioning
    script.
 
+## Source-free gate verification
+
+Before asking an approved runner to execute private guest sources, reviewers can
+exercise the qualification script's own preflight and receipt policy using
+disposable **local** Git repositories and simulated `java`, `javac`, and
+`mvn` executables:
+
+```bash
+python3 -m unittest discover -s tests -p test_nio_source_local_gate.py -v
+```
+
+The six test methods cover exact commit/tree mismatches, dirty checkouts,
+unsafe `target/` and receipt symlinks, a clean pinned checkout with a
+simulated passing toolchain, and propagation of a simulated Maven failure
+through `tee` and the receipt. This is a **source-free simulation**, not real
+JDK25/Maven/JUnit qualification. Passing it does not satisfy the source-head
+Actions execution gate.
+
 ## Execute
 
 ```bash
