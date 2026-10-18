@@ -66,6 +66,31 @@ final class ParserTest {
     }
 
     @Test
+    void namedNoneIsEvaluatedAndUnderscoreOnlyOmitsWhenBare() {
+        for (String expression : List.of(
+                "f(b: None)", "f(b: Some(1))",
+                "f(b: (_))", "f(b: _ + 1)")) {
+            String source = "pub fnc test(): void { const v = " + expression + "; return; }";
+            Ast.Program program = Parser.parse(source);
+            Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                    program.modules().getFirst().declarations().getFirst();
+            Ast.BindingStmt binding = (Ast.BindingStmt) fn.body().getFirst();
+            Ast.StagedCallExpr call = (Ast.StagedCallExpr) binding.initializer();
+            assertFalse(call.arguments().getFirst().omitted(), expression);
+            assertNotNull(call.arguments().getFirst().value(), expression);
+        }
+
+        String source = "pub fnc test(): void { const v = f(b: _); return; }";
+        Ast.Program program = Parser.parse(source);
+        Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                program.modules().getFirst().declarations().getFirst();
+        Ast.BindingStmt binding = (Ast.BindingStmt) fn.body().getFirst();
+        Ast.StagedCallExpr call = (Ast.StagedCallExpr) binding.initializer();
+        assertTrue(call.arguments().getFirst().omitted());
+        assertNull(call.arguments().getFirst().value());
+    }
+
+    @Test
     void duplicateNamedCallItemsAreRejectedAtTheAstBoundary() {
         for (String invocation : List.of(
                 "f(a: 1, a: 2)", "f(a: _, a: 2)",
