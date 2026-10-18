@@ -199,6 +199,55 @@ chmod +x "$work/broken-others-bin/git"
   export PATH="$work/broken-others-bin:$PATH"
   assert_status 68 'untracked enumeration failure never certifies source' "$clean_tree" source
 )
+# A successful but incomplete tracked-list response must not certify source.
+cat > "$work/broken-index-bin/git" <<'MOCK_EMPTY_STAGE'
+#!/usr/bin/env bash
+if [[ "${1:-}" == ls-files && "${2:-}" == --stage ]]; then
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+MOCK_EMPTY_STAGE
+chmod +x "$work/broken-index-bin/git"
+(
+  export PATH="$work/broken-index-bin:$PATH"
+  assert_status 68 'successful empty index manifest denied' "$clean_tree" source
+)
+# A successful but empty untracked-file listing cannot hide a new source file.
+printf 'untracked input\n' > source/hidden-untracked.ores
+cat > "$work/broken-index-bin/git" <<'MOCK_EMPTY_UNTRACKED'
+#!/usr/bin/env bash
+if [[ "${1:-}" == ls-files && "${2:-}" == --others ]]; then
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+MOCK_EMPTY_UNTRACKED
+chmod +x "$work/broken-index-bin/git"
+(
+  export PATH="$work/broken-index-bin:$PATH"
+  assert_status 68 'successful empty untracked listing denied by inventory' "$clean_tree" source
+)
+rm source/hidden-untracked.ores
+# Build-ignored compiler inputs also require inventory rejection.
+printf 'ignored-source.ores\n' > source/.gitignore
+printf 'ignored input\n' > source/ignored-source.ores
+(
+  export PATH="$work/broken-index-bin:$PATH"
+  assert_status 68 'ignored source input denied by inventory' "$clean_tree" source
+)
+rm source/.gitignore source/ignored-source.ores
+# A successful but empty committed-tree listing must not certify a checkout.
+cat > "$work/broken-index-bin/git" <<'MOCK_EMPTY_TREE'
+#!/usr/bin/env bash
+if [[ "${1:-}" == ls-tree ]]; then
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+MOCK_EMPTY_TREE
+chmod +x "$work/broken-index-bin/git"
+(
+  export PATH="$work/broken-index-bin:$PATH"
+  assert_status 68 'successful empty committed tree denied' "$clean_tree" source
+)
 # Verify ordinary source works after removing the adversarial Git shim.
 assert_status 0 'clean source remains valid after index failure test' "$clean_tree" source
 echo 'SOURCE_TREE_GATE_TESTS_PASS'
