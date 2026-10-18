@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.BoundInvocation;
 import dev.oreslang.types.OptionalCallAbiPreview;
+import dev.oreslang.types.OptionalCallEvaluationSchedule;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
@@ -283,5 +284,67 @@ final class BoundInvocationTest {
                 BoundInvocation.bindClassConstructor(owner,
                         new Ast.StagedNewExpr(Ast.TypeRef.simple("Box"), args, false),
                         List.of(BOOL, INT)));
+    }
+
+    @Test
+    void canonicalBoundScheduleEnforcesSourceThenAbiPhases() {
+        Ast.ModuleDecl module = owner();
+        var bound = BoundInvocation.bindModuleFunction(
+                module, call("work"), List.of(BOOL, INT));
+        var steps = bound.schedule().steps();
+        assertEquals(7, steps.size());
+        assertEquals(OptionalCallEvaluationSchedule.Operation.EVALUATE_CALLEE,
+                steps.get(0).operation());
+        assertEquals(OptionalCallEvaluationSchedule.Operation.EVALUATE_ARGUMENT,
+                steps.get(1).operation());
+        assertEquals(0, steps.get(1).index());
+        assertEquals(OptionalCallEvaluationSchedule.Operation.EVALUATE_ARGUMENT,
+                steps.get(2).operation());
+        assertEquals(1, steps.get(2).index());
+        assertEquals(List.of(0, 1, 2), steps.subList(3, 6).stream()
+                .map(OptionalCallEvaluationSchedule.Step::index).toList());
+        assertTrue(steps.subList(3, 6).stream().allMatch(s ->
+                s.operation() == OptionalCallEvaluationSchedule.Operation.MATERIALIZE_ABI_SLOT));
+        assertEquals(OptionalCallEvaluationSchedule.Operation.INVOKE,
+                steps.getLast().operation());
+        assertEquals(-1, steps.getLast().index());
+        assertEquals(List.of(2, 1, 0), bound.schedule().abiSlots().stream()
+                .map(OptionalCallAbiPreview.Slot::originalCallItemIndex).toList());
+        assertThrows(UnsupportedOperationException.class,
+                () -> bound.schedule().steps().clear());
+        assertThrows(IllegalStateException.class, bound::requireExecutable);
+    }
+
+    @Test
+    void methodAndConstructorSchedulesHaveDistinctCalleeRules() {
+        Ast.ClassDecl owner = (Ast.ClassDecl) Parser.parse("""
+                define module app as
+                    define class Box as
+                        constructor(int a, bool c) { return; }
+                        pub fnc work(int a, bool c): int { return a; }
+                    end
+                end
+                """).modules().getFirst().declarations().getFirst();
+        var args = List.of(
+                Ast.CallArgument.named("c", new Ast.LiteralExpr(true)),
+                Ast.CallArgument.named("a", new Ast.LiteralExpr(7L)));
+        var method = BoundInvocation.bindClassMethod(owner,
+                new Ast.StagedCallExpr(
+                        new Ast.MemberExpr(new Ast.NameExpr("box"), "work"),
+                        List.of(), false, args),
+                List.of(BOOL, INT));
+        var constructor = BoundInvocation.bindClassConstructor(owner,
+                new Ast.StagedNewExpr(Ast.TypeRef.simple("Box"), args, false),
+                List.of(BOOL, INT));
+        assertEquals(OptionalCallEvaluationSchedule.Operation.EVALUATE_CALLEE,
+                method.schedule().steps().getFirst().operation());
+        assertEquals(OptionalCallEvaluationSchedule.Operation.EVALUATE_ARGUMENT,
+                constructor.schedule().steps().getFirst().operation());
+        assertEquals(2, constructor.schedule().evaluationOrder().size());
+        assertEquals(3, method.schedule().evaluationOrder().size());
+        assertEquals(2, constructor.schedule().abiSlots().size());
+        assertEquals(2, method.schedule().abiSlots().size());
+        assertThrows(IllegalStateException.class, method::requireExecutable);
+        assertThrows(IllegalStateException.class, constructor::requireExecutable);
     }
 }

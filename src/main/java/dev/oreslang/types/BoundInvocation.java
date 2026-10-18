@@ -18,6 +18,7 @@ public final class BoundInvocation {
     private final Kind kind;
     private final int declarationOrdinal;
     private final OptionalCallAbiPreview.InvocationPreview preview;
+    private final OptionalCallEvaluationSchedule.Schedule schedule;
     private final List<Ast.TypeRef> assertedSourceTypes;
 
     private BoundInvocation(Kind kind, Ast.Expr source, Object owner,
@@ -30,6 +31,9 @@ public final class BoundInvocation {
         this.selected = Objects.requireNonNull(selected);
         this.declarationOrdinal = ordinal;
         this.preview = Objects.requireNonNull(preview);
+        // The canonical schedule rechecks source evaluation identity and
+        // unique formal ABI destinations before any consumer can inspect IR.
+        this.schedule = OptionalCallEvaluationSchedule.from(preview);
         this.assertedSourceTypes = List.copyOf(assertedSourceTypes);
         if (preview.arguments().sourceExpressions().size() != this.assertedSourceTypes.size()) {
             throw new IllegalArgumentException("every evaluated source must have one claimed type");
@@ -63,6 +67,8 @@ public final class BoundInvocation {
     public Kind kind() { return kind; }
     public int declarationOrdinal() { return declarationOrdinal; }
     public OptionalCallAbiPreview.InvocationPreview preview() { return preview; }
+    /** Compiler-only schedule; its INVOKE step does not authorize execution. */
+    public OptionalCallEvaluationSchedule.Schedule schedule() { return schedule; }
     public List<Ast.TypeRef> assertedSourceTypes() { return assertedSourceTypes; }
     public Readiness readiness() { return Readiness.SHAPE_ONLY; }
 
