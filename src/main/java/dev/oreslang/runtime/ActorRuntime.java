@@ -6847,6 +6847,14 @@ public final class ActorRuntime implements AutoCloseable {
         private OresScheduler sourceScheduler;
         /** Owned source Tasks retain actor finalization until all have quiesced. */
         private TaskScope actorOwnedTasks;
+        /**
+         * Guard actor-owned Task finalization while the termination cascade
+         * is still dispatching pending-Future and child-actor cancellation.
+         * Both members are protected by lifecycleLock. Reentrant/concurrent
+         * termination requests must not publish done after only one cascade.
+         */
+        private int activeTerminationCascades;
+        private boolean terminationCascadeComplete;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
@@ -7154,7 +7162,10 @@ public final class ActorRuntime implements AutoCloseable {
                     || scheduled.get()
                     || carrierActive
                     || !children.isEmpty()
-                    || (actorOwnedTasks != null && !actorOwnedTasks.getDone().isDone())) return;
+                    || (actorOwnedTasks != null
+                            && (!terminationCascadeComplete
+                                    || activeTerminationCascades != 0
+                                    || !actorOwnedTasks.getDone().isDone()))) return;
             finalized = true;
             OresScheduler scheduler = sourceScheduler;
             sourceScheduler = null;
@@ -7754,34 +7765,53 @@ public final class ActorRuntime implements AutoCloseable {
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
                 ownedTaskScope = actorOwnedTasks;
-                // The actor finalization gate will remain closed until the
-                // scope has sealed admission and every owned Task is quiescent.
+                if (ownedTaskScope != null) {
+                    activeTerminationCascades++;
+                    terminationCascadeComplete = false;
+                }
+                // A tracked Task scope prevents finalization until both its
+                // physical join AND this entire termination cascade finish.
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
 
-            // Sealing/cancelling a scope can settle Futures and run trusted
-            // host notification callbacks synchronously. Never do that while
-            // holding lifecycleLock. The finalization gate is already armed.
-            if (ownedTaskScope != null) {
-                ownedTaskScope.cancel("owning actor terminated");
-            }
+            try {
+                // Sealing/cancelling a scope can settle Futures and execute
+                // trusted callbacks inline. Never hold the actor lifecycle
+                // monitor while doing so.
+                if (ownedTaskScope != null) {
+                    ownedTaskScope.cancel("owning actor terminated");
+                }
 
-            // Runtime Future callbacks can take other actor/lifecycle locks.
-            // Publish failure only after teardown has released lifecycleLock.
-            Throwable drainFailure = cause == null ? terminated(ref) : cause;
-            for (DrainWaiter waiter : failedDrainWaiters) {
-                waiter.completion().failFromRuntime(drainFailure);
-            }
-
-            // Cancellation removes channel/select waiter registrations before
-            // any future channel activity can revive work for this dead actor.
-            for (OresFuture<?> future : pending) future.cancel(false);
-
-            for (ActorCell<?> child : descendants) {
-                child.cancel(new ActorCancelledException(
-                        child.ref.id(),
-                        "parent actor " + ref.id() + " terminated"));
+                // Pending Future subscribers may synchronously request more
+                // lifecycle operations. All of these belong to this cascade,
+                // and must be dispatched before the actor publishes done.
+                Throwable drainFailure = cause == null ? terminated(ref) : cause;
+                for (DrainWaiter waiter : failedDrainWaiters) {
+                    waiter.completion().failFromRuntime(drainFailure);
+                }
+                for (OresFuture<?> future : pending) future.cancel(false);
+                for (ActorCell<?> child : descendants) {
+                    child.cancel(new ActorCancelledException(
+                            child.ref.id(),
+                            "parent actor " + ref.id() + " terminated"));
+                }
+            } finally {
+                if (ownedTaskScope != null) {
+                    synchronized (lifecycleLock) {
+                        if (activeTerminationCascades <= 0) {
+                            throw new IllegalStateException(
+                                    "actor Task termination cascade accounting underflow");
+                        }
+                        if (--activeTerminationCascades == 0) {
+                            terminationCascadeComplete = true;
+                        }
+                        // A TaskScope completion callback could have arrived
+                        // during this cascade; recheck after its last action.
+                        if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                        lifecycleLock.notifyAll();
+                    }
+                }
             }
         }
     }
