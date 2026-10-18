@@ -351,4 +351,24 @@ public class TaskScopeTest {
         }
     }
 
+    @Test void saturatedJoinCounterRejectsBeforeSignedOverflow()
+            throws Exception {
+        // White-box extreme-boundary test. This is not a production claim
+        // about accepting billions of live tasks; it protects the invariant
+        // that admitted children can never make the join count negative.
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            Field counter = TaskScope.class.getDeclaredField("active");
+            counter.setAccessible(true);
+            counter.setInt(scope, Integer.MAX_VALUE);
+            assertThrows(RejectedExecutionException.class,
+                    () -> scope.startTask(r -> OresScheduler.done(1)));
+            assertEquals(Integer.MAX_VALUE, counter.getInt(scope),
+                    "saturated admission must not mutate the join count");
+            counter.setInt(scope, 0); // Restore test-only injected state.
+            scope.seal();
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+        }
+    }
+
 }
