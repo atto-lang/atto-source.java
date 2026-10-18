@@ -179,26 +179,63 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
 
     @Override
     public byte[] encode(Object value) {
+        return encodeForMailbox(
+                value,
+                MessagePackCollectionCodec.ScratchBudget.NONE).bytes();
+    }
+
+    @Override
+    public MessagePackCollectionCodec.EncodedMailboxFrame encodeForMailbox(
+            Object value,
+            MessagePackCollectionCodec.ScratchBudget scratch) {
+        Objects.requireNonNull(scratch, "scratch budget");
         if (!(value instanceof TaggedValue tagged)) {
-            throw new IllegalArgumentException("typed actor mailbox requires enum-tagged value");
+            throw new IllegalArgumentException(
+                    "typed actor mailbox requires enum-tagged value");
         }
         CaseCodec cc = byName.get(tagged.qualifiedName());
         if (cc == null || cc.source().tag() != tagged.tag()) {
-            throw new IllegalArgumentException("enum variant is not allowed in actor pattern: "
-                    + tagged.qualifiedName());
+            throw new IllegalArgumentException(
+                    "enum variant is not allowed in actor pattern: "
+                            + tagged.qualifiedName());
         }
-        if (cc.source().payload() == null) {
-            if (tagged.payload() != null) {
-                throw new IllegalArgumentException("payloadless enum case cannot carry data");
+
+        // The top-level tuple passed into the collection codec is a short
+        // transient host wrapper. Charge it before allocation; the collection
+        // codec itself charges all variable-sized buffers before allocating.
+        scratch.reserve(64L);
+        try {
+            MessagePackCollectionCodec.EncodedMailboxFrame encoded;
+            if (cc.source().payload() == null) {
+                if (tagged.payload() != null) {
+                    throw new IllegalArgumentException(
+                            "payloadless enum case cannot carry data");
+                }
+                encoded = MessagePackCollectionCodec.encodeForMailbox(
+                        cc.schemaId(),
+                        cc.shape(),
+                        List.of(tagged.enumName(), (long) tagged.tag()),
+                        scratch);
+            } else {
+                if (tagged.payload() == null) {
+                    throw new IllegalArgumentException(
+                            "enum case requires serializable payload");
+                }
+                encoded = MessagePackCollectionCodec.encodeForMailbox(
+                        cc.schemaId(),
+                        cc.shape(),
+                        List.of(
+                                tagged.enumName(),
+                                (long) tagged.tag(),
+                                tagged.payload()),
+                        scratch);
             }
-            return MessagePackCollectionCodec.encode(
-                    cc.schemaId(), cc.shape(), List.of(tagged.enumName(), (long) tagged.tag()));
+            return new MessagePackCollectionCodec.EncodedMailboxFrame(
+                    encoded.bytes(),
+                    Math.addExact(encoded.decodedBytes(), 64L));
+        } finally {
+            scratch.release(64L);
         }
-        if (tagged.payload() == null) {
-            throw new IllegalArgumentException("enum case requires serializable payload");
-        }
-        return MessagePackCollectionCodec.encode(cc.schemaId(), cc.shape(),
-                List.of(tagged.enumName(), (long) tagged.tag(), tagged.payload()));
     }
 
     @Override
