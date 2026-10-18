@@ -129,6 +129,69 @@ final class StaticModuleNamespaceConfinementTest {
     }
 
     @Test
+    void linkedImportedModuleMembersHaveVerifiedTypesAndArity() {
+        java.util.Map<String, String> sources = new java.util.LinkedHashMap<>();
+        sources.put("catalog.ores", MODULE);
+        sources.put("client.ores", """
+                import module Catalog as ImportedCatalog from "./catalog.ores";
+                routine main(): void {
+                    const int version = ImportedCatalog.version;
+                    const int result = ImportedCatalog.get();
+                    return;
+                }
+                """);
+        assertDoesNotThrow(() ->
+                new dev.oreslang.compiler.IncrementalCompiler().compile(sources));
+    }
+
+    @Test
+    void linkedImportedModuleCannotFabricateMembers() {
+        java.util.Map<String, String> sources = new java.util.LinkedHashMap<>();
+        sources.put("catalog.ores", MODULE);
+        sources.put("client.ores", """
+                import module Catalog as ImportedCatalog from "./catalog.ores";
+                routine main(): void {
+                    const forged = ImportedCatalog.notExported;
+                    return;
+                }
+                """);
+        IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class, () ->
+                new dev.oreslang.compiler.IncrementalCompiler().compile(sources));
+        assertTrue(rejection.getMessage().contains("unknown structural member"),
+                rejection.toString());
+    }
+
+    @Test
+    void linkedImportedModuleCannotCallUndeclaredOverload() {
+        java.util.Map<String, String> sources = new java.util.LinkedHashMap<>();
+        sources.put("catalog.ores", MODULE);
+        sources.put("client.ores", """
+                import module Catalog as ImportedCatalog from "./catalog.ores";
+                routine main(): void {
+                    const result = ImportedCatalog.get(1);
+                    return;
+                }
+                """);
+        assertThrows(IllegalArgumentException.class, () ->
+                new dev.oreslang.compiler.IncrementalCompiler().compile(sources));
+    }
+
+    @Test
+    void unresolvedImportedModuleCannotUseOpaqueMemberShape() {
+        String source = """
+                import module Catalog as ImportedCatalog from "unresolved-package";
+                routine main(): void {
+                    const result = ImportedCatalog.get();
+                    return;
+                }
+                """;
+        IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(rejection.getMessage().contains("requires verified linked module metadata"),
+                rejection.toString());
+    }
+
+    @Test
     void importedModuleAliasIsNotAnOrdinaryValue() {
         java.util.Map<String, String> sources = new java.util.LinkedHashMap<>();
         sources.put("catalog.ores", MODULE);
