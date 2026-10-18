@@ -41,7 +41,7 @@ public final class OresCancellationSource implements AutoCloseable {
             for (OresCancellationToken parent : upstream) {
                 Objects.requireNonNull(parent, "linked cancellation token");
                 OresCancellationToken.Registration registration =
-                        parent.onCancellationRequested(child::cancel);
+                        parent.onCancellationRequested(() -> OresCancellationDispatcher.request(child));
                 synchronized (child.gate) {
                     if (child.requested.get()) {
                         registration.close();
