@@ -241,7 +241,11 @@ public final class NativeHttp implements AutoCloseable {
             if (waiter != null) throw new IllegalStateException("only one pending HTTP accept is permitted");
             Exchange exchange = pending.poll();
             while (exchange != null && exchange.state.terminal) exchange = pending.poll();
-            if (exchange != null) return OresFuture.completed(exchange);
+            if (exchange != null) {
+                exchange.state.acceptReadyNanos = System.nanoTime();
+                CorePerf.elapsed(CorePerf.HTTP_ACCEPT_QUEUE, exchange.state.queuedNanos, exchange.state.acceptReadyNanos);
+                return OresFuture.completed(exchange);
+            }
             waiter = new OresFuture<>(() -> false, () -> { });
             return waiter;
         }
@@ -261,8 +265,14 @@ public final class NativeHttp implements AutoCloseable {
                     state.deadline = timers.schedule(() -> timed.abort(504), deadlineMillis, TimeUnit.MILLISECONDS);
                     CorePerf.end(CorePerf.HTTP_TIMER_SCHEDULE, schedulePerf);
                     Exchange exchange = new Exchange(state, context, 0);
+                    state.queuedNanos = System.nanoTime();
                     if (waiter == null) pending.add(exchange);
-                    else { OresFuture<Object> next = waiter; waiter = null; next.completeFromRuntime(exchange); }
+                    else {
+                        // Direct delivery spends no time in the pending HTTP queue.
+                        state.acceptReadyNanos = state.queuedNanos;
+                        CorePerf.elapsed(CorePerf.HTTP_ACCEPT_QUEUE, state.queuedNanos, state.acceptReadyNanos);
+                        OresFuture<Object> next = waiter; waiter = null; next.completeFromRuntime(exchange);
+                    }
                 }
             } catch (IllegalArgumentException invalid) {
                 admission.release(); reject(raw, invalid.getMessage().equals("body too large") ? 413 : 400);
@@ -328,6 +338,7 @@ public final class NativeHttp implements AutoCloseable {
         final List<String> path;
         long generation;
         long spawnNanos, readyNanos, movedNanos, claimedNanos;
+        volatile long queuedNanos, acceptReadyNanos;
         Object owner;
         boolean busy, committed, bodyRead, streamingBody, suppressBody;
         int bodyBytes;
@@ -440,6 +451,8 @@ public final class NativeHttp implements AutoCloseable {
         public String serverTiming() { return "actor-startup;dur=" + startupNanos() / 1_000_000.0 + ", move-to-claim;dur=" + transferNanos() / 1_000_000.0; }
         public long startupNanos() { synchronized (state) { checkOwner(); return state.spawnNanos == 0 ? 0 : Math.max(0, state.readyNanos - state.spawnNanos); } }
         public long transferNanos() { synchronized (state) { checkOwner(); return state.claimedNanos == 0 ? 0 : Math.max(0, state.claimedNanos - state.movedNanos); } }
+        public long queuedNanos() { synchronized (state) { checkOwner(); return state.queuedNanos; } }
+        public long acceptReadyNanos() { synchronized (state) { checkOwner(); return state.acceptReadyNanos; } }
         public long admittedNanos() { synchronized (state) { checkOwner(); return state.admittedNanos; } }
         public OresFuture<Object> completion() { synchronized (state) { checkOwner(); return state.completion; } }
         public String requestId() { synchronized (state) { checkOwner(); return state.requestId; } }

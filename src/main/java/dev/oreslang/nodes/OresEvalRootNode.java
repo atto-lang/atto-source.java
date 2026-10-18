@@ -6284,6 +6284,8 @@ public final class OresEvalRootNode extends RootNode {
                     case "move_to_claim_ns" -> exchange.transferNanos();
                     case "request_id" -> exchange.requestId();
                     case "admitted_ns" -> exchange.admittedNanos();
+                    case "http_queued_ns" -> exchange.queuedNanos();
+                    case "accept_ready_ns" -> exchange.acceptReadyNanos();
                     case "completion" -> exchange.completion();
                     case "operation_id" -> exchange.operationId();
                     case "pipeline_id" -> (long) exchange.pipelineId();

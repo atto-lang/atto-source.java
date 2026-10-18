@@ -16,6 +16,38 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void acceptTimingSeparatesWaitingConsumerFromQueuedRequest() throws Exception {
+        String output = run("""
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              val waiting = server.accept();
+              stdio.println(server.port);
+              val first = await waiting;
+              val int resumed = process.monotonic_ns();
+              stdio.println(first.http_queued_ns == first.accept_ready_ns);
+              stdio.println(resumed >= first.accept_ready_ns);
+              loop { if server.accepted == 2; then break; fi }
+              val second = await server.accept();
+              stdio.println(second.accept_ready_ns > second.http_queued_ns);
+              stdio.println(second.http_queued_ns >= second.admitted_ns);
+              await first.respond(200, "text/plain", "ok");
+              await second.respond(200, "text/plain", "ok");
+              await server.shutdown(1000);
+              return;
+            }
+            """, port -> {
+                try (HttpClient client = HttpClient.newHttpClient()) {
+                    var req = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/"))
+                        .timeout(Duration.ofSeconds(8)).GET().build();
+                    var first = client.sendAsync(req, HttpResponse.BodyHandlers.ofString());
+                    var second = client.sendAsync(req, HttpResponse.BodyHandlers.ofString());
+                    assertEquals(200, first.get(10, TimeUnit.SECONDS).statusCode());
+                    assertEquals(200, second.get(10, TimeUnit.SECONDS).statusCode());
+                }
+            });
+        assertTrue(output.contains("true\ntrue\ntrue\ntrue\n"), output);
+    }
+
     @Test void rootBufferedResponseTransfersOwnershipAndRejectsRootStreaming() throws Exception {
         String output = run("""
             pub async routine main(): void {

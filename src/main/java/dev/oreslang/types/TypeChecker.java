@@ -4251,7 +4251,7 @@ public final class TypeChecker {
             case "HttpExchange" -> switch (name) {
                 case "can_respond" -> Primitive.BOOL;
                 case "method", "target", "request_id", "operation_id", "server_timing" -> Primitive.STRING;
-                case "pipeline_id", "contract_id", "actor_startup_ns", "move_to_claim_ns", "admitted_ns" -> Primitive.INT;
+                case "pipeline_id", "contract_id", "actor_startup_ns", "move_to_claim_ns", "admitted_ns", "http_queued_ns", "accept_ready_ns" -> Primitive.INT;
                 case "completion" -> new Named("Future", List.of(Primitive.INT));
                 case "set_route" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT), Primitive.VOID);
                 case "add_param" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.VOID);
