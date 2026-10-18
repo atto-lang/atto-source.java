@@ -56,14 +56,27 @@ final class ActorPipelineRouteSession {
         private final List<String> actorPath;
         private final int receiverIndex;
         private final boolean returning;
+        // Exactly one original forward/return frame was consumed to create
+        // this reverse hop. This is an identity relation, not a flow/path
+        // equality guess. Never serialized into an ActorMail payload.
+        private final MailFrame returnParent;
+        // Guarded by the owning session monitor.
+        private boolean rollbackConsumed;
         private MailFrame(ActorPipelineRouteSession session, long generation,
                           long flowId, long routeId, List<String> actorPath) {
             this(session, generation, flowId, routeId, actorPath,
-                    actorPath.size() - 1, false);
+                    actorPath.size() - 1, false, null);
         }
         private MailFrame(ActorPipelineRouteSession session, long generation,
                           long flowId, long routeId, List<String> actorPath,
                           int receiverIndex, boolean returning) {
+            this(session, generation, flowId, routeId, actorPath,
+                    receiverIndex, returning, null);
+        }
+        private MailFrame(ActorPipelineRouteSession session, long generation,
+                          long flowId, long routeId, List<String> actorPath,
+                          int receiverIndex, boolean returning,
+                          MailFrame returnParent) {
             this.session = session;
             this.generation = generation;
             this.flowId = flowId;
@@ -73,6 +86,7 @@ final class ActorPipelineRouteSession {
                 throw new IllegalArgumentException("route receiver index out of bounds");
             this.receiverIndex = receiverIndex;
             this.returning = returning;
+            this.returnParent = returnParent;
         }
         public String receiver() { return actorPath.get(receiverIndex); }
         public long generation() { return generation; }
@@ -307,7 +321,8 @@ final class ActorPipelineRouteSession {
             throw new IllegalStateException("pipeline origin has no upstream return hop");
         reserveRouteIds(1);
         MailFrame child = new MailFrame(this, generation, current.flowId,
-                nextRouteId, current.actorPath, current.receiverIndex - 1, true);
+                nextRouteId, current.actorPath, current.receiverIndex - 1, true,
+                current);
         active.put(child, Boolean.TRUE);
         active.remove(current);
         nextRouteId++;
@@ -326,7 +341,7 @@ final class ActorPipelineRouteSession {
             throw new IllegalStateException("pipeline origin cannot reply to itself");
         reserveRouteIds(1);
         MailFrame child = new MailFrame(this, generation, current.flowId,
-                nextRouteId, current.actorPath, 0, true);
+                nextRouteId, current.actorPath, 0, true, current);
         active.put(child, Boolean.TRUE);
         active.remove(current);
         nextRouteId++;
@@ -345,6 +360,8 @@ final class ActorPipelineRouteSession {
                 || original.generation != generation
                 || rejected.generation != generation
                 || !rejected.returning
+                || rejected.returnParent != original
+                || rejected.rollbackConsumed
                 || original.flowId != rejected.flowId
                 || !original.actorPath.equals(rejected.actorPath)
                 || active.containsKey(original)) {
@@ -357,6 +374,7 @@ final class ActorPipelineRouteSession {
         // Failed attempts always spend their distinct route ID.
         active.put(original, Boolean.TRUE);
         active.remove(rejected);
+        rejected.rollbackConsumed = true;
     }
 
     /** Send to the immediate authenticated sender of the current message. */
