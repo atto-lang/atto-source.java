@@ -1,7 +1,8 @@
 // Proposed executable gate for Java/Graal actor state; NOT proven as a guest
 // execution on this exact tree. Uses int scalars to avoid pretending Tensor<f64>
 // or GPU-backed parameter storage is implemented.
-// Expected stdout (each own line): -6, 20, -7, 30, 2, -4, -2, 5, 5, 2, -1, 10.
+// Golden stdout lives in tests/golden/actor_state_scalar.stdout; includes
+// rejected out-of-range inputs and a rejected oversized optimizer candidate.
 //
 // This is a single actor performing a scalar differentiable step. Gradient
 // contribution is x * upstream_gradient. Two microbatches are admitted at
@@ -40,6 +41,12 @@ define actor VersionedScalarStage as
             if s.step != expected_step; do
                 return -5;
             fi
+            // Conservative 32-bit-safe domain: |weight| and |x| <= 10000.
+            // Forward multiplication is therefore <= 1e8, with no mutation
+            // on invalid input. The future typed Result API can replace -8.
+            if x < -10000 || x > 10000 || s.weight < -10000 || s.weight > 10000; do
+                return -8;
+            fi
             if microbatch == 1; do
                 if s.issued_first; do
                     return -7;
@@ -75,6 +82,12 @@ define actor VersionedScalarStage as
             fi
             if microbatch != 1 && microbatch != 2; do
                 return -3;
+            fi
+            // Both inputs were bounded during forward. Each contribution is
+            // <= 1e8; two contributions cannot overflow a signed 32-bit int.
+            // Reject first so neither seen bit nor gradient is consumed.
+            if upstream < -10000 || upstream > 10000; do
+                return -8;
             fi
             if microbatch == 1; do
                 if !s.issued_first; do
@@ -118,7 +131,19 @@ define actor VersionedScalarStage as
             if s.pending_gradients != 2 || !s.issued_first || !s.issued_second || !s.seen_first || !s.seen_second; do
                 return -2;
             fi
-            s.weight = s.weight - s.accumulated_gradient;
+            // Version/step cannot wrap and create a stale-message ABA.
+            // Bound them before the write. Both gradients sum to <= 2e8,
+            // making candidate arithmetic safe for signed 32-bit int.
+            if s.step >= 1000000 || s.version >= 1000000; do
+                return -9;
+            fi
+            val int candidate_weight = s.weight - s.accumulated_gradient;
+            if candidate_weight < -10000 || candidate_weight > 10000; do
+                return -8;
+            fi
+            // All checks complete: one exclusive state transaction publishes
+            // candidate weight, version, step, and cleared gradient receipts.
+            s.weight = candidate_weight;
             s.accumulated_gradient = 0;
             s.pending_gradients = 0;
             s.issued_first = false;
@@ -147,6 +172,10 @@ define actor VersionedScalarStage as
             stdio.println(self.accumulate(1, 1, 2, 1));
             return;
         fi
+        if mail.value == "unsafe_forward"; do
+            stdio.println(self.eval_affine(1, 1, 1, 10001));
+            return;
+        fi
         if mail.value == "forward1"; do
             stdio.println(self.eval_affine(1, 1, 1, 2));
             return;
@@ -157,6 +186,10 @@ define actor VersionedScalarStage as
         fi
         if mail.value == "forward2"; do
             stdio.println(self.eval_affine(1, 1, 2, 3));
+            return;
+        fi
+        if mail.value == "unsafe_upstream"; do
+            stdio.println(self.accumulate(1, 1, 1, 10001));
             return;
         fi
         if mail.value == "grad1"; do
@@ -184,6 +217,30 @@ define actor VersionedScalarStage as
             stdio.println(self.accumulate(1, 1, 1, 1));
             return;
         fi
+        // A second step has mathematically valid individual contributions,
+        // but its candidate weight would exceed the bounded safe domain.
+        // Rejection must leave weight/version unchanged.
+        if mail.value == "high_forward1"; do
+            stdio.println(self.eval_affine(2, 2, 1, 10000));
+            return;
+        fi
+        if mail.value == "high_forward2"; do
+            stdio.println(self.eval_affine(2, 2, 2, 10000));
+            return;
+        fi
+        if mail.value == "high_grad1"; do
+            stdio.println(self.accumulate(2, 2, 1, 10000));
+            return;
+        fi
+        if mail.value == "high_grad2"; do
+            stdio.println(self.accumulate(2, 2, 2, 10000));
+            return;
+        fi
+        if mail.value == "high_commit"; do
+            stdio.println(self.commit(2, 2));
+            stdio.println(self.version());
+            return;
+        fi
         if mail.value == "after"; do
             stdio.println(self.weight_snapshot() * 2);
             self.end();
@@ -197,15 +254,22 @@ pub async routine main(): void {
     val worker = spawn VersionedScalarStage();
     await worker.get_ready();
     worker.send("orphan");
+    worker.send("unsafe_forward");
     worker.send("forward1");
     worker.send("forward_duplicate");
     worker.send("forward2");
+    worker.send("unsafe_upstream");
     worker.send("grad1");
     worker.send("duplicate");
     worker.send("early");
     worker.send("grad2");
     worker.send("commit");
     worker.send("stale");
+    worker.send("high_forward1");
+    worker.send("high_forward2");
+    worker.send("high_grad1");
+    worker.send("high_grad2");
+    worker.send("high_commit");
     worker.send("after");
     await worker.get_done();
     return;
