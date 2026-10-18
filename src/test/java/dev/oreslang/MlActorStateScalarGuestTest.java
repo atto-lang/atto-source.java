@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * GUEST execution gate for the actual Oreslang ML scalar actor-state fixture.
  *
  * The .ores fixture was copied byte-for-byte from oreslang-ml's stacked
- * actor-state PR #7 (Git blob 7b14a0ed95b6d957cce86814b62a733615a5675a).
+ * actor-state PR #7 (Git blob 4597a2860fb5aaf0be5cf1dda5c16eaa93c5d8b2).
  * This JUnit class requires an actual GraalVM Oreslang context evaluation;
  * pure host-side arithmetic is explicitly NOT accepted as execution evidence.
  *
@@ -47,7 +47,7 @@ final class MlActorStateScalarGuestTest {
 
     @Test void compiledActorStageHasOneStateSchemaAndDeclaredEffects() throws Exception {
         String text = source();
-        assertEquals("7b14a0ed95b6d957cce86814b62a733615a5675a",
+        assertEquals("4597a2860fb5aaf0be5cf1dda5c16eaa93c5d8b2",
                 gitBlobSha(text), "ML fixture drifted from pinned source Git blob");
         assertDoesNotThrow(() -> verify(text));
         assertEquals(1, count(text, "    state {"));
@@ -64,7 +64,7 @@ final class MlActorStateScalarGuestTest {
         assertTrue(text.contains("return Err(\"INVALID_INPUT\")"));
         assertTrue(text.contains("return Err(\"INVALID_GRADIENT\")"));
         assertTrue(text.contains("return Err(\"UNSAFE_CANDIDATE\")"));
-        assertTrue(text.contains("self.eval_affine(3, 3, 2, -2, 101, 1)"));
+        assertTrue(text.contains("self.eval_affine(3, 3, 2, -2, 101, 1, 202)"));
         assertTrue(text.contains("issued_first: bool"));
         assertTrue(text.contains("issued_second: bool"));
         assertTrue(text.contains("input_first: int"));
@@ -75,6 +75,9 @@ final class MlActorStateScalarGuestTest {
         assertTrue(text.contains("private cancel_rejected("));
         assertTrue(text.contains("run_id: int = 101"));
         assertTrue(text.contains("incarnation: int = 1"));
+        assertTrue(text.contains("graph_id: int = 202"));
+        assertTrue(text.contains("return Err(\"STALE_GRAPH\")"));
+        assertTrue(text.contains("worker.send(\"wrong_graph\")"));
         assertTrue(text.contains("return Err(\"STALE_RUN\")"));
         assertTrue(text.contains("return Err(\"STALE_INCAR\")"));
         assertFalse(text.contains("mail.value == \"cancel_failed\""));
@@ -113,7 +116,7 @@ final class MlActorStateScalarGuestTest {
         }
         String expected = Files.readString(Path.of("tests", "golden",
                 "ml-actor-state-scalar.stdout"));
-        assertEquals("029f88f5a174c1269a784ab4cc44b67e348156d1",
+        assertEquals("b602f9821817696f16499af1a74cb22d49a0ecab",
                 gitBlobSha(expected), "scalar training output golden drifted");
         assertEquals(expected, stdout.toString(StandardCharsets.UTF_8));
     }
