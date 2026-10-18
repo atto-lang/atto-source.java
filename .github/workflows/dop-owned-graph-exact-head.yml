@@ -45,6 +45,9 @@ jobs:
             printf 'DOP_GRAPH_SOURCE_TREE=%s\n' "$(git rev-parse HEAD^{tree})"
             printf 'DOP_GRAPH_REPOSITORY=%s\n' "$GITHUB_REPOSITORY"
             printf 'DOP_GRAPH_EVENT=%s\n' "$GITHUB_EVENT_NAME"
+            printf 'DOP_GRAPH_RUNTIME_BLOB=%s\n' "$(git hash-object src/main/java/dev/oreslang/runtime/DopGraphCpuIntegrationV1.java)"
+            printf 'DOP_GRAPH_EXECUTION_BLOB=%s\n' "$(git hash-object src/main/java/dev/oreslang/runtime/ExecutionGraphV1.java)"
+            printf 'DOP_GRAPH_TEST_BLOB=%s\n' "$(git hash-object src/test/java/dev/oreslang/runtime/DopGraphCpuIntegrationV1Test.java)"
             printf '%s\n' 'DOP_GRAPH_SCOPE=host-only owned F32 CPU region and independent I64 graph'
           } > "$RUNNER_TEMP/dop-graph-evidence/provenance.txt"
       - name: Install Java 21 for standalone source assertions
@@ -57,7 +60,7 @@ jobs:
         run: bash scripts/test-dop-planner-standalone.sh
       - name: Compile and test actual Maven project (DOP and graph)
         run: mvn -B -ntp -Dtest='Dop*,ExecutionGraphV1Test,ExecutionGraphChannelV1Test,ExecutionSurfaceV1Test' -DfailIfNoTests=true test
-      - name: Verify specific new zero-work integration tests executed
+      - name: Verify exact integration and scheduler-admission regressions executed
         shell: bash
         run: |
           set -euo pipefail
@@ -68,17 +71,22 @@ jobs:
           if not report.is_file():
               raise SystemExit('Missing exact DOP integration Surefire XML')
           root = ET.parse(report).getroot()
-          required = {'zeroRowOwnedCpuGraphCompletesWithoutAccessingStorage',
-                      'emptySliceOfPopulatedBufferDoesNotTouchOtherRows'}
+          required = {
+              'zeroRowOwnedCpuGraphCompletesWithoutAccessingStorage',
+              'emptySliceOfPopulatedBufferDoesNotTouchOtherRows',
+              'inlineExecutorFailsBeforeTouchingOwnedStorage',
+              'inlineThenThrowReportsSchedulerRejectionNotInlineError',
+              'startedWorkerCannotWriteIfSchedulerRejectsAfterEnqueue',
+          }
           methods = {node.attrib.get('name') for node in root.iter('testcase')}
           if not required.issubset(methods):
-              raise SystemExit('Missing executed zero-work regression methods: ' + repr(sorted(required - methods)))
+              raise SystemExit('Missing executed DOP admission/integration regressions: ' + repr(sorted(required - methods)))
           for field in ('failures', 'errors', 'skipped'):
               if int(root.attrib.get(field, '0')) != 0:
                   raise SystemExit('DOP integration contains nonpassing cases: ' + field)
           if int(root.attrib.get('tests', '0')) < len(required):
               raise SystemExit('Impossible DOP integration test count')
-          print('Verified executed DOP zero-work regression method names in Surefire XML')
+          print('Verified executed DOP zero-work and scheduler-admission regressions in Surefire XML')
           PY
       - name: Record passing exact-head test suite
         shell: bash
