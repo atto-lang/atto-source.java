@@ -5133,7 +5133,7 @@ public final class OresEvalRootNode extends RootNode {
                 returnFrom(
                         ret.value(),
                         env,
-                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                        inheritedTailBarrier || !deferred.isEmpty());
             }
             if (stmt instanceof Ast.YieldStmt yielded) {
                 if (env.hasLiveMutexGuards()) {
@@ -5168,7 +5168,7 @@ public final class OresEvalRootNode extends RootNode {
                 executeBlock(
                         block.body(),
                         env,
-                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                        inheritedTailBarrier || !deferred.isEmpty());
                 return;
             }
             if (stmt instanceof Ast.BreakStmt) throw new BreakSignal();
@@ -5183,14 +5183,14 @@ public final class OresEvalRootNode extends RootNode {
                         executeBlock(
                                 branch.body(),
                                 branchEnv,
-                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                                inheritedTailBarrier || !deferred.isEmpty());
                         return;
                     }
                 }
                 executeBlock(
                         ifStmt.elseBody(),
                         env,
-                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                        inheritedTailBarrier || !deferred.isEmpty());
                 return;
             }
             if (stmt instanceof Ast.MatchStmt matched) {
@@ -5219,7 +5219,7 @@ public final class OresEvalRootNode extends RootNode {
                         executeBlock(
                                 arm.body(),
                                 armEnv,
-                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                                inheritedTailBarrier || !deferred.isEmpty());
                         return;
                     }
                     if (selected != null) {
@@ -5250,7 +5250,7 @@ public final class OresEvalRootNode extends RootNode {
                 executeBlock(
                         selected.body(),
                         selectedEnv,
-                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                        inheritedTailBarrier || !deferred.isEmpty());
                 return;
             }
             if (stmt instanceof Ast.SwitchStmt switched) {
@@ -5267,21 +5267,21 @@ public final class OresEvalRootNode extends RootNode {
                         executeBlock(
                                 arm.body(),
                                 env,
-                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                                inheritedTailBarrier || !deferred.isEmpty());
                         return;
                     }
                 }
                 executeBlock(
                         switched.defaultBody(),
                         env,
-                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                        inheritedTailBarrier || !deferred.isEmpty());
                 return;
             }
             if (stmt instanceof Ast.SelectStmt selected) {
                 executeSelectStatement(
                         selected,
                         env,
-                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                        inheritedTailBarrier || !deferred.isEmpty());
                 return;
             }
             if (stmt instanceof Ast.TryStmt tried) {
@@ -5342,7 +5342,7 @@ public final class OresEvalRootNode extends RootNode {
                             executeBlock(
                                     loop.body(),
                                     iteration,
-                                    inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                                    inheritedTailBarrier || !deferred.isEmpty());
                         } catch (ContinueSignal ignored) {
                             continue;
                         } catch (BreakSignal ignored) {
@@ -5368,7 +5368,7 @@ public final class OresEvalRootNode extends RootNode {
                             executeBlock(
                                     loop.body(),
                                     iteration,
-                                    inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                                    inheritedTailBarrier || !deferred.isEmpty());
                         } catch (ContinueSignal ignored) {
                             continue;
                         } catch (BreakSignal ignored) {
@@ -5387,7 +5387,7 @@ public final class OresEvalRootNode extends RootNode {
                             loop.initializer(),
                             loopEnv,
                             new ArrayDeque<>(),
-                            inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                            inheritedTailBarrier || !deferred.isEmpty());
                 }
                 while (loop.condition() == null || truth(eval(loop.condition(), loopEnv))) {
                     context.schedulerSafepoint();
@@ -5395,7 +5395,7 @@ public final class OresEvalRootNode extends RootNode {
                         executeBlock(
                                 loop.body(),
                                 loopEnv,
-                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                                inheritedTailBarrier || !deferred.isEmpty());
                     } catch (ContinueSignal ignored) {
                         // Conventional for-loops still execute their update on continue.
                     } catch (BreakSignal ignored) {
@@ -5412,7 +5412,7 @@ public final class OresEvalRootNode extends RootNode {
                         executeBlock(
                                 loop.body(),
                                 env,
-                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                                inheritedTailBarrier || !deferred.isEmpty());
                     } catch (ContinueSignal ignored) {
                         continue;
                     } catch (BreakSignal ignored) {
@@ -5717,6 +5717,11 @@ public final class OresEvalRootNode extends RootNode {
 
             if (!tailBarrier) {
                 if (value instanceof Ast.CallExpr call) {
+                    // Inspect the complete lexical environment only when a
+                    // call can actually elide this activation. Parent frames
+                    // remain visible here; branches/loops need only propagate
+                    // explicit defer/handler barriers, not eagerly rescan data.
+                    if (env.hasLiveMutexGuards()) throw new ReturnSignal(eval(value, env));
                     if (isBooleanIntrinsicCall(call, env)) {
                         throw new ReturnSignal(evalBooleanIntrinsic(call, env));
                     }
