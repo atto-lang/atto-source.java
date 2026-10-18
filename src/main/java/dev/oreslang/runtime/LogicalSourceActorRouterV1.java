@@ -255,6 +255,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         ActorRuntime.ActorRef<Object> replacement = null;
         boolean published = false;
         boolean candidateLeaseTransferred = false;
+        Throwable primaryFailure = null;
         try {
             synchronized (routeLock) {
                 requireOpenLocked();
@@ -348,48 +349,124 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 routeLock.notifyAll();
             }
             return true;
+        } catch (InterruptedException
+                | ExecutionException
+                | TimeoutException
+                | RuntimeException
+                | Error failure) {
+            primaryFailure = failure;
+            throw failure;
         } finally {
+            Throwable cleanupFailure = null;
+
             if (!published) {
                 if (replacement != null) {
                     try {
                         replacement.stop();
-                    } catch (RuntimeException ignored) {
-                        // Rollback still keeps the old route authoritative.
+                    } catch (RuntimeException | Error stopFailure) {
+                        cleanupFailure = stopFailure;
                     }
-                    if (!candidate.runtime().physicallyFinalizedForHotUpgrade(
-                            replacement)) {
-                        synchronized (routeLock) {
-                            retiredRoutes.add(new Route(
-                                    candidateGeneration,
-                                    candidateLease,
-                                    candidate,
-                                    replacement,
-                                    prior == null ? 1L : prior.incarnation,
-                                    prior == null ? 1L : prior.routeEpoch));
+
+                    try {
+                        if (!candidate.runtime().physicallyFinalizedForHotUpgrade(
+                                replacement)) {
+                            synchronized (routeLock) {
+                                retiredRoutes.add(new Route(
+                                        candidateGeneration,
+                                        candidateLease,
+                                        candidate,
+                                        replacement,
+                                        prior == null ? 1L : prior.incarnation,
+                                        prior == null ? 1L : prior.routeEpoch));
+                            }
+                            // The candidate context must stay pinned until its
+                            // unpublished physical actor actually finalizes.
+                            candidateLeaseTransferred = true;
                         }
-                        // The candidate context must stay pinned until its
-                        // unpublished physical actor actually finalizes.
+                    } catch (RuntimeException | Error finalizationProbeFailure) {
+                        if (cleanupFailure == null) {
+                            cleanupFailure = finalizationProbeFailure;
+                        } else {
+                            cleanupFailure.addSuppressed(finalizationProbeFailure);
+                        }
+                        // We cannot prove reclamation. Fail closed by retaining
+                        // the candidate generation rather than closing code
+                        // beneath an unknown physical actor.
                         candidateLeaseTransferred = true;
+                        synchronized (routeLock) {
+                            if (replacement != null
+                                    && retiredRoutes.stream().noneMatch(
+                                            route -> route.physical == replacement)) {
+                                retiredRoutes.add(new Route(
+                                        candidateGeneration,
+                                        candidateLease,
+                                        candidate,
+                                        replacement,
+                                        prior == null ? 1L : prior.incarnation,
+                                        prior == null ? 1L : prior.routeEpoch));
+                            }
+                        }
                     }
                 }
-                if (transfer != null) transfer.close();
+
+                if (transfer != null) {
+                    try {
+                        transfer.close();
+                    } catch (RuntimeException | Error rollbackFailure) {
+                        if (cleanupFailure == null) {
+                            cleanupFailure = rollbackFailure;
+                        } else {
+                            cleanupFailure.addSuppressed(rollbackFailure);
+                        }
+                    }
+                }
+
+                // Route-level admission must never remain wedged merely
+                // because physical rollback/quarantine reported a failure.
+                // The old physical actor may still be ingress-frozen by the
+                // transfer, which correctly makes later sends fail sealed
+                // rather than block forever.
                 synchronized (routeLock) {
                     if (pauseOwned) {
                         upgrading = false;
+                        pauseOwned = false;
                         routeLock.notifyAll();
                     }
                 }
             }
+
             if (published && pauseOwned) {
                 // Post-commit cleanup failure cannot roll routing back. Reopen
                 // the authoritative new route while retaining any unreaped old
                 // generation lease.
                 synchronized (routeLock) {
                     upgrading = false;
+                    pauseOwned = false;
                     routeLock.notifyAll();
                 }
             }
-            if (!candidateLeaseTransferred) candidateLease.close();
+
+            if (!candidateLeaseTransferred) {
+                try {
+                    candidateLease.close();
+                } catch (RuntimeException | Error leaseFailure) {
+                    if (cleanupFailure == null) {
+                        cleanupFailure = leaseFailure;
+                    } else {
+                        cleanupFailure.addSuppressed(leaseFailure);
+                    }
+                }
+            }
+
+            if (cleanupFailure != null) {
+                if (primaryFailure != null) {
+                    primaryFailure.addSuppressed(cleanupFailure);
+                } else if (cleanupFailure instanceof RuntimeException runtimeFailure) {
+                    throw runtimeFailure;
+                } else {
+                    throw (Error) cleanupFailure;
+                }
+            }
         }
     }
 
