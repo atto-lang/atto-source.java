@@ -41,6 +41,12 @@ public final class Ast {
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
     public enum ActorKind { NONE, PRIVATE, SHARED, UNTRUSTED }
+    /**
+     * Physical execution boundary is orthogonal to actor trust/ownership kind.
+     * LOCAL is the existing in-runtime actor model; IPC and FFI are reserved
+     * external boundaries whose runtime lowering is independently gated.
+     */
+    public enum ActorBoundary { LOCAL, IPC, FFI }
 
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
@@ -323,6 +329,7 @@ public final class Ast {
             Visibility visibility,
             boolean isAbstract,
             ActorKind actorKind,
+            ActorBoundary actorBoundary,
             List<String> genericParameters,
             List<TypeRef> parents,
             List<TypeRef> interfaces,
@@ -330,11 +337,51 @@ public final class Ast {
             ConstructorDecl constructor,
             List<MethodDecl> methods) implements Decl {
         public ClassDecl {
+            actorKind = java.util.Objects.requireNonNull(actorKind, "actor kind");
+            actorBoundary = java.util.Objects.requireNonNull(
+                    actorBoundary, "actor boundary");
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+
+            boolean legal = switch (actorBoundary) {
+                case LOCAL -> true;
+                case IPC -> actorKind == ActorKind.PRIVATE
+                        || actorKind == ActorKind.UNTRUSTED;
+                case FFI -> actorKind == ActorKind.PRIVATE;
+            };
+            if (!legal || (actorKind == ActorKind.NONE
+                    && actorBoundary != ActorBoundary.LOCAL)) {
+                throw new IllegalArgumentException(
+                        "illegal actor kind/boundary combination: "
+                                + actorKind + "/" + actorBoundary);
+            }
+            if (actorBoundary != ActorBoundary.LOCAL
+                    && (!genericParameters.isEmpty()
+                        || !parents.isEmpty()
+                        || !interfaces.isEmpty())) {
+                throw new IllegalArgumentException(
+                        "external actors v1 cannot be generic or inherit/implement types");
+            }
+        }
+
+        /** Compatibility constructor for existing actor-aware AST producers. */
+        public ClassDecl(
+                String name,
+                Visibility visibility,
+                boolean isAbstract,
+                ActorKind actorKind,
+                List<String> genericParameters,
+                List<TypeRef> parents,
+                List<TypeRef> interfaces,
+                List<FieldDecl> fields,
+                ConstructorDecl constructor,
+                List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, ActorBoundary.LOCAL,
+                    genericParameters, parents, interfaces, fields, constructor,
+                    methods);
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
@@ -342,8 +389,8 @@ public final class Ast {
                          List<String> genericParameters, List<TypeRef> parents,
                          List<TypeRef> interfaces, List<FieldDecl> fields,
                          List<MethodDecl> methods) {
-            this(name, Visibility.PRIVATE, isAbstract, actorKind, genericParameters,
-                    parents, interfaces, fields, null, methods);
+            this(name, Visibility.PRIVATE, isAbstract, actorKind, ActorBoundary.LOCAL,
+                    genericParameters, parents, interfaces, fields, null, methods);
         }
 
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
