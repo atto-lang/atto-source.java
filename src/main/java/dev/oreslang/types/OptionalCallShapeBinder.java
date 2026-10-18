@@ -120,6 +120,40 @@ public final class OptionalCallShapeBinder {
         }
     }
 
+    /**
+     * Typed lowering decisions for an optional scalar slot. This deliberately
+     * does not perform the compiler's nominal/generic subtype check:
+     * OPTION_VALUE and NONE_LITERAL must be verified as Option<T> by the
+     * type checker. In particular, a void-producing expression is NOT None.
+     */
+    public enum SuppliedForm {
+        PLAIN_VALUE, OPTION_VALUE, NONE_LITERAL, NULL_LITERAL, VOID_EXPRESSION
+    }
+    public enum OptionalAdaptation { WRAP_SOME, PASS_OPTION, INJECT_NONE }
+
+    public static OptionalAdaptation optionalAdaptation(
+            Parameter parameter, boolean omitted, SuppliedForm suppliedForm) {
+        Objects.requireNonNull(parameter, "parameter");
+        if (!parameter.optional() || parameter.variadic()) {
+            throw new IllegalArgumentException("optional adaptation requires optional scalar formal");
+        }
+        if (omitted) {
+            if (suppliedForm != null) {
+                throw new IllegalArgumentException("omitted slot cannot have a supplied value");
+            }
+            return OptionalAdaptation.INJECT_NONE;
+        }
+        Objects.requireNonNull(suppliedForm, "suppliedForm");
+        return switch (suppliedForm) {
+            case PLAIN_VALUE -> OptionalAdaptation.WRAP_SOME;
+            case OPTION_VALUE, NONE_LITERAL -> OptionalAdaptation.PASS_OPTION;
+            case NULL_LITERAL -> throw new IllegalArgumentException(
+                    "null is not None; use typed None for an absent optional argument");
+            case VOID_EXPRESSION -> throw new IllegalArgumentException(
+                    "void is not a value and cannot represent an omitted argument");
+        };
+    }
+
     /** The selected declaration index and its permutation; never a runtime overload choice. */
     public record Selection(int signatureIndex, Plan plan) {
         public Selection {
