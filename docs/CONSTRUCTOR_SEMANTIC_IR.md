@@ -186,7 +186,7 @@ serialization, sharing or construction-region restrictions.
 
 A callable's capture metadata is descriptive of the values retained by its
 environment; it is **not transport authorization**. In particular,
-`CallableCapability.SERIALIZABLE` means captured data satisfies an
+`CallableCapability.CAPTURES_SERIALIZABLE_DATA` means captured data satisfies an
 independent serialization property. It never means the executable callable,
 closure environment, code pointer, `AnyCallable` erasure, or callback ABI may
 be encoded by `NetworkCodec`/`ActorMessageCodec`, admitted as actor DATA, or
