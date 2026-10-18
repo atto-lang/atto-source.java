@@ -57,7 +57,7 @@ final class StaticModuleNamespaceGuestTest {
 
     @Test
     void immutableModuleMemberAssignmentFailsBeforeGuestExecution() {
-        assertThrows(Exception.class, () -> evaluate(MODULE + """
+        Exception rejected = assertThrows(Exception.class, () -> evaluate(MODULE + """
                 define module app as
                   pub fnc main(): void {
                   Catalog.version = 5;
