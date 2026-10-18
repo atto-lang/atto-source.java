@@ -150,6 +150,32 @@ final class NestedOptionFutureExtractionLanguageTest {
     }
 
     @Test
+    void temporaryFutureFlattenMovesLambdaCaptureOnlyOnce() throws Exception {
+        String program = """
+                define class Box as
+                  pub val int value = 22;
+                end
+
+                async fnc base(): int {
+                  return 20;
+                }
+                async fnc leaf(int value): int {
+                  return value;
+                }
+                pub fnc main(): void {
+                  val Box captured = new Box();
+                  val Future<int> flattened = base().map(|int n| -> {
+                    return leaf(n + captured.value);
+                  }).flatten();
+                  stdio.stdout.write(await flattened);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("42", run(program));
+    }
+
+    @Test
     void futureFlattenConsumesItsAffineOwner() {
         String program = """
                 async fnc base(): int {
