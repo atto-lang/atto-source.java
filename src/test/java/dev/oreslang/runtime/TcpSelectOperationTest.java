@@ -10,6 +10,8 @@ import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -126,6 +128,64 @@ final class TcpSelectOperationTest {
                 assertTrue(Arrays.equals(payload, received.array()));
             }
         }
+    }
+
+    @Test
+    void competingCommittersNeverEnterKernelTwice() throws Exception {
+        var entered = new CountDownLatch(1);
+        var unblock = new CountDownLatch(1);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var operation = new TcpSelectOperation.Operation<Integer>() {
+            @Override TcpSelectOperation.Commit<Integer> commitKernel() throws java.io.IOException {
+                calls.incrementAndGet();
+                entered.countDown();
+                try {
+                    if (!unblock.await(3, TimeUnit.SECONDS))
+                        throw new java.io.IOException("mock kernel stalled");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new java.io.IOException(e);
+                }
+                return new TcpSelectOperation.Commit<>(TcpSelectOperation.CommitStatus.COMPLETE, 1, 1);
+            }
+        };
+        assertTrue(operation.markReady());
+        assertTrue(operation.tryWin());
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            var first = executor.submit(operation::commit);
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertEquals(TcpSelectOperation.Phase.COMMITTING, operation.phase());
+            assertFalse(operation.cancelBeforeWin());
+            assertThrows(IllegalStateException.class, operation::commit,
+                    "a second carrier must not concurrently enter the kernel");
+            unblock.countDown();
+            assertEquals(1, first.get(3, TimeUnit.SECONDS).value());
+            assertEquals(1, calls.get());
+            assertEquals(TcpSelectOperation.Phase.COMMITTED, operation.phase());
+            assertThrows(IllegalStateException.class, operation::commit);
+        } finally {
+            unblock.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void ambiguousIoFailureNeverReplaysPotentiallyCommittedBytes() throws Exception {
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var operation = new TcpSelectOperation.Operation<Integer>() {
+            @Override TcpSelectOperation.Commit<Integer> commitKernel() throws java.io.IOException {
+                calls.incrementAndGet();
+                throw new java.io.IOException("mock partial kernel commit");
+            }
+        };
+        assertTrue(operation.markReady());
+        assertTrue(operation.tryWin());
+        assertThrows(java.io.IOException.class, operation::commit);
+        assertEquals(TcpSelectOperation.Phase.COMMITTED, operation.phase());
+        assertFalse(operation.cancelBeforeWin());
+        assertThrows(IllegalStateException.class, operation::commit);
+        assertEquals(1, calls.get());
     }
 
     @Test
