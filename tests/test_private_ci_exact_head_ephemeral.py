@@ -6,6 +6,7 @@ import unittest
 REPO=Path(__file__).resolve().parents[1]
 PATH=REPO/".github/workflows/private-ci-exact-head-ephemeral.yml"
 BRANCH="security/review-pinned-private-ci-dispatcher-v2-20261017"
+HARDENING_BRANCH="hardening/canonical-review-pinned-ledger-20261017"
 
 class SourceLocalEphemeralWorkflowTests(unittest.TestCase):
     @classmethod
@@ -15,10 +16,38 @@ class SourceLocalEphemeralWorkflowTests(unittest.TestCase):
             "\n  approved-source-validation:\n",1)[0]
         cls.job=cls.text.split("  approved-source-validation:\n",1)[1]
 
-    def test_only_canonical_source_push_ref_is_allowed(self):
-        self.assertIn("on:\n  push:\n    branches:\n      - "+BRANCH,self.text)
+    def test_only_two_explicit_reviewed_source_push_refs_are_allowed(self):
+        expected=("on:\n  push:\n    branches:\n"
+                  "      - "+BRANCH+"\n"
+                  "      - "+HARDENING_BRANCH+"\n")
+        self.assertIn(expected,self.text)
         for disallowed in ("pull_request:", "pull_request_target:", "workflow_dispatch:"):
             self.assertNotIn(disallowed,self.text)
+        self.assertNotIn("      - '*'\n",self.text)
+        self.assertNotIn("      - '**'\n",self.text)
+
+    def test_both_source_heads_need_identical_approval_and_protection(self):
+        canonical="refs/heads/"+BRANCH
+        hardened="refs/heads/"+HARDENING_BRANCH
+        allow="(github.ref == '"+canonical+"' || github.ref == '"+hardened+"')"
+        self.assertIn(allow,self.job)
+        self.assertIn("!("+allow+")",self.deny)
+        self.assertIn("github.ref_protected == true",self.job)
+        self.assertIn("github.ref_protected != true",self.deny)
+        self.assertIn("vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha",self.job)
+        self.assertIn('test "$APPROVED_SHA" = "$GITHUB_SHA"',self.job)
+        self.assertIn(canonical+"|"+hardened+") ;;",self.job)
+        self.assertIn("*) echo \"Exact reviewed source branch required\"",self.job)
+
+    def test_hardening_branch_does_not_relax_runner_or_repository_identity(self):
+        for condition in ("github.repository_id == '1400792274'",
+                          "github.event.repository.fork == false",
+                          "github.event.repository.private == true",
+                          "vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true'",
+                          "vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != ''"):
+            self.assertIn(condition,self.job)
+        self.assertEqual(self.job.count("runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]"),1)
+        self.assertNotIn("workflow_dispatch:",self.text)
 
     def test_explicit_private_repo_and_protected_ref_admission(self):
         for constraint in (
