@@ -12,6 +12,7 @@ MODULE = Path(__file__).with_name("publish-private-ci-source.py")
 spec = importlib.util.spec_from_file_location("private_publisher", MODULE)
 pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
+REAL_PREFLIGHT = pub.require_preflight
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
 
 
@@ -1463,6 +1464,26 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             (outside / "outside.ores").unlink()
             outside.rmdir()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_complete_publisher_uses_data_only_preflight(self):
+        # Execute the normal publication state machine with mocked GitHub
+        # responses but the REAL require_preflight implementation. Even if a
+        # modified checkout contains an executable guard, publication must
+        # never spawn a shell or another process for that guard.
+        scripts = self.root / "scripts"
+        scripts.mkdir(exist_ok=True)
+        marker = self.root / "unexpected-guard-executed"
+        guard = scripts / "check-private-ci-destination.sh"
+        guard.write_text("#!/bin/sh\\ntouch " + str(marker) + "\\n")
+        guard.chmod(0o755)
+        with patch.object(pub, "require_preflight", wraps=REAL_PREFLIGHT):
+            with patch.object(pub.subprocess, "run", side_effect=AssertionError(
+                    "publisher spawned a checkout-supplied process")):
+                commit_sha, files = self.publish()
+        self.assertEqual(files, 1)
+        self.assertFalse(marker.exists())
+        self.assertTrue(any(method == "POST" and route.endswith("/git/refs")
+                            for method, route, _ in self.route_calls))
 
     def test_preflight_does_not_execute_checkout_controlled_shell(self):
         # An unreviewed source checkout can contain an attacker-controlled
