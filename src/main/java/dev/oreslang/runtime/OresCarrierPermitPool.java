@@ -126,19 +126,33 @@ final class OresCarrierPermitPool {
         Objects.requireNonNull(domain, "domain");
         if (count < 1) throw new IllegalArgumentException("permit count must be positive");
 
-        int originalDomain = held.get(domain);
-        int originalTotal = total;
-        Permit[] permits = new Permit[count];
-        for (int i = 0; i < count; i++) {
-            Permit permit = tryAcquire(domain);
-            if (permit == null) {
-                held.put(domain, originalDomain);
-                total = originalTotal;
-                verifyLocked();
-                return null;
-            }
-            permits[i] = permit;
+        // Reject impossible requests before allocating count-sized storage.
+        // This also prevents a hostile Integer.MAX_VALUE request from turning
+        // bounded admission into an OutOfMemoryError.
+        if (count > maximum - total) {
+            deniedCapacity = saturatingIncrement(deniedCapacity);
+            return null;
         }
+
+        // Every successful batch gives this domain at least one permit.
+        // Preserve all other domains' unmet protected reserves in one check.
+        // No speculative permits or accounting state are mutated on denial.
+        int unmetOtherReserves = 0;
+        for (Domain other : Domain.values()) {
+            if (other != domain && held.get(other) == 0) unmetOtherReserves++;
+        }
+        if (maximum - (total + count) < unmetOtherReserves) {
+            deniedReserveProtection = saturatingIncrement(deniedReserveProtection);
+            return null;
+        }
+
+        // Construct every handle before committing counters. Even allocation
+        // failure leaves the synchronized pool unchanged and leak-free.
+        Permit[] permits = new Permit[count];
+        for (int i = 0; i < count; i++) permits[i] = new Permit(this, domain);
+        held.put(domain, held.get(domain) + count);
+        total += count;
+        verifyLocked();
         return permits;
     }
 
