@@ -867,7 +867,7 @@ public final class Ast {
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, StagedCallExpr, StagedNewExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -935,6 +935,65 @@ public final class Ast {
         }
         public CallExpr(Expr callee, List<TypeRef> typeArguments, List<Expr> arguments) {
             this(callee, typeArguments, true, arguments);
+        }
+    }
+
+    /**
+     * A call-site item is not an Expr. In particular, omission has no value,
+     * effect, ownership transfer, or runtime representation. Source order is
+     * exactly the order of this list, including the omitted positions.
+     */
+    public record CallArgument(String label, Expr value, boolean omitted, boolean spread) {
+        public CallArgument {
+            if (label != null && label.isBlank()) {
+                throw new IllegalArgumentException("call-argument label cannot be blank");
+            }
+            if (omitted == (value != null)) {
+                throw new IllegalArgumentException("a call item must have exactly one of value or omission");
+            }
+            if (spread && (omitted || label != null)) {
+                throw new IllegalArgumentException("spread cannot be named or omitted");
+            }
+        }
+        public static CallArgument value(Expr value) {
+            return new CallArgument(null, java.util.Objects.requireNonNull(value), false, false);
+        }
+        public static CallArgument named(String label, Expr value) {
+            return new CallArgument(java.util.Objects.requireNonNull(label),
+                    java.util.Objects.requireNonNull(value), false, false);
+        }
+        public static CallArgument omit(String label) {
+            return new CallArgument(label, null, true, false);
+        }
+        public static CallArgument spread(Expr value) {
+            return new CallArgument(null, java.util.Objects.requireNonNull(value), false, true);
+        }
+    }
+
+    /**
+     * Parser-stage representation for named/omitted call sites. This node is
+     * intentionally NOT an executable CallExpr: generic type, ownership and
+     * Option<T> lowering have not been verified. The type checker rejects it.
+     */
+    public record StagedCallExpr(
+            Expr callee, List<TypeRef> typeArguments,
+            boolean typeArgumentsPresent, List<CallArgument> arguments) implements Expr {
+        public StagedCallExpr {
+            java.util.Objects.requireNonNull(callee, "callee");
+            typeArguments = List.copyOf(typeArguments);
+            arguments = List.copyOf(arguments);
+            if (!typeArgumentsPresent && !typeArguments.isEmpty()) {
+                throw new IllegalArgumentException("call-site type arguments require explicit marker");
+            }
+        }
+    }
+
+    /** Constructing an actor is distinct from ordinary class construction. */
+    public record StagedNewExpr(
+            TypeRef type, List<CallArgument> arguments, boolean actorSpawn) implements Expr {
+        public StagedNewExpr {
+            java.util.Objects.requireNonNull(type, "constructed type");
+            arguments = List.copyOf(arguments);
         }
     }
 
