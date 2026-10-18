@@ -103,8 +103,8 @@ final class EnumCaseAstBoundaryAuditTest {
     @Test
     void directAstRejectsUnlexableEnumAndPatternIdentities() {
         for (String invalid : List.of("9Bad", "A.B", "Bad-case", "A B",
-                "A\\nB", "A\\u200bB", "A\\u202eB", "A\\u00a0B",
-                "A\\uD800", "A\\uDC00")) {
+                "A\nB", "A\u200bB", "A\u202eB", "A\u00a0B",
+                "A\uD800", "A\uDC00")) {
             assertThrows(IllegalArgumentException.class,
                     () -> new Ast.EnumCase(invalid, null, 1), invalid);
             assertThrows(IllegalArgumentException.class,
@@ -114,15 +114,15 @@ final class EnumCaseAstBoundaryAuditTest {
                     () -> new Ast.PatternDecl(invalid, List.of("Foo.A")), invalid);
         }
         for (String invalid : List.of("Unqualified", "...", "...A.B",
-                "A.B.C", ".B", "A.", "A.3B", "A. B", "A.B\\u200b")) {
+                "A.B.C", ".B", "A.", "A.3B", "A. B", "A.B\u200b")) {
             assertThrows(IllegalArgumentException.class,
                     () -> new Ast.PatternDecl("P", List.of(invalid)), invalid);
         }
         assertDoesNotThrow(() -> new Ast.PatternDecl("P",
-                List.of("Color.Red", "...Mode", "\\u03A9.\\u03A6")));
-        assertDoesNotThrow(() -> new Ast.EnumDecl("\\u03A9",
-                List.of(new Ast.EnumCase("\\u03A6", null, 1))));
-        String longUnicode = "\\u03A9".repeat(300);
+                List.of("Color.Red", "...Mode", "\u03A9.\u03A6")));
+        assertDoesNotThrow(() -> new Ast.EnumDecl("\u03A9",
+                List.of(new Ast.EnumCase("\u03A6", null, 1))));
+        String longUnicode = "\u03A9".repeat(300);
         assertThrows(IllegalArgumentException.class,
                 () -> new Ast.EnumCase(longUnicode, null, 1));
     }
