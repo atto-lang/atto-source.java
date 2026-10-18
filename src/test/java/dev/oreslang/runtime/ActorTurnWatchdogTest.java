@@ -83,8 +83,8 @@ final class ActorTurnWatchdogTest {
 
             var notices = watchdogNotices(runtime);
             for (int i = 0; i < 1_024; ++i) {
-                assertTrue(notices.offer(new ActorRuntime.WatchdogNotice(
-                        actor.id(), ActorRuntime.ActorKind.SHARED, i, i)));
+                notices.addLast(new ActorRuntime.WatchdogNotice(
+                        actor.id(), ActorRuntime.ActorKind.SHARED, i, i));
             }
             assertEquals(1_024, runtime.schedulerSnapshot().watchdogNoticeBacklog());
 
@@ -106,13 +106,62 @@ final class ActorTurnWatchdogTest {
         }
     }
 
+    @Test
+    void contendedWatchdogDiagnosticLockDropsWithoutStallingIndependentScanner()
+            throws Exception {
+        AtomicBoolean release = new AtomicBoolean();
+        CountDownLatch entered = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                entered.countDown();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
+                while (!release.get() && System.nanoTime() < deadline) {
+                    context.runtime().schedulerSafepoint();
+                    if (context.runtime().watchdogPreemptionRequested()) {
+                        context.self().stop();
+                        return;
+                    }
+                    Thread.onSpinWait();
+                }
+                context.self().stop();
+            });
+
+            var diagnosticLock = watchdogNoticeQueueLock(runtime);
+            diagnosticLock.lock();
+            try {
+                actor.send("busy");
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                        "diagnostic lock contention must not stall watchdog progress");
+                assertTrue(runtime.watchdogOverruns() >= 1,
+                        "watchdog must still observe the actor overrun");
+                assertTrue(runtime.watchdogNoticesDropped() >= 1,
+                        "contended diagnostic publication must fail closed as a drop");
+                assertEquals(0, watchdogNotices(runtime).size(),
+                        "failed publication must not fabricate a queued notice");
+            } finally {
+                diagnosticLock.unlock();
+                release.set(true);
+            }
+        } finally {
+            release.set(true);
+        }
+    }
+
     @SuppressWarnings("unchecked")
-    private static java.util.concurrent.ArrayBlockingQueue<ActorRuntime.WatchdogNotice>
+    private static java.util.ArrayDeque<ActorRuntime.WatchdogNotice>
             watchdogNotices(ActorRuntime runtime) throws ReflectiveOperationException {
         var field = ActorRuntime.class.getDeclaredField("watchdogNotices");
         field.setAccessible(true);
-        return (java.util.concurrent.ArrayBlockingQueue<ActorRuntime.WatchdogNotice>)
+        return (java.util.ArrayDeque<ActorRuntime.WatchdogNotice>)
                 field.get(runtime);
+    }
+
+    private static java.util.concurrent.locks.ReentrantLock watchdogNoticeQueueLock(
+            ActorRuntime runtime) throws ReflectiveOperationException {
+        var field = ActorRuntime.class.getDeclaredField("watchdogNoticeQueueLock");
+        field.setAccessible(true);
+        return (java.util.concurrent.locks.ReentrantLock) field.get(runtime);
     }
 
     @Test
