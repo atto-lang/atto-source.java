@@ -93,6 +93,30 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
         }
     }
 
+    static boolean isVmFatalRetirementFailure(Throwable failure) {
+        return failure instanceof VirtualMachineError
+                || failure instanceof ThreadDeath
+                || failure instanceof LinkageError;
+    }
+
+    static Throwable mergeRetirementFailure(Throwable current, Throwable next) {
+        Objects.requireNonNull(next, "next");
+        if (current == null || current == next) return current == null ? next : current;
+        if (isVmFatalRetirementFailure(next) && !isVmFatalRetirementFailure(current)) {
+            next.addSuppressed(current);
+            return next;
+        }
+        current.addSuppressed(next);
+        return current;
+    }
+
+    static void rethrowRetirementFailure(Throwable failure) {
+        if (failure == null) return;
+        if (failure instanceof RuntimeException runtime) throw runtime;
+        if (failure instanceof Error error) throw error;
+        throw new IllegalStateException("unexpected checked untrusted-isolate retirement failure", failure);
+    }
+
     /** Create a long-lived group using the separate cumulative CPU budget. */
     public Group createGroup() {
         return createGroup(IsolatePolicy.untrustedActorGroup());
@@ -181,28 +205,32 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
     private void retirePhysicalIsolate() {
         Set<Group> snapshot;
         synchronized (this) { snapshot = Set.copyOf(groups); }
-        RuntimeException failure = null;
+        Throwable failure = null;
         for (Group group : snapshot) {
             try {
                 group.close();
-            } catch (RuntimeException error) {
-                if (failure == null) failure = error;
-                else failure.addSuppressed(error);
+            } catch (RuntimeException | Error error) {
+                failure = mergeRetirementFailure(failure, error);
             }
         }
         try {
             engine.close(true);
         } catch (RuntimeException | Error error) {
-            if (failure == null) {
-                failure = new IllegalStateException(
-                        "untrusted Engine close could not be confirmed");
-            }
+            // Preserve the VM-fatal identity when Engine teardown itself
+            // fails, even if an earlier Context close already reported an
+            // ordinary retryable failure.
+            failure = mergeRetirementFailure(
+                    failure,
+                    isVmFatalRetirementFailure(error)
+                            ? error
+                            : new IllegalStateException(
+                                    "untrusted Engine close could not be confirmed"));
         }
         // A successful Engine.close alone is not sufficient: one failed
         // Context close leaves its native/guest lifetime unproven. The
         // process-global slot must remain denied until ALL close fences
         // were confirmed, otherwise a second isolate can be admitted.
-        if (failure != null) throw failure;
+        rethrowRetirementFailure(failure);
         ISOLATE_SLOT.set(false);
     }
 }
