@@ -68,8 +68,8 @@ public final class PostgresQuotaSmoke {
         ok(selected!=null,"pending intent can be claimed");
         ok(gateway.recordReceipt(address,rebooted.epoch(),rebootedOwner,selected,"receipt-1"),
             "receipt frees pending quota");
-        ok(store.commitTurn(new DurableActorStore.Turn(address,rebooted.epoch(),1,
-            "m2",two,List.of(blocked)))==2,"outbox capacity recovers after receipt");
+        ok(store.commitOwnedTurn(new DurableActorStore.Turn(address,rebooted.epoch(),1,
+            "m2",two,List.of(blocked)),rebootedOwner)==2,"outbox capacity recovers after receipt");
 
         // Eight independent writers race for one available inbox slot. An actor
         // row lock must make quota check and insertion one serialization point.
@@ -97,7 +97,7 @@ public final class PostgresQuotaSmoke {
         pool.shutdown();
         ok(admitted.get()==1 && rejected.get()==7,
             "quota enforced across concurrent DB transactions");
-        ok(raceStore.activate(race).inbox().size()==1,"only one durable message committed");
+        ok(raceStore.acquireLease(race,UUID.randomUUID()).activation().inbox().size()==1,"only one durable message committed");
         System.out.println("POSTGRES_DURABLE_QUOTA_PASS");
     }
 }
