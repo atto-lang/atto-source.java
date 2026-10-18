@@ -194,10 +194,11 @@ public final class OresContext implements AutoCloseable {
         AsyncRuntime async = null;
         RuntimeGarbageCollector gc = null;
         try {
-            // Explicit global budget gives CONTROL one guaranteed slot and
-            // statically partitions the remainder across isolated actor
-            // domains. Unlike the legacy non-affine fallback, no domain may
-            // independently expand to 20 and overshoot the VM-wide ceiling.
+            // Explicit global budget gives CONTROL one guaranteed slot,
+            // statically partitions isolated actor domains, and reserves the
+            // bounded lifecycle-observer host capacity inside the same
+            // execution-carrier ceiling. Unlike the legacy non-affine fallback,
+            // no runtime execution domain may independently expand past it.
             ActorRuntime.DispatcherConfig actorSettings =
                     ActorRuntime.DispatcherConfig.defaults();
             OresCarrierBudget budget = vm.carrierBudget();
