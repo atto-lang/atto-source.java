@@ -314,6 +314,7 @@ public final class NativeIo {
         }
 
         public void writeText(String value) {
+            TrustedNetworkIngressGuard.rejectUntrustedDirectNetwork("network.socket.write_text");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.write_text");
             try {
                 writer.write(value);
