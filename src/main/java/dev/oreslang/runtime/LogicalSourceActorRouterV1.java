@@ -427,21 +427,41 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         }
 
         route.physical.stop();
-        boolean terminated = false;
+        boolean interrupted = false;
+        boolean activeTerminated = false;
         try {
-            terminated = route.physical.awaitTermination(5, TimeUnit.SECONDS);
+            activeTerminated =
+                    route.physical.awaitTermination(5, TimeUnit.SECONDS);
         } catch (InterruptedException interruption) {
-            Thread.currentThread().interrupt();
+            interrupted = true;
         }
+
+        final ArrayList<Route> oldRoutes;
         synchronized (routeLock) {
             reapRetiredLocked();
-            if (terminated) {
+            oldRoutes = new ArrayList<>(retiredRoutes);
+        }
+        for (Route old : oldRoutes) {
+            try {
+                old.physical.awaitTermination(5, TimeUnit.SECONDS);
+            } catch (InterruptedException interruption) {
+                interrupted = true;
+                break;
+            }
+        }
+
+        synchronized (routeLock) {
+            reapRetiredLocked();
+            if (activeTerminated) {
                 route.generationLease.close();
-            } else {
+            } else if (!retiredRoutes.contains(route)) {
                 retiredRoutes.add(route);
+            }
+            if (interrupted) Thread.currentThread().interrupt();
+            if (!activeTerminated || !retiredRoutes.isEmpty()) {
                 throw new IllegalStateException(
-                        "logical actor close did not observe physical termination; "
-                                + "generation remains pinned");
+                        "logical actor close did not observe complete physical retirement; "
+                                + "generation lease(s) remain pinned");
             }
         }
     }
