@@ -42,6 +42,13 @@ git restore --staged --worktree -- source/main.ores
 printf 'untracked\n' > source/new.ores
 assert_status 67 'untracked source rejected' "$expected" source
 rm source/new.ores
+# Ignored source inputs are invisible to git status but can still change builds.
+printf 'source/ignored.ores\n' > .gitignore
+git add .gitignore
+git commit -qm ignored-input-setup
+printf 'unattested source\n' > source/ignored.ores
+assert_status 67 'ignored untracked source rejected' "$expected" source
+rm source/ignored.ores
 # Index intent-to-ignore flags can suppress ordinary git diff output while
 # Maven still reads changed source bytes. The proof must hash tracked bytes.
 git update-index --assume-unchanged source/main.ores
