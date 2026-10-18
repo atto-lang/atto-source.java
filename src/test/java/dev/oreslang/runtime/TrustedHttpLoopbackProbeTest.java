@@ -53,6 +53,10 @@ final class TrustedHttpLoopbackProbeTest {
                 assertEquals(TrustedUntrustedNetworkQuota.Status.TOO_MANY_IN_FLIGHT,
                         gate.tryStartHttp(child, parent, tenant).status());
                 assertTrue(caller.cancel(true));
+                // Give transport cancellation propagation time to manifest.
+                // The trusted host operation must keep its slot until its
+                // OWN response future settles, despite caller cancellation.
+                Thread.sleep(150);
                 assertEquals(TrustedUntrustedNetworkQuota.Status.TOO_MANY_IN_FLIGHT,
                         gate.tryStartHttp(child, parent, tenant).status());
                 respond.countDown();
