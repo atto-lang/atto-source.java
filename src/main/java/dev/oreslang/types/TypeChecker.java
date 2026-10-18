@@ -1870,12 +1870,18 @@ public final class TypeChecker {
                         "defer cleanup lambda must accept zero parameters");
             }
             Map<Env.Binding, Set<String>> beforeDefer = env.initializationSnapshot();
+            Object previousDeferCaller = activeCallerDeclaration;
+            // Deferred execution has its own activation boundary. A direct
+            // deferred call must not receive the registering fnc's grant,
+            // just as a closure does not inherit it.
+            activeCallerDeclaration = null;
             try {
                 typeOf(defer.expression(), env, generics, self);
             } finally {
                 // Defer executes later; checking its expression now must not
                 // establish definite-initialization facts for following code.
                 env.restoreInitialization(beforeDefer);
+                activeCallerDeclaration = previousDeferCaller;
             }
             return;
         }
@@ -2145,6 +2151,10 @@ public final class TypeChecker {
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) {
                 rejectUnimportedModuleNamespace(name.name());
+                // A namespace record is a first-class value. Without this
+                // check, namespace aliases can erase @CallableBy callee
+                // identity and invoke guarded functions as plain fields.
+                callerRoleContracts.rejectModuleNamespaceValue(moduleNamespace);
                 return moduleShape(moduleNamespace);
             }
             Ast.ClassDecl classNamespace = findClass(name.name());
