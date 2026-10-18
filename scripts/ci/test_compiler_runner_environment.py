@@ -26,6 +26,57 @@ def policy_script():
 
 
 class CompilerRunnerEnvironmentTests(unittest.TestCase):
+    def test_posix_bootstrap_precedes_all_bash_steps(self):
+        workflow = WORKFLOW.read_text(encoding='utf-8')
+        boot = workflow.index(
+            '      - name: Reject exported Bash functions before any Bash step')
+        approved = workflow.index(
+            '      - name: Verify protected source authorization before checkout')
+        checkout = workflow.index(
+            '      - name: Checkout approved SHA from original private repository only')
+        self.assertLess(boot, approved)
+        self.assertLess(approved, checkout)
+        section = workflow[boot:approved]
+        self.assertIn('        shell: sh\n', section)
+        self.assertIn('/usr/bin/env | /usr/bin/grep', section)
+        job_env = workflow.split('  approved-compiler-build:\n', 1)[1].split(
+            '\n    steps:\n', 1)[0]
+        self.assertIn("      LD_AUDIT: ''", job_env)
+        self.assertIn("      LD_DEBUG: ''", job_env)
+
+    def test_exported_bash_functions_and_options_denied_before_any_bash(self):
+        workflow = WORKFLOW.read_text(encoding='utf-8')
+        section = workflow.split(
+            '      - name: Reject exported Bash functions before any Bash step\n',
+            1)[1].split(
+            '      - name: Verify protected source authorization before checkout\n',
+            1)[0]
+        match = re.search(r'        run: \|\n((?:          .*\n)+)', section)
+        self.assertIsNotNone(match)
+        script = ''.join(line[10:] + '\n'
+                         for line in match.group(1).splitlines())
+        baseline = {'PATH': os.defpath, 'HOME': '/tmp', 'LC_ALL': 'C'}
+        clean = subprocess.run(
+            ['sh', '-eu', '-c', script], env=baseline,
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(clean.returncode, 0, clean.stderr)
+        scenarios = (
+            ('BASH_FUNC_git%%', '() { echo injected; }'),
+            ('BASH_FUNC_test%%', '() { echo injected; }'),
+            ('BASH_FUNC_builtin%%', '() { echo injected; }'),
+            ('SHELLOPTS', 'xtrace'),
+            ('BASHOPTS', 'extdebug'),
+        )
+        for key, value in scenarios:
+            with self.subTest(variable=key):
+                out = subprocess.run(
+                    ['sh', '-eu', '-c', script],
+                    env=dict(baseline, **{key: value}),
+                    capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(out.returncode, 0)
+                self.assertIn('DENIED:', out.stderr)
+
+
     def test_job_env_disables_shell_startup_injection(self):
         """Runner BASH_ENV must not execute code before a policy guard starts."""
         source = WORKFLOW.read_text(encoding='utf-8')

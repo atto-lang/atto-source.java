@@ -40,7 +40,19 @@ jobs:
       NODE_OPTIONS: ''
       NODE_PATH: ''
       LD_PRELOAD: ''
+      LD_AUDIT: ''
+      LD_DEBUG: ''
     steps:
+      - name: Reject exported Bash functions before any Bash step
+        # POSIX sh does not import Bash exported functions; a Bash-only guard can
+        # itself be shadowed by an inherited BASH_FUNC_builtin%% definition.
+        shell: sh
+        run: |
+          set -eu
+          if /usr/bin/env | /usr/bin/grep -Eq '^(BASH_FUNC_[^=]*=|BASHOPTS=|SHELLOPTS=)'; then
+            printf 'DENIED: inherited Bash function or options before shell startup\n' >&2
+            exit 1
+          fi
       - name: Verify protected source authorization before checkout
         shell: bash
         run: |
