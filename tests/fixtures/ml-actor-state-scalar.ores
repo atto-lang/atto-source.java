@@ -195,7 +195,7 @@ end
 
 pub async routine main(): void {
     val worker = spawn VersionedScalarStage();
-    await worker.ready;
+    await worker.get_ready();
     worker.send("orphan");
     worker.send("forward1");
     worker.send("forward_duplicate");
@@ -207,6 +207,6 @@ pub async routine main(): void {
     worker.send("commit");
     worker.send("stale");
     worker.send("after");
-    await worker.done;
+    await worker.get_done();
     return;
 }
