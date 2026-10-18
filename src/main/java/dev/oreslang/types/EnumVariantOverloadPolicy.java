@@ -1,7 +1,12 @@
 package dev.oreslang.types;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +21,8 @@ import java.util.Set;
 public final class EnumVariantOverloadPolicy {
     public static final int MAX_ARITY = 64;
     public static final int MAX_CANDIDATES = 128;
+    public static final int MAX_CASES = 1024;
+    public static final int MAX_TOTAL_CANDIDATES = (MAX_ARITY + 1) * MAX_CANDIDATES;
 
     private EnumVariantOverloadPolicy() { }
 
@@ -26,7 +33,9 @@ public final class EnumVariantOverloadPolicy {
         public EnumInfo {
             requireId(symbolId);
             Objects.requireNonNull(cases, "cases");
-            if (cases.isEmpty()) throw new IllegalArgumentException("empty enum");
+            if (cases.isEmpty() || cases.size() > MAX_CASES) {
+                throw new IllegalArgumentException("empty or oversized enum case set");
+            }
             for (Map.Entry<String, Payload> item : cases.entrySet()) {
                 requireName(item.getKey());
                 Objects.requireNonNull(item.getValue(), "case payload");
@@ -86,20 +95,26 @@ public final class EnumVariantOverloadPolicy {
      * nested by declared enum-case refinement. Crossing overlap is forbidden.
      * Differences in ordinary non-enum parameters cannot form overload slots.
      */
+
     public static void admit(List<Signature> candidates) {
         Objects.requireNonNull(candidates, "candidates");
-        if (candidates.isEmpty()) throw new IllegalArgumentException("empty family");
-        List<Signature> slots = List.copyOf(candidates);
-        Signature first = slots.get(0);
+        if (candidates.isEmpty() || candidates.size() > MAX_TOTAL_CANDIDATES) {
+            throw new IllegalArgumentException("empty or oversized callable family");
+        }
+        Signature first = Objects.requireNonNull(candidates.get(0), "candidate");
         Map<String, EnumInfo> registry = new HashMap<>();
-        Map<Integer, Integer> countsByArity = new HashMap<>();
-        for (Signature slot : slots) {
-            int count = countsByArity.merge(slot.arity(), 1, Integer::sum);
-            if (count > MAX_CANDIDATES) throw new IllegalArgumentException("same-arity candidate limit");
+        Map<Integer, List<Signature>> byArity = new HashMap<>();
+        for (Signature slot : candidates) {
+            Objects.requireNonNull(slot, "candidate");
             if (!slot.ownerId().equals(first.ownerId()) || slot.domain() != first.domain()
                     || !slot.name().equals(first.name())) {
                 throw new IllegalArgumentException("mixed callable family");
             }
+            List<Signature> group = byArity.computeIfAbsent(slot.arity(), ignored -> new ArrayList<>());
+            if (group.size() >= MAX_CANDIDATES) {
+                throw new IllegalArgumentException("same-arity candidate limit");
+            }
+            group.add(slot);
             for (Parameter p : slot.parameters()) {
                 if (p instanceof EnumParameter e) {
                     EnumInfo prior = registry.putIfAbsent(e.info().symbolId(), e.info());
@@ -109,61 +124,147 @@ public final class EnumVariantOverloadPolicy {
                 }
             }
         }
-        for (int i = 0; i < slots.size(); i++) {
-            for (int j = i + 1; j < slots.size(); j++) {
-                if (slots.get(i).arity() == slots.get(j).arity()
-                        && !safePair(slots.get(i), slots.get(j))) {
-                    throw new IllegalArgumentException("same-arity enum overloads overlap or have an invalid discriminator");
+        // Pair comparisons are bounded *within* each arity, never a quadratic
+        // walk across unrelated arities. No declaration-order tie breaker.
+        for (List<Signature> group : byArity.values()) {
+            for (int i = 0; i < group.size(); i++) {
+                for (int j = i + 1; j < group.size(); j++) {
+                    if (!safePair(group.get(i), group.get(j))) {
+                        throw new IllegalArgumentException(
+                                "same-arity enum overloads overlap or have an invalid discriminator");
+                    }
                 }
             }
         }
     }
 
-    public static Signature select(List<Signature> candidates, List<Parameter> staticArguments) {
+    /** Prepare a single immutable compiler family once, rather than revalidating
+     * all declaration pairs at every call site. This is a host-only proof plan. */
+    public static PreparedFamily prepare(List<Signature> candidates) {
         admit(candidates);
-        Objects.requireNonNull(staticArguments, "staticArguments");
-        List<Parameter> args = List.copyOf(staticArguments);
-        if (args.size() > MAX_ARITY) throw new IllegalArgumentException("arity limit");
-        Map<String, EnumInfo> declared = new HashMap<>();
-        for (Signature slot : candidates) {
-            for (Parameter p : slot.parameters()) {
-                if (p instanceof EnumParameter e) declared.put(e.info().symbolId(), e.info());
-            }
-        }
-        for (Parameter p : args) {
-            if (p instanceof EnumParameter e) {
-                EnumInfo info = declared.get(e.info().symbolId());
-                if (info != null && !info.equals(e.info())) {
-                    throw new IllegalArgumentException("stale/forged static enum proof");
+        return new PreparedFamily(candidates);
+    }
+
+    /** Compatibility oracle: use {@link #prepare} once for production checker integration. */
+    public static Signature select(List<Signature> candidates, List<Parameter> staticArguments) {
+        return prepare(candidates).bind(staticArguments).signature();
+    }
+
+    public static final class PreparedFamily {
+        private final Map<Integer, List<Signature>> byArity;
+        private final Map<String, EnumInfo> registeredEnums;
+        private final String schemaFingerprint;
+
+        private PreparedFamily(List<Signature> checked) {
+            Map<Integer, List<Signature>> groups = new HashMap<>();
+            Map<String, EnumInfo> enums = new HashMap<>();
+            for (Signature slot : checked) {
+                groups.computeIfAbsent(slot.arity(), ignored -> new ArrayList<>()).add(slot);
+                for (Parameter p : slot.parameters()) {
+                    if (p instanceof EnumParameter e) enums.put(e.info().symbolId(), e.info());
                 }
             }
+            groups.replaceAll((arity, group) -> List.copyOf(group));
+            byArity = Map.copyOf(groups);
+            registeredEnums = Map.copyOf(enums);
+            schemaFingerprint = fingerprint(checked, registeredEnums);
         }
-        List<Signature> applicable = new ArrayList<>();
-        for (Signature slot : candidates) {
-            if (slot.arity() != args.size()) continue;
-            boolean matches = true;
-            for (int i = 0; i < args.size(); i++) {
-                if (!subset(args.get(i), slot.parameters().get(i))) {
-                    matches = false;
-                    break;
+
+        /** Non-authoritative cache/rebuild fingerprint, never an overload identity by itself. */
+        public String schemaFingerprint() { return schemaFingerprint; }
+
+        /** Statically bind a call without runtime enum-tag inspection. */
+        public BoundTarget bind(List<Parameter> staticArguments) {
+            Objects.requireNonNull(staticArguments, "staticArguments");
+            if (staticArguments.size() > MAX_ARITY) throw new IllegalArgumentException("arity limit");
+            List<Parameter> args = List.copyOf(staticArguments);
+            for (Parameter p : args) {
+                if (p instanceof EnumParameter e) {
+                    EnumInfo registered = registeredEnums.get(e.info().symbolId());
+                    if (registered != null && !registered.equals(e.info())) {
+                        throw new IllegalArgumentException("stale/forged static enum proof");
+                    }
                 }
             }
-            if (matches) applicable.add(slot);
-        }
-        if (applicable.isEmpty()) throw new IllegalArgumentException("no statically provable overload");
-        Signature winner = null;
-        for (Signature candidate : applicable) {
-            boolean dominates = true;
-            for (Signature other : applicable) {
-                if (!signatureSubset(candidate, other)) { dominates = false; break; }
+            List<Signature> candidates = byArity.getOrDefault(args.size(), List.of());
+            List<Signature> applicable = new ArrayList<>();
+            for (Signature slot : candidates) {
+                boolean matches = true;
+                for (int i = 0; i < args.size(); i++) {
+                    if (!subset(args.get(i), slot.parameters().get(i))) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (matches) applicable.add(slot);
             }
-            if (dominates) {
-                if (winner != null) throw new IllegalArgumentException("ambiguous overload");
-                winner = candidate;
+            if (applicable.isEmpty()) throw new IllegalArgumentException("no statically provable overload");
+            Signature winner = null;
+            for (Signature candidate : applicable) {
+                boolean dominates = true;
+                for (Signature other : applicable) {
+                    if (!signatureSubset(candidate, other)) { dominates = false; break; }
+                }
+                if (dominates) {
+                    if (winner != null) throw new IllegalArgumentException("ambiguous overload");
+                    winner = candidate;
+                }
+            }
+            if (winner == null) throw new IllegalArgumentException("ambiguous overload");
+            return new BoundTarget(this, winner);
+        }
+    }
+
+    /** Carries the selected declaration and its owning compiler family by identity.
+     * Unrelated/hot-reloaded families cannot silently reuse this binding. */
+    public static final class BoundTarget {
+        private final PreparedFamily family;
+        private final Signature signature;
+        private final String slotSymbol;
+        private BoundTarget(PreparedFamily family, Signature signature) {
+            this.family = family;
+            this.signature = signature;
+            this.slotSymbol = symbol(signature);
+        }
+        public Signature signature() { return signature; }
+        public String slotSymbol() { return slotSymbol; }
+        public String schemaFingerprint() { return family.schemaFingerprint(); }
+        public void requireLinkedTo(PreparedFamily current) {
+            if (current != family) {
+                throw new IllegalArgumentException("bound overload belongs to another compilation image");
             }
         }
-        if (winner == null) throw new IllegalArgumentException("ambiguous overload");
-        return winner;
+    }
+
+    private static String fingerprint(List<Signature> declarations, Map<String, EnumInfo> enums) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digestField(digest, "ores-enum-variant-family-schema-v1");
+            List<String> slots = declarations.stream().map(EnumVariantOverloadPolicy::symbol).sorted().toList();
+            digestField(digest, Integer.toString(slots.size()));
+            for (String slot : slots) digestField(digest, slot);
+            List<EnumInfo> infos = enums.values().stream()
+                    .sorted(Comparator.comparing(EnumInfo::symbolId)).toList();
+            digestField(digest, Integer.toString(infos.size()));
+            for (EnumInfo info : infos) {
+                digestField(digest, info.symbolId());
+                List<String> cases = info.cases().keySet().stream().sorted().toList();
+                digestField(digest, Integer.toString(cases.size()));
+                for (String caseId : cases) {
+                    digestField(digest, caseId);
+                    digestField(digest, info.cases().get(caseId).name());
+                }
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException impossibleOnSupportedJdks) {
+            throw new IllegalStateException("SHA-256 unavailable", impossibleOnSupportedJdks);
+        }
+    }
+
+    private static void digestField(MessageDigest digest, String value) {
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        digest.update(ByteBuffer.allocate(4).putInt(bytes.length).array());
+        digest.update(bytes);
     }
 
     private static boolean safePair(Signature left, Signature right) {
