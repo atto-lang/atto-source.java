@@ -677,6 +677,69 @@ final class WorkflowJournalV1Test {
     }
 
     @Test
+    void persistedClaimTokenCannotBeRelabeledAcrossEffectOrAttempt() {
+        var loop = new DurableDevLoopV1("run-token-tamper", 3);
+        var store = started(loop);
+        var claim = store.claimNext(
+                "worker-a", 100L, 100L).orElseThrow();
+        var state = store.persistentState();
+        var original = state.effects().getFirst();
+
+        assertEquals(claim.claimToken(), original.claimToken());
+
+        var tamperedAttempt = new WorkflowJournalV1.EffectSnapshot(
+                original.effectKey(),
+                original.command(),
+                original.state(),
+                original.attempts(),
+                original.workerId(),
+                original.claimToken().replace(
+                        "/attempt/1/",
+                        "/attempt/2/"),
+                original.leaseUntilMillis(),
+                original.receiptRef(),
+                original.reconciliationRef(),
+                original.retryAllowed());
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> WorkflowJournalV1.restore(
+                        new WorkflowJournalV1.PersistentState(
+                                state.runId(),
+                                state.maxIterations(),
+                                state.nextSequence(),
+                                state.nextClaimNumber(),
+                                state.lastObservedMillis(),
+                                state.journal(),
+                                List.of(tamperedAttempt))));
+
+        var tamperedDigest = new WorkflowJournalV1.EffectSnapshot(
+                original.effectKey(),
+                original.command(),
+                original.state(),
+                original.attempts(),
+                original.workerId(),
+                original.claimToken().substring(
+                        0, original.claimToken().length() - 1) + "0",
+                original.leaseUntilMillis(),
+                original.receiptRef(),
+                original.reconciliationRef(),
+                original.retryAllowed());
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> WorkflowJournalV1.restore(
+                        new WorkflowJournalV1.PersistentState(
+                                state.runId(),
+                                state.maxIterations(),
+                                state.nextSequence(),
+                                state.nextClaimNumber(),
+                                state.lastObservedMillis(),
+                                state.journal(),
+                                List.of(tamperedDigest))));
+    }
+
+    @Test
     void persistedRetryAuthorityCannotOverrideJournalRevocation() {
         var loop = new DurableDevLoopV1("run-retry-tamper", 3);
         var store = started(loop);
