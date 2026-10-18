@@ -87,6 +87,8 @@ final class LogicalSourceActorCrossContextUpgradeTest {
                         "active logical route must pin its generation");
                 assertThrows(IllegalStateException.class, first::close,
                         "direct generation close must not invalidate a live actor route");
+                assertThrows(IllegalStateException.class, manager::close,
+                        "manager shutdown must not invalidate a live logical actor route");
                 var logicalBefore = ref.address();
                 var physicalBefore = router.physicalAddressForTesting();
 
