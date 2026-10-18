@@ -6,7 +6,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -20,13 +19,30 @@ final class CriticalCarrierNonparkingTest {
     void allThreeContendersSuspendWithoutConsumingTheirCarriers() throws Exception {
         CriticalGate gate = new CriticalGate();
         CriticalGate.Ticket owner = gate.newTicket();
-        assertTrue(owner.enterAsync().isDone());
+        CountDownLatch ownerSuspended = new CountDownLatch(1);
+        OresFuture<Void> resumeOwner = new OresFuture<>();
         CountDownLatch threeSuspended = new CountDownLatch(3);
         List<CriticalGate.Ticket> contenders = new ArrayList<>();
         List<OresFuture<Void>> suspendedTasks = new ArrayList<>();
         AtomicInteger resumed = new AtomicInteger();
 
         try (OresScheduler scheduler = new OresScheduler(3)) {
+            AtomicInteger ownerStage = new AtomicInteger();
+            OresFuture<Void> owningTask = scheduler.start(result -> {
+                if (ownerStage.getAndIncrement() == 0) {
+                    assertTrue(owner.enterAsync().isDone());
+                    ownerSuspended.countDown();
+                    // The lockholder retains only its logical ticket while
+                    // awaiting I/O; it releases the physical carrier.
+                    return OresScheduler.await(resumeOwner);
+                }
+                assertNull(result.failure());
+                assertTrue(owner.isHeld());
+                owner.close();
+                return OresScheduler.done(null);
+            });
+            assertTrue(ownerSuspended.await(5, TimeUnit.SECONDS));
+
             for (int i = 0; i < 3; i++) {
                 CriticalGate.Ticket ticket = gate.newTicket();
                 contenders.add(ticket);
@@ -59,7 +75,8 @@ final class CriticalCarrierNonparkingTest {
             assertEquals(77, control.get(5, TimeUnit.SECONDS));
             assertEquals(0, resumed.get(), "the original owner still holds the gate");
 
-            owner.close();
+            resumeOwner.completeFromRuntime(null);
+            owningTask.get(5, TimeUnit.SECONDS);
             for (OresFuture<Void> task : suspendedTasks) {
                 task.get(5, TimeUnit.SECONDS);
             }
@@ -68,6 +85,7 @@ final class CriticalCarrierNonparkingTest {
             assertFalse(gate.held());
             assertEquals(0, CriticalGate.waitingLogicalDomains());
         } finally {
+            resumeOwner.cancel(false);
             owner.close();
             for (CriticalGate.Ticket ticket : contenders) ticket.close();
         }
