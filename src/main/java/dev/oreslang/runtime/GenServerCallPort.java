@@ -30,9 +30,17 @@ final class GenServerCallPort<T> {
         Objects.requireNonNull(target, "target");
         synchronized (gate) {
             var ticket = ledger.register(target); // authority not published to guest DATA
-            OresFuture<T> future = new OresFuture<>(() -> cancel(ticket), () -> { });
-            futures.put(ticket, future);
-            return new PendingCall<>(ticket, future);
+            try {
+                // Future construction and map growth may fail under resource
+                // pressure. A successful ledger registration without a
+                // published future would otherwise leak scarce call credits.
+                OresFuture<T> future = new OresFuture<>(() -> cancel(ticket), () -> { });
+                futures.put(ticket, future);
+                return new PendingCall<>(ticket, future);
+            } catch (RuntimeException | Error failure) {
+                ledger.retire(ticket);
+                throw failure;
+            }
         }
     }
 
@@ -94,28 +102,29 @@ final class GenServerCallPort<T> {
     int failActor(GenServerReplyLedger.Target target, Throwable failure) {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(failure, "failure");
-        ArrayList<OresFuture<T>> affected = new ArrayList<>();
+        ArrayList<Map.Entry<GenServerReplyLedger.Ticket, OresFuture<T>>> selected =
+                new ArrayList<>();
         synchronized (gate) {
-            // Walk the live map in-place: duplicating ALL pending entries at
-            // crash time amplifies heap pressure and stalls unrelated calls.
-            // Only allocate storage for the failed generation's own futures.
-            var iterator = futures.entrySet().iterator();
-            while (iterator.hasNext()) {
-                var entry = iterator.next();
-                if (!entry.getKey().matchesTarget(target)) continue;
-                if (!ledger.retire(entry.getKey())) {
+            // Prepare all allocation BEFORE changing the correlation ledger.
+            // OOME halfway through collection cannot leave an untracked live
+            // future whose ticket was already retired.
+            for (var entry : futures.entrySet()) {
+                if (entry.getKey().matchesTarget(target))
+                    selected.add(Map.entry(entry.getKey(), entry.getValue()));
+            }
+            for (var entry : selected) {
+                if (!ledger.retire(entry.getKey()))
                     throw new IllegalStateException("call port/ledger retirement mismatch");
-                }
-                affected.add(entry.getValue());
-                iterator.remove();
+                if (futures.remove(entry.getKey()) != entry.getValue())
+                    throw new IllegalStateException("call port/future retirement mismatch");
             }
         }
-        for (var future : affected) {
-            if (!future.failFromRuntime(failure)) {
+        for (var entry : selected) {
+            if (!entry.getValue().failFromRuntime(failure)) {
                 throw new IllegalStateException("actor exit/future settlement mismatch");
             }
         }
-        return affected.size();
+        return selected.size();
     }
 
     /** Close claims all remaining calls before invoking any callbacks. */
