@@ -498,6 +498,12 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
                                 + entry.getKey());
             }
             validatePersistedEffect(persisted);
+            if (effect.retryAllowed != persisted.retryAllowed()) {
+                throw new IllegalStateException(
+                        "persisted retry authority disagrees with "
+                                + "journal-derived authority for "
+                                + entry.getKey());
+            }
             effect.state = persisted.state();
             effect.attempts = persisted.attempts();
             effect.workerId = persisted.workerId();
@@ -661,11 +667,10 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
         MutableEffect effect = effects.get(key);
         if (effect.state == EffectState.PENDING) {
             effect.state = EffectState.ABANDONED;
-            effect.retryAllowed = false;
-        } else if (effect.state == EffectState.CLAIMED
-                || effect.state == EffectState.AMBIGUOUS) {
-            effect.retryAllowed = false;
         }
+        // Once the causal outcome is accepted, no lifecycle state may regain
+        // authority to execute this effect again. This bit is journal-derived.
+        effect.retryAllowed = false;
     }
 
     private static boolean causalCommandMatches(
@@ -726,11 +731,11 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
         for (MutableEffect effect : effects.values()) {
             if (effect.state == EffectState.PENDING) {
                 effect.state = EffectState.ABANDONED;
-                effect.retryAllowed = false;
-            } else if (effect.state == EffectState.CLAIMED
-                    || effect.state == EffectState.AMBIGUOUS) {
-                effect.retryAllowed = false;
             }
+            // Terminal workflow state revokes all pre-existing retry authority,
+            // including already-completed effects. The newly emitted terminal
+            // effect is inserted after this pass and retains its own authority.
+            effect.retryAllowed = false;
         }
     }
 
