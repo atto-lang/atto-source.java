@@ -104,6 +104,18 @@ final class RefinementRulesTest {
         assertInstanceOf(RefinementRules.NominalValue.class, checked.value());
         assertEquals("ok", ((RefinementRules.NominalValue)checked.value()).intoInner());
         assertEquals("app.A", ((RefinementRules.NominalValue)checked.value()).qualifiedTypeName());
+        var wrapped = (RefinementRules.NominalValue) checked.value();
+        assertEquals(
+                RefinementRules.descriptor("app.A", a.target(), a.refinement()).fingerprint(),
+                wrapped.schemaFingerprint());
+        var other = RefinementRules.tryFrom(
+                "other.A", a.target(), a.refinement(), "ok");
+        assertNotEquals(
+                wrapped.schemaFingerprint(),
+                ((RefinementRules.NominalValue) other.value()).schemaFingerprint());
+        assertTrue(java.util.Arrays.stream(RefinementRules.NominalValue.class.getDeclaredConstructors())
+                .allMatch(ctor -> java.lang.reflect.Modifier.isPrivate(ctor.getModifiers())));
+
     }
 
     @Test void canonicalStringSpellingHasIdenticalProofAndSchemaSemantics() {

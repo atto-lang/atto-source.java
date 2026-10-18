@@ -307,14 +307,21 @@ public final class RefinementRules {
     /** Non-public constructor: no unchecked nominal wrapper manufacture. */
     public static final class NominalValue {
         private final String qualifiedTypeName;
+        private final String schemaFingerprint;
         private final Object underlying;
-        private NominalValue(String qualifiedTypeName, Object underlying) {
-            if (qualifiedTypeName == null || qualifiedTypeName.isBlank())
-                throw new IllegalArgumentException("nominal identity is required");
+        private NominalValue(String qualifiedTypeName, String schemaFingerprint,
+                             Object underlying) {
+            if (!qualifiedIdentity(qualifiedTypeName))
+                throw new IllegalArgumentException("qualified nominal identity is required");
+            if (schemaFingerprint == null
+                    || !schemaFingerprint.matches("[0-9a-f]{64}"))
+                throw new IllegalArgumentException("canonical schema fingerprint is required");
             this.qualifiedTypeName = qualifiedTypeName;
+            this.schemaFingerprint = schemaFingerprint;
             this.underlying = Objects.requireNonNull(underlying);
         }
         public String qualifiedTypeName() { return qualifiedTypeName; }
+        public String schemaFingerprint() { return schemaFingerprint; }
         public Object intoInner() { return underlying; }
     }
     public record CheckedValue(boolean ok, Object value, String error) { }
@@ -324,11 +331,18 @@ public final class RefinementRules {
                                        Ast.RefinementSpec spec, Object raw) {
         if (spec == null) throw new IllegalArgumentException("missing refinement");
         if (spec.nominal() && !qualifiedIdentity(identity)) {
-            throw new IllegalArgumentException("nominal checked construction requires qualified identifier");
+            throw new IllegalArgumentException(
+                    "nominal checked construction requires qualified identifier");
         }
-        if (!accepts(base, spec, raw))
+        // Checked construction is descriptor-driven so the value wrapper is
+        // bound to the exact normalized constraint ABI that admitted it.
+        Descriptor schema = descriptor(spec.nominal() ? identity : null, base, spec);
+        if (!schema.accepts(raw))
             return new CheckedValue(false, null, "constraint violation for " + identity);
         return new CheckedValue(true,
-                spec.nominal() ? new NominalValue(identity, raw) : raw, null);
+                spec.nominal()
+                        ? new NominalValue(identity, schema.fingerprint(), raw)
+                        : raw,
+                null);
     }
 }
