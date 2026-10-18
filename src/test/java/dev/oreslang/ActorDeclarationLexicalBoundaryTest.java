@@ -97,6 +97,47 @@ final class ActorDeclarationLexicalBoundaryTest {
     }
 
     @Test
+    void ffiForeignDeclUsesClosedScalarAbiAndCannotCollideWithActorMembers() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define ffi actor Native as
+                  extern suspends fnc add(int left, int right): int;
+                  receive(ActorMail<int> mail): void { return; }
+                end
+                """)));
+
+        IllegalArgumentException unsafe = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define ffi actor Native as
+                          extern suspends fnc echo(string value): string;
+                        end
+                        """)));
+        assertTrue(unsafe.getMessage().contains("ffi v1 scalar ABI"),
+                unsafe.getMessage());
+
+        IllegalArgumentException collision = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define ffi actor Native as
+                          extern suspends fnc work(int value): int;
+                          work(int value): int { return value; }
+                        end
+                        """)));
+        assertTrue(collision.getMessage().contains("cannot collide"),
+                collision.getMessage());
+
+        IllegalArgumentException generic = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define ffi actor Native as
+                          extern suspends fnc work<T>(int value): int;
+                        end
+                        """));
+        assertTrue(generic.getMessage().contains("generic extern"),
+                generic.getMessage());
+    }
+
+    @Test
     void externalActorSpawnIsRejectedUntilAuthenticatedBoundaryLoweringExists() {
         IllegalArgumentException ipc = assertThrows(
                 IllegalArgumentException.class,
