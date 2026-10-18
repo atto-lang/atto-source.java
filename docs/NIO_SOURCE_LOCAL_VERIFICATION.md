@@ -70,14 +70,20 @@ bash scripts/test-nio-exact-tree-source-local.sh \
 ```
 
 The script rejects mismatched commit/tree IDs, dirty or untracked checkout,
-a `target/` symlink, missing tools, the wrong Java/javac/Maven JVM version,
-and failed build steps. It uses `pipefail` so `tee` never converts a Maven
-failure into a pass.
+any nonstandard Git index tag (including **assume-unchanged** and
+**skip-worktree**), unsafe `target/`, evidence-directory or receipt symlinks,
+missing tools, the wrong Java/javac/Maven JVM version, and failed build steps.
+It uses `pipefail` so `tee` never converts a Maven failure into a pass.
+Checking only `git status` is insufficient: Git may deliberately hide
+modified tracked bytes behind those index flags while HEAD/tree SHA remain
+unchanged. Both flags are rejected on preflight and postflight.
 
 **Clean-build fence:** Even an otherwise clean Git checkout may contain ignored
 `target/` compiler outputs. After checking source identity and JDK 25, the
-helper runs `mvn -B -ntp clean` **before** any targeted JUnit command and
-recreates the evidence directory afterward. This prevents a prior stale
+helper runs `mvn -B -ntp clean` **before** any targeted JUnit command.
+It then **requires `target/` to be absent**, failing with exit code 71 if a
+Maven clean configuration silently skips or incompletely deletes the old build.
+Only then does it recreate the evidence directory. This prevents stale
 `target/classes` or `target/test-classes` from supplying the test result.
 A Maven clean failure is itself fatal and still produces a failure receipt.
 The gate does not delete private checkout content outside the Maven build output.
@@ -96,6 +102,22 @@ Future callback regressions. It then
 runs `mvn -B -ntp -Dores.runtime.carriers=native verify`. An explicitly
 requested `--native-aot` also runs
 `mvn -B -ntp -Pnative-aot -DskipTests package`.
+
+## Source-free self-tests of the qualification gate
+
+These use temporary synthetic Git repositories and mocked Java/Maven; they
+never access or export private Oreslang sources and **are not runtime tests**:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_nio_source_local_gate.py' -v
+python3 scripts/test-nio-exact-tree-source-local-selftest.py
+```
+
+The regressions cover wrong commit/tree, hidden tracked source changes using
+`git update-index --assume-unchanged` and `--skip-worktree`, skipped-clean
+stale classes, symlinked evidence paths, toolchain mismatch, interrupted Maven
+phases and the successful optional native-image invocation. The gate refuses
+these unsafe cases before it can claim a JUnit or exact-tree test result.
 
 ## Evidence, trust boundary and interpretation
 
