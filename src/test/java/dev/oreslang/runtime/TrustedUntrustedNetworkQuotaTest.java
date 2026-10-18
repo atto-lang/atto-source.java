@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -30,10 +31,11 @@ final class TrustedUntrustedNetworkQuotaTest {
                 quota.tryStartHttp().status());
         leases.get(0).close();
         assertEquals(9, quota.httpInFlight());
-        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED,
-                quota.tryStartHttp().status());
+        var resumed = quota.tryStartHttp();
+        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, resumed.status());
         for (var lease : leases) lease.close();
-        assertEquals(1, quota.httpInFlight()); // final unclosed test lease
+        resumed.lease().close();
+        assertEquals(0, quota.httpInFlight());
         quota.close();
         assertEquals(TrustedUntrustedNetworkQuota.Status.CLOSED, quota.tryStartHttp().status());
     }
@@ -90,6 +92,7 @@ final class TrustedUntrustedNetworkQuotaTest {
         var quota = new TrustedUntrustedNetworkQuota(
                 TrustedUntrustedNetworkQuota.Policy.initialDefault(), now::get);
         AtomicInteger admitted = new AtomicInteger();
+        var leases = new ConcurrentLinkedQueue<TrustedUntrustedNetworkQuota.Lease>();
         CountDownLatch start = new CountDownLatch(1);
         Thread[] threads = new Thread[24];
         for (int i = 0; i < threads.length; i++) {
@@ -97,7 +100,10 @@ final class TrustedUntrustedNetworkQuotaTest {
                 try {
                     if (!start.await(2, TimeUnit.SECONDS)) return;
                     var item = quota.tryOpenTcp();
-                    if (item.lease() != null) admitted.incrementAndGet();
+                    if (item.lease() != null) {
+                        leases.add(item.lease());
+                        admitted.incrementAndGet();
+                    }
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                 }
@@ -111,6 +117,8 @@ final class TrustedUntrustedNetworkQuotaTest {
         quota.close();
         assertEquals(TrustedUntrustedNetworkQuota.Status.CLOSED,
                 quota.tryOpenTcp().status());
+        for (var lease : leases) lease.close();
+        assertEquals(0, quota.tcpConnections());
     }
 
     @Test
