@@ -56,3 +56,37 @@ Retiring a completed token now also detaches (without invoking) any remaining ca
 
 ### Exact-source CI status note
 The latest inspected source-org Actions run batch for the audited PR continued reporting failure without job execution. Four sampled jobs (fast-ci/test, Target ABI x86-64/ARM64, native PGO preflight) each reported **0 executed steps**. An Actions workflow conclusion of failure is therefore not evidence of a compiler or regression-test failure here.
+
+
+## Admission-lock callback hardening — October 18, 2026
+
+The original `TaskScope.startTask()` registered `TaskHandle.getDone()`'s
+subscriber **inside** `admissionLock`. Because an already-terminal
+`OresFuture.whenCompleteRuntime` can invoke the callback synchronously,
+`childDone()` could ultimately complete the scope's externally observable
+`done` future while the caller still held `admissionLock`. Arbitrary
+observer code could then run under the admission monitor and block other
+scope operations, compromising the nonparking scheduler contract.
+
+Correction: reserve `active++` and admit the child under `admissionLock`,
+release the monitor, **then** install its `getDone()` subscriber.
+A concurrent `seal()` or `cancel()` sees the reservation, so it cannot
+prematurely publish the aggregate quiescence witness. If the task already
+completed, callback registration runs immediately but outside the monitor.
+
+Added a deterministic scheduler-level JUnit regression
+`alreadyTerminalChildNeverPublishesScopeDoneUnderAdmissionLock`. It uses
+the existing runtime-owned inline executor (`Runnable::run`) so the task
+seals the scope and completes before its terminal subscriber is registered.
+The observer checks `Thread.holdsLock(admissionLock)` and demands false.
+This test was **committed, not executed under real source CI**.
+
+Exact-head observations from GitHub Actions after the fix:
+- fast-ci run 39176109871, job 117818999011: failure, `steps=[]`.
+- declaration-integrity run 39176109900, job 117818999083: failure, `steps=[]`.
+
+These are runner/admission failures without executable test steps; the
+connector does not establish the underlying billing/policy/runner cause.
+The source-org Actions administrator must fix or provide an approved
+source-local runner. Never mirror this private source to an unapproved
+cross-organization CI repository. Keep this PR stacked on #1402 and draft.
