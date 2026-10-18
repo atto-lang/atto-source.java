@@ -481,6 +481,70 @@ final class SqliteWorkflowJournalV1Test {
     }
 
     @Test
+    void realChildProcessAtomicOutcomeCrashBeforeCommitRecoversClaimOnly()
+            throws Exception {
+        Path db = tempDir.resolve("process-atomic-before.db");
+        seedStarted(db, "run-process-atomic-before");
+        WorkflowJournalV1.Claim claim;
+        try (var store = SqliteWorkflowJournalV1.open(db)) {
+            claim = store.claimNext(
+                    "worker-a", 100L, 100L).orElseThrow();
+        }
+
+        int exit = runCrashWorker(
+                db,
+                SqliteWorkflowJournalV1.FaultPoint.BEFORE_COMMIT,
+                claim.claimToken());
+        assertNotEquals(0, exit);
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            assertEquals(1, reopened.journal().size());
+            assertEquals(
+                    DurableDevLoopV1.Phase.CODING,
+                    reopened.replayDevLoop().machine().snapshot().phase());
+            var effect = reopened.effect(
+                    claim.effectKey()).orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.CLAIMED,
+                    effect.state());
+            assertNull(effect.receiptRef());
+        }
+    }
+
+    @Test
+    void realChildProcessAtomicOutcomeCrashAfterCommitRecoversBothSides()
+            throws Exception {
+        Path db = tempDir.resolve("process-atomic-after.db");
+        seedStarted(db, "run-process-atomic-after");
+        WorkflowJournalV1.Claim claim;
+        try (var store = SqliteWorkflowJournalV1.open(db)) {
+            claim = store.claimNext(
+                    "worker-a", 100L, 100L).orElseThrow();
+        }
+
+        int exit = runCrashWorker(
+                db,
+                SqliteWorkflowJournalV1.FaultPoint.AFTER_COMMIT,
+                claim.claimToken());
+        assertNotEquals(0, exit);
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            assertEquals(2, reopened.journal().size());
+            assertEquals(
+                    DurableDevLoopV1.Phase.WAITING_FOR_PUSH,
+                    reopened.replayDevLoop().machine().snapshot().phase());
+            var effect = reopened.effect(
+                    claim.effectKey()).orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.COMPLETED,
+                    effect.state());
+            assertEquals(
+                    "receipt://child-process",
+                    effect.receiptRef());
+        }
+    }
+
+    @Test
     void realChildProcessCrashBeforeCommitRecoversOldState()
             throws Exception {
         Path db = tempDir.resolve("process-before.db");
@@ -520,21 +584,50 @@ final class SqliteWorkflowJournalV1Test {
 
     private static int runCrashWorker(
             Path database,
+            SqliteWorkflowJournalV1.FaultPoint point,
+            String claimToken)
+            throws Exception {
+        return runCrashWorker(
+                database,
+                point,
+                new String[] {"atomic-outcome", claimToken});
+    }
+
+    private static int runCrashWorker(
+            Path database,
             SqliteWorkflowJournalV1.FaultPoint point)
             throws Exception {
         String classPath = System.getProperty(
                 "surefire.test.class.path",
                 System.getProperty("java.class.path"));
-        Process process = new ProcessBuilder(
-                Path.of(
-                        System.getProperty("java.home"),
-                        "bin",
-                        "java").toString(),
-                "-cp",
-                classPath,
-                SqliteWorkflowJournalCrashWorkerV1.class.getName(),
-                database.toAbsolutePath().toString(),
-                point.name())
+        return runCrashWorker(
+                database,
+                point,
+                new String[0]);
+    }
+
+    private static int runCrashWorker(
+            Path database,
+            SqliteWorkflowJournalV1.FaultPoint point,
+            String[] extraArgs)
+            throws Exception {
+        String classPath = System.getProperty(
+                "surefire.test.class.path",
+                System.getProperty("java.class.path"));
+        java.util.ArrayList<String> command =
+                new java.util.ArrayList<>();
+        command.add(Path.of(
+                System.getProperty("java.home"),
+                "bin",
+                "java").toString());
+        command.add("-cp");
+        command.add(classPath);
+        command.add(SqliteWorkflowJournalCrashWorkerV1.class.getName());
+        command.add(database.toAbsolutePath().toString());
+        command.add(point.name());
+        command.addAll(java.util.List.of(extraArgs));
+
+        Process process = new ProcessBuilder(command)
                 .redirectErrorStream(true)
                 .start();
         boolean exited = process.waitFor(20, TimeUnit.SECONDS);
