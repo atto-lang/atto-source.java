@@ -274,6 +274,84 @@ final class SqliteWorkflowJournalV1Test {
     }
 
     @Test
+    void expiredCompletionPersistsAmbiguousStateBeforeRethrow() {
+        Path db = tempDir.resolve("expired-complete.db");
+        var loop = new DurableDevLoopV1("run-expired-complete", 3);
+        WorkflowJournalV1.Claim claim;
+
+        try (var store = SqliteWorkflowJournalV1.open(db)) {
+            store.append(loop.accept(
+                    "start",
+                    new DurableDevLoopV1.Start("goal")));
+            claim = store.claimNext(
+                    "worker-a", 100L, 20L).orElseThrow();
+
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> store.complete(
+                            claim.effectKey(),
+                            claim.claimToken(),
+                            "receipt://late",
+                            120L));
+
+            assertEquals(
+                    WorkflowJournalV1.EffectState.AMBIGUOUS,
+                    store.effect(claim.effectKey())
+                            .orElseThrow()
+                            .state());
+        }
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            var effect = reopened.effect(
+                    claim.effectKey()).orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.AMBIGUOUS,
+                    effect.state());
+            assertNull(effect.receiptRef());
+            assertNotNull(effect.claimToken());
+        }
+    }
+
+    @Test
+    void invalidClaimFailureRollsBackOnceAndStoreRemainsUsable() {
+        Path db = tempDir.resolve("invalid-claim.db");
+        var loop = new DurableDevLoopV1("run-invalid-claim", 3);
+
+        try (var store = SqliteWorkflowJournalV1.open(db)) {
+            store.append(loop.accept(
+                    "start",
+                    new DurableDevLoopV1.Start("goal")));
+            var claim = store.claimNext(
+                    "worker-a", 100L, 100L).orElseThrow();
+
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> store.complete(
+                            claim.effectKey(),
+                            claim.claimToken() + "-wrong",
+                            "receipt://invalid",
+                            150L));
+
+            var effect = store.effect(
+                    claim.effectKey()).orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.CLAIMED,
+                    effect.state());
+
+            store.complete(
+                    claim.effectKey(),
+                    claim.claimToken(),
+                    "receipt://valid",
+                    150L);
+            assertEquals(
+                    WorkflowJournalV1.EffectState.COMPLETED,
+                    store.effect(claim.effectKey())
+                            .orElseThrow()
+                            .state());
+        }
+    }
+
+    @Test
     void faultAfterCommitRecoversNewStateRatherThanOldState() {
         Path db = tempDir.resolve("after-commit.db");
         seedStarted(db, "run-after-commit");
