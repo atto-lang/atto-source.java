@@ -537,6 +537,60 @@ final class SqliteWorkflowJournalV1Test {
     }
 
     @Test
+    void concurrentReaderNeverObservesMixedSqliteGeneration()
+            throws Exception {
+        Path db = tempDir.resolve("consistent-read.db");
+        seedStarted(db, "run-consistent-read");
+
+        try (var writer = SqliteWorkflowJournalV1.open(db);
+             var reader = SqliteWorkflowJournalV1.open(db);
+             var pool = Executors.newFixedThreadPool(2)) {
+            var start = new CountDownLatch(1);
+
+            var writeFuture = pool.submit(() -> {
+                start.await();
+                for (int i = 0; i < 100; i++) {
+                    var machine = writer.replayDevLoop().machine();
+                    writer.append(machine.accept(
+                            "late-start-" + i,
+                            new DurableDevLoopV1.Start("again")));
+                }
+                return null;
+            });
+
+            var readFuture = pool.submit(() -> {
+                start.await();
+                for (int i = 0; i < 200; i++) {
+                    var snapshot = reader.snapshot();
+                    var journal = reader.journal();
+                    assertEquals(
+                            snapshot.journalEntries(),
+                            journal.size());
+                    assertEquals(
+                            snapshot.nextSequence(),
+                            journal.size() + 1L);
+                    var replay = reader.replayDevLoop();
+                    assertEquals(
+                            journal,
+                            replay.machine().journal());
+                }
+                return null;
+            });
+
+            start.countDown();
+            writeFuture.get(20, TimeUnit.SECONDS);
+            readFuture.get(20, TimeUnit.SECONDS);
+        }
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            assertEquals(101, reopened.journal().size());
+            assertEquals(
+                    102L,
+                    reopened.snapshot().nextSequence());
+        }
+    }
+
+    @Test
     void tamperedEffectCommandFailsClosedOnOpen() throws Exception {
         Path db = tempDir.resolve("tamper.db");
         seedStarted(db, "run-tamper");
