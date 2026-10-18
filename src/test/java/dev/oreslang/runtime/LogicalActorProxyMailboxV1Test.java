@@ -350,6 +350,77 @@ final class LogicalActorProxyMailboxV1Test {
                 () -> mailbox.admit(new byte[] {1}));
     }
 
+    @Test
+    void provenUnsentRequeueRetainsCreditsAndOriginalFifoSequence() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(3, 8, 24)) {
+            mailbox.admit(bytes("a"));
+            mailbox.admit(bytes("bb"));
+            mailbox.admit(bytes("ccc"));
+
+            assertEquals(1L, mailbox.pollDispatch().messageSequence());
+            mailbox.requeueProvenUnsent(1L);
+            var requeued = mailbox.snapshot();
+            assertEquals(0L, requeued.highestDispatchedSequence());
+            assertEquals(3, requeued.queuedMessages());
+            assertEquals(0, requeued.outstandingMessages());
+            assertEquals(3, requeued.retainedMessages());
+            assertEquals(6L, requeued.retainedBytes());
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.admit(bytes("d")));
+
+            assertEquals(1L, mailbox.pollDispatch().messageSequence());
+            assertEquals(2L, mailbox.pollDispatch().messageSequence());
+            assertEquals(3L, mailbox.pollDispatch().messageSequence());
+            mailbox.complete(2L);
+            mailbox.complete(3L);
+            assertEquals(0L, mailbox.snapshot().completionWatermark());
+            mailbox.complete(1L);
+            assertEquals(3L, mailbox.snapshot().completionWatermark());
+            assertEquals(0, mailbox.snapshot().retainedMessages());
+            assertEquals(0L, mailbox.snapshot().retainedBytes());
+        }
+    }
+
+    @Test
+    void requeueCannotErasePriorDeliveryOrBypassFreeze() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(4, 8, 32)) {
+            mailbox.admit(bytes("a"));
+            mailbox.admit(bytes("b"));
+            mailbox.pollDispatch();
+            mailbox.pollDispatch();
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.requeueProvenUnsent(1L),
+                    "only the most recent dispatch can be proven unsent");
+
+            var freeze = mailbox.freezeDispatchForUpgrade();
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.requeueProvenUnsent(2L),
+                    "a frozen dispatch watermark cannot be rolled backwards");
+            assertFalse(freeze.drained());
+            freeze.rollback();
+            mailbox.complete(2L);
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.requeueProvenUnsent(2L),
+                    "a completed delivery must never be replayed");
+            mailbox.complete(1L);
+            assertEquals(0, mailbox.snapshot().retainedMessages());
+        }
+    }
+
+    @Test
+    void rejectedAdmissionsDoNotAdvanceSequenceOrLoseCredits() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(1, 4, 4)) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> mailbox.admit(new byte[5]));
+            assertEquals(1L, mailbox.snapshot().nextMessageSequence());
+            assertEquals(1L, mailbox.admit(bytes("ok")).messageSequence());
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.admit(bytes("no")));
+            assertEquals(2L, mailbox.snapshot().nextMessageSequence());
+            assertEquals(2L, mailbox.snapshot().retainedBytes());
+        }
+    }
+
     private static byte[] bytes(String value) {
         return value.getBytes(StandardCharsets.UTF_8);
     }
