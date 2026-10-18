@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * GUEST execution gate for the actual Oreslang ML scalar actor-state fixture.
  *
  * The .ores fixture was copied byte-for-byte from oreslang-ml's stacked
- * actor-state PR #7 (Git blob 5c61549af7fe9d9fc373ec5e4482c177334fd675).
+ * actor-state PR #7 (Git blob 164bbae8cd4663d83224c7f433028f251d0d661d).
  * This JUnit class requires an actual GraalVM Oreslang context evaluation;
  * pure host-side arithmetic is explicitly NOT accepted as execution evidence.
  *
@@ -48,6 +48,8 @@ final class MlActorStateScalarGuestTest {
         assertTrue(text.contains("with state.read"));
         assertTrue(text.contains("with state.read, state.write"));
         assertTrue(text.contains("using state.read("));
+        assertTrue(text.contains("private eval_affine("));
+        assertFalse(text.contains("private forward("));
         assertTrue(text.contains("using state.write(critical "));
         assertTrue(text.contains("self.handle_state(critical read "));
         assertTrue(text.contains("self.handle_state(critical write "));
