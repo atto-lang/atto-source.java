@@ -30,7 +30,7 @@ if [[ "$phase" == native-* || "$phase" == all ]]; then
 fi
 cd "$source_dir"
 run_targeted() {
-    local tests='AffineSumProjectionExtractionTest,BorrowedSumExtractionOwnershipTest,CheckedOptionDepthMetadataTest,FutureCompositionLanguageTest,NestedExtractionArityDiagnosticsTest,NestedFutureAffineReceiverTest,NestedFutureFlattenArityTest,NestedFutureSchedulerContractTest,NestedFutureCycleInterleavingTest,NestedOptionDepthConformanceTest,NestedOptionFutureExtractionLanguageTest,NestedOptionNoneBoundaryTest,NestedOptionResultBoundaryRegressionTest'
+    local tests='AffineSumProjectionExtractionTest,BorrowedSumExtractionOwnershipTest,CheckedOptionDepthMetadataTest,FutureCompositionLanguageTest,NestedExtractionArityDiagnosticsTest,NestedFutureAffineReceiverTest,NestedFutureFlattenArityTest,NestedFutureSchedulerContractTest,NestedFutureCycleInterleavingTest,NestedFutureFlattenCycleRegressionTest,NestedOptionDepthConformanceTest,NestedOptionFutureExtractionLanguageTest,NestedOptionNoneBoundaryTest,NestedOptionResultBoundaryRegressionTest'
     mvn -B -ntp "-Dtest=$tests" -DfailIfNoTests=true test
 }
 run_full() { mvn -B -ntp -Dores.runtime.carriers=native verify; }
