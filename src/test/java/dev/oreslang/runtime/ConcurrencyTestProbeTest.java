@@ -1,0 +1,93 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class ConcurrencyTestProbeTest {
+    @TempDir Path tmp;
+
+    @Test
+    void disabledProbeHasNoSideEffects() {
+        ConcurrencyTestProbe.checkpoint("task-turn");
+        ConcurrencyTestProbe.deadlock("future-cycle");
+    }
+
+    @Test
+    void replayRoundTripAndDetectedCycle() throws Exception {
+        Path trace = tmp.resolve("run.trace");
+        List<String> recorded;
+        try (var session = ConcurrencyTestProbe.start(91, true, null)) {
+            ConcurrencyTestProbe.checkpoint("task-turn");
+            ConcurrencyTestProbe.deadlock("future-cycle");
+            ConcurrencyTestProbe.checkpoint("task-turn");
+            assertEquals(1, session.detectedDeadlocks());
+            assertEquals(3, session.eventCount());
+            session.writeTrace(trace);
+            recorded = session.trace();
+        }
+        assertEquals(recorded, ConcurrencyTestProbe.readTrace(trace));
+        try (var session = ConcurrencyTestProbe.start(91, true, ConcurrencyTestProbe.readTrace(trace))) {
+            ConcurrencyTestProbe.checkpoint("task-turn");
+            ConcurrencyTestProbe.deadlock("future-cycle");
+            ConcurrencyTestProbe.checkpoint("task-turn");
+            session.verifyReplayComplete();
+            assertEquals(recorded, session.trace());
+        }
+    }
+
+    @Test
+    void replayMismatchFailsClosedAndSessionRetires() {
+        try (var session = ConcurrencyTestProbe.start(1, true, List.of("future-await|1"))) {
+            assertThrows(IllegalStateException.class,
+                    () -> ConcurrencyTestProbe.checkpoint("task-turn"));
+            assertEquals(0, session.eventCount());
+        }
+        try (var session = ConcurrencyTestProbe.start(2, false, null)) {
+            assertEquals(0, session.eventCount());
+        }
+    }
+
+    @Test
+    void replayTruncationIsNotSuccessful() {
+        try (var session = ConcurrencyTestProbe.start(1, false,
+                List.of("task-turn|0", "task-turn|0"))) {
+            ConcurrencyTestProbe.checkpoint("task-turn");
+            assertThrows(IllegalStateException.class, session::verifyReplayComplete);
+        }
+    }
+
+    @Test
+    void nestedProbeCannotReplaceActiveSession() {
+        try (var ignored = ConcurrencyTestProbe.start(7, false, null)) {
+            assertThrows(IllegalStateException.class,
+                    () -> ConcurrencyTestProbe.start(8, true, null));
+        }
+    }
+
+    @Test
+    void concurrentEventRecordingIsBoundedAndAtomic() throws Exception {
+        try (var session = ConcurrencyTestProbe.start(5, false, null)) {
+            CountDownLatch done = new CountDownLatch(2);
+            for (int i = 0; i < 2; i++) {
+                Thread.ofPlatform().start(() -> {
+                    try {
+                        for (int j = 0; j < 100; j++) {
+                            ConcurrencyTestProbe.checkpoint("task-turn");
+                        }
+                    } finally {
+                        done.countDown();
+                    }
+                });
+            }
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertEquals(200, session.eventCount());
+        }
+    }
+}
