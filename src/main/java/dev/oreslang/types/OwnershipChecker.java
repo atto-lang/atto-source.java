@@ -857,6 +857,10 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
+            throw new IllegalArgumentException(
+                    "staged named/optional calls cannot bypass ownership admission");
+        }
         if (expr instanceof Ast.MatchExpr match) {
             ValueInfo subject = checkExpr(match.subject(), scope, false);
             VarState source = match.subject() instanceof Ast.NameExpr name
