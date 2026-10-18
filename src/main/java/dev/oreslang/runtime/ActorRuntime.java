@@ -1828,6 +1828,47 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Spawn one host/runtime Task whose lifetime is owned by the executing
+     * trusted actor, rather than by a transient TaskHandle variable. The actor
+     * must not finalize while an admitted child Task is still physically live.
+     *
+     * UNTRUSTED source tasks retain their separately metered
+     * startActorTask(...) path until quota-aware tracked admission exists.
+     * A handle does not grant control over any other actor.
+     */
+    public <T> TaskHandle<T> startActorOwnedTask(OresScheduler.Task<T> task) {
+        Objects.requireNonNull(task, "task");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "actor-owned Task admission requires an executing actor turn");
+        }
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            throw new SecurityException(
+                    "untrusted actor TaskHandle admission requires quota-aware lowering");
+        }
+
+        TaskScope scope;
+        synchronized (cell.lifecycleLock) {
+            if (closed.get() || cell.stopped.get() || cell.forceKillFenced || cell.finalized) {
+                throw terminated(cell.ref);
+            }
+            scope = cell.actorOwnedTasks;
+            if (scope == null) {
+                scope = new TaskScope(cell.sourceScheduler());
+                cell.actorOwnedTasks = scope;
+                scope.getDone().whenCompleteRuntime(
+                        (ignored, failure) -> cell.actorTasksQuiescent());
+            }
+        }
+        // Must not hold the actor monitor while registering a Task and its
+        // Future callbacks. Concurrent termination seals the same TaskScope;
+        // either admission wins and is cancelled or termination wins and
+        // this call fails closed.
+        return scope.startTask(task);
+    }
+
     private boolean ownFuture(
             ActorCell<?> cell,
             OresFuture<?> future) {
@@ -6804,6 +6845,8 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private boolean sourceHandoffRequested;
         private OresScheduler sourceScheduler;
+        /** Owned source Tasks retain actor finalization until all have quiesced. */
+        private TaskScope actorOwnedTasks;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
@@ -7095,6 +7138,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private void actorTasksQuiescent() {
+            synchronized (lifecycleLock) {
+                if (stopped.get()) finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
+        }
+
         private void finalizeStopLocked() {
             // External termination is not observable until the dispatcher has
             // fully crossed back out of the TurnExecutor boundary. For
@@ -7103,7 +7153,8 @@ public final class ActorRuntime implements AutoCloseable {
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
-                    || !children.isEmpty()) return;
+                    || !children.isEmpty()
+                    || (actorOwnedTasks != null && !actorOwnedTasks.getDone().isDone())) return;
             finalized = true;
             OresScheduler scheduler = sourceScheduler;
             sourceScheduler = null;
@@ -7682,6 +7733,7 @@ public final class ActorRuntime implements AutoCloseable {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             List<DrainWaiter> failedDrainWaiters;
+            TaskScope ownedTaskScope;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -7701,8 +7753,18 @@ public final class ActorRuntime implements AutoCloseable {
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
+                ownedTaskScope = actorOwnedTasks;
+                // The actor finalization gate will remain closed until the
+                // scope has sealed admission and every owned Task is quiescent.
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
+            }
+
+            // Sealing/cancelling a scope can settle Futures and run trusted
+            // host notification callbacks synchronously. Never do that while
+            // holding lifecycleLock. The finalization gate is already armed.
+            if (ownedTaskScope != null) {
+                ownedTaskScope.cancel("owning actor terminated");
             }
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
