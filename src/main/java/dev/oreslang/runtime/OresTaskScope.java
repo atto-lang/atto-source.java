@@ -113,8 +113,12 @@ public final class OresTaskScope implements AutoCloseable {
             OresTask<T> child = new OresTask<>(completion, exited);
             tasks.add(child);
             child.getDone().whenCompleteRuntime((ignored, failure) -> {
-                synchronized (gate) {
-                    tasks.remove(child);
+                // Do not discard an owner record if its trusted image-release
+                // callback failed. close() must still report the failed fence.
+                if (failure == null) {
+                    synchronized (gate) {
+                        tasks.remove(child);
+                    }
                 }
             });
             return child;
@@ -337,9 +341,13 @@ public final class OresTaskScope implements AutoCloseable {
     /** Wait through host interruption; releasing owned frames is mandatory. */
     private static void awaitPhysicalExit(OresFuture<Void> observed) {
         CountDownLatch exited = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> retirementError =
+                new java.util.concurrent.atomic.AtomicReference<>();
         OresFuture.RuntimeWaiterRegistration<Void> registration =
-                observed.whenCompleteRuntimeCancellable(
-                        (value, failure) -> exited.countDown());
+                observed.whenCompleteRuntimeCancellable((value, failure) -> {
+                    retirementError.set(failure);
+                    exited.countDown();
+                });
         boolean interrupted = false;
         try {
             for (;;) {
@@ -354,6 +362,10 @@ public final class OresTaskScope implements AutoCloseable {
             registration.detach();
             if (interrupted) Thread.currentThread().interrupt();
         }
+        Throwable failure = retirementError.get();
+        if (failure != null) throw new IllegalStateException(
+                "Task guest turn exited but trusted generation/resource retirement failed",
+                failure);
     }
 
     private void joinExistingClose() {
