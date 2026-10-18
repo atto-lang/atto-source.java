@@ -16,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import zipfile
 
 SCHEMA = 'oreslang-compiler-bundle/v1'
 REPO = 'ores-truffle-oreslang/oreslang-source.java'
@@ -56,12 +57,40 @@ def digest(path):
     return h.hexdigest()
 
 
+def no_symlink_parents(path):
+    """Deny symlinks in existing path components, not just at the leaf."""
+    path = Path(path).absolute()
+    check(path.is_absolute(), 'nonabsolute input path')
+    for part in (path, *path.parents):
+        check(not part.is_symlink(), 'symlink in path: ' + str(part))
+
+
 def regular(path, max_size=MAX_FILE):
+    no_symlink_parents(path)
     check(not path.is_symlink(), 'symlink: ' + str(path))
     check(path.is_file(), 'missing, linked, empty or oversized file: ' + str(path))
     st = path.stat()
     check(stat.S_ISREG(st.st_mode) and st.st_nlink == 1 and 0 < st.st_size <= max_size,
           'missing, linked, empty or oversized file: ' + str(path))
+
+
+def jar_structure(path, *, main=False):
+    """Refuse mislabeled scripts or corrupt JAR archives before attestation."""
+    regular(path)
+    try:
+        with zipfile.ZipFile(path, 'r') as archive:
+            names = archive.namelist()
+            check(len(names) <= 32768 and len(names) == len(set(names)),
+                  'invalid or duplicate JAR entries')
+            check(all(not name.startswith('/') and '\x00' not in name and
+                      all(part not in ('..', '.') for part in name.split('/'))
+                      for name in names), 'unsafe JAR member path')
+            if main:
+                check('module-info.class' in names and
+                      'dev/oreslang/launcher/OresMain.class' in names,
+                      'compiler JAR missing modular OresMain entry point')
+    except (zipfile.BadZipFile, zipfile.LargeZipFile):
+        deny('not a valid JAR archive: ' + str(path))
 
 
 def read_json(path):
@@ -89,13 +118,15 @@ def git(repo, *args):
 def check_source(repo, commit, tree):
     check(SHA40.fullmatch(commit) is not None and SHA40.fullmatch(tree) is not None,
           'invalid source commit/tree SHA')
+    no_symlink_parents(repo)
     check(not repo.is_symlink() and repo.is_dir() and repo.resolve() == repo,
           'unsafe source directory')
     check(Path(git(repo, 'rev-parse', '--show-toplevel')).resolve() == repo,
           'source Git root differs')
     check(git(repo, 'rev-parse', '--verify', 'HEAD') == commit, 'wrong source commit')
     check(git(repo, 'show', '-s', '--format=%T', 'HEAD') == tree, 'wrong source tree')
-    check(not git(repo, 'status', '--porcelain', '--untracked-files=all'),
+    check(not git(repo, 'status', '--porcelain', '--untracked-files=all',
+                  '--ignore-submodules=none'),
           'dirty source checkout')
     for row in git(repo, 'ls-files', '-v', '-z').split('\0'):
         check(not row or row.startswith('H '), 'masked Git index entry')
@@ -155,9 +186,11 @@ def create(args):
     check_source(source, args.source_commit, args.source_tree)
     jar = Path(args.main_jar).absolute()
     depdir = Path(args.dependency_dir).absolute()
-    regular(jar)
+    jar_structure(jar, main=True)
     check(jar.suffix == '.jar', 'main artifact not a JAR')
+    no_symlink_parents(depdir)
     check(depdir.is_dir() and not depdir.is_symlink(), 'missing dependency directory')
+    no_symlink_parents(out)
     check(not out.exists(), 'output already exists; refuse overwrite')
     check(source != out and source not in out.parents, 'bundle may not contain source')
     check(out != source and out not in source.parents, 'bundle cannot sit inside source')
@@ -165,7 +198,7 @@ def create(args):
     check(0 < len(deps) <= MAX_JARS and all(NAME.fullmatch(p.name) for p in deps),
           'missing/invalid dependency JAR names')
     for dep in deps:
-        regular(dep)
+        jar_structure(dep)
     check(jar.name not in {x.name for x in deps}, 'duplicate app/dependency name')
     # Do not allow an existing destination to acquire incomplete artifacts.
     out.mkdir(parents=True, mode=0o700)
@@ -200,8 +233,24 @@ def create(args):
         raise
 
 
-def verify_bundle(bundle, commit, tree):
+def verify_bundle(bundle, commit, tree, *, expected_manifest_sha256=None,
+                  run_untrusted_launcher=False):
+    """Verify bytes *without executing* the bundle unless explicitly requested.
+
+    A self-reported manifest is not trusted provenance. For an out-of-band pinned
+    receipt provide expected_manifest_sha256. Running the JVM is a separate
+    explicitly opted-in step, only appropriate for a trusted executable.
+    """
+    bundle = Path(bundle).absolute()
+    no_symlink_parents(bundle)
     check(bundle.is_dir() and not bundle.is_symlink(), 'unsafe bundle directory')
+    if expected_manifest_sha256 is not None:
+        check(type(expected_manifest_sha256) is str and
+              SHA256.fullmatch(expected_manifest_sha256),
+              'invalid pinned manifest SHA-256')
+        regular(bundle / 'manifest.json', MAX_JSON)
+        check(digest(bundle / 'manifest.json') == expected_manifest_sha256,
+              'pinned manifest SHA-256 mismatch')
     doc = read_json(bundle / 'manifest.json')
     check(type(doc) is dict and set(doc) == {'schema_version', 'source_repository',
           'source_commit', 'source_tree', 'maven_pom_sha256', 'module_main',
@@ -227,15 +276,19 @@ def verify_bundle(bundle, commit, tree):
     files = doc['files']
     check(type(files) is list and 3 <= len(files) <= MAX_JARS + 2,
           'invalid dependency manifest')
+    jar_structure(bundle / 'app.jar', main=True)
     expected = [file_entry(bundle, 'app.jar'), file_entry(bundle, 'run-oreslang')]
     expected.extend(canonical_dependencies(bundle))
+    for entry in expected[2:]:
+        jar_structure(bundle / entry['path'])
     check(files == expected, 'dependency/artifact bytes or inventory changed')
     check((bundle / 'run-oreslang').read_text(encoding='utf-8') == LAUNCHER,
           'unknown launcher shell script')
     check((bundle / 'run-oreslang').stat().st_mode & stat.S_IXUSR,
           'launcher is not executable')
-    check(doc['build_info'] == probe_info(bundle / 'run-oreslang', bundle),
-          'build-info mismatches manifest')
+    if run_untrusted_launcher:
+        check(doc['build_info'] == probe_info(bundle / 'run-oreslang', bundle),
+              'build-info mismatches manifest')
     return doc
 
 
@@ -253,12 +306,18 @@ def main():
     verify_p.add_argument('--bundle', required=True)
     verify_p.add_argument('--source-commit', required=True)
     verify_p.add_argument('--source-tree', required=True)
+    verify_p.add_argument('--expected-manifest-sha256', required=True,
+                          help='Out-of-band trusted digest; the bundle manifest cannot attest itself')
+    verify_p.add_argument('--probe-launcher', action='store_true',
+                          help='EXPLICITLY execute bundled code AFTER static/hash verification')
     args = p.parse_args()
     try:
         if args.command == 'create':
             result = create(args)
         else:
-            result = verify_bundle(Path(args.bundle).absolute(), args.source_commit, args.source_tree)
+            result = verify_bundle(Path(args.bundle).absolute(), args.source_commit, args.source_tree,
+                                   expected_manifest_sha256=args.expected_manifest_sha256,
+                                   run_untrusted_launcher=args.probe_launcher)
         print(json.dumps({'status': 'BUNDLE_BYTES_CHECKED_NOT_ATTESTED',
                           'source_commit': result['source_commit'],
                           'files_checked': len(result['files']),
