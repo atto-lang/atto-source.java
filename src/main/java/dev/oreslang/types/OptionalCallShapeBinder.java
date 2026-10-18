@@ -164,6 +164,31 @@ public final class OptionalCallShapeBinder {
         return List.copyOf(result);
     }
 
+    /**
+     * Compiler-lowering handoff: dense source expressions in the exact lexical
+     * order in which a selected call must evaluate them. Rebind the checked
+     * signature and source AST before exposing any expression: a valid-looking
+     * dense Plan is not proof that omissions target the correct formals.
+     *
+     * This returns AST data ONLY. It never evaluates expressions or authorizes
+     * runtime invocation, borrow moves, or Option<T> ABI lowering.
+     */
+    public static List<Ast.Expr> evaluatedExpressionsInSourceOrder(
+            List<Parameter> parameters, List<Ast.CallArgument> callItems, Plan selectedPlan) {
+        Objects.requireNonNull(callItems, "callItems");
+        verifyPlanAgainstSource(parameters, callItems, selectedPlan);
+        List<Ast.Expr> evaluated = new ArrayList<>(selectedPlan.suppliedArgumentCount());
+        for (int callItemIndex : selectedPlan.callItemIndexByEvaluatedSource()) {
+            Ast.CallArgument item = callItems.get(callItemIndex);
+            if (item.omitted() || item.spread() || item.value() == null) {
+                throw new IllegalArgumentException(
+                        "selected call source index references a non-evaluable call item");
+            }
+            evaluated.add(item.value());
+        }
+        return List.copyOf(evaluated);
+    }
+
     public record Parameter(String name, boolean optional, boolean variadic) {
         public Parameter {
             if (name == null || name.isBlank()) {
