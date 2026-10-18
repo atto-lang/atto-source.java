@@ -8,8 +8,11 @@ cross-organization source-copy mechanism.
 
 **Do not copy private source to another repository.** The protected
 `.github/private-ci-approved-repositories.txt` currently authorizes **zero**
-cross-repository destinations. In particular, `zed-pkg-test/java-app` is
-public and must not receive private code. Follow the public-source exposure incident
+cross-repository destinations. In particular, `zed-pkg-test/java-app`
+was previously public; it is currently verified private (2026-10-18), but
+changing visibility does not erase historical exposure, Git history, cloned
+source or retained artifacts. It must not receive additional private source.
+Follow the historical public-source exposure incident
 [platform-conformance #22](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/issues/22),
 the private-carrier incident
 [#77](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/issues/77),
@@ -24,6 +27,17 @@ and the runner-admission blocker
    Give it no cloud/admin privileges, no application secrets, and no network
    access beyond what is required for GitHub Actions, Maven dependencies,
    GraalVM/native-image setup and trusted build tools.
+   **Current PR #1217 candidate branch audit (2026-10-18):**
+   `security/review-pinned-private-ci-dispatcher-v2-20261017` currently
+   reports `protected: false` through GitHub's branch API. The new
+   `.github/workflows/private-ci-exact-head-ephemeral.yml` will therefore
+   **skip source execution** until a repository administrator independently
+   configures and verifies effective protection on that exact branch.
+   Require reviewed workflow changes, restricted pushes and no force pushes;
+   merely seeing `github.ref_protected=true` indicates a protection rule or
+   ruleset exists, not that its restrictions are independently sufficient.
+   Never change the YAML guard to `false` to bypass this control.
+
 2. Require effective protection for trusted `main`: restrict who can push,
    require reviewed workflow changes, disable force pushes/deletions, and
    restrict runner administrators. The reviewed workflows explicitly require
