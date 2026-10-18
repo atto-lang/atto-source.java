@@ -296,7 +296,30 @@ public final class GitHubWebhookActorV1 {
                         secret,
                         receive.rawBody(),
                         receive.headers());
+
+                if (!"workflow_run".equals(verified.eventName())) {
+                    recordDelivery(verified, null);
+                    emit(
+                            context,
+                            new Unmatched(
+                                    verified.deliveryId(),
+                                    verified.payloadSha256(),
+                                    "unsupported GitHub event type "
+                                            + verified.eventName()));
+                    return;
+                }
+
+                GitHubWorkflowRunPayloadV1.Parsed parsed =
+                        GitHubWorkflowRunPayloadV1.parse(
+                                receive.rawBody());
+                receive.treeProof().verifyCommit(
+                        parsed.commitSha());
+
+                // Persist the delivery identity only after the externally
+                // supplied tree proof has been bound to the signed payload.
+                // A rejected proof must never poison this GitHub delivery id.
                 recordDelivery(verified, receive.treeProof());
+
                 MatchedDelivery priorDelivery =
                         matchedDeliveries.get(verified.deliveryId());
                 if (priorDelivery != null) {
@@ -315,22 +338,6 @@ public final class GitHubWebhookActorV1 {
                     return;
                 }
 
-                if (!"workflow_run".equals(verified.eventName())) {
-                    emit(
-                            context,
-                            new Unmatched(
-                                    verified.deliveryId(),
-                                    verified.payloadSha256(),
-                                    "unsupported GitHub event type "
-                                            + verified.eventName()));
-                    return;
-                }
-
-                GitHubWorkflowRunPayloadV1.Parsed parsed =
-                        GitHubWorkflowRunPayloadV1.parse(
-                                receive.rawBody());
-                receive.treeProof().verifyCommit(
-                        parsed.commitSha());
                 GitHubCiCorrelationV1.Observed observed =
                         parsed.observed(
                                 receive.treeProof().treeSha());
@@ -413,13 +420,20 @@ public final class GitHubWebhookActorV1 {
                 GitHubWebhookSecurityV1.VerifiedWebhook verified,
                 GitHubWorkflowRunPayloadV1.GitTreeProof treeProof) {
             if (ledger != null) {
-                ledger.recordDelivery(
-                        verified.deliveryId(),
-                        verified.payloadSha256(),
-                        verified.eventName(),
-                        treeProof.commitSha(),
-                        treeProof.treeSha(),
-                        treeProof.receiptRef());
+                if (treeProof == null) {
+                    ledger.recordDelivery(
+                            verified.deliveryId(),
+                            verified.payloadSha256(),
+                            verified.eventName());
+                } else {
+                    ledger.recordDelivery(
+                            verified.deliveryId(),
+                            verified.payloadSha256(),
+                            verified.eventName(),
+                            treeProof.commitSha(),
+                            treeProof.treeSha(),
+                            treeProof.receiptRef());
+                }
                 return;
             }
 
@@ -428,11 +442,17 @@ public final class GitHubWebhookActorV1 {
                             + "\u0000"
                             + verified.payloadSha256()
                             + "\u0000"
-                            + treeProof.commitSha()
+                            + (treeProof == null
+                                    ? "-"
+                                    : treeProof.commitSha())
                             + "\u0000"
-                            + treeProof.treeSha()
+                            + (treeProof == null
+                                    ? "-"
+                                    : treeProof.treeSha())
                             + "\u0000"
-                            + treeProof.receiptRef();
+                            + (treeProof == null
+                                    ? "-"
+                                    : treeProof.receiptRef());
             String prior = deliveryIdentities.putIfAbsent(
                     verified.deliveryId(), identity);
             if (prior != null && !prior.equals(identity)) {
