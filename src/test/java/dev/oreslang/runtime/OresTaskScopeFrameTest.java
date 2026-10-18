@@ -141,4 +141,64 @@ final class OresTaskScopeFrameTest {
     }
 
 
+
+    @Test
+    void suspendsStyleAwaitUsesSameTaskAndCancellingWaiterLeavesSharedProducerAlive() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            OresFuture<Integer> sharedProducer = new OresFuture<>();
+            CountDownLatch suspendedEntered = new CountDownLatch(1);
+            AtomicInteger cancelledResumes = new AtomicInteger();
+            OresTask<Integer> cancelled = scope.startCompilerFrame(scheduler, resume -> {
+                if (resume.initial()) {
+                    suspendedEntered.countDown();
+                    return new OresScheduler.Await<Integer>(sharedProducer);
+                }
+                cancelledResumes.incrementAndGet();
+                return new OresScheduler.Done<>(-1);
+            });
+            assertTrue(suspendedEntered.await(2, TimeUnit.SECONDS));
+            assertTrue(cancelled.cancel());
+            assertNull(AsyncRuntime.await(cancelled.getDone()));
+            assertEquals(0, cancelledResumes.get());
+            assertFalse(sharedProducer.isDone(),
+                    "cancelling a suspends-style waiter must not cancel a shared producer");
+
+            AtomicInteger aliveResumes = new AtomicInteger();
+            OresTask<Integer> surviving = scope.startCompilerFrame(scheduler, resume -> {
+                if (resume.initial()) {
+                    aliveResumes.incrementAndGet();
+                    return new OresScheduler.Await<Integer>(sharedProducer);
+                }
+                aliveResumes.incrementAndGet();
+                return new OresScheduler.Done<>(((Integer) resume.value()) + 1);
+            });
+            sharedProducer.completeFromRuntime(40);
+            assertEquals(41, AsyncRuntime.await(surviving.getAwaited()));
+            assertNull(AsyncRuntime.await(surviving.getDone()));
+            assertEquals(2, aliveResumes.get());
+            assertEquals(0, cancelledResumes.get(),
+                    "a late producer completion must never resurrect the cancelled continuation");
+        }
+    }
+
+    @Test
+    void continuationSuspendsAndResumesWithoutCreatingNestedTaskOrFuture() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            OresFuture<Integer> input = OresFuture.completed(21);
+            AtomicInteger calls = new AtomicInteger();
+            OresTask<Integer> outer = scope.startCompilerFrame(scheduler, resume -> {
+                if (calls.getAndIncrement() == 0)
+                    return new OresScheduler.Await<Integer>(input);
+                return new OresScheduler.Done<>(((Integer) resume.value()) * 2);
+            });
+            assertEquals(42, AsyncRuntime.await(outer.getAwaited()));
+            assertNull(AsyncRuntime.await(outer.getDone()));
+            assertEquals(2, calls.get());
+            assertTrue(outer.isQuiescent());
+        }
+    }
 }
