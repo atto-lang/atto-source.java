@@ -106,6 +106,8 @@ final class LogicalSourceActorCrossContextUpgradeTest {
                 assertThrows(IllegalStateException.class,
                         () -> manager.retire(second.id()),
                         "new active generation must remain route-pinned");
+                assertThrows(IllegalStateException.class, second::start,
+                        "generic init/main may not run behind an active actor route");
                 assertFalse(second.started(),
                         "cross-context actor restore must not run generation main");
 
