@@ -698,7 +698,11 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void publishTerminalIfReady() {
-            if (phase.get() != TERMINAL || completion.isDone()) return;
+            // A terminal outcome may have been recorded while a previously
+            // admitted dispatch is still unwinding. Public completion must
+            // follow physical cleanup, even if the result is already known.
+            if (phase.get() != TERMINAL || completion.isDone()
+                    || !physicalRetirementPublished.get()) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
             if (outcome instanceof TerminalSuccess<?> success) {
                 @SuppressWarnings("unchecked")
