@@ -126,8 +126,14 @@ public final class HttpResponseDraft {
         Objects.requireNonNull(raw, "exchange");
         Objects.requireNonNull(cancelled, "cancelled");
         Objects.requireNonNull(activeBody, "activeBody");
+        preflight(raw);
         claim();
-        if (cancelled.getAsBoolean()) throw new IOException("HTTP response cancelled before headers");
+        writeClaimedTo(raw, cancelled, activeBody);
+    }
+
+    /** Immutable-only validation; never takes the response lease or writes headers. */
+    void preflight(HttpExchange raw) {
+        Objects.requireNonNull(raw, "exchange");
         // The legacy exchange may already contain user-supplied headers.
         // Enforce one aggregate budget, not an independent budget per API.
         List<Map.Entry<String, String>> combined = new ArrayList<>(headers);
@@ -139,6 +145,16 @@ public final class HttpResponseDraft {
             }
         }
         checkHeaders(combined);
+    }
+
+    /** Called only after claim, from the single owner of the HTTP exchange. */
+    void writeClaimedTo(HttpExchange raw, BooleanSupplier cancelled,
+                        Consumer<InputStream> activeBody) throws IOException {
+        Objects.requireNonNull(raw, "exchange");
+        Objects.requireNonNull(cancelled, "cancelled");
+        Objects.requireNonNull(activeBody, "activeBody");
+        if (!handedOff.get()) throw new IllegalStateException("response not handed off");
+        if (cancelled.getAsBoolean()) throw new IOException("HTTP response cancelled before headers");
         for (Map.Entry<String, String> field : headers)
             raw.getResponseHeaders().add(field.getKey(), field.getValue());
         boolean suppress = raw.getRequestMethod().equals("HEAD") || !bodyPresent;
