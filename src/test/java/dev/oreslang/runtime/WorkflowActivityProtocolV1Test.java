@@ -142,6 +142,61 @@ final class WorkflowActivityProtocolV1Test {
     }
 
     @Test
+    void successfulOutcomeMustMatchExactIterationAndCommitIdentity() {
+        var codeClaim = claim(new DurableDevLoopV1.RequestCode(
+                2,
+                "goal",
+                "bug://1",
+                "devloop/run/iteration/2/code"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorkflowActivityProtocolV1.validateOutcome(
+                        codeClaim,
+                        new WorkflowActivityProtocolV1.Succeeded(
+                                codeClaim.effectKey(),
+                                codeClaim.claimToken(),
+                                "receipt://code",
+                                new DurableDevLoopV1.CodeChanged(
+                                        1, "patch://wrong-iteration"))));
+
+        var ciClaim = claim(new DurableDevLoopV1.AwaitCi(
+                2,
+                sha('a'),
+                "devloop/run/iteration/2/ci/" + sha('a')));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorkflowActivityProtocolV1.validateOutcome(
+                        ciClaim,
+                        new WorkflowActivityProtocolV1.Succeeded(
+                                ciClaim.effectKey(),
+                                ciClaim.claimToken(),
+                                "receipt://ci",
+                                new DurableDevLoopV1.CiCompleted(
+                                        sha('b'),
+                                        DurableDevLoopV1.CiConclusion.SUCCESS,
+                                        "artifact://wrong-sha"))));
+
+        var bugClaim = claim(new DurableDevLoopV1.CreateBugReport(
+                3,
+                sha('c'),
+                "artifact://tests",
+                "review://failure",
+                "devloop/run/iteration/3/bug/" + sha('c')));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorkflowActivityProtocolV1.validateOutcome(
+                        bugClaim,
+                        new WorkflowActivityProtocolV1.Succeeded(
+                                bugClaim.effectKey(),
+                                bugClaim.claimToken(),
+                                "receipt://bug",
+                                new DurableDevLoopV1.BugReportCreated(
+                                        2,
+                                        sha('c'),
+                                        "bug://wrong-iteration"))));
+    }
+
+    @Test
     void terminalActivityUsesCompletionWithoutInventingWorkflowEvent() {
         var cancelClaim = claim(new DurableDevLoopV1.CancelWork(
                 "operator",
