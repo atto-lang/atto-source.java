@@ -163,6 +163,14 @@ public final class BoundInvocation {
         if (constructor == null) {
             throw new IllegalArgumentException("synthetic constructor requires separate proof");
         }
+        // An optional leading constructor self is a receiver binder, never a
+        // guest value argument. Until the constructor parser and checker issue
+        // a verified receiver-erasure proof, do not manufacture an ABI slot
+        // for self (including malformed nonleading synthetic self binders).
+        if (constructor.parameters().stream().anyMatch(p -> "self".equals(p.name()))) {
+            throw new IllegalArgumentException(
+                    "constructor self receiver requires checked receiver erasure");
+        }
         var preview = OptionalCallAbiPreview.prepareStagedConstructionExact(
                 call, constructor.parameters(), assertedSourceTypes);
         return new BoundInvocation(Kind.CLASS_CONSTRUCTOR, call, owner, constructor, 0,
@@ -171,11 +179,11 @@ public final class BoundInvocation {
 
     private static void requireSimpleClass(Ast.ClassDecl owner) {
         Objects.requireNonNull(owner, "class owner");
-        if (!owner.genericParameters().isEmpty() || !owner.parents().isEmpty()
-                || !owner.interfaces().isEmpty()
+        if (owner.isAbstract() || !owner.genericParameters().isEmpty()
+                || !owner.parents().isEmpty() || !owner.interfaces().isEmpty()
                 || owner.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
-                    "generic, inherited, interface or actor class has no binding proof");
+                    "abstract, generic, inherited, interface or actor class has no binding proof");
         }
     }
 }
