@@ -425,6 +425,22 @@ final class ActorDeclarationLexicalBoundaryTest {
 
 
     @Test
+    void actorInheritanceCannotEraseExternalBoundary() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define ffi actor Native as
+                          extern suspends fnc add(int value): int;
+                        end
+
+                        isoactor LocalChild extends Native {
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("actor boundary must be preserved"),
+                failure.getMessage());
+    }
+
+    @Test
     void actorLexicalBoundarySurvivesNonlexicalLambda() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
