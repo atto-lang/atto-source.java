@@ -47,6 +47,38 @@ final class AnyCallableActorBoundaryTest {
     }
 
     @Test
+    void anyCallableCannotBeImplementedInheritedOrExtendedAsUserProtocol() {
+        for (String source : new String[] {
+                "define class Pretender implements AnyCallable as end",
+                "define class Pretender extends AnyCallable as end",
+                "define interface Pretender extends AnyCallable as end",
+                "define trait Pretender extends AnyCallable as end"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+        }
+    }
+
+    @Test
+    void aliasMayNameErasedCallableLocallyButCannotMintActorDataAuthority() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                type LocalCallback = AnyCallable;
+                fnc accept(LocalCallback cb): void { return; }
+                fnc callback(): void { return; }
+                fnc local(): void {
+                  accept(callback);
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type LocalCallback = AnyCallable;
+                        actor fnc transmit(LocalCallback cb): void { return; }
+                        """)));
+    }
+
+    @Test
     void intrinsicNameHasNoModuleOrScopeQualificationBypass() {
         assertEquals("AnyCallable", TypeChecker.actorBoundarySimpleName("AnyCallable"));
         assertEquals("ActorRef", TypeChecker.actorBoundarySimpleName("ActorRef"));
