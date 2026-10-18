@@ -709,6 +709,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final OresCarrierBudget carrierBudget;
+    private final OresCarrierPermitPool carrierPermitPool;
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
@@ -815,7 +816,7 @@ public final class ActorRuntime implements AutoCloseable {
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher) {
-        this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher, null);
+        this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher, null, null);
     }
 
     ActorRuntime(
@@ -824,6 +825,22 @@ public final class ActorRuntime implements AutoCloseable {
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher,
             OresCarrierBudget carrierBudget) {
+        this(
+                policyCeiling,
+                dispatcherConfig,
+                turnExecutor,
+                controlDispatcher,
+                carrierBudget,
+                carrierBudget == null ? null : new OresCarrierPermitPool(carrierBudget.maximum()));
+    }
+
+    ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher,
+            OresCarrierBudget carrierBudget,
+            OresCarrierPermitPool carrierPermitPool) {
         // Standalone ActorRuntime callers must not bypass OresVM's strict-GC
         // admission gate: the underlying JVM and direct-buffer cleaner still GC.
         ActorHeapAdmission.requireSupportedJvmMode(
@@ -832,6 +849,15 @@ public final class ActorRuntime implements AutoCloseable {
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.carrierBudget = carrierBudget;
+        this.carrierPermitPool = carrierPermitPool;
+        if ((carrierBudget == null) != (carrierPermitPool == null)) {
+            throw new IllegalArgumentException(
+                    "carrier budget and physical permit coordinator must be configured together");
+        }
+        if (carrierBudget != null && carrierPermitPool.maximum() != carrierBudget.maximum()) {
+            throw new IllegalArgumentException(
+                    "physical permit coordinator maximum does not match VM carrier budget");
+        }
         if (carrierBudget != null
                 && (dispatcherConfig.privateParallelism() != carrierBudget.privateMaximum()
                         || dispatcherConfig.sharedParallelism() != carrierBudget.sharedMaximum()
@@ -846,12 +872,27 @@ public final class ActorRuntime implements AutoCloseable {
         ExecutorService untrustedPool = null;
         ThreadPoolExecutor lifecycleObservers = null;
         try {
-            privatePool = newActorDispatcher(dispatcherConfig.privateParallelism(),
-                    dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-", carrierBudget);
-            sharedPool = newActorDispatcher(dispatcherConfig.sharedParallelism(),
-                    dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-", carrierBudget);
-            untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
-                    dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-", carrierBudget);
+            privatePool = newActorDispatcher(
+                    dispatcherConfig.privateParallelism(),
+                    dispatcherConfig.maxActors(),
+                    "ores-private-actor-dispatcher-",
+                    carrierBudget,
+                    carrierPermitPool,
+                    OresCarrierPermitPool.Domain.PRIVATE);
+            sharedPool = newActorDispatcher(
+                    dispatcherConfig.sharedParallelism(),
+                    dispatcherConfig.maxActors(),
+                    "ores-shared-actor-dispatcher-",
+                    carrierBudget,
+                    carrierPermitPool,
+                    OresCarrierPermitPool.Domain.SHARED);
+            untrustedPool = newActorDispatcher(
+                    Math.max(1, dispatcherConfig.privateParallelism()),
+                    dispatcherConfig.maxActors(),
+                    "ores-untrusted-actor-dispatcher-",
+                    carrierBudget,
+                    carrierPermitPool,
+                    OresCarrierPermitPool.Domain.UNTRUSTED);
 
             int observerWorkers = carrierBudget == null
                     ? Math.max(
@@ -872,7 +913,11 @@ public final class ActorRuntime implements AutoCloseable {
                     30L,
                     TimeUnit.SECONDS,
                     new ArrayBlockingQueue<>(dispatcherConfig.maxActors()),
-                    namedFactory("ores-lifecycle-observer-"),
+                    carrierPermitPool == null
+                            ? namedFactory("ores-lifecycle-observer-")
+                            : carrierPermitPool.threadFactory(
+                                    OresCarrierPermitPool.Domain.LIFECYCLE,
+                                    "ores-lifecycle-observer-"),
                     new ThreadPoolExecutor.AbortPolicy());
             // Preserve the runtime's zero-thread cold start. Lifecycle workers
             // exist only while terminal observers actually need execution.
@@ -7395,7 +7440,12 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private static ExecutorService newActorDispatcher(
-            int parallelism, int capacity, String prefix, OresCarrierBudget carrierBudget) {
+            int parallelism,
+            int capacity,
+            String prefix,
+            OresCarrierBudget carrierBudget,
+            OresCarrierPermitPool carrierPermitPool,
+            OresCarrierPermitPool.Domain permitDomain) {
         String mode = System.getProperty("ores.actor.affinity", "lane").trim();
         if (mode.equals("none")) {
             // Non-affine actor domains can admit independent runnable actor
@@ -7408,7 +7458,8 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException(
                         "ores.actor.dispatch.max.parallelism must be between domain minimum and 256");
             }
-            return newDispatcher(parallelism, max, capacity, prefix);
+            return newDispatcher(
+                    parallelism, max, capacity, prefix, carrierPermitPool, permitDomain);
         }
         if (!mode.equals("lane") && !mode.equals("cpu")) {
             throw new IllegalArgumentException("ores.actor.affinity must be lane, cpu, or none");
@@ -7423,15 +7474,26 @@ public final class ActorRuntime implements AutoCloseable {
         // A pinned/soft-affine actor lane must never silently create another
         // executing worker for that lane. Scaling lanes needs a placement
         // migration contract; preserve their existing one-carrier semantics.
-        return new ActorAffinityDispatcher(parallelism, capacity, cpus,
-                lane -> newDispatcher(1, 1, capacity, prefix + "lane-" + lane + "-"));
+        return new ActorAffinityDispatcher(
+                parallelism,
+                capacity,
+                cpus,
+                lane -> newDispatcher(
+                        1,
+                        1,
+                        capacity,
+                        prefix + "lane-" + lane + "-",
+                        carrierPermitPool,
+                        permitDomain));
     }
 
     private static ExecutorService newDispatcher(
             int parallelism,
             int maximumParallelism,
             int readyQueueCapacity,
-            String threadPrefix) {
+            String threadPrefix,
+            OresCarrierPermitPool carrierPermitPool,
+            OresCarrierPermitPool.Domain permitDomain) {
         String requested = System.getProperty(CARRIER_BACKEND_PROPERTY, "auto")
                 .trim()
                 .toLowerCase(java.util.Locale.ROOT);
@@ -7457,7 +7519,9 @@ public final class ActorRuntime implements AutoCloseable {
                         parallelism,
                         parallelism,
                         readyQueueCapacity,
-                        threadPrefix);
+                        threadPrefix,
+                        carrierPermitPool,
+                        permitDomain);
             } catch (UnsatisfiedLinkError | SecurityException unavailable) {
                 if (requested.equals("native")) {
                     throw new IllegalStateException(
@@ -7472,9 +7536,11 @@ public final class ActorRuntime implements AutoCloseable {
         // JVM fallback has bounded, demand-driven expansion when CPU/soft
         // actor lane affinity is explicitly disabled. Other domains retain
         // their own queues and actor physical execution leases.
+        ThreadFactory factory = carrierPermitPool == null
+                ? namedFactory(threadPrefix)
+                : carrierPermitPool.threadFactory(permitDomain, threadPrefix);
         return new AdaptiveCarrierExecutor(
-                parallelism, maximumParallelism, readyQueueCapacity,
-                namedFactory(threadPrefix));
+                parallelism, maximumParallelism, readyQueueCapacity, factory);
     }
 
     private static boolean isNativeCarrierPlatform() {
