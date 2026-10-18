@@ -150,9 +150,21 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
             var frame = session.ingress(root);
             try {
                 owner.sendWithPipelineFrame(targets.get(root), message, frame, this);
-            } catch (RuntimeException | Error failed) {
+            } catch (RuntimeException failed) {
+                if (ActorPipelineRouteSession.wasMailboxPublished(frame)) {
+                    // Root DATA has already entered the mailbox. Never
+                    // retire its frame or represent this as retryable ingress.
+                    // A supervisor must reconcile the admitted message.
+                    throw new IllegalStateException(
+                            "pipeline ingress DATA already published; retry is unsafe",
+                            failed);
+                }
                 ActorPipelineRouteSession.retireDelivered(frame);
                 throw failed;
+            } catch (Error fatal) {
+                if (!ActorPipelineRouteSession.wasMailboxPublished(frame))
+                    ActorPipelineRouteSession.retireDelivered(frame);
+                throw fatal;
             }
             return null;
         });
