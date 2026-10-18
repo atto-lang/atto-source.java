@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class NestedFutureFlattenArityTest {
     @Test
@@ -24,7 +25,11 @@ final class NestedFutureFlattenArityTest {
         String valid = source.replace("nested.flatten(7)", "nested.flatten()");
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(valid),
                 "positive control: a nested Future must accept zero-argument flatten");
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("flatten")
+                        && (failure.getMessage().contains("argument")
+                            || failure.getMessage().contains("arity")),
+                failure.getMessage());
     }
 }
