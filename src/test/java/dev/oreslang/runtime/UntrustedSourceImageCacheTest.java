@@ -46,7 +46,9 @@ final class UntrustedSourceImageCacheTest {
             assertNotSame(base.source(), updated.source());
             assertNotSame(base.source(), differentUnit.source());
             assertEquals(3, cache.liveImages());
-            assertNotEquals(base.source().getName(), updated.source().getName());
+            assertEquals("a.ores", base.source().getName());
+            assertEquals("a.ores", updated.source().getName(),
+                    "different versions must preserve canonical import identity");
         }
         assertEquals(0, cache.liveImages());
     }
