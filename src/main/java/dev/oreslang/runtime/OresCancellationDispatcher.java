@@ -39,17 +39,31 @@ final class OresCancellationDispatcher {
         boolean won = dispatch.enqueue(target);
         ACTIVE.set(dispatch);
         try {
-            while (!dispatch.pending.isEmpty()) {
-                OresCancellationSource next = dispatch.pending.removeFirst();
-                try {
-                    next.cancel();
-                } catch (RuntimeException | Error problem) {
-                    // Even a faulty listener must not strand later siblings.
-                    dispatch.record(problem);
+            while (!dispatch.pending.isEmpty() || !dispatch.toNotify.isEmpty()) {
+                // Revoke all transitive links before running host observers.
+                while (!dispatch.pending.isEmpty()) {
+                    OresCancellationSource next = dispatch.pending.removeFirst();
+                    try {
+                        for (OresCancellationSource child : next.collectLinkedChildren()) {
+                            dispatch.enqueue(child);
+                        }
+                    } catch (RuntimeException | Error problem) {
+                        dispatch.record(problem);
+                    } finally {
+                        dispatch.toNotify.addLast(next);
+                    }
+                }
+                if (!dispatch.toNotify.isEmpty()) {
+                    try {
+                        dispatch.toNotify.removeFirst().publishCancellation();
+                    } catch (RuntimeException | Error problem) {
+                        dispatch.record(problem);
+                    }
                 }
             }
         } finally {
             dispatch.pending.clear();
+            dispatch.toNotify.clear();
             ACTIVE.remove();
         }
         if (dispatch.failure instanceof RuntimeException runtimeFailure)
