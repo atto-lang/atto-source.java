@@ -83,18 +83,16 @@ def checked_repo(repository):
 
 
 def require_preflight(repository, root):
-    guard = root / "scripts" / "check-private-ci-destination.sh"
-    if guard.is_symlink() or not guard.is_file():
-        raise Denied("trusted destination approval guard missing")
-    try:
-        p = subprocess.run(["bash", str(guard), repository],
-                           capture_output=True, text=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise Denied("destination policy check unavailable") from exc
-    if p.returncode != 0:
-        raise Denied("destination not approved by checked-in private policy")
-    checked_repo(repository)
+    """Deny unsafe destinations without executing checkout-supplied scripts.
 
+    The root checkout may contain unreviewed changes. Invoking its Bash guard
+    before authenticating protected-main policy would grant arbitrary command
+    execution with the caller's GitHub credentials. Keep the CLI guard for
+    interactive diagnostics, but make publisher admission entirely data-only.
+    Protected-source authority is checked independently by the caller.
+    """
+    checked_policy_fingerprint(root, repository)
+    checked_repo(repository)
 
 def checked_policy_fingerprint(root, repository):
     """Read approval only through directory descriptors and O_NOFOLLOW.
