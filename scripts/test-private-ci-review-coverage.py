@@ -55,6 +55,22 @@ def require_unconditional_test_step(workflow, name, command):
         raise ValueError("required test step is not unconditional and executable: " + name)
 
 
+def require_active_security_job(workflow):
+    """Reject unsupported job-level conditions and failure masking."""
+    marker = "jobs:\n  preflight-regressions:\n"
+    if workflow.count(marker) != 1:
+        raise ValueError("required private-CI security job is missing or duplicated")
+    block = workflow.split(marker, 1)[1]
+    next_job = re.search(r"(?m)^  [A-Za-z_][A-Za-z_0-9-]*:\s*$", block)
+    if next_job:
+        block = block[:next_job.start()]
+    fields = re.findall(r"(?m)^    ([A-Za-z_][A-Za-z_0-9-]*):", block)
+    if fields != ["runs-on", "timeout-minutes", "steps"]:
+        raise ValueError("private-CI security job contains an unsupported control")
+    if not re.search(r"(?m)^    runs-on: ubuntu-24\.04\s*$", block):
+        raise ValueError("private-CI job runner is not pinned")
+
+
 def validate(codeowners, workflow):
     if len(SECURITY_PATHS) != len(set(SECURITY_PATHS)):
         raise ValueError("duplicated security manifest entry")
@@ -92,9 +108,10 @@ def validate(codeowners, workflow):
         missing = set(SECURITY_PATHS) - set(filtered)
         if missing:
             raise ValueError(event + " does not trigger on " + sorted(missing)[0])
+    require_active_security_job(workflow)
     require_unconditional_test_step(
         workflow, "Validate CI security review coverage",
-        "python3 -B scripts/test-private-ci-review-coverage.py")
+        "python3 -I -B scripts/test-private-ci-review-coverage.py")
     require_unconditional_test_step(
         workflow, "Validate offline regression runner",
         "bash scripts/test-run-private-ci-regressions-local.sh")
@@ -205,6 +222,28 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
         damaged = self.workflow.replace(block, block + block)
         with self.assertRaisesRegex(ValueError, "duplicated required executable step"):
             validate(self.owners, damaged)
+
+    def test_job_skip_condition_is_denied(self):
+        damaged = self.workflow.replace(
+            "  preflight-regressions:\n",
+            "  preflight-regressions:\n    " + "if: false" + "\n")
+        with self.assertRaisesRegex(ValueError, "unsupported control"):
+            validate(self.owners, damaged)
+
+    def test_job_failure_masking_is_denied(self):
+        damaged = self.workflow.replace(
+            "  preflight-regressions:\n",
+            "  preflight-regressions:\n    " + "continue-on-error: true" + "\n")
+        with self.assertRaisesRegex(ValueError, "unsupported control"):
+            validate(self.owners, damaged)
+
+    def test_job_extra_dependency_is_denied(self):
+        damaged = self.workflow.replace(
+            "  preflight-regressions:\n",
+            "  preflight-regressions:\n    needs: optional-security-job\n")
+        with self.assertRaisesRegex(ValueError, "unsupported control"):
+            validate(self.owners, damaged)
+
 
 
 if __name__ == "__main__":
