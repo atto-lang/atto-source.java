@@ -1,0 +1,36 @@
+name: Marketing actor pipeline compiler conformance
+on:
+  pull_request:
+    paths:
+      - 'examples/marketing-actor-pipeline-three-stage.ores'
+      - 'src/test/java/dev/oreslang/MarketingActorPipelineConformanceTest.java'
+      - 'contracts/conformance/language-motion-v1.json'
+      - 'scripts/check-language-motion-evidence.py'
+      - 'scripts/test_language_motion_evidence.py'
+      - '.github/workflows/marketing-actor-pipeline-conformance.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  evidence-and-compiler:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact tested revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reject unpinned fixtures and unsupported verification claims
+        run: |
+          set -euo pipefail
+          python3 scripts/check-language-motion-evidence.py
+          python3 -m unittest -v scripts/test_language_motion_evidence.py
+      - name: Set up GraalVM 25
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Run actual source compiler and three-stage actor roundtrip
+        run: mvn -B -ntp -Dtest=MarketingActorPipelineConformanceTest test
