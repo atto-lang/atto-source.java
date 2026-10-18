@@ -64,6 +64,13 @@ public final class Ast {
                     throw new IllegalArgumentException(
                             "T? formal cannot wrap void, Option<T>, borrow or nested optional types");
                 }
+            } else {
+                for (TypeRef argument : arguments) {
+                    if (argument.isOmittableFormal()) {
+                        throw new IllegalArgumentException(
+                                "T? formal marker cannot be nested in an ordinary type");
+                    }
+                }
             }
         }
         /** No borrow or nested omittable marker may be hidden in a T? value. */
