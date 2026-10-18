@@ -395,26 +395,5 @@ final class OresCarrierPermitPool {
             return true;
         }
 
-        @Override
-        public void reconcileCreatedThreads() {
-            ArrayList<Thread> created = createdByCaller.get();
-            if (created.isEmpty()) {
-                createdByCaller.remove();
-                return;
-            }
-            try {
-                for (Thread thread : created) {
-                    if (thread.getState() != Thread.State.NEW) continue;
-                    Permit abandoned = live.remove(thread);
-                    if (abandoned != null) {
-                        abandoned.close();
-                        signalPhysicalDrain();
-                    }
-                }
-            } finally {
-                created.clear();
-                createdByCaller.remove();
-            }
-        }
     }
 }
