@@ -179,12 +179,15 @@ final class UntrustedSourceImageCacheTest {
                 assertEquals(1, cache.liveImages());
                 assertEquals(4L, cache.pinnedBytes());
             }
-            assertSame(canonical.source(),
-                    cache.acquire("lib/é.ores", "code").source(),
-                    "canonical code image can still be reused");
-            // Extra lease above deliberately pinned until the shared
-            // Context retires; close it independently in production.
+            try (var same = cache.acquire("lib/é.ores", "code")) {
+                assertSame(canonical.source(), same.source(),
+                        "canonical code image can still be reused");
+            }
+            assertEquals(1, cache.liveImages());
+            assertEquals(4L, cache.pinnedBytes());
         }
+        assertEquals(0, cache.liveImages());
+        assertEquals(0L, cache.pinnedBytes());
     }
 
     @Test
