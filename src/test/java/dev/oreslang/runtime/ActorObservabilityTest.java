@@ -662,4 +662,67 @@ final class ActorObservabilityTest {
                     "per-ref post-mortem survives global journal exhaustion");
         }
     }
+    @Test
+    void telemetryCountersSaturateInsteadOfWrappingNegative() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 8))) {
+            String[] counters = {
+                "userMessagesAccepted",
+                "userMessagesProcessed",
+                "mailboxFullRejections",
+                "sealedSendRejections",
+                "terminatedSendRejections",
+                "invalidReferenceSendRejections",
+                "lifecycleFenceSendRejections",
+                "continuationAdmissionFailures",
+                "normalTerminations",
+                "cancelledTerminations",
+                "failedTerminations",
+                "supervisionEventsDropped",
+                "lifecyclePublicationFailures",
+                "watchdogOverruns",
+                "watchdogNoticesDropped"
+            };
+
+            var helper = ActorRuntime.class.getDeclaredMethod(
+                    "saturatingIncrement",
+                    java.util.concurrent.atomic.AtomicLong.class);
+            helper.setAccessible(true);
+
+            var almostFull = new java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE - 1L);
+            assertEquals(Long.MAX_VALUE, helper.invoke(null, almostFull));
+            assertEquals(Long.MAX_VALUE, helper.invoke(null, almostFull));
+            assertEquals(Long.MAX_VALUE, almostFull.get());
+
+            for (String counterName : counters) {
+                Field field = ActorRuntime.class.getDeclaredField(counterName);
+                field.setAccessible(true);
+                var counter = (java.util.concurrent.atomic.AtomicLong) field.get(runtime);
+                counter.set(Long.MAX_VALUE);
+                assertEquals(Long.MAX_VALUE, helper.invoke(null, counter),
+                        counterName + " must remain saturated");
+                assertEquals(Long.MAX_VALUE, counter.get(),
+                        counterName + " must never wrap negative");
+            }
+
+            ActorRuntime.ActorRuntimeStats stats = assertDoesNotThrow(runtime::runtimeStats);
+            assertEquals(Long.MAX_VALUE, stats.userMessagesAccepted());
+            assertEquals(Long.MAX_VALUE, stats.userMessagesProcessed());
+            assertEquals(Long.MAX_VALUE, stats.mailboxFullRejections());
+            assertEquals(Long.MAX_VALUE, stats.sealedSendRejections());
+            assertEquals(Long.MAX_VALUE, stats.terminatedSendRejections());
+            assertEquals(Long.MAX_VALUE, stats.invalidReferenceSendRejections());
+            assertEquals(Long.MAX_VALUE, stats.lifecycleFenceSendRejections());
+            assertEquals(Long.MAX_VALUE, stats.continuationAdmissionFailures());
+            assertEquals(Long.MAX_VALUE, stats.normalTerminations());
+            assertEquals(Long.MAX_VALUE, stats.cancelledTerminations());
+            assertEquals(Long.MAX_VALUE, stats.failedTerminations());
+            assertEquals(Long.MAX_VALUE, stats.supervisionEventsDropped());
+            assertEquals(Long.MAX_VALUE, stats.lifecyclePublicationFailures());
+            assertEquals(Long.MAX_VALUE, stats.watchdogOverruns());
+            assertEquals(Long.MAX_VALUE, stats.watchdogNoticesDropped());
+        }
+    }
+
 }
