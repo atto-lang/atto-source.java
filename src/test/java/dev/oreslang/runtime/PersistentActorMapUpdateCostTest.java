@@ -48,6 +48,54 @@ final class PersistentActorMapUpdateCostTest {
     }
 
     @Test
+    void deepPersistentRootEqualityAndHashCodeUseBoundedCallStack() {
+        var left = nested(8192);
+        var right = nested(8192);
+        assertNotSame(left, right);
+        assertTrue(assertDoesNotThrow(() -> left.equals(right)));
+        assertTrue(assertDoesNotThrow(() -> right.equals(left)));
+        assertEquals(assertDoesNotThrow(left::hashCode),
+                assertDoesNotThrow(right::hashCode),
+                "equal persistent roots must have the same map hash");
+        var changed = PersistentActorMap.empty().with("leaf", 17);
+        for (int i = 0; i < 8192; i++)
+            changed = PersistentActorMap.empty().with("next", changed);
+        var distinct = changed;
+        assertFalse(assertDoesNotThrow(() -> left.equals(distinct)));
+        assertFalse(assertDoesNotThrow(() -> distinct.equals(left)));
+    }
+
+    @Test
+    void repeatedSharedSubtreesCompareAndHashWithoutRepeatedRecursion() {
+        var sharedLeft = nested(4096);
+        var sharedRight = nested(4096);
+        var first = PersistentActorMap.empty()
+                .with("left", sharedLeft).with("right", sharedLeft);
+        var second = PersistentActorMap.empty()
+                .with("left", sharedRight).with("right", sharedRight);
+        assertEquals(first, second);
+        assertEquals(first.hashCode(), second.hashCode());
+        assertEquals(first, first.with("left", sharedRight),
+                "equal nested values remain equal without recursive update shortcuts");
+        assertNotSame(first, first.with("left", sharedRight),
+                "distinct nested roots still produce a new path copy");
+    }
+
+    @Test
+    void standardMapHashAndEqualityContractsRemainCompatible() {
+        var child = nested(512);
+        var parent = PersistentActorMap.empty()
+                .with("child", child).with("number", 42);
+        java.util.Map<String, Object> oracle = java.util.Map.of(
+                "child", child, "number", 42);
+        assertEquals(oracle, parent);
+        assertEquals(parent, oracle);
+        assertEquals(oracle.hashCode(), parent.hashCode());
+        assertEquals(parent, PersistentActorMap.empty()
+                .with("number", 42).with("child", child));
+    }
+
+    @Test
     void scalarReplacementStillPreservesCanonicalNoOp() {
         var first = PersistentActorMap.empty().with("x", 1234);
         assertSame(first, first.with("x", Integer.valueOf(1234)));
