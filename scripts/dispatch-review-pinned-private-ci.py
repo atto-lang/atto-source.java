@@ -24,6 +24,8 @@ INCIDENT_REPO="ores-truffle-oreslang/oreslang-platform-conformance"
 INCIDENT_REPO_ID=1413795502
 INCIDENT_NUMBER=22
 INCIDENT_ISSUE_ID=5832921751
+CARRIER_INCIDENT_NUMBER=77
+CARRIER_INCIDENT_ISSUE_ID=5904679716
 PUBLISHER_PR=1217
 DESTINATION_PR=1092
 SNAPSHOT_PR=1189
@@ -93,11 +95,12 @@ RECEIPT_KEYS={
  "publisher_policy_pr","publisher_policy_head_sha","publisher_review_id",
  "destination_approval_pr","destination_approval_head_sha","destination_review_id",
  "snapshot_approval_pr","snapshot_approval_head_sha","snapshot_review_id",
- "carrier_policy_pr","carrier_policy_head_sha","carrier_review_id","incident_resume_comment_id"
+ "carrier_policy_pr","carrier_policy_head_sha","carrier_review_id","incident_resume_comment_id",
+ "carrier_incident_resume_comment_id"
 }
 
 def validate_receipt(r):
-    if type(r) is not dict or set(r)!=RECEIPT_KEYS or r.get("schema")!=2:
+    if type(r) is not dict or set(r)!=RECEIPT_KEYS or r.get("schema")!=3:
         raise Denied("unexpected review-pinned receipt schema")
     fixed={
       "source_repository":SOURCE_REPO,"source_repository_id":SOURCE_REPO_ID,
@@ -119,7 +122,7 @@ def validate_receipt(r):
     if rid in DISALLOWED_REVIEWER_IDS: raise Denied("operator-controlled reviewer is not independent")
     for k in ("independent_reviewer_source_permission","independent_reviewer_carrier_permission"):
         if not permission_at_least(r.get(k),"write"): raise Denied("reviewer permission below write: "+k)
-    for k in ("publisher_review_id","destination_review_id","snapshot_review_id","carrier_review_id","incident_resume_comment_id"):
+    for k in ("publisher_review_id","destination_review_id","snapshot_review_id","carrier_review_id","incident_resume_comment_id","carrier_incident_resume_comment_id"):
         if type(r.get(k)) is not int or r[k]<=0: raise Denied("invalid positive receipt field: "+k)
     return r
 
@@ -226,18 +229,18 @@ def require_exact_ledger(repo,path,ref,expected):
     rows=[x.strip() for x in text.splitlines() if x.strip() and not x.lstrip().startswith("#")]
     if rows!=[expected]: raise Denied("reviewed ledger entry changed: "+path)
 
-def require_incident_closed():
+def require_incident_closed(number,issue_id,label):
     repo_identity(INCIDENT_REPO,INCIDENT_REPO_ID)
-    issue=PUB.gh_api(f"repos/{INCIDENT_REPO}/issues/{INCIDENT_NUMBER}")
-    if (issue.get("id")!=INCIDENT_ISSUE_ID or issue.get("number")!=INCIDENT_NUMBER
+    issue=PUB.gh_api(f"repos/{INCIDENT_REPO}/issues/{number}")
+    if (issue.get("id")!=issue_id or issue.get("number")!=number
             or issue.get("state")!="closed" or issue.get("state_reason")!="completed"
             or issue.get("pull_request") is not None):
-        raise Denied("private-source exposure incident remains unresolved")
+        raise Denied(label+" incident remains unresolved")
 
-def incident_resume(r):
-    comments=api_list(f"repos/{INCIDENT_REPO}/issues/{INCIDENT_NUMBER}/comments?per_page=100&page=1")
-    if api_list(f"repos/{INCIDENT_REPO}/issues/{INCIDENT_NUMBER}/comments?per_page=100&page=2")!=[]:
-        raise Denied("incident comment history exceeds bounded first page")
+def incident_resume(r,number,receipt_key,label):
+    comments=api_list(f"repos/{INCIDENT_REPO}/issues/{number}/comments?per_page=100&page=1")
+    if api_list(f"repos/{INCIDENT_REPO}/issues/{number}/comments?per_page=100&page=2")!=[]:
+        raise Denied(label+" incident comment history exceeds bounded first page")
     suffix=(f" publisher={r['publisher_policy_head_sha']} destination={r['destination_approval_head_sha']}"
             f" snapshot={r['snapshot_approval_head_sha']} carrier={r['carrier_policy_head_sha']}"
             f" source_commit={r['source_commit_sha']} source_tree={r['source_tree_sha']}"
@@ -252,23 +255,23 @@ def incident_resume(r):
         state=None
         if approve in lines: state="APPROVED"
         if revoke in lines:
-            if state: raise Denied("incident comment both approves and revokes")
+            if state: raise Denied(label+" incident comment both approves and revokes")
             state="REVOKED"
         if state:
             cid=c.get("id"); created=c.get("created_at")
-            if type(cid) is not int or cid<=0 or type(created) is not str: raise Denied("invalid incident authorization metadata")
+            if type(cid) is not int or cid<=0 or type(created) is not str: raise Denied("invalid "+label+" incident authorization metadata")
             try: stamp=dt.datetime.fromisoformat(created.replace("Z","+00:00"))
-            except ValueError as exc: raise Denied("invalid incident authorization timestamp") from exc
+            except ValueError as exc: raise Denied("invalid "+label+" incident authorization timestamp") from exc
             events.append((stamp,cid,state))
-    if not events: raise Denied("missing incident resume authorization")
+    if not events: raise Denied("missing "+label+" incident resume authorization")
     events.sort()
     previous=None
     for _,_,state in events:
-        if state==previous: raise Denied("duplicate incident authorization transition")
+        if state==previous: raise Denied("duplicate "+label+" incident authorization transition")
         previous=state
     latest=events[-1]
-    if latest[2]!="APPROVED" or latest[1]!=r["incident_resume_comment_id"]:
-        raise Denied("incident resume authorization changed or revoked")
+    if latest[2]!="APPROVED" or latest[1]!=r[receipt_key]:
+        raise Denied(label+" incident resume authorization changed or revoked")
 
 def branch_absent(r):
     branch="ci/oreslang-"+r["source_tree_sha"]
@@ -345,8 +348,10 @@ def refresh_authorization(r, require_new_ref=False):
     commit=PUB.gh_api(f"repos/{SOURCE_REPO}/git/commits/{r['source_commit_sha']}")
     if commit.get("sha")!=r["source_commit_sha"] or PUB.nested_sha(commit,"tree")!=r["source_tree_sha"]:
         raise Denied("approved source commit/tree changed")
-    require_incident_closed()
-    incident_resume(r)
+    require_incident_closed(INCIDENT_NUMBER,INCIDENT_ISSUE_ID,"public exposure")
+    incident_resume(r,INCIDENT_NUMBER,"incident_resume_comment_id","public exposure")
+    require_incident_closed(CARRIER_INCIDENT_NUMBER,CARRIER_INCIDENT_ISSUE_ID,"private carrier")
+    incident_resume(r,CARRIER_INCIDENT_NUMBER,"carrier_incident_resume_comment_id","private carrier")
     parent=PUB.gh_api(f"repos/{CARRIER_REPO}/git/commits/{r['carrier_base_sha']}")
     if parent.get("sha")!=r["carrier_base_sha"]: raise Denied("carrier parent changed")
     parent_tree=PUB.nested_sha(parent,"tree")
