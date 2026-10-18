@@ -126,10 +126,13 @@ Runtime counters distinguish at minimum:
 - dropped terminal diagnostics;
 - lifecycle publication/cleanup anomalies.
 
-Diagnostic producers never wait for diagnostic consumers. Bounded diagnostic
-queues must couple capacity admission with payload publication in one queue
-operation (or an equivalently failure-atomic primitive); a producer must not be
-able to reserve diagnostic capacity and then die before publishing the record.
+Diagnostic producers never wait for diagnostic consumers or diagnostic
+producers. Bounded diagnostic journals must couple capacity admission with
+payload publication in one failure-atomic critical section. Java uses a
+producer try-lock around a pre-sized bounded deque: lock contention and full
+capacity are explicit diagnostic drops, never actor-lifecycle backpressure.
+A producer must not be able to reserve diagnostic capacity and then die before
+publishing the record.
 
 ## 8. Watchdog semantics
 
