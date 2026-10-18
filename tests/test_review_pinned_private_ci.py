@@ -490,10 +490,10 @@ class WorkflowSecureInputOpenTests(unittest.TestCase):
         workflow = (Path(__file__).resolve().parents[1] /
                     ".github/workflows/private-ci-policy.yml").read_text(
                         encoding="utf-8")
-        marker = "          python3 -I - <<'PY'\\n"
+        marker = "          python3 -I - <<'PY'\n"
         if workflow.count(marker) != 1:
             raise AssertionError("private CI policy embedded Python missing")
-        embedded = workflow.split(marker, 1)[1].split("\\n          PY", 1)[0]
+        embedded = workflow.split(marker, 1)[1].split("\n          PY", 1)[0]
         tree = ast.parse(textwrap.dedent(embedded))
         matches = [node for node in tree.body
                    if isinstance(node, ast.FunctionDef) and node.name == "read_regular"]
@@ -552,9 +552,9 @@ class WorkflowSecureInputOpenTests(unittest.TestCase):
     def test_empty_oversized_or_invalid_encoding_rejected(self):
         for name, data in (("empty", b""),
                            ("huge", b"x" * 33),
-                           ("bom", b"\\xef\\xbb\\xbf{}"),
-                           ("nul", b"a\\x00b"),
-                           ("badutf8", b"\\xff")):
+                           ("bom", b"\xef\xbb\xbf{}"),
+                           ("nul", b"a\x00b"),
+                           ("badutf8", b"\xff")):
             Path(name).write_bytes(data)
             with self.subTest(name=name), self.assertRaises(SystemExit):
                 self.read_regular(name, max_bytes=32)
