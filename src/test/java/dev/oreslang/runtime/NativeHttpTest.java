@@ -301,6 +301,68 @@ class NativeHttpTest {
         }
     }
 
+    @Test void guestNominalHttpResponseConstructorHandlesTextAndEmptyBody() throws Exception {
+        String output = run("""
+            define actor Hello as
+              receive(ActorMail<String> mail): void {
+                val request = http.claim(mail.value);
+                if request.target == "/empty"; then
+                  val response = new HttpResponse();
+                  await request.respond_response(response);
+                else
+                  val response = new HttpResponse("hello from Oreslang");
+                  await request.respond_response(response);
+                fi
+                self.end();
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              stdio.println(server.port);
+              for (let int i = 0; i < 2; i = i + 1) {
+                val request = await server.accept();
+                val completion = request.completion;
+                http.handler("Hello").dispatch(rt borrow mut request);
+                await completion;
+              }
+              await server.shutdown(0);
+              return;
+            }
+            """, port -> {
+                var response = request(port, "GET", "/text", "");
+                assertEquals(200, response.statusCode());
+                assertEquals("hello from Oreslang", response.body());
+                assertEquals("text/plain; charset=utf-8",
+                        response.headers().firstValue("Content-Type").orElseThrow());
+                var empty = request(port, "GET", "/empty", "");
+                assertEquals(200, empty.statusCode());
+                assertEquals("", empty.body());
+            });
+        assertFalse(output.contains("exception"), output);
+    }
+
+    @Test void guestHttpResponseConstructorRejectsUnimplementedOptionsAndWrongTypes() {
+        String template = """
+            define actor A as
+              receive(ActorMail<String> mail): void {
+                val reply = %s;
+                return;
+              }
+            end
+            """;
+        for (String rejected : List.of(
+                "new HttpResponse(100)",
+                "new HttpResponse(\"ok\", 201)",
+                "new HttpResponse<unknown>(\"ok\")")) {
+            assertThrows(Exception.class,
+                    () -> OresCompiler.parseAndTypeCheck(template.formatted(rejected)),
+                    rejected);
+        }
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                template.formatted("new HttpResponse(\"ok\")")));
+    }
+
     @Test void guestResponseDraftRejectsInvalidStatusAndBodylessStatus() {
         String valid = """
             define actor A as
