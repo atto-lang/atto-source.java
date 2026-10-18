@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * GUEST execution gate for the actual Oreslang ML scalar actor-state fixture.
  *
  * The .ores fixture was copied byte-for-byte from oreslang-ml's stacked
- * actor-state PR #7 (Git blob 9171c320420a128ca61cc193c9dd4db985222552).
+ * actor-state PR #7 (Git blob 5a6c8240ea257b0cee14f0d086ab2a14f0b369d3).
  * This JUnit class requires an actual GraalVM Oreslang context evaluation;
  * pure host-side arithmetic is explicitly NOT accepted as execution evidence.
  *
@@ -47,7 +47,7 @@ final class MlActorStateScalarGuestTest {
 
     @Test void compiledActorStageHasOneStateSchemaAndDeclaredEffects() throws Exception {
         String text = source();
-        assertEquals("9171c320420a128ca61cc193c9dd4db985222552",
+        assertEquals("5a6c8240ea257b0cee14f0d086ab2a14f0b369d3",
                 gitBlobSha(text), "ML fixture drifted from pinned source Git blob");
         assertDoesNotThrow(() -> verify(text));
         assertEquals(1, count(text, "    state {"));
@@ -64,6 +64,9 @@ final class MlActorStateScalarGuestTest {
         assertTrue(text.contains("issued_second: bool"));
         assertTrue(text.contains("input_first: int"));
         assertTrue(text.contains("input_second: int"));
+        assertTrue(text.contains("if upstream < -10000 || upstream > 10000"));
+        assertTrue(text.contains("if candidate_weight < -10000 || candidate_weight > 10000"));
+        assertTrue(text.contains("if s.step >= 1000000 || s.version >= 1000000"));
         assertTrue(text.contains("s.input_first * upstream"));
         assertTrue(text.contains("s.input_second * upstream"));
         assertFalse(text.contains("private forward("));
@@ -84,7 +87,7 @@ final class MlActorStateScalarGuestTest {
             // must execute here. A missing feature fails the test.
             assertDoesNotThrow(() -> context.eval(executable));
         }
-        assertEquals("-6\n20\n-7\n30\n2\n-4\n-2\n5\n5\n2\n-1\n10\n",
+        assertEquals("-6\n-8\n20\n-7\n30\n-8\n2\n-4\n-2\n5\n5\n2\n-1\n50000\n50000\n100000000\n200000000\n-8\n2\n10\n",
                 stdout.toString(StandardCharsets.UTF_8));
     }
 
