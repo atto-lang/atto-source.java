@@ -451,6 +451,80 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void concurrentLargeWritesPreserveEverySocketByteAndRetireLeases()
+            throws Exception {
+        // Host-side adversarial backpressure for OP_WRITE rearm. A partial
+        // write owns a mutable ByteBuffer cursor; another notification worker
+        // must never write through it until the previous callback retires.
+        final int sockets = 4;
+        final int iterations = 8;
+        final int bytesPerWrite = 65536;
+        try (var group = new NioReadinessGroup(2, 64, 256);
+             var listener = ServerSocketChannel.open()) {
+            listener.configureBlocking(false);
+            listener.bind(new InetSocketAddress(
+                    InetAddress.getLoopbackAddress(), 0));
+            final int port = ((InetSocketAddress) listener.getLocalAddress()).getPort();
+            var peers = new ArrayList<Socket>();
+            var channels = new ArrayList<SocketChannel>();
+            var readers = java.util.concurrent.Executors.newFixedThreadPool(sockets);
+            try {
+                for (int i = 0; i < sockets; ++i) {
+                    var peer = new Socket(InetAddress.getLoopbackAddress(), port);
+                    peer.setSoTimeout(20000);
+                    peer.setReceiveBufferSize(8192);
+                    peers.add(peer);
+                    SocketChannel incoming = null;
+                    long limit = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (incoming == null && System.nanoTime() < limit) {
+                        incoming = listener.accept();
+                        if (incoming == null) Thread.sleep(1);
+                    }
+                    assertNotNull(incoming, "server did not accept backpressure peer");
+                    incoming.configureBlocking(false);
+                    incoming.socket().setSendBufferSize(1024);
+                    channels.add(incoming);
+                }
+
+                for (int round = 0; round < iterations; ++round) {
+                    var drains = new ArrayList<java.util.concurrent.Future<byte[]>>();
+                    var writes = new ArrayList<OresFuture<Integer>>();
+                    var expected = new ArrayList<byte[]>();
+                    for (int i = 0; i < sockets; ++i) {
+                        byte[] payload = new byte[bytesPerWrite];
+                        for (int offset = 0; offset < payload.length; ++offset)
+                            payload[offset] = (byte) (i * 37 + round * 19 + offset * 7);
+                        expected.add(payload);
+                        final Socket peer = peers.get(i);
+                        drains.add(readers.submit(
+                                () -> peer.getInputStream().readNBytes(bytesPerWrite)));
+                        writes.add(group.writeAsync(channels.get(i), payload));
+                    }
+                    for (int i = 0; i < sockets; ++i) {
+                        assertEquals(bytesPerWrite, writes.get(i).get(20, TimeUnit.SECONDS),
+                                "short/duplicate completion for socket " + i);
+                        assertArrayEquals(expected.get(i),
+                                drains.get(i).get(20, TimeUnit.SECONDS),
+                                "partial-write rearm corrupted bytes on socket " + i);
+                    }
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (group.activeWriteLeases() != 0
+                            && System.nanoTime() < deadline) Thread.sleep(1);
+                    assertEquals(0, group.activeWriteLeases(),
+                            "write lease survived full write round " + round);
+                }
+                assertEquals(0, group.pendingCount());
+                assertEquals(0, group.activeWriteLeases());
+            } finally {
+                for (var channel : channels) channel.close();
+                for (var peer : peers) peer.close();
+                readers.shutdownNow();
+            }
+            group.close();
+            assertTrue(group.awaitStopped(5, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void vmSelectorTcpReadReportsEofWithoutBlockingCarrier() throws Exception {
         try (var group = new NioReadinessGroup(1, 8, 8);
              var listener = ServerSocketChannel.open()) {
