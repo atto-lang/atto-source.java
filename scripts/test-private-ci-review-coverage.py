@@ -56,13 +56,13 @@ def validate(codeowners, workflow):
 
     for event in ("pull_request", "push"):
         match = list(re.finditer(
-            r"(?m)^  " + event + r":\\s*$", workflow))
+            r"(?m)^  " + event + r":\s*$", workflow))
         if len(match) != 1:
             raise ValueError("missing or duplicate private-CI workflow event " + event)
         following = workflow[match[0].end():]
         end = re.search(r"(?m)^(?:  [A-Za-z_][A-Za-z_0-9]*:|[A-Za-z_][A-Za-z_0-9]*:)", following)
         block = following[:end.start()] if end else following
-        filtered = re.findall(r"(?m)^      - '([^'\\n]+)'\\s*$", block)
+        filtered = re.findall(r"(?m)^      - '([^'\n]+)'\s*$", block)
         if len(filtered) != len(set(filtered)):
             raise ValueError("duplicated private-CI trigger path")
         missing = set(SECURITY_PATHS) - set(filtered)
@@ -89,17 +89,17 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
             validate(damaged, self.workflow)
 
     def test_later_overriding_owner_is_rejected(self):
-        damaged = self.owners + "\\n/tools/verify-exact-source-tree.sh @different\\n"
+        damaged = self.owners + "\n/tools/verify-exact-source-tree.sh @different\n"
         with self.assertRaisesRegex(ValueError, "CODEOWNER"):
             validate(damaged, self.workflow)
 
     def test_unmodelled_glob_rule_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "unrecognized"):
-            validate(self.owners + "\\n/* @different\\n", self.workflow)
+            validate(self.owners + "\n/* @different\n", self.workflow)
 
     def test_missing_push_trigger_is_rejected(self):
         damaged = self.workflow.replace(
-            "      - 'tools/verify-exact-source-tree.sh'\\n", "", 1)
+            "      - 'tools/verify-exact-source-tree.sh'\n", "", 1)
         with self.assertRaisesRegex(ValueError, "does not trigger"):
             validate(self.owners, damaged)
 
