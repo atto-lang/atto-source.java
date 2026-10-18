@@ -33,9 +33,10 @@ pub fnc from_c(): void { foo(); }  // compiler error
 - Roles are **nominal enum case identities**: `Module.Enum.Case` resolves
   to an actual enum declaration and nullary case. Case names, string values,
   ordinals and type aliases are never substitute credentials.
-- A label reference must resolve within the same checked compilation unit.
-  Unresolved imported enum roles are rejected, not guessed. Future multi-file
-  programs require an authenticated, linker-resolved role symbol/ABI record.
+- A label reference must resolve to an enum in the **same lexical module**.
+  `Enum.Case` and the redundant fully qualified `Module.Enum.Case`
+  are accepted there. Cross-module and imported roles are rejected until
+  import visibility and authenticated linker-resolved symbol/ABI proofs exist.
 - Annotation arguments must be 1..64 distinct, qualified, nullary enum cases.
   Repeated `@CallerRole` or `@CallableBy` on one declaration is an error.
   Empty allowlists, unknown cases, case payloads, generic annotations and
