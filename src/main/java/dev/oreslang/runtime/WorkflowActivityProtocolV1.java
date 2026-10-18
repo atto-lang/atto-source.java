@@ -47,6 +47,14 @@ public final class WorkflowActivityProtocolV1 {
                             grantedCapabilities,
                             "grantedCapabilities"));
 
+            String expectedEffectKey =
+                    expectedEffectKey(runId, claim.command());
+            if (!expectedEffectKey.equals(claim.effectKey())) {
+                throw new IllegalArgumentException(
+                        "activity claim does not belong to run "
+                                + runId);
+            }
+
             Kind expected = kindFor(claim.command());
             if (kind != expected) {
                 throw new IllegalArgumentException(
@@ -120,6 +128,60 @@ public final class WorkflowActivityProtocolV1 {
     }
 
     private WorkflowActivityProtocolV1() { }
+
+    public static String expectedEffectKey(
+            String runId,
+            DurableDevLoopV1.Command command) {
+        runId = requireText(runId, "runId");
+        Objects.requireNonNull(command, "command");
+        String prefix = "devloop/" + runId + "/";
+        if (command instanceof DurableDevLoopV1.RequestCode value) {
+            return prefix + "iteration/" + value.iteration() + "/code";
+        }
+        if (command instanceof DurableDevLoopV1.PushCode value) {
+            return prefix + "iteration/" + value.iteration() + "/push";
+        }
+        if (command instanceof DurableDevLoopV1.AwaitCi value) {
+            return prefix
+                    + "iteration/"
+                    + value.iteration()
+                    + "/ci/"
+                    + value.commitSha();
+        }
+        if (command instanceof DurableDevLoopV1.Evaluate value) {
+            return prefix
+                    + "iteration/"
+                    + value.iteration()
+                    + "/evaluate/"
+                    + value.commitSha();
+        }
+        if (command instanceof DurableDevLoopV1.CreateBugReport value) {
+            return prefix
+                    + "iteration/"
+                    + value.iteration()
+                    + "/bug/"
+                    + value.commitSha();
+        }
+        if (command instanceof DurableDevLoopV1.RequestApproval value) {
+            return prefix
+                    + "iteration/"
+                    + value.iteration()
+                    + "/approval/"
+                    + value.commitSha();
+        }
+        if (command instanceof DurableDevLoopV1.Escalate value) {
+            return prefix
+                    + "iteration/"
+                    + value.iteration()
+                    + "/escalate";
+        }
+        if (command instanceof DurableDevLoopV1.CancelWork) {
+            return prefix + "cancel";
+        }
+        throw new IllegalArgumentException(
+                "unknown workflow command "
+                        + command.getClass().getName());
+    }
 
     public static Kind kindFor(DurableDevLoopV1.Command command) {
         Objects.requireNonNull(command, "command");
