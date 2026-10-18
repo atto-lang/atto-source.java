@@ -58,6 +58,10 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
         public Claim {
             effectKey = requireText(effectKey, "effectKey", 2_048);
             command = Objects.requireNonNull(command, "command");
+            if (!effectKey.equals(command.effectKey())) {
+                throw new IllegalArgumentException(
+                        "claim effect key must match command effect key");
+            }
             claimToken = requireText(
                     claimToken, "claimToken", 2_048);
             if (attempt <= 0) {
