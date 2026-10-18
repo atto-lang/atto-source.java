@@ -300,7 +300,8 @@ public final class ConstructorValInitialization {
             return;
         }
         if (node instanceof Ast.AwaitExpr item) {
-            scan(item.expression(), state, required, klass, immediate);
+            if (immediate) throw constructionSuspension(klass, "await");
+            scan(item.expression(), state, required, klass, false);
             return;
         }
         if (node instanceof Ast.TrapExpr item) {
@@ -308,12 +309,18 @@ public final class ConstructorValInitialization {
             return;
         }
         if (node instanceof Ast.ChannelOpExpr item) {
+            if (immediate && item.mode() == Ast.WaitMode.BLOCKING) {
+                throw constructionSuspension(klass, "blocking channel operation");
+            }
             scan(item.channel(), state, required, klass, immediate);
             scan(item.value(), state, required, klass, immediate);
-            scan(item.callbackBody(), state, required, klass, immediate);
+            scan(item.callbackBody(), state, required, klass, false);
             return;
         }
         if (node instanceof Ast.DynamicSelectExpr item) {
+            if (immediate && item.mode() == Ast.WaitMode.BLOCKING) {
+                throw constructionSuspension(klass, "blocking dynamic select");
+            }
             scan(item.cases(), state, required, klass, immediate);
             return;
         }
@@ -334,8 +341,8 @@ public final class ConstructorValInitialization {
             return;
         }
         if (node instanceof Ast.LambdaExpr item) {
-            scan(item.expressionBody(), state, required, klass, immediate);
-            scan(item.blockBody(), state, required, klass, immediate);
+            scan(item.expressionBody(), state, required, klass, false);
+            scan(item.blockBody(), state, required, klass, false);
             return;
         }
         if (node instanceof Ast.BindingStmt item) {
@@ -404,11 +411,13 @@ public final class ConstructorValInitialization {
             return;
         }
         if (node instanceof Ast.ForOfStmt item) {
+            if (immediate && item.asyncIteration()) throw constructionSuspension(klass, "async iteration");
             scan(item.iterable(), state, required, klass, immediate);
             scan(item.body(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.ForOfDestructureStmt item) {
+            if (immediate && item.asyncIteration()) throw constructionSuspension(klass, "async iteration");
             scan(item.iterable(), state, required, klass, immediate);
             scan(item.body(), state, required, klass, immediate);
             return;
@@ -425,6 +434,9 @@ public final class ConstructorValInitialization {
             return;
         }
         if (node instanceof Ast.SelectStmt item) {
+            if (immediate && item.mode() == Ast.WaitMode.BLOCKING) {
+                throw constructionSuspension(klass, "blocking select");
+            }
             scan(item.arms(), state, required, klass, immediate);
             return;
         }
@@ -436,6 +448,12 @@ public final class ConstructorValInitialization {
         }
         throw new IllegalArgumentException("unhandled AST node in constructor val analysis: " + node.getClass().getName());
 
+    }
+
+    private static IllegalArgumentException constructionSuspension(String klass, String operation) {
+        return new IllegalArgumentException("constructor for '" + klass
+                + "' cannot suspend through " + operation
+                + "; construction-scoped self must not cross a scheduler boundary");
     }
 
     private static IllegalArgumentException error(String klass, String field, String message) {
