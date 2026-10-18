@@ -7,9 +7,17 @@ This same-repository branch derives from Java ML guest head
 `2b1cc32830e8159e37ba3e1bad26bba20024dbaa`) and stages ten previously
 absent Java ADT support classes from nominal ADT head
 `27ccb069b5e3cc2d293c5ba537d70a4fbedb7c67`.
-No production Java file present in the guest parent was overwritten.
-The 17 overlapping core files below must be reconciled *semantically*,
-not replaced by a wholesale cherry-pick:
+Initial staging preserved the complete original guest source tree. Subsequent
+focused edits reconciled **four shared syntax-layer files** (`Ast.java`,
+`Token.java`, `Lexer.java`, `Parser.java`) by adding nominal enum and match
+pattern declarations while preserving existing actor-state syntax. Three
+isolated V8 host-only parser bridge tests passed; Java compilation is still
+**NOT EXECUTED**. These four files are only partially integrated: their
+typechecker/runtime call sites remain dependent on further work.
+
+All 17 original overlapping core files require a full semantic review, and the
+other 13 shared compiler/runtime files remain unchanged from the ML guest tree.
+Never wholesale-replace either version with the other:
 
 - `src/main/java/dev/oreslang/ast/AnnotationExpander.java`
 - `src/main/java/dev/oreslang/ast/Ast.java`
