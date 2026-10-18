@@ -110,6 +110,9 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
                 || !actorType.matches("[a-zA-Z_][a-zA-Z0-9_]*")) {
             throw new IllegalArgumentException("invalid untrusted actor type");
         }
+        // Cheap input-only check: fail before native isolate construction,
+        // never interpret or validate hostile source in the trusted JVM.
+        UntrustedSourceImageCache.validateCandidate(sourceId, source);
 
         synchronized (lifecycle) {
             if (closed) throw new IllegalStateException("untrusted supervisor is closed");
