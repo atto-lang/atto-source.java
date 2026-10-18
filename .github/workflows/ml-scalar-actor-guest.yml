@@ -7,6 +7,7 @@ on:
       - "tests/java-ml-guest-junit-guard.test.mjs"
       - "tests/fixtures/ml-actor-state-scalar.ores"
       - "tests/golden/ml-actor-state-scalar.stdout"
+      - "tests/golden/ml-actor-state-scalar.stdout"
       - "stdlib/**"
       - "pom.xml"
       - ".github/workflows/ml-scalar-actor-guest.yml"
