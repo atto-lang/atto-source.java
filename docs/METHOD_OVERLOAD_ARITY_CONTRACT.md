@@ -57,10 +57,7 @@ ordinary private methods still follow their existing declaring-class access rule
 For a `private abstract` instance slot, concrete and intermediate overrides
 must preserve the **originating** superclass parameter types, return type,
 mutability, and callable effects. This is separate from name-and-arity method
-selection. The current Java implementation checks exact non-generic
-signatures through transitive inheritance and **rejects generic private
-abstract overrides until capture-safe type substitution is validated**;
-generic parity is not yet claimed.
+selection. The current Java implementation checks the originating slot through transitive inheritance, substitutes class generics through the concrete ancestor view, and alpha-normalizes method generics by declaration position. Return/parameter types plus mutability, structural and suspension effects must remain exact after substitution. Ambiguous ancestor views and incompatible generic arity fail closed.
 
 Signature-only declarations in concrete classes are rejected. Abstract
 static class functions remain rejected.
