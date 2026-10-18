@@ -78,6 +78,10 @@ public final class HttpResponseDraftStandaloneCheck {
         check(claimsWon.get() == 1, "exactly one concurrent response handoff");
 
         AtomicInteger opened = new AtomicInteger();
+        AtomicInteger cancelledStreamReads = new AtomicInteger();
+        AtomicInteger cancelledStreamCloses = new AtomicInteger();
+        var responseCancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var cancelledCleanupDone = new java.util.concurrent.CountDownLatch(1);
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 8);
         var workers = Executors.newCachedThreadPool();
         server.setExecutor(workers);
@@ -97,11 +101,28 @@ public final class HttpResponseDraftStandaloneCheck {
                         opened.incrementAndGet();
                         return new ByteArrayInputStream("never".getBytes(StandardCharsets.UTF_8));
                     }, 200, List.of());
+                    case "/cancel-after-open" -> HttpResponseDraft.streaming(() -> new ByteArrayInputStream(
+                            "should not be read".getBytes(StandardCharsets.UTF_8)) {
+                        @Override public synchronized int read(byte[] buf, int off, int len) {
+                            cancelledStreamReads.incrementAndGet();
+                            return super.read(buf, off, len);
+                        }
+                        @Override public void close() throws java.io.IOException {
+                            cancelledStreamCloses.incrementAndGet();
+                            super.close();
+                        }
+                    }, 200, List.of());
                     default -> HttpResponseDraft.text("head-only", 200, List.of());
                 };
                 response.writeTo(exchange,
-                        () -> exchange.getRequestURI().getPath().equals("/cancel"), ignored -> { });
+                        () -> exchange.getRequestURI().getPath().equals("/cancel") || responseCancelled.get(),
+                        input -> {
+                            if (exchange.getRequestURI().getPath().equals("/cancel-after-open") && input != null)
+                                responseCancelled.set(true);
+                        });
             } finally {
+                if (exchange.getRequestURI().getPath().equals("/cancel-after-open"))
+                    cancelledCleanupDone.countDown();
                 exchange.close();
             }
         });
@@ -141,6 +162,16 @@ public final class HttpResponseDraftStandaloneCheck {
                 // Response must not commit headers after cancellation.
             }
             check(opened.get() == 1, "cancelled stream supplier must not run");
+            try {
+                client.send(HttpRequest.newBuilder(base.resolve("/cancel-after-open"))
+                                .timeout(java.time.Duration.ofSeconds(3)).build(),
+                        HttpResponse.BodyHandlers.ofString());
+            } catch (java.io.IOException ignored) {
+                // The headers might have committed, but body abort is allowed.
+            }
+            check(cancelledCleanupDone.await(3, java.util.concurrent.TimeUnit.SECONDS), "cancel cleanup ran");
+            check(cancelledStreamReads.get() == 0, "do not read source after cancellation");
+            check(cancelledStreamCloses.get() == 1, "cancelled source closed exactly once");
         } finally {
             server.stop(0);
             workers.shutdownNow();
