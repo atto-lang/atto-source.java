@@ -26,6 +26,16 @@ This directory documents the executable formal-methods layer for Oreslang runtim
 
 `FormalForceRevocationModelCheckTest` models hard kill as a two-phase protocol: fence, external revocation, then logical termination. It also explores failed/throwing revokers, mailbox rejection while fenced, overlapping hard-kill rejection, and fence clearing after failure.
 
+`FormalDurableWorkflowModelCheckTest` exhaustively explores the V1 durable
+workflow effect/delivery protocol: pending/claimed/ambiguous/completed/abandoned
+effects, retry-authority revocation, claim expiry, safe-to-retry versus completed
+reconciliation, phase-rejected delivery retry, exact duplicate delivery,
+conflicting delivery-id reuse, causal outcome retirement, and terminal
+cancellation. It proves terminal monotonicity, that revoked ambiguous work
+cannot return to PENDING, that duplicate/conflicting deliveries cannot mutate
+the effect lifecycle, and that accepted causal outcomes/cancellation revoke
+future execution authority.
+
 The checked invariants are:
 
 1. **At-most-once protocol settlement.** A reply is completed or cancelled, never both and never twice.
@@ -52,6 +62,9 @@ The checked invariants are:
 
 22. **Promoted storage outlives actor ownership.** Actor stop cannot reclaim storage rooted by a runtime-owned proxy; disposal of the final promoted root makes reclamation legal.
 23. **Proxy locks cannot span suspension or compose implicitly.** Read-to-write upgrades, cross-proxy nested locking, and suspension while locked fail closed in the bounded model; disposed proxies cannot be reacquired.
+
+24. **Durable workflow terminality is monotonic.** Cancellation cannot resurrect runnable pre-terminal effects; accepted causal outcomes retire or revoke their causal effect; expired claims become ambiguous; revoked ambiguous work cannot be reconciled back to pending.
+25. **Workflow delivery identity is non-mutating.** Exact duplicate, conflicting reuse, and phase-rejected deliveries cannot alter the external effect lifecycle; a rejected exact payload may later apply only through its legal causal transition.
 
 `FormalActorStorageLifetimeModelCheckTest` explores actor retirement versus promoted-root lifetime. `FormalProxySynchronizationModelCheckTest` explores two proxies, lock modes, suspension and disposal. These are bounded abstract contracts; they do not substitute for concrete runtime refinement tests.
 
