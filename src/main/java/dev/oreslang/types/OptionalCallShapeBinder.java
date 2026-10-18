@@ -42,6 +42,21 @@ public final class OptionalCallShapeBinder {
         }
         /** Named 'label: _' also normalizes to exactly the same omission shape. */
         public static Argument namedUnderscore(String name) { return namedOmission(name); }
+        /**
+         * Call-argument grammar bridge: only an entire standalone '_' or
+         * 'omit' token can denote omission. The lexer/parser must establish
+         * argument-item boundaries; this helper NEVER parses an expression.
+         * Treating 'None' or 'void' as tokens here would erase an essential
+         * type/evaluation distinction.
+         */
+        public static Argument omittedCallItemToken(String token, String label) {
+            Objects.requireNonNull(token, "token");
+            if (!"_".equals(token) && !"omit".equals(token)) {
+                throw new IllegalArgumentException(
+                        "only a standalone '_' or 'omit' may denote an omitted call item");
+            }
+            return new Argument(label, true);
+        }
     }
 
     public record Parameter(String name, boolean optional, boolean variadic) {
