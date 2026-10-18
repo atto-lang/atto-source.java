@@ -7159,6 +7159,14 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
+            // Internal fnc/lambda/static fnc values have only a signature and
+            // an invocation entrypoint; they are never user-extensible objects.
+            // Do not accidentally expose Java/Truffle member reflection even
+            // when the host interop capability is present.
+            if (receiver instanceof Invokable) {
+                throw new IllegalArgumentException(
+                        "function values have no properties; use explicit closure captures or a class field");
+            }
             InteropLibrary foreign = InteropLibrary.getUncached(receiver);
             if (foreign.hasMembers(receiver)) {
                 context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
