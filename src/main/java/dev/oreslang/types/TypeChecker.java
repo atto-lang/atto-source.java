@@ -1861,7 +1861,12 @@ public final class TypeChecker {
                 return new ModuleNamespace(module.name());
             }
             if (importedModuleNamespaces.contains(name.name())) {
-                return Unknown.INSTANCE; // linked module members are checked at link time
+                if (!linkedModuleNamespaces.containsKey(name.name())) {
+                    throw new IllegalArgumentException(
+                            "imported module namespace '" + name.name()
+                                    + "' requires verified linked module metadata for member access");
+                }
+                return new ModuleNamespace(name.name());
             }
         }
         return typeOf(receiver, env, generics, self);
