@@ -4410,8 +4410,14 @@ public final class OresEvalRootNode extends RootNode {
                         return null;
                     }, List.of());
                 }
-                // Partial fan-out cannot hide per-edge admission results.
-                case "forward_all" -> null;
+                case "forward_all" -> {
+                    if (args.size() != 1) {
+                        throw new IllegalArgumentException(
+                                "self.forward_all expects exactly one value");
+                    }
+                    yield object.owner.invokableInvocation(ignored ->
+                            runtime.routeCurrentPipelineForwardAll(args.getFirst()), List.of());
+                }
                 default -> null;
             };
         }
