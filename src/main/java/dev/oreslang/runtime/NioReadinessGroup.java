@@ -730,6 +730,10 @@ public final class NioReadinessGroup implements AutoCloseable {
                 pendingWatch.set(readiness);
                 readiness.whenCompleteRuntime((events, failure) -> {
                     pendingWatch.compareAndSet(readiness, null);
+                    // A partial kernel write retains one mutable ByteBuffer.
+                    // Never register its next readiness callback until this
+                    // callback has finished accessing that shared cursor.
+                    boolean rearm = false;
                     try {
                         if (written.isDone()) return;
                         if (failure != null) {
@@ -748,7 +752,12 @@ public final class NioReadinessGroup implements AutoCloseable {
                                     // safe until the next kernel-write claim.
                                     kernelPhase.compareAndSet(1, 0);
                                 }
-                                arm();
+                                // Scheduling a new OP_WRITE watch here may
+                                // immediately dispatch another callback on a
+                                // different completion worker while this one
+                                // still owns the ByteBuffer cursor. Defer it
+                                // until the current callback has retired.
+                                rearm = true;
                             } else {
                                 written.completeFromRuntime(snapshot.length);
                             }
@@ -761,6 +770,7 @@ public final class NioReadinessGroup implements AutoCloseable {
                         inFlight.decrementAndGet();
                         releaseIfTerminal();
                     }
+                    if (rearm) arm();
                 });
                 if (written.isDone()) {
                     pendingWatch.compareAndSet(readiness, null);
