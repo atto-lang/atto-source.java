@@ -200,7 +200,8 @@ public final class NativeHttp implements AutoCloseable {
         private final int bodyLimit, deadlineMillis;
         private final ArrayDeque<Exchange> pending = new ArrayDeque<>();
         private final Set<State> active = ConcurrentHashMap.newKeySet();
-        private OresFuture<Object> waiter;
+        private final OresFuture<?>[] waiters = new OresFuture<?>[16];
+        private final ArrayDeque<Integer> waitingLanes = new ArrayDeque<>();
         private boolean stopped, transportStopped;
         private OresFuture<Object> drained;
         private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
@@ -229,16 +230,20 @@ public final class NativeHttp implements AutoCloseable {
         private void supervisor() {
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP server is supervisor-owned");
         }
+        public synchronized boolean accepting() { supervisor(); return !stopped; }
         public int port() { supervisor(); return transport.getAddress().getPort(); }
         public long accepted() { supervisor(); return accepted.get(); }
         public long rejected() { supervisor(); return rejected.get(); }
         public long completed() { supervisor(); return completed.get(); }
         public int active() { supervisor(); return active.size(); }
 
-        public synchronized OresFuture<Object> accept() {
+        public OresFuture<Object> accept() { return acceptOn(0); }
+        /** Independent bounded supervisor lanes; one outstanding accept per lane. */
+        public synchronized OresFuture<Object> acceptOn(int lane) {
             supervisor();
+            if (lane < 0 || lane >= waiters.length) throw new IllegalArgumentException("HTTP accept lane must be 0..15");
             if (stopped) return OresFuture.failed(new IllegalStateException("HTTP server closed"));
-            if (waiter != null) throw new IllegalStateException("only one pending HTTP accept is permitted");
+            if (waiters[lane] != null) throw new IllegalStateException("only one pending HTTP accept per lane is permitted");
             Exchange exchange = pending.poll();
             while (exchange != null && exchange.state.terminal) exchange = pending.poll();
             if (exchange != null) {
@@ -246,8 +251,10 @@ public final class NativeHttp implements AutoCloseable {
                 CorePerf.elapsed(CorePerf.HTTP_ACCEPT_QUEUE, exchange.state.queuedNanos, exchange.state.acceptReadyNanos);
                 return OresFuture.completed(exchange);
             }
-            waiter = new OresFuture<>(() -> false, () -> { });
-            return waiter;
+            OresFuture<Object> waiting = new OresFuture<>(() -> false, () -> { });
+            waiters[lane] = waiting;
+            waitingLanes.addLast(lane);
+            return waiting;
         }
         private void receive(HttpExchange raw) {
             long perf = CorePerf.start();
@@ -266,12 +273,16 @@ public final class NativeHttp implements AutoCloseable {
                     CorePerf.end(CorePerf.HTTP_TIMER_SCHEDULE, schedulePerf);
                     Exchange exchange = new Exchange(state, context, 0);
                     state.queuedNanos = System.nanoTime();
-                    if (waiter == null) pending.add(exchange);
+                    if (waitingLanes.isEmpty()) pending.add(exchange);
                     else {
                         // Direct delivery spends no time in the pending HTTP queue.
                         state.acceptReadyNanos = state.queuedNanos;
                         CorePerf.elapsed(CorePerf.HTTP_ACCEPT_QUEUE, state.queuedNanos, state.acceptReadyNanos);
-                        OresFuture<Object> next = waiter; waiter = null; next.completeFromRuntime(exchange);
+                        int lane = waitingLanes.removeFirst();
+                        @SuppressWarnings("unchecked")
+                        OresFuture<Object> next = (OresFuture<Object>) waiters[lane];
+                        waiters[lane] = null;
+                        next.completeFromRuntime(exchange);
                     }
                 }
             } catch (IllegalArgumentException invalid) {
@@ -321,7 +332,12 @@ public final class NativeHttp implements AutoCloseable {
         }
         private synchronized void stopAccepting() {
             stopped = true;
-            if (waiter != null) { waiter.failFromRuntime(new IllegalStateException("HTTP server closed")); waiter = null; }
+            while (!waitingLanes.isEmpty()) {
+                int lane = waitingLanes.removeFirst();
+                OresFuture<?> waiting = waiters[lane];
+                waiters[lane] = null;
+                waiting.failFromRuntime(new IllegalStateException("HTTP server closed"));
+            }
             pending.clear();
         }
         @Override public void close() {

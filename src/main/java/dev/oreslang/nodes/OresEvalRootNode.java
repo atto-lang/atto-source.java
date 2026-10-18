@@ -6267,11 +6267,16 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof NativeHttp.Server server) {
                 return switch (name) {
                     case "port" -> (long) server.port();
+                    case "accepting" -> server.accepting();
                     case "active" -> (long) server.active();
                     case "accepted" -> server.accepted();
                     case "rejected" -> server.rejected();
                     case "completed" -> server.completed();
                     case "accept" -> (Invokable) args -> { requireZero(args, "http.accept"); return server.accept(); };
+                    case "accept_on" -> (Invokable) args -> {
+                        requireOne(args, "http.accept_on");
+                        return server.acceptOn(Math.toIntExact(((Number) args.getFirst()).longValue()));
+                    };
                     case "shutdown" -> (Invokable) args -> {
                         if (args.size() != 1) throw new IllegalArgumentException("shutdown requires grace milliseconds");
                         return server.shutdown(((Number) args.get(0)).intValue());

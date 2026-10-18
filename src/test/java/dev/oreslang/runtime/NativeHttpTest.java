@@ -16,6 +16,47 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void independentAcceptLanesDeliverUniqueExchangesAndCloseAllWaiters() throws Exception {
+        String output = run("""
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              val a = server.accept_on(1);
+              val b = server.accept_on(2);
+              stdio.println(server.port);
+              try { server.accept_on(1); stdio.println("DUPLICATE ACCEPTED"); }
+              catch (err) { stdio.println("duplicate-rejected"); }
+              try { server.accept_on(16); stdio.println("INVALID ACCEPTED"); }
+              catch (err) { stdio.println("range-rejected"); }
+              val first = await a;
+              val second = await b;
+              stdio.println(first.request_id != second.request_id);
+              await first.respond(200, "text/plain", "ok");
+              await second.respond(200, "text/plain", "ok");
+              val pending_a = server.accept_on(1);
+              val pending_b = server.accept_on(2);
+              await server.shutdown(1000);
+              try { await pending_a; stdio.println("OPEN ACCEPTED"); }
+              catch (err) { stdio.println("closed-a"); }
+              try { await pending_b; stdio.println("OPEN ACCEPTED"); }
+              catch (err) { stdio.println("closed-b"); }
+              stdio.println(server.accepting);
+              return;
+            }
+            """, port -> {
+                try (HttpClient client = HttpClient.newHttpClient()) {
+                    var req = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/"))
+                        .timeout(Duration.ofSeconds(8)).GET().build();
+                    var a = client.sendAsync(req, HttpResponse.BodyHandlers.ofString());
+                    var b = client.sendAsync(req, HttpResponse.BodyHandlers.ofString());
+                    assertEquals(200, a.get(10, TimeUnit.SECONDS).statusCode());
+                    assertEquals(200, b.get(10, TimeUnit.SECONDS).statusCode());
+                }
+            });
+        assertFalse(output.contains("ACCEPTED"), output);
+        assertTrue(output.contains("true"), output);
+        assertTrue(output.contains("closed-a\nclosed-b\nfalse"), output);
+    }
+
     @Test void acceptTimingSeparatesWaitingConsumerFromQueuedRequest() throws Exception {
         String output = run("""
             pub async routine main(): void {
