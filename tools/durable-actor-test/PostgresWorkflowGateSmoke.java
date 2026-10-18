@@ -48,11 +48,18 @@ public final class PostgresWorkflowGateSmoke {
         String sha="a".repeat(40),ref="refs/heads/develop";
         var expected=new PostgresDurableWorkflowGate.ExpectedPush(9,10,ref,sha,1,0);
         gate.expectPush(key,expected);
+        gate.expectPush(key,expected); // identical pending expectation is idempotent
         var push=new PostgresDurableWorkflowGate.SignedPush(9,10,ref,sha,"delivery-1",bytes("signed-raw-push"));
         check(gate.admitSignedPush(key,push)==PostgresDurableWorkflowGate.Admission.ACCEPTED,
             "first authenticated push");
         check(gate.admitSignedPush(key,push)==PostgresDurableWorkflowGate.Admission.DUPLICATE,
             "duplicate delivery ignored atomically");
+        rejects(()->gate.expectPush(key,expected),
+            "completed expected workflow state cannot be reopened");
+        check(gate.admitSignedPush(key,new PostgresDurableWorkflowGate.SignedPush(
+            9,10,ref,sha,"delivery-1",bytes("different-payload"))) ==
+            PostgresDurableWorkflowGate.Admission.STALE,
+            "same delivery ID with different raw bytes must not count as duplicate");
         check(gate.admitSignedPush(key,new PostgresDurableWorkflowGate.SignedPush(
             9,10,ref,sha,"different-delivery-same-logical-push",bytes("another-signed-delivery"))) ==
             PostgresDurableWorkflowGate.Admission.STALE,
