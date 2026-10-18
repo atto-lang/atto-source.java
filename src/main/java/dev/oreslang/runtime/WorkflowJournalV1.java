@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -85,6 +86,8 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
 
     private static final long MAX_LEASE_MILLIS =
             7L * 24L * 60L * 60L * 1000L;
+    private static final SecureRandom CLAIM_RANDOM = new SecureRandom();
+    private static final int CLAIM_NONCE_BYTES = 32;
 
     private static final class MutableEffect {
         private final String effectKey;
@@ -614,16 +617,17 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
         }
     }
 
-    private static void validateClaimToken(
+    private static long validateClaimToken(
             EffectSnapshot effect,
             String runId,
             long nextClaimNumber) {
         String[] parts = effect.claimToken().split("/", -1);
-        if (parts.length != 7
+        if (parts.length != 9
                 || !"workflow".equals(parts[0])
                 || !"claim".equals(parts[1])
                 || !"attempt".equals(parts[3])
-                || !"effect".equals(parts[5])) {
+                || !"nonce".equals(parts[5])
+                || !"effect".equals(parts[7])) {
             throw new IllegalStateException(
                     "persisted claim token has invalid structure");
         }
@@ -638,6 +642,11 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
                     "persisted claim token has invalid numeric fields",
                     failure);
         }
+        String nonce = parts[6];
+        if (!nonce.matches("[0-9a-f]{64}")) {
+            throw new IllegalStateException(
+                    "persisted claim token has invalid nonce");
+        }
         if (claimNumber <= 0
                 || claimNumber >= nextClaimNumber
                 || attempt != effect.attempts()) {
@@ -646,13 +655,18 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
         }
 
         String expectedDigest = claimDigest(
-                runId, effect.effectKey());
+                runId,
+                effect.effectKey(),
+                claimNumber,
+                attempt,
+                nonce);
         if (!MessageDigest.isEqual(
                 expectedDigest.getBytes(StandardCharsets.US_ASCII),
-                parts[6].getBytes(StandardCharsets.US_ASCII))) {
+                parts[8].getBytes(StandardCharsets.US_ASCII))) {
             throw new IllegalStateException(
                     "persisted claim token effect digest mismatch");
         }
+        return claimNumber;
     }
 
     private static String claimToken(
@@ -660,23 +674,44 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
             String effectKey,
             int attempt,
             long claimNumber) {
+        byte[] nonceBytes = new byte[CLAIM_NONCE_BYTES];
+        CLAIM_RANDOM.nextBytes(nonceBytes);
+        String nonce = HexFormat.of().formatHex(nonceBytes);
         return "workflow/claim/"
                 + claimNumber
                 + "/attempt/"
                 + attempt
+                + "/nonce/"
+                + nonce
                 + "/effect/"
-                + claimDigest(runId, effectKey);
+                + claimDigest(
+                        runId,
+                        effectKey,
+                        claimNumber,
+                        attempt,
+                        nonce);
     }
 
     private static String claimDigest(
             String runId,
-            String effectKey) {
+            String effectKey,
+            long claimNumber,
+            int attempt,
+            String nonce) {
         try {
             MessageDigest digest =
                     MessageDigest.getInstance("SHA-256");
             digest.update(runId.getBytes(StandardCharsets.UTF_8));
             digest.update((byte) 0);
             digest.update(effectKey.getBytes(StandardCharsets.UTF_8));
+            digest.update((byte) 0);
+            digest.update(Long.toString(claimNumber)
+                    .getBytes(StandardCharsets.US_ASCII));
+            digest.update((byte) 0);
+            digest.update(Integer.toString(attempt)
+                    .getBytes(StandardCharsets.US_ASCII));
+            digest.update((byte) 0);
+            digest.update(nonce.getBytes(StandardCharsets.US_ASCII));
             return HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException(
