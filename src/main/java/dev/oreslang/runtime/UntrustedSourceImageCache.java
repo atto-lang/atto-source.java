@@ -3,16 +3,8 @@ package dev.oreslang.runtime;
 import dev.oreslang.OresLanguage;
 import org.graalvm.polyglot.Source;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CodingErrorAction;
-import java.nio.CharBuffer;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
-import java.util.HexFormat;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -30,8 +22,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * The cache retains no idle entry after the final lease is released.</p>
  */
 final class UntrustedSourceImageCache {
-    private static final int MAX_CODE_UNIT_CHARS = 512;
-    private static final int MAX_SOURCE_BYTES = 1_048_576;
     private record Key(String codeUnitId, String sha256) { }
 
     private final Map<Key, Entry> live = new HashMap<>();
@@ -57,49 +47,13 @@ final class UntrustedSourceImageCache {
      * Call it BEFORE building a costly native guest isolate.
      */
     static void validateCandidate(String codeUnitId, String sourceText) {
-        strictSourceBytes(codeUnitId, sourceText);
-    }
-
-    private static byte[] strictSourceBytes(String codeUnitId, String sourceText) {
-        Objects.requireNonNull(codeUnitId, "codeUnitId");
-        Objects.requireNonNull(sourceText, "sourceText");
-        if (codeUnitId.isBlank() || codeUnitId.length() > MAX_CODE_UNIT_CHARS
-                || codeUnitId.codePoints().anyMatch(Character::isISOControl)) {
-            throw new IllegalArgumentException("invalid bounded untrusted code-unit identity");
-        }
-        for (int i = 0; i < codeUnitId.length(); i++) {
-            char c = codeUnitId.charAt(i);
-            if (Character.isHighSurrogate(c)) {
-                if (++i >= codeUnitId.length()
-                        || !Character.isLowSurrogate(codeUnitId.charAt(i))) {
-                    throw new IllegalArgumentException("malformed code-unit identity");
-                }
-            } else if (Character.isLowSurrogate(c)) {
-                throw new IllegalArgumentException("malformed code-unit identity");
-            }
-        }
-        try {
-            var encoded = StandardCharsets.UTF_8.newEncoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .encode(CharBuffer.wrap(sourceText));
-            int bytes = encoded.remaining();
-            if (bytes == 0 || bytes > MAX_SOURCE_BYTES) {
-                throw new IllegalArgumentException("untrusted source byte budget exceeded");
-            }
-            byte[] result = new byte[bytes];
-            encoded.get(result);
-            return result;
-        } catch (CharacterCodingException malformed) {
-            // Malformed UTF-16 must never silently coalesce into replacement
-            // bytes, which would create ambiguous content hashes and cache keys.
-            throw new IllegalArgumentException("malformed UTF-8 source input");
-        }
+        UntrustedSourceIdentity.inspect(codeUnitId, sourceText);
     }
 
     synchronized Lease acquire(String codeUnitId, String sourceText) {
-        byte[] bytes = strictSourceBytes(codeUnitId, sourceText);
-        Key key = new Key(codeUnitId, sha256(bytes));
+        UntrustedSourceIdentity.Validated identity =
+                UntrustedSourceIdentity.inspect(codeUnitId, sourceText);
+        Key key = new Key(identity.codeUnitId(), identity.sha256());
         Entry entry = live.get(key);
         if (entry != null) {
             // The digest is an index, never authorization or equality evidence.
@@ -109,7 +63,7 @@ final class UntrustedSourceImageCache {
             entry.leases = Math.addExact(entry.leases, 1);
             return new Lease(this, entry);
         }
-        if (live.size() >= maxImages || bytes.length > maxBytes - pinnedBytes) {
+        if (live.size() >= maxImages || identity.byteLength() > maxBytes - pinnedBytes) {
             throw new IllegalStateException("untrusted code-image cache capacity exceeded");
         }
         // Stable content identity makes engine-level Source caching possible;
@@ -121,9 +75,9 @@ final class UntrustedSourceImageCache {
                 .mimeType(OresLanguage.MIME_TYPE)
                 .cached(true)
                 .buildLiteral();
-        entry = new Entry(key, sourceText, source, bytes.length);
+        entry = new Entry(key, sourceText, source, identity.byteLength());
         live.put(key, entry);
-        pinnedBytes += bytes.length;
+        pinnedBytes += identity.byteLength();
         return new Lease(this, entry);
     }
 
@@ -137,14 +91,6 @@ final class UntrustedSourceImageCache {
         if (--entry.leases == 0) {
             live.remove(entry.key);
             pinnedBytes -= entry.byteLength;
-        }
-    }
-
-    private static String sha256(byte[] bytes) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
-        } catch (NoSuchAlgorithmException unavailable) {
-            throw new IllegalStateException("SHA-256 unavailable", unavailable);
         }
     }
 
