@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicReference;
 final class TcpSelectOperation {
     private TcpSelectOperation() { }
 
-    enum Phase { DESCRIBED, READY, WON, COMMITTED, CANCELLED }
+    enum Phase { DESCRIBED, READY, WON, COMMITTING, COMMITTED, CANCELLED }
     enum CommitStatus { COMPLETE, REARM }
 
     record Commit<T>(CommitStatus status, T value, int bytesCommitted) {
@@ -51,23 +51,30 @@ final class TcpSelectOperation {
             for (;;) {
                 Phase current = phase.get();
                 if (current == Phase.CANCELLED) return true;
-                if (current == Phase.WON || current == Phase.COMMITTED) return false;
+                if (current == Phase.WON || current == Phase.COMMITTING
+                        || current == Phase.COMMITTED) return false;
                 if (phase.compareAndSet(current, Phase.CANCELLED)) return true;
             }
         }
 
         final Commit<T> commit() throws IOException {
-            if (phase.get() != Phase.WON) {
+            // Winner reservation is not an execution mutex. Two racing carrier
+            // callbacks must never perform the same socket operation twice.
+            if (!phase.compareAndSet(Phase.WON, Phase.COMMITTING)) {
                 throw new IllegalStateException(
-                        "TCP selectable operation must win before kernel commit");
+                        "TCP selectable operation must win and commit only once at a time");
             }
-            Commit<T> result = commitKernel();
-            if (result.status() == CommitStatus.COMPLETE) {
-                if (!phase.compareAndSet(Phase.WON, Phase.COMMITTED)) {
-                    throw new IllegalStateException("TCP selectable commit state changed");
-                }
+            try {
+                Commit<T> result = Objects.requireNonNull(commitKernel(), "kernel commit");
+                phase.set(result.status() == CommitStatus.COMPLETE
+                        ? Phase.COMMITTED : Phase.WON);
+                return result;
+            } catch (IOException | RuntimeException | Error failure) {
+                // I/O might already have committed bytes/accepted a socket.
+                // Never rollback/retry an operation after an unknown failure.
+                phase.set(Phase.COMMITTED);
+                throw failure;
             }
-            return result;
         }
 
         abstract Commit<T> commitKernel() throws IOException;
@@ -133,8 +140,14 @@ final class TcpSelectOperation {
                 throw new IllegalStateException("TCP selectable listener became blocking");
             SocketChannel accepted = listener.accept();
             if (accepted == null) return new Commit<>(CommitStatus.REARM, null, 0);
-            accepted.configureBlocking(false);
-            return new Commit<>(CommitStatus.COMPLETE, accepted, 0);
+            try {
+                accepted.configureBlocking(false);
+                return new Commit<>(CommitStatus.COMPLETE, accepted, 0);
+            } catch (IOException | RuntimeException | Error failure) {
+                try { accepted.close(); }
+                catch (IOException closeFailure) { failure.addSuppressed(closeFailure); }
+                throw failure;
+            }
         }
     }
 }
