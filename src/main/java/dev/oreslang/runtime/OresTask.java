@@ -28,6 +28,16 @@ public final class OresTask<T> implements Awaitable<T> {
         return completion;
     }
 
+    /**
+     * Explicit observation projection for callers that need Future<T>.
+     * This does not launch another task, change its owner, or implicitly
+     * flatten a Future<Task<T>>. The original owning runtime remains
+     * responsible for its lifecycle.
+     */
+    public OresFuture<T> asFuture() {
+        return completion;
+    }
+
     public boolean isDone() {
         return completion.isDone();
     }
