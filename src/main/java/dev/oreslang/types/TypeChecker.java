@@ -7619,6 +7619,44 @@ public final class TypeChecker {
         return resolve(ref, generics, self, false);
     }
 
+    /**
+     * Dynamic interface views must be object-safe: no data-field projection,
+     * per-call generic specialization, or erased receiver-specific self types.
+     * Revalidate inherited members (including generic parent instantiations).
+     */
+    private void requireDynCompatible(Ast.InterfaceDecl iface, Set<Ast.InterfaceDecl> visited) {
+        if (!visited.add(iface)) return;
+        for (Ast.InterfaceMember member : iface.members()) {
+            if (member instanceof Ast.InterfaceFieldDecl field) {
+                throw new IllegalArgumentException("dyn interface '" + iface.name()
+                        + "' cannot expose instance field '" + field.name() + "'");
+            }
+            Ast.InterfaceFunctionDecl method = (Ast.InterfaceFunctionDecl) member;
+            if (!method.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException("dyn interface '" + iface.name()
+                        + "' has generic method '" + method.name()
+                        + "' requiring per-call specialization");
+            }
+            if (dynMentionsSelf(method.returnType())
+                    || method.parameters().stream().anyMatch(p -> dynMentionsSelf(p.type()))) {
+                throw new IllegalArgumentException("dyn interface '" + iface.name()
+                        + "' has non-object-safe self type in method '" + method.name() + "'");
+            }
+        }
+        for (Ast.TypeRef parentRef : iface.parents()) {
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent == null || parent.moduleContract()) {
+                throw new IllegalArgumentException("dyn interface '" + iface.name()
+                        + "' has unresolved/non-interface parent '" + parentRef.name() + "'");
+            }
+            requireDynCompatible(parent, visited);
+        }
+    }
+
+    private boolean dynMentionsSelf(Ast.TypeRef ref) {
+        return ref.name().equals("self") || ref.arguments().stream().anyMatch(this::dynMentionsSelf);
+    }
+
     private List<Ast.TypeRef> positionalTypeArguments(Ast.TypeRef ref) {
         return ref.arguments().stream()
                 .filter(argument -> !argument.isNamedParameter() && !argument.isSequenceShape())
@@ -7943,6 +7981,26 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "named generic type arguments in type position are not supported yet; "
                             + "use positional type arguments");
+        }
+        if (ref.isDyn()) {
+            Ast.TypeRef target = ref.dynTarget();
+            if (target.isDyn()) {
+                throw new IllegalArgumentException("nested dyn is not a valid interface type");
+            }
+            Type resolved = resolve(target, generics, self, allowNullMarker);
+            if (!(resolved instanceof Named named)) {
+                throw new IllegalArgumentException("dyn requires a nominal interface or trait, got " + resolved);
+            }
+            Ast.InterfaceDecl iface = findInterface(named.name());
+            if (iface == null || iface.moduleContract()) {
+                throw new IllegalArgumentException("dyn requires an ordinary interface or trait, not '" + named.name() + "'");
+            }
+            requireDynCompatible(iface, new LinkedHashSet<>());
+            // The Java/Truffle receiver ABI already stores class references
+            // and performs runtime method selection. Erase only to the proven
+            // nominal interface view; never erase to Any or a record shape.
+            // LLVM trait-object codegen is a separate, fail-closed parity gate.
+            return named;
         }
         if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
         if (ref.isComplement()) return Types.notOf(resolve(ref.complementedType(), generics, self, allowNullMarker));
