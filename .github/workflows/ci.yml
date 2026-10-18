@@ -49,6 +49,14 @@ jobs:
           grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-jit.out
           grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-jit.out
 
+      - name: Exercise experimental concurrency trace and replay CLI
+        run: |
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="test examples/native-testing.ores --deadlock --schedule-fuzz --seed=37 --trace-output=/tmp/ores-concurrency.trace" | tee /tmp/ores-concurrency-cli.out
+          grep -F "ORES_CONCURRENCY|RUN|seed=37" /tmp/ores-concurrency-cli.out
+          test -s /tmp/ores-concurrency.trace
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="test examples/native-testing.ores --replay=/tmp/ores-concurrency.trace --seed=37" | tee /tmp/ores-concurrency-replay.out
+          grep -F "ORES_CONCURRENCY|RUN|seed=37" /tmp/ores-concurrency-replay.out
+
   native-aot:
     runs-on: ubuntu-latest
     steps:
