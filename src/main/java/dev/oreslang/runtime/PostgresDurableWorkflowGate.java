@@ -117,27 +117,43 @@ public final class PostgresDurableWorkflowGate {
             throw new IllegalArgumentException("invalid verified event");
         return transaction(c -> {
             DurableActorStore.Address actor;
-            long expectedVersion;
-            // Lock expectation first; concurrent webhook deliveries serialize on it.
+            long actualVersion;
+            // First find the candidate WITHOUT locking the expectation.
+            // Staging locks the actor row first, so admission must acquire
+            // actor -> expectation in that same order to avoid SQL deadlock.
             try(PreparedStatement p=c.prepareStatement(
-                    "SELECT tenant_id,workflow_id,run_id,node_id,expected_state_version" +
+                    "SELECT tenant_id,workflow_id,run_id,node_id" +
                     " FROM ores_durable_webhook_expectation WHERE tenant_id=?" +
                     " AND installation_id=? AND repository_id=? AND expected_sha=?" +
-                    " AND expected_ref=? AND stage='waiting_webhook' FOR UPDATE")) {
+                    " AND expected_ref=? AND stage='waiting_webhook'")) {
                 p.setString(1,authorizedTenant);p.setLong(2,installationId);
                 p.setLong(3,repositoryId);p.setString(4,sha);p.setString(5,ref);
                 try(ResultSet r=p.executeQuery()) {
                     if(!r.next())return Admission.STALE;
                     actor=new DurableActorStore.Address(r.getString(1),r.getString(2),
                            r.getString(3),r.getString(4));
-                    expectedVersion=r.getLong(5);
                 }
             }
             try(PreparedStatement p=c.prepareStatement(
                     "SELECT state_version FROM ores_durable_actor WHERE "+KEY+" FOR UPDATE")) {
                 bind(p,1,actor);
                 try(ResultSet r=p.executeQuery()) {
-                    if(!r.next() || r.getLong(1)!=expectedVersion)return Admission.STALE;
+                    if(!r.next())return Admission.STALE;
+                    actualVersion=r.getLong(1);
+                }
+            }
+            // Recheck matching routing and expected version UNDER its own row
+            // lock after acquiring the actor lock. A stage update that races
+            // with the initial lookup cannot admit an obsolete webhook.
+            try(PreparedStatement p=c.prepareStatement(
+                    "SELECT expected_state_version FROM ores_durable_webhook_expectation" +
+                    " WHERE "+KEY+" AND installation_id=? AND repository_id=?" +
+                    " AND expected_sha=? AND expected_ref=? AND stage='waiting_webhook' FOR UPDATE")) {
+                bind(p,1,actor);
+                p.setLong(5,installationId);p.setLong(6,repositoryId);
+                p.setString(7,sha);p.setString(8,ref);
+                try(ResultSet r=p.executeQuery()) {
+                    if(!r.next() || r.getLong(1)!=actualVersion)return Admission.STALE;
                 }
             }
             try(PreparedStatement p=c.prepareStatement(
