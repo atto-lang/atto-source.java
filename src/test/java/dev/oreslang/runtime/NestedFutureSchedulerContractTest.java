@@ -190,6 +190,27 @@ final class NestedFutureSchedulerContractTest {
         }
     }
 
+    @Test
+    void trustedCancelledStepDiffersFromThrownCancellationException() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> cancelled = scheduler.start(
+                    resume -> OresScheduler.cancelled());
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> cancelled.get(5, TimeUnit.SECONDS));
+            assertTrue(cancelled.isCancelled());
+
+            java.util.concurrent.CancellationException original =
+                    new java.util.concurrent.CancellationException("ordinary task failure");
+            OresFuture<Integer> failed = scheduler.start(resume -> {
+                throw original;
+            });
+            ExecutionException observed = assertThrows(ExecutionException.class,
+                    () -> failed.get(5, TimeUnit.SECONDS));
+            assertSame(original, observed.getCause());
+            assertFalse(failed.isCancelled());
+        }
+    }
+
     private static OresFuture<Integer> twoStage(
             OresScheduler scheduler,
             OresFuture<OresFuture<Integer>> outer,
