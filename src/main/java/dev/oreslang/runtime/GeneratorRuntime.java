@@ -105,7 +105,10 @@ public final class GeneratorRuntime {
          * if callers issue more than one pull before an earlier pull completes.
          */
         public OresFuture<Step<T>> nextStep() {
-            if (engine.isClosed()) {
+            // A completed generator must remain terminal even if its
+            // owning scheduler has since shut down. No new task is admitted
+            // for a pull that cannot resume guest code.
+            if (engine.isTerminal()) {
                 engine.awaitProducerExit();
                 return OresFuture.completed(Step.doneStep());
             }
@@ -148,8 +151,8 @@ public final class GeneratorRuntime {
             this.producer = Objects.requireNonNull(producer, "producer");
         }
 
-        private boolean isClosed() {
-            return closed.get();
+        private boolean isTerminal() {
+            return done || closed.get();
         }
 
         private synchronized Step<T> next() {
