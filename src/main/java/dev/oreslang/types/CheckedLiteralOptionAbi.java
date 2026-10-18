@@ -105,9 +105,7 @@ public final class CheckedLiteralOptionAbi {
             throw new IllegalArgumentException(
                     "scalar Option ABI requires an original static module function");
         }
-        if (!(lexical.source() instanceof Ast.StagedCallExpr call)) {
-            throw new IllegalArgumentException("missing original staged call");
-        }
+        Ast.StagedCallExpr call = lexical.source();
 
         List<OptionalCallTempLowering.ArgumentTemp> arguments = recipe.argumentTemps();
         if (checked.checkedLiteralTypes().size() != arguments.size()) {
