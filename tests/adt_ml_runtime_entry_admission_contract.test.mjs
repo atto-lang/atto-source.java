@@ -23,3 +23,10 @@ test("runtime guard does not replace actor capability checks",()=>{
   assert.match(root,/CapabilityChecker\.check\(program, context\.isolatePolicy\(\), context\.permissionCheckMode\(\)\)/);
   assert.match(root,/ActorStateContract/);
 });
+
+test("actual Polyglot negative fixture does not permit main side effects",()=>{
+  const java=readFileSync(new URL("../src/test/java/dev/oreslang/NominalActorBridgeFailClosedTest.java",import.meta.url),"utf8");
+  assert.match(java,/realPolyglotSourceMustRejectEnumBeforeAnyMainSideEffects/);
+  assert.match(java,/assertThrows\(PolyglotException\.class, \(\) -> context\.eval\(source\)\)/);
+  assert.match(java,/assertEquals\("", output\.toString\(StandardCharsets\.UTF_8\)\)/);
+});

@@ -4,6 +4,11 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.graalvm.polyglot.PolyglotException;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -54,6 +59,23 @@ final class NominalActorBridgeFailClosedTest {
                 """));
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(parsed));
+    }
+
+    @Test void realPolyglotSourceMustRejectEnumBeforeAnyMainSideEffects() throws Exception {
+        String unsafe = ENUM + """
+                pub routine main(): void {
+                    stdio.println("UNSAFE_NOMINAL_MAIN_EXECUTED");
+                    return;
+                }
+                """;
+        Source source = Source.newBuilder(OresLanguage.ID, unsafe, "ml-adt-admission-negative.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            assertThrows(PolyglotException.class, () -> context.eval(source));
+        }
+        assertEquals("", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test void ordinaryNonNominalProgramsRemainAdmissible() {
