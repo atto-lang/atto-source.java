@@ -127,25 +127,41 @@ final class StaticSignatureSyntaxTest {
 
     @Test
     void signatureIsNotAClassOrAValueAndCannotBeInstantiated() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define signature Service as
-                  fnc ping(): int;
-                end
-                routine main(): void {
-                  const x = new Service();
-                  return;
-                }
-                """)));
+        IllegalArgumentException contract = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                        define signature Service as
+                          fnc ping(): int;
+                        end
+                        routine main(): void {
+                          const x = new Service();
+                          return;
+                        }
+                        """)));
+        assertTrue(contract.getMessage().contains("compile-time contract/signature"));
 
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define module Service as
-                  pub fnc ping(): int { return 1; }
-                end
-                routine main(): void {
-                  const x = new Service();
-                  return;
-                }
-                """)));
+        IllegalArgumentException module = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                        define module Service as
+                          pub fnc ping(): int { return 1; }
+                        end
+                        routine main(): void {
+                          const x = new Service();
+                          return;
+                        }
+                        """)));
+        assertTrue(module.getMessage().contains("compile-time module"));
+
+        IllegalArgumentException staticSignature = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                        define static signature Factory as
+                          fnc make(): int;
+                        end
+                        routine main(): void {
+                          const x = new Factory();
+                          return;
+                        }
+                        """)));
+        assertTrue(staticSignature.getMessage().contains("compile-time contract/signature"));
     }
 
     @Test
