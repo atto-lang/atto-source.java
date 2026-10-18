@@ -212,7 +212,8 @@ public final class OresContext implements AutoCloseable {
                     actorSettings,
                     this::executeActorTurn,
                     vm::executeControl,
-                    budget);
+                    budget,
+                    vm.carrierPermitPool());
             // NIO completions share the existing actor-carrier admission
             // domain. A full queue stages bounded records and retries after
             // actor turns. The first runnable completion may use the readiness
