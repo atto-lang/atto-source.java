@@ -1465,6 +1465,10 @@ public final class OwnershipChecker {
             if (member.member().equals("flatten")
                     && member.receiver() instanceof Ast.NameExpr rootName) {
                 VarState owner = scope.lookup(rootName.name());
+                if (owner != null && owner.type.isBorrow()
+                        && owner.type.borrowedTarget().name().equals("Future")) {
+                    throw error("Future.flatten cannot consume a borrowed Future");
+                }
                 if (owner != null && !owner.type.isBorrow()
                         && owner.type.name().equals("Future")
                         && owner.type.arguments().size() == 1) {
@@ -1490,12 +1494,13 @@ public final class OwnershipChecker {
                     && !(member.receiver() instanceof Ast.NameExpr)) {
                 ValueInfo candidate = checkExpr(member.receiver(), scope, false);
                 Ast.TypeRef candidateType = candidate.type;
+                if (candidateType != null && candidateType.isBorrow()
+                        && candidateType.borrowedTarget().name().equals("Future")) {
+                    throw error("Future.flatten cannot consume a borrowed Future");
+                }
                 if (candidateType != null
                         && candidateType.name().equals("Future")
                         && candidateType.arguments().size() == 1) {
-                    if (candidateType.isBorrow()) {
-                        throw error("Future.flatten cannot consume a borrowed Future");
-                    }
                     Ast.TypeRef nested = candidateType.arguments().getFirst();
                     if (!nested.name().equals("Future") || nested.arguments().size() != 1) {
                         throw error("Future.flatten requires Future<Future<T>>");
