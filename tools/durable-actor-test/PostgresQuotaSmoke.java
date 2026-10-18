@@ -12,6 +12,18 @@ import org.postgresql.ds.PGSimpleDataSource;
 /** PostgreSQL-backed regression coverage for per-actor bounded queues. */
 public final class PostgresQuotaSmoke {
     private static byte[] bytes(String value) { return value.getBytes(StandardCharsets.UTF_8); }
+    /** Simulate lease deadline after abrupt process loss; never used in the host adapter. */
+    private static void expire(org.postgresql.ds.PGSimpleDataSource ds,
+                               DurableActorStore.Address key) throws Exception {
+        try (var c=ds.getConnection(); var p=c.prepareStatement(
+                "UPDATE ores_durable_actor SET lease_expires_at=clock_timestamp()-interval '1 second' " +
+                "WHERE tenant_id=? AND workflow_id=? AND run_id=? AND node_id=?")) {
+            p.setString(1,key.tenantId()); p.setString(2,key.workflowId());
+            p.setString(3,key.runId()); p.setString(4,key.nodeId());
+            if(p.executeUpdate()!=1)throw new AssertionError("lease fixture failed");
+        }
+    }
+
     private static void ok(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
     }
@@ -49,11 +61,15 @@ public final class PostgresQuotaSmoke {
         var two = new DurableActorStore.Snapshot(0,1,"code-v1",2,bytes("two"));
         rejects(() -> store.commitTurn(new DurableActorStore.Turn(address,first.epoch(),1,
             "m2",two,List.of(blocked))),"pending outbox must stop at one entry");
-        var rebooted = new PostgresDurableActorStore(ds,2,1).activate(address);
+        rejects(() -> new PostgresDurableActorStore(ds,2,1).activate(address),
+            "healthy actor must remain owned");
+        expire(ds,address);
+        var newOwner = new PostgresDurableActorStore(ds,2,1);
+        var rebooted = newOwner.activate(address);
         ok(rebooted.snapshot().stateVersion()==1 && rebooted.inbox().size()==2 &&
             rebooted.pendingOutbox().size()==1,"outbox limit rolls back state and consumption");
-        ok(store.acknowledge(address,rebooted.epoch(),"o1","receipt-1"),"clear pending outbox");
-        ok(store.commitTurn(new DurableActorStore.Turn(address,rebooted.epoch(),1,
+        ok(newOwner.acknowledge(address,rebooted.epoch(),"o1","receipt-1"),"clear pending outbox");
+        ok(newOwner.commitTurn(new DurableActorStore.Turn(address,rebooted.epoch(),1,
             "m2",two,List.of(blocked)))==2,"outbox capacity recovers after receipt");
 
         // Eight independent writers race for one available inbox slot. An actor
