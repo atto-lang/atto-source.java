@@ -145,4 +145,24 @@ final class LiteralNamedCallPreflightTest {
                 """);
         assertThrows(IllegalArgumentException.class, () -> inspect(wrongName));
     }
+
+    @Test
+    void sameNamedClassDeclarationCannotBypassNamespaceResolution() {
+        Ast.Program p = simple();
+        Ast.ModuleDecl original = p.modules().getFirst();
+        Ast.ClassDecl conflicting = new Ast.ClassDecl(
+                "work", Ast.Visibility.PRIVATE, false, Ast.ActorKind.NONE,
+                List.of(), List.of(), List.of(), List.of(), null, List.of());
+        Ast.ModuleDecl collided = new Ast.ModuleDecl(
+                original.name(), original.annotations(), original.contracts(),
+                List.of(original.declarations().get(0), original.declarations().get(1),
+                        conflicting));
+        Ast.Program collisionProgram = new Ast.Program(List.of(collided));
+        Ast.FunctionDecl caller = (Ast.FunctionDecl) collided.declarations().get(1);
+        Ast.StagedCallExpr call = (Ast.StagedCallExpr)
+                ((Ast.BindingStmt) caller.body().getFirst()).initializer();
+        assertThrows(IllegalArgumentException.class, () ->
+                LiteralNamedCallPreflight.inspect(
+                        collisionProgram, collided, caller, call));
+    }
 }

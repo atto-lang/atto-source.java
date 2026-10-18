@@ -92,8 +92,14 @@ public final class LiteralNamedCallPreflight {
                 || callee.name().equals("init")
                 || caller.parameters().stream().anyMatch(p -> p.name().equals(callee.name()))
                 || module.declarations().stream().anyMatch(decl ->
-                        decl instanceof Ast.FieldDecl field
-                                && field.name().equals(callee.name()))) {
+                        (decl instanceof Ast.FieldDecl field
+                                && field.name().equals(callee.name()))
+                        || (decl instanceof Ast.ClassDecl klass
+                                && klass.name().equals(callee.name()))
+                        || (decl instanceof Ast.InterfaceDecl iface
+                                && iface.name().equals(callee.name()))
+                        || (decl instanceof Ast.TypeAliasDecl alias
+                                && alias.name().equals(callee.name())))) {
             throw new IllegalArgumentException("unproved direct lexical callable resolution");
         }
         // No arbitrary expression callbacks are accepted as type evidence:
