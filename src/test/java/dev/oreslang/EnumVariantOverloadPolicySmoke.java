@@ -39,6 +39,10 @@ public final class EnumVariantOverloadPolicySmoke {
         List<Signature> family = List.of(general, specializedA, specializedB, unrelated);
         EnumVariantOverloadPolicy.admit(family);
         var compiled = EnumVariantOverloadPolicy.prepare(family);
+        List<Signature> mutableDeclarations = new ArrayList<>(family);
+        var frozenPlan = EnumVariantOverloadPolicy.prepare(mutableDeclarations);
+        mutableDeclarations.clear();
+        eq(specializedA, frozenPlan.bind(List.of(a, n)).signature());
         var target = compiled.bind(List.of(a, n));
         eq(specializedA, target.signature());
         eq(EnumVariantOverloadPolicy.symbol(specializedA), target.slotSymbol());
