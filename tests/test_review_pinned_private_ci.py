@@ -573,6 +573,60 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                 self.assertDenied(lambda fx: fx.__setitem__(
                     "source_reviewer_permission", self.write("bad-user.json", value)))
 
+    def test_oversized_approval_ledgers_denied_before_normalization(self):
+        for field in ("destination_ledger", "snapshot_ledger"):
+            with self.subTest(field=field):
+                self.assertDenied(lambda fx: fx.__setitem__(
+                    field, self.write("huge-ledger.txt",
+                        b"#" + b"x" * MOD.MAX_LEDGER + b"\n")))
+
+    def test_invalid_utf8_approval_ledgers_denied(self):
+        for field in ("destination_ledger", "snapshot_ledger"):
+            with self.subTest(field=field):
+                self.assertDenied(lambda fx: fx.__setitem__(
+                    field, self.write("invalid-ledger.txt", b"\xff")))
+
+    def test_approval_ledger_exact_size_boundary(self):
+        canonical = f"{MOD.CARRIER_REPO} {MOD.CARRIER_REPO_ID}\n"
+        comment = "#" + ("x" * (MOD.MAX_LEDGER - len(canonical) - 2)) + "\n"
+        path = self.write("boundary-ledger.txt", canonical + comment)
+        self.assertEqual(len(Path(path).read_bytes()), MOD.MAX_LEDGER)
+        self.assertEqual(MOD.parse_destination_entry(path), MOD.CARRIER_REPO_ID)
+
+    def test_oversized_carrier_workflow_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "carrier_workflow",
+            self.write("huge-workflow.yml", b"#" + b"x" * MOD.MAX_CARRIER_WORKFLOW)))
+
+    def test_oversized_reviewer_policy_denied_after_valid_json(self):
+        body = json.dumps(self.policy())
+        assert len(body) < MOD.MAX_REVIEWER_POLICY
+        oversized = body + " " * (MOD.MAX_REVIEWER_POLICY + 1 - len(body))
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "reviewer_policy", self.write("oversized-reviewer.json", oversized)))
+
+    def test_malformed_source_commit_tree_shapes_denied(self):
+        for commit in ([], None, {"sha": SOURCE_COMMIT, "commit": []},
+                       {"sha": SOURCE_COMMIT, "commit": {"tree": []}},
+                       {"sha": SOURCE_COMMIT, "commit": {"tree": None}},
+                       {"sha": SOURCE_COMMIT, "commit": {"tree": SOURCE_TREE}}):
+            with self.subTest(commit=commit):
+                self.assertDenied(lambda fx: fx.__setitem__(
+                    "source_commit", self.write("bad-commit-tree.json", commit)))
+
+    def test_malformed_destination_document_shapes_denied(self):
+        for document in ([], None, "carrier", 0, False):
+            with self.subTest(document=document):
+                self.assertDenied(lambda fx: fx.__setitem__(
+                    "destination_repo", self.write("bad-destination.json", document)))
+
+    def test_bounded_bytes_rejects_invalid_empty_and_bom(self):
+        for content in (b"", b"\xef\xbb\xbf{}", b"x" * (MOD.MAX_LEDGER + 1)):
+            with self.subTest(length=len(content)):
+                path = self.write("invalid-bytes.dat", content)
+                with self.assertRaises(MOD.Denied):
+                    MOD.bounded_bytes(path, MOD.MAX_LEDGER, "test")
+
     def test_wrong_destination_id_denied(self):
         def mutate(fx):
             d = {"id": 1, "full_name": MOD.CARRIER_REPO, "private": True,
