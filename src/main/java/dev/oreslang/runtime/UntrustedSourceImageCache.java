@@ -72,8 +72,10 @@ final class UntrustedSourceImageCache {
         }
         // Stable content identity makes engine-level Source caching possible;
         // UUID actor/generation fencing is handled separately by the caller.
-        String sourceName = "untrusted/" + codeUnitId + "@" + key.sha256();
-        Source source = Source.newBuilder(OresLanguage.ID, sourceText, sourceName)
+        // Preserve the original module/import identity in Source.getName().
+        // The full SHA-256 remains in the private cache key rather than
+        // silently changing import resolution or diagnostics during hot reload.
+        Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
                 .mimeType(OresLanguage.MIME_TYPE)
                 .cached(true)
                 .buildLiteral();
