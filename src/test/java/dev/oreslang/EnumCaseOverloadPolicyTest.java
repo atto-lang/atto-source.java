@@ -166,6 +166,25 @@ final class EnumCaseOverloadPolicyTest {
     }
 
     @Test
+    void stableSlotSymbolsIncludeCaseDomainArityAndOwnerWithoutWireTags() {
+        Signature a = call(enumCase("root.Foo", "A"), fixed("int"));
+        Signature b = call(enumCase("root.Foo", "B"), fixed("int"));
+        Signature whole = call(enumType("root.Foo"), fixed("int"));
+        assertEquals("eos26_4d4f44554c4511_726f6f742e6d6f64756c653_666f6fa2_C8_726f6f742e466f6f1_41F3_696e74",
+                a.symbolId());
+        assertNotEquals(a.symbolId(), b.symbolId());
+        assertNotEquals(a.symbolId(), whole.symbolId());
+        assertNotEquals(a.symbolId(),
+                new Signature(INSTANCE, "root.module", "foo", a.params()).symbolId());
+        assertNotEquals(a.symbolId(),
+                new Signature(MODULE, "root.other", "foo", a.params()).symbolId());
+        assertNotEquals(a.symbolId(),
+                call(enumCase("other.Foo", "A"), fixed("int")).symbolId());
+        assertEquals(a.symbolId(),
+                new Signature(MODULE, "root.module", "foo", a.params()).symbolId());
+    }
+
+    @Test
     void staticProofCannotFabricateANarrowingOrWrongArity() {
         Signature a = call(enumCase("root.Foo", "A"));
         assertThrows(IllegalArgumentException.class, () ->
