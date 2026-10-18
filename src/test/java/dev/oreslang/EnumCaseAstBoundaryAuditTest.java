@@ -61,6 +61,25 @@ final class EnumCaseAstBoundaryAuditTest {
     }
 
     @Test
+    void directAnnotationExpansionMustNotEraseAnUnsupportedEnumDeclaration() {
+        Ast.Program parsed = Parser.parse("""
+                define enum Foo as A, B end
+                fnc main(): int { return 42; }
+                """);
+        Ast.Program expanded = dev.oreslang.ast.AnnotationExpander.expand(parsed);
+        assertTrue(expanded.modules().getFirst().declarations().stream()
+                        .anyMatch(Ast.EnumDecl.class::isInstance),
+                "direct annotation expansion must preserve unsupported declarations");
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypes(expanded));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypesWithImportedClasses(
+                        expanded, java.util.Map.of(), java.util.Map.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> TreeShaker.shake(expanded, BuildOptions.executable()));
+    }
+
+    @Test
     void directTreeShakerRefusesEnumAstBeforePruningDeadDeclarations() {
         Ast.Program program = Parser.parse("""
                 define enum Foo as A, B end
