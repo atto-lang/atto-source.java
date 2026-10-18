@@ -475,21 +475,19 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
     def test_ledger_rejects_unicode_line_separators_and_ascii_controls(self):
         destination = f"{MOD.CARRIER_REPO} {MOD.CARRIER_REPO_ID}"
         snapshot = f"{SOURCE_COMMIT} {SOURCE_TREE} {MOD.CARRIER_REPO_ID}"
-        for invalid in ("\\u0085", "\\u2028", "\\u2029", "\\r",
-                        "\\v", "\\f", "\\x00", "\\t"):
-            # Even an otherwise valid row followed by a hidden separator and
-            # comment must be rejected, not silently normalized to one row.
-            sep = invalid.encode("ascii").decode("unicode_escape")
+        for sep in ("\u0085", "\u2028", "\u2029", "\r",
+                    "\v", "\f", "\x00", "\t"):
+            # Hidden separators must not create new accepted rows/comments.
             with self.subTest(separator=repr(sep)):
-                p = self.write("ledger-destination.txt", destination + sep + "#extra\\n".replace("\\n", "\n"))
+                p = self.write("ledger-destination.txt", destination + sep + "#extra\n")
                 with self.assertRaises(MOD.Denied):
                     MOD.parse_destination_entry(p)
-                p = self.write("ledger-snapshot.txt", snapshot + sep + "#extra\\n".replace("\\n", "\n"))
+                p = self.write("ledger-snapshot.txt", snapshot + sep + "#extra\n")
                 with self.assertRaises(MOD.Denied):
                     MOD.parse_snapshot_entry(p)
 
     def test_ledger_rejects_oversized_input_without_normalization(self):
-        oversized = b"#" + b"x" * 65536 + b"\\n"
+        oversized = b"#" + b"x" * 65536 + b"\n"
         for parser in (MOD.parse_destination_entry, MOD.parse_snapshot_entry):
             with self.subTest(parser=parser.__name__):
                 p = self.write("ledger-oversized.txt", oversized)
