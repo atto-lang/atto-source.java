@@ -60,3 +60,18 @@ ALTER TABLE ores_durable_outbox
   ADD COLUMN IF NOT EXISTS claim_until timestamptz,
   ADD COLUMN IF NOT EXISTS claim_epoch bigint,
   ADD COLUMN IF NOT EXISTS attempt_count integer NOT NULL DEFAULT 0;
+
+-- GitHub deliveries are unique across workflow actors for the same App
+-- installation; keep this idempotency ledger even after the inbox is consumed.
+CREATE TABLE IF NOT EXISTS ores_durable_github_delivery (
+  installation_id bigint NOT NULL CHECK (installation_id > 0),
+  delivery_id text NOT NULL,
+  repository_id bigint NOT NULL CHECK (repository_id > 0),
+  tenant_id text NOT NULL,
+  expected_sha text NOT NULL,
+  expected_ref text NOT NULL,
+  workflow_id text NOT NULL,
+  run_id text NOT NULL,
+  node_id text NOT NULL,
+  PRIMARY KEY (installation_id, delivery_id)
+);
