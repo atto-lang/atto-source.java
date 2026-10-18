@@ -97,8 +97,9 @@ explicit arity slots must check collision before code generation.
 
 Proposed non-trailing optional slots and named calls require compile-time
 *call-shape* disambiguation, not raw supplied-argument-count dispatch. An
-omitted optional must retain the declaration's full ABI arity; competing
-eligible shapes, even across distinct declared arities, fail closed instead
-of preferring exact arity or matching runtime types. See
+omitted optional must retain the declaration's full ABI arity; v1 rejects
+optional-capable overload families with intersecting supplied-arity intervals
+at declaration/link time, including across distinct declared arities, rather
+than preferring exact arity, labels, or matching runtime types. See
 [OPTIONAL_NAMED_ARGUMENTS_CONTRACT.md](OPTIONAL_NAMED_ARGUMENTS_CONTRACT.md).
 This extension is not enabled in the current compiler.
