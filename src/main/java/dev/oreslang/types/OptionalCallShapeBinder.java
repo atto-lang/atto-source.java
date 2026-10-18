@@ -40,6 +40,8 @@ public final class OptionalCallShapeBinder {
         public static Argument namedOmission(String name) {
             return new Argument(Objects.requireNonNull(name, "name"), true);
         }
+        /** Named 'label: _' also normalizes to exactly the same omission shape. */
+        public static Argument namedUnderscore(String name) { return namedOmission(name); }
     }
 
     public record Parameter(String name, boolean optional, boolean variadic) {
