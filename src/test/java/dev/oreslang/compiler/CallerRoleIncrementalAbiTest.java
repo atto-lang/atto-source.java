@@ -151,6 +151,23 @@ final class CallerRoleIncrementalAbiTest {
     }
 
     @Test
+    void unrelatedPrivateEnumDoesNotInvalidateExportedRolePolicy() {
+        String a = IncrementalCompiler.abiDigest(Parser.parse("""
+                define enum Roles as A = 1 end
+                define enum Unrelated as B = 1 end
+                @CallableBy(Roles.A)
+                pub fnc guarded(): void {}
+                """));
+        String b = IncrementalCompiler.abiDigest(Parser.parse("""
+                define enum Roles as A = 1 end
+                define enum Unrelated as B = 2 end
+                @CallableBy(Roles.A)
+                pub fnc guarded(): void {}
+                """));
+        assertEquals(a, b);
+    }
+
+    @Test
     void implementationChangesDoNotModifyExportedPolicyAbi() {
         String first = fingerprint("""
                 @CallableBy(Callers.A)
