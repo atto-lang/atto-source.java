@@ -947,6 +947,100 @@ public final class TypeChecker {
      * during construction; directly invoking a lambda initializer remains
      * rejected until its body has a verified non-suspending effect bound.
      */
+    private void validateExternalActorBoundary(Ast.ClassDecl klass) {
+        if (klass.actorBoundary() == Ast.ActorBoundary.LOCAL) {
+            if (!klass.foreignDeclarations().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "local actor/class '" + klass.name()
+                                + "' cannot contain foreign declarations");
+            }
+            return;
+        }
+        if (klass.actorKind() == Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "external actor boundary requires an actor declaration");
+        }
+        if (klass.actorBoundary() == Ast.ActorBoundary.FFI
+                && klass.actorKind() == Ast.ActorKind.UNTRUSTED) {
+            throw new IllegalArgumentException(
+                    "untrusted ffi actor is forbidden; use an untrusted ipc actor");
+        }
+        if (klass.actorKind() == Ast.ActorKind.SHARED) {
+            throw new IllegalArgumentException(
+                    "external actor '" + klass.name()
+                            + "' cannot use shared actor state");
+        }
+        if (!klass.genericParameters().isEmpty() || !klass.parents().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "external ipc/ffi actors v1 cannot be generic or inherit actor classes");
+        }
+
+        if (klass.actorBoundary() != Ast.ActorBoundary.FFI
+                && !klass.foreignDeclarations().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "foreign declarations require an ffi actor boundary");
+        }
+        if (klass.actorBoundary() == Ast.ActorBoundary.FFI) {
+            Set<String> members = new HashSet<>();
+            for (Ast.FieldDecl field : klass.fields()) members.add(field.name());
+            for (Ast.MethodDecl method : klass.methods()) members.add(method.name());
+
+            for (Ast.ForeignDecl foreign : klass.foreignDeclarations()) {
+                if (!foreign.suspends()) {
+                    throw new IllegalArgumentException(
+                            "ffi v1 foreign declaration '" + foreign.name()
+                                    + "' must suspend");
+                }
+                if (!members.add(foreign.name())) {
+                    throw new IllegalArgumentException(
+                            "ffi actor member '" + foreign.name()
+                                    + "' cannot collide with a field/method/foreign declaration");
+                }
+                if (!foreign.symbolIdentity().equals(foreign.name())) {
+                    throw new IllegalArgumentException(
+                            "ffi v1 does not permit guest-selectable foreign symbol aliases");
+                }
+                for (Ast.Param parameter : foreign.parameters()) {
+                    requireFfiV1Scalar(
+                            parameter.type(),
+                            false,
+                            "foreign parameter " + klass.name() + "."
+                                    + foreign.name() + "." + parameter.name());
+                    if (parameter.structural() || parameter.mutable()) {
+                        throw new IllegalArgumentException(
+                                "ffi v1 foreign parameters cannot carry structural/mutable Ores borrows");
+                    }
+                }
+                requireFfiV1Scalar(
+                        foreign.returnType(),
+                        true,
+                        "foreign return " + klass.name() + "." + foreign.name());
+            }
+        }
+    }
+
+    private void requireFfiV1Scalar(
+            Ast.TypeRef type,
+            boolean allowVoid,
+            String label) {
+        if (type == null || type.isBorrow() || type.inferArguments()
+                || !type.arguments().isEmpty()) {
+            throw new IllegalArgumentException(
+                    label + " must use an explicit FFI-safe scalar type");
+        }
+        boolean safe = type.name().equals("int")
+                || type.name().equals("bool")
+                || type.name().equals("float")
+                || (allowVoid && type.name().equals("void"));
+        if (!safe) {
+            throw new IllegalArgumentException(
+                    label + " type '" + type.name()
+                            + "' is not in the ffi v1 scalar ABI; "
+                            + "strings, objects, pointers, generic values and buffers require "
+                            + "explicit compiler-owned layout/ownership descriptors");
+        }
+    }
+
     private boolean fieldInitializerMaySuspend(Ast.Expr expr) {
         if (expr instanceof Ast.AwaitExpr
                 || expr instanceof Ast.ChannelOpExpr
@@ -1098,6 +1192,8 @@ public final class TypeChecker {
     private void checkClassBody(String module, Ast.ClassDecl klass) {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
+
+        validateExternalActorBoundary(klass);
 
         Set<String> parentNames = new HashSet<>();
         for (Ast.TypeRef parent : klass.parents()) {
