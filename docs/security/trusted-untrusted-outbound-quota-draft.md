@@ -53,3 +53,35 @@ The real Java NativeIo outbound HTTP and raw TCP call sites also now explicitly 
 Added `TrustedHttpLoopbackProbe` and `TrustedHttpLoopbackProbeTest` to the Java draft. The trusted host can reserve child/supervisor/tenant HTTP quota, initiate asynchronous fixed-loopback HTTP I/O, and release the lease on the underlying response's completion instead of the caller's cancellable future. No redirects or ambient HTTP proxy. The local-server cancellation regression is authored but **not executed in the source CI or pinned 19-blob carrier**; it remains unverified and grants no untrusted NETWORK capability.
 
 [Carrier run #39095558019](https://github.com/scintilla-run-test/gleam-runner-conformance/actions/runs/39095558019) passed the existing source-exact host suite and uploaded the [19-blob host-only evidence artifact](https://github.com/scintilla-run-test/gleam-runner-conformance/actions/runs/39095558019/artifacts/12124566191). This artifact does not include the two newly added loopback probe files. Protected guest-to-broker integration and real host I/O cancellation/teardown remain release blockers.
+
+## October 18, 2026 cross-backend audit and release gates
+
+The trusted-only host quota prototypes now have source-exact loopback validation of
+asynchronous Java HTTP and TCP operations. The Java TCP adapter reserves capacity
+before opening a channel; completed, cancelled or failed dials must close the OS
+channel before releasing the active socket slot. Host TCP handle tracking is
+retained if an OS close failure leaves the Socket open. The Java HTTP adapter
+isolates caller-future cancellation from host transport cancellation and tracks
+its own outstanding exchanges. All HTTP/TCP test helpers are HOST-ONLY; they do
+**not** grant network access to UNTRUSTED actors or establish protected isolation.
+
+The shared contract now has **28** adversarial cases and the conformance registry
+has **22**. All backend conformance remains **pending**: compiling and executing
+host helper tests is not the same as executing an authenticated guest request.
+
+**Blocking requirements before promotion:**
+
+- The runtime must authenticate actual actor identity and durable child/supervisor/
+  tenant lineage at the trusted bridge. No guest-provided sender, quota scope,
+  timestamp or permission decision can be authoritative.
+- Egress authorization must pin the resolved destination/address before DNS,
+  redirects, proxy dispatch and connect, and reject private/metadata SSRF
+  escalation across all transports and HTTP/2 multiplexing.
+- Supervisor revocation and cancellation must close real host sockets, drain
+  active I/O and prevent credit reuse before underlying transport termination.
+  A terminated Java CompletableFuture alone is not proof of OS socket closure.
+- Native LLVM UNTRUSTED execution must retain default-deny until a real
+  containment boundary exists; in-process private arenas are not a sandbox.
+- Run the actual protected guest and full original runtime tests; source-org
+  Actions currently fail before jobs execute. Keep every associated PR draft
+  until both CI and the appropriate protected tests pass.
