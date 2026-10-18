@@ -82,7 +82,7 @@ public final class GitHubWebhookActorV1 {
     public record Shutdown() implements Message { }
 
     public sealed interface Output permits Ready, RunRegistered,
-            RunUnregistered, Matched, Unmatched, Stopping { }
+            RunUnregistered, Matched, Unmatched, Rejected, Stopping { }
 
     public record Ready() implements Output { }
 
@@ -129,6 +129,12 @@ public final class GitHubWebhookActorV1 {
             deliveryId = requireText(deliveryId, "deliveryId");
             payloadSha256 = requireText(
                     payloadSha256, "payloadSha256");
+            reason = requireText(reason, "reason");
+        }
+    }
+
+    public record Rejected(String reason) implements Output {
+        public Rejected {
             reason = requireText(reason, "reason");
         }
     }
@@ -196,6 +202,8 @@ public final class GitHubWebhookActorV1 {
                     WorkflowActorWireV1.string(map, "deliveryId"),
                     WorkflowActorWireV1.string(
                             map, "payloadSha256"),
+                    WorkflowActorWireV1.string(map, "reason"));
+            case "rejected" -> new Rejected(
                     WorkflowActorWireV1.string(map, "reason"));
             case "stopping" -> new Stopping();
             default -> throw new IllegalArgumentException(
@@ -302,7 +310,8 @@ public final class GitHubWebhookActorV1 {
             }
 
             if (message instanceof ReceiveCiWebhook receive) {
-                var verified = GitHubWebhookSecurityV1.verify(
+                try {
+                    var verified = GitHubWebhookSecurityV1.verify(
                         secret,
                         receive.rawBody(),
                         receive.headers());
@@ -400,7 +409,15 @@ public final class GitHubWebhookActorV1 {
                                             + matched
                                             + " registered runs"));
                 }
-                return;
+                    return;
+                } catch (SecurityException | IllegalArgumentException failure) {
+                    emit(
+                            context,
+                            new Rejected(
+                                    "webhook rejected: "
+                                            + failure.getMessage()));
+                    return;
+                }
             }
 
             if (message instanceof Shutdown) {
@@ -607,6 +624,11 @@ public final class GitHubWebhookActorV1 {
                     "type", "unmatched",
                     "deliveryId", value.deliveryId(),
                     "payloadSha256", value.payloadSha256(),
+                    "reason", value.reason());
+        }
+        if (output instanceof Rejected value) {
+            return WorkflowActorWireV1.map(
+                    "type", "rejected",
                     "reason", value.reason());
         }
         if (output instanceof Stopping) {
