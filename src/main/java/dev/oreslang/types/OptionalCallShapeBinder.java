@@ -48,6 +48,21 @@ public final class OptionalCallShapeBinder {
     public record Plan(List<Integer> sourceIndexByParameter) {
         public Plan {
             sourceIndexByParameter = List.copyOf(sourceIndexByParameter);
+            boolean[] seen = new boolean[sourceIndexByParameter.size()];
+            int supplied = 0;
+            for (int source : sourceIndexByParameter) {
+                if (source == -1) continue;
+                if (source < 0 || source >= seen.length || seen[source]) {
+                    throw new IllegalArgumentException("invalid or duplicate call-plan source index");
+                }
+                seen[source] = true;
+                supplied++;
+            }
+            for (int source = 0; source < supplied; source++) {
+                if (!seen[source]) {
+                    throw new IllegalArgumentException("noncontiguous call-plan source indexes");
+                }
+            }
         }
         public int declaredArity() { return sourceIndexByParameter.size(); }
         public boolean omitted(int parameterIndex) {
@@ -59,7 +74,12 @@ public final class OptionalCallShapeBinder {
     }
 
     /** The selected declaration index and its permutation; never a runtime overload choice. */
-    public record Selection(int signatureIndex, Plan plan) { }
+    public record Selection(int signatureIndex, Plan plan) {
+        public Selection {
+            if (signatureIndex < 0) throw new IllegalArgumentException("negative signature index");
+            Objects.requireNonNull(plan, "plan");
+        }
+    }
 
     /**
      * Bind without executing or reordering a single expression.
