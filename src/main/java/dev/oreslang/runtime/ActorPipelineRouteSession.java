@@ -461,6 +461,9 @@ final class ActorPipelineRouteSession {
     /** Complete a one-way message without a reply; never replay a terminal. */
     public synchronized void complete(MailFrame current) {
         requireActive(current);
+        if (current.publicationState.get() == 1)
+            throw new IllegalStateException(
+                    "cannot complete route while mailbox publication is claimed");
         active.remove(current);
     }
 
