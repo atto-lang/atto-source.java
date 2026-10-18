@@ -168,6 +168,45 @@ exit 0
         self.assertIn("result=FAIL", self.receipt())
         self.assertIn("stage=postflight-source-identity", self.receipt())
 
+    def test_filemode_false_cannot_hide_executable_bit_tampering(self):
+        # Repo-local core.fileMode=false conceals a tracked chmod from ordinary
+        # status. The qualification gate must override it rather than treating
+        # the HEAD/tree SHA as proof that checkout bytes/modes match.
+        subprocess.run(["git", "config", "core.fileMode", "false"],
+                       cwd=self.root, check=True)
+        source = self.root / ".gitignore"
+        source.chmod(0o755)
+        ordinary = run("git", "status", "--porcelain", "--untracked-files=all",
+                       cwd=self.root)
+        self.assertEqual("", ordinary.stdout.strip(),
+                         "fixture must prove ordinary status concealed chmod")
+        result = self.gate()
+        self.assertEqual(67, result.returncode, result.stderr)
+        self.assertIn("result=FAIL", self.receipt())
+        self.assertIn("stage=source-identity", self.receipt())
+        self.assertFalse((self.root / "target" / "nio-exact-tree-gate" /
+                          "targeted-junit.log").exists())
+
+    def test_postflight_executable_bit_mutation_is_detected(self):
+        subprocess.run(["git", "config", "core.fileMode", "false"],
+                       cwd=self.root, check=True)
+        maven = self.tools / "mvn"
+        before = maven.read_text()
+        marker = '    if [ "${FAKE_CHANGE_INDEX:-0}" = 1 ]; then'
+        injection = '''    if [ "${FAKE_CHANGE_MODE:-0}" = 1 ]; then
+      chmod +x .gitignore
+    fi
+'''
+        self.assertIn(marker, before)
+        maven.write_text(before.replace(marker, injection + marker))
+        maven.chmod(0o755)
+        environment = self.env.copy()
+        environment["FAKE_CHANGE_MODE"] = "1"
+        result = self.gate(env=environment)
+        self.assertEqual(70, result.returncode, result.stderr)
+        self.assertIn("result=FAIL", self.receipt())
+        self.assertIn("stage=postflight-source-identity", self.receipt())
+
     def test_nonzero_maven_exit_survives_tee_and_receipt(self):
         environment = self.env.copy()
         environment["FAKE_FAIL_VERIFY"] = "1"
