@@ -195,7 +195,8 @@ public final class WorkflowJournalV1 {
         journal.add(entry);
         nextSequence = followingSequence;
 
-        if (isTerminal(snapshot.phase())) {
+        if (entry.disposition() == DurableDevLoopV1.Disposition.APPLIED
+                && isTerminal(snapshot.phase())) {
             abandonPendingEffectsLocked();
         }
 
