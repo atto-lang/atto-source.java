@@ -169,4 +169,14 @@ final class OresMatrixComplexTest {
                 () -> thousandAndOne.outerHermitian(thousandAndOne));
     }
 
+    @Test
+    void complexScalarPromotionRejectsOverBudgetOutputShape() {
+        // 1450^2 real doubles fit in 32 MiB, but the 16-byte complex result
+        // does not. Promotion must preflight before allocating either plane.
+        OresMatrix real = OresMatrix.identity(1450);
+        OresComplex typedReal = new OresComplex(1.0, 0.0);
+        assertThrows(IllegalArgumentException.class, () -> real.scale(typedReal));
+        assertThrows(IllegalArgumentException.class, () -> real.divide(typedReal));
+    }
+
 }
