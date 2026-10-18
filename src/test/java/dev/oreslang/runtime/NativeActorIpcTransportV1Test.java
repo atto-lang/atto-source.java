@@ -298,7 +298,7 @@ final class NativeActorIpcTransportV1Test {
                     errno = 0;
                     if (write(8, "x", 1) >= 0 || errno != EPERM) return 15;
 
-                    unsigned char bootstrap[124];
+                    unsigned char bootstrap[140];
                     if (read_exact(3, bootstrap, sizeof bootstrap) != 0) return 16;
                     unsigned char extra;
                     if (read(3, &extra, 1) != 0) return 17;
