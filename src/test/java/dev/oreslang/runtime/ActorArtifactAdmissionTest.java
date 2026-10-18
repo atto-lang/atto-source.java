@@ -279,6 +279,107 @@ final class ActorArtifactAdmissionTest {
     }
 
     @Test
+    void signedCapabilitiesMustExactlyMatchWorkerAuthority() throws Exception {
+        byte[] executable = "ELF-stdout".getBytes(StandardCharsets.UTF_8);
+        KeyPair keys = keyPair();
+        var manifest = sign(manifest(executable, List.of("stdout")), keys);
+        IsolatePolicy stdoutOnly = new IsolatePolicy(
+                Set.of(IsolatePolicy.Capability.STDOUT),
+                64L * 1024 * 1024,
+                128,
+                java.time.Duration.ofSeconds(5),
+                false);
+
+        ActorArtifact<Object> artifact = ActorArtifactAdmission.admitIpcActor(
+                java.util.UUID.randomUUID(),
+                "ImageWorker",
+                Ast.ActorKind.PRIVATE,
+                manifest,
+                executable,
+                attestation("ImageWorker", manifest),
+                TRUST_ATTESTATION,
+                (builder, keyId) -> keys.getPublic(),
+                targetPolicy(),
+                supervisorPolicy(),
+                stdoutOnly);
+        assertEquals(Set.of(IsolatePolicy.Capability.STDOUT),
+                artifact.requiredCapabilities());
+
+        var noCaps = sign(manifest(executable, List.of()), keys);
+        SecurityException undeclared = assertThrows(
+                SecurityException.class,
+                () -> ActorArtifactAdmission.admitIpcActor(
+                        java.util.UUID.randomUUID(),
+                        "ImageWorker",
+                        Ast.ActorKind.PRIVATE,
+                        noCaps,
+                        executable,
+                        attestation("ImageWorker", noCaps),
+                        TRUST_ATTESTATION,
+                        (builder, keyId) -> keys.getPublic(),
+                        targetPolicy(),
+                        supervisorPolicy(),
+                        stdoutOnly));
+        assertTrue(undeclared.getMessage().contains("undeclared="),
+                undeclared.getMessage());
+    }
+
+    @Test
+    void oversizedInputFailsBeforeTrustCallbacksOrSecondCopy() throws Exception {
+        byte[] executable = "ELF-oversized".getBytes(StandardCharsets.UTF_8);
+        KeyPair keys = keyPair();
+        var manifest = sign(manifest(executable, List.of()), keys);
+        var trustCalled = new java.util.concurrent.atomic.AtomicBoolean();
+
+        var tinyTarget = new ActorArtifactAdmission.TargetPolicy(
+                Set.of(ActorArtifactAdmission.Backend.LLVM),
+                TARGET,
+                ABI,
+                4);
+
+        SecurityException failure = assertThrows(
+                SecurityException.class,
+                () -> ActorArtifactAdmission.admitIpcActor(
+                        java.util.UUID.randomUUID(),
+                        "ImageWorker",
+                        Ast.ActorKind.PRIVATE,
+                        manifest,
+                        executable,
+                        attestation("ImageWorker", manifest),
+                        ignored -> trustCalled.set(true),
+                        (builder, keyId) -> keys.getPublic(),
+                        tinyTarget,
+                        supervisorPolicy(),
+                        privateWorkerPolicy()));
+        assertTrue(failure.getMessage().contains("size limit"), failure.getMessage());
+        assertFalse(trustCalled.get(),
+                "oversized input must be rejected before trust callbacks run");
+    }
+
+    @Test
+    void trustedAttestationCannotReclassifyActorKind() throws Exception {
+        byte[] executable = "ELF-kind-bound".getBytes(StandardCharsets.UTF_8);
+        KeyPair keys = keyPair();
+        var manifest = sign(manifest(executable, List.of()), keys);
+
+        SecurityException failure = assertThrows(
+                SecurityException.class,
+                () -> ActorArtifactAdmission.admitIpcActor(
+                        java.util.UUID.randomUUID(),
+                        "ImageWorker",
+                        Ast.ActorKind.PRIVATE,
+                        manifest,
+                        executable,
+                        attestation("ImageWorker", Ast.ActorKind.UNTRUSTED, manifest),
+                        TRUST_ATTESTATION,
+                        (builder, keyId) -> keys.getPublic(),
+                        targetPolicy(),
+                        supervisorPolicy(),
+                        privateWorkerPolicy()));
+        assertTrue(failure.getMessage().contains("actor kind"), failure.getMessage());
+    }
+
+    @Test
     void untrustedIpcActorRequiresAdversarialZeroAuthorityWorker() throws Exception {
         byte[] executable = "ELF-hostile".getBytes(StandardCharsets.UTF_8);
         KeyPair keys = keyPair();
