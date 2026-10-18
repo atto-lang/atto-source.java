@@ -117,6 +117,42 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void stagedOptionalFormalsBindParsedSourceWithoutTreatingRequiredOptionAsOmittable() {
+        Ast.Program parsed = Parser.parse("""
+                pub fnc candidate(string? label, Option<int> required, bool? enabled): void {
+                    return;
+                }
+                pub fnc caller(): void {
+                    const result = candidate(enabled: _, required: None, label: "go");
+                    return;
+                }
+                """);
+        Ast.FunctionDecl target = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        Ast.FunctionDecl caller = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().get(1);
+        Ast.BindingStmt callBinding = (Ast.BindingStmt) caller.body().getFirst();
+        Ast.StagedCallExpr call = (Ast.StagedCallExpr) callBinding.initializer();
+        List<Parameter> signature =
+                OptionalCallShapeBinder.declaredParameterShapes(target.parameters());
+        assertEquals(List.of(
+                Parameter.optional("label"), Parameter.required("required"),
+                Parameter.optional("enabled")), signature);
+        Plan plan = OptionalCallShapeBinder.bindParsed(signature, call.arguments());
+        assertEquals(List.of(1, 0, -1), plan.sourceIndexByParameter());
+        assertEquals(List.of(1, 2), plan.callItemIndexByEvaluatedSource());
+        assertEquals(List.of(0), plan.omittedCallItemIndices());
+        assertEquals(List.of(new OptionalCallShapeBinder.OmittedCallItem(0, 2)),
+                plan.omittedCallItemBindings());
+        assertDoesNotThrow(() -> OptionalCallShapeBinder.verifyPlanAgainstSource(
+                signature, call.arguments(), plan));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.bind(signature, List.of(
+                        Argument.namedOmission("required"),
+                        Argument.named("label"))));
+    }
+
+    @Test
     void parsedPlanRejectsSwappedOmissionFormalBindings() {
         List<Parameter> parameters = List.of(
                 Parameter.required("a"), Parameter.optional("b"),
