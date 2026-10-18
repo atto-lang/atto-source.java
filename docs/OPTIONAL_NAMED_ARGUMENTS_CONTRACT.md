@@ -600,7 +600,10 @@ programs with imports or multiple modules, annotated/contracted modules,
 same-name field collisions, overloaded names, unknown labels, generic call
 application, effectful/nonliteral arguments, callable generics, async,
 suspending, generator, nonlexical, trapped, actor-owned and annotated
-functions are rejected. These exclusions may later be relaxed only after
+functions are rejected. All candidate formal value types are additionally
+restricted to exact `int`, `float`, `bool`, or `string` scalar types;
+structural, mutable, borrowed, unresolved nominal, generic and required
+`Option<T>` formals cannot acquire a fabricated literal proof. These exclusions may later be relaxed only after
 the real type/lexical/ownership resolver proves them. The helper does not
 inspect or authenticate the lexical call-site location: a local variable
 may still shadow a module function, and merely matching a parsed direct
