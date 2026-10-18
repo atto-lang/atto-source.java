@@ -65,6 +65,43 @@ final class OwnershipMatchExpressionCaptureTest {
     }
 
     @Test
+    void matchArmBorrowedValueCannotEscapeThroughClosure() throws Exception {
+        Ast.LambdaExpr lambda = new Ast.LambdaExpr(List.of(),
+                new Ast.MatchExpr(new Ast.NameExpr("subject"),
+                        List.of(new Ast.MatchValueArm(
+                                new Ast.WildcardPattern(), null,
+                                new Ast.NameExpr("loan")))), null);
+
+        Class<?> cls = OwnershipChecker.class;
+        Constructor<?> make = cls.getDeclaredConstructor(Ast.Program.class);
+        make.setAccessible(true);
+        Object checker = make.newInstance(new Ast.Program(List.of()));
+        Class<?> scopeType = Class.forName("dev.oreslang.types.OwnershipChecker$Scope");
+        Class<?> stateType = Class.forName("dev.oreslang.types.OwnershipChecker$VarState");
+        Constructor<?> scopeCtor = scopeType.getDeclaredConstructor(scopeType, boolean.class);
+        scopeCtor.setAccessible(true);
+        Object scope = scopeCtor.newInstance(null, false);
+        Method stateFor = cls.getDeclaredMethod("stateForParam", Ast.Param.class);
+        Method define = scopeType.getDeclaredMethod("define", String.class, stateType);
+        stateFor.setAccessible(true);
+        define.setAccessible(true);
+        define.invoke(scope, "subject", stateFor.invoke(checker,
+                new Ast.Param(Ast.TypeRef.simple("int"), "subject")));
+        define.invoke(scope, "loan", stateFor.invoke(checker,
+                new Ast.Param(Ast.TypeRef.borrowed(Ast.TypeRef.simple("int"), false), "loan")));
+
+        Method check = cls.getDeclaredMethod("checkLambda", Ast.LambdaExpr.class,
+                scopeType, String.class, boolean.class, boolean.class);
+        check.setAccessible(true);
+        java.lang.reflect.InvocationTargetException caught = assertThrows(
+                java.lang.reflect.InvocationTargetException.class,
+                () -> check.invoke(checker, lambda, scope, null, false, false));
+        assertInstanceOf(IllegalArgumentException.class, caught.getCause());
+        assertTrue(caught.getCause().getMessage().contains("closure cannot capture borrowed value"),
+                "match arm closure must honor the same loan exclusion as other expressions");
+    }
+
+    @Test
     void nestedExpressionMatchCapturesThroughNestedLambda() throws Exception {
         Ast.LambdaExpr nested = new Ast.LambdaExpr(List.of(),
                 new Ast.MatchExpr(new Ast.NameExpr("subject"),
