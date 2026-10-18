@@ -34,6 +34,9 @@ EXPECTED_PRS = {
 RESUME_MARKER = "PRIVATE_CI_RESUME_APPROVED"
 RESUME_REVOKE_MARKER = "PRIVATE_CI_RESUME_REVOKED"
 MAX_JSON = 2 * 1024 * 1024
+MAX_LEDGER = 64 * 1024
+MAX_REVIEWER_POLICY = 64 * 1024
+MAX_CARRIER_WORKFLOW = 256 * 1024
 # Match the strict private-ci-policy workflow grammar. Python int()/split()
 # otherwise admit numeric aliases and whitespace not approved by reviewers.
 DESTINATION_ROW = re.compile(
@@ -63,13 +66,17 @@ def finite_json_float(value):
         raise Denied("non-finite JSON number")
     return number
 
-def load_json(path):
-    # Files supplied by the external dispatcher may be malformed. Bound the
-    # read itself, not merely the size check after unbounded read_bytes().
+def bounded_bytes(path, limit, label):
+    # Do not allocate an unbounded attacker-controlled input before rejecting
+    # it. Exactly limit bytes are allowed, with a single-byte overflow probe.
     with Path(path).open("rb") as stream:
-        raw = stream.read(MAX_JSON + 1)
-    if not raw or len(raw) > MAX_JSON or raw.startswith(b"\xef\xbb\xbf"):
-        raise Denied("invalid JSON input bytes: " + str(path))
+        raw = stream.read(limit + 1)
+    if not raw or len(raw) > limit or raw.startswith(b"\xef\xbb\xbf"):
+        raise Denied("invalid " + label + " bytes")
+    return raw
+
+def load_json(path):
+    raw = bounded_bytes(path, MAX_JSON, "JSON")
     try:
         return json.loads(
             raw.decode("utf-8"), object_pairs_hook=unique_object,
@@ -254,7 +261,10 @@ def exact_resume_comment(incident, heads, source_commit, source_tree, reviewer):
     return events[-1][2]
 
 def active_rows(path):
-    text = Path(path).read_text(encoding="utf-8")
+    try:
+        text = bounded_bytes(path, MAX_LEDGER, "approval ledger").decode("utf-8")
+    except UnicodeError as exc:
+        raise Denied("invalid approval ledger encoding") from exc
     # Do not silently normalize caller-controlled policy text. This must
     # exactly match the checked-in private-ci-policy workflow: blank lines and
     # column-zero comments are the only ignored lines.
@@ -327,13 +337,20 @@ def main():
         carrier_incident, heads, source_commit, source_tree, reviewer)
 
     commit = load_json(args.source_commit)
+    if type(commit) is not dict:
+        raise Denied("invalid source commit metadata")
+    source_object = commit.get("commit")
+    if type(source_object) is not dict or type(source_object.get("tree")) is not dict:
+        raise Denied("invalid source commit tree metadata")
     if require_sha(commit.get("sha"), "source commit metadata") != source_commit:
         raise Denied("source commit metadata mismatch")
-    tree = require_sha((commit.get("commit") or {}).get("tree", {}).get("sha"), "source tree metadata")
+    tree = require_sha(source_object["tree"].get("sha"), "source tree metadata")
     if tree != source_tree:
         raise Denied("approved source commit/tree mismatch")
 
     destination = load_json(args.destination_repo)
+    if type(destination) is not dict:
+        raise Denied("invalid carrier repository metadata")
     if type(destination.get("id")) is not int or destination["id"] != CARRIER_REPO_ID:
         raise Denied("carrier repository ID mismatch")
     if destination.get("full_name") != CARRIER_REPO:
@@ -343,16 +360,12 @@ def main():
             or destination.get("disabled") is not False):
         raise Denied("carrier repository is not an active private repository")
 
-    workflow_raw = Path(args.carrier_workflow).read_bytes()
-    if not workflow_raw or len(workflow_raw) > 256 * 1024:
-        raise Denied("invalid carrier workflow bytes")
+    workflow_raw = bounded_bytes(args.carrier_workflow, MAX_CARRIER_WORKFLOW, "carrier workflow")
     workflow_blob = hashlib.sha1(
         b"blob " + str(len(workflow_raw)).encode("ascii") + b"\0" + workflow_raw
     ).hexdigest()
 
-    reviewer_policy_raw = Path(args.reviewer_policy).read_bytes()
-    if not reviewer_policy_raw or len(reviewer_policy_raw) > 64 * 1024:
-        raise Denied("invalid reviewer policy bytes")
+    reviewer_policy_raw = bounded_bytes(args.reviewer_policy, MAX_REVIEWER_POLICY, "reviewer policy")
     reviewer_policy_blob = hashlib.sha1(
         b"blob " + str(len(reviewer_policy_raw)).encode("ascii")
         + b"\0" + reviewer_policy_raw
