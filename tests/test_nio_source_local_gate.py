@@ -137,6 +137,26 @@ exit 0
         self.assertIn("stage=clean-stale-build", self.receipt())
         self.assertFalse((target / "nio-exact-tree-gate" / "targeted-junit.log").exists())
 
+    def _assert_hidden_tracked_source_rejected(self, flag: str):
+        subprocess.run(["git", "update-index", flag, ".gitignore"],
+                       cwd=self.root, check=True)
+        # Git deliberately omits this modified tracked file from status.
+        (self.root / ".gitignore").write_text("target/\\n# hidden tampering\\n")
+        status = run("git", "status", "--porcelain", "--untracked-files=all",
+                     cwd=self.root)
+        self.assertEqual("", status.stdout.strip(),
+                         "fixture must demonstrate the Git status bypass")
+        result = self.gate()
+        self.assertEqual(72, result.returncode, result.stderr)
+        self.assertIn("stage=source-identity", self.receipt())
+        self.assertIn("result=FAIL", self.receipt())
+
+    def test_assume_unchanged_index_does_not_bypass_source_identity(self):
+        self._assert_hidden_tracked_source_rejected("--assume-unchanged")
+
+    def test_skip_worktree_index_does_not_bypass_source_identity(self):
+        self._assert_hidden_tracked_source_rejected("--skip-worktree")
+
     def test_nonzero_maven_exit_survives_tee_and_receipt(self):
         environment = self.env.copy()
         environment["FAKE_FAIL_VERIFY"] = "1"
