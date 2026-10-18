@@ -121,7 +121,8 @@ public final class CoreLibrarySources {
         if (importPath.indexOf('\\') >= 0
                 || importPath.indexOf('\0') >= 0
                 || importPath.startsWith("/")
-                || importPath.contains("//")) {
+                || importPath.contains("//")
+                || importPath.endsWith("/")) {
             throw new IllegalArgumentException(
                     "invalid Oreslang core-library import path: " + importPath);
         }
@@ -152,6 +153,12 @@ public final class CoreLibrarySources {
             }
             normalized.add(segment);
         }
-        return String.join("/", normalized) + ".ores";
+        String relative = String.join("/", normalized) + ".ores";
+        // The reserved OTP namespace is intentionally a *closed* registry,
+        // including for unitId(), before any filesystem/package resolution.
+        if (relative.startsWith("otp/") && !PACKAGED_SOURCES.contains(relative)) {
+            throw new IllegalArgumentException("unknown Oreslang OTP module: " + importPath);
+        }
+        return relative;
     }
 }

@@ -34,7 +34,8 @@ final class NativeOtpCanonicalImportTest {
     @Test void unknownTraversalAndShadowingOtpImportsFailClosed() throws Exception {
         for (String path : List.of("otp/../core", "otp/./gen_server", "otp//gen_server",
                 "otp/not_real", "otp/release", "otp/ets", "otp/a/../../core",
-                "otp/gen_server?query", "otp/%2e%2e/core", "otp/")) {
+                "otp/gen_server?query", "otp/%2e%2e/core", "otp/",
+                "otp/gen_server/", "std/otp/gen_server/", "otp/gen_server/.")) {
             assertThrows(IllegalArgumentException.class, () -> CoreLibrarySources.source(path), path);
         }
         Path root = Files.createTempDirectory("ores-otp-import-shadow-");
