@@ -1,11 +1,9 @@
 package dev.oreslang.runtime;
 
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -813,10 +811,10 @@ public final class GitHubWebhookActorV1 {
         }
 
         private void writeState(PrivateState state) {
+            WorkflowPrivateActorStateV1.ScrubbableOutput bytes =
+                    new WorkflowPrivateActorStateV1.ScrubbableOutput();
             byte[] encoded = null;
             try {
-                ByteArrayOutputStream bytes =
-                        new ByteArrayOutputStream();
                 try (DataOutputStream output =
                              new DataOutputStream(bytes)) {
                     output.writeInt(1);
@@ -879,7 +877,7 @@ public final class GitHubWebhookActorV1 {
                         writeString(output, entry.getValue());
                     }
                 }
-                encoded = bytes.toByteArray();
+                encoded = bytes.snapshotAndWipe();
                 WorkflowPrivateActorStateV1.write(
                         stateBlock, encoded);
             } catch (IOException failure) {
@@ -887,6 +885,7 @@ public final class GitHubWebhookActorV1 {
                         "failed to encode GitHub webhook private state",
                         failure);
             } finally {
+                bytes.wipe();
                 if (encoded != null) {
                     Arrays.fill(encoded, (byte) 0);
                 }
@@ -936,16 +935,19 @@ public final class GitHubWebhookActorV1 {
         private static void writeString(
                 DataOutputStream output,
                 String value) throws IOException {
-            byte[] bytes = requireText(
-                    value, "private-state string")
-                    .getBytes(StandardCharsets.UTF_8);
-            if (bytes.length > MAX_STATE_STRING_BYTES) {
-                throw new IllegalStateException(
-                        "private-state string exceeds "
-                                + MAX_STATE_STRING_BYTES + " bytes");
+            byte[] bytes = WorkflowPrivateActorStateV1.encodeUtf8(
+                    requireText(value, "private-state string"));
+            try {
+                if (bytes.length > MAX_STATE_STRING_BYTES) {
+                    throw new IllegalStateException(
+                            "private-state string exceeds "
+                                    + MAX_STATE_STRING_BYTES + " bytes");
+                }
+                output.writeInt(bytes.length);
+                output.write(bytes);
+            } finally {
+                Arrays.fill(bytes, (byte) 0);
             }
-            output.writeInt(bytes.length);
-            output.write(bytes);
         }
 
         private static String readString(
@@ -961,8 +963,11 @@ public final class GitHubWebhookActorV1 {
                 throw new IllegalStateException(
                         "truncated private-state string");
             }
-            return new String(
-                    bytes, StandardCharsets.UTF_8);
+            try {
+                return WorkflowPrivateActorStateV1.decodeUtf8(bytes);
+            } finally {
+                Arrays.fill(bytes, (byte) 0);
+            }
         }
 
         private static void writeNullableString(

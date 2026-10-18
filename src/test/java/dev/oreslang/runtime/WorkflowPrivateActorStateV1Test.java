@@ -11,6 +11,34 @@ import static org.junit.jupiter.api.Assertions.*;
 final class WorkflowPrivateActorStateV1Test {
 
     @Test
+    void utf8CodecRoundTripsSupplementaryCharacters() {
+        String value = "workflow-🚀-λ";
+        byte[] encoded = WorkflowPrivateActorStateV1.encodeUtf8(value);
+        try {
+            assertEquals(
+                    value,
+                    WorkflowPrivateActorStateV1.decodeUtf8(encoded));
+        } finally {
+            java.util.Arrays.fill(encoded, (byte) 0);
+        }
+    }
+
+    @Test
+    void utf8CodecRejectsMalformedBytesAndUnpairedSurrogates() {
+        assertThrows(
+                IllegalStateException.class,
+                () -> WorkflowPrivateActorStateV1.decodeUtf8(
+                        new byte[] {(byte) 0xC3, (byte) 0x28}));
+
+        String unpaired = new String(
+                new char[] {'b', 'a', 'd', '-', (char) 0xD800});
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorkflowPrivateActorStateV1.encodeUtf8(unpaired));
+    }
+
+
+    @Test
     void envelopeRoundTripsZeroFillsAndRejectsCorruptLength()
             throws Exception {
         try (var runtime = new ActorRuntime()) {
