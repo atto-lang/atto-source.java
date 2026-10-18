@@ -133,3 +133,37 @@ All code above illustrates intended **post-lowering semantics**, not current exe
 A Task lambda whose body itself returns `Task<U>` would produce `Task<Task<U>>` rather than silently flatten. Similarly `async |...| -> nb {...}` produces `Future<Task<U>>`. Plain and Task lambdas still use the established block-return requirement: braced bodies require explicit `return` for non-void values; expression bodies return their expression result.
 
 The Java frontend recognizes the AST forms but **both fail closed at type checking** until Task/async lambda type inference, closure capture, nonparking suspension and source execution are integrated and tested across GraalVM and LLVM.
+
+## Canonical Task syntax and cooperative scheduling (follow-up)
+
+Use `task { ... }` for a **Task-producing expression**; `do task { ... }` when the caller deliberately discards the Task handle. The previous `nb { ... }` and `do nb { ... }` remain source-compatible aliases with the identical AST. Both launch immediately. Only `await` suspends the current Task to join another Task. When the awaited completion is pending and compiler continuation frames exist, the scheduler releases the physical worker; the language NEVER interprets a keyword as "switch OS threads now."
+
+`nb task { ... }` is intentionally **not supported**. It suggests a second thread-dispatch/yield mode that cannot be defined consistently with the scheduler. `task` remains a contextual identifier when followed by a task block; an ordinary `task()` callable is unchanged.
+
+**Single-layer whole-body Task lambda:**
+
+```oreslang
+let int result = await (
+    async task |int a, string b| -> compute(a, b)
+)(5, "xyz");
+```
+
+**Real nested Task (no flattening):**
+
+```oreslang
+let Task<Task<int>> outer = (async task |int a, string b| -> task {
+    return compute(a, b);
+})(5, "xyz");
+let Task<int> inner = await outer;
+let int result = await inner;
+```
+
+The second example starts a *separate child Task* inside an already scheduled Task, producing `Task<Task<int>>`. If that extra scheduling boundary is not intentional, omit the inner `task {}`.
+
+## Task ownership and cancellation audit
+
+The Java ownership checker now treats `task {}`, `nb {}`, `do task {}` and `do nb {}` as independently escaping closures at their launch site. It collects free names transitively through nested lambdas and Task blocks, and moves affine values at capture time, not at first resumption. Copyable immutable values remain available to the caller.
+
+It rejects borrowed captures, by-value borrowed arguments to immediately invoked `async task` and `async` lambdas, escaping actor self, captured MutexGuards, Task launch from active protected critical sections, and ordinary borrows held over `await`. Task execution does not inherit an enclosing constructor's partial-init privilege or actor state lock. Task lambda arguments must be owned/copy-safe before the caller stack frame exits.
+
+The type checker also recognizes the intended `await Task<T> -> T` rule, without flattening `Task<Task<T>>`. **These are static admission improvements, not enabled Task lowering.** Existing `OresScheduler` supports nonparking resumable `Await` steps, while the Java runtime Task handle draft adds tests for a single carrier progressing other work during a wait. Actual Oreslang source-frame transformation, actor-owned Task admission, physical quiescence before resource reclamation, and exact-head GraalVM/LLVM runtime parity are still release blockers. Do not remove the TypeChecker fail-closed gate based on these tests alone.
