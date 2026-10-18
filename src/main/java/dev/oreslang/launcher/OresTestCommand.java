@@ -23,7 +23,7 @@ final class OresTestCommand {
             "(?m)^ORES_TEST\\|SUMMARY\\|total=(\\d+)\\|passed=(\\d+)"
             + "\\|failed=(\\d+)\\|skipped=(\\d+)\\|filtered=(\\d+)\\r?$");
     private static final Pattern FUZZ_EVENT = Pattern.compile(
-            "(?m)^ORES_TEST\\\\|FUZZ\\\\|seed=(\\\\d+)\\\\|cases=(\\\\d+)\\\\r?$");
+            "(?m)^ORES_TEST\\|FUZZ\\|seed=(\\d+)\\|cases=(\\d+)\\r?$");
     private static final int MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 
     /** Refuse oversized guest output before allocating an unbounded buffer. */
