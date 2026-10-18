@@ -190,9 +190,16 @@ final class OresTaskScopeFrameTest {
              OresTaskScope scope = new OresTaskScope(runtime)) {
             OresFuture<Integer> input = OresFuture.completed(21);
             AtomicInteger calls = new AtomicInteger();
+            AtomicReference<Object> logicalDomain = new AtomicReference<>();
             OresTask<Integer> outer = scope.startCompilerFrame(scheduler, resume -> {
-                if (calls.getAndIncrement() == 0)
+                Object active = OresScheduler.currentTaskDomain();
+                assertNotNull(active, "suspends continuation must run with a Task domain");
+                if (calls.getAndIncrement() == 0) {
+                    assertNull(logicalDomain.getAndSet(active));
                     return new OresScheduler.Await<Integer>(input);
+                }
+                assertSame(logicalDomain.get(), active,
+                        "resuming suspends work must not silently create a child Task");
                 return new OresScheduler.Done<>(((Integer) resume.value()) * 2);
             });
             assertEquals(42, AsyncRuntime.await(outer.getAwaited()));
