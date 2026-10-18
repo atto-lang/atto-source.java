@@ -400,7 +400,7 @@ public final class ConstructorSemanticIr {
             Objects.requireNonNull(other, "other capture plan");
             java.util.LinkedHashMap<CaptureBindingId, ResolvedCaptureBinding> merged =
                     new java.util.LinkedHashMap<>();
-            for (CaptureBinding binding : bindings) {
+            for (ResolvedCaptureBinding binding : bindings) {
                 merged.put(binding.bindingId(), binding);
             }
             for (ResolvedCaptureBinding binding : other.bindings) {
