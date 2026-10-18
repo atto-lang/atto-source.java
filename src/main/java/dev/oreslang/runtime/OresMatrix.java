@@ -238,6 +238,7 @@ public final class OresMatrix implements ImmutableGuestValue {
         // imaginary value. A complex scalar with +0i or -0i still yields
         // Matrix<complex> and must return OresComplex from get()/trace().
         boolean complex = isComplex() || scalar instanceof OresComplex;
+        checkedElements(rows, cols, complex, "matrix scalar multiplication output");
         double[] outReal = new double[real.length];
         double[] outImaginary = complex ? new double[real.length] : null;
         for (int i = 0; i < real.length; i++) {
@@ -250,8 +251,9 @@ public final class OresMatrix implements ImmutableGuestValue {
 
     public OresMatrix divide(Object scalar) {
         OresComplex divisor = OresComplex.of(scalar);
-        double[] outReal = new double[real.length];
         boolean complex = isComplex() || scalar instanceof OresComplex;
+        checkedElements(rows, cols, complex, "matrix scalar division output");
+        double[] outReal = new double[real.length];
         double[] outImaginary = complex ? new double[real.length] : null;
         for (int i = 0; i < real.length; i++) {
             OresComplex value = new OresComplex(real[i], imag(i)).div(divisor);
