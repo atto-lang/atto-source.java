@@ -317,4 +317,102 @@ final class CheckedScalarInvocationWitnessTest {
         assertThrows(IllegalStateException.class, witness::requireExecutable);
     }
 
+
+    @Test
+    void nonVoidCallerCannotPreviewCallWithoutItsOwnExplicitReturn() {
+        Ast.Program original = program();
+        Ast.FunctionDecl caller = caller(original);
+        Ast.StagedCallExpr call = call(caller);
+        Ast.FunctionDecl modified = withSignature(caller, Ast.TypeRef.simple("int"),
+                caller.parameters(), List.of(caller.body().getFirst()));
+        Ast.Program forged = withCaller(original, modified);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.inspectStagedScalarInvocation(forged, modified, call));
+        assertTrue(failure.getMessage().contains("explicitly return"), failure::toString);
+    }
+
+    @Test
+    void nonVoidCallerBareReturnOrWrongScalarResultIsRejected() {
+        Ast.Program original = program();
+        Ast.FunctionDecl caller = caller(original);
+        Ast.StagedCallExpr call = call(caller);
+        for (Ast.ReturnStmt returned : List.of(
+                new Ast.ReturnStmt(null),
+                new Ast.ReturnStmt(new Ast.LiteralExpr(true)),
+                new Ast.ReturnStmt(new Ast.LiteralExpr("wrong")))) {
+            Ast.FunctionDecl modified = withSignature(caller, Ast.TypeRef.simple("int"),
+                    caller.parameters(), List.of(caller.body().getFirst(), returned));
+            Ast.Program forged = withCaller(original, modified);
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.inspectStagedScalarInvocation(forged, modified, call));
+        }
+    }
+
+    @Test
+    void voidCallerCannotReturnScalarDespiteValidCallPreview() {
+        Ast.Program original = program();
+        Ast.FunctionDecl caller = caller(original);
+        Ast.StagedCallExpr call = call(caller);
+        Ast.FunctionDecl modified = withBody(caller,
+                List.of(caller.body().getFirst(),
+                        new Ast.ReturnStmt(new Ast.LiteralExpr(5L))));
+        Ast.Program forged = withCaller(original, modified);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.inspectStagedScalarInvocation(forged, modified, call));
+    }
+
+    @Test
+    void unrelatedTypedLiteralBindingCannotSmuggleWrongTypeIntoCaller() {
+        Ast.Program original = program();
+        Ast.FunctionDecl caller = caller(original);
+        Ast.StagedCallExpr call = call(caller);
+        Ast.BindingStmt mismatch = new Ast.BindingStmt(
+                Ast.BindingKind.CONST, Ast.TypeRef.simple("bool"), "other",
+                new Ast.LiteralExpr(12L));
+        Ast.FunctionDecl modified = withBody(caller, List.of(
+                mismatch, caller.body().getFirst(), new Ast.ReturnStmt(null)));
+        Ast.Program forged = withCaller(original, modified);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.inspectStagedScalarInvocation(forged, modified, call));
+    }
+
+    @Test
+    void callerWithMatchingExplicitScalarReturnStillHasShapeOnlyWitness() {
+        Ast.Program original = program();
+        Ast.FunctionDecl caller = caller(original);
+        Ast.StagedCallExpr call = call(caller);
+        Ast.FunctionDecl modified = withSignature(caller, Ast.TypeRef.simple("int"),
+                caller.parameters(), List.of(
+                        caller.body().getFirst(),
+                        new Ast.ReturnStmt(new Ast.LiteralExpr(5L))));
+        Ast.Program forged = withCaller(original, modified);
+        var witness = TypeChecker.inspectStagedScalarInvocation(forged, modified, call);
+        assertEquals(BoundInvocation.Readiness.SHAPE_ONLY, witness.readiness());
+        assertThrows(IllegalStateException.class, witness::requireExecutable);
+    }
+
+    @Test
+    void duplicateCallerFormalNamesCannotForgeLexicalTypeWitness() {
+        Ast.Program original = program();
+        Ast.FunctionDecl caller = caller(original);
+        Ast.StagedCallExpr call = call(caller);
+        Ast.Param duplicated = new Ast.Param(Ast.TypeRef.simple("int"), "x");
+        Ast.FunctionDecl modified = withSignature(caller, caller.returnType(),
+                List.of(duplicated, duplicated), caller.body());
+        Ast.Program forged = withCaller(original, modified);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.inspectStagedScalarInvocation(forged, modified, call));
+    }
+
+    private static Ast.FunctionDecl withSignature(
+            Ast.FunctionDecl original, Ast.TypeRef returnType,
+            List<Ast.Param> formals, List<Ast.Stmt> statements) {
+        return new Ast.FunctionDecl(original.name(), original.kind(),
+                original.visibility(), original.async(), original.suspends(),
+                original.generator(), original.structural(), original.nonLexical(),
+                original.trapped(), original.actorKind(),
+                original.genericParameters(), formals, returnType,
+                original.annotations(), statements);
+    }
+
 }

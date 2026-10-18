@@ -70,6 +70,7 @@ public final class CheckedScalarInvocationWitness {
             throw new IllegalArgumentException(
                     "caller return signature requires full semantic type resolution");
         }
+        requireDistinctFormals(caller.parameters(), "caller");
         for (Ast.Param formal : caller.parameters()) {
             if (formal.optional() || formal.structural() || formal.mutable()
                     || !exactScalar(formal.valueType())) {
@@ -81,6 +82,7 @@ public final class CheckedScalarInvocationWitness {
             throw new IllegalArgumentException(
                     "callee return type requires full semantic type resolution");
         }
+        requireDistinctFormals(selected.parameters(), "selected callee");
         for (Ast.Param formal : selected.parameters()) {
             if (formal.structural() || formal.mutable()
                     || !exactScalar(formal.valueType())) {
@@ -112,7 +114,44 @@ public final class CheckedScalarInvocationWitness {
 
         int sites = 0;
         ResultSite site = null;
+        boolean callerReturned = false;
         for (Ast.Stmt statement : caller.body()) {
+            // The lexical preview accepts only linear top-level statements.
+            // A typed binding unrelated to this call must still have an
+            // independently valid scalar literal result; it cannot smuggle
+            // an ill-typed caller body into a checker-issued witness.
+            if (statement instanceof Ast.BindingStmt binding
+                    && binding.initializer() instanceof Ast.LiteralExpr literal) {
+                requireMatchingCallerScalarResult(
+                        binding.declaredType(),
+                        OptionalCallLiteralStage.exactScalarLiteralType(literal),
+                        "other local literal binding");
+            }
+            if (statement instanceof Ast.ReturnStmt returned) {
+                callerReturned = true;
+                if (returned.value() == call) {
+                    if (!exactScalar(caller.returnType())
+                            || !caller.returnType().equals(selected.returnType())) {
+                        throw new IllegalArgumentException(
+                                "caller return type differs from selected callable result");
+                    }
+                } else if (returned.value() == null) {
+                    if (!isVoid(caller.returnType())) {
+                        throw new IllegalArgumentException(
+                                "non-void caller needs explicit return value");
+                    }
+                } else if (returned.value() instanceof Ast.LiteralExpr literal) {
+                    requireMatchingCallerScalarResult(
+                            caller.returnType(),
+                            OptionalCallLiteralStage.exactScalarLiteralType(literal),
+                            "caller return");
+                } else {
+                    // The tiny lexical witness already refuses other direct
+                    // expression shapes, but keep the result proof independent.
+                    throw new IllegalArgumentException(
+                            "caller return requires full semantic type checking");
+                }
+            }
             if (statement instanceof Ast.BindingStmt binding
                     && binding.initializer() == call) {
                 if (selected.returnType().name().equals("void")) {
@@ -147,6 +186,10 @@ public final class CheckedScalarInvocationWitness {
         if (sites != 1) {
             throw new IllegalArgumentException(
                     "call must occupy one unambiguous immediate result context");
+        }
+        if (!isVoid(caller.returnType()) && !callerReturned) {
+            throw new IllegalArgumentException(
+                    "non-void caller must explicitly return a value on every path");
         }
         return new CheckedScalarInvocationWitness(
                 lexical, selected, selected.returnType(), site, literalTypes);
@@ -200,6 +243,31 @@ public final class CheckedScalarInvocationWitness {
         }
         throw new IllegalArgumentException(
                 "callee return expression requires full semantic and effect checking");
+    }
+
+    private static void requireDistinctFormals(List<Ast.Param> formals, String owner) {
+        java.util.Set<String> names = new java.util.HashSet<>();
+        for (Ast.Param formal : formals) {
+            if (!names.add(formal.name())) {
+                throw new IllegalArgumentException(
+                        owner + " has duplicate formal '" + formal.name()
+                                + "'; lexical binding requires the full checker");
+            }
+        }
+    }
+
+    private static void requireMatchingCallerScalarResult(
+            Ast.TypeRef declared, Ast.TypeRef actual, String context) {
+        if (declared != null && !Ast.TypeRef.inferred().equals(declared)
+                && (!exactScalar(declared) || !declared.equals(actual))) {
+            throw new IllegalArgumentException(
+                    context + " type contradicts the original scalar expression");
+        }
+    }
+
+    private static boolean isVoid(Ast.TypeRef t) {
+        return t != null && !t.inferArguments() && t.arguments().isEmpty()
+                && "void".equals(t.name());
     }
 
     private static boolean exactScalar(Ast.TypeRef t) {
