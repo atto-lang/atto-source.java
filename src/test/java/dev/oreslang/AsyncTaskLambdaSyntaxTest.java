@@ -151,4 +151,28 @@ final class AsyncTaskLambdaSyntaxTest {
                         """)));
         assertTrue(error.getMessage().contains("return is not allowed inside finally"), error::getMessage);
     }
+    @Test
+    void taskStaysAnOrdinaryIdentifierOutsideAsyncModifier() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                pub fnc task(): int { return 5; }
+                pub fnc main(): void {
+                    let int result = task();
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void explicitNbInsideTaskLambdaWouldBeNestedRatherThanFlattened() {
+        Ast.CallExpr call = assertInstanceOf(Ast.CallExpr.class, initializer("""
+                (async task |int a| -> nb {
+                    return a;
+                })(5)
+                """));
+        Ast.TaskLambdaExpr outer = assertInstanceOf(Ast.TaskLambdaExpr.class, call.callee());
+        assertInstanceOf(Ast.TaskExpr.class, outer.lambda().expressionBody());
+        // Once enabled this would be Task<Task<int>>, not Task<int>.
+    }
+
+
 }
