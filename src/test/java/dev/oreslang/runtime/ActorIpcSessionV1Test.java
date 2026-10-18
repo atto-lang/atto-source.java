@@ -408,6 +408,76 @@ final class ActorIpcSessionV1Test {
     }
 
     @Test
+    void controlLaneHasIndependentSmallPayloadBudget() {
+        ActorArtifact<Object> artifact = artifact(
+                "ImageWorker", MESSAGE_ABI, ARTIFACT);
+
+        try (ActorIpcSessionV1 session = ActorIpcSessionV1.create(
+                artifact, UUID.randomUUID(), 1, 1);
+             ActorIpcSessionV1.BootstrapMaterial bootstrap =
+                     session.claimBootstrapForTrustedLauncher()) {
+            ready(session, bootstrap, artifact);
+
+            byte[] oversizedControl =
+                    new byte[ActorIpcSessionV1.MAX_CONTROL_PAYLOAD_BYTES + 1];
+            byte[] workerFrame = worker(
+                    bootstrap,
+                    artifact,
+                    ActorIpcSessionV1.Lane.CONTROL,
+                    ActorIpcSessionV1.FrameKind.ERROR,
+                    2,
+                    0,
+                    oversizedControl);
+
+            ActorIpcSessionV1.ProtocolException inbound = assertThrows(
+                    ActorIpcSessionV1.ProtocolException.class,
+                    () -> session.acceptWorkerFrame(workerFrame));
+            assertEquals(ActorIpcSessionV1.Reason.MALFORMED, inbound.reason());
+            assertTrue(session.poisoned());
+        }
+
+        try (ActorIpcSessionV1 session = ActorIpcSessionV1.create(
+                artifact, UUID.randomUUID(), 1, 1);
+             ActorIpcSessionV1.BootstrapMaterial bootstrap =
+                     session.claimBootstrapForTrustedLauncher()) {
+            ready(session, bootstrap, artifact);
+            byte[] oversizedControl =
+                    new byte[ActorIpcSessionV1.MAX_CONTROL_PAYLOAD_BYTES + 1];
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> session.encodeSupervisorControl(
+                            ActorIpcSessionV1.FrameKind.CONTROL,
+                            0,
+                            oversizedControl));
+        }
+    }
+
+    @Test
+    void completeFrameIsBodylessAndMessageBound() {
+        ActorArtifact<Object> artifact = artifact(
+                "ImageWorker", MESSAGE_ABI, ARTIFACT);
+        try (ActorIpcSessionV1 session = ActorIpcSessionV1.create(
+                artifact, UUID.randomUUID(), 1, 1);
+             ActorIpcSessionV1.BootstrapMaterial bootstrap =
+                     session.claimBootstrapForTrustedLauncher()) {
+            ready(session, bootstrap, artifact);
+
+            ActorIpcSessionV1.ProtocolException payload = assertThrows(
+                    ActorIpcSessionV1.ProtocolException.class,
+                    () -> session.acceptWorkerFrame(worker(
+                            bootstrap,
+                            artifact,
+                            ActorIpcSessionV1.Lane.CONTROL,
+                            ActorIpcSessionV1.FrameKind.COMPLETE,
+                            2,
+                            5,
+                            new byte[]{1})));
+            assertEquals(ActorIpcSessionV1.Reason.STATE, payload.reason());
+            assertTrue(session.poisoned());
+        }
+    }
+
+    @Test
     void payloadSizeBoundIsCheckedBeforeFrameAllocation() {
         ActorArtifact<Object> artifact = artifact(
                 "ImageWorker", MESSAGE_ABI, ARTIFACT);
