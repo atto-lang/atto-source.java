@@ -351,6 +351,72 @@ final class NestedOptionFutureUnwrapTest {
         assertTrue(failure.getMessage().contains("borrow"), failure.getMessage());
     }
 
+    @Test
+    void moveOnlyNestedOptionFieldCannotBeExtractedWithoutAPlaceMove() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Payload as
+                          pub let int number;
+                        end
+                        define class Holder as
+                          pub let mut Option<Option<Payload>> nested;
+                        end
+                        fnc bad(Holder holder): void {
+                          val Option<Payload> extracted = holder.nested.flatten();
+                          return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("projected"), failure.getMessage());
+    }
+
+    @Test
+    void moveOnlyOptionUnwrapFieldCannotDuplicateItsPayload() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Payload as
+                          pub let int number;
+                        end
+                        define class Holder as
+                          pub let mut Option<Payload> nested;
+                        end
+                        fnc bad(Holder holder): void {
+                          val Payload extracted = holder.nested.unwrap();
+                          return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("projected"), failure.getMessage());
+    }
+
+    @Test
+    void nestedFutureFieldCannotBeFlattenedWithoutAnOwnedLocal() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Holder as
+                          pub let mut Future<Future<int>> nested;
+                        end
+                        fnc bad(Holder holder): void {
+                          val Future<int> extracted = holder.nested.flatten();
+                          return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("projected"), failure.getMessage());
+    }
+
+    @Test
+    void moveOnlyNestedOptionIndexedElementCannotBeExtractedTwice() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Payload as
+                          pub let int number;
+                        end
+                        fnc bad(Array<Option<Option<Payload>>> values): void {
+                          val Option<Payload> extracted = values[0].flatten();
+                          return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("projected"), failure.getMessage());
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "nested-option-future.ores")
