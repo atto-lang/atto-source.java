@@ -4336,6 +4336,16 @@ public final class OresEvalRootNode extends RootNode {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
 
+            if (receiver instanceof OptionValue option
+                    && member.member().equals("unwrap_all")) {
+                int depth = Ast.CheckedOptionDepth.require(call);
+                return invokableInvocation(
+                        values -> {
+                            requireZero(values, "Option.unwrap_all");
+                            return unwrapOptionAtDepth(option, depth);
+                        }, args);
+            }
+
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
@@ -5786,6 +5796,16 @@ public final class OresEvalRootNode extends RootNode {
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
+
+                if (receiver instanceof OptionValue option
+                        && methodCall.member().equals("unwrap_all")) {
+                    int depth = Ast.CheckedOptionDepth.require(call);
+                    return invokableInvocation(
+                            values -> {
+                                requireZero(values, "Option.unwrap_all");
+                                return unwrapOptionAtDepth(option, depth);
+                            }, args);
+                }
 
                 if (receiver instanceof OresObject object) {
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
@@ -7263,6 +7283,23 @@ public final class OresEvalRootNode extends RootNode {
             return new IllegalArgumentException(operation + " failed: " + failure.getMessage(), failure);
         }
 
+        private Object unwrapOptionAtDepth(OptionValue option, int depth) {
+            Object current = option;
+            for (int level = 0; level < depth; level++) {
+                if (!(current instanceof OptionValue layer)) {
+                    throw new IllegalStateException(
+                            "Option.unwrap_all runtime value violates checked nesting depth");
+                }
+                if (!layer.present()) {
+                    throw new OresPanic("called Option::unwrap_all() on a None value");
+                }
+                current = layer.value();
+            }
+            // The checked leaf is returned intact, even when its runtime
+            // representation happens to be another OptionValue.
+            return current;
+        }
+
         private Object optionMember(OptionValue option, String name) {
             return switch (name) {
                 case "is_some" -> (Invokable) args -> { requireZero(args, "Option.is_some"); return option.present(); };
@@ -7274,16 +7311,8 @@ public final class OresEvalRootNode extends RootNode {
                 };
                 case "unwrap_all" -> (Invokable) args -> {
                     requireZero(args, "Option.unwrap_all");
-                    Object current = option;
-                    // Iterative rather than recursive: bounded by the input value's
-                    // nesting, not the Java call stack.
-                    while (current instanceof OptionValue layer) {
-                        if (!layer.present()) {
-                            throw new OresPanic("called Option::unwrap_all() on a None value");
-                        }
-                        current = layer.value();
-                    }
-                    return current;
+                    throw new IllegalStateException(
+                            "Option.unwrap_all requires a statically checked direct invocation");
                 };
                 case "flatten" -> (Invokable) args -> {
                     requireZero(args, "Option.flatten");
