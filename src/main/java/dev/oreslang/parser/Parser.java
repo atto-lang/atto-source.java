@@ -3558,6 +3558,14 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        // Creating a Task is already asynchronous. Do not accept the
+        // unimplemented "async |...|" lambda spelling and silently flatten
+        // Future<Task<T>> into Task<T>. Plain lambdas can return Task<T>
+        // directly: (|T arg| -> nb { ... })(value).
+        if (check(ASYNC) && (checkNext(PIPE) || checkNext(LPAREN))) {
+            throw error(peek(), "async lambdas are not enabled; nb already produces Task<T>. "
+                    + "Use (|Type arg| -> nb { ... })(value) without async or an outer await");
+        }
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
