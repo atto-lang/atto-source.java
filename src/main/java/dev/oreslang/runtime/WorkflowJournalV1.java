@@ -438,13 +438,14 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
         if (state.runId() == null) {
             if (state.maxIterations() != null
                     || state.nextSequence() != 1L
+                    || state.nextClaimNumber() != 1L
+                    || state.lastObservedMillis() < -1L
                     || !state.journal().isEmpty()
                     || !state.effects().isEmpty()) {
                 throw new IllegalStateException(
                         "empty persisted workflow state is internally inconsistent");
             }
             WorkflowJournalV1 empty = new WorkflowJournalV1();
-            empty.nextClaimNumber = state.nextClaimNumber();
             empty.lastObservedMillis = state.lastObservedMillis();
             return empty;
         }
