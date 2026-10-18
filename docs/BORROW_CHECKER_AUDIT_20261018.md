@@ -49,3 +49,17 @@ and sanitizer cases. The common 18-case corpus SHA-256 is
 `cc42b9bd3c4ff27033eecb526aae25e29bf8d176915ff0fd9e6abe33167f9cbe`.
 This audit's new changes have local evidence; earlier fallback CI results apply
 only to their recorded source commits, not automatically to this head.
+
+## Returned-loan receiver follow-up
+
+A second negative control reproduced an unsound admission through a returned
+borrow: `identity(rt borrow holder.item).read(mutate(rt borrow mut holder))`.
+Call-return loans have no call-site root/lifetime summary today. Their use as
+implicit receivers previously bypassed the explicit-borrow argument gate.
+Method, field and index receivers now reject a borrow with unknown provenance;
+this also prevents recovering ownership of an affine field through such a loan.
+Even simple receiver arguments stay rejected until return-lifetime summaries
+prove their root. Named incoming/retained borrows and owned temporary receivers
+remain admitted. The follow-up has 159 passing local tests, including seventeen
+projected/returned receiver tests. LLVM already rejects source borrow returns.
+The 154-test Linux run on `f49073f19` does not cover this later follow-up.

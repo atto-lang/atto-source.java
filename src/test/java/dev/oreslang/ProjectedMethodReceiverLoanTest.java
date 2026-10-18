@@ -107,4 +107,52 @@ final class ProjectedMethodReceiverLoanTest {
         rejects("holder.item.read(holder.item.update(2))");
     }
 
+    @Test void returnedBorrowCannotHideReceiverRootFromLaterArguments() {
+        var parsed = Parser.parse(TYPES + """
+            fnc identity(borrow Item item):borrow Item { return item; }
+            fnc bad(Holder mut holder):int {
+              return identity(rt borrow holder.item).read(mutate(rt borrow mut holder));
+            }
+            """);
+        var failure = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+        assertTrue(failure.getMessage().toLowerCase().contains("borrow"), failure.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(parsed));
+    }
+
+    @Test void unknownReturnedLoanCannotBecomeReceiverEvenWithSimpleArguments() {
+        var parsed = Parser.parse(TYPES + """
+            fnc identity(borrow Item item):borrow Item { return item; }
+            fnc bad(borrow Item item):int { return identity(item).read(0); }
+            """);
+        var failure = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+        assertTrue(failure.getMessage().contains("unknown lifetime provenance"), failure.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(parsed));
+    }
+    @Test void ownedTemporaryReceiverRemainsAdmitted() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(TYPES + """
+            fnc owned():Item { return new Item(); }
+            fnc good():int { return owned().read(0); }
+            """)));
+    }
+
+    @Test void unknownReturnedLoanCannotMoveAnOwnedField() {
+        var parsed = Parser.parse(TYPES + """
+            fnc identity(borrow Holder holder):borrow Holder { return holder; }
+            fnc consumeItem(Item item):int { return item.value; }
+            fnc bad(borrow Holder holder):int { return consumeItem(identity(holder).item); }
+            """);
+        var failure = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+        assertTrue(failure.getMessage().contains("unknown lifetime provenance"), failure.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(parsed));
+    }
+    @Test void unknownReturnedLoanCannotBeIndexed() {
+        var parsed = Parser.parse(TYPES + """
+            fnc identity(borrow List<Item> items):borrow List<Item> { return items; }
+            fnc bad(borrow List<Item> items):int { return identity(items)[0].value; }
+            """);
+        var failure = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+        assertTrue(failure.getMessage().contains("unknown lifetime provenance"), failure.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(parsed));
+    }
+
 }

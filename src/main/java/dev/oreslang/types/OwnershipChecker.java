@@ -1146,6 +1146,7 @@ public final class OwnershipChecker {
                 }
             }
             ValueInfo receiverValue = checkExpr(member.receiver(), scope, false);
+            requireKnownReceiverBorrow(receiverValue);
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
             if (concreteReceiver == null) concreteReceiver = receiverValue.type;
             if (concreteReceiver != null && concreteReceiver.isBorrow()) {
@@ -1183,6 +1184,7 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.IndexExpr indexed) {
             ValueInfo receiver = checkExpr(indexed.receiver(), scope, false);
+            requireKnownReceiverBorrow(receiver);
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = collectionElementType(receiver.type);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
@@ -1642,6 +1644,7 @@ public final class OwnershipChecker {
                 }
             }
             ValueInfo receiverValue = checkExpr(member.receiver(), scope, false);
+            requireKnownReceiverBorrow(receiverValue);
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
             if (concreteReceiver == null) {
                 concreteReceiver = receiverValue.type.isBorrow()
@@ -2367,6 +2370,16 @@ public final class OwnershipChecker {
         VarState root = ownershipRoot(owner);
         if (mutable) root.mutableBorrowed = true;
         else root.immutableBorrows++;
+    }
+
+    private void requireKnownReceiverBorrow(ValueInfo receiver) {
+        // Returned loans currently have no call-site lifetime summary. A
+        // method/field/index receiver must not hide its owner from later
+        // arguments or recover ownership of a non-Copy field through a loan.
+        if (isBorrowValue(receiver) && receiver.borrowSource == null) {
+            throw error("receiver borrow has unknown lifetime provenance; "
+                    + "use a named owner/borrow until return-lifetime summaries are supported");
+        }
     }
 
     private boolean isBorrowValue(ValueInfo value) {
