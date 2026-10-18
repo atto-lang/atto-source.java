@@ -6,8 +6,11 @@ root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
 fixture="$root/scripts"
 make_fixture() {
-  rm -rf "$fixture"
-  mkdir -p "$fixture"
+  rm -rf "$fixture" "$root/.github"
+  mkdir -p "$fixture" "$root/.github/workflows"
+  printf '/.github/ @ORESoftware\n' > "$root/.github/CODEOWNERS"
+  printf '# synthetic allowlist for offline test only\n' > "$root/.github/private-ci-approved-repositories.txt"
+  printf 'name: synthetic source-free test workflow\n' > "$root/.github/workflows/private-ci-mirror-preflight.yml"
   cp "$runner" "$fixture/run-private-ci-regressions-local.sh"
   cp "$(dirname "$runner")/test-run-private-ci-regressions-local.sh" \
     "$fixture/test-run-private-ci-regressions-local.sh"
@@ -117,4 +120,29 @@ fi
 test ! -e "$root/startup-marker"
 grep -q '^PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1$' "$root/out"
 echo 'PASS: injected sitecustomize and PYTHONPATH cannot execute'
-echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=12' 
+make_fixture
+cat >> "$fixture/test-private-ci-destination.sh" <<'SH'
+printf '\n# tampered owner\n' >> "$(dirname "$0")/../.github/CODEOWNERS"
+SH
+if PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
+grep -q PRIVATE_CI_FILES_CHANGED_DURING_TEST "$root/out"
+echo 'PASS: mutation of CODEOWNERS source-control policy is detected'
+make_fixture
+cat >> "$fixture/test-private-ci-destination.sh" <<'SH'
+printf '\n# tampered workflow\n' >> "$(dirname "$0")/../.github/workflows/private-ci-mirror-preflight.yml"
+SH
+if PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
+grep -q PRIVATE_CI_FILES_CHANGED_DURING_TEST "$root/out"
+echo 'PASS: mutation of reviewed CI workflow is detected'
+make_fixture
+mv "$root/.github/private-ci-approved-repositories.txt" "$root/external-policy"
+ln -s "$root/external-policy" "$root/.github/private-ci-approved-repositories.txt"
+if bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
+grep -q PRIVATE_CI_MISSING_OR_SYMLINKED_FILE "$root/out"
+echo 'PASS: symlinked CI approval policy fails closed'
+make_fixture
+rm "$root/.github/CODEOWNERS"
+if bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
+grep -q PRIVATE_CI_MISSING_OR_SYMLINKED_FILE "$root/out"
+echo 'PASS: missing CODEOWNERS policy fails closed'
+echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=16' 
