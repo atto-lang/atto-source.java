@@ -173,7 +173,6 @@ PY
 if PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
 grep -q PRIVATE_CI_TEST_INVENTORY_MISSING_LOAD_TESTS "$root/out"
 ! grep -q '^PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1
- "$root/out"
 echo 'PASS: a single passing test without full discovery cannot produce a success receipt'
 make_fixture
 python3 - "$fixture/test-publish-private-ci-source.py" <<'PY'
@@ -191,17 +190,20 @@ grep -q PRIVATE_CI_TEST_INVENTORY_REJECTED "$root/out"
 echo 'PASS: shortened suite with valid load_tests is rejected'
 make_fixture
 mkdir -p "$root/poisoned-PATH"
-cat > "$root/poisoned-PATH/python3" <<'FAKE_PYTHON'
+for executable in python3 dirname; do
+  cat > "$root/poisoned-PATH/$executable" <<'FAKE_EXEC'
 #!/bin/sh
-printf 'executed unsafe python from PATH\\n' >> "$PATH_INJECTION_MARKER"
+printf 'unexpected executable invoked\n' >> "$PATH_INJECTION_MARKER"
 exit 0
-FAKE_PYTHON
-chmod +x "$root/poisoned-PATH/python3"
-PATH="$root/poisoned-PATH:$PATH" PATH_INJECTION_MARKER="$root/path-injection-marker" \\
-  PRIVATE_CI_TEST_REPEATS=1 /bin/bash "$fixture/run-private-ci-regressions-local.sh" \\
-  > "$root/out" 2>&1 || { cat "$root/out" >&2; exit 1; }
+FAKE_EXEC
+  chmod +x "$root/poisoned-PATH/$executable"
+done
+# The current runner must sanitize PATH *before* calling even dirname.
+if ! PATH="$root/poisoned-PATH:$PATH" PATH_INJECTION_MARKER="$root/path-injection-marker" PRIVATE_CI_TEST_REPEATS=1 /bin/bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then
+  cat "$root/out" >&2
+  exit 1
+fi
 test ! -e "$root/path-injection-marker"
-grep -q '^PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1 
- "$root/out"
-echo 'PASS: caller-controlled PATH cannot replace trusted Python interpreter'
-echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=19' 
+grep -q '^PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1$' "$root/out"
+echo 'PASS: caller PATH cannot replace trusted Python or dirname'
+echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=19'
