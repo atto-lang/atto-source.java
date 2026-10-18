@@ -190,12 +190,17 @@ public final class IncrementalCompiler {
                         }
                     }
                 }
-                if (resolved == null || linked.putIfAbsent(name, resolved) != null) {
+                String scope = imported.lexicalModule() == null
+                        ? Parser.ROOT_MODULE
+                        : imported.lexicalModule();
+                String linkedKey = scope + "::" + name;
+                if (resolved == null || linked.putIfAbsent(linkedKey, resolved) != null) {
                     throw new IllegalArgumentException(
                             "missing or duplicate public linked class '" + name
-                                    + "' in source unit '" + unitId + "'");
+                                    + "' in lexical module '" + scope
+                                    + "' of source unit '" + unitId + "'");
                 }
-                aliases.put(name, classAliases);
+                aliases.put(linkedKey, classAliases);
             }
         }
         return new LinkedClasses(Map.copyOf(linked), Map.copyOf(aliases));
