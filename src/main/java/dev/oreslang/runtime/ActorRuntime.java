@@ -1025,21 +1025,31 @@ public final class ActorRuntime implements AutoCloseable {
          * actor incarnation are attached before newActorArena returns.
          */
         private ExternalTaskLease acquireExternalTaskLease() {
-            requireCurrentOwner();
-            ExternalTaskLease lease = new ExternalTaskLease();
-            try {
-                for (ActorArena arena : List.copyOf(actorArenas)) {
-                    lease.attachArena(arena);
+            ActorCell<?> cell = requireCurrentOwner();
+            // Publish the escaping task lease under the same lifecycle lock
+            // used by newActorArena(). Otherwise this interleaving is possible:
+            // task scans existing arenas -> new arena scans activeTaskLeases ->
+            // task publishes itself, leaving the new arena unpinned.
+            synchronized (cell.lifecycleLock) {
+                if (sliceClosed.get() || cell.stopped.get()) {
+                    throw new IllegalStateException(
+                            "actor heap retired during external task admission");
                 }
-                activeTaskLeases.add(lease);
-                return lease;
-            } catch (RuntimeException | Error failure) {
+                ExternalTaskLease lease = new ExternalTaskLease();
                 try {
-                    lease.close();
-                } catch (RuntimeException | Error closing) {
-                    if (closing != failure) failure.addSuppressed(closing);
+                    for (ActorArena arena : List.copyOf(actorArenas)) {
+                        lease.attachArena(arena);
+                    }
+                    activeTaskLeases.add(lease);
+                    return lease;
+                } catch (RuntimeException | Error failure) {
+                    try {
+                        lease.close();
+                    } catch (RuntimeException | Error closing) {
+                        if (closing != failure) failure.addSuppressed(closing);
+                    }
+                    throw failure;
                 }
-                throw failure;
             }
         }
 
@@ -1113,9 +1123,24 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 long actorLimit = limitBytes;
                 if (sharedCell != null) {
-                    actorLimit = Math.max(0L, limitBytes
-                            - sharedCell.sharedMailboxBytes.get()
-                            - sharedCell.outputBytes.get());
+                    long mailboxBytes = sharedCell.sharedMailboxBytes.get();
+                    long outputBytes = sharedCell.outputBytes.get();
+                    if (mailboxBytes < 0 || outputBytes < 0) {
+                        throw new IllegalStateException(
+                                "shared actor transport accounting became negative");
+                    }
+                    final long transportBytes;
+                    try {
+                        transportBytes = Math.addExact(mailboxBytes, outputBytes);
+                    } catch (ArithmeticException overflow) {
+                        throw new IllegalStateException(
+                                "shared actor transport accounting overflow");
+                    }
+                    if (transportBytes > limitBytes) {
+                        throw new IllegalStateException(
+                                "shared actor transport accounting exceeds actor limit");
+                    }
+                    actorLimit = limitBytes - transportBytes;
                 }
                 if (next > actorLimit) {
                     throw new IllegalStateException(purpose + " limit exceeded for " + owner
