@@ -11,3 +11,5 @@
 /scripts/test-publish-private-ci-source.py @ORESoftware
 /.github/workflows/ @ORESoftware
 /scripts/test-private-ci-merged-main.py @ORESoftware
+/tools/verify-exact-source-tree.sh @ORESoftware
+/tools/test-verify-exact-source-tree.sh @ORESoftware
