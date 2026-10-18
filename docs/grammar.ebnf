@@ -322,7 +322,13 @@ primary         = literal
                 | explicit_struct_literal
                 | "(" expression ")" ;
 
-lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda ) ;
+lambda          = ( [ "nlex" ] | "async" [ "task" ] )
+                  ( pipe_lambda | typed_legacy_lambda ) ;
+(* A plain lambda returns its body result. An async lambda returns Future<R>.
+   An async task lambda schedules the *whole* body as one Task<R> directly.
+   These effects are distinct: async |...| -> nb {...} yields
+   Future<Task<R>> without implicit flattening; async task |...| -> {...}
+   yields exactly Task<R>. Native/backend execution currently gated. *)
 pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" lambda_body ;
 lambda_param    = IDENT | type_ref IDENT ;
 typed_legacy_lambda
