@@ -289,6 +289,17 @@ public final class TypeChecker {
                 .contains(name);
     }
 
+    private void rejectRootImportLeak(String name) {
+        String scope = currentImportScope();
+        if (Parser.ROOT_MODULE.equals(scope)) return;
+        if (!importedValuesByModule
+                .getOrDefault(Parser.ROOT_MODULE, Set.of())
+                .contains(name)) return;
+        throw new IllegalArgumentException(
+                "imported name '" + name + "' is file/root-scoped and is not visible in module '"
+                        + scope + "'; move the import into the module prelude");
+    }
+
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
@@ -2178,6 +2189,7 @@ public final class TypeChecker {
                 return new ClassNamespace(qualifiedClassName(classNamespace));
             }
             if (importedValueVisible(name.name())) return Unknown.INSTANCE;
+            rejectRootImportLeak(name.name());
             Ast.FunctionDecl fn = findSingleFunction(name.name());
             if (fn != null) {
                 rejectImplicitClassCallable(name.name());
