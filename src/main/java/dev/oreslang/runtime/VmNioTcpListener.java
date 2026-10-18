@@ -31,6 +31,10 @@ public final class VmNioTcpListener implements AutoCloseable {
     private final OresFuture<Void> listenerClosed = new OresFuture<>();
     private int admittedOperations; // guarded by gate; includes Future callbacks
     private boolean closed;
+    // The close request and physical server-descriptor retirement are distinct.
+    // A concurrent operation drain must not publish listenerClosed between them.
+    private boolean serverDescriptorRetired; // guarded by gate
+    private IOException serverCloseFailure; // guarded by gate
 
     static VmNioTcpListener loopback(NioReadinessGroup readiness, int port,
                                      int backlog, int maxConnections,
@@ -53,7 +57,9 @@ public final class VmNioTcpListener implements AutoCloseable {
         }
     }
 
-    private VmNioTcpListener(NioReadinessGroup readiness, ServerSocketChannel server,
+    // Package-private to permit deterministic descriptor-retirement fault injection
+    // in the runtime's own regression tests; public construction remains loopback().
+    VmNioTcpListener(NioReadinessGroup readiness, ServerSocketChannel server,
                              int maxConnections, int maxPending) {
         this.readiness = readiness;
         this.server = server;
@@ -68,7 +74,8 @@ public final class VmNioTcpListener implements AutoCloseable {
 
     public boolean isTerminated() {
         synchronized (gate) {
-            return closed && admittedOperations == 0
+            return closed && serverDescriptorRetired && serverCloseFailure == null
+                    && admittedOperations == 0
                     && pendingAccept == null && connections.isEmpty();
         }
     }
@@ -87,11 +94,18 @@ public final class VmNioTcpListener implements AutoCloseable {
 
     private void completeListenerCloseIfQuiesced() {
         final boolean quiesced;
+        final IOException closeFailure;
         synchronized (gate) {
-            quiesced = closed && admittedOperations == 0
+            quiesced = closed && serverDescriptorRetired && admittedOperations == 0
                     && pendingAccept == null && connections.isEmpty();
+            closeFailure = serverCloseFailure;
         }
-        if (quiesced) listenerClosed.completeFromRuntime(null);
+        // A failed physical descriptor close cannot be reported as successful
+        // quiescence, even if every Future and connection credit has drained.
+        if (quiesced) {
+            if (closeFailure == null) listenerClosed.completeFromRuntime(null);
+            else listenerClosed.failFromRuntime(closeFailure);
+        }
     }
 
     private void releaseOperation() {
@@ -190,8 +204,15 @@ public final class VmNioTcpListener implements AutoCloseable {
             closed = true;
         }
         // Closing the caller-owned listener revokes the readiness registration.
-        // NIO terminal notification will settle any pending source Future.
-        try { server.close(); } catch (IOException ignored) { }
+        // A completion callback may race with server.close(), so publish the
+        // retirement fence before permitting any terminal close notification.
+        IOException physicalCloseFailure = null;
+        try { server.close(); }
+        catch (IOException problem) { physicalCloseFailure = problem; }
+        synchronized (gate) {
+            serverCloseFailure = physicalCloseFailure;
+            serverDescriptorRetired = true;
+        }
         if (pending != null) pending.cancel(false);
         for (Connection connection : snapshot) connection.close();
         completeListenerCloseIfQuiesced();
