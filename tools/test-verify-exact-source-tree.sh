@@ -259,6 +259,64 @@ chmod +x "$work/broken-index-bin/git"
   export PATH="$work/broken-index-bin:$PATH"
   assert_status 68 'successful empty committed tree denied' "$clean_tree" source
 )
+# A successful nonempty but PARTIAL index manifest must never certify a tree.
+cat > "$work/broken-index-bin/git" <<'MOCK_PARTIAL_INDEX'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == ls-files && "$2" == --stage ]]; then
+  "$REAL_GIT" "$@" | python3 -c '
+import sys
+records = sys.stdin.buffer.read().split(b"\0")
+if len(records) < 3:
+    sys.exit("expected at least two tracked entries")
+sys.stdout.buffer.write(records[0] + b"\0")
+'
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+MOCK_PARTIAL_INDEX
+chmod +x "$work/broken-index-bin/git"
+(
+  export PATH="$work/broken-index-bin:$PATH"
+  assert_status 68 'successful partial nonempty index manifest denied' "$clean_tree" source
+)
+# A successful partial committed-tree manifest is equally untrustworthy.
+cat > "$work/broken-index-bin/git" <<'MOCK_PARTIAL_TREE'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == ls-tree ]]; then
+  "$REAL_GIT" "$@" | python3 -c '
+import sys
+records = sys.stdin.buffer.read().split(b"\0")
+if len(records) < 3:
+    sys.exit("expected multiple committed paths")
+sys.stdout.buffer.write(records[0] + b"\0")
+'
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+MOCK_PARTIAL_TREE
+chmod +x "$work/broken-index-bin/git"
+(
+  export PATH="$work/broken-index-bin:$PATH"
+  assert_status 68 'successful partial nonempty committed tree denied' "$clean_tree" source
+)
+# Git has no entry for an empty directory, but the builder can still observe
+# directory-based inputs; an empty untracked directory must fail the inventory.
+mkdir -p source/injected-empty-directory
+cat > "$work/broken-index-bin/git" <<'MOCK_EMPTY_OTHERS'
+#!/usr/bin/env bash
+if [[ "$1" == ls-files && "$2" == --others ]]; then
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+MOCK_EMPTY_OTHERS
+chmod +x "$work/broken-index-bin/git"
+(
+  export PATH="$work/broken-index-bin:$PATH"
+  assert_status 68 'injected empty directory denied despite hidden untracked listing' "$clean_tree" source
+)
+rmdir source/injected-empty-directory
 # Verify ordinary source works after removing the adversarial Git shim.
 assert_status 0 'clean source remains valid after index failure test' "$clean_tree" source
 echo 'SOURCE_TREE_GATE_TESTS_PASS'
