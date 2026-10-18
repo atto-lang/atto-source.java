@@ -131,6 +131,22 @@ final class ConstructorSemanticIrTest {
     }
 
     @Test
+    void serializableCaptureMetadataNeverMakesExecutableCallablePortableData() {
+        ConstructorSemanticIr.CallableType callable =
+                new ConstructorSemanticIr.CallableType(
+                        List.of(Types.Primitive.INT),
+                        Types.Primitive.STRING,
+                        Set.of(),
+                        Set.of(ConstructorSemanticIr.CallableCapability.SERIALIZABLE));
+
+        assertTrue(callable.captureCapabilities().contains(
+                ConstructorSemanticIr.CallableCapability.SERIALIZABLE));
+        assertEquals(Types.AnyCallable.INSTANCE, callable.erasedCallableTop());
+        assertFalse(callable.serializableExecutableValue());
+        assertFalse(callable.actorDataAdmissible());
+    }
+
+    @Test
     void recursiveAliasRequiresRepresentationBarrierAndRegularGenericRecursion() {
         Ast.TypeRef body = Ast.TypeRef.simple("Callback");
 
