@@ -332,6 +332,70 @@ final class LogicalActorProxyMailboxV1Test {
     }
 
     @Test
+    void freezeVersusProvenUnsentRollbackPreservesExactCreditsAndSequence()
+            throws Exception {
+        for (int round = 0; round < 128; round++) {
+            try (var mailbox = new LogicalActorProxyMailboxV1(2, 16, 32)) {
+                mailbox.admit(new byte[] {42});
+                assertEquals(1L, mailbox.pollDispatch().messageSequence());
+                var start = new CountDownLatch(1);
+                var freeze = new java.util.concurrent.atomic.AtomicReference<
+                        LogicalActorProxyMailboxV1.FreezeTicket>();
+                var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                Thread retry = Thread.ofPlatform().start(() -> {
+                    try {
+                        start.await();
+                        try {
+                            mailbox.requeueProvenUnsent(1L);
+                        } catch (IllegalStateException freezeWon) {
+                            // Freeze acquired the lock before the trusted
+                            // unsent rollback. It must not mutate the message.
+                        }
+                    } catch (Throwable unexpected) {
+                        failure.compareAndSet(null, unexpected);
+                    }
+                });
+                Thread upgrade = Thread.ofPlatform().start(() -> {
+                    try {
+                        start.await();
+                        freeze.set(mailbox.freezeDispatchForUpgrade());
+                    } catch (Throwable unexpected) {
+                        failure.compareAndSet(null, unexpected);
+                    }
+                });
+                start.countDown();
+                retry.join(5000);
+                upgrade.join(5000);
+                assertFalse(retry.isAlive() || upgrade.isAlive(),
+                        "concurrent proxy freeze/requeue workers must terminate");
+                assertNull(failure.get());
+                assertNotNull(freeze.get());
+                var snapshot = mailbox.snapshot();
+                assertTrue(snapshot.dispatchFrozen());
+                assertEquals(1, snapshot.retainedMessages());
+                assertEquals(1L, snapshot.retainedBytes());
+                assertEquals(1, snapshot.queuedMessages()
+                        + snapshot.outstandingMessages());
+                assertEquals(0L, snapshot.completionWatermark());
+                assertEquals(1L,
+                        snapshot.queuedMessages() == 1
+                                ? snapshot.nextMessageSequence() - 1L
+                                : snapshot.highestDispatchedSequence());
+
+                freeze.get().rollback();
+                if (snapshot.outstandingMessages() == 1) {
+                    mailbox.requeueProvenUnsent(1L);
+                }
+                assertEquals(1L, mailbox.pollDispatch().messageSequence());
+                mailbox.complete(1L);
+                assertEquals(1L, mailbox.snapshot().completionWatermark());
+                assertEquals(0, mailbox.snapshot().retainedMessages());
+                assertEquals(0L, mailbox.snapshot().retainedBytes());
+            }
+        }
+    }
+
+    @Test
     void closingClearsRetainedCapacityAndInvalidatesTickets() {
         var mailbox = new LogicalActorProxyMailboxV1(
                 4, 16, 64);
