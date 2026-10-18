@@ -179,9 +179,10 @@ final class NestedOptionFutureExtractionLanguageTest {
                 }
                 pub fnc main(): void {
                   val Box captured = new Box();
-                  val Future<int> flattened = base().map(|int n| -> {
+                  val Future<Future<int>> nested = base().map(|int n| -> {
                     return leaf(n + captured.value);
-                  }).flatten();
+                  });
+                  val Future<int> flattened = nested.flatten();
                   stdio.stdout.write(await flattened);
                   return;
                 }
