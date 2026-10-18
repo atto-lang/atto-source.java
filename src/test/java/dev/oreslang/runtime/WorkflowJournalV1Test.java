@@ -257,9 +257,12 @@ final class WorkflowJournalV1Test {
                 "cancel",
                 new DurableDevLoopV1.Cancel("operator request")));
 
+        var claimedAfterCancel =
+                store.effect(active.effectKey()).orElseThrow();
         assertEquals(
                 WorkflowJournalV1.EffectState.CLAIMED,
-                store.effect(active.effectKey()).orElseThrow().state());
+                claimedAfterCancel.state());
+        assertFalse(claimedAfterCancel.retryAllowed());
 
         var cancel = store.claimNext(
                 "worker-cancel", 101L, 100L).orElseThrow();
