@@ -301,6 +301,10 @@ final class ActorLifecycleObserverIsolationTest {
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS),
                     "logical actor finalization precedes arbitrary observer completion");
             assertTrue(observerEntered.await(3, TimeUnit.SECONDS));
+            assertEquals(0, runtime.runtimeStats().liveActors(),
+                    "authoritatively finalized actors must not remain logically live");
+            assertEquals(1, runtime.reservedActorSlots(),
+                    "blocked terminal observer retains only bounded spawn capacity");
             assertEquals(1, runtime.lifecycleObserverCarrierCount(),
                     "one blocked lifecycle callback needs one bounded host worker");
             assertEquals(0, runtime.lifecycleObserverBacklog(),
