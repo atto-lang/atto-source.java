@@ -134,3 +134,39 @@ Java/LLVM verification. No private Oreslang source was copied.
 Tests checked into this branch exercise the host TaskScope and physical
 completion distinction. They are **not** evidence of guest language execution
 or verified exact-head CI runs.
+
+## Directed host cancellation sources (October 18 continuation)
+
+`OresCancellationSource` is a host-only cancellation authority and
+`OresCancellationToken` is a read-only observation capability. Tokens have
+no `cancel()` operation and do not expose a raw `OresFuture` which could
+be cancelled to revoke a producer.
+
+`OresCancellationSource.linked(parentA.token(), parentB.token())` applies
+OR semantics: a cancellation of either upstream requests cancellation of
+the linked child; cancelling the child never cancels the upstream sources.
+Upstream registrations are detached on child cancellation or close, to
+prevent retention. The construction-only link direction also precludes
+introducing a cancellation cycle by reparenting a live source.
+
+`OresTaskScope.cancelWhen(token)` connects a source cancellation event to
+one scope and its descendants. It is **not** Task adoption, a failure link,
+a monitor, or an Actor capability grant. Scope cancellation detaches external
+registrations and does not affect the token's source. Tokens do not alter
+deadlines, CPU fuel, actor heap isolation or quota admission by themselves.
+
+These host callbacks may run synchronously on the source's cancelling
+thread. They must never directly run guest continuations. Proper guest
+syntax, scheduler-affine delivery, and cross-actor/tenant capability checks
+remain outside this Java runtime prototype.
+
+The Future's deferred cancellation notification gate now also fences
+late-registered callbacks until the whole owning scope's cancellation
+revocation walk completes. Merely flipping the Future's cancelled state
+cannot admit a new subscriber before its sibling producers are revoked.
+One-shot deferred notification is idempotent.
+
+Additional JUnit fixtures cover directed cancellation, linked-source
+OR propagation, late registration, listener detachment, and cancelling
+a linked TaskScope with a running child. These tests are checked in but
+**not verified executed** on the exact branch head.
