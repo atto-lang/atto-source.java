@@ -201,3 +201,64 @@ become a second writer or override the explicit Fetch-style response.
 Contract vectors and a small reference checker live in
 `contracts/v1/http-response-fetch/`; they test the **reference metadata rules**,
 not compiler or network-runtime behavior.
+
+
+## Security audit and hardened v1 rules (2026-10-18)
+
+1. **Actual body type:** one constructor argument `HttpBody` is an explicit,
+   compiler-known sum/trait over owned UTF-8 text, owned byte buffers and owned
+   readable byte streams; it is not a family of same-arity overloads distinguished
+   only by parameter type. A stream can be constructed only from a request-owned,
+   cancellation-aware producer. Neither class nor module types may be dynamically
+   created. `HttpResponse` remains nominal and affine.
+2. **Null-body semantics:** the *presence* of a body, even a zero-length text
+   string or zero-length stream, is prohibited for 204, 205 and 304, matching
+   Fetch's null-body status validation. `HttpResponse.empty(init)` does not
+   create a body. For HEAD, constructing a response with a body may be valid but
+   the transport must never read/send that body; it promptly cancels/settles the
+   producer and does not await a phantom EOF/trailer. HEAD trailer declarations
+   are rejected in v1.
+3. **Trailer compatibility is explicit:** a trailer future is permitted only
+   with a nonempty, unique case-insensitive `trailerNames` set and a readable
+   streaming body. For HTTP/1.1, require a trailer-capable transport and a client
+   `TE: trailers` opt-in; otherwise *reject before headers commit* under the
+   v1 fail-closed policy. HTTP/2 and HTTP/3 additionally require actual frame
+   writer support. Neither the `Trailer` nor `Transfer-Encoding` header can
+   be set by user code. Declaring trailers does not guarantee an intermediary
+   or browser will expose them to the ultimate consumer.
+4. **Permitted trailing fields:** RFC 9110 §6.5.1 forbids fields whose
+   definitions do not permit trailer use. The default v1 registry is
+   `Content-Digest`, `Repr-Digest`, and `Server-Timing`; any extension
+   requires an audited registry change. In particular `Location`,
+   `Content-Type`, routing, authentication, connection and framing fields
+   may **not** appear in trailers. A trailer future resolving an undeclared,
+   duplicate, or invalid field aborts the already-committed response.
+   `Content-Digest` follows RFC 9530 Structured Fields (e.g.,
+   `sha-256=:base64digest:`), not an ad-hoc hexadecimal header. The digest
+   example is *best-effort metadata*, not a promised end-to-end integrity check.
+5. **Header policy:** field names are ASCII RFC 9110 tokens; values are
+   HTTP ByteString-compatible with no CR/LF/NUL, other C0 controls or DEL.
+   Reject non-ByteString Unicode scalars, bounded counts/bytes, and
+   case-insensitive prohibited names. Transport owns `Content-Length`,
+   `Transfer-Encoding`, `Connection`, `TE`, `Trailer`, `Upgrade`,
+   and HTTP/2 pseudo-headers. Preserve individual `Set-Cookie` occurrences
+   without comma coalescing. A field-name casing trick cannot bypass policy.
+6. **Handoff linearization:** `run` returning a response transfers a single
+   immutable metadata snapshot and affine stream lease; exactly one of
+   `COMPLETE` or `ABORTED` publishes. Callback/continuation races
+   (disconnect, panic, deadline, EOF, trailer-future resolution, pooled actor
+   replacement) use a generation-checked compare-and-set terminal barrier.
+   In-flight native writes may finish cleanup, but never publish a second
+   response or retain an unbounded buffer after terminal publication.
+7. **Replay determinism:** fixed random seeds and exact-tree SHA manifests
+   must accompany evidence. Python reference metadata/lifecycle tests are
+   **design-policy tests only** and cannot upgrade Java/Graal or LLVM case
+   status. Actual HTTP wire framing, async body backpressure, and actor
+   ownership require executable Oreslang and live socket tests on each backend.
+
+Primary normative references:
+[WHATWG Fetch](https://fetch.spec.whatwg.org/#response-class),
+[WHATWG Streams](https://streams.spec.whatwg.org/),
+[RFC 9110 §6.5](https://www.rfc-editor.org/rfc/rfc9110#section-6.5),
+[RFC 9112](https://www.rfc-editor.org/rfc/rfc9112),
+[RFC 9530](https://www.rfc-editor.org/rfc/rfc9530).
