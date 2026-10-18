@@ -131,6 +131,18 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
+        // Actor carriers may enter the same evaluator concurrently. The
+        // identity map only retains call nodes already owned by this program.
+        private final Map<Ast.CallExpr, Integer> optionDepthCache =
+                java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+
+        private int checkedOptionDepth(Ast.CallExpr call) {
+            synchronized (optionDepthCache) {
+                return optionDepthCache.computeIfAbsent(
+                        call, Ast.CheckedOptionDepth::require);
+            }
+        }
+
         /** Exact immutable image published by link(); shared by all source actors. */
         private volatile SharedCodeImageStore.CodeImage linkedCodeImage;
         private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
@@ -4338,7 +4350,7 @@ public final class OresEvalRootNode extends RootNode {
 
             if (receiver instanceof OptionValue option
                     && member.member().equals("unwrap_all")) {
-                int depth = Ast.CheckedOptionDepth.require(call);
+                int depth = checkedOptionDepth(call);
                 return invokableInvocation(
                         values -> {
                             requireZero(values, "Option.unwrap_all");
@@ -5799,7 +5811,7 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof OptionValue option
                         && methodCall.member().equals("unwrap_all")) {
-                    int depth = Ast.CheckedOptionDepth.require(call);
+                    int depth = checkedOptionDepth(call);
                     return invokableInvocation(
                             values -> {
                                 requireZero(values, "Option.unwrap_all");
