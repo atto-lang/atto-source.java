@@ -106,7 +106,7 @@ final class EnumCaseSourceCallPlanTest {
                 "const Foo.A x = Foo.A; x(Foo.A);",
                 "return foo(Foo.A);",
                 "foo(Foo.A); const Foo v = Foo.B;",
-                "if true then foo(Foo.A); fi")) {
+                "foo(Foo.A); foo(1 + 2);")) {
             Ast.Program source = Parser.parse(BASE +
                     "pub fnc main(): int { " + body + " return 0; }");
             assertThrows(IllegalArgumentException.class,
