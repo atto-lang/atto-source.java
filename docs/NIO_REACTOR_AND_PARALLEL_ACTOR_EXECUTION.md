@@ -78,18 +78,32 @@ selector are superseded by this section.
   **before** calling `ActorRuntime.close()`; otherwise a bound notification
   might wait forever on workers already shut down.
 - The optional `-Dores.runtime.carriers.global.max=N` property accepts
-  5..256. It enforces a static upper bound over ordinary CONTROL + actor +
-  lifecycle-observer execution carriers: CONTROL reserve=1; PRIVATE, SHARED
-  and UNTRUSTED receive equal isolated shares; the remaining 1..3 slots are
-  reserved for the lazy terminal-observer domain. This includes native-affinity
-  lane capacity and caps Java non-affine growth. CONTROL and terminal cleanup
-  therefore retain explicit headroom while actor-domain quotas are occupied.
-- This is **not** a dynamic, work-conserving global permit scheduler: idle
-  domain quotas cannot yet be borrowed. By default (property absent), legacy
-  independent per-domain limits remain. NIO reactor/readiness threads,
-  the independent watchdog, and explicit user-owned `OresScheduler(N)`
-  threads are excluded from this execution-carrier cap and are reported as
-  separate host resources.
+  5..256. Its conservative partition is CONTROL=1, equal PRIVATE/SHARED/
+  UNTRUSTED preferred shares, and the remaining 1..3 slots for the lazy
+  terminal-observer domain. Those preferred shares exactly sum to N.
+- A VM-wide permit coordinator protects one runnable execution-carrier reserve
+  for CONTROL, PRIVATE, SHARED, UNTRUSTED and lifecycle observers. In the
+  explicitly permit-tracked topology
+  `-Dores.runtime.carriers=java -Dores.actor.affinity=none`, CONTROL,
+  non-affine actor domains and lifecycle observers may borrow otherwise-idle
+  permits up to their bounded per-domain maxima without consuming another
+  domain's final reserve.
+- Borrowing is deliberately **disabled** for default/auto native and lane/cpu
+  affinity topologies. Native pthread pools do not yet expose a per-carrier
+  exit/reaper acknowledgement for partial-start rollback, and an affinity lane
+  whose first worker is denied cannot safely borrow/rebalance through another
+  lane. Those topologies therefore stay on the static partition.
+- JDK 25 `ThreadPoolExecutor` starts workers through its internal thread
+  container rather than virtual-dispatching a public `Thread.start()`
+  override. Permit-aware JVM pools reserve in `ThreadFactory.newThread()`,
+  reconcile factory-created workers that never enter, linearize
+  RESERVED->ENTERED->RELEASED ownership, and fence executor termination on
+  permit retirement. Ordinary task failure is contained at the carrier
+  boundary so replacement cannot be requested before the old permit retires.
+- By default (property absent), legacy independent per-domain limits remain.
+  NIO reactor/readiness threads, the independent watchdog, and explicit
+  user-owned `OresScheduler(N)` threads are excluded from this
+  execution-carrier cap and are reported as separate host resources.
 - A direct byte-identical `OresCarrierBudget` source blob was compiled
   locally with JDK 21, and 261 positive/negative budget smoke cases passed.
   Source-repository JDK25/Graal CI still cannot execute runner steps; the
