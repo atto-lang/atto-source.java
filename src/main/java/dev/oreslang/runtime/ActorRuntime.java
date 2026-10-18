@@ -942,12 +942,28 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private record MessageEnvelope(
-            Object value,
-            Runnable release,
-            Runnable continuation,
-            ActorId sender,
-            long sequence) implements AutoCloseable {
+    private static final class MessageEnvelope implements AutoCloseable {
+        private final Object value;
+        private final Runnable release;
+        private final Runnable continuation;
+        private final ActorId sender;
+        private final long sequence;
+        private boolean releaseDetached;
+        private boolean releaseCompleted;
+
+        private MessageEnvelope(
+                Object value,
+                Runnable release,
+                Runnable continuation,
+                ActorId sender,
+                long sequence) {
+            this.value = value;
+            this.release = release;
+            this.continuation = continuation;
+            this.sender = sender;
+            this.sequence = sequence;
+        }
+
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
@@ -968,13 +984,45 @@ public final class ActorRuntime implements AutoCloseable {
                     -1L);
         }
 
+        private Object value() { return value; }
+        private Runnable continuation() { return continuation; }
+        private ActorId sender() { return sender; }
+        private long sequence() { return sequence; }
+
         private boolean isContinuation() {
             return continuation != null;
         }
 
+        /**
+         * Transfer retained mailbox-memory ownership to a suspended receive.
+         * The envelope's lexical close then becomes a no-op for that resource;
+         * the returned release must be completed by resume or teardown.
+         */
+        private synchronized Runnable detachRelease() {
+            if (release == null) return () -> { };
+            if (releaseDetached || releaseCompleted) {
+                throw new IllegalStateException(
+                        "mailbox envelope release ownership already transferred or completed");
+            }
+            releaseDetached = true;
+            return () -> {
+                synchronized (MessageEnvelope.this) {
+                    if (releaseCompleted) return;
+                    releaseCompleted = true;
+                }
+                release.run();
+            };
+        }
+
         @Override
         public void close() {
-            if (release != null) release.run();
+            Runnable owned = null;
+            synchronized (this) {
+                if (releaseDetached || releaseCompleted || release == null) return;
+                releaseCompleted = true;
+                owned = release;
+            }
+            owned.run();
         }
     }
 
@@ -1625,20 +1673,30 @@ public final class ActorRuntime implements AutoCloseable {
                         "actor " + cell.ref.id()
                                 + " already has a suspended source receive");
             }
-            if (cell.activeMail == null) {
+            if (cell.activeMail == null || cell.activeUserEnvelope == null) {
                 throw new IllegalStateException(
                         "only an active user-mail receive may suspend the actor mailbox");
             }
+            if (cell.suspendedMailRelease != null) {
+                throw new IllegalStateException(
+                        "actor suspended mail already owns a transport reservation");
+            }
+            cell.suspendedMailRelease = cell.activeUserEnvelope.detachRelease();
             cell.sourceReceiveSuspended = true;
         }
 
         future.whenCompleteRuntime((ignored, failure) -> {
             if (!enqueueContinuation(cell.ref.id(), () -> {
+                Runnable release;
                 synchronized (cell.lifecycleLock) {
+                    release = cell.suspendedMailRelease;
+                    cell.suspendedMailRelease = null;
                     cell.sourceReceiveSuspended = false;
                     cell.activeMail = null;
+                    cell.activeUserEnvelope = null;
                     cell.lifecycleLock.notifyAll();
                 }
+                if (release != null) release.run();
                 if (failure != null) {
                     Throwable terminal = OresFuture.unwrap(failure);
                     if (terminal instanceof java.util.concurrent.CancellationException
@@ -1650,10 +1708,19 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new RuntimeException(terminal);
                 }
             })) {
+                Runnable release = null;
                 synchronized (cell.lifecycleLock) {
                     if (!cell.stopped.get() && !cell.finalized) {
+                        release = cell.suspendedMailRelease;
+                        cell.suspendedMailRelease = null;
                         cell.sourceReceiveSuspended = false;
                         cell.activeMail = null;
+                        cell.activeUserEnvelope = null;
+                    }
+                }
+                if (release != null) release.run();
+                synchronized (cell.lifecycleLock) {
+                    if (!cell.stopped.get() && !cell.finalized) {
                         cell.fail(new IllegalStateException(
                                 "actor source receive completion could not re-enter its continuation lane"));
                     }
@@ -6157,6 +6224,10 @@ public final class ActorRuntime implements AutoCloseable {
         private int queuedContinuations;
         private long nextUserMessageSequence;
         private ActorInboxMail<M> activeMail;
+        /** Physical envelope currently backing activeMail during a user turn. */
+        private MessageEnvelope activeUserEnvelope;
+        /** Retained mailbox/decode reservation transferred across suspension. */
+        private Runnable suspendedMailRelease;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
@@ -6783,6 +6854,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     activeEnvelope.sequence(),
                                     received);
                             activeMail = mail;
+                            activeUserEnvelope = activeEnvelope;
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
@@ -6805,7 +6877,10 @@ public final class ActorRuntime implements AutoCloseable {
                                     behavior.onMessage(mail.value(), context);
                                 }
                             } finally {
-                                if (!sourceReceiveSuspended) activeMail = null;
+                                if (!sourceReceiveSuspended) {
+                                    activeMail = null;
+                                    activeUserEnvelope = null;
+                                }
                             }
                         }
                         if (codeExecutor == null
@@ -6882,8 +6957,12 @@ public final class ActorRuntime implements AutoCloseable {
             })) {
                 // Drain all committed user-message envelopes, including after close.
             }
+            Runnable suspendedRelease = suspendedMailRelease;
+            suspendedMailRelease = null;
             sourceReceiveSuspended = false;
             activeMail = null;
+            activeUserEnvelope = null;
+            if (suspendedRelease != null) suspendedRelease.run();
         }
 
         private void fail(Throwable failure) {
