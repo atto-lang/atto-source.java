@@ -1,11 +1,10 @@
 package dev.oreslang.runtime;
 
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.Objects;
-import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.UnaryOperator;
 
 /**
@@ -14,42 +13,29 @@ import java.util.function.UnaryOperator;
  * <p>Every execution domain keeps one protected reserve. Capacity above those
  * reserves is borrowable, but an above-reserve acquisition is denied whenever
  * granting it would leave too few free permits for currently unmet reserves.
- * Acquisition never waits; callers either create a carrier immediately or
- * retain/stage their runnable work.
+ * Acquisition never waits.
+ *
+ * <p>JDK 25 ThreadPoolExecutor starts workers through its internal thread
+ * container rather than virtual-dispatching a Thread.start() override. Permit
+ * acquisition therefore happens in ThreadFactory.newThread(), immediately
+ * before executor startup. The executor must reconcile factory-created threads
+ * after each synchronous worker-creation attempt so abandoned NEW threads
+ * return their permits. Started workers release on worker-loop exit.
  */
 final class OresCarrierPermitPool {
     enum Domain { CONTROL, PRIVATE, SHARED, UNTRUSTED, LIFECYCLE }
 
-    record Snapshot(
-            int maximum,
-            int totalHeld,
-            int free,
-            int controlHeld,
-            int privateHeld,
-            int sharedHeld,
-            int untrustedHeld,
-            int lifecycleHeld,
-            long deniedCapacity,
-            long deniedReserveProtection) {
-        Snapshot {
-            if (maximum < Domain.values().length || maximum > 256
-                    || totalHeld < 0 || totalHeld > maximum
-                    || free != maximum - totalHeld
-                    || controlHeld < 0 || privateHeld < 0 || sharedHeld < 0
-                    || untrustedHeld < 0 || lifecycleHeld < 0
-                    || (long) controlHeld + privateHeld + sharedHeld
-                            + untrustedHeld + lifecycleHeld != totalHeld
-                    || deniedCapacity < 0 || deniedReserveProtection < 0) {
-                throw new IllegalArgumentException("invalid physical carrier permit snapshot");
-            }
-        }
+    interface ReconciliableThreadFactory extends ThreadFactory {
+        /**
+         * Release permits for Thread objects created by the current caller
+         * that are still NEW after its synchronous executor operation returns.
+         */
+        void reconcileCreatedThreads();
     }
 
     private final int maximum;
     private final EnumMap<Domain, Integer> held = new EnumMap<>(Domain.class);
     private int total;
-    private long deniedCapacity;
-    private long deniedReserveProtection;
 
     OresCarrierPermitPool(int maximum) {
         if (maximum < Domain.values().length || maximum > 256)
@@ -68,10 +54,7 @@ final class OresCarrierPermitPool {
 
     synchronized Permit tryAcquire(Domain domain) {
         Objects.requireNonNull(domain, "domain");
-        if (total >= maximum) {
-            deniedCapacity = saturatingIncrement(deniedCapacity);
-            return null;
-        }
+        if (total >= maximum) return null;
 
         int current = held.get(domain);
         if (current >= 1) {
@@ -82,10 +65,7 @@ final class OresCarrierPermitPool {
                 if (other == domain) count++;
                 if (count < 1) unmetAfter++;
             }
-            if (freeAfter < unmetAfter) {
-                deniedReserveProtection = saturatingIncrement(deniedReserveProtection);
-                return null;
-            }
+            if (freeAfter < unmetAfter) return null;
         }
 
         held.put(domain, current + 1);
@@ -95,8 +75,9 @@ final class OresCarrierPermitPool {
     }
 
     /**
-     * Atomically reserve a fixed native carrier set before nativeStart().
-     * Failure leaves the coordinator unchanged.
+     * Atomic reservation primitive for a future native implementation.
+     * It is intentionally not wired to nativeStart yet: Java lacks proof that
+     * a partially attached pthread has physically exited after startup failure.
      */
     synchronized Permit[] tryAcquireMany(Domain domain, int count) {
         Objects.requireNonNull(domain, "domain");
@@ -118,24 +99,6 @@ final class OresCarrierPermitPool {
         return permits;
     }
 
-    synchronized Snapshot snapshot() {
-        return new Snapshot(
-                maximum,
-                total,
-                maximum - total,
-                held.get(Domain.CONTROL),
-                held.get(Domain.PRIVATE),
-                held.get(Domain.SHARED),
-                held.get(Domain.UNTRUSTED),
-                held.get(Domain.LIFECYCLE),
-                deniedCapacity,
-                deniedReserveProtection);
-    }
-
-    private static long saturatingIncrement(long value) {
-        return value == Long.MAX_VALUE ? Long.MAX_VALUE : value + 1L;
-    }
-
     private synchronized void release(Domain domain) {
         int current = held.get(domain);
         if (current <= 0 || total <= 0)
@@ -155,34 +118,24 @@ final class OresCarrierPermitPool {
             throw new IllegalStateException("physical carrier permit accounting invariant failed");
     }
 
-    /**
-     * JVM factory whose permit is acquired immediately before Thread.start().
-     * Creating a Java Thread object therefore consumes no physical permit.
-     * A failed start rolls the permit back unless the worker loop already
-     * entered concurrently; normal worker exit releases exactly once.
-     */
-    ThreadFactory threadFactory(
+    ReconciliableThreadFactory threadFactory(
             Domain domain,
             String prefix,
             UnaryOperator<Runnable> decorateWorkerLoop) {
-        Objects.requireNonNull(domain, "domain");
-        Objects.requireNonNull(prefix, "prefix");
-        Objects.requireNonNull(decorateWorkerLoop, "decorateWorkerLoop");
-        AtomicInteger next = new AtomicInteger();
-        return workerLoop -> {
-            Runnable decorated = Objects.requireNonNull(
-                    decorateWorkerLoop.apply(Objects.requireNonNull(workerLoop, "workerLoop")),
-                    "decorated workerLoop");
-            return new PermitThread(
-                    decorated,
-                    prefix + next.incrementAndGet(),
-                    this,
-                    domain);
-        };
+        return new PermitThreadFactory(
+                this,
+                Objects.requireNonNull(domain, "domain"),
+                Objects.requireNonNull(prefix, "prefix"),
+                Objects.requireNonNull(decorateWorkerLoop, "decorateWorkerLoop"));
     }
 
-    ThreadFactory threadFactory(Domain domain, String prefix) {
+    ReconciliableThreadFactory threadFactory(Domain domain, String prefix) {
         return threadFactory(domain, prefix, UnaryOperator.identity());
+    }
+
+    static void reconcile(ThreadFactory factory) {
+        if (factory instanceof ReconciliableThreadFactory reconciliable)
+            reconciliable.reconcileCreatedThreads();
     }
 
     static final class Permit implements AutoCloseable {
@@ -205,73 +158,100 @@ final class OresCarrierPermitPool {
         }
     }
 
-    private static final class PermitThread extends Thread {
-        private static final int NEW = 0;
-        private static final int STARTING = 1;
-        private static final int RUNNING = 2;
-        private static final int RELEASED = 3;
-
+    private static final class PermitThreadFactory implements ReconciliableThreadFactory {
         private final OresCarrierPermitPool permits;
         private final Domain domain;
-        private final AtomicInteger state = new AtomicInteger(NEW);
-        private final AtomicReference<Permit> permit = new AtomicReference<>();
+        private final String prefix;
+        private final UnaryOperator<Runnable> decorateWorkerLoop;
+        private final java.util.concurrent.atomic.AtomicInteger next =
+                new java.util.concurrent.atomic.AtomicInteger();
+        private final ConcurrentHashMap<Thread, Permit> live = new ConcurrentHashMap<>();
+        private final ThreadLocal<ArrayList<Thread>> createdByCaller =
+                ThreadLocal.withInitial(ArrayList::new);
 
-        PermitThread(
-                Runnable target,
-                String name,
+        PermitThreadFactory(
                 OresCarrierPermitPool permits,
-                Domain domain) {
-            super(target, name);
-            setDaemon(true);
+                Domain domain,
+                String prefix,
+                UnaryOperator<Runnable> decorateWorkerLoop) {
             this.permits = permits;
             this.domain = domain;
+            this.prefix = prefix;
+            this.decorateWorkerLoop = decorateWorkerLoop;
         }
 
         @Override
-        public synchronized void start() {
-            if (!state.compareAndSet(NEW, STARTING))
-                throw new IllegalThreadStateException("carrier thread already started");
-
-            Permit acquired = permits.tryAcquire(domain);
-            if (acquired == null) {
-                state.set(RELEASED);
-                throw new RejectedExecutionException(
-                        "global physical carrier budget has no safe permit for " + domain);
+        public Thread newThread(Runnable workerLoop) {
+            Objects.requireNonNull(workerLoop, "workerLoop");
+            Permit permit = permits.tryAcquire(domain);
+            if (permit == null) {
+                // ThreadFactory explicitly permits null when creation policy
+                // refuses another worker. ThreadPoolExecutor can then queue or
+                // reject according to its normal bounded semantics.
+                return null;
             }
-            permit.set(acquired);
+
+            final Runnable decorated;
             try {
-                super.start();
-            } catch (RuntimeException | Error startFailure) {
-                // If the JVM still reports NEW, no physical Java worker was
-                // published and the permit can be rolled back synchronously.
-                // Any non-NEW/ambiguous state keeps the permit attached to the
-                // thread so run() owns the eventual exactly-once release.
-                if (getState() == State.NEW
-                        && state.compareAndSet(STARTING, RELEASED)) {
-                    releasePermit();
+                decorated = Objects.requireNonNull(
+                        decorateWorkerLoop.apply(workerLoop),
+                        "decorated workerLoop");
+            } catch (RuntimeException | Error failure) {
+                permit.close();
+                throw failure;
+            }
+
+            final Thread[] holder = new Thread[1];
+            Runnable tracked = () -> {
+                try {
+                    decorated.run();
+                } finally {
+                    // processWorkerExit() may synchronously attempt a
+                    // replacement on this same worker thread. Reconcile any
+                    // replacement Thread object that was created but never
+                    // started before releasing this exiting carrier's permit.
+                    reconcileCreatedThreads();
+                    Thread current = Thread.currentThread();
+                    Permit owned = live.remove(current);
+                    if (owned == null) {
+                        throw new IllegalStateException(
+                                "physical carrier permit missing at JVM worker exit");
+                    }
+                    owned.close();
                 }
-                throw startFailure;
+            };
+
+            final Thread thread;
+            try {
+                thread = new Thread(tracked, prefix + next.incrementAndGet());
+                thread.setDaemon(true);
+                holder[0] = thread;
+                live.put(thread, permit);
+                createdByCaller.get().add(thread);
+                return thread;
+            } catch (RuntimeException | Error failure) {
+                permit.close();
+                throw failure;
             }
         }
 
         @Override
-        public void run() {
-            if (!state.compareAndSet(STARTING, RUNNING)) {
-                // A successful JVM start must publish STARTING before this
-                // worker can enter. Anything else is a runtime invariant fault.
-                releasePermit();
-                throw new IllegalStateException("physical carrier entered without a start permit");
+        public void reconcileCreatedThreads() {
+            ArrayList<Thread> created = createdByCaller.get();
+            if (created.isEmpty()) {
+                createdByCaller.remove();
+                return;
             }
             try {
-                super.run();
+                for (Thread thread : created) {
+                    if (thread.getState() != Thread.State.NEW) continue;
+                    Permit abandoned = live.remove(thread);
+                    if (abandoned != null) abandoned.close();
+                }
             } finally {
-                if (state.getAndSet(RELEASED) != RELEASED) releasePermit();
+                created.clear();
+                createdByCaller.remove();
             }
-        }
-
-        private void releasePermit() {
-            Permit owned = permit.getAndSet(null);
-            if (owned != null) owned.close();
         }
     }
 }
