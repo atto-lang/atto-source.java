@@ -212,6 +212,41 @@ final class DopGraphCpuIntegrationV1Test {
     }
 
     @Test
+    void interruptedPreAdmissionWorkerCannotMutateAfterSchedulerAccepts() {
+        try (var input = new DopKernelIR.HostBuffer(LAYOUT);
+             var output = new DopKernelIR.HostBuffer(LAYOUT)) {
+            input.write(0, 0, 3.0f);
+            var launched = new java.util.concurrent.CountDownLatch(1);
+            var workerRef = new java.util.concurrent.atomic.AtomicReference<Thread>();
+            var result = DopGraphCpuIntegrationV1.submit(kernel(), input, output,
+                    region(input, DopRegionSchedule.Mode.READ),
+                    region(output, DopRegionSchedule.Mode.WRITE),
+                    scalar(), job -> {
+                        var worker = new Thread(() -> {
+                            launched.countDown();
+                            job.run();
+                        });
+                        workerRef.set(worker);
+                        worker.start();
+                        try {
+                            assertTrue(launched.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                            worker.interrupt();
+                            worker.join(5000);
+                            assertFalse(worker.isAlive());
+                        } catch (InterruptedException ex) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(ex);
+                        }
+                    });
+            assertNotNull(workerRef.get());
+            assertInstanceOf(InterruptedException.class,
+                    assertThrows(CompletionException.class, result::join).getCause());
+            assertEquals(0.0f, output.read(0, 0));
+            assertEquals(0.0f, output.read(1, 0));
+        }
+    }
+
+    @Test
     void executorThatEnqueuesThenThrowsCannotMutateOutput() {
         try (var input = new DopKernelIR.HostBuffer(LAYOUT);
              var output = new DopKernelIR.HostBuffer(LAYOUT)) {
