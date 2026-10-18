@@ -274,6 +274,12 @@ final class WorkflowJournalV1Test {
         assertEquals(
                 WorkflowJournalV1.EffectState.AMBIGUOUS,
                 store.effect(active.effectKey()).orElseThrow().state());
+        store.resolveAmbiguousForRetry(
+                active.effectKey(),
+                "reconcile://provider/not-found");
+        assertEquals(
+                WorkflowJournalV1.EffectState.ABANDONED,
+                store.effect(active.effectKey()).orElseThrow().state());
     }
 
     @Test
