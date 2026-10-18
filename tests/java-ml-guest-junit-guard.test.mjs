@@ -62,3 +62,24 @@ test("guest CI source pins match actual fixture blobs and JUnit gate", () => {
   assert.match(workflow, /-Dores\\.runtime\\.carriers=native clean verify/);
   assert.doesNotMatch(workflow, /uses: (?:actions\\/checkout|graalvm\\/setup-graalvm)@v[0-9]/);
 });
+
+test("private source-local runner cannot admit unreviewed code", () => {
+  const privateWorkflow = readFileSync(new URL("../.github/workflows/ml-scalar-actor-private-ephemeral.yml", import.meta.url), "utf8");
+  const hostedWorkflow = readFileSync(new URL("../.github/workflows/ml-scalar-actor-guest.yml", import.meta.url), "utf8");
+  assert.match(hostedWorkflow, /ml-scalar-actor-private-ephemeral\\.yml/);
+  assert.match(privateWorkflow, /^on:\\n  push:/m);
+  assert.doesNotMatch(privateWorkflow, /^\\s+pull_request:|^\\s+workflow_dispatch:/m);
+  assert.match(privateWorkflow, /deny-unapproved:/);
+  assert.match(privateWorkflow, /approved-ml-guest:/);
+  assert.match(privateWorkflow, /github\\.repository_id == '1400792274'/);
+  assert.match(privateWorkflow, /github\\.event\\.repository\\.private == true/);
+  assert.match(privateWorkflow, /github\\.ref_protected == true/);
+  assert.match(privateWorkflow, /vars\\.ORESLANG_ML_APPROVED_SHA == github\\.sha/);
+  assert.match(privateWorkflow, /GITHUB_REF_PROTECTED/);
+  assert.match(privateWorkflow, /git rev-parse 'HEAD\\^\\{tree\\}'/);
+  assert.match(privateWorkflow, /persist-credentials: false/);
+  assert.match(privateWorkflow, /runs-on: \\[self-hosted, linux, x64, oreslang-private-ephemeral\\]/);
+  assert.match(privateWorkflow, /-Dtest=MlActorStateScalarGuestTest test/);
+  assert.match(privateWorkflow, /-Dores\\.runtime\\.carriers=native clean verify/);
+  assert.doesNotMatch(privateWorkflow, /upload-artifact|actions\\/cache|pull_request_target:/);
+});
