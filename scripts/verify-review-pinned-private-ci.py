@@ -33,6 +33,14 @@ EXPECTED_PRS = {
 RESUME_MARKER = "PRIVATE_CI_RESUME_APPROVED"
 RESUME_REVOKE_MARKER = "PRIVATE_CI_RESUME_REVOKED"
 MAX_JSON = 2 * 1024 * 1024
+# Match the strict private-ci-policy workflow grammar. Python int()/split()
+# otherwise admit numeric aliases and whitespace not approved by reviewers.
+DESTINATION_ROW = re.compile(
+    r"([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]{0,19})"
+)
+SNAPSHOT_ROW = re.compile(
+    r"([0-9a-f]{40}) ([0-9a-f]{40}) ([1-9][0-9]{0,19})"
+)
 
 class Denied(RuntimeError):
     pass
@@ -224,38 +232,33 @@ def exact_resume_comment(incident, heads, source_commit, source_tree, reviewer):
 
 def active_rows(path):
     text = Path(path).read_text(encoding="utf-8")
-    return [line.strip() for line in text.splitlines()
-            if line.strip() and not line.lstrip().startswith("#")]
+    # Do not silently normalize caller-controlled policy text. This must
+    # exactly match the checked-in private-ci-policy workflow: blank lines and
+    # column-zero comments are the only ignored lines.
+    return [line for line in text.splitlines()
+            if line and not line.startswith("#")]
 
 def parse_destination_entry(destination_file):
     rows = active_rows(destination_file)
     if len(rows) != 1:
         raise Denied("destination approval must contain exactly one active entry")
-    parts = rows[0].split()
-    if len(parts) != 2 or parts[0] != CARRIER_REPO:
+    match = DESTINATION_ROW.fullmatch(rows[0])
+    if match is None or match.group(1) != CARRIER_REPO:
         raise Denied("invalid destination approval entry")
-    try:
-        destination_id = int(parts[1])
-    except ValueError as exc:
-        raise Denied("invalid destination approval repository ID") from exc
-    if destination_id != CARRIER_REPO_ID:
+    if match.group(2) != str(CARRIER_REPO_ID):
         raise Denied("destination approval repository ID mismatch")
-    return destination_id
+    return CARRIER_REPO_ID
 
 def parse_snapshot_entry(snapshot_file):
     rows = active_rows(snapshot_file)
     if len(rows) != 1:
         raise Denied("snapshot approval must contain exactly one active tuple")
-    parts = rows[0].split()
-    if len(parts) != 3:
+    match = SNAPSHOT_ROW.fullmatch(rows[0])
+    if match is None:
         raise Denied("invalid snapshot tuple")
-    source_commit = require_sha(parts[0], "source commit")
-    source_tree = require_sha(parts[1], "source tree")
-    try:
-        destination_id = int(parts[2])
-    except ValueError as exc:
-        raise Denied("invalid destination repository ID") from exc
-    if destination_id != CARRIER_REPO_ID:
+    source_commit = require_sha(match.group(1), "source commit")
+    source_tree = require_sha(match.group(2), "source tree")
+    if match.group(3) != str(CARRIER_REPO_ID):
         raise Denied("snapshot tuple destination mismatch")
     return source_commit, source_tree
 
@@ -308,7 +311,7 @@ def main():
         raise Denied("approved source commit/tree mismatch")
 
     destination = load_json(args.destination_repo)
-    if destination.get("id") != CARRIER_REPO_ID:
+    if type(destination.get("id")) is not int or destination["id"] != CARRIER_REPO_ID:
         raise Denied("carrier repository ID mismatch")
     if destination.get("full_name") != CARRIER_REPO:
         raise Denied("carrier repository name mismatch")
