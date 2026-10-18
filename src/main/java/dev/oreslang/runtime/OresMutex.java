@@ -495,6 +495,7 @@ public final class OresMutex {
 
             if (wouldCreateDeadlock(domain)) {
                 WAITING_ON.remove(domain, this);
+                ConcurrencyTestProbe.deadlock("mutex-cycle");
                 throw new DeadlockDetectedException();
             }
         }
