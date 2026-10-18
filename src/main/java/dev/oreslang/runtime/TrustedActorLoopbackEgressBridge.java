@@ -27,6 +27,11 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
     }
 
     private static final int MAX_TICKETS = 16;
+    // Only the host retains bridge objects and their privileged scopes.
+    private record ActorKey(ActorRuntime runtime, ActorRuntime.ActorId id) { }
+    private static final ConcurrentHashMap<ActorKey, TrustedActorLoopbackEgressBridge>
+            HOST_BINDINGS = new ConcurrentHashMap<>();
+    private final ActorKey bindingKey;
     private final ActorRuntime runtime;
     private final ActorRuntime.ActorRef<?> actor;
     private final TrustedHttpLoopbackProbe broker;
@@ -51,9 +56,14 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
         if (actor.kind() != ActorRuntime.ActorKind.UNTRUSTED || !actor.isAlive()) {
             throw new IllegalArgumentException("only a live untrusted actor may bind");
         }
+        this.bindingKey = new ActorKey(this.runtime, this.actor.id());
         this.hostDispatcher = Objects.requireNonNull(hostDispatcher);
         this.broker = new TrustedHttpLoopbackProbe(
                 gate, child, supervisor, tenant, fixedLoopbackPort);
+        if (HOST_BINDINGS.putIfAbsent(bindingKey, this) != null) {
+            broker.close();
+            throw new IllegalStateException("untrusted actor already has a host egress binding");
+        }
     }
 
     /**
@@ -61,7 +71,28 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
      * No user-controlled identity or arbitrary URL is accepted.
      * Admission is bounded before enqueuing on a trusted host executor.
      */
-    synchronized long submitGetFromCurrentActor() {
+    static long submitGetFromCurrentActor() {
+        return lookupCurrentBinding().submitBoundRequest();
+    }
+
+    static Poll pollFromCurrentActor(long id) {
+        return lookupCurrentBinding().pollBoundTicket(id);
+    }
+
+    private static TrustedActorLoopbackEgressBridge lookupCurrentBinding() {
+        ActorRuntime runtime = ActorRuntime.currentActorRuntime();
+        var id = ActorRuntime.currentActorId();
+        if (ActorRuntime.currentActorKind() != ActorRuntime.ActorKind.UNTRUSTED
+                || runtime == null || id.isEmpty()
+                || ActorRuntime.inActorGroupMailmanExecution()) {
+            throw new SecurityException("egress requires authenticated untrusted actor turn");
+        }
+        var found = HOST_BINDINGS.get(new ActorKey(runtime, id.orElseThrow()));
+        if (found == null) throw new SecurityException("actor has no host-issued egress binding");
+        return found;
+    }
+
+    private synchronized long submitBoundRequest() {
         requireBoundActorTurn();
         if (closed) throw new IllegalStateException("egress binding closed");
         if (!actor.isAlive()) throw new SecurityException("actor terminated");
@@ -85,7 +116,7 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
      * Single-consumer poll; consumes terminal state so completed tickets
      * cannot build up indefinitely or be replayed.
      */
-    Poll pollFromCurrentActor(long id) {
+    private Poll pollBoundTicket(long id) {
         requireBoundActorTurn();
         AtomicReference<Poll> slot = tickets.get(id);
         if (slot == null) throw new SecurityException("invalid egress ticket");
@@ -142,6 +173,7 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
     @Override public synchronized void close() {
         requireHost();
         closed = true;
+        HOST_BINDINGS.remove(bindingKey, this);
         // Repeated close retries outstanding host cancellation.
         broker.close();
     }
