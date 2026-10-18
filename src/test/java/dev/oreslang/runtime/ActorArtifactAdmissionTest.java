@@ -32,7 +32,7 @@ final class ActorArtifactAdmissionTest {
         var attestation = attestation("ImageWorker", manifest);
         var target = targetPolicy();
 
-        ActorArtifact<Object> artifact = ActorArtifactAdmission.admitIpcActor(
+        ActorArtifact<Object> artifact = ActorArtifactAdmission.admitIpcActor(java.util.UUID.randomUUID(), 
                 "ImageWorker",
                 Ast.ActorKind.PRIVATE,
                 manifest,
@@ -74,7 +74,7 @@ final class ActorArtifactAdmissionTest {
 
         SecurityException failure = assertThrows(
                 SecurityException.class,
-                () -> ActorArtifactAdmission.admitIpcActor(
+                () -> ActorArtifactAdmission.admitIpcActor(java.util.UUID.randomUUID(), 
                         "ImageWorker",
                         Ast.ActorKind.PRIVATE,
                         manifest,
@@ -110,7 +110,7 @@ final class ActorArtifactAdmissionTest {
 
         SecurityException failure = assertThrows(
                 SecurityException.class,
-                () -> ActorArtifactAdmission.admitIpcActor(
+                () -> ActorArtifactAdmission.admitIpcActor(java.util.UUID.randomUUID(), 
                         "ImageWorker",
                         Ast.ActorKind.PRIVATE,
                         mutated,
@@ -131,7 +131,7 @@ final class ActorArtifactAdmissionTest {
 
         SecurityException failure = assertThrows(
                 SecurityException.class,
-                () -> ActorArtifactAdmission.admitIpcActor(
+                () -> ActorArtifactAdmission.admitIpcActor(java.util.UUID.randomUUID(), 
                         "ImageWorker",
                         Ast.ActorKind.PRIVATE,
                         manifest,
@@ -173,7 +173,7 @@ final class ActorArtifactAdmissionTest {
 
         SecurityException failure = assertThrows(
                 SecurityException.class,
-                () -> ActorArtifactAdmission.admitIpcActor(
+                () -> ActorArtifactAdmission.admitIpcActor(java.util.UUID.randomUUID(), 
                         "ImageWorker",
                         Ast.ActorKind.PRIVATE,
                         manifest,
@@ -192,7 +192,7 @@ final class ActorArtifactAdmissionTest {
         KeyPair keys = keyPair();
 
         var unknown = sign(manifest(executable, List.of("made.up.capability")), keys);
-        assertThrows(SecurityException.class, () -> ActorArtifactAdmission.admitIpcActor(
+        assertThrows(SecurityException.class, () -> ActorArtifactAdmission.admitIpcActor(java.util.UUID.randomUUID(), 
                 "ImageWorker", Ast.ActorKind.PRIVATE, unknown, executable,
                 attestation("ImageWorker", unknown),
                 (builder, keyId) -> keys.getPublic(), targetPolicy(),
@@ -201,7 +201,7 @@ final class ActorArtifactAdmissionTest {
         var network = sign(manifest(executable, List.of("network")), keys);
         SecurityException excess = assertThrows(
                 SecurityException.class,
-                () -> ActorArtifactAdmission.admitIpcActor(
+                () -> ActorArtifactAdmission.admitIpcActor(java.util.UUID.randomUUID(), 
                         "ImageWorker", Ast.ActorKind.PRIVATE, network, executable,
                         attestation("ImageWorker", network),
                         (builder, keyId) -> keys.getPublic(), targetPolicy(),
@@ -215,12 +215,12 @@ final class ActorArtifactAdmissionTest {
         KeyPair keys = keyPair();
         var manifest = sign(manifest(executable, List.of()), keys);
 
-        assertDoesNotThrow(() -> ActorArtifactAdmission.admitIpcActor(
+        assertDoesNotThrow(() -> ActorArtifactAdmission.admitIpcActor(java.util.UUID.randomUUID(), 
                 "HostileWorker",
                 Ast.ActorKind.UNTRUSTED,
                 manifest,
                 executable,
-                attestation("HostileWorker", manifest),
+                attestation("HostileWorker", Ast.ActorKind.UNTRUSTED, manifest),
                 (builder, keyId) -> keys.getPublic(),
                 targetPolicy(),
                 IsolatePolicy.developer(),
@@ -228,12 +228,12 @@ final class ActorArtifactAdmissionTest {
 
         SecurityException nonAdversarial = assertThrows(
                 SecurityException.class,
-                () -> ActorArtifactAdmission.admitIpcActor(
+                () -> ActorArtifactAdmission.admitIpcActor(java.util.UUID.randomUUID(), 
                         "HostileWorker",
                         Ast.ActorKind.UNTRUSTED,
                         manifest,
                         executable,
-                        attestation("HostileWorker", manifest),
+                        attestation("HostileWorker", Ast.ActorKind.UNTRUSTED, manifest),
                         (builder, keyId) -> keys.getPublic(),
                         targetPolicy(),
                         IsolatePolicy.developer(),
@@ -263,7 +263,7 @@ final class ActorArtifactAdmissionTest {
                 "aarch64-unknown-linux-gnu",
                 ABI,
                 1024 * 1024);
-        assertThrows(SecurityException.class, () -> ActorArtifactAdmission.admitIpcActor(
+        assertThrows(SecurityException.class, () -> ActorArtifactAdmission.admitIpcActor(java.util.UUID.randomUUID(), 
                 "ImageWorker", Ast.ActorKind.PRIVATE, manifest, executable,
                 attestation("ImageWorker", manifest),
                 (builder, keyId) -> keys.getPublic(), wrongTarget,
@@ -274,7 +274,7 @@ final class ActorArtifactAdmissionTest {
                         IsolatePolicy.Capability.HOT_CODE_LOAD);
         SecurityException authority = assertThrows(
                 SecurityException.class,
-                () -> ActorArtifactAdmission.admitIpcActor(
+                () -> ActorArtifactAdmission.admitIpcActor(java.util.UUID.randomUUID(), 
                         "ImageWorker", Ast.ActorKind.PRIVATE, manifest, executable,
                         attestation("ImageWorker", manifest),
                         (builder, keyId) -> keys.getPublic(), targetPolicy(),
