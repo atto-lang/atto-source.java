@@ -44,6 +44,77 @@ public final class OptionalCallLiteralStage {
     }
 
     /**
+     * Non-executable candidate from a parser-owned, self-contained module.
+     * A function name alone is NOT a lexical-resolution, owner, visibility,
+     * effect or ownership proof. In particular, a local variable at the call
+     * site might shadow this module declaration. No backend may invoke this.
+     */
+    public static final class LocalCandidate {
+        private final Ast.FunctionDecl declaration;
+        private final LiteralPlan preview;
+
+        private LocalCandidate(Ast.FunctionDecl declaration, LiteralPlan preview) {
+            this.declaration = Objects.requireNonNull(declaration, "declaration");
+            this.preview = Objects.requireNonNull(preview, "preview");
+        }
+
+        public Ast.FunctionDecl declaration() { return declaration; }
+        public LiteralPlan preview() { return preview; }
+    }
+
+    /**
+     * Conservatively bind the signature from actual parsed source, not a
+     * caller-supplied list. Import resolution and all runtime admission remain
+     * blocked. More than one matching declaration is ambiguous even when
+     * supplied counts or labels differ: do not guess at overload selection.
+     */
+    public static LocalCandidate prepareSingleModuleLiteralCandidate(
+            Ast.Program program, Ast.StagedCallExpr call) {
+        Objects.requireNonNull(program, "program");
+        Objects.requireNonNull(call, "staged call");
+        if (!program.imports().isEmpty() || program.modules().size() != 1) {
+            throw new IllegalArgumentException(
+                    "single-module candidate requires exactly one unimported module");
+        }
+        if (!(call.callee() instanceof Ast.NameExpr target)
+                || call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    "candidate requires a direct name and no generic call application");
+        }
+        Ast.ModuleDecl module = program.modules().getFirst();
+        if (!module.annotations().isEmpty() || !module.contracts().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "module contracts and annotations need semantic resolution");
+        }
+        Ast.FunctionDecl candidate = null;
+        for (Ast.Decl decl : module.declarations()) {
+            if (decl instanceof Ast.FunctionDecl fn && target.name().equals(fn.name())) {
+                if (candidate != null) {
+                    throw new IllegalArgumentException(
+                            "overloaded candidates require independent declaration selection");
+                }
+                if (fn.kind() != Ast.CallableKind.FNC || fn.async() || fn.suspends()
+                        || fn.generator() || fn.structural() || fn.nonLexical()
+                        || fn.trapped() || fn.actorKind() != Ast.ActorKind.NONE
+                        || !fn.genericParameters().isEmpty() || !fn.annotations().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "candidate callable needs checked effects, generics or capabilities");
+                }
+                candidate = fn;
+            } else if (decl instanceof Ast.FieldDecl field
+                    && target.name().equals(field.name())) {
+                throw new IllegalArgumentException(
+                        "same-name module value needs real lexical resolution");
+            }
+        }
+        if (candidate == null) {
+            throw new IllegalArgumentException("unknown local function candidate");
+        }
+        LiteralPlan preview = prepareDirectLiteralCall(call, candidate.parameters());
+        return new LocalCandidate(candidate, preview);
+    }
+
+    /**
      * Only direct-name calls with literal argument expressions qualify.
      * The direct name is still UNRESOLVED: this proof must never select a
      * declaration based on name spelling, labels or guessed parameter types.
