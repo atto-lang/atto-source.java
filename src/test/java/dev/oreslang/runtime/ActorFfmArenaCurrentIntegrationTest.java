@@ -36,6 +36,21 @@ final class ActorFfmArenaCurrentIntegrationTest {
     }
 
     @Test
+    void arenaRetirementFatalFailureDominatesEarlierOrdinaryCleanup() {
+        var ordinary = new IllegalStateException("ordinary");
+        var fatal = new LinkageError("fatal");
+        Throwable merged = ActorArena.mergeRetirementFailure(ordinary, fatal);
+        assertSame(fatal, merged);
+        assertTrue(List.of(merged.getSuppressed()).contains(ordinary));
+
+        var later = new IllegalArgumentException("later");
+        assertSame(fatal, ActorArena.mergeRetirementFailure(merged, later));
+        assertTrue(List.of(fatal.getSuppressed()).contains(later));
+        assertSame(fatal, assertThrows(LinkageError.class,
+                () -> ActorArena.rethrowRetirementFailure(fatal)));
+    }
+
+    @Test
     void persistentArenaSurvivesTurnsAndLoanPinsPhysicalRetirement() throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
 
