@@ -39,6 +39,8 @@ class BundleReceiptTests(unittest.TestCase):
             jar.writestr('dev/oreslang/launcher/OresMain.class', b'synthetic')
         with ZipFile(self.bundle / 'lib' / 'dependency.jar', 'w') as jar:
             jar.writestr('synthetic.txt', b'one')
+        self.report = root / 'versions.txt'
+        self.report.write_text('GraalVM JDK 25\nApache Maven 3.9\nNative Image 25.3\n')
         self.launcher = self.bundle / 'launcher'
         self.launcher.write_text('''#!/bin/sh
 case "$1" in
@@ -51,7 +53,8 @@ exit 9
 
     def capture(self, **kw):
         return capture(self.repo, self.bundle, kw.get('sha', self.commit),
-                       kw.get('tree', self.tree), kw.get('mode', 'jvm'))
+                       kw.get('tree', self.tree), kw.get('mode', 'jvm'),
+                       kw.get('report'))
 
     def test_positive_bundle(self):
         result = self.capture()
@@ -145,6 +148,16 @@ exit 9
         self.launcher.write_text(body)
         with self.assertRaisesRegex(ValueError, 'bundle file set mutated'):
             self.capture()
+
+    def test_toolchain_report_is_hash_bound(self):
+        first = self.capture(report=self.report)
+        self.report.write_text('changed compiler toolchain report\n')
+        second = self.capture(report=self.report)
+        self.assertNotEqual(first['toolchain_report'], second['toolchain_report'])
+
+    def test_missing_toolchain_report_denied(self):
+        with self.assertRaisesRegex(ValueError, 'toolchain report missing'):
+            self.capture(report=self.bundle.parent / 'missing-version-file')
 
     def test_cannot_reuse_different_bundle(self):
         self.assertEqual(self.capture()['source_commit'], self.commit)
