@@ -282,6 +282,25 @@ still retrievable by SHA. Administrators must restrict public access and seek
 GitHub Support assistance for retained Git objects, Actions caches/logs, and
 other copies before resolving the incident.
 
+## Strict reviewed workflow boundary
+
+The offline review-coverage gate protects the complete `preflight-regressions`
+job, not just matching step names anywhere in a workflow. It permits a single
+security job with exactly four steps: pinned checkout with
+`persist-credentials: false`, review-coverage validation, offline runner
+self-test, and the complete publisher regression execution step. Extra
+checkout/action steps, additional jobs, edited checkout identities, disabled
+or masked tests, and renamed or modified executable security commands deny
+the review-coverage check.
+
+This protects against false-positive source-only test attestations. It is
+**not** a substitute for protected branch rules and independent CODEOWNER
+review; unreviewed workflow modifications are still untrusted until GitHub
+actually enforces the reviewed source policy. The security regression file
+`scripts/test-private-ci-review-coverage.py` contains 28 cases for this
+boundary. The 28/28 local result is specific to the validator and does not
+certify the complete publisher suite or compiler.
+
 ## Offline publisher regression execution
 
 These checks **do not transfer source**. From a trusted authorized checkout of
