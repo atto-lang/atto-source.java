@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 import compiler_bundle as cb
 
@@ -29,10 +30,13 @@ class BundleTests(unittest.TestCase):
         self.commit = self.git('rev-parse', 'HEAD')
         self.tree = self.git('show', '-s', '--format=%T', 'HEAD')
         self.jar = self.root / 'compiled.jar'
-        self.jar.write_bytes(b'fake jar bytes - NOT AN ORESLANG BINARY\n')
+        with zipfile.ZipFile(self.jar, 'w') as z:
+            z.writestr('module-info.class', b'\xca\xfe\xba\xbe synthetic')
+            z.writestr('dev/oreslang/launcher/OresMain.class', b'\xca\xfe\xba\xbe synthetic')
         self.deps = self.root / 'runtime-deps'
         self.deps.mkdir()
-        (self.deps / 'dep-a.jar').write_bytes(b'fake dependency A\n')
+        with zipfile.ZipFile(self.deps / 'dep-a.jar', 'w') as z:
+            z.writestr('com/example/Dependency.class', b'\xca\xfe\xba\xbe synthetic')
         self.out = self.root / 'bundle'
 
     def git(self, *args):
@@ -70,6 +74,90 @@ class BundleTests(unittest.TestCase):
         self.assertEqual(len(doc['files']), 3)
         self.assertFalse(self.verify()['provenance_independently_attested'])
 
+    def test_verify_does_not_execute_untrusted_launcher(self):
+        self.create()
+        marker = self.root / 'exec-marker'
+        with patch.object(cb, 'probe_info', side_effect=AssertionError('executed untrusted code')):
+            self.assertEqual(self.verify()['schema_version'], cb.SCHEMA)
+        self.assertFalse(marker.exists())
+
+    def test_optional_launcher_probe_must_be_explicit(self):
+        self.create()
+        with patch.object(cb, 'probe_info', side_effect=ValueError('untrusted launcher rejected')):
+            self.verify()
+            with self.assertRaisesRegex(ValueError, 'untrusted launcher rejected'):
+                cb.verify_bundle(self.out, self.commit, self.tree, run_untrusted_launcher=True)
+
+    def test_manifest_digest_pin_correct(self):
+        self.create()
+        expected = cb.digest(self.out / 'manifest.json')
+        self.assertEqual(self.commit, cb.verify_bundle(
+            self.out, self.commit, self.tree,
+            expected_manifest_sha256=expected)['source_commit'])
+
+    def test_manifest_digest_pin_mismatch_denied(self):
+        self.create()
+        with self.assertRaisesRegex(ValueError, 'pinned manifest SHA-256 mismatch'):
+            cb.verify_bundle(self.out, self.commit, self.tree,
+                             expected_manifest_sha256='0' * 64)
+
+    def test_malformed_digest_pin_denied(self):
+        self.create()
+        with self.assertRaisesRegex(ValueError, 'invalid pinned manifest SHA-256'):
+            cb.verify_bundle(self.out, self.commit, self.tree,
+                             expected_manifest_sha256='invalid')
+
+    def test_parent_path_symlink_bundle_denied(self):
+        self.create()
+        alias = self.root / 'alias-root'
+        alias.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'symlink in path'):
+            cb.verify_bundle(alias / 'bundle', self.commit, self.tree)
+
+    def test_parent_path_symlink_source_denied(self):
+        alias = self.root / 'alias-root'
+        alias.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'symlink in path'):
+            cb.check_source(alias / 'source', self.commit, self.tree)
+
+    def test_source_skip_worktree_bit_denied(self):
+        self.git('update-index', '--skip-worktree', 'pom.xml')
+        with self.assertRaisesRegex(ValueError, 'masked Git index entry'):
+            cb.check_source(self.source, self.commit, self.tree)
+
+    def test_verify_json_never_probes_even_if_manifest_forged(self):
+        self.create()
+        self.change_receipt(lambda v: v['build_info'].update(
+            build_mode='aot', default_execution_mode='aot',
+            guest_execution='interpreter-no-jit'))
+        with patch.object(cb, 'probe_info', side_effect=AssertionError('must not execute')):
+            with self.assertRaisesRegex(ValueError, 'unsupported launcher build mode'):
+                self.verify()
+
+    def test_non_zip_main_jar_denied(self):
+        self.jar.write_bytes(b'#!/bin/sh\nexit 0\n')
+        with self.assertRaisesRegex(ValueError, 'not a valid JAR'):
+            self.create()
+
+    def test_main_jar_without_compiler_entrypoint_denied(self):
+        with zipfile.ZipFile(self.jar, 'w') as z:
+            z.writestr('module-info.class', b'synthetic')
+        with self.assertRaisesRegex(ValueError, 'missing modular OresMain'):
+            self.create()
+
+    def test_non_zip_dependency_denied(self):
+        (self.deps / 'dep-a.jar').write_bytes(b'not a ZIP archive')
+        with self.assertRaisesRegex(ValueError, 'not a valid JAR'):
+            self.create()
+
+    def test_unlisted_zip_archive_member_path_denied(self):
+        with zipfile.ZipFile(self.jar, 'w') as z:
+            z.writestr('module-info.class', b'x')
+            z.writestr('dev/oreslang/launcher/OresMain.class', b'x')
+            z.writestr('../escape.class', b'bad')
+        with self.assertRaisesRegex(ValueError, 'unsafe JAR member path'):
+            self.create()
+
     def test_wrong_commit_denied(self):
         with self.assertRaisesRegex(ValueError, 'wrong source commit'):
             with patch.object(cb, 'probe_info', return_value=INFO):
@@ -98,26 +186,26 @@ class BundleTests(unittest.TestCase):
     def test_wrong_dependency_hash_denied(self):
         self.create()
         (self.out / 'deps' / 'dep-a.jar').write_bytes(b'different dependency')
-        with self.assertRaisesRegex(ValueError, 'dependency/artifact bytes'):
+        with self.assertRaisesRegex(ValueError, 'dependency/artifact bytes|not a valid JAR'):
             self.verify()
 
     def test_wrong_launcher_hash_denied(self):
         self.create()
         launcher = self.out / 'run-oreslang'
         launcher.write_text(launcher.read_text() + '# tampered\n')
-        with self.assertRaisesRegex(ValueError, 'dependency/artifact bytes'):
+        with self.assertRaisesRegex(ValueError, 'dependency/artifact bytes|not a valid JAR'):
             self.verify()
 
     def test_wrong_jar_hash_denied(self):
         self.create()
         (self.out / 'app.jar').write_bytes(b'changed jar')
-        with self.assertRaisesRegex(ValueError, 'dependency/artifact bytes'):
+        with self.assertRaisesRegex(ValueError, 'dependency/artifact bytes|not a valid JAR'):
             self.verify()
 
     def test_unlisted_dependency_denied(self):
         self.create()
         (self.out / 'deps' / 'unlisted.jar').write_bytes(b'missing from manifest')
-        with self.assertRaisesRegex(ValueError, 'dependency/artifact bytes'):
+        with self.assertRaisesRegex(ValueError, 'dependency/artifact bytes|not a valid JAR'):
             self.verify()
 
     def test_unlisted_root_file_denied(self):
