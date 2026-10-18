@@ -4657,8 +4657,12 @@ public final class TypeChecker {
         defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+        boolean previousMaySuspend = currentMaySuspend;
+        boolean previousAsyncCallable = currentAsyncCallable;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
+        currentMaySuspend = false;
+        currentAsyncCallable = false;
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
@@ -4674,6 +4678,8 @@ public final class TypeChecker {
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
+            currentMaySuspend = previousMaySuspend;
+            currentAsyncCallable = previousAsyncCallable;
         }
         if (lambda.blockBody() != null
                 && expected.result() != Primitive.VOID
