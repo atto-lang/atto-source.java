@@ -370,7 +370,12 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             } finally {
                 releaseSink.countDown();
             }
-            worker.getDone().get(5, TimeUnit.SECONDS);
+            try {
+                worker.getDone().get(5, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.ExecutionException cancelled) {
+                assertNotNull(cancelled.getCause(),
+                        "cancelled worker should carry a terminal cause");
+            }
             assertTrue(sourceReplied.await(8, TimeUnit.SECONDS),
                     "failed backward should permit authenticated alternate reply");
             assertNotNull(rejected.get(),
