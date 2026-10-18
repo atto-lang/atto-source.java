@@ -108,4 +108,26 @@ final class GroupPhysicalTurnPermitsTest {
                 gate.tryRequest(queued).status());
     }
 
+    @Test
+    void grantSequenceExhaustionSealsQueueWithoutOrphanedIncarnations() throws Exception {
+        var gate = new GroupPhysicalTurnPermits(1, 2);
+        var running = gate.tryRequest(actor(1)).grant();
+        assertEquals(GroupPhysicalTurnPermits.Admission.QUEUED,
+                gate.tryRequest(actor(2)).status());
+        var sequence = GroupPhysicalTurnPermits.class.getDeclaredField("nextTicket");
+        sequence.setAccessible(true);
+        sequence.setLong(gate, Long.MAX_VALUE);
+        var result = gate.tryRelease(running);
+        assertTrue(result.released());
+        assertNull(result.successor(), "exhausted grant cannot mint a recycled ticket");
+        assertEquals(new GroupPhysicalTurnPermits.Snapshot(0, 0, true),
+                gate.trySnapshot());
+        var index = GroupPhysicalTurnPermits.class.getDeclaredField("reservedIncarnations");
+        index.setAccessible(true);
+        assertTrue(((java.util.Map<?, ?>) index.get(gate)).isEmpty(),
+                "no queued successor reservation survives a fail-closed seal");
+        assertEquals(GroupPhysicalTurnPermits.Admission.CLOSED,
+                gate.tryRequest(new GroupPhysicalTurnPermits.Actor(2, 2)).status());
+    }
+
 }
