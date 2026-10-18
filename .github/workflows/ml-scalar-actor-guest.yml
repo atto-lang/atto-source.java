@@ -10,6 +10,7 @@ on:
       - "stdlib/**"
       - "pom.xml"
       - ".github/workflows/ml-scalar-actor-guest.yml"
+      - ".github/workflows/ml-scalar-actor-private-ephemeral.yml"
   workflow_dispatch:
 permissions:
   contents: read
