@@ -116,6 +116,69 @@ public final class Types {
     }
 
     /**
+     * Reject a missing completion payload anywhere a runtime value must be
+     * stored. Future<void> and Option<void> have independently observable
+     * state/tags, and Result<void,E> has an Ok() tag with no payload.
+     * Every other generic payload position must contain an actual value.
+     *
+     * <p>Result<T,void> remains unsupported: Err() has no corresponding
+     * admitted zero-payload constructor in the current source contract.
+     * Keep void separate from a future first-class Unit singleton.</p>
+     */
+    public static void requireValueShape(Type type, String location) {
+        Objects.requireNonNull(type, "type");
+        Objects.requireNonNull(location, "location");
+        if (type == Primitive.VOID) {
+            throw new IllegalArgumentException(location
+                    + " cannot store void; use Future<void>, Option<void>, or Result<void,E> "
+                    + "for explicitly tagged completion");
+        }
+        if (type instanceof SelfType self) {
+            requireValueShape(self.bound(), location + " receiver");
+        } else if (type instanceof Borrow borrow) {
+            requireValueShape(borrow.target(), location + " borrowed element");
+        } else if (type instanceof ListType list) {
+            requireValueShape(list.element(), location + " collection element");
+        } else if (type instanceof Tuple tuple) {
+            for (Type item : tuple.elements()) {
+                requireValueShape(item, location + " tuple element");
+            }
+        } else if (type instanceof Record record) {
+            for (Map.Entry<String, Type> field : record.members().entrySet()) {
+                requireValueShape(field.getValue(), location + "." + field.getKey());
+            }
+        } else if (type instanceof Union union) {
+            for (Type item : union.options()) {
+                requireValueShape(item, location + " union case");
+            }
+        } else if (type instanceof Function function) {
+            for (Type param : function.parameters()) {
+                requireValueShape(param, location + " callable parameter");
+            }
+            if (function.result() != Primitive.VOID) {
+                requireValueShape(function.result(), location + " callable result");
+            }
+        } else if (type instanceof Named named) {
+            if (named.arguments().size() == 1
+                    && (named.name().equals("Future") || named.name().equals("Option"))
+                    && named.arguments().getFirst() == Primitive.VOID) {
+                return;
+            }
+            if (named.name().equals("Result") && named.arguments().size() == 2) {
+                Type ok = named.arguments().get(0);
+                if (ok != Primitive.VOID) {
+                    requireValueShape(ok, location + " Result success");
+                }
+                requireValueShape(named.arguments().get(1), location + " Result error");
+                return;
+            }
+            for (Type parameter : named.arguments()) {
+                requireValueShape(parameter, location + " generic argument");
+            }
+        }
+    }
+
+    /**
      * A conservative disjointness proof, never a runtime guess.
      *
      * Unknown and generics must not pass a negative type merely because
