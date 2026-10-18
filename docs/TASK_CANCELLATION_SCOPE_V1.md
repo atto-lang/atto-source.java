@@ -190,3 +190,33 @@ cancellation propagation through lexical cleanup, preemption safepoints,
 actor-affine admission and cross-backend execution are not yet enabled.
 A host scheduler-frame test is not evidence that Oreslang source-level
 suspends/task interop executes successfully.
+
+## Stack-safe directed-link audit (October 18, 2026)
+
+The earlier `OresCancellationSource.linked(...)` callback called the next
+source's `cancel()` synchronously. Nested links therefore consumed one Java
+call frame per hop and could overflow the stack before the terminal source
+received cancellation. The new package-private
+`OresCancellationDispatcher.request(source)` provides a per-thread iterative
+queue. A nested downstream request appends to the active queue instead of
+recursively entering another source's cancellation walk; the queue is cleared
+and its ThreadLocal binding removed on exit.
+
+Committed JUnit regression cases now exercise an **8,192-link chain** and a
+diamond-shaped DAG, checking terminal events occur once, existing upstream
+subscriptions detach, and unrelated sources remain unaffected. These are
+actual Java tests in PR #1379, but exact-head JUnit execution is still blocked
+by source-organization zero-step Actions failures.
+
+**Separate evidence:** the independently authored source-free graph model ran
+on funded `gha-indie-worker/gha-indie-worker-e2e` draft PR #12 at
+[Actions run 39174769429](https://github.com/gha-indie-worker/gha-indie-worker-e2e/actions/runs/39174769429),
+with 36,393 passing synthetic assertions, 8,192-link depth, and 10,000
+schedules. It executed on a hosted worker but **did not compile or run the
+Oreslang Java runtime**, and **did not export private source**.
+
+A remaining limitation is that arbitrary blocking host callbacks are not
+preemptible; directed cancellation callbacks must remain host-only and must
+not directly resume guest actor/task code. Complete Java/GraalVM regression
+runs, actor-affine message delivery, fuel/deadline inheritance, and LLVM
+parity are separate release gates.
