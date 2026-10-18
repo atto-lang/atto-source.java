@@ -361,7 +361,12 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("module '" + module.name() + "' lists contract '" + ref.name() + "' more than once");
             }
             Ast.InterfaceDecl contract = findInterface(ref.name());
-            if (contract == null || !contract.moduleContract()) {
+            if (contract == null || !contract.moduleContract() || contract.staticContract()) {
+                if (contract != null && contract.staticContract()) {
+                    throw new IllegalArgumentException(
+                            "static contract '" + ref.name()
+                                    + "' cannot be used by a module; it describes a class namespace");
+                }
                 throw new IllegalArgumentException("unknown module contract '" + ref.name() + "'");
             }
             Type resolvedRef = resolveModuleContractRef(ref, contract);
@@ -375,30 +380,38 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("module '" + module.name() + "' does not conform to contract '" + ref.name()
                         + "': expected " + expected + " but got " + actual);
             }
-            validateModuleContractFields(module, contract, new LinkedHashSet<>());
+            validateModuleContractFields(
+                    module, contract, actual, expected, new LinkedHashSet<>());
         }
     }
 
     private void validateModuleContractFields(
             Ast.ModuleDecl module,
             Ast.InterfaceDecl contract,
+            Record actualShape,
+            Record expectedShape,
             Set<Ast.InterfaceDecl> stack) {
         if (!stack.add(contract)) {
-            throw new IllegalArgumentException("module contract inheritance cycle involving '" + contract.name() + "'");
+            throw new IllegalArgumentException(
+                    "module contract inheritance cycle involving '" + contract.name() + "'");
         }
 
         for (Ast.TypeRef parentRef : contract.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
-            if (parent == null || !parent.moduleContract()) {
+            if (parent == null || !parent.moduleContract() || parent.staticContract()) {
                 throw new IllegalArgumentException(
-                        "module contract '" + contract.name() + "' has invalid parent '" + parentRef.name() + "'");
+                        "module contract '" + contract.name() + "' has invalid parent '"
+                                + parentRef.name()
+                                + "'; module contracts may extend only module contracts");
             }
-            validateModuleContractFields(module, parent, stack);
+            validateModuleContractFields(
+                    module, parent, actualShape, expectedShape, stack);
         }
 
         Map<String, Ast.FieldDecl> actualFields = new LinkedHashMap<>();
         for (Ast.Decl decl : module.declarations()) {
-            if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
+            if (decl instanceof Ast.FieldDecl field
+                    && field.visibility() == Ast.Visibility.PUBLIC) {
                 actualFields.put(field.name(), field);
             }
         }
@@ -408,20 +421,44 @@ public final class TypeChecker {
             Ast.FieldDecl actual = actualFields.get(required.name());
             if (actual == null) {
                 throw new IllegalArgumentException(
-                        "module '" + module.name() + "' is missing required contract field '" + contract.name()
-                                + "." + required.name() + "'");
+                        "module '" + module.name()
+                                + "' is missing required contract field '"
+                                + contract.name() + "." + required.name() + "'");
             }
-            boolean actualRebindable = actual.bindingKind() == Ast.BindingKind.LET;
-            boolean requiredRebindable = required.bindingKind() == Ast.BindingKind.LET;
-            if (actualRebindable != requiredRebindable
-                    || actual.mutableReferent() != required.mutableReferent()) {
+
+            if (required.bindingKind() != null) {
+                if (actual.bindingKind() != required.bindingKind()
+                        || actual.mutableReferent() != required.mutableReferent()) {
+                    throw new IllegalArgumentException(
+                            "module '" + module.name() + "." + actual.name()
+                                    + "' has binding kind " + actual.bindingKind()
+                                    + ", mutableReferent=" + actual.mutableReferent()
+                                    + " but contract '" + contract.name()
+                                    + "' requires " + required.bindingKind()
+                                    + ", mutableReferent=" + required.mutableReferent());
+                }
+            }
+
+            Type actualType = actualShape.members().get(required.name());
+            Type requiredType = expectedShape.members().get(required.name());
+            if (actualType == null || requiredType == null) {
+                throw new IllegalArgumentException(
+                        "contract field type metadata missing for '"
+                                + contract.name() + "." + required.name() + "'");
+            }
+
+            boolean grantsWriteAuthority =
+                    required.bindingKind() != null
+                            && (required.bindingKind() == Ast.BindingKind.LET
+                                || required.mutableReferent());
+            if (grantsWriteAuthority
+                    && (!assignable(actualType, requiredType)
+                        || !assignable(requiredType, actualType))) {
                 throw new IllegalArgumentException(
                         "module '" + module.name() + "." + actual.name()
-                                + "' has binding capabilities rebindable=" + actualRebindable
-                                + ", mutableReferent=" + actual.mutableReferent()
-                                + " but contract '" + contract.name()
-                                + "' requires rebindable=" + requiredRebindable
-                                + ", mutableReferent=" + required.mutableReferent());
+                                + "' must be type-invariant because contract '"
+                                + contract.name() + "' grants write authority: expected "
+                                + requiredType + " but got " + actualType);
             }
         }
 
