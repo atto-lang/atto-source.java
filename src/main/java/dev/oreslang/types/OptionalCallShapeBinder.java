@@ -68,20 +68,40 @@ public final class OptionalCallShapeBinder {
     public record Plan(List<Integer> sourceIndexByParameter,
                        int variadicParameterIndex,
                        List<Integer> variadicSourceIndices,
-                       List<Integer> explicitlyOmittedParameterIndices) {
+                       List<Integer> explicitlyOmittedParameterIndices,
+                       List<Integer> callItemIndexByEvaluatedSource) {
         public Plan(List<Integer> sourceIndexByParameter) {
-            this(sourceIndexByParameter, -1, List.of(), List.of());
+            this(sourceIndexByParameter, -1, List.of(), List.of(),
+                    identityItemIndexes(sourceIndexByParameter, List.of()));
         }
         public Plan(List<Integer> sourceIndexByParameter,
                     int variadicParameterIndex,
                     List<Integer> variadicSourceIndices) {
-            this(sourceIndexByParameter, variadicParameterIndex, variadicSourceIndices, List.of());
+            this(sourceIndexByParameter, variadicParameterIndex, variadicSourceIndices,
+                    List.of(), identityItemIndexes(sourceIndexByParameter, variadicSourceIndices));
+        }
+        public Plan(List<Integer> sourceIndexByParameter,
+                    int variadicParameterIndex,
+                    List<Integer> variadicSourceIndices,
+                    List<Integer> explicitlyOmittedParameterIndices) {
+            this(sourceIndexByParameter, variadicParameterIndex, variadicSourceIndices,
+                    explicitlyOmittedParameterIndices,
+                    identityItemIndexes(sourceIndexByParameter, variadicSourceIndices));
+        }
+
+        private static List<Integer> identityItemIndexes(List<Integer> fixed, List<Integer> rest) {
+            int count = rest.size();
+            for (Integer source : fixed) if (source != null && source >= 0) count++;
+            List<Integer> identity = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) identity.add(i);
+            return identity;
         }
 
         public Plan {
             sourceIndexByParameter = List.copyOf(sourceIndexByParameter);
             variadicSourceIndices = List.copyOf(variadicSourceIndices);
             explicitlyOmittedParameterIndices = List.copyOf(explicitlyOmittedParameterIndices);
+            callItemIndexByEvaluatedSource = List.copyOf(callItemIndexByEvaluatedSource);
             boolean[] claimedOmission = new boolean[sourceIndexByParameter.size()];
             for (int parameterIndex : explicitlyOmittedParameterIndices) {
                 if (parameterIndex < 0 || parameterIndex >= sourceIndexByParameter.size()
@@ -109,6 +129,18 @@ public final class OptionalCallShapeBinder {
                 if (source < -1) throw new IllegalArgumentException("invalid call-plan source index");
                 if (source >= 0) supplied++;
             }
+            if (callItemIndexByEvaluatedSource.size() != supplied) {
+                throw new IllegalArgumentException(
+                        "evaluated-source to original-call-item index map has incorrect size");
+            }
+            int priorCallItemIndex = -1;
+            for (int callItemIndex : callItemIndexByEvaluatedSource) {
+                if (callItemIndex <= priorCallItemIndex) {
+                    throw new IllegalArgumentException(
+                            "evaluated call-item indexes must be strictly increasing");
+                }
+                priorCallItemIndex = callItemIndex;
+            }
             boolean[] seen = new boolean[supplied];
             for (int i = 0; i < sourceIndexByParameter.size(); i++) {
                 int source = sourceIndexByParameter.get(i);
@@ -130,6 +162,14 @@ public final class OptionalCallShapeBinder {
         }
 
         public int declaredArity() { return sourceIndexByParameter.size(); }
+        /**
+         * Original call-item index of an evaluated argument. Crucial because
+         * '_' and 'omit' consume slots WITHOUT contributing an expression:
+         * foo(3, _, effect()) maps evaluated source #1 to call item #2.
+         */
+        public int callItemIndex(int evaluatedSourceIndex) {
+            return callItemIndexByEvaluatedSource.get(evaluatedSourceIndex);
+        }
         public int suppliedArgumentCount() {
             int count = variadicSourceIndices.size();
             for (int source : sourceIndexByParameter) if (source >= 0) count++;
@@ -216,6 +256,7 @@ public final class OptionalCallShapeBinder {
         Arrays.fill(binding, -1);
         boolean[] claimed = new boolean[parameters.size()];
         List<Integer> explicitOmissions = new ArrayList<>();
+        List<Integer> evaluatedCallItems = new ArrayList<>();
         int nextPositional = 0;
         // An explicit omit consumes a CALL SLOT but never evaluates a value.
         // Source indices refer to evaluated expressions, not raw call items.
@@ -236,6 +277,7 @@ public final class OptionalCallShapeBinder {
                         throw new IllegalArgumentException("rest tail cannot contain omit");
                     }
                     restSources.add(evaluatedSourceIndex++);
+                    evaluatedCallItems.add(itemIndex);
                     continue;
                 }
                 if (nextPositional >= parameters.size()) {
@@ -267,6 +309,7 @@ public final class OptionalCallShapeBinder {
                 explicitOmissions.add(slot);
             } else {
                 binding[slot] = evaluatedSourceIndex++;
+                evaluatedCallItems.add(itemIndex);
             }
         }
 
@@ -278,7 +321,8 @@ public final class OptionalCallShapeBinder {
             }
             permutation.add(binding[i]);
         }
-        return new Plan(permutation, restSlot, restSources, explicitOmissions);
+        return new Plan(permutation, restSlot, restSources,
+                explicitOmissions, evaluatedCallItems);
     }
 
     private static Map<String, Integer> checkedParameters(List<Parameter> parameters) {
