@@ -18,20 +18,28 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Reject unearned compilation verification claims
+      - name: Verify exact fixture blob and prohibit unearned verification
         shell: bash
         run: |
           set -euo pipefail
-          jq -e --arg blob '87136de0c131a20ca3891d88f6b69f0d13177b3a' '
+          pinned='87136de0c131a20ca3891d88f6b69f0d13177b3a'
+          test "$(git hash-object examples/marketing-actor-pipeline-three-stage.ores)" = "$pinned"
+          test "$(git rev-parse HEAD:examples/marketing-actor-pipeline-three-stage.ores)" = "$pinned"
+          test -f contracts/conformance/language-motion-v1.json
+          jq -e --arg blob "$pinned" '
             .schema_version == 1
             and .candidate.not_in_main == true
             and .candidate.baseline_compiler_revision == "00c344e05a5265a340a5dc68c012caa7e375115d"
             and .public_site.merged_revision == "b499725f5eb345c8b3828f1e70c9fc8fed836d21"
             and (.examples | length == 4)
+            and ([.examples[].id] | unique | length) == 4
+            and ([.examples[].id] | sort) == ["http-unary","ml-backprop","select-result-modes","three-actor-pipeline"]
+            and ([.examples[] | select(.id == "three-actor-pipeline") | .source_file] == ["examples/marketing-actor-pipeline-three-stage.ores"])
             and ([.examples[].public_property] | sort) == ["httpCode","mlCode","pipelineCode","selectCode"]
             and ([.examples[] | select(.id == "three-actor-pipeline") | .source_blob_sha1] == [$blob])
             and ([.examples[] | select(.id == "three-actor-pipeline") | .java_status] == ["pending_ci"])
-            and (all(.examples[]; .java_status != "verified" and .llvm_status != "verified" and .ci_evidence_url == null))
+            and (all(.examples[]; (.java_status | type) == "string" and (.llvm_status | type) == "string" and .java_status != "verified" and .llvm_status != "verified" and .ci_evidence_url == null))
+            and ([.examples[] | select(.id != "three-actor-pipeline") | .source_file] == [null,null,null])
           ' contracts/conformance/language-motion-v1.json
       - name: Set up GraalVM 25
         uses: graalvm/setup-graalvm@v1
