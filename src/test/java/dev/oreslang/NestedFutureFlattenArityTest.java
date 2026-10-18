@@ -13,7 +13,10 @@ final class NestedFutureFlattenArityTest {
                   return 42;
                 }
                 pub fnc main(): void {
-                  val future = value().flatten(7);
+                  val Future<Future<int>> nested = value().map(|int item| -> {
+                    return value();
+                  });
+                  val future = nested.flatten(7);
                   return;
                 }
                 """;
