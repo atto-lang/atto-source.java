@@ -672,7 +672,10 @@ public final class TypeChecker {
         // programs that await without an explicit suspends modifier.
         // Other ordinary callables must declare the effect themselves.
         currentMaySuspend = fn.async() || fn.suspends()
-                || (fn.name().equals("main") && fn.parameters().isEmpty());
+                || (module.equals(Parser.ROOT_MODULE)
+                    && fn.name().equals("main")
+                    && fn.actorKind() == Ast.ActorKind.NONE
+                    && fn.parameters().isEmpty());
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
