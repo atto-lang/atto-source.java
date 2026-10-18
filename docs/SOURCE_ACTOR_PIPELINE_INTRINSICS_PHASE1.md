@@ -182,6 +182,46 @@ two eligible RR turns, and actor-termination membership removal; group
 close must not stop a membership-only worker. Exact-head execution
 remains unverified while source Actions fail before job steps.
 
+## Additional replay and publication audit — 2026-10-17
+
+A reverse route frame carries an immutable identity reference to the
+**exact consumed parent frame**, not merely a matching flow ID and
+actor path. `restoreRejectedReturn` rejects sibling-frame substitution,
+duplicate rollback, changed generation, and any return frame which has
+ever been published to a real mailbox. This closes an identity-replay
+gap when two branches legitimately share the same path and flow.
+
+At the successful bounded mailbox `tryWrite` boundary,
+`ActorRuntime` marks a route frame as **monotonically published**,
+before later shared-mutex accounting or scheduling can fail. The
+publisher then distinguishes a known prepublication rejection from a
+fault **after** DATA has entered the mailbox:
+
+- Prepublication: retire the rejected child or restore the exact
+  rejected reverse frame; the retry retains a fresh route ID.
+- Postpublication: NEVER restore the source or issue a false negative
+  per-edge admission receipt. Leave accepted child cleanup to its
+  actual mailbox envelope and fail closed on internal runtime error.
+- VM `Error`: preserve fatal classification; never turn it into an
+  ordinary retryable `RuntimeException`.
+
+The new standalone smoke adds same-flow/same-path sibling spoofing,
+rollback replay, and already-published-return tests, including envelope
+retirement. New actual ActorRuntime JUnit exercises group departure
+after successful admission: a previously sealed direct origin reply
+must still arrive, while subsequent routing to that departed member
+is rejected. The parallel ActorGroup snapshot JUnit exercises
+concurrent joins/readers (20,000 immutable snapshots), foreign-ID
+rejection, group closure and membership-only worker survival.
+Both JUnit fixtures are now included in the exact-head routing
+workflow's test selection.
+
+These are **committed test cases, not observed Maven passes** until a
+runner executes the exact source commit. The publication marker
+provides safe rejection classification, **not exactly-once processing,
+transactional multi-mailbox fanout, durable acknowledgement or remote
+delivery guarantees**.
+
 ## Evidence required before promotion
 
 1. Exact-head Maven/JUnit compilation and execution of
