@@ -326,6 +326,20 @@ final class ActorArtifactV1Test {
                 required);
     }
 
+    private static ActorArtifactV1.ExpectedActorContract expected(
+            ActorArtifactV1.UnsignedReceipt receipt) {
+        return new ActorArtifactV1.ExpectedActorContract(
+                receipt.actorTypeName(),
+                receipt.actorKind(),
+                receipt.actorBoundary(),
+                receipt.artifactFormat(),
+                receipt.compilerBackend(),
+                receipt.targetTriple(),
+                receipt.abi(),
+                receipt.messageAbiSha256(),
+                receipt.stateSchemaSha256());
+    }
+
     private static ActorArtifactV1.SignedReceipt signed(
             KeyPair pair,
             ActorArtifactV1.UnsignedReceipt receipt,
