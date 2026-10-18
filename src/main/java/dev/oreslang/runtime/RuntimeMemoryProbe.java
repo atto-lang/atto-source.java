@@ -52,18 +52,22 @@ public final class RuntimeMemoryProbe {
         } catch (UnsupportedOperationException | SecurityException unsupported) {
             return new Snapshot(bytes, OptionalLong.empty(), OptionalLong.empty(), 1);
         }
+        if (collectors.isEmpty()) {
+            // No observable collector does not prove a collector-free runtime.
+            return new Snapshot(bytes, OptionalLong.empty(), OptionalLong.empty(), 1);
+        }
         for (GarbageCollectorMXBean collector : collectors) {
-            long observedCount = collector.getCollectionCount();
-            long observedMillis = collector.getCollectionTime();
-            if (observedCount < 0L || observedMillis < 0L) {
-                unknown++;
-                continue;
-            }
-            // Fail closed on overflow rather than publishing wrapped metrics.
             try {
+                long observedCount = collector.getCollectionCount();
+                long observedMillis = collector.getCollectionTime();
+                if (observedCount < 0L || observedMillis < 0L) {
+                    unknown++;
+                    continue;
+                }
+                // Fail closed on overflow rather than publishing wrapped metrics.
                 count = Math.addExact(count, observedCount);
                 time = Math.addExact(time, observedMillis);
-            } catch (ArithmeticException overflow) {
+            } catch (ArithmeticException | UnsupportedOperationException | SecurityException unsupported) {
                 unknown++;
             }
         }
