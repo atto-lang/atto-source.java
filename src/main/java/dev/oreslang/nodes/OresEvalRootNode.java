@@ -6766,15 +6766,14 @@ public final class OresEvalRootNode extends RootNode {
                     case "claim" -> (Invokable) args -> context.http().claim(requireStringArg(args, "http.claim"));
                     case "get_text" -> (Invokable) http::getText;
                     case "get_text_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.get_text_async", () -> http.getText(values));
+                        return NativeIo.httpGetTextAsync(context, requireStringArg(args, "http.get_text_async"));
                     };
                     case "post_text" -> (Invokable) http::postText;
                     case "post_text_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.post_text_async", () -> http.postText(values));
+                        requireTwo(args, "http.post_text_async");
+                        return NativeIo.httpPostTextAsync(context,
+                                requireString(args.get(0), "http.post_text_async url"),
+                                requireString(args.get(1), "http.post_text_async body"));
                     };
                     default -> throw new IllegalArgumentException("unknown http member " + name);
                 };

@@ -227,6 +227,32 @@ public final class NativeIo {
         return httpText(context, "POST", rawUri, body);
     }
 
+    public static OresFuture<String> httpGetTextAsync(OresContext context, String rawUri) {
+        return httpTextAsync(context, "GET", rawUri, null);
+    }
+
+    public static OresFuture<String> httpPostTextAsync(OresContext context, String rawUri, String body) {
+        return httpTextAsync(context, "POST", rawUri, body);
+    }
+
+    private static OresFuture<String> httpTextAsync(OresContext context, String method,
+            String rawUri, String body) {
+        String operation = "http." + method.toLowerCase(java.util.Locale.ROOT) + "_text_async";
+        return context.nativeIo().submitAsync(context, RuntimePermissions.Permission.NET, operation, () -> {
+            URI uri = checkedHttpUri(rawUri);
+            String endpoint = networkEndpoint(uri);
+            // Check endpoint authority in the invoking actor's domain, before
+            // any asynchronous producer starts. Redirects remain disabled.
+            context.requirePermission(RuntimePermissions.Permission.NET, endpoint, operation);
+            HttpRequest.Builder request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(30));
+            if (method.equals("POST")) request.POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
+            else request.GET();
+            return context.nativeIo().httpClient()
+                    .sendAsync(request.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+                    .thenApply(HttpResponse::body);
+        });
+    }
+
     private static String httpText(
             OresContext context,
             String method,
