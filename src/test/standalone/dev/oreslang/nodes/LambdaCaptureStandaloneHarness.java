@@ -15,6 +15,13 @@ public final class LambdaCaptureStandaloneHarness {
         cases++;
     }
 
+    private static void expectedBlock(Set<String> want, List<Ast.Stmt> body) {
+        Set<String> got = LambdaCapturePlanner.capturesBlock(body);
+        if (!got.equals(want))
+            throw new AssertionError("block capture mismatch expected=" + want + " observed=" + got);
+        cases++;
+    }
+
     public static void main(String[] args) {
         expected(Set.of(), new Ast.LambdaExpr(
                 List.of(), new Ast.LiteralExpr(4), null));
@@ -44,6 +51,37 @@ public final class LambdaCaptureStandaloneHarness {
                 Ast.TypeRef.simple("int"), "shadow", new Ast.NameExpr("source"));
         expected(Set.of("source"), new Ast.LambdaExpr(
                 List.of(), null, List.of(local, new Ast.ReturnStmt(new Ast.NameExpr("shadow")))));
+
+        expectedBlock(Set.of("callbackOwner"), List.of(
+                new Ast.BindingStmt(Ast.BindingKind.VAL,
+                        Ast.TypeRef.simple("int"), "local",
+                        new Ast.NameExpr("callbackOwner")),
+                new Ast.ReturnStmt(new Ast.NameExpr("local"))));
+
+        Ast.SelectArm readArm = new Ast.SelectArm(
+                Ast.ChannelOperation.READ,
+                new Ast.NameExpr("channel"),
+                null,
+                Ast.BindingKind.VAL,
+                "item",
+                List.of(new Ast.ExprStmt(new Ast.BinaryExpr(
+                        "+", new Ast.NameExpr("item"),
+                        new Ast.NameExpr("leftOwner")))));
+        Ast.SelectArm writeArm = new Ast.SelectArm(
+                Ast.ChannelOperation.WRITE,
+                new Ast.NameExpr("otherChannel"),
+                new Ast.NameExpr("payload"),
+                null,
+                null,
+                List.of(new Ast.ExprStmt(new Ast.NameExpr("rightOwner"))));
+        Set<String> selectCaptures = LambdaCapturePlanner.capturesSelect(
+                new Ast.SelectStmt(Ast.WaitMode.NONBLOCKING,
+                        Ast.SelectPolicy.FAIR, List.of(readArm, writeArm)));
+        if (!selectCaptures.equals(Set.of("leftOwner", "rightOwner"))) {
+            throw new AssertionError("deferred select captured synchronous channel/payload authority: "
+                    + selectCaptures);
+        }
+        cases++;
 
         System.out.println("PASS " + cases + " standalone lexical capture planner checks on JDK "
                 + Runtime.version().feature());
