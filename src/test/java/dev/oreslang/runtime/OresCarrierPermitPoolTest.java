@@ -39,6 +39,42 @@ final class OresCarrierPermitPoolTest {
         assertEquals(0, permits.totalHeld());
     }
 
+    @Test void workConservingCapacityKeepsAllFiveDomainReservesAcrossFullRange() {
+        var domains = OresCarrierPermitPool.Domain.values();
+        for (int maximum = 5; maximum <= 256; maximum++) {
+            var pool = new OresCarrierPermitPool(maximum);
+            var borrowed = new ArrayList<OresCarrierPermitPool.Permit>();
+            try {
+                // CONTROL is permitted to borrow all surplus, but never the
+                // protected admission of the other four execution domains.
+                for (int i = 0; i < maximum - 4; i++) {
+                    var permit = pool.tryAcquire(OresCarrierPermitPool.Domain.CONTROL);
+                    assertNotNull(permit, "failed borrowing at ceiling " + maximum);
+                    borrowed.add(permit);
+                }
+                assertNull(pool.tryAcquire(OresCarrierPermitPool.Domain.CONTROL));
+                for (var domain : domains) {
+                    if (domain == OresCarrierPermitPool.Domain.CONTROL) continue;
+                    var permit = pool.tryAcquire(domain);
+                    assertNotNull(permit, "lost a reserved domain at ceiling " + maximum);
+                    borrowed.add(permit);
+                }
+                assertEquals(maximum, pool.snapshot().totalHeld());
+                assertNull(pool.tryAcquire(OresCarrierPermitPool.Domain.UNTRUSTED));
+                var exact = pool.snapshot();
+                assertEquals(maximum, exact.maximum());
+                assertEquals(0, exact.free());
+                assertEquals(1, exact.privateHeld());
+                assertEquals(1, exact.sharedHeld());
+                assertEquals(1, exact.untrustedHeld());
+                assertEquals(1, exact.lifecycleHeld());
+            } finally {
+                borrowed.forEach(OresCarrierPermitPool.Permit::close);
+            }
+            assertEquals(0, pool.totalHeld(), "permit leaked at ceiling " + maximum);
+        }
+    }
+
     @Test void abandonedNewThreadReservationReconcilesExactlyOnce() {
         var permits = new OresCarrierPermitPool(5);
         OresCarrierPermitPool.ReconciliableThreadFactory factory =
