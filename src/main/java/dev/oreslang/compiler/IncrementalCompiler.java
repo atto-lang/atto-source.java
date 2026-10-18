@@ -239,6 +239,10 @@ public final class IncrementalCompiler {
         if (decl instanceof Ast.ClassDecl klass) {
             if (klass.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append(klass.actorKind()).append(" pub class ").append(klass.name());
+            // The protocol descriptor is part of the exported ABI. Reusing a
+            // cached class after its transport/direction/capability policy
+            // changes would otherwise silently reopen a stale authority.
+            abi.append(" protocol=").append(klass.actorSpecialization());
             appendGenerics(abi, klass.genericParameters());
             abi.append(" extends ");
             for (Ast.TypeRef parent : klass.parents()) abi.append(typeRef(parent)).append(',');
