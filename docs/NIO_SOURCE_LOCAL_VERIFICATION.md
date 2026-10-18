@@ -52,18 +52,29 @@ bash scripts/test-nio-exact-tree-source-local.sh \
 ```
 
 The script rejects mismatched commit/tree IDs, dirty or untracked checkout,
-missing tools, the wrong Java/javac/Maven JVM version, and failed build steps.
-It uses `pipefail` so `tee` never converts a Maven failure into a pass.
+a `target/` symlink, missing tools, the wrong Java/javac/Maven JVM version,
+and failed build steps. It uses `pipefail` so `tee` never converts a Maven
+failure into a pass.
+
+**Clean-build fence:** Even an otherwise clean Git checkout may contain ignored
+`target/` compiler outputs. After checking source identity and JDK 25, the
+helper runs `mvn -B -ntp clean` **before** any targeted JUnit command and
+recreates the evidence directory afterward. This prevents a prior stale
+`target/classes` or `target/test-classes` from supplying the test result.
+A Maven clean failure is itself fatal and still produces a failure receipt.
+The gate does not delete private checkout content outside the Maven build output.
 
 Its first test command runs:
 
 ```bash
 mvn -B -ntp -Dores.runtime.carriers=native \
-  '-Dtest=VmNioTcpListenerTest,NativeNetStdlibTest,OresSchedulerTest,OresCarrierPermitPoolTest' test
+  '-Dtest=VmNioTcpListenerTest,NativeNetStdlibTest,NioReadinessGroupTest,NativeNioFutureReactorTest,OresSchedulerTest,OresCarrierPermitPoolTest,OresFuturesTest,OresFutureCallbackTest' test
 ```
 
-This includes the deterministic listener **and connection** descriptor-close
-error regressions and guest dual-listener Future-to-`await` coverage. It then
+This includes deterministic listener **and connection** descriptor-close
+failure regressions, guest dual-listener Future-to-`await` coverage, the
+four-socket 64-KiB partial-write/rearm integrity test, and native reactor /
+Future callback regressions. It then
 runs `mvn -B -ntp -Dores.runtime.carriers=native verify`. An explicitly
 requested `--native-aot` also runs
 `mvn -B -ntp -Pnative-aot -DskipTests package`.
