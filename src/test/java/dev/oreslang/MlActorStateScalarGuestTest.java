@@ -5,6 +5,7 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.ActorStateContract;
 import dev.oreslang.types.DeclaredEffectVerifier;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -40,6 +41,7 @@ final class MlActorStateScalarGuestTest {
         ActorStateContract.verify(program);
         DeclaredEffectVerifier.verify(program);
         TypeChecker.checkTypes(program);
+        OwnershipChecker.check(program);
     }
 
     @Test void compiledActorStageHasOneStateSchemaAndDeclaredEffects() throws Exception {
