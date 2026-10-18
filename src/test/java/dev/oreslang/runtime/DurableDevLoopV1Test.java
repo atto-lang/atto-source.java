@@ -152,6 +152,78 @@ final class DurableDevLoopV1Test {
     }
 
     @Test
+    void phaseRejectedDeliveryCanBeRetriedWithSamePayloadLater() {
+        var loop = new DurableDevLoopV1("run-early", 3);
+        String sha = sha('a');
+        var early = new DurableDevLoopV1.ApprovalGranted(sha);
+
+        loop.accept(
+                "start",
+                new DurableDevLoopV1.Start("goal"));
+        loop.accept(
+                "code",
+                new DurableDevLoopV1.CodeChanged(
+                        1, "patch://1"));
+        loop.accept(
+                "push",
+                new DurableDevLoopV1.PushRecorded(
+                        1, sha));
+
+        var rejected = loop.accept(
+                "approval-delivery",
+                early);
+        assertEquals(
+                DurableDevLoopV1.Disposition.REJECTED,
+                rejected.journalEntry().disposition());
+
+        loop.accept(
+                "ci",
+                new DurableDevLoopV1.CiCompleted(
+                        sha,
+                        DurableDevLoopV1.CiConclusion.SUCCESS,
+                        "artifact://tests"));
+        loop.accept(
+                "eval",
+                new DurableDevLoopV1.EvaluationPassed(sha));
+
+        var accepted = loop.accept(
+                "approval-delivery",
+                early);
+        assertEquals(
+                DurableDevLoopV1.Disposition.APPLIED,
+                accepted.journalEntry().disposition());
+        assertEquals(
+                DurableDevLoopV1.Phase.COMPLETED,
+                accepted.snapshot().phase());
+    }
+
+    @Test
+    void rejectedDeliveryIdStillRejectsChangedPayloadAsConflict() {
+        var loop = new DurableDevLoopV1("run-early-conflict", 3);
+        String sha = sha('a');
+
+        loop.accept(
+                "start",
+                new DurableDevLoopV1.Start("goal"));
+        var rejected = loop.accept(
+                "shared-id",
+                new DurableDevLoopV1.ApprovalGranted(sha));
+        assertEquals(
+                DurableDevLoopV1.Disposition.REJECTED,
+                rejected.journalEntry().disposition());
+
+        var conflict = loop.accept(
+                "shared-id",
+                new DurableDevLoopV1.Cancel("changed payload"));
+        assertEquals(
+                DurableDevLoopV1.Disposition.CONFLICT,
+                conflict.journalEntry().disposition());
+        assertEquals(
+                DurableDevLoopV1.Phase.CODING,
+                conflict.snapshot().phase());
+    }
+
+    @Test
     void failedCiProducesBugReportThenFeedsNextCodingIteration() {
         var loop = readyForCi("run-loop", 3, sha('a'));
 
