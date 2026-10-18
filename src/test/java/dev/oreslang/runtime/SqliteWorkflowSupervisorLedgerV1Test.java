@@ -65,6 +65,147 @@ final class SqliteWorkflowSupervisorLedgerV1Test {
     }
 
     @Test
+    void reservationSettlementRefundsEstimateAndSurvivesReopen() {
+        Path db = tempDir.resolve("reservation-settle.db");
+
+        try (var ledger =
+                    SqliteWorkflowSupervisorLedgerV1.open(
+                            db, "run-settle", POLICY, 100L)) {
+            var reserved = ledger.reserve(
+                    "effect/model-1",
+                    WorkflowActivityProtocolV1.Kind.CODING,
+                    200L,
+                    600L,
+                    600_000L,
+                    0,
+                    false);
+            assertEquals(
+                    WorkflowSupervisorPolicyV1.Decision.ALLOW,
+                    reserved.decision());
+            assertEquals(600L, reserved.usage().modelTokens());
+
+            var settled = ledger.settle(
+                    "effect/model-1",
+                    250L,
+                    200_000L);
+            assertEquals(250L, settled.modelTokens());
+            assertEquals(200_000L, settled.spendMicros());
+
+            assertEquals(
+                    settled,
+                    ledger.settle(
+                            "effect/model-1",
+                            250L,
+                            200_000L));
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> ledger.settle(
+                            "effect/model-1",
+                            251L,
+                            200_000L));
+        }
+
+        try (var reopened =
+                    SqliteWorkflowSupervisorLedgerV1.open(
+                            db, "run-settle", POLICY, 100L)) {
+            assertEquals(250L, reopened.usage().modelTokens());
+            assertEquals(200_000L, reopened.usage().spendMicros());
+
+            var replay = reopened.reserve(
+                    "effect/model-1",
+                    WorkflowActivityProtocolV1.Kind.CODING,
+                    300L,
+                    600L,
+                    600_000L,
+                    0,
+                    false);
+            assertEquals(
+                    WorkflowSupervisorPolicyV1.Decision.ALLOW,
+                    replay.decision());
+            assertEquals(250L, replay.usage().modelTokens());
+        }
+    }
+
+    @Test
+    void actualUsageOverageIsRecordedAndCancelsFutureAdmission() {
+        Path db = tempDir.resolve("settlement-overage.db");
+        var tight = new WorkflowSupervisorPolicyV1.Policy(
+                10_000L,
+                500L,
+                10,
+                500_000L,
+                1,
+                false);
+
+        try (var ledger =
+                    SqliteWorkflowSupervisorLedgerV1.open(
+                            db, "run-overage", tight, 100L)) {
+            assertEquals(
+                    WorkflowSupervisorPolicyV1.Decision.ALLOW,
+                    ledger.reserve(
+                            "effect/model-1",
+                            WorkflowActivityProtocolV1.Kind.CODING,
+                            200L,
+                            400L,
+                            400_000L,
+                            0,
+                            false)
+                            .decision());
+
+            var usage = ledger.settle(
+                    "effect/model-1",
+                    700L,
+                    450_000L);
+            assertEquals(700L, usage.modelTokens());
+            assertEquals(450_000L, usage.spendMicros());
+            assertTrue(usage.cancelled());
+            assertEquals(
+                    "model_token_budget_exhausted_after_settlement",
+                    usage.cancellationReason());
+
+            var future = ledger.admit(
+                    WorkflowActivityProtocolV1.Kind.GIT,
+                    300L,
+                    0L,
+                    0L,
+                    0,
+                    false);
+            assertEquals(
+                    WorkflowSupervisorPolicyV1.Decision.CANCEL,
+                    future.decision());
+        }
+    }
+
+    @Test
+    void reservationKeyCannotBeReusedWithDifferentEstimate() {
+        Path db = tempDir.resolve("reservation-conflict.db");
+
+        try (var ledger =
+                    SqliteWorkflowSupervisorLedgerV1.open(
+                            db, "run-reservation-conflict", POLICY, 100L)) {
+            ledger.reserve(
+                    "effect/model-1",
+                    WorkflowActivityProtocolV1.Kind.CODING,
+                    200L,
+                    100L,
+                    100_000L,
+                    0,
+                    false);
+
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> ledger.reserve(
+                            "effect/model-1",
+                            WorkflowActivityProtocolV1.Kind.CODING,
+                            201L,
+                            101L,
+                            100_000L,
+                            0,
+                            false));
+        }
+    }
+
+    @Test
     void concurrentConnectionsCannotDoubleSpendRemainingBudget()
             throws Exception {
         Path db = tempDir.resolve("concurrent-budget.db");
