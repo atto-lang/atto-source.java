@@ -367,3 +367,33 @@ static overload selection; precisely-once lexical evaluation; constructor
 formatter round-tripping; and Java/GraalVM plus LLVM execution/parity.
 In particular, neither this stage nor pure reference-model success is a
 passing compiler test.
+
+## Staged optional formal metadata (2026-10-18)
+
+Java now parses canonical `T? label` and compatibility `label: T?`
+formal declarations into a *compiler-only type marker* held by `Ast.Param`.
+The existing four-component `Ast.Param` construction interface is preserved.
+`Param.optional()` reports the source omission contract,
+`Param.valueType()` yields source `T`, and `Param.calleeType()`
+constructs the intended `Option<T>` type. This differs from a required
+`Option<T> label` formal: the latter has `optional() == false`.
+
+The special marker is only recognized in a formal-parameter position.
+Standalone type expressions and `void?` are not enabled, and structural
+borrowed view parameters cannot be omitted. Pipe lambdas and class
+constructors preserve the same metadata. The static binder's
+`declaredParameterShapes` converts these `Ast.Param` records to omission
+signatures, and `evaluatedExpressionsInSourceOrder` verifies the selected
+call plan against the original AST before yielding expressions in lexical
+evaluation order. It does *not* execute them.
+
+There is **no** optional-parameter ABI/runtime support yet:
+`TypeChecker` and `OwnershipChecker` reject all staged `T?`
+declarations before normal admission. Linked class signatures and lambda
+formals are also checked; staged named/omitted calls continue to fail closed.
+Do not infer success of actual program execution from parsing, JUnit source
+presence or standalone reference checker passes.
+
+Release gates remain full Option<T> ABI and effect/borrow checking, unique
+target selection, checked constructor and actor lifecycle binding, native
+LLVM parity, and green JDK25/GraalVM and LLVM CI tied to exact source trees.
