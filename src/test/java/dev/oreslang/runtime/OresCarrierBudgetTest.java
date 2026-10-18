@@ -214,6 +214,61 @@ final class OresCarrierBudgetTest {
         }
     }
 
+    @Test void affinityJvmTopologyKeepsLifecycleObserversOnStaticReservation()
+            throws Exception {
+        String previous = System.getProperty(OresCarrierBudget.PROPERTY);
+        String previousBackend = System.getProperty("ores.runtime.carriers");
+        String previousAffinity = System.getProperty("ores.actor.affinity");
+        try {
+            System.setProperty(OresCarrierBudget.PROPERTY, "8");
+            System.setProperty("ores.runtime.carriers", "java");
+            System.setProperty("ores.actor.affinity", "lane");
+            OresVM vm = OresVM.create(Runnable::run);
+            ActorRuntime actors = null;
+            try {
+                OresCarrierBudget budget = vm.carrierBudget();
+                assertNotNull(budget);
+                var config = new ActorRuntime.DispatcherConfig(
+                        budget.privateMaximum(),
+                        budget.sharedMaximum(),
+                        16,
+                        32);
+                actors = new ActorRuntime(
+                        IsolatePolicy.developer(),
+                        config,
+                        ActorRuntime.TurnExecutor.direct(),
+                        ActorRuntime.ControlDispatcher.unavailable(),
+                        budget,
+                        vm.carrierPermitPool());
+
+                var field = ActorRuntime.class.getDeclaredField(
+                        "lifecycleObserverDispatcher");
+                field.setAccessible(true);
+                var observerPool = (java.util.concurrent.ThreadPoolExecutor)
+                        field.get(actors);
+                assertEquals(
+                        budget.lifecycleObserverMaximum(),
+                        observerPool.getMaximumPoolSize(),
+                        "affinity lanes are not individually borrow-safe; lifecycle "
+                                + "workers must stay on the static reservation");
+                assertEquals(1, vm.carrierPermitSnapshot().maximum()
+                        - (budget.privateMaximum() * 3)
+                        - budget.lifecycleObserverMaximum(),
+                        "fixture must retain exactly the CONTROL static reserve");
+            } finally {
+                if (actors != null) actors.close();
+                vm.close();
+            }
+        } finally {
+            if (previous == null) System.clearProperty(OresCarrierBudget.PROPERTY);
+            else System.setProperty(OresCarrierBudget.PROPERTY, previous);
+            if (previousBackend == null) System.clearProperty("ores.runtime.carriers");
+            else System.setProperty("ores.runtime.carriers", previousBackend);
+            if (previousAffinity == null) System.clearProperty("ores.actor.affinity");
+            else System.setProperty("ores.actor.affinity", previousAffinity);
+        }
+    }
+
     @Test void budgetedJvmActorDomainCanBorrowIdleGlobalPermits() throws Exception {
         String previous = System.getProperty(OresCarrierBudget.PROPERTY);
         String previousBackend = System.getProperty("ores.runtime.carriers");
