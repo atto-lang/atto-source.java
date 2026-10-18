@@ -21,7 +21,7 @@ import java.util.Objects;
 public final class SqliteWorkflowSupervisorLedgerV1
         implements AutoCloseable {
 
-    private static final int SCHEMA_VERSION = 1;
+    private static final int SCHEMA_VERSION = 2;
 
     private final Path databasePath;
     private Connection connection;
@@ -114,6 +114,200 @@ public final class SqliteWorkflowSupervisorLedgerV1
         } catch (SQLException failure) {
             IllegalStateException wrapped = new IllegalStateException(
                     "workflow supervisor admission failed",
+                    failure);
+            if (!committed) {
+                rollbackOrInvalidate(wrapped);
+            }
+            throw wrapped;
+        }
+    }
+
+    /**
+     * Idempotently reserve estimated model/spend budget for one durable effect.
+     *
+     * <p>Only ALLOW admissions create a reservation. Repeating the same
+     * reservation key/parameters is a no-op; conflicting reuse fails closed.</p>
+     */
+    public synchronized WorkflowSupervisorPolicyV1.Admission reserve(
+            String effectKey,
+            WorkflowActivityProtocolV1.Kind activity,
+            long nowMillis,
+            long estimatedModelTokens,
+            long estimatedSpendMicros,
+            int currentAmbiguousEffects,
+            boolean protectedWrite) {
+        requireOpen();
+        effectKey = requireText(effectKey, "effectKey");
+        Objects.requireNonNull(activity, "activity");
+        boolean committed = false;
+        try {
+            execute("BEGIN IMMEDIATE");
+            Reservation existing = readReservation(effectKey);
+            if (existing != null) {
+                if (existing.activity() != activity
+                        || existing.reservedModelTokens()
+                                != estimatedModelTokens
+                        || existing.reservedSpendMicros()
+                                != estimatedSpendMicros
+                        || existing.protectedWrite()
+                                != protectedWrite) {
+                    throw new IllegalStateException(
+                            "supervisor reservation key was reused "
+                                    + "with different parameters: "
+                                    + effectKey);
+                }
+                WorkflowSupervisorPolicyV1.Usage usage = readUsage();
+                WorkflowSupervisorPolicyV1.Admission replay =
+                        usage.cancelled()
+                                ? new WorkflowSupervisorPolicyV1.Admission(
+                                        WorkflowSupervisorPolicyV1.Decision.CANCEL,
+                                        usage,
+                                        usage.cancellationReason())
+                                : new WorkflowSupervisorPolicyV1.Admission(
+                                        WorkflowSupervisorPolicyV1.Decision.ALLOW,
+                                        usage,
+                                        null);
+                execute("COMMIT");
+                committed = true;
+                return replay;
+            }
+
+            WorkflowSupervisorPolicyV1.Admission admission =
+                    WorkflowSupervisorPolicyV1.admit(
+                            policy,
+                            readUsage(),
+                            activity,
+                            nowMillis,
+                            estimatedModelTokens,
+                            estimatedSpendMicros,
+                            currentAmbiguousEffects,
+                            protectedWrite);
+            writeUsage(admission.usage());
+            if (admission.decision()
+                    == WorkflowSupervisorPolicyV1.Decision.ALLOW) {
+                insertReservation(
+                        effectKey,
+                        activity,
+                        estimatedModelTokens,
+                        estimatedSpendMicros,
+                        protectedWrite);
+            }
+            execute("COMMIT");
+            committed = true;
+            return admission;
+        } catch (RuntimeException | Error failure) {
+            if (!committed) {
+                rollbackOrInvalidate(failure);
+            }
+            throw failure;
+        } catch (SQLException failure) {
+            IllegalStateException wrapped = new IllegalStateException(
+                    "workflow supervisor reservation failed",
+                    failure);
+            if (!committed) {
+                rollbackOrInvalidate(wrapped);
+            }
+            throw wrapped;
+        }
+    }
+
+    /**
+     * Settle actual provider usage against one previously admitted reservation.
+     *
+     * <p>Settlement may refund conservative estimates or charge an overage.
+     * An overage that crosses a policy limit is still recorded as reality and
+     * atomically cancels future workflow admission. Exact repeated settlement
+     * is idempotent; a different second settlement is rejected.</p>
+     */
+    public synchronized WorkflowSupervisorPolicyV1.Usage settle(
+            String effectKey,
+            long actualModelTokens,
+            long actualSpendMicros) {
+        requireOpen();
+        effectKey = requireText(effectKey, "effectKey");
+        if (actualModelTokens < 0 || actualSpendMicros < 0) {
+            throw new IllegalArgumentException(
+                    "actual usage cannot be negative");
+        }
+
+        boolean committed = false;
+        try {
+            execute("BEGIN IMMEDIATE");
+            Reservation reservation = readReservation(effectKey);
+            if (reservation == null) {
+                throw new IllegalArgumentException(
+                        "unknown supervisor reservation " + effectKey);
+            }
+            WorkflowSupervisorPolicyV1.Usage current = readUsage();
+
+            if (reservation.settled()) {
+                if (reservation.actualModelTokens()
+                                != actualModelTokens
+                        || reservation.actualSpendMicros()
+                                != actualSpendMicros) {
+                    throw new IllegalStateException(
+                            "supervisor reservation was already settled "
+                                    + "with different actual usage: "
+                                    + effectKey);
+                }
+                execute("COMMIT");
+                committed = true;
+                return current;
+            }
+
+            long withoutReservedTokens = Math.subtractExact(
+                    current.modelTokens(),
+                    reservation.reservedModelTokens());
+            long withoutReservedSpend = Math.subtractExact(
+                    current.spendMicros(),
+                    reservation.reservedSpendMicros());
+            long settledTokens = Math.addExact(
+                    withoutReservedTokens, actualModelTokens);
+            long settledSpend = Math.addExact(
+                    withoutReservedSpend, actualSpendMicros);
+            if (settledTokens < 0 || settledSpend < 0) {
+                throw new IllegalStateException(
+                        "supervisor reservation accounting underflow");
+            }
+
+            WorkflowSupervisorPolicyV1.Usage adjusted =
+                    new WorkflowSupervisorPolicyV1.Usage(
+                            current.startedAtMillis(),
+                            settledTokens,
+                            current.ciRuns(),
+                            settledSpend,
+                            current.ambiguousEffects(),
+                            current.cancelled(),
+                            current.cancellationReason());
+
+            if (!adjusted.cancelled()
+                    && settledTokens > policy.maxModelTokens()) {
+                adjusted = WorkflowSupervisorPolicyV1.cancel(
+                        adjusted,
+                        "model_token_budget_exhausted_after_settlement");
+            } else if (!adjusted.cancelled()
+                    && settledSpend > policy.maxSpendMicros()) {
+                adjusted = WorkflowSupervisorPolicyV1.cancel(
+                        adjusted,
+                        "spend_budget_exhausted_after_settlement");
+            }
+
+            writeUsage(adjusted);
+            markReservationSettled(
+                    effectKey,
+                    actualModelTokens,
+                    actualSpendMicros);
+            execute("COMMIT");
+            committed = true;
+            return adjusted;
+        } catch (RuntimeException | Error failure) {
+            if (!committed) {
+                rollbackOrInvalidate(failure);
+            }
+            throw failure;
+        } catch (SQLException failure) {
+            IllegalStateException wrapped = new IllegalStateException(
+                    "workflow supervisor settlement failed",
                     failure);
             if (!committed) {
                 rollbackOrInvalidate(wrapped);
@@ -219,6 +413,32 @@ public final class SqliteWorkflowSupervisorLedgerV1
                     ambiguous_effects INTEGER NOT NULL,
                     cancelled INTEGER NOT NULL,
                     cancellation_reason TEXT
+        execute("""
+                CREATE TABLE IF NOT EXISTS workflow_supervisor_reservations (
+                    run_id TEXT NOT NULL,
+                    effect_key TEXT NOT NULL,
+                    activity TEXT NOT NULL,
+                    reserved_model_tokens INTEGER NOT NULL,
+                    reserved_spend_micros INTEGER NOT NULL,
+                    protected_write INTEGER NOT NULL,
+                    settled INTEGER NOT NULL,
+                    actual_model_tokens INTEGER,
+                    actual_spend_micros INTEGER,
+                    PRIMARY KEY (run_id, effect_key),
+                    FOREIGN KEY (run_id)
+                        REFERENCES workflow_supervisor(run_id)
+                        ON DELETE CASCADE,
+                    CHECK(settled IN (0, 1)),
+                    CHECK(protected_write IN (0, 1)),
+                    CHECK(
+                        (settled = 0
+                            AND actual_model_tokens IS NULL
+                            AND actual_spend_micros IS NULL)
+                        OR
+                        (settled = 1
+                            AND actual_model_tokens IS NOT NULL
+                            AND actual_spend_micros IS NOT NULL)
+                    )
                 )
                 """);
     }
@@ -357,6 +577,106 @@ public final class SqliteWorkflowSupervisorLedgerV1
             }
         }
     }
+
+    private Reservation readReservation(String effectKey)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT
+                    activity,
+                    reserved_model_tokens,
+                    reserved_spend_micros,
+                    protected_write,
+                    settled,
+                    actual_model_tokens,
+                    actual_spend_micros
+                FROM workflow_supervisor_reservations
+                WHERE run_id = ? AND effect_key = ?
+                """)) {
+            statement.setString(1, runId);
+            statement.setString(2, effectKey);
+            try (ResultSet row = statement.executeQuery()) {
+                if (!row.next()) return null;
+                boolean settled = row.getInt("settled") != 0;
+                Long actualTokens = settled
+                        ? row.getLong("actual_model_tokens")
+                        : null;
+                Long actualSpend = settled
+                        ? row.getLong("actual_spend_micros")
+                        : null;
+                return new Reservation(
+                        WorkflowActivityProtocolV1.Kind.valueOf(
+                                row.getString("activity")),
+                        row.getLong("reserved_model_tokens"),
+                        row.getLong("reserved_spend_micros"),
+                        row.getInt("protected_write") != 0,
+                        settled,
+                        actualTokens,
+                        actualSpend);
+            }
+        }
+    }
+
+    private void insertReservation(
+            String effectKey,
+            WorkflowActivityProtocolV1.Kind activity,
+            long modelTokens,
+            long spendMicros,
+            boolean protectedWrite) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO workflow_supervisor_reservations (
+                    run_id,
+                    effect_key,
+                    activity,
+                    reserved_model_tokens,
+                    reserved_spend_micros,
+                    protected_write,
+                    settled,
+                    actual_model_tokens,
+                    actual_spend_micros
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, NULL, NULL)
+                """)) {
+            statement.setString(1, runId);
+            statement.setString(2, effectKey);
+            statement.setString(3, activity.name());
+            statement.setLong(4, modelTokens);
+            statement.setLong(5, spendMicros);
+            statement.setInt(6, protectedWrite ? 1 : 0);
+            statement.executeUpdate();
+        }
+    }
+
+    private void markReservationSettled(
+            String effectKey,
+            long actualModelTokens,
+            long actualSpendMicros) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE workflow_supervisor_reservations
+                SET
+                    settled = 1,
+                    actual_model_tokens = ?,
+                    actual_spend_micros = ?
+                WHERE run_id = ? AND effect_key = ?
+                  AND settled = 0
+                """)) {
+            statement.setLong(1, actualModelTokens);
+            statement.setLong(2, actualSpendMicros);
+            statement.setString(3, runId);
+            statement.setString(4, effectKey);
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException(
+                        "supervisor reservation settlement update failed");
+            }
+        }
+    }
+
+    private record Reservation(
+            WorkflowActivityProtocolV1.Kind activity,
+            long reservedModelTokens,
+            long reservedSpendMicros,
+            boolean protectedWrite,
+            boolean settled,
+            Long actualModelTokens,
+            Long actualSpendMicros) { }
 
     private void execute(String sql) throws SQLException {
         try (Statement statement = connection.createStatement()) {
