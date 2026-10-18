@@ -27,16 +27,45 @@ jobs:
           from pathlib import Path
 
           base = Path(".github")
-          declared = json.loads((base / "private-ci-required-checks.json").read_text(encoding="utf-8"))
+
+          def read_regular(path, max_bytes=256 * 1024):
+              target = Path(path)
+              if not target.is_file() or target.is_symlink():
+                  raise SystemExit("private CI security input must be a regular non-symlink file: " + str(path))
+              raw = target.read_bytes()
+              if (not raw or len(raw) > max_bytes or raw.startswith(b"\xef\xbb\xbf")
+                      or b"\x00" in raw):
+                  raise SystemExit("private CI security input bytes invalid: " + str(path))
+              try:
+                  return raw.decode("utf-8")
+              except UnicodeError as exc:
+                  raise SystemExit("private CI security input must be UTF-8: " + str(path)) from exc
+
+          def no_duplicate_keys(pairs):
+              out = {}
+              for key, value in pairs:
+                  if key in out:
+                      raise SystemExit("duplicate JSON key in private CI security input")
+                  out[key] = value
+              return out
+
+          def read_json(path):
+              try:
+                  return json.loads(read_regular(path), object_pairs_hook=no_duplicate_keys)
+              except (ValueError, RecursionError) as exc:
+                  raise SystemExit("invalid private CI JSON: " + str(path)) from exc
+
+          declared = read_json(base / "private-ci-required-checks.json")
           expected = {
               "schema": 1,
               "source": {"context": "private-ci-policy", "appId": 15368},
               "carrier": {"context": "carrier-policy", "appId": 15368},
           }
-          if declared != expected:
+          if (type(declared) is not dict or type(declared.get("schema")) is not int
+                  or declared != expected):
               raise SystemExit("private CI required checks must be bound to pinned Actions issuer")
 
-          publisher = ast.parse(Path("scripts/publish-private-ci-source.py").read_text(encoding="utf-8"))
+          publisher = ast.parse(read_regular("scripts/publish-private-ci-source.py"))
           vars = {}
           for node in publisher.body:
               if isinstance(node, ast.Assign):
@@ -54,7 +83,7 @@ jobs:
           required = vars["REQUIRED_CODEOWNER_PATHS"]
           if not isinstance(required, tuple) or len(required) < 28 or len(set(required)) != len(required):
               raise SystemExit("private CI CODEOWNER path inventory invalid")
-          codeowners = (base / "CODEOWNERS").read_text(encoding="utf-8").splitlines()
+          codeowners = read_regular(base / "CODEOWNERS").splitlines()
           rules = [s.strip() for s in codeowners if s.strip() and not s.lstrip().startswith("#")]
           if rules[-len(required):] != [f"{p} @ORESoftware" for p in required]:
               raise SystemExit("terminal CODEOWNERS contract mismatch")
@@ -62,16 +91,22 @@ jobs:
                   or rules[-len(required)-1] != "/.github/workflows/ @ORESoftware"):
               raise SystemExit("unreviewed workflows could spoof protected check name")
           for path in required:
-              if not (Path(".") / path.lstrip("/")).is_file():
-                  raise SystemExit("CODEOWNERS mandatory path not present: " + path)
+              target = Path(".") / path.lstrip("/")
+              if not target.is_file() or target.is_symlink():
+                  raise SystemExit("CODEOWNERS mandatory path must be a regular non-symlink file: " + path)
+              read_regular(target)
 
           dest_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]* [1-9][0-9]{0,19}")
           snap_pattern = re.compile(r"[0-9a-f]{40} [0-9a-f]{40} [1-9][0-9]{0,19}")
           def load_lines(name, pattern):
-              data = (base / name).read_text(encoding="utf-8").splitlines()
-              active = [line for line in data if line and not line.startswith("#")]
-              if any(not pattern.fullmatch(line) for line in active):
-                  raise SystemExit("unreviewable private CI approval format: " + name)
+              data = read_regular(base / name).splitlines()
+              active = []
+              for line in data:
+                  if not line or line.startswith("#"):
+                      continue
+                  if line != line.strip() or not pattern.fullmatch(line):
+                      raise SystemExit("unreviewable private CI approval format: " + name)
+                  active.append(line)
               return active
           dests = load_lines("private-ci-approved-repositories.txt", dest_pattern)
           names = [line.split()[0].casefold() for line in dests]
@@ -88,7 +123,7 @@ jobs:
                   raise SystemExit("one source commit maps to inconsistent root trees")
               commit_tree[commit] = tree
 
-          reviewer = json.loads((base / "private-ci-independent-reviewer.json").read_text(encoding="utf-8"))
+          reviewer = read_json(base / "private-ci-independent-reviewer.json")
           expected_reviewer_keys = {"schema", "enabled", "minimumPermission",
                                     "disallowedReviewerIds", "reviewer"}
           if (set(reviewer) != expected_reviewer_keys
