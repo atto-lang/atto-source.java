@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
@@ -36,6 +37,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
 
     private record Route(
             HotReloadManager.Generation generation,
+            HotReloadManager.Generation.ActorRouteLease generationLease,
             HotReloadManager.ActorGenerationView view,
             ActorRuntime.ActorRef<Object> physical,
             long incarnation) { }
@@ -48,6 +50,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         public LogicalAddress address() {
             synchronized (routeLock) {
                 requireOpenLocked();
+                reapRetiredLocked();
                 return new LogicalAddress(logicalId, active.incarnation, kind);
             }
         }
@@ -55,6 +58,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         public long incarnation() {
             synchronized (routeLock) {
                 requireOpenLocked();
+                reapRetiredLocked();
                 return active.incarnation;
             }
         }
@@ -69,6 +73,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             synchronized (routeLock) {
                 awaitUpgradeLocked();
                 requireOpenLocked();
+                reapRetiredLocked();
                 active.physical.send(message);
             }
         }
@@ -89,15 +94,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             synchronized (routeLock) {
                 awaitUpgradeLocked();
                 requireOpenLocked();
+                reapRetiredLocked();
                 stream = active.physical.outputs();
             }
-            long nanos;
-            try {
-                nanos = timeout.toNanos();
-            } catch (ArithmeticException overflow) {
-                nanos = Long.MAX_VALUE;
-            }
-            return stream.next().get(nanos, TimeUnit.NANOSECONDS);
+            return stream.next().get(
+                    toNanosSaturated(timeout),
+                    TimeUnit.NANOSECONDS);
         }
     }
 
@@ -106,6 +108,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     private final ActorRuntime.ActorKind kind;
     private final String actorTypeName;
     private final LogicalActorRef logicalRef = new LogicalActorRef();
+    private final ArrayList<Route> retiredRoutes = new ArrayList<>();
     private Route active;
     private boolean upgrading;
     private boolean closed;
@@ -115,7 +118,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             String actorTypeName,
             Route initial) {
         this.kind = Objects.requireNonNull(kind);
-        this.actorTypeName = actorTypeName;
+        this.actorTypeName = Objects.requireNonNull(actorTypeName);
         this.active = Objects.requireNonNull(initial);
     }
 
@@ -141,21 +144,29 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
 
         HotReloadManager.ActorGenerationView view =
                 generation.linkActorGeneration(actorTypeName);
-        ActorRuntime.ActorRef<Object> physical = view.runtime().spawnCodeActor(
-                kind,
-                view.policy(),
-                view.executor(),
-                actorTypeName);
+        HotReloadManager.Generation.ActorRouteLease generationLease =
+                generation.pinActorRoute();
+        ActorRuntime.ActorRef<Object> physical = null;
         boolean ready = false;
         try {
-            physical.getReady().get(toNanosSaturated(readyTimeout), TimeUnit.NANOSECONDS);
+            physical = view.runtime().spawnCodeActor(
+                    kind,
+                    view.policy(),
+                    view.executor(),
+                    actorTypeName);
+            physical.getReady().get(
+                    toNanosSaturated(readyTimeout),
+                    TimeUnit.NANOSECONDS);
             ready = true;
             return new LogicalSourceActorRouterV1(
                     kind,
                     actorTypeName,
-                    new Route(generation, view, physical, 1L));
+                    new Route(generation, generationLease, view, physical, 1L));
         } finally {
-            if (!ready) physical.stop();
+            if (!ready) {
+                if (physical != null) physical.stop();
+                generationLease.close();
+            }
         }
     }
 
@@ -164,6 +175,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     public HotReloadManager.Generation generation() {
         synchronized (routeLock) {
             requireOpenLocked();
+            reapRetiredLocked();
             return active.generation;
         }
     }
@@ -186,28 +198,37 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             throw new IllegalArgumentException("ready timeout must be positive");
         requireBlockingHostSurface("upgrade a logical source actor");
 
-        // Link/compile before pausing message route admission.
+        // Link/compile and pin the candidate context before pausing message route
+        // admission. Failure here has zero effect on the active logical route.
         HotReloadManager.ActorGenerationView candidate =
                 candidateGeneration.linkActorGeneration(actorTypeName);
+        HotReloadManager.Generation.ActorRouteLease candidateLease =
+                candidateGeneration.pinActorRoute();
 
         final Route prior;
-        synchronized (routeLock) {
-            requireOpenLocked();
-            if (upgrading)
-                throw new IllegalStateException("logical actor upgrade already in progress");
-            if (candidateGeneration == active.generation)
-                throw new IllegalArgumentException(
-                        "candidate generation is already the active logical route");
-            if (active.incarnation == Long.MAX_VALUE)
-                throw new IllegalStateException("logical actor incarnation exhausted");
-            upgrading = true;
-            prior = active;
-        }
-
+        boolean pauseOwned = false;
         ActorRuntime.SourceActorTransfer transfer = null;
         ActorRuntime.ActorRef<Object> replacement = null;
         boolean published = false;
+        boolean candidateLeaseTransferred = false;
         try {
+            synchronized (routeLock) {
+                requireOpenLocked();
+                reapRetiredLocked();
+                if (upgrading)
+                    throw new IllegalStateException(
+                            "logical actor upgrade already in progress");
+                if (candidateGeneration == active.generation)
+                    throw new IllegalArgumentException(
+                            "candidate generation is already the active logical route");
+                if (active.incarnation == Long.MAX_VALUE)
+                    throw new IllegalStateException(
+                            "logical actor incarnation exhausted");
+                upgrading = true;
+                pauseOwned = true;
+                prior = active;
+            }
+
             var started = prior.view.runtime().tryBeginSourceActorTransfer(
                     prior.physical,
                     logicalId,
@@ -231,11 +252,14 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                             "logical actor route changed while candidate staged");
                 active = new Route(
                         candidateGeneration,
+                        candidateLease,
                         candidate,
                         replacement,
                         Math.addExact(prior.incarnation, 1L));
+                candidateLeaseTransferred = true;
                 published = true;
                 upgrading = false;
+                pauseOwned = false;
                 routeLock.notifyAll();
             }
 
@@ -244,16 +268,21 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             transfer.retireSourceAfterPublication();
             transfer = null;
 
-            // The source was already physically drained, so termination should
-            // be immediate. Failure here is post-commit cleanup failure; the new
-            // logical route remains authoritative.
-            if (!prior.physical.awaitTermination(
+            // The source was already physically drained. Keep its generation
+            // pinned until physical finalization is actually observed.
+            if (prior.physical.awaitTermination(
                     toNanosSaturated(readyTimeout),
                     TimeUnit.NANOSECONDS)) {
+                prior.generationLease.close();
+            } else {
+                synchronized (routeLock) {
+                    retiredRoutes.add(prior);
+                }
                 throw new IllegalStateException(
-                        "old physical actor did not terminate after route publication");
+                        "old physical actor did not terminate after route publication; "
+                                + "its generation remains pinned for later reaping");
             }
-            replacement = null; // authoritative route now owns it
+            replacement = null; // authoritative route owns it
             return true;
         } finally {
             if (!published) {
@@ -266,13 +295,37 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 }
                 if (transfer != null) transfer.close();
                 synchronized (routeLock) {
-                    if (active == prior) {
+                    if (pauseOwned) {
                         upgrading = false;
                         routeLock.notifyAll();
                     }
                 }
             }
+            if (!candidateLeaseTransferred) candidateLease.close();
         }
+    }
+
+    /**
+     * Release generation leases for previously published physical incarnations
+     * once their runtimes report full actor finalization.
+     */
+    public int reapRetired() {
+        synchronized (routeLock) {
+            return reapRetiredLocked();
+        }
+    }
+
+    private int reapRetiredLocked() {
+        int released = 0;
+        for (int i = retiredRoutes.size() - 1; i >= 0; --i) {
+            Route old = retiredRoutes.get(i);
+            if (!old.physical.isAlive()) {
+                retiredRoutes.remove(i);
+                old.generationLease.close();
+                released++;
+            }
+        }
+        return released;
     }
 
     /**
@@ -281,7 +334,15 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     ActorRuntime.ActorAddress physicalAddressForTesting() {
         synchronized (routeLock) {
             requireOpenLocked();
+            reapRetiredLocked();
             return active.physical.address();
+        }
+    }
+
+    ActorRuntime.ActorRef<Object> physicalRefForTesting() {
+        synchronized (routeLock) {
+            requireOpenLocked();
+            return active.physical;
         }
     }
 
@@ -303,7 +364,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     }
 
     private void requireOpenLocked() {
-        if (closed) throw new IllegalStateException("logical actor router is closed");
+        if (closed)
+            throw new IllegalStateException("logical actor router is closed");
     }
 
     private static void requireBlockingHostSurface(String operation) {
@@ -326,6 +388,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
 
     @Override
     public void close() {
+        requireBlockingHostSurface("close a logical source actor");
         final Route route;
         synchronized (routeLock) {
             if (closed) return;
@@ -334,6 +397,24 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             route = active;
             routeLock.notifyAll();
         }
+
         route.physical.stop();
+        boolean terminated = false;
+        try {
+            terminated = route.physical.awaitTermination(5, TimeUnit.SECONDS);
+        } catch (InterruptedException interruption) {
+            Thread.currentThread().interrupt();
+        }
+        synchronized (routeLock) {
+            reapRetiredLocked();
+            if (terminated) {
+                route.generationLease.close();
+            } else {
+                retiredRoutes.add(route);
+                throw new IllegalStateException(
+                        "logical actor close did not observe physical termination; "
+                                + "generation remains pinned");
+            }
+        }
     }
 }
