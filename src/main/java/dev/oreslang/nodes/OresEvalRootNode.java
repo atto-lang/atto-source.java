@@ -58,6 +58,20 @@ public final class OresEvalRootNode extends RootNode {
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
         super(language);
+        // Defense in depth for host-created ASTs that bypass OresCompiler.
+        // The regular Polyglot path already calls TypeChecker.checkTypes,
+        // but an executable RootNode must never accept unfinished nominal
+        // enum or pattern lowering, regardless of its caller.
+        Objects.requireNonNull(program, "program");
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.EnumDecl
+                        || declaration instanceof Ast.PatternDecl) {
+                    throw new IllegalArgumentException(
+                            "nominal enum/pattern runtime lowering is not yet integrated");
+                }
+            }
+        }
         this.program = program;
         this.codeUnitId = codeUnitId;
     }
