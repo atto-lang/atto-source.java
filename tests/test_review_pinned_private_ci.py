@@ -499,6 +499,80 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                         "private": True, "archived": False, "disabled": False
                     })))
 
+    def test_nonfinite_json_numbers_fail_closed(self):
+        for value in ("NaN", "Infinity", "-Infinity", "1e999", "-1e999"):
+            with self.subTest(value=value):
+                path = self.write("invalid-number.json", '{"extra":' + value + '}')
+                with self.assertRaises(MOD.Denied):
+                    MOD.load_json(path)
+
+    def test_finite_standard_json_float_is_still_accepted(self):
+        path = self.write("finite-number.json", '{"extra":1.25}')
+        self.assertEqual(MOD.load_json(path), {"extra": 1.25})
+
+    def test_reviewer_policy_float_schema_denied(self):
+        def mutate(fx):
+            policy = self.policy()
+            policy["schema"] = 2.0
+            fx["reviewer_policy"] = self.write("float-schema.json", policy)
+        self.assertDenied(mutate)
+
+    def test_security_pr_float_number_denied(self):
+        def mutate(fx):
+            pr = self.pr(MOD.SOURCE_REPO, 1217, PUBLISHER_HEAD)
+            pr["number"] = 1217.0
+            fx["publisher_pr"] = self.write("float-pr-number.json", pr)
+        self.assertDenied(mutate)
+
+    def test_live_permission_reviewer_id_type_denied(self):
+        for invalid in (float(REVIEWER_ID), str(REVIEWER_ID)):
+            with self.subTest(invalid=invalid):
+                self.assertDenied(lambda fx: fx.__setitem__(
+                    "source_reviewer_permission",
+                    self.write("permission-id-type.json",
+                               self.permission("write", reviewer_id=invalid))))
+
+    def test_exact_review_reviewer_id_type_denied(self):
+        for invalid in (float(REVIEWER_ID), str(REVIEWER_ID)):
+            with self.subTest(invalid=invalid):
+                self.assertDenied(lambda fx: fx.__setitem__(
+                    "publisher_reviews", self.write("review-id-type.json",
+                        self.reviews(PUBLISHER_HEAD, reviewer_id=invalid))))
+
+    def test_incident_authorization_reviewer_id_type_denied(self):
+        for invalid in (float(REVIEWER_ID), str(REVIEWER_ID)):
+            with self.subTest(invalid=invalid):
+                self.assertDenied(lambda fx: fx.__setitem__(
+                    "incident_comments", self.write("incident-id-type.json", [
+                        self.resume_comment(reviewer_id=invalid)])))
+
+    def test_review_timestamp_must_be_utc(self):
+        for submitted in ("2026-10-17T20:00:00", "2026-10-17T21:00:00+01:00"):
+            with self.subTest(submitted=submitted):
+                self.assertDenied(lambda fx: fx.__setitem__(
+                    "publisher_reviews", self.write("review-time.json",
+                        self.reviews(PUBLISHER_HEAD, submitted=submitted))))
+
+    def test_incident_timestamp_must_be_utc(self):
+        for created in ("2026-10-17T20:00:00", "2026-10-17T21:00:00+01:00"):
+            with self.subTest(created=created):
+                self.assertDenied(lambda fx: fx.__setitem__(
+                    "carrier_incident_comments", self.write("incident-time.json", [
+                        self.resume_comment(cid=200, created=created)])))
+
+    def test_json_reader_rejects_oversized_input(self):
+        path = self.write("oversized-input.json", b" " * (MOD.MAX_JSON + 1))
+        with self.assertRaises(MOD.Denied):
+            MOD.load_json(path)
+
+    def test_malformed_live_user_object_denied(self):
+        for invalid in ([], "fake-user", 7):
+            with self.subTest(invalid=invalid):
+                value = self.permission("write")
+                value["user"] = invalid
+                self.assertDenied(lambda fx: fx.__setitem__(
+                    "source_reviewer_permission", self.write("bad-user.json", value)))
+
     def test_wrong_destination_id_denied(self):
         def mutate(fx):
             d = {"id": 1, "full_name": MOD.CARRIER_REPO, "private": True,
