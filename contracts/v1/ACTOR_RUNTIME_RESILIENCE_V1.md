@@ -159,6 +159,12 @@ reserve diagnostic capacity and then die before publishing the record.
 - Actor identity is never native/JVM thread identity.
 - Default source execution is single-flight even when turns migrate.
 - Ordinary actors share bounded carriers; actor count does not imply thread count.
+- A configured VM-wide execution-carrier ceiling protects one physical permit
+  for CONTROL, PRIVATE, SHARED, UNTRUSTED and lifecycle-observer domains.
+  JVM non-affine domains may borrow otherwise idle permits without consuming
+  another domain's final reserve; hard-cap denial and reserve-protection denial
+  are separately observable. Affine/native borrowing must remain conservative
+  until the backend can acknowledge individual carrier retirement safely.
 - Selector and CONTROL threads never execute arbitrary guest callbacks.
 - PRIVATE/UNTRUSTED actors do not acquire writable foreign actor heap aliases.
 - Actor-local allocation domains are reclaimed independently of observer progress.
@@ -198,7 +204,7 @@ reserve diagnostic capacity and then die before publishing the record.
 
 | Backend | Status |
 | --- | --- |
-| Java/GraalVM | Active draft implements bounded mail/control, structured cancellation, single-flight execution, continuation fairness, typed send rejection, snapshots/stats, retained terminal state, ordered bounded terminal telemetry, watchdog isolation and two-phase finalization. Terminal ready/DONE/output/exit observers use a lazy bounded lifecycle-observer domain; actor capacity remains charged until that bundle retires, and runtime close fences in-flight finalization handoff before observer-domain shutdown. When `ores.runtime.carriers.global.max` is configured, CONTROL + PRIVATE + SHARED + UNTRUSTED + lifecycle-observer execution carriers are all reserved inside the 5..256 ceiling; the partition is still static/non-work-conserving pending #1303. NIO/watchdog/user-owned scheduler threads remain separately accounted host resources. Source supervisor callbacks remain a release gate. |
+| Java/GraalVM | Active draft implements bounded mail/control, structured cancellation, single-flight execution, continuation fairness, typed send rejection, snapshots/stats, retained terminal state, ordered bounded terminal telemetry, watchdog isolation and two-phase finalization. Terminal ready/DONE/output/exit observers use a lazy bounded lifecycle-observer domain; actor capacity remains charged until that bundle retires, and runtime close fences in-flight finalization handoff before observer-domain shutdown. When `ores.runtime.carriers.global.max` is configured, CONTROL + PRIVATE + SHARED + UNTRUSTED + lifecycle-observer execution carriers share one 5..256 permit coordinator with one protected reserve per domain. JVM non-affine CONTROL/actor/lifecycle pools can borrow idle permits up to the safe per-domain ceiling, with coherent held/free and denial-reason telemetry. Affine/native pools remain conservative pending individual native carrier retirement acknowledgment (#1303). NIO/watchdog/user-owned scheduler threads remain separately accounted host resources. Source supervisor callbacks remain a release gate. |
 | LLVM | Native actor/group and RT/thread-accounting primitives exist. The host scheduler now retains immutable generation-bound terminal metadata for explicit STOP and VM/runtime retirement, including accepted/processed user-message accounting and domain-fenced lookup. Callback failure has no typed return channel yet, so FAILED classification, source supervision, terminal diagnostics/journaling and the full observability/fairness contract remain parity work. |
 | .NET | Contract target only; no source-runtime parity claim from this file. |
 | WASM | Contract target; fail closed where threads/native isolation are unavailable. |
