@@ -131,6 +131,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         private final byte[] masterKey;
         private final byte[] challenge;
         private final UUID logicalActorId;
+        private final UUID codeGenerationId;
         private final long incarnation;
         private final long routeEpoch;
         private final UUID sessionId;
@@ -139,12 +140,15 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
                 byte[] masterKey,
                 byte[] challenge,
                 UUID logicalActorId,
+                UUID codeGenerationId,
                 long incarnation,
                 long routeEpoch,
                 UUID sessionId) {
             this.masterKey = masterKey.clone();
             this.challenge = challenge.clone();
             this.logicalActorId = logicalActorId;
+            this.codeGenerationId =
+                    Objects.requireNonNull(codeGenerationId, "codeGenerationId");
             this.incarnation = incarnation;
             this.routeEpoch = routeEpoch;
             this.sessionId = sessionId;
@@ -153,6 +157,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         byte[] masterKey() { return masterKey.clone(); }
         byte[] challenge() { return challenge.clone(); }
         UUID logicalActorId() { return logicalActorId; }
+        UUID codeGenerationId() { return codeGenerationId; }
         long incarnation() { return incarnation; }
         long routeEpoch() { return routeEpoch; }
         UUID sessionId() { return sessionId; }
@@ -216,7 +221,8 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         this.bootstrapChallenge = challenge.clone();
         this.dataKey = deriveLaneKey(masterKey, "data");
         this.controlKey = deriveLaneKey(masterKey, "control");
-        this.expectedReadyPayload = readyPayload(challenge, artifact);
+        this.expectedReadyPayload = readyPayload(
+                challenge, artifact, artifact.codeGenerationId());
     }
 
     static ActorIpcSessionV1 create(
@@ -272,6 +278,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
                 bootstrapMasterKey,
                 bootstrapChallenge,
                 logicalActorId,
+                artifact.codeGenerationId(),
                 incarnation,
                 routeEpoch,
                 sessionId);
@@ -389,7 +396,10 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
             byte[] actualPayload;
             if (kind == FrameKind.READY) {
                 challenge = bootstrap.challenge();
-                actualPayload = readyPayload(challenge, workerArtifact);
+                actualPayload = readyPayload(
+                        challenge,
+                        workerArtifact,
+                        bootstrap.codeGenerationId());
             } else {
                 actualPayload = Objects.requireNonNull(payload, "payload");
             }
@@ -722,9 +732,11 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
 
     private static byte[] readyPayload(
             byte[] challenge,
-            ActorArtifact<?> artifact) {
+            ActorArtifact<?> artifact,
+            UUID codeGenerationId) {
         Objects.requireNonNull(challenge, "challenge");
         Objects.requireNonNull(artifact, "artifact");
+        Objects.requireNonNull(codeGenerationId, "codeGenerationId");
         if (challenge.length != 32) {
             throw new IllegalArgumentException("IPC READY challenge must be 32 bytes");
         }
@@ -738,7 +750,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         out.put(digestBytes(artifact.wireCodecSha256()));
         out.put(digestBytes(artifact.workerPolicySha256()));
         out.put(sha256(artifact.actorTypeName().getBytes(StandardCharsets.UTF_8)));
-        putUuid(out, artifact.codeGenerationId());
+        putUuid(out, codeGenerationId);
         return out.array();
     }
 
