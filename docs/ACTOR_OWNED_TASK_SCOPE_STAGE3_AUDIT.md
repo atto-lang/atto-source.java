@@ -52,6 +52,8 @@ is integrated with `startWithWallDeadline`.
 5. Host stop racing source continuation must not publish actor done before Task done.
 6. Parent stop cancels eight queued Task handles with no leaked executable work.
 7. Possession of ActorRef alone never grants Task admission authority.
+8. An UNTRUSTED actor cannot bypass the quota-controlled existing task admission path.
+9. An actor handler failure cancels owned Tasks without erasing the actor's terminal error.
 
 Run against exact nested PR head:
 
