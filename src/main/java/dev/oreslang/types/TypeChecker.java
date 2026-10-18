@@ -1106,6 +1106,11 @@ public final class TypeChecker {
                         + "' cannot carry actor transport specialization");
             }
         } else {
+            if (actorSpec.serial()) {
+                throw new IllegalArgumentException("actor '" + klass.name()
+                        + "' declares serial (1,1) admission but request/message"
+                        + " admission policy lowering is not installed");
+            }
             if (actorSpec.transport() != Ast.ActorTransport.MAIL) {
                 throw new IllegalArgumentException("actor '" + klass.name() + "' declares "
                         + actorSpec.transport() + " " + actorSpec.direction()
