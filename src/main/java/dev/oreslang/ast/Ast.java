@@ -979,8 +979,13 @@ public final class Ast {
         List<CallArgument> items = List.copyOf(source);
         boolean seenNamed = false;
         boolean hasStagedItem = false;
+        java.util.Set<String> labels = new java.util.HashSet<>();
         for (CallArgument item : items) {
             if (item.label() != null) {
+                if (!labels.add(item.label())) {
+                    throw new IllegalArgumentException(
+                            "duplicate named call argument '" + item.label() + "'");
+                }
                 seenNamed = true;
                 hasStagedItem = true;
             } else if (seenNamed) {
