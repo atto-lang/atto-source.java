@@ -670,6 +670,28 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                     fx["publisher_pr"] = self.write("forged-merge-status.json", pr)
                 self.assertDenied(mutate)
 
+    def test_verifier_rejects_parent_directory_symlinks(self):
+        (self.root / "real").mkdir()
+        (self.root / "real" / "policy.json").write_text('{"valid":true}')
+        (self.root / "alias").symlink_to("real", target_is_directory=True)
+        with self.assertRaises(MOD.Denied):
+            MOD.load_json(self.root / "alias" / "policy.json")
+
+    def test_verifier_rejects_nested_parent_symlinks(self):
+        (self.root / "real").mkdir()
+        (self.root / "real" / "child").mkdir()
+        (self.root / "real" / "child" / "policy.json").write_text('{"valid":true}')
+        (self.root / "real" / "alias").symlink_to("child", target_is_directory=True)
+        with self.assertRaises(MOD.Denied):
+            MOD.load_json(self.root / "real" / "alias" / "policy.json")
+
+    def test_verifier_rejects_embedded_nul_while_allowing_absolute_valid_file(self):
+        valid = self.write("good.json", {"valid": True})
+        self.assertEqual(MOD.load_json(valid), {"valid": True})
+        invalid = self.write("nul.json", b'{"valid":true}\x00')
+        with self.assertRaises(MOD.Denied):
+            MOD.load_json(invalid)
+
     def test_wrong_destination_id_denied(self):
         def mutate(fx):
             d = {"id": 1, "full_name": MOD.CARRIER_REPO, "private": True,
