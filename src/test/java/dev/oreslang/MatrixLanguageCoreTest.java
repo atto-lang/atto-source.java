@@ -119,4 +119,21 @@ final class MatrixLanguageCoreTest {
                 """);
         assertDoesNotThrow(() -> TypeChecker.check(program));
     }
+    @Test
+    void complexTypedZeroImaginaryScaleAndDivisionRemainComplexInGuestCode() {
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub routine main(): bool {
+                      val Matrix<float> a = matrix[[2.0]];
+                      val Matrix<complex> scaled = a * (2.0 + 0.0i);
+                      val Matrix<complex> divided = a / (2.0 + 0.0i);
+                      return scaled.get(0, 0) eq (4.0 + 0.0i)
+                          && scaled.trace() eq (4.0 + 0.0i)
+                          && divided.get(0, 0) eq (1.0 + 0.0i);
+                    }
+                    """).asBoolean());
+        }
+    }
+
 }
