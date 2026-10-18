@@ -160,13 +160,11 @@ final class ImportGraph {
                         && klass.visibility() == Ast.Visibility.PUBLIC
                         && (imported.kind() == Ast.ImportKind.MODULE
                             || imported.wildcard() || imported.names().contains(klass.name()))) {
-                    for (Ast.MethodDecl method : klass.methods()) {
-                        if (method.visibility() == Ast.Visibility.PUBLIC
-                                && hasCallerPolicy(method.annotations())) {
-                            symbol = klass.name() + "." + method.name();
-                            break;
-                        }
-                    }
+                    // An imported class exposes inherited public static
+                    // functions too. Inspect local ancestry, and reject any
+                    // parent whose identity cannot be proven in this source.
+                    symbol = protectedClassSurface(
+                            target, module, klass, new HashSet<>());
                 }
                 if (symbol != null) {
                     throw new IllegalArgumentException(
@@ -176,6 +174,64 @@ final class ImportGraph {
                                     + "unlinked role-policy imports are forbidden");
                 }
             }
+        }
+    }
+
+    /**
+     * Find protected public methods reachable through a locally resolved
+     * class hierarchy. Unknown ancestors fail closed: a class import must
+     * not erase a protected inherited static function's linked identity.
+     * Imported parent schemas can be admitted once signed/verified class
+     * ancestry is available to this linker.
+     */
+    private static String protectedClassSurface(
+            Ast.Program program, Ast.ModuleDecl module, Ast.ClassDecl klass,
+            Set<String> visiting) {
+        String qualified = module.name() + "." + klass.name();
+        if (!visiting.add(qualified)) {
+            throw new IllegalArgumentException(
+                    "cyclic inherited class hierarchy in import of '" + qualified + "'");
+        }
+        try {
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (method.visibility() == Ast.Visibility.PUBLIC
+                        && hasCallerPolicy(method.annotations())) {
+                    return qualified + "." + method.name();
+                }
+            }
+            for (Ast.TypeRef parent : klass.parents()) {
+                String name = parent.name();
+                String parentQualified = name.contains(".")
+                        ? name : module.name() + "." + name;
+                Ast.ModuleDecl foundModule = null;
+                Ast.ClassDecl foundClass = null;
+                for (Ast.ModuleDecl candidateModule : program.modules()) {
+                    for (Ast.Decl declaration : candidateModule.declarations()) {
+                        if (declaration instanceof Ast.ClassDecl candidate
+                                && (candidateModule.name() + "." + candidate.name())
+                                        .equals(parentQualified)) {
+                            if (foundClass != null) {
+                                throw new IllegalArgumentException(
+                                        "ambiguous inherited class '" + parentQualified + "'");
+                            }
+                            foundModule = candidateModule;
+                            foundClass = candidate;
+                        }
+                    }
+                }
+                if (foundClass == null) {
+                    throw new IllegalArgumentException(
+                            "unverified inherited callable policy for class '"
+                                    + qualified + "': parent '" + name
+                                    + "' has no linked declaration identity");
+                }
+                String guarded = protectedClassSurface(
+                        program, foundModule, foundClass, visiting);
+                if (guarded != null) return guarded;
+            }
+            return null;
+        } finally {
+            visiting.remove(qualified);
         }
     }
 
