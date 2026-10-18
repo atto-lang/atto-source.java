@@ -574,12 +574,22 @@ public final class NativeNioFutureReactor implements AutoCloseable {
                 Set<OresFuture<?>> forgotten;
                 synchronized (admissionGate) {
                     forgotten = Set.copyOf(unsettled);
-                    unsettled.clear();
-                    pending.set(0);
                     commands.clear();
                 }
                 recordTerminalCleanupFailure(exhaustTerminalCleanup(
-                        forgotten, future -> future.failFromRuntime(failure)));
+                        forgotten, future -> {
+                            try { future.failFromRuntime(failure); }
+                            finally {
+                                // Do not zero the physical admission ledger
+                                // ahead of terminal CAS. A still-unsettled
+                                // Future remains observable as incomplete
+                                // quiescence even if its publisher throws.
+                                if (future.isDone()) release(future);
+                            }
+                        }));
+                if (pending.get() != 0) recordTerminalCleanupFailure(
+                        new IllegalStateException(
+                                "TCP reactor terminated with unsettled Futures"));
             } finally {
                 try { listener.close(); } catch (IOException ignored) { }
                 try { selector.close(); } catch (IOException ignored) { }
