@@ -121,3 +121,42 @@ Current exact source has 38 JUnit methods in the two stage-2 test files.
 Both new regressions are **committed but unexecuted** by source Actions.
 This does not establish source-language Task lowering or bounded wall
 latency for arbitrary cancellation callbacks.
+
+
+## Funded alternate Actions runner qualification (source-free only)
+
+An approved *execution-capacity experiment*, not a private-source export,
+was performed on 2026-10-18 in private repository
+`opto-sync-test/go-java-validation` (GitHub repository ID 1323598177).
+
+- Test branch: `audit/sourcefree-taskscope-canary-20261018`
+- Exact branch commit: `c06c67734bd1f5b9f29b4a5cb872b99828e632a5`
+- Actions run: https://github.com/opto-sync-test/go-java-validation/actions/runs/39177621239
+- Result: **success**. All eight recorded job steps succeeded, including
+  checkout, setup-java 21, compilation, and execution.
+- Guest-code fidelity: **none**. The 1,750 race cases ran an independently
+  written Java model, not Oreslang compiler/runtime source or a complete
+  Git snapshot; no private source, Git blobs, tokens, or workflows were
+  copied from the Oreslang repository.
+- Separate local model: OpenJDK 21 compiled/executed an independently
+  reconstructed TaskScope admission model with 3,000 successful cases:
+  1,000 inline callback/guest monitor cases, 500 cancellation-vs-dispatch,
+  500 rejection/rollback, and 1,000 concurrent seal/start races.
+  This is **not actual production JUnit/Maven/GraalVM coverage**.
+
+**Fail-closed export status:** GitHub issue
+https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/962
+still requires protected source provenance, independently approved exact
+numeric destination identity and main policy. Conformance security incident
+https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/issues/22
+remains open. Source main has no approved cross-org destination in
+`.github/private-ci-approved-repositories.txt`; therefore transferring any
+actual private source tree, even into this privately verified carrier, was
+**not authorized or performed**. The historical successful five-step
+canary and this fresh eight-step canary demonstrate availability only.
+
+To run actual exact-source PR #1407 tests later: clear independent
+source/destination approvals, attest protected source main and complete Git
+tree, build in approved private destination, obtain exact-head Maven/JUnit
+and Graal evidence, then review cleanup of ephemeral refs/artifacts.
+Do not equate a canary success with a merge gate.
