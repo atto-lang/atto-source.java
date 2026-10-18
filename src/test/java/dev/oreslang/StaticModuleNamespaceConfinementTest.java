@@ -139,8 +139,10 @@ final class StaticModuleNamespaceConfinementTest {
                     return;
                 }
                 """);
-        assertThrows(IllegalArgumentException.class, () ->
+        IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class, () ->
                 new dev.oreslang.compiler.IncrementalCompiler().compile(sources));
+        assertTrue(rejection.getMessage().contains("compile-time namespace"),
+                rejection.toString());
     }
 
     @Test
@@ -154,20 +156,24 @@ final class StaticModuleNamespaceConfinementTest {
                     return;
                 }
                 """);
-        assertThrows(IllegalArgumentException.class, () ->
+        IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class, () ->
                 new dev.oreslang.compiler.IncrementalCompiler().compile(sources));
+        assertTrue(rejection.getMessage().contains("compile-time namespace"),
+                rejection.toString());
     }
 
     @Test
     void bareModuleNamespaceMustNeverBecomeRuntimeInstance() {
         // Reject before guest execution; internal dispatch facades are not values.
-        assertThrows(IllegalArgumentException.class, () ->
+        IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse(MODULE + """
                     routine main(): void {
                         const moduleInstance = Catalog;
                         return;
                     }
                     """)));
+        assertTrue(rejection.getMessage().contains("compile-time namespace"),
+                rejection.toString());
     }
 
     @Test
