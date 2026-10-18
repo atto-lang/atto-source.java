@@ -127,6 +127,7 @@ public final class HttpResponseDraft {
         Objects.requireNonNull(cancelled, "cancelled");
         Objects.requireNonNull(activeBody, "activeBody");
         claim();
+        if (cancelled.getAsBoolean()) throw new IOException("HTTP response cancelled before headers");
         for (Map.Entry<String, String> field : headers)
             raw.getResponseHeaders().add(field.getKey(), field.getValue());
         boolean suppress = raw.getRequestMethod().equals("HEAD") || !bodyPresent;
@@ -140,7 +141,10 @@ public final class HttpResponseDraft {
             try {
                 byte[] chunk = new byte[8192];
                 int count;
-                while ((count = input.read(chunk)) != -1) {
+                while (true) {
+                    if (cancelled.getAsBoolean()) throw new IOException("response cancelled");
+                    count = input.read(chunk);
+                    if (count == -1) break;
                     if (cancelled.getAsBoolean()) throw new IOException("response cancelled");
                     if (count == 0) throw new IOException("HTTP stream made no progress");
                     raw.getResponseBody().write(chunk, 0, count);
