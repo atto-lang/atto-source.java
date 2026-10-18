@@ -68,8 +68,29 @@ public final class PostgresWorkflowGateSmoke {
         for(var future:futures)future.get(30,TimeUnit.SECONDS);
         workers.shutdown();
         check(admitted.get()==1 && duplicates.get()==7,"one durable event for eight racing webhooks");
+        // Exercise the actor->expectation lock order against concurrent staging
+        // and webhook delivery. Neither path may deadlock or lose valid mail.
+        var racing=Executors.newFixedThreadPool(2);
+        var go=new CountDownLatch(1);
+        var restage=racing.submit(()->{
+            try{go.await();for(int i=0;i<20;i++)
+                gate.stage(new PostgresDurableWorkflowGate.Expected(address,7,13,sha,
+                    "refs/heads/feature",1,0));
+            }catch(InterruptedException e){Thread.currentThread().interrupt();throw new RuntimeException(e);}
+        });
+        var webhook=racing.submit(()->{
+            try{go.await();for(int i=0;i<20;i++)
+                check(gate.accept("tenant-a",7,13,sha,"refs/heads/feature",
+                    "race-"+i,raw)==PostgresDurableWorkflowGate.Admission.ACCEPTED,
+                    "racing stage preserved matching webhook");
+            }catch(InterruptedException e){Thread.currentThread().interrupt();throw new RuntimeException(e);}
+        });
+        go.countDown();
+        restage.get(30,TimeUnit.SECONDS);
+        webhook.get(30,TimeUnit.SECONDS);
+        racing.shutdown();
         var a=db.activate(address);
-        check(a.inbox().size()==1 && a.epoch()==1,"authenticated event delivered");
+        check(a.inbox().size()==21 && a.epoch()==1,"authenticated events delivered without deadlock");
         var o1=new DurableActorStore.Outbound("push-1","unique:push:1",bytes("git"));
         var o2=new DurableActorStore.Outbound("test-1","unique:test:1",bytes("CI"));
         var v1=new DurableActorStore.Snapshot(0,1,"code-a",1,bytes("v1"));
