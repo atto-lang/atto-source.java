@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * GUEST execution gate for the actual Oreslang ML scalar actor-state fixture.
  *
  * The .ores fixture was copied byte-for-byte from oreslang-ml's stacked
- * actor-state PR #7 (Git blob 555dfe5602e28c93b02c0b398a428ef412c13b58).
+ * actor-state PR #7 (Git blob 9171c320420a128ca61cc193c9dd4db985222552).
  * This JUnit class requires an actual GraalVM Oreslang context evaluation;
  * pure host-side arithmetic is explicitly NOT accepted as execution evidence.
  *
@@ -46,7 +46,7 @@ final class MlActorStateScalarGuestTest {
 
     @Test void compiledActorStageHasOneStateSchemaAndDeclaredEffects() throws Exception {
         String text = source();
-        assertEquals("555dfe5602e28c93b02c0b398a428ef412c13b58",
+        assertEquals("9171c320420a128ca61cc193c9dd4db985222552",
                 gitBlobSha(text), "ML fixture drifted from pinned source Git blob");
         assertDoesNotThrow(() -> verify(text));
         assertEquals(1, count(text, "    state {"));
