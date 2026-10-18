@@ -8,6 +8,7 @@ on:
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source.py'
       - 'scripts/test-private-ci-merged-main.py'
+      - 'scripts/test-private-ci-review-coverage.py'
       - '.github/workflows/private-ci-mirror-preflight.yml'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/CODEOWNERS'
@@ -22,6 +23,7 @@ on:
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source.py'
       - 'scripts/test-private-ci-merged-main.py'
+      - 'scripts/test-private-ci-review-coverage.py'
       - '.github/workflows/private-ci-mirror-preflight.yml'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/CODEOWNERS'
@@ -42,7 +44,8 @@ jobs:
         run: |
           set -euo pipefail
           bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
-          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/test-private-ci-merged-main.py
+          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/test-private-ci-merged-main.py scripts/test-private-ci-review-coverage.py
+          python3 -B scripts/test-private-ci-review-coverage.py
           bash scripts/test-private-ci-destination.sh
           bash -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh
           bash tools/test-verify-exact-source-tree.sh
