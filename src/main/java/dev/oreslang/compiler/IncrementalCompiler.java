@@ -151,7 +151,8 @@ public final class IncrementalCompiler {
                             Parser.parse(normalized.get(id)),
                             linked.classes(),
                             linked.aliases(),
-                            linkedContracts);
+                            linkedContracts,
+                            linkedModules);
                     OwnershipChecker.checkWithImportedClasses(
                             checked, linked.classes());
                 } catch (IllegalArgumentException invalid) {
