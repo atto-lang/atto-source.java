@@ -67,7 +67,13 @@ final class ActorCounterUpgradeProof {
 
     ActorRuntime.ActorRef<Long> actorRef() { return ref; }
     long epoch() { return generation.epoch(); }
-    long value() { return active.state().snapshot().value(); }
+    long value() {
+        // A host observer must not race a routing commit and snapshot an
+        // incarnation that has already been retired by the supervisor.
+        synchronized (transactionLock) {
+            return active.state().snapshot().value();
+        }
+    }
     ActorUpgradeEpochGate.Image image() { return generation.image(); }
 
     private void deliver(long delta) {
