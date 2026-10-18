@@ -35,7 +35,10 @@ public final class HttpResponseDraftStandaloneCheck {
         for (int status : List.of(0, 100, 199, 600)) {
             rejected(() -> HttpResponseDraft.empty(status, List.of()));
         }
-        for (String value : List.of("injected\\r\\nHeader: yes", "nul\\u0000byte", "wide\\u0100")) {
+        for (String value : List.of(
+                "injected" + ((char) 13) + ((char) 10) + "Header: yes",
+                "nul" + ((char) 0) + "byte",
+                "wide" + ((char) 256))) {
             rejected(() -> HttpResponseDraft.empty(200, List.of(Map.entry("X-Test", value))));
         }
         for (String name : List.of("Transfer-Encoding", "Content-Length", "Trailer", "Connection", "Bad Name")) {
