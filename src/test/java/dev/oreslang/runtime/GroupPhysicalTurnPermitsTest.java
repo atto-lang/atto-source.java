@@ -5,6 +5,9 @@ import org.junit.jupiter.api.Timeout;
 
 import java.lang.reflect.Field;
 import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -100,6 +103,52 @@ final class GroupPhysicalTurnPermitsTest {
                 "ticket exhaustion must return every dropped waiter for cancellation/reschedule");
         assertEquals(new GroupPhysicalTurnPermits.Snapshot(0, 0, true), gate.trySnapshot());
         assertEquals(GroupPhysicalTurnPermits.Admission.CLOSED, gate.tryRequest(actor(4)).status());
+    }
+
+    @Test
+    void contendedTurnGateNeverParksOrDropsAnActiveCredit() throws Exception {
+        var gate = new GroupPhysicalTurnPermits(1, 1);
+        var activeGrant = gate.tryRequest(actor(1)).grant();
+        var waitingActor = actor(2);
+        assertEquals(GroupPhysicalTurnPermits.Admission.QUEUED,
+                gate.tryRequest(waitingActor).status());
+
+        Field lockField = GroupPhysicalTurnPermits.class.getDeclaredField("lock");
+        lockField.setAccessible(true);
+        var gateLock = (ReentrantLock) lockField.get(gate);
+        var worker = Executors.newSingleThreadExecutor();
+        try {
+            gateLock.lock();
+            try {
+                // Assertions execute on a DIFFERENT thread while the owner
+                // holds the lock. A blocking lock() would time out here.
+                var pending = worker.submit(() -> {
+                    assertEquals(GroupPhysicalTurnPermits.Admission.RETRY,
+                            gate.tryRequest(actor(3)).status());
+                    var release = gate.tryRelease(activeGrant);
+                    assertTrue(release.retry());
+                    assertFalse(release.released());
+                    assertNull(release.successor());
+                    assertEquals(GroupPhysicalTurnPermits.Cancellation.RETRY,
+                            gate.tryCancelQueued(waitingActor));
+                    assertEquals(GroupPhysicalTurnPermits.SealStatus.RETRY,
+                            gate.trySeal().status());
+                    assertNull(gate.trySnapshot());
+                });
+                pending.get(2, TimeUnit.SECONDS);
+            } finally {
+                gateLock.unlock();
+            }
+            // A RETRY has NOT transferred or released physical ownership.
+            var resumed = gate.tryRelease(activeGrant);
+            assertTrue(resumed.released());
+            assertEquals(waitingActor, resumed.successor().actor());
+            assertEquals(new GroupPhysicalTurnPermits.Snapshot(1, 0, false),
+                    gate.trySnapshot());
+            assertTrue(gate.tryRelease(resumed.successor()).released());
+        } finally {
+            worker.shutdownNow();
+        }
     }
 
     @Test
