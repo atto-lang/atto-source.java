@@ -135,6 +135,7 @@ final class ImportGraph {
                 || imported.kind() == Ast.ImportKind.ALL
                 || imported.kind() == Ast.ImportKind.MODULE;
         boolean classes = imported.kind() == Ast.ImportKind.CLASS
+                || imported.kind() == Ast.ImportKind.ACTOR
                 || imported.kind() == Ast.ImportKind.ALL
                 || imported.kind() == Ast.ImportKind.MODULE;
         if (!functions && !classes) return;
@@ -158,6 +159,10 @@ final class ImportGraph {
                 }
                 if (classes && decl instanceof Ast.ClassDecl klass
                         && klass.visibility() == Ast.Visibility.PUBLIC
+                        && (imported.kind() != Ast.ImportKind.ACTOR
+                            || klass.actorKind() != Ast.ActorKind.NONE)
+                        && (imported.kind() != Ast.ImportKind.CLASS
+                            || klass.actorKind() == Ast.ActorKind.NONE)
                         && (imported.kind() == Ast.ImportKind.MODULE
                             || imported.wildcard() || imported.names().contains(klass.name()))) {
                     // An imported class exposes inherited public static
