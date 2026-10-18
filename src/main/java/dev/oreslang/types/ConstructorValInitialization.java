@@ -41,31 +41,27 @@ public final class ConstructorValInitialization {
         // self. Ownership checks must not be the only protection: run the
         // constructor expression walker independently for every constructor.
         for (Ast.ConstructorDecl constructor : klass.constructors()) {
-            State normalExit = block(constructor.body(), new State(fixed), required, klass.name());
+            State normalExit = block(constructor.body(), new State(required, fixed), required, klass.name());
             if (normalExit != null) requireComplete(normalExit, required, klass.name());
         }
     }
 
+
+    /** Mutable local cursor over immutable backend-neutral assignment intervals. */
     private static final class State {
-        final LinkedHashSet<String> must;
-        final LinkedHashSet<String> may;
+        ConstructorFlowState flow;
         final Set<String> fixed;
-
-        State(Set<String> fixed) {
-            this.must = new LinkedHashSet<>();
-            this.may = new LinkedHashSet<>();
-            this.fixed = Set.copyOf(fixed);
+        State(Set<String> required, Set<String> fixed) {
+            this(ConstructorFlowState.blank(required), Set.copyOf(fixed));
         }
-
-        State(Set<String> must, Set<String> may, Set<String> fixed) {
-            this.must = new LinkedHashSet<>(must);
-            this.may = new LinkedHashSet<>(may);
+        State(ConstructorFlowState flow, Set<String> fixed) {
+            this.flow = flow;
             this.fixed = fixed;
         }
-
-        State copy() {
-            return new State(must, may, fixed);
-        }
+        State copy() { return new State(flow, fixed); }
+        boolean initialized(String field) { return flow.definitelyInitialized(field); }
+        boolean maybeInitialized(String field) { return flow.maybeInitialized(field); }
+        void write(String field) { flow = flow.write(field); }
     }
 
     /** A null state has no normal continuation (every path returned). */
@@ -84,11 +80,10 @@ public final class ConstructorValInitialization {
                 String field = uninitializedFieldTarget(assignment.target(), required);
                 // RHS executes before the slot is written: reject reads of a missing slot.
                 scan(assignment.value(), state, required, klass);
-                if (state.fixed.contains(field) && state.may.contains(field)) {
+                if (state.fixed.contains(field) && state.maybeInitialized(field)) {
                     throw error(klass, field, "is immutable; may be initialized more than once");
                 }
-                state.may.add(field);
-                state.must.add(field);
+                state.write(field);
             } else {
                 scan(expression.expression(), state, required, klass);
             }
@@ -148,15 +143,14 @@ public final class ConstructorValInitialization {
         if (states.isEmpty()) return null;
         State joined = states.getFirst().copy();
         for (int i = 1; i < states.size(); i++) {
-            joined.must.retainAll(states.get(i).must);
-            joined.may.addAll(states.get(i).may);
+            joined.flow = joined.flow.join(states.get(i).flow);
         }
         return joined;
     }
 
     private static void requireComplete(State state, Set<String> required, String klass) {
         for (String field : required) {
-            if (!state.must.contains(field)) {
+            if (!state.initialized(field)) {
                 throw new IllegalArgumentException("constructor for " + klass
                         + " did not initialize field '" + field + "' on every normal path");
             }
@@ -183,7 +177,7 @@ public final class ConstructorValInitialization {
         if (node instanceof Ast.AssignExpr assignment) {
             String field = uninitializedFieldTarget(assignment.target(), required);
             if (field != null
-                    && (state.fixed.contains(field) || !state.must.contains(field))) {
+                    && (state.fixed.contains(field) || !state.initialized(field))) {
                 throw error(klass, field,
                         "must be assigned directly in a constructor statement, not through a nested expression or callback");
             }
@@ -192,7 +186,7 @@ public final class ConstructorValInitialization {
                 && member.receiver() instanceof Ast.NameExpr receiver
                 && receiver.name().equals("self")) {
             // A direct field projection is not publication of the receiver itself.
-            if (required.contains(member.member()) && !state.must.contains(member.member())) {
+            if (required.contains(member.member()) && !state.initialized(member.member())) {
                 throw error(klass, member.member(), "is read before constructor initialization");
             }
             return;
