@@ -51,6 +51,36 @@ final class CallerRoleImportBoundaryTest {
     }
 
     @Test
+    void importingModuleWithProtectedClassMethodIsRejected() {
+        String source = """
+                define module Protected as
+                    define enum Roles as
+                        A
+                    end
+                    define pub class Worker as
+                        @CallableBy(Roles.A)
+                        pub static fnc guarded(): void {}
+                    end
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> link(source, "import module Protected from \"provider.ores\";"));
+    }
+
+    @Test
+    void importingModuleWithUnrestrictedClassMethodIsAllowed() {
+        String source = """
+                define module Open as
+                    define pub class Worker as
+                        pub static fnc helper(): void {}
+                    end
+                end
+                """;
+        assertDoesNotThrow(() -> link(source,
+                "import module Open from \"provider.ores\";"));
+    }
+
+    @Test
     void protectedPublicStaticMethodInImportedClassIsRejected() {
         String source = """
                 define enum Roles as
