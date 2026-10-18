@@ -396,6 +396,18 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
+     * Create an explicit host/runtime Task scope. The caller must seal or
+     * close it and await its getDone() barrier when physical quiescence matters.
+     * Guest actor/tenant authority is not exposed by this staging API.
+     */
+    public TaskScope newTaskScope() {
+        synchronized (taskAdmissionLock) {
+            ensureOpen();
+            return new TaskScope(this);
+        }
+    }
+
+    /**
      * Trusted runtime lifecycle hook. A cancelled Future can settle before
      * the current guest carrier has physically exited; this callback fires
      * only after task execution is quiescent (or before it ever started).
