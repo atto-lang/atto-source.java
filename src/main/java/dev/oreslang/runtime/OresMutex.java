@@ -30,6 +30,13 @@ import java.util.function.Function;
 public final class OresMutex {
     private OresMutex() { }
 
+    // Includes pending acquisition Futures, so scope cleanup still cancels an
+    // unfulfilled lock request. Zero proves no guard graph can require a scan.
+    private static final AtomicInteger GUARD_RESOURCES = new AtomicInteger();
+
+    public static boolean hasGuardResources() { return guardResourceCount() != 0; }
+    static int guardResourceCount() { return GUARD_RESOURCES.get(); }
+
     private static long saturatedNanos(Duration timeout) {
         try {
             return timeout.toNanos();
@@ -63,7 +70,10 @@ public final class OresMutex {
      * could be detached from the mutex's domain/permit accounting.</p>
      */
     public static final class GuardFuture<T> extends CompletableFuture<Guard<T>> {
-        private GuardFuture() { }
+        private GuardFuture() {
+            GUARD_RESOURCES.incrementAndGet();
+            super.whenComplete((guard, failure) -> GUARD_RESOURCES.decrementAndGet());
+        }
 
         private boolean completeFromRuntime(Guard<T> guard) {
             return super.complete(guard);
@@ -143,7 +153,7 @@ public final class OresMutex {
      * Linear lock capability. Oreslang lowering owns guard release; guest code
      * may release early, but the mutex itself has no public unlock operation.
      */
-    public interface Guard<T> extends AutoCloseable {
+    public sealed interface Guard<T> extends AutoCloseable permits Local.LocalGuard, Shared.SharedGuard {
         T value();
         boolean released();
         void release();
@@ -277,6 +287,8 @@ public final class OresMutex {
         private final class LocalGuard implements Guard<T> {
             private boolean released;
 
+            private LocalGuard() { GUARD_RESOURCES.incrementAndGet(); }
+
             @Override
             public T value() {
                 requireOwnerDomain();
@@ -292,6 +304,7 @@ public final class OresMutex {
                 if (released) return;
                 released = true;
                 held = false;
+                GUARD_RESOURCES.decrementAndGet();
             }
 
             @Override
@@ -607,6 +620,7 @@ public final class OresMutex {
                 if (waiter.future.completeFromRuntime(guard)) return;
 
                 // Cancellation won after dequeue but before completion.
+                guard.discardAfterFailedPublication();
                 clearOwner(waiter.ownerDomain);
                 releaseDomain(waiter.ownerDomain);
             }
@@ -907,6 +921,11 @@ public final class OresMutex {
             private SharedGuard(Object ownerDomain, boolean enforceOwnerDomain) {
                 this.ownerDomain = ownerDomain;
                 this.enforceOwnerDomain = enforceOwnerDomain;
+                GUARD_RESOURCES.incrementAndGet();
+            }
+
+            private void discardAfterFailedPublication() {
+                if (released.compareAndSet(false, true)) GUARD_RESOURCES.decrementAndGet();
             }
 
             private void requireOwnerDomain() {
@@ -937,6 +956,7 @@ public final class OresMutex {
                 clearOwner(ownerDomain);
                 releaseDomain(ownerDomain);
                 releasePermitOrHandoff();
+                GUARD_RESOURCES.decrementAndGet();
             }
 
             @Override
@@ -947,6 +967,7 @@ public final class OresMutex {
                 clearOwner(ownerDomain);
                 releaseDomain(ownerDomain);
                 releasePermitOrHandoff();
+                GUARD_RESOURCES.decrementAndGet();
             }
         }
     }

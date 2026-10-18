@@ -9127,6 +9127,7 @@ public final class OresEvalRootNode extends RootNode {
             return cp;
         }
         private boolean hasLiveMutexGuards() {
+            if (!OresMutex.hasGuardResources()) return false;
             return hasLiveMutexGuards(java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
         }
 
@@ -9188,6 +9189,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void releaseMutexGuards(boolean failed) {
+            if (!OresMutex.hasGuardResources()) return;
             Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
             for (Slot slot : slots.values()) releaseMutexGuardsInValue(slot.value, failed, seen);
         }
