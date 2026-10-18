@@ -177,7 +177,7 @@ final class WorkflowJournalV1Test {
                 new DurableDevLoopV1.BugReportCreated(
                         1, sha, "bug://1")));
 
-        var replayed = store.replayDevLoop(3);
+        var replayed = store.replayDevLoop();
         assertEquals(loop.snapshot(), replayed.machine().snapshot());
         assertEquals(loop.journal(), replayed.machine().journal());
         assertEquals(DurableDevLoopV1.Phase.CODING,
@@ -192,6 +192,62 @@ final class WorkflowJournalV1Test {
                 .distinct()
                 .toList();
         assertEquals(storedKeys, replayedKeys);
+    }
+
+
+    @Test
+    void persistedIterationBudgetCannotChangeDuringRun() {
+        var loop = new DurableDevLoopV1("run-policy", 3);
+        var store = new WorkflowJournalV1();
+        store.append(loop.accept(
+                "start",
+                new DurableDevLoopV1.Start("goal")));
+
+        var entry = new DurableDevLoopV1.JournalEntry(
+                2L,
+                "policy-change",
+                new DurableDevLoopV1.Start("other"),
+                DurableDevLoopV1.Disposition.REJECTED);
+        var badSnapshot = new DurableDevLoopV1.Snapshot(
+                "run-policy",
+                DurableDevLoopV1.Phase.CODING,
+                1,
+                4,
+                "goal",
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                3L,
+                2,
+                2);
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> store.append(new DurableDevLoopV1.Transition(
+                        entry, badSnapshot, List.of())));
+        assertEquals(3, store.snapshot().maxIterations());
+        assertEquals(1, store.snapshot().journalEntries());
+    }
+
+    @Test
+    void journalClockCannotMoveBackwards() {
+        var loop = new DurableDevLoopV1("run-clock", 3);
+        var store = new WorkflowJournalV1();
+        store.append(loop.accept(
+                "start",
+                new DurableDevLoopV1.Start("goal")));
+        var claim = store.claimNext(
+                "worker-a", 100L, 50L).orElseThrow();
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> store.expireClaims(99L));
+        assertEquals(
+                WorkflowJournalV1.EffectState.CLAIMED,
+                store.effect(claim.effectKey()).orElseThrow().state());
     }
 
     @Test
