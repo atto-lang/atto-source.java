@@ -72,11 +72,15 @@ public final class TaskHandle<T> {
 
     /** Requests cancellation; never claims the guest turn has exited. */
     public boolean cancel(String reason) {
+        // Cancellation is a request against live work. A terminal result is
+        // immutable even when its physical quiescence notification is pending.
+        OresFuture<T> current = result.get();
+        if (done.isDone() || (current != null && current.isDone())) return false;
         return cancellation.cancel(reason);
     }
 
     public boolean cancel() {
-        return cancellation.cancel();
+        return cancel("cancelled");
     }
 
     public boolean isCancellationRequested() {
@@ -93,15 +97,20 @@ public final class TaskHandle<T> {
         maybePublish();
     }
 
-    private void onSettled(T value, Throwable failure) {
+    private void onSettled(OresFuture<T> source, T value, Throwable failure) {
         final TaskOutcome<T> outcome;
-        if (failure == null) {
+        Throwable unwrapped = failure == null ? null : OresFuture.unwrap(failure);
+        if (unwrapped == null) {
             outcome = new Success<>(value);
-        } else if (failure instanceof CancellationException) {
+        } else if (source.isCancelled() || (cancellation.isCancelled()
+                && unwrapped instanceof CancellationException)) {
             outcome = new Cancelled<>(Objects.requireNonNullElse(
                     cancellation.cancellationReason(), "cancelled"));
         } else {
-            outcome = new Failed<>(OresFuture.unwrap(failure));
+            // A guest may throw CancellationException without there being a
+            // runtime cancellation request: that is a failure, not proof of
+            // cancellation, and must not silently hide a task bug.
+            outcome = new Failed<>(unwrapped);
         }
         settledOutcome.compareAndSet(null, outcome);
         maybePublish();
@@ -140,7 +149,8 @@ public final class TaskHandle<T> {
         if (!handle.result.compareAndSet(null, source)) {
             throw new IllegalStateException("TaskHandle result bound more than once");
         }
-        source.whenCompleteRuntime(handle::onSettled);
+        source.whenCompleteRuntime((value, failure) ->
+                handle.onSettled(source, value, failure));
         // Cancellation can win before bind, after bind, or during subscriber
         // registration. The second check makes the early request observable.
         if (handle.cancellation.isCancelled()) source.cancel(false);
