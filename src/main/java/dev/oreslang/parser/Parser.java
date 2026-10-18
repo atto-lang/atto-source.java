@@ -629,7 +629,8 @@ public final class Parser {
         // A leading bare self is an explicit spelling of the compiler-supplied
         // construction receiver. It is not a caller-visible value parameter
         // and therefore never contributes to constructor overload arity.
-        if (match(SELF) && !check(RPAREN)) {
+        boolean bindsSelf = match(SELF);
+        if (bindsSelf && !check(RPAREN)) {
             consume(COMMA, "constructor self receiver must be followed by ',' or ')'");
         }
         List<Ast.Param> params = parseParametersUntil(RPAREN);
@@ -638,7 +639,7 @@ public final class Parser {
             throw error(peek(), "constructors do not declare a return type");
         }
         List<Ast.Stmt> body = parseBlock();
-        return new Ast.ConstructorDecl(mods.visibility, params, annotations, body);
+        return new Ast.ConstructorDecl(mods.visibility, params, annotations, body, bindsSelf);
     }
 
     private boolean defineFollowsAfterVisibilityModifiers() {
