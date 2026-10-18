@@ -82,6 +82,19 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
                         } catch (IllegalStateException expected) {
                             denied.incrementAndGet();
                         }
+                        try {
+                            router.forwardSelected(java.util.Set.of("sink"), "bad");
+                            throw new AssertionError(
+                                    "group membership created an unauthorized graph edge");
+                        } catch (SecurityException expected) {
+                            denied.incrementAndGet();
+                        }
+                        try {
+                            router.forwardSelected(java.util.Set.of(), "bad");
+                            throw new AssertionError("empty selection discarded DATA");
+                        } catch (IllegalArgumentException expected) {
+                            denied.incrementAndGet();
+                        }
                         receipts.put(value, router.forwardSelected(
                                 java.util.Set.of("worker-a"), value));
                     }
@@ -112,7 +125,8 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             router.ingress("source", "deny");
             source.drain().get(5, TimeUnit.SECONDS);
             a.drain().get(5, TimeUnit.SECONDS);
-            assertEquals(1, denied.get());
+            assertEquals(3, denied.get(),
+                    "nonmember, off-graph and empty selection must fail closed");
             assertEquals("worker-a", receipts.get("deny").getFirst().target());
 
             // A subsequent join affects future snapshots without changing
