@@ -63,7 +63,8 @@ public final class PostgresQuotaSmoke {
         ok(raceStore.initialize(race,initial), "race actor initialized");
         var started=new CountDownLatch(1);
         var pool=Executors.newFixedThreadPool(8);
-        var admitted=new AtomicInteger(),rejected=new AtomicInteger();
+        var admitted=new AtomicInteger();
+        var rejected=new AtomicInteger();
         var futures=new ArrayList<java.util.concurrent.Future<?>>();
         for(int i=0;i<8;i++){
             final int n=i;
