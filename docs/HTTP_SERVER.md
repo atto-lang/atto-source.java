@@ -1,5 +1,12 @@
 # Native HTTP server capabilities
 
+> **Current lower-level implementation.** The proposed Fetch-inspired
+> `HttpResponse` unary actor return is separately specified in
+> [HTTP_RESPONSE_FETCH_API_V1.md](HTTP_RESPONSE_FETCH_API_V1.md) and is
+> **not yet implemented or compiler-verified** on this backend. The API below
+> remains the existing `http.claim`/`HttpExchange` path; this document does
+> not claim that a `run(HttpMessage): HttpResponse` actor can already serve requests.
+
 `http.listen(host, port, capacity, body_limit_bytes, deadline_ms)` creates an
 HTTP/1.1 server under the supervisor's scoped NET permission. Port zero selects
 an ephemeral port. The native backend uses `jdk.httpserver`; Java socket,
