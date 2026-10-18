@@ -208,7 +208,7 @@ final class CallerRoleIncrementalAbiTest {
     @Test
     void changingGuardedPrivateParentPolicyInvalidatesPublicSubclassAbi() {
         String a = IncrementalCompiler.abiDigest(Parser.parse("""
-                define enum Roles as A B end
+                define enum Roles as A, B end
                 define class Base as
                     @CallableBy(Roles.A)
                     pub static fnc guarded(): void {}
@@ -216,7 +216,7 @@ final class CallerRoleIncrementalAbiTest {
                 define pub class Child extends Base as end
                 """));
         String b = IncrementalCompiler.abiDigest(Parser.parse("""
-                define enum Roles as A B end
+                define enum Roles as A, B end
                 define class Base as
                     @CallableBy(Roles.B)
                     pub static fnc guarded(): void {}
