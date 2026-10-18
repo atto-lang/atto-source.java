@@ -103,6 +103,14 @@ must use that key in a durable outbox/effect journal:
 Replay may regenerate the same command keys, but the effect journal prevents
 already-completed effects from being executed again.
 
+When an applied outcome event arrives, the journal also verifies that the
+deterministic causal effect exists and has the expected command type. If the
+effect was still pending, it is retired so it cannot execute after its outcome.
+If it was already claimed or ambiguous, its retry authority is revoked while
+the claim/ambiguity remains visible for receipt recording or reconciliation.
+This rule is iteration-aware: CI, evaluation and approval outcomes retire the
+effect for the workflow's current iteration, not an assumed first iteration.
+
 This is intentionally not an "exactly once network effects" claim. The runtime
 must support at-least-once delivery, deduplication, idempotency and explicit
 reconciliation for ambiguous external outcomes.
@@ -130,10 +138,10 @@ The v1 reducer assigns every delivery a monotonic journal sequence and records
 one of:
 
 - APPLIED: state advanced and zero or more commands were emitted;
-- DUPLICATE: the delivery id was already seen with the exact same immutable event;
+- DUPLICATE: a previously sealed delivery id was redelivered with the exact same immutable event;
 - CONFLICT: the delivery id was reused with a different event payload;
-- STALE: the event was well-formed but targeted an obsolete commit;
-- REJECTED: the event is not legal in the current phase.
+- STALE: the event was well-formed but targeted an obsolete commit and is sealed against later reuse;
+- REJECTED: the event is not legal in the current phase; the same delivery id and exact payload may be retried later if the workflow reaches a legal phase.
 
 Duplicate, stale and rejected deliveries are no-ops for business state but stay
 auditable in the journal.
