@@ -29,6 +29,24 @@ final class AnyCallableActorBoundaryTest {
     }
 
     @Test
+    void reservedAnyCallableCannotBeUserDefinedOrParameterized() {
+        for (String declaration : new String[] {
+                "type AnyCallable = int;",
+                "define class AnyCallable as end",
+                "define interface AnyCallable as end",
+                "define enum AnyCallable as A, B end",
+                "define struct AnyCallable as end"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(declaration)),
+                    declaration);
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(
+                        "fnc bad(AnyCallable<int> cb): void { return; }")));
+    }
+
+    @Test
     void intrinsicNameHasNoModuleOrScopeQualificationBypass() {
         assertEquals("AnyCallable", TypeChecker.actorBoundarySimpleName("AnyCallable"));
         assertEquals("AnyCallable", TypeChecker.actorBoundarySimpleName("pkg.AnyCallable"));
