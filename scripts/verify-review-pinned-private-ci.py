@@ -13,6 +13,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 
@@ -53,12 +54,26 @@ def unique_object(pairs):
         out[key] = value
     return out
 
+def reject_nonstandard_constant(value):
+    raise Denied("nonstandard JSON number: " + value)
+
+def finite_json_float(value):
+    number = float(value)
+    if not math.isfinite(number):
+        raise Denied("non-finite JSON number")
+    return number
+
 def load_json(path):
-    raw = Path(path).read_bytes()
+    # Files supplied by the external dispatcher may be malformed. Bound the
+    # read itself, not merely the size check after unbounded read_bytes().
+    with Path(path).open("rb") as stream:
+        raw = stream.read(MAX_JSON + 1)
     if not raw or len(raw) > MAX_JSON or raw.startswith(b"\xef\xbb\xbf"):
         raise Denied("invalid JSON input bytes: " + str(path))
     try:
-        return json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
+        return json.loads(
+            raw.decode("utf-8"), object_pairs_hook=unique_object,
+            parse_constant=reject_nonstandard_constant, parse_float=finite_json_float)
     except (UnicodeError, ValueError, RecursionError) as exc:
         raise Denied("invalid JSON: " + str(path)) from exc
 
@@ -70,7 +85,8 @@ def require_sha(value, label):
 def reviewer_policy(path):
     value = load_json(path)
     required = {"schema", "enabled", "minimumPermission", "disallowedReviewerIds", "reviewer"}
-    if type(value) is not dict or set(value) != required or value.get("schema") != 2:
+    if (type(value) is not dict or set(value) != required
+            or type(value.get("schema")) is not int or value["schema"] != 2):
         raise Denied("invalid independent reviewer policy")
     minimum = value.get("minimumPermission")
     if minimum not in ("write", "maintain", "admin"):
@@ -100,7 +116,8 @@ def live_permission(doc, reviewer, minimum, label):
         raise Denied("malformed reviewer permission: " + label)
     user = doc.get("user") or {}
     reviewer_login, reviewer_id, _ = reviewer
-    if (user.get("login") != reviewer_login or user.get("id") != reviewer_id
+    if (type(user) is not dict or user.get("login") != reviewer_login
+            or type(user.get("id")) is not int or user["id"] != reviewer_id
             or user.get("type") != "User"):
         raise Denied("reviewer permission identity mismatch: " + label)
     permission = str(doc.get("permission") or "").lower()
@@ -113,7 +130,7 @@ def live_permission(doc, reviewer, minimum, label):
 def pr_head(pr, repo, number):
     if type(pr) is not dict:
         raise Denied("malformed PR metadata")
-    if pr.get("number") != number:
+    if type(pr.get("number")) is not int or pr["number"] != number:
         raise Denied("unexpected PR number")
     base = pr.get("base") or {}
     head = pr.get("head") or {}
@@ -143,6 +160,8 @@ def submitted_key(review):
         stamp = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
         raise Denied("invalid exact-head review submitted_at") from exc
+    if stamp.utcoffset() != dt.timedelta(0):
+        raise Denied("exact-head review submitted_at must be UTC")
     rid = review.get("id")
     if type(rid) is not int or rid <= 0:
         raise Denied("invalid exact-head review ID")
@@ -159,8 +178,9 @@ def exact_approval(reviews, head, reviewer, author_id):
         if type(review) is not dict:
             continue
         user = review.get("user") or {}
-        if (user.get("login") == reviewer_login
-                and user.get("id") == reviewer_id
+        if (type(user) is dict
+                and user.get("login") == reviewer_login
+                and type(user.get("id")) is int and user["id"] == reviewer_id
                 and user.get("type") == "User"
                 and review.get("commit_id") == head):
             exact.append(review)
@@ -179,6 +199,8 @@ def comment_key(comment):
         stamp = dt.datetime.fromisoformat(created.replace("Z", "+00:00"))
     except ValueError as exc:
         raise Denied("invalid incident authorization created_at") from exc
+    if stamp.utcoffset() != dt.timedelta(0):
+        raise Denied("incident authorization created_at must be UTC")
     cid = comment.get("id")
     if type(cid) is not int or cid <= 0:
         raise Denied("invalid incident authorization comment ID")
@@ -205,7 +227,8 @@ def exact_resume_comment(incident, heads, source_commit, source_tree, reviewer):
             continue
         user = comment.get("user") or {}
         body = comment.get("body")
-        if (user.get("login") != reviewer_login or user.get("id") != reviewer_id
+        if (type(user) is not dict or user.get("login") != reviewer_login
+                or type(user.get("id")) is not int or user["id"] != reviewer_id
                 or user.get("type") != "User" or type(body) is not str):
             continue
         lines = [line.strip() for line in body.splitlines() if line.strip()]
