@@ -31,6 +31,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
+        # The mock endpoint returns a fixed synthetic Git tree D. Existing
+        # destination-path tests isolate network policy from source attestation.
+        # Real Git identity is exercised independently below.
+        self.committed_tree = patch.object(pub, "committed_source_tree", return_value=D)
+        self.committed_tree.start()
+        self.addCleanup(self.committed_tree.stop)
+        self.collected_tree = patch.object(pub, "git_tree_digest", return_value=D)
+        self.collected_tree.start()
+        self.addCleanup(self.collected_tree.stop)
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
@@ -421,6 +430,106 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+
+class CommittedSourceTreeTests(unittest.TestCase):
+    """Source-free real Git fixtures; no network and no private Oreslang source."""
+
+    def setUp(self):
+        import shutil
+        import subprocess
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.source = self.root / "source"
+        self.source.mkdir()
+        (self.root / "tools").mkdir()
+        (self.root / ".github").mkdir()
+        (self.root / ".github/private-ci-approved-repositories.txt").write_text(
+            "trusted/ci\n")
+        shutil.copy2(MODULE.parent.parent / "tools/verify-exact-source-tree.sh",
+                     self.root / "tools/verify-exact-source-tree.sh")
+        (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
+        (self.source / "nested").mkdir()
+        (self.source / "nested/abc.ores").write_text("safe\n")
+
+        def git(*args):
+            return subprocess.check_output(
+                ["git", "-C", str(self.root), *args], text=True).strip()
+        self.git = git
+        git("init", "-q")
+        git("config", "user.name", "Synthetic CI")
+        git("config", "user.email", "ci@example.invalid")
+        git("add", ".")
+        git("commit", "-qm", "synthetic committed tree")
+        self.expected = git("rev-parse", "HEAD:source")
+
+    def test_committed_source_matches_git_and_collected_tree(self):
+        self.assertEqual(pub.committed_source_tree(self.source, self.root), self.expected)
+        self.assertEqual(pub.git_tree_digest(
+            pub.collect_source(self.source, self.root)), self.expected)
+
+    def test_tracked_mutation_is_denied_before_any_upload(self):
+        (self.source / "hello.ores").write_text("mutated\n")
+        with self.assertRaisesRegex(pub.Denied, "differs from its committed"):
+            pub.committed_source_tree(self.source, self.root)
+
+    def test_untracked_and_ignored_input_are_denied(self):
+        (self.source / "extra.ores").write_text("unexpected\n")
+        with self.assertRaises(pub.Denied):
+            pub.committed_source_tree(self.source, self.root)
+        (self.source / "extra.ores").unlink()
+        (self.source / ".gitignore").write_text("hidden.ores\n")
+        (self.source / "hidden.ores").write_text("ignored\n")
+        with self.assertRaises(pub.Denied):
+            pub.committed_source_tree(self.source, self.root)
+
+    def test_non_git_source_directory_is_denied(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "source").mkdir()
+            with self.assertRaises(pub.Denied):
+                pub.committed_source_tree(root / "source", root)
+
+    def test_collection_swap_is_denied_before_blob_posts(self):
+        original = pub.collect_source
+        def mutate(*args):
+            output = original(*args)
+            return [("hello.ores", b"post-attestation-modification", "100644")
+                    if path == "hello.ores" else (path, data, mode)
+                    for path, data, mode in output]
+        with patch.object(pub, "require_preflight"), \
+             patch.object(pub, "collect_source", side_effect=mutate), \
+             patch.object(pub, "gh_api", side_effect=AssertionError(
+                 "no GitHub writes should occur")):
+            with self.assertRaisesRegex(pub.Denied, "collected source"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+
+    def test_remote_subtree_sha_mismatch_denied_before_ref_creation(self):
+        calls = []
+        def fake_api(route, method="GET", payload=None):
+            calls.append((method, route))
+            if route == "repos/trusted/ci":
+                return {"full_name": "trusted/ci", "private": True,
+                        "visibility": "private", "default_branch": "main"}
+            if route.endswith("/git/ref/heads/main"):
+                return {"object": {"sha": A}}
+            if route.endswith("/git/commits/" + A):
+                return {"tree": {"sha": B}}
+            if route.endswith("/git/blobs"):
+                raw = base64.b64decode(payload["content"])
+                return {"sha": hashlib.sha1(
+                    b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()}
+            if route.endswith("/git/trees"):
+                return {"sha": C}
+            raise AssertionError("unexpected API access " + route)
+
+        with patch.object(pub, "require_preflight"), \
+             patch.object(pub, "gh_api", side_effect=fake_api):
+            with self.assertRaisesRegex(pub.Denied, "destination Git tree"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+        self.assertFalse(any(route.endswith("/git/refs") for _, route in calls))
+        self.assertFalse(any(route.endswith("/git/commits") for _, route in calls))
 
 
 if __name__ == "__main__":
