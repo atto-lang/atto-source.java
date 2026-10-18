@@ -28,6 +28,8 @@ jobs:
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
+      - name: Verify standalone callable and lexical capture
+        run: bash scripts/test-anycallable-standalone.sh && bash scripts/test-lambda-capture-standalone.sh
       - name: Verify compiler/runtime tests
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Run examples
