@@ -22,7 +22,12 @@ final class ExecutionGraphV1Test {
         var result = graph.build(sum);
         assertEquals(ExecutionGraphV1.ValueKind.HOST_I64, result.resultType());
         assertEquals(42L, result.executeCpu());
-        assertEquals(42L, result.submitCpu(Runnable::run).join());
+        var queuedCpu = new ArrayDeque<Runnable>();
+        var async = result.submitCpu(queuedCpu::add);
+        assertFalse(async.isDone());
+        assertEquals(1, queuedCpu.size());
+        queuedCpu.removeFirst().run();
+        assertEquals(42L, async.join());
         assertEquals(3, result.nodes().size());
         assertThrows(UnsupportedOperationException.class,
                 () -> result.nodes().clear());
@@ -68,9 +73,12 @@ final class ExecutionGraphV1Test {
         var b = new ExecutionGraphV1.Builder();
         var result = b.build(b.cpuAdd(b.cpuI64(Long.MAX_VALUE), b.cpuI64(1)));
         assertThrows(ArithmeticException.class, result::executeCpu);
+        var queued = new ArrayDeque<Runnable>();
+        var future = result.submitCpu(queued::add);
+        assertEquals(1, queued.size());
+        queued.removeFirst().run();
         assertInstanceOf(ArithmeticException.class,
-                assertThrows(CompletionException.class,
-                        () -> result.submitCpu(Runnable::run).join()).getCause());
+                assertThrows(CompletionException.class, future::join).getCause());
     }
 
     @Test
@@ -96,6 +104,61 @@ final class ExecutionGraphV1Test {
         });
         assertInstanceOf(RejectedExecutionException.class,
                 assertThrows(CompletionException.class, future::join).getCause());
+    }
+
+    @Test
+    void inlineExecutorIsRejectedBeforeCpuEvaluation() {
+        var b = new ExecutionGraphV1.Builder();
+        var plan = b.build(b.cpuAdd(b.cpuI64(Long.MAX_VALUE), b.cpuI64(1)));
+        var future = plan.submitCpu(Runnable::run);
+        var cause = assertThrows(CompletionException.class, future::join).getCause();
+        assertInstanceOf(IllegalStateException.class, cause);
+        assertTrue(cause.getMessage().contains("queued worker executor"));
+    }
+
+    @Test
+    void inlineThenThrowPreservesSchedulerRejection() {
+        var b = new ExecutionGraphV1.Builder();
+        var plan = b.build(b.cpuI64(42));
+        var future = plan.submitCpu(job -> {
+            job.run();
+            throw new RejectedExecutionException("inline then rejected");
+        });
+        var cause = assertThrows(CompletionException.class, future::join).getCause();
+        assertInstanceOf(RejectedExecutionException.class, cause);
+        assertEquals("inline then rejected", cause.getMessage());
+    }
+
+    @Test
+    void startedWorkerCannotPublishIfSchedulerRejectsAfterStart() throws Exception {
+        var b = new ExecutionGraphV1.Builder();
+        var plan = b.build(b.cpuAdd(b.cpuI64(20), b.cpuI64(22)));
+        for (int round = 0; round < 128; round++) {
+            var launched = new java.util.concurrent.CountDownLatch(1);
+            var workerRef = new java.util.concurrent.atomic.AtomicReference<Thread>();
+            var future = plan.submitCpu(job -> {
+                var worker = new Thread(() -> {
+                    launched.countDown();
+                    job.run();
+                });
+                workerRef.set(worker);
+                worker.start();
+                try {
+                    assertTrue(launched.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    throw new RejectedExecutionException(ex);
+                }
+                throw new RejectedExecutionException("threw after starting worker");
+            });
+            var worker = workerRef.get();
+            assertNotNull(worker);
+            worker.join(5000);
+            assertFalse(worker.isAlive(), "scheduler rejection stranded CPU worker");
+            var cause = assertThrows(CompletionException.class, future::join).getCause();
+            assertInstanceOf(RejectedExecutionException.class, cause);
+            assertEquals("threw after starting worker", cause.getMessage());
+        }
     }
 
     @Test
