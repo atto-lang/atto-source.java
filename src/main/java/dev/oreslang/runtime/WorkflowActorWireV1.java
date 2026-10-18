@@ -154,6 +154,24 @@ final class WorkflowActorWireV1 {
                 nullableString(map, "workflowName"));
     }
 
+    static Map<String, Object> treeProof(
+            GitHubWorkflowRunPayloadV1.GitTreeProof value) {
+        Objects.requireNonNull(value, "value");
+        return map(
+                "commitSha", value.commitSha(),
+                "treeSha", value.treeSha(),
+                "receiptRef", value.receiptRef());
+    }
+
+    static GitHubWorkflowRunPayloadV1.GitTreeProof treeProof(
+            Object value) {
+        Map<String, Object> map = objectMap(value);
+        return new GitHubWorkflowRunPayloadV1.GitTreeProof(
+                string(map, "commitSha"),
+                string(map, "treeSha"),
+                string(map, "receiptRef"));
+    }
+
     static Map<String, Object> observed(
             GitHubCiCorrelationV1.Observed value) {
         return map(
