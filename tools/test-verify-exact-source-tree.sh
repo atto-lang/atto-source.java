@@ -117,6 +117,32 @@ export REAL_GIT="$real_git"
   export PATH="$work/broken-index-bin:$PATH"
   assert_status 68 'index enumeration failure never certifies source' "$clean_tree" source
 )
+# Failure to enumerate untracked files is also an admission failure.
+cat > "$work/broken-index-bin/git" <<'MOCK_GIT'
+#!/usr/bin/env bash
+if [[ "${1:-}" == ls-files && "${2:-}" == --others ]]; then
+  exit 99
+fi
+exec "$REAL_GIT" "$@"
+MOCK_GIT
+chmod +x "$work/broken-index-bin/git"
+(
+  export PATH="$work/broken-index-bin:$PATH"
+  assert_status 68 'untracked enumeration failure cannot certify source' "$clean_tree" source
+)
+# A failed raw blob hash must never let a source tree pass verification.
+cat > "$work/broken-index-bin/git" <<'MOCK_GIT'
+#!/usr/bin/env bash
+if [[ "${1:-}" == hash-object ]]; then
+  exit 99
+fi
+exec "$REAL_GIT" "$@"
+MOCK_GIT
+chmod +x "$work/broken-index-bin/git"
+(
+  export PATH="$work/broken-index-bin:$PATH"
+  assert_status 99 'tracked blob hashing failure cannot certify source' "$clean_tree" source
+)
 # Verify ordinary source works after removing the adversarial Git shim.
 assert_status 0 'clean source remains valid after index failure test' "$clean_tree" source
 echo 'SOURCE_TREE_GATE_TESTS_PASS'
