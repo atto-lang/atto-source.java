@@ -81,7 +81,7 @@ final class WorkflowActivityProtocolV1Test {
         var claim = claim(new DurableDevLoopV1.PushCode(
                 1,
                 "patch://one",
-                "effect/push"));
+                "devloop/run/iteration/1/push"));
         var outcome = new WorkflowActivityProtocolV1.Succeeded(
                 "effect/other",
                 claim.claimToken(),
@@ -100,7 +100,7 @@ final class WorkflowActivityProtocolV1Test {
         var claim = claim(new DurableDevLoopV1.PushCode(
                 1,
                 "patch://one",
-                "effect/push"));
+                "devloop/run/iteration/1/push"));
 
         assertThrows(
                 IllegalArgumentException.class,
@@ -117,14 +117,14 @@ final class WorkflowActivityProtocolV1Test {
         var claim = claim(new DurableDevLoopV1.PushCode(
                 1,
                 "patch://one",
-                "effect/push"));
+                "devloop/run/iteration/1/push"));
 
         assertThrows(
                 IllegalArgumentException.class,
                 () -> WorkflowActivityProtocolV1.validateOutcome(
                         claim,
                         new WorkflowActivityProtocolV1.Succeeded(
-                                "effect/push",
+                                "devloop/run/iteration/1/push",
                                 claim.claimToken(),
                                 "receipt://wrong",
                                 new DurableDevLoopV1.EvaluationPassed(
@@ -134,7 +134,7 @@ final class WorkflowActivityProtocolV1Test {
                 () -> WorkflowActivityProtocolV1.validateOutcome(
                         claim,
                         new WorkflowActivityProtocolV1.Succeeded(
-                                "effect/push",
+                                "devloop/run/iteration/1/push",
                                 claim.claimToken(),
                                 "receipt://push",
                                 new DurableDevLoopV1.PushRecorded(
@@ -183,7 +183,7 @@ final class WorkflowActivityProtocolV1Test {
                 1,
                 "goal",
                 null,
-                "effect/code"));
+                "devloop/run/iteration/1/code"));
 
         assertThrows(
                 IllegalArgumentException.class,
