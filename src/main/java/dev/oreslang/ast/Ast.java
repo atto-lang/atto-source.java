@@ -873,7 +873,7 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, TaskExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, TaskExpr, AsyncLambdaExpr, TaskLambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -1163,6 +1163,25 @@ public final class Ast {
         }
         public boolean inferredStruct() { return kind == ObjectKind.INFERRED_STRUCT; }
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
+    }
+
+    /**
+     * `async |...| -> body`: an async callable returning Future<R>.
+     * Keep the modifier on the AST: `async (... -> nb {...})` must
+     * ultimately return Future<Task<R>>, never silently flatten a Task.
+     * Source execution is currently rejected until async-lambda lowering.
+     */
+    public record AsyncLambdaExpr(LambdaExpr lambda) implements Expr {
+        public AsyncLambdaExpr { java.util.Objects.requireNonNull(lambda, "lambda"); }
+    }
+
+    /**
+     * `async task |...| -> body`: one scheduled Task<R> with a whole
+     * Task-owned body. It is NOT an async Future wrapping an inner Task.
+     * Capture admission and task-frame lowering must precede execution.
+     */
+    public record TaskLambdaExpr(LambdaExpr lambda) implements Expr {
+        public TaskLambdaExpr { java.util.Objects.requireNonNull(lambda, "lambda"); }
     }
 
     public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
