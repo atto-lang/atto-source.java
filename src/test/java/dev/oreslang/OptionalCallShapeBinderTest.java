@@ -252,6 +252,44 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void omittedCallItemIsSkippedWithoutLosingOriginalExpressionIdentity() {
+        Plan positional = OptionalCallShapeBinder.bind(FOO, List.of(
+                Argument.positional(), Argument.underscore(), Argument.positional()));
+        assertEquals(List.of(0, -1, 1), positional.sourceIndexByParameter());
+        assertEquals(List.of(0, 2), positional.callItemIndexByEvaluatedSource());
+        assertEquals(2, positional.callItemIndex(positional.sourceIndex(2)));
+
+        Plan named = OptionalCallShapeBinder.bind(FOO, List.of(
+                Argument.named("c"), Argument.namedUnderscore("b"), Argument.named("a")));
+        assertEquals(List.of(1, -1, 0), named.sourceIndexByParameter());
+        assertEquals(List.of(0, 2), named.callItemIndexByEvaluatedSource());
+        assertEquals(2, named.callItemIndex(named.sourceIndex(0)));
+        assertEquals(0, named.callItemIndex(named.sourceIndex(2)));
+
+        Plan variadic = OptionalCallShapeBinder.bind(List.of(
+                Parameter.optional("prefix"), Parameter.variadic("tail")), List.of(
+                Argument.underscore(), Argument.positional(), Argument.positional()));
+        assertEquals(List.of(0, 1), variadic.variadicSourceIndices());
+        assertEquals(List.of(1, 2), variadic.callItemIndexByEvaluatedSource());
+    }
+
+    @Test
+    void forgedCallItemMappingsCannotDropDuplicateOrReorderEffects() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Plan(List.of(0, -1, 1), -1, List.of(),
+                        List.of(1), List.of(0, 0)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Plan(List.of(0, -1, 1), -1, List.of(),
+                        List.of(1), List.of(2, 1)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Plan(List.of(0, -1, 1), -1, List.of(),
+                        List.of(1), List.of(0)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Plan(List.of(0, -1, 1), -1, List.of(),
+                        List.of(1), List.of(-1, 2)));
+    }
+
+    @Test
     void underscoreIsExactlyTheSameOmissionPlanAsOmit() {
         assertEquals(Argument.positionalOmission(), Argument.underscore());
         assertEquals(Argument.namedOmission("b"), Argument.namedUnderscore("b"));
