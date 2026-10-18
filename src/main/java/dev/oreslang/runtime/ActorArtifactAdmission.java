@@ -149,6 +149,8 @@ public final class ActorArtifactAdmission {
      */
     public record TrustedBuildAttestation(
             String actorTypeName,
+            Ast.ActorKind actorKind,
+            Ast.ActorBoundary actorBoundary,
             Backend backend,
             String compilerVersion,
             String compilerGitCommit,
@@ -166,6 +168,12 @@ public final class ActorArtifactAdmission {
             String wireCodecSha256) {
         public TrustedBuildAttestation {
             actorTypeName = requireText(actorTypeName, "attested actor type");
+            Objects.requireNonNull(actorKind, "attested actor kind");
+            Objects.requireNonNull(actorBoundary, "attested actor boundary");
+            if (actorBoundary != Ast.ActorBoundary.IPC) {
+                throw new IllegalArgumentException(
+                        "IPC build attestation must bind the IPC actor boundary");
+            }
             Objects.requireNonNull(backend, "attested backend");
             compilerVersion = requireText(compilerVersion, "attested compiler version");
             compilerGitCommit = requireGitCommit(compilerGitCommit, "attested compiler git commit");
@@ -210,7 +218,8 @@ public final class ActorArtifactAdmission {
         }
     }
 
-    public static <T> ActorArtifact<T> admitIpcActor(
+    static <T> ActorArtifact<T> admitIpcActor(
+            UUID admittingRuntimeId,
             String actorTypeName,
             Ast.ActorKind actorKind,
             Manifest manifest,
@@ -220,6 +229,7 @@ public final class ActorArtifactAdmission {
             TargetPolicy targetPolicy,
             IsolatePolicy supervisorPolicy,
             IsolatePolicy workerPolicy) {
+        Objects.requireNonNull(admittingRuntimeId, "admitting runtime id");
         actorTypeName = requireText(actorTypeName, "actor type name");
         Objects.requireNonNull(actorKind, "actor kind");
         Objects.requireNonNull(manifest, "manifest");
@@ -246,7 +256,7 @@ public final class ActorArtifactAdmission {
             throw new SecurityException("artifact byte size does not match signed manifest");
         }
 
-        validateAttestation(actorTypeName, manifest, attestation);
+        validateAttestation(actorTypeName, actorKind, manifest, attestation);
         Set<IsolatePolicy.Capability> required =
                 resolveCapabilities(manifest.policy().requiredCapabilities());
         if (!workerPolicy.capabilities().containsAll(required)) {
@@ -270,7 +280,9 @@ public final class ActorArtifactAdmission {
         verifyManifestSignature(manifest, keyPolicy);
 
         byte[] canonicalSigned = canonicalManifest(manifest, true);
+        String workerPolicySha256 = workerPolicyDigest(workerPolicy);
         return ActorArtifact.mint(
+                admittingRuntimeId,
                 UUID.randomUUID(),
                 actorTypeName,
                 actorKind,
@@ -279,6 +291,7 @@ public final class ActorArtifactAdmission {
                 attestation.messageAbiSha256(),
                 attestation.stateSchemaSha256(),
                 attestation.wireCodecSha256(),
+                workerPolicySha256,
                 manifest.compiler().backend().manifestName(),
                 manifest.compiler().version(),
                 manifest.compiler().gitCommit(),
@@ -342,10 +355,13 @@ public final class ActorArtifactAdmission {
 
     private static void validateAttestation(
             String actorTypeName,
+            Ast.ActorKind actorKind,
             Manifest manifest,
             TrustedBuildAttestation attestation) {
         ArrayList<String> mismatches = new ArrayList<>();
         match(mismatches, "actor type", actorTypeName, attestation.actorTypeName());
+        match(mismatches, "actor kind", actorKind, attestation.actorKind());
+        match(mismatches, "actor boundary", Ast.ActorBoundary.IPC, attestation.actorBoundary());
         match(mismatches, "compiler backend", manifest.compiler().backend(), attestation.backend());
         match(mismatches, "compiler version", manifest.compiler().version(), attestation.compilerVersion());
         match(mismatches, "compiler git commit", manifest.compiler().gitCommit(), attestation.compilerGitCommit());
@@ -410,6 +426,22 @@ public final class ActorArtifactAdmission {
             }
         }
         return Set.copyOf(result);
+    }
+
+    static String workerPolicyDigest(IsolatePolicy policy) {
+        Objects.requireNonNull(policy, "worker policy");
+        ArrayList<String> capabilities = new ArrayList<>();
+        for (IsolatePolicy.Capability capability : policy.capabilities()) {
+            capabilities.add(capability.name());
+        }
+        capabilities.sort(String::compareTo);
+        String canonical = "capabilities=" + String.join(",", capabilities)
+                + "|maxHeapBytes=" + policy.maxHeapBytes()
+                + "|maxMailboxMessages=" + policy.maxMailboxMessages()
+                + "|maxWallTimeSeconds=" + policy.maxWallTime().getSeconds()
+                + "|maxWallTimeNanos=" + policy.maxWallTime().getNano()
+                + "|adversarial=" + policy.adversarial();
+        return sha256Hex(canonical.getBytes(StandardCharsets.UTF_8));
     }
 
     private static void verifyManifestSignature(
