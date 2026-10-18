@@ -38,6 +38,15 @@ if [[ "${GITHUB_ACTIONS:-}" == 'true' ]]; then
     exit 2
   }
 fi
+# A matching HEAD/tree is insufficient if local overlays can alter Maven's
+# source inputs. Refuse both ordinary modifications and ignored build/source
+# files before compilation; never silently clean a user's working directory.
+if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]] ||
+   [[ -n "$(git ls-files --others --ignored --exclude-standard)" ]]; then
+  echo 'ERROR: checkout is not pristine (tracked, untracked or ignored files)' >&2
+  exit 2
+fi
+
 frontend='6a15dba1c4be4e0e7f2313e58b6a68c31c7ad4e8'
 runtime='1a0e1607c51386ab77cd32ff49de19e4351f22f5'
 integrated_merge='5d4b582d6c36570f6829ab63710941137491e185'
@@ -126,8 +135,16 @@ printf 'TASK_INTEGRATION_EXACT_BLOBS frontend=%s runtime=%s\n' \
   "${#front_paths[@]}" "${#runtime_paths[@]}"
 
 
-if ! command -v java >/dev/null || ! command -v mvn >/dev/null; then
-  echo 'ERROR: Java 21 and Maven must be installed on the actual test runner' >&2
+if ! command -v java >/dev/null ||
+   ! command -v javac >/dev/null ||
+   ! command -v mvn >/dev/null; then
+  echo 'ERROR: a JDK >= 21 and Maven are required on the actual runner' >&2
+  exit 2
+fi
+javac_version="$(javac -version 2>&1)"
+if [[ ! "$javac_version" =~ ^javac[[:space:]]+([0-9]+) ]] ||
+   (( ${BASH_REMATCH[1]:-0} < 21 )); then
+  echo "ERROR: required javac >=21; found: $javac_version" >&2
   exit 2
 fi
 java -version
