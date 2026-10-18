@@ -255,13 +255,13 @@ public final class ConstructorSemanticIr {
         BORROWED,
         CONSTRUCTION_SCOPED,
         ACTOR_LOCAL,
-        SHAREABLE,
+        CAPTURES_SHAREABLE_DATA,
         /**
          * All captured DATA values are independently serializable. This never
          * means the callable, its code pointer, environment or AnyCallable
          * erasure may be serialized or admitted to actor DATA.
          */
-        SERIALIZABLE
+        CAPTURES_SERIALIZABLE_DATA
     }
 
     /**
