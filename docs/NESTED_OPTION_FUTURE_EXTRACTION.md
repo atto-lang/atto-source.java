@@ -44,6 +44,8 @@ The `trap` expression does not flatten successful `Option` payloads.
   is introduced by a new independent primitive.
 - Java `Option.flatten()` is a single-layer value transformation, preserving
   ownership of the nested payload and the existing `unwrap` panic behavior.
+  The ownership checker consumes move-only Option and Future wrappers at
+  `flatten()`; no repeated extraction or mutation of an affine handle is allowed.
 - Future stage cancellation remains governed by the existing `flatMap`/source
   task rules; it is **not** proof that cancelling an outer Future cancels all
   independently owned inner work. That needs a separately specified contract.
