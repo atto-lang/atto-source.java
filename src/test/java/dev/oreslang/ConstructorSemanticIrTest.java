@@ -322,13 +322,13 @@ final class ConstructorSemanticIrTest {
 
     @Test
     void capturePlanUsesResolvedIdentityNotSourceSpelling() {
-        var outer = new ConstructorSemanticIr.CaptureBinding(
+        var outer = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 new ConstructorSemanticIr.CaptureBindingId("root::fn#outer:x"),
                 "x",
                 Types.Primitive.INT,
                 ConstructorSemanticIr.CaptureAccess.READ,
                 Set.of());
-        var inner = new ConstructorSemanticIr.CaptureBinding(
+        var inner = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 new ConstructorSemanticIr.CaptureBindingId("root::fn#block1:x"),
                 "x",
                 Types.Primitive.INT,
@@ -342,10 +342,10 @@ final class ConstructorSemanticIrTest {
     @Test
     void duplicateSemanticCaptureIdentityIsRejected() {
         var id = new ConstructorSemanticIr.CaptureBindingId("root::fn#slot");
-        var first = new ConstructorSemanticIr.CaptureBinding(
+        var first = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 id, "value", Types.Primitive.INT,
                 ConstructorSemanticIr.CaptureAccess.READ, Set.of());
-        var duplicate = new ConstructorSemanticIr.CaptureBinding(
+        var duplicate = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 id, "value", Types.Primitive.INT,
                 ConstructorSemanticIr.CaptureAccess.WRITE, Set.of());
         assertThrows(IllegalArgumentException.class,
@@ -355,11 +355,11 @@ final class ConstructorSemanticIrTest {
     @Test
     void capturePlanMergePromotesWriteAndUnionsCapabilities() {
         var id = new ConstructorSemanticIr.CaptureBindingId("root::ctor#self");
-        var read = new ConstructorSemanticIr.CaptureBinding(
+        var read = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 id, "self", Types.Unknown.INSTANCE,
                 ConstructorSemanticIr.CaptureAccess.READ,
                 Set.of(ConstructorSemanticIr.CallableCapability.CONSTRUCTION_SCOPED));
-        var write = new ConstructorSemanticIr.CaptureBinding(
+        var write = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 id, "self", Types.Unknown.INSTANCE,
                 ConstructorSemanticIr.CaptureAccess.WRITE,
                 Set.of(ConstructorSemanticIr.CallableCapability.BORROWED));
@@ -377,13 +377,13 @@ final class ConstructorSemanticIrTest {
     @Test
     void inconsistentCaptureIdentityCannotBeMergedAcrossDifferentTypesOrNames() {
         var id = new ConstructorSemanticIr.CaptureBindingId("root::fn#0");
-        var first = new ConstructorSemanticIr.CaptureBinding(
+        var first = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 id, "first", Types.Primitive.INT,
                 ConstructorSemanticIr.CaptureAccess.READ, Set.of());
-        var wrongName = new ConstructorSemanticIr.CaptureBinding(
+        var wrongName = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 id, "second", Types.Primitive.INT,
                 ConstructorSemanticIr.CaptureAccess.READ, Set.of());
-        var wrongType = new ConstructorSemanticIr.CaptureBinding(
+        var wrongType = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 id, "first", Types.Primitive.STRING,
                 ConstructorSemanticIr.CaptureAccess.READ, Set.of());
 
@@ -398,12 +398,12 @@ final class ConstructorSemanticIrTest {
 
     @Test
     void serializableCapturesNeverAuthorizeExecutableOrAnyCallableTransport() {
-        var capture = new ConstructorSemanticIr.CaptureBinding(
+        var capture = new ConstructorSemanticIr.ResolvedCaptureBinding(
                 new ConstructorSemanticIr.CaptureBindingId("root::fn#payload"),
                 "payload",
                 Types.Primitive.STRING,
                 ConstructorSemanticIr.CaptureAccess.READ,
-                Set.of(ConstructorSemanticIr.CallableCapability.SERIALIZABLE));
+                Set.of(ConstructorSemanticIr.CallableCapability.CAPTURES_SERIALIZABLE_DATA));
         var plan = new ConstructorSemanticIr.CapturePlan(List.of(capture));
         assertFalse(plan.serializableExecutableValue());
         assertFalse(plan.actorDataAdmissible());
@@ -412,7 +412,7 @@ final class ConstructorSemanticIrTest {
                 List.of(),
                 Types.Primitive.VOID,
                 Set.of(),
-                Set.of(ConstructorSemanticIr.CallableCapability.SERIALIZABLE));
+                Set.of(ConstructorSemanticIr.CallableCapability.CAPTURES_SERIALIZABLE_DATA));
         assertEquals(Types.AnyCallable.INSTANCE, callable.erasedCallableTop());
         assertFalse(callable.serializableExecutableValue());
         assertFalse(callable.actorDataAdmissible());
