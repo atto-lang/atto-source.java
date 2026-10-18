@@ -1106,11 +1106,6 @@ public final class TypeChecker {
                         + "' cannot carry actor transport specialization");
             }
         } else {
-            if (actorSpec.serial()) {
-                throw new IllegalArgumentException("actor '" + klass.name()
-                        + "' declares serial (1,1) admission but request/message"
-                        + " admission policy lowering is not installed");
-            }
             if (actorSpec.transport() != Ast.ActorTransport.MAIL) {
                 throw new IllegalArgumentException("actor '" + klass.name() + "' declares "
                         + actorSpec.transport() + " " + actorSpec.direction()
@@ -1130,6 +1125,11 @@ public final class TypeChecker {
             if (!actorSpec.annotations().isEmpty()) {
                 throw new IllegalArgumentException("actor '" + klass.name()
                         + "' transport direction annotations require a bound adapter");
+            }
+            if (actorSpec.serial()) {
+                throw new IllegalArgumentException("actor '" + klass.name()
+                        + "' declares serial (1,1) admission but request/message"
+                        + " admission policy lowering is not installed");
             }
         }
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
