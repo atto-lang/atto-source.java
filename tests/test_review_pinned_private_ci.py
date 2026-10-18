@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -626,6 +627,45 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                 path = self.write("invalid-bytes.dat", content)
                 with self.assertRaises(MOD.Denied):
                     MOD.bounded_bytes(path, MOD.MAX_LEDGER, "test")
+
+    def test_policy_reader_rejects_symlinks_to_valid_files(self):
+        original = self.write(
+            "real-ledger.txt", f"{MOD.CARRIER_REPO} {MOD.CARRIER_REPO_ID}\n")
+        linked = self.root / "linked-ledger.txt"
+        linked.symlink_to(original)
+        with self.assertRaises(MOD.Denied):
+            MOD.parse_destination_entry(str(linked))
+        original_json = self.write("real-json.json", {"valid": True})
+        linked_json = self.root / "linked-json.json"
+        linked_json.symlink_to(original_json)
+        with self.assertRaises(MOD.Denied):
+            MOD.load_json(str(linked_json))
+
+    def test_policy_reader_rejects_fifo_without_blocking(self):
+        pipe = self.root / "malicious-policy-fifo"
+        os.mkfifo(pipe)
+        with self.assertRaises(MOD.Denied):
+            MOD.bounded_bytes(str(pipe), MOD.MAX_JSON, "FIFO")
+
+    def test_policy_reader_rejects_hardlinked_files(self):
+        original = self.write("original-ledger.txt",
+                              f"{MOD.CARRIER_REPO} {MOD.CARRIER_REPO_ID}\n")
+        linked = self.root / "hardlinked-ledger.txt"
+        os.link(original, linked)
+        with self.assertRaises(MOD.Denied):
+            MOD.parse_destination_entry(str(linked))
+
+    def test_security_pr_missing_or_forged_merge_state_denied(self):
+        for forged in (None, "false", 0, [], {}):
+            with self.subTest(forged=forged):
+                def mutate(fx):
+                    pr = self.pr(MOD.SOURCE_REPO, 1217, PUBLISHER_HEAD)
+                    if forged is None:
+                        del pr["merged"]
+                    else:
+                        pr["merged"] = forged
+                    fx["publisher_pr"] = self.write("forged-merge-status.json", pr)
+                self.assertDenied(mutate)
 
     def test_wrong_destination_id_denied(self):
         def mutate(fx):
