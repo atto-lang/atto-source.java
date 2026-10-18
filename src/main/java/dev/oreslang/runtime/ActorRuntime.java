@@ -21,6 +21,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
@@ -2387,6 +2388,8 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        /** Callback-free authoritative physical/logical finalization barrier. */
+        private final CountDownLatch finalizedLatch = new CountDownLatch(1);
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind, long generation) {
@@ -2473,29 +2476,7 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-            long timeoutNanos = unit.toNanos(timeout);
-            long deadline = System.nanoTime() + Math.max(0L, timeoutNanos);
-
-            ActorCell<?> cell = actors.get(id);
-            if (cell != null) {
-                cell.awaitFinalized(timeoutNanos);
-                if (cell.finalized()) return true;
-            }
-
-            // Registry removal is not itself a finalization barrier: out-of-lock
-            // teardown may intentionally unregister the cell before terminal
-            // observer publication. Fall back to the non-cancellable done
-            // observer rather than fabricating successful termination.
-            long remaining = deadline - System.nanoTime();
-            if (remaining < 0L) remaining = 0L;
-            try {
-                doneFuture.get(remaining, TimeUnit.NANOSECONDS);
-                return true;
-            } catch (ExecutionException | CancellationException terminalFailure) {
-                return true; // exceptional/cancelled DONE is still termination
-            } catch (TimeoutException notYetPublished) {
-                return false;
-            }
+            return finalizedLatch.await(timeout, unit);
         }
 
         public void send(M message) {
@@ -7857,6 +7838,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             if (publishTerminalObservers) {
+                // Callback-free authoritative termination becomes visible
+                // before any arbitrary Future/output/host observer executes.
+                ref.finalizedLatch.countDown();
+
                 // Parent tree progress is authoritative and precedes every
                 // arbitrary Future/output observer belonging to this child.
                 if (parent != null) {
