@@ -12,6 +12,9 @@ printf 'program\n' > "$work/checkout/source.ores"
 cat > "$work/bin/java" <<'MOCKJAVA'
 #!/usr/bin/env bash
 printf '    java.specification.version = %s\n' "${MOCK_JAVA_MAJOR:-25}" >&2
+printf '    java.runtime.name = %s\n' "${MOCK_JAVA_RUNTIME:-Oracle GraalVM}" >&2
+printf '    java.vendor.version = %s\n' "${MOCK_JAVA_VENDOR_VERSION:-Oracle Corporation}" >&2
+printf '    user.home = %s\n' "${MOCK_JAVA_USER_HOME:-/home/ci}" >&2
 MOCKJAVA
 cat > "$work/bin/mvn" <<'MOCKMVN'
 #!/usr/bin/env bash
@@ -42,6 +45,9 @@ attempt() {
 }
 attempt 0 "$expected" . targeted
 grep -q -- '-DfailIfNoTests=true test' "$MOCK_MAVEN_LOG"
+grep -q -- 'NestedExtractionCallableEscapeTest' "$MOCK_MAVEN_LOG"
+grep -q -- 'NestedFutureFlattenCycleRegressionTest' "$MOCK_MAVEN_LOG"
+grep -q -- 'NestedOptionResultBoundaryRegressionTest' "$MOCK_MAVEN_LOG"
 [[ "$(wc -l < "$MOCK_MAVEN_LOG")" -eq 1 ]]
 echo 'PASS clean tree invokes targeted Maven once'
 attempt 66 '0000000000000000000000000000000000000000' . targeted
@@ -62,6 +68,32 @@ attempt 69 "$expected" . targeted
 [[ ! -s "$MOCK_MAVEN_LOG" ]]
 unset MOCK_JAVA_MAJOR
 echo 'PASS non-JDK25 blocks Maven execution'
+export MOCK_JAVA_RUNTIME='OpenJDK Runtime Environment'
+attempt 69 "$expected" . targeted
+[[ ! -s "$MOCK_MAVEN_LOG" ]]
+unset MOCK_JAVA_RUNTIME
+echo 'PASS non-GraalVM PATH JDK25 blocks Maven execution'
+# A generic JVM property containing "GraalVM" cannot authenticate the runtime.
+export MOCK_JAVA_RUNTIME='OpenJDK Runtime Environment' MOCK_JAVA_USER_HOME='/opt/GraalVM-not-the-runtime'
+attempt 69 "$expected" . targeted
+[[ ! -s "$MOCK_MAVEN_LOG" ]]
+unset MOCK_JAVA_RUNTIME MOCK_JAVA_USER_HOME
+echo 'PASS GraalVM string in unrelated PATH property cannot bypass runtime gate'
+export MOCK_JAVA_RUNTIME='Java(TM) SE Runtime Environment' MOCK_JAVA_VENDOR_VERSION='Oracle GraalVM 25.0.3'
+attempt 0 "$expected" . targeted
+grep -q -- '-DfailIfNoTests=true test' "$MOCK_MAVEN_LOG"
+unset MOCK_JAVA_RUNTIME MOCK_JAVA_VENDOR_VERSION
+echo 'PASS Oracle GraalVM vendor identity accepts a standard Java runtime name' 
+# java.vendor.version is externally mutable (e.g. JAVA_TOOL_OPTIONS=-D...)
+# and must not be accepted as identity evidence under option injection.
+for ambient in JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS _JAVA_OPTIONS; do
+    printf -v "$ambient" '%s' '-Djava.vendor.version=Oracle GraalVM'
+    export "$ambient"
+    attempt 69 "$expected" . targeted
+    [[ ! -s "$MOCK_MAVEN_LOG" ]]
+    unset "$ambient"
+    echo "PASS $ambient injection forbidden before Maven"
+done
 mkdir -p "$work/java-home-21/bin" "$work/java-home-25/bin"
 cat > "$work/java-home-21/bin/java" <<'BADHOMEJAVA'
 #!/usr/bin/env bash
@@ -70,6 +102,9 @@ BADHOMEJAVA
 cat > "$work/java-home-25/bin/java" <<'GOODHOMEJAVA'
 #!/usr/bin/env bash
 printf '    java.specification.version = 25\n' >&2
+printf '    java.runtime.name = %s\n' "${MOCK_HOME_JAVA_RUNTIME:-Oracle GraalVM}" >&2
+printf '    java.vendor.version = %s\n' "${MOCK_HOME_JAVA_VENDOR_VERSION:-Oracle Corporation}" >&2
+printf '    user.home = %s\n' "${MOCK_HOME_JAVA_USER_HOME:-/home/ci}" >&2
 GOODHOMEJAVA
 chmod +x "$work/java-home-21/bin/java" "$work/java-home-25/bin/java"
 export JAVA_HOME="$work/java-home-21"
@@ -79,7 +114,26 @@ echo 'PASS mismatched JAVA_HOME rejects Maven despite PATH JDK25'
 export JAVA_HOME="$work/java-home-25"
 attempt 0 "$expected" . targeted
 grep -q -- '-DfailIfNoTests=true test' "$MOCK_MAVEN_LOG"
-echo 'PASS matching JAVA_HOME JDK25 invokes Maven'
+echo 'PASS matching JAVA_HOME GraalVM JDK25 invokes Maven'
+export MOCK_HOME_JAVA_RUNTIME='OpenJDK Runtime Environment'
+attempt 69 "$expected" . targeted
+[[ ! -s "$MOCK_MAVEN_LOG" ]]
+unset MOCK_HOME_JAVA_RUNTIME
+echo 'PASS non-GraalVM JAVA_HOME JDK25 blocks Maven execution'
+export JAVA_HOME="$work/java-home-25"
+export MOCK_HOME_JAVA_RUNTIME='OpenJDK Runtime Environment'
+# A fake version-banner field must not bypass the runtime-specific check.
+export MOCK_HOME_JAVA_USER_HOME='/opt/GraalVM-toolchain-bait'
+attempt 69 "$expected" . targeted
+[[ ! -s "$MOCK_MAVEN_LOG" ]]
+unset MOCK_HOME_JAVA_RUNTIME MOCK_HOME_JAVA_USER_HOME JAVA_HOME
+echo 'PASS GraalVM string in unrelated HOME toolchain property cannot bypass runtime gate'
+export JAVA_HOME="$work/java-home-25"
+export MOCK_HOME_JAVA_RUNTIME='Java(TM) SE Runtime Environment' MOCK_HOME_JAVA_VENDOR_VERSION='Oracle GraalVM 25.0.3'
+attempt 0 "$expected" . targeted
+grep -q -- '-DfailIfNoTests=true test' "$MOCK_MAVEN_LOG"
+unset MOCK_HOME_JAVA_RUNTIME MOCK_HOME_JAVA_VENDOR_VERSION JAVA_HOME
+echo 'PASS Oracle GraalVM JAVA_HOME vendor identity accepts a standard Java runtime name' 
 unset JAVA_HOME
 attempt 64 "$expected" . '../../outside' targeted
 [[ ! -s "$MOCK_MAVEN_LOG" ]]
