@@ -90,11 +90,29 @@ that is deliberately separate from actor mail and from the future source-level
   continuation-admission, termination-classification, dropped-diagnostic and
   watchdog counters. These are telemetry, never scheduling authority.
 
-This journal **does not implement the normative source supervisor event path**.
-A child panic is still required eventually to become one non-droppable typed
-CONTROL event admitted to its supervisor's exclusive logical lane. The
-diagnostic journal may drop under observer backpressure and therefore MUST NOT
-drive restart/escalation policy.
+The JVM runtime now also has the first **authoritative host/runtime supervisor
+CONTROL retention primitive**, separate from the diagnostic journal:
+
+- each FAILED actor incarnation publishes exactly one generation-bound
+  `SupervisorControlEvent` containing actor identity, parent lineage, the
+  stable `ActorFailure.Kind`, and failure type identity;
+- this event is retained in bounded runtime state rather than the droppable
+  terminal journal;
+- the failed actor's `maxActors` capacity reservation remains charged after
+  terminal observers retire until that CONTROL event is acknowledged;
+- therefore a crash storm cannot admit replacement actors faster than a
+  supervisor consumes failure decisions. Backpressure is applied at actor
+  admission instead of dropping correctness-critical failures;
+- normal/cancelled termination consumes no supervisor-failure capacity;
+- diagnostic-journal saturation or diagnostic producer contention is
+  independent and cannot erase the retained CONTROL event.
+
+This is deliberately one layer below source callbacks. It does **not** yet
+claim executable guest `on_panic/on_raise/on_throw` lowering or automatic
+restart policy. The next integration step is to route these retained events
+through the owning supervisor's reserved serialized CONTROL lane and only then
+acknowledge/release the reservation after that supervisor invocation has been
+admitted.
 
 ### Continuation-vs-user-mail fairness
 
