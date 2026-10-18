@@ -120,6 +120,71 @@ final class WorkflowSupervisorActorV1Test {
         }
     }
 
+    @Test
+    void supervisorUsesDurableAmbiguityInsteadOfCallerReportedCount()
+            throws Exception {
+        Path db = tempDir.resolve("supervisor-durable-ambiguity.db");
+        var loop = new DurableDevLoopV1("run-durable-ambiguity", 3);
+
+        try (var workflow = SqliteWorkflowJournalV1.open(db)) {
+            workflow.append(loop.accept(
+                    "start",
+                    new DurableDevLoopV1.Start("goal")));
+            var claim = workflow.claimNext(
+                    "coder", 100L, 10L).orElseThrow();
+            assertEquals(1, workflow.expireClaims(110L));
+            assertEquals(
+                    WorkflowJournalV1.EffectState.AMBIGUOUS,
+                    workflow.effect(claim.effectKey()).orElseThrow().state());
+        }
+
+        var policy = new WorkflowSupervisorPolicyV1.Policy(
+                10_000L,
+                1_000L,
+                3,
+                2_000_000L,
+                0,
+                false);
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = WorkflowSupervisorActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new WorkflowSupervisorActorV1.Configure(
+                    db.toString(),
+                    "run-durable-ambiguity",
+                    policy,
+                    100L,
+                    db.toString()));
+            next(outputs);
+
+            actor.send(new WorkflowSupervisorActorV1.Admit(
+                    WorkflowActivityProtocolV1.Kind.GIT,
+                    200L,
+                    0L,
+                    0L,
+                    0,
+                    false));
+            var result = assertInstanceOf(
+                    WorkflowSupervisorActorV1.AdmissionEvaluated.class,
+                    next(outputs));
+            assertEquals(
+                    WorkflowSupervisorPolicyV1.Decision.REQUIRE_HUMAN,
+                    result.admission().decision());
+            assertEquals(
+                    "ambiguous_effect_budget_exhausted",
+                    result.admission().reason());
+            assertEquals(
+                    1,
+                    result.admission().usage().ambiguousEffects());
+
+            actor.send(new WorkflowSupervisorActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
     private static Object next(
             ActorRuntime.ActorOutputStream<Object> outputs)
             throws Exception {
