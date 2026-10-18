@@ -62,6 +62,9 @@ public final class LinkedProgramRunner {
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
+        // This Java/Truffle runner is hosted. Reject an unsupported
+        // freestanding request before import traversal or guest compilation.
+        projectConfig.requireHostedJavaBackend();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
@@ -178,6 +181,9 @@ public final class LinkedProgramRunner {
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
+        // This Java/Truffle runner is hosted. Reject an unsupported
+        // freestanding request before import traversal or guest compilation.
+        projectConfig.requireHostedJavaBackend();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
