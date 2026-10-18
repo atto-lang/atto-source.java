@@ -50,6 +50,75 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
     }
 
     @Test
+    void leavingGroupDoesNotRewriteAlreadyAdmittedReturnPath() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var join = group.joinCapability();
+            var routerRef =
+                    new AtomicReference<ActorPipelineCorrelatedMailboxRouter<String>>();
+            var replied = new CountDownLatch(1);
+            var futureDenied = new CountDownLatch(1);
+            var error = new AtomicReference<Throwable>();
+            var worker = runtime.<String>spawnShared(() -> (value, actor) -> {
+                assertEquals("branch", value);
+                group.leaveCurrent();
+                // The worker was a valid member at forward admission.
+                // Its immutable return frame must not be invalidated
+                // solely because it leaves the optional selection group.
+                runtime.routeCurrentPipelineReply("ack");
+            });
+            var other = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var sink = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                if (value.equals("begin")) {
+                    routerRef.get().forwardTo("worker-a", "branch");
+                } else if (value.equals("ack")) {
+                    replied.countDown();
+                } else if (value.equals("second")) {
+                    try {
+                        routerRef.get().forwardTo("worker-a", "illegal");
+                        error.set(new AssertionError("ex-member received a new route"));
+                    } catch (IllegalStateException expected) {
+                        futureDenied.countDown();
+                    }
+                } else {
+                    error.set(new AssertionError("unexpected source payload " + value));
+                }
+            });
+            group.join(worker, join);
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, fanInGraph(),
+                    Map.of("source", source, "worker-a", worker,
+                           "worker-b", other, "sink", sink), 95, 12, group);
+            routerRef.set(router);
+            router.ingress("source", "begin");
+            assertTrue(replied.await(8, TimeUnit.SECONDS),
+                    "membership leave invalidated a sealed already-published return path");
+            source.drain().get(5, TimeUnit.SECONDS);
+            worker.drain().get(5, TimeUnit.SECONDS);
+            assertFalse(group.pipelineMemberSnapshot().contains(worker.id()));
+
+            router.ingress("source", "second");
+            assertTrue(futureDenied.await(5, TimeUnit.SECONDS),
+                    "departed worker remained eligible for new DATA selection");
+            source.drain().get(5, TimeUnit.SECONDS);
+            assertNull(error.get());
+            assertEquals(0, router.outstanding(),
+                    "group departure + reverse receipt leaked correlation frames");
+            router.close();
+            group.close();
+            source.stop();
+            worker.stop();
+            other.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            worker.getDone().get(5, TimeUnit.SECONDS);
+            other.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void actorGroupFanoutSelectiveAndRoundRobinUseOnlyLiveGraphMembers()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
