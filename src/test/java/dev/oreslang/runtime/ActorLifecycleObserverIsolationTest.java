@@ -398,6 +398,121 @@ final class ActorLifecycleObserverIsolationTest {
         }
     }
 
+    @Test
+    @Timeout(30)
+    void concurrentMassFinalizationRetainsExactlyOneTerminalStatePerIncarnation()
+            throws Exception {
+        final int count = 512;
+        ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 16, count + 16));
+        try (var terminators = java.util.concurrent.Executors.newFixedThreadPool(12)) {
+            var actors = new java.util.ArrayList<ActorRuntime.ActorRef<Integer>>(count);
+            for (int i = 0; i < count; ++i) {
+                actors.add(runtime.<Integer>spawnShared(
+                        () -> (message, context) -> { }));
+            }
+            var started = new CountDownLatch(1);
+            var finished = new CountDownLatch(count);
+            var workerErrors = new java.util.concurrent.ConcurrentLinkedQueue<Throwable>();
+            for (var actor : actors) {
+                terminators.execute(() -> {
+                    try {
+                        if (!started.await(15, TimeUnit.SECONDS))
+                            throw new AssertionError("terminator start gate timed out");
+                        actor.stop();
+                    } catch (Throwable failure) {
+                        workerErrors.add(failure);
+                    } finally {
+                        finished.countDown();
+                    }
+                });
+            }
+            started.countDown();
+            assertTrue(finished.await(20, TimeUnit.SECONDS));
+            assertTrue(workerErrors.isEmpty(), () -> "termination worker errors: " + workerErrors);
+            var ids = new java.util.HashSet<ActorRuntime.ActorId>();
+            for (var actor : actors) {
+                assertTrue(actor.awaitTermination(8, TimeUnit.SECONDS));
+                var terminal = actor.terminalState().orElseThrow();
+                assertEquals(actor.id(), terminal.actorId());
+                assertEquals(actor.generation(), terminal.generation());
+                assertEquals(ActorRuntime.ActorTerminationKind.NORMAL,
+                        terminal.terminationKind());
+                assertTrue(ids.add(terminal.actorId()), "no actor identity may be recycled");
+                assertSame(terminal, actor.terminalState().orElseThrow(),
+                        "postmortem state is retained, not reconstructed each query");
+            }
+            assertEquals(count, ids.size());
+            assertEquals(count, runtime.runtimeStats().normalTerminations());
+            assertEquals(0, runtime.runtimeStats().liveActors());
+            assertEquals(0L, runtime.supervisionEventsDropped());
+            assertTrue(runtime.lifecycleObserverCarrierCount() <= 4);
+            for (var actor : actors)
+                actor.done().get(8, TimeUnit.SECONDS);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+            while (runtime.reservedActorSlots() != 0 && System.nanoTime() < deadline)
+                Thread.sleep(1);
+            assertEquals(0, runtime.reservedActorSlots(),
+                    "completed observer bundles must release bounded actor admission");
+            assertEquals(count, runtime.runtimeStats().normalTerminations());
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
+    void closeRacingObserverDeliveryCannotRetireObserverDomainPrematurely()
+            throws Exception {
+        ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 4));
+        CountDownLatch observerEntered = new CountDownLatch(1);
+        CountDownLatch releaseObserver = new CountDownLatch(1);
+        CountDownLatch closerStarted = new CountDownLatch(1);
+        var closeFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread closer = null;
+        try {
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            actor.done().whenCompleteRuntime((value, failure) -> {
+                observerEntered.countDown();
+                try {
+                    if (!releaseObserver.await(10, TimeUnit.SECONDS))
+                        throw new AssertionError("observer was not released");
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+
+            actor.stop();
+            assertTrue(observerEntered.await(3, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(1, runtime.reservedActorSlots());
+
+            closer = Thread.ofPlatform().name("actor-observer-close-race").start(() -> {
+                closerStarted.countDown();
+                try { runtime.close(); }
+                catch (Throwable failed) { closeFailure.set(failed); }
+            });
+            assertTrue(closerStarted.await(3, TimeUnit.SECONDS));
+            // This check is deliberately before release: shutdown must fence
+            // the accepted observer callback, not discard its future.
+            assertEquals(1, runtime.reservedActorSlots());
+            assertFalse(actor.done().isCancelled());
+            releaseObserver.countDown();
+            closer.join(10_000);
+            assertFalse(closer.isAlive(), "runtime close must finish after observer drain");
+            assertNull(closeFailure.get(), () -> "close failed: " + closeFailure.get());
+            assertEquals(0, runtime.reservedActorSlots());
+            assertEquals(0, runtime.runtimeStats().liveActors());
+        } finally {
+            releaseObserver.countDown();
+            if (closer != null) closer.join(10_000);
+            runtime.close();
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private static OresFuture<Void> privateFuture(
             ActorRuntime.ActorRef<?> actor,
