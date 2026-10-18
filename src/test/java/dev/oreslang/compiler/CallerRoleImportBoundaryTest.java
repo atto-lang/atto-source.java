@@ -95,6 +95,28 @@ final class CallerRoleImportBoundaryTest {
     }
 
     @Test
+    void unknownParentRequiresVerifiedImportedClassPolicy() {
+        String source = """
+                define pub class Child extends External as end
+                """;
+        assertTrue(assertThrows(IllegalArgumentException.class, () -> link(
+                source, "import class Child from \"provider.ores\";"))
+                .getMessage().contains("unverified inherited callable policy"));
+    }
+
+    @Test
+    void verifiedUnguardedInheritedMethodsRemainImportable() {
+        String source = """
+                define class Base as
+                    pub static fnc safe(): void {}
+                end
+                define pub class Child extends Base as end
+                """;
+        assertDoesNotThrow(() -> link(
+                source, "import class Child from \"provider.ores\";"));
+    }
+
+    @Test
     void protectedPublicStaticMethodInImportedClassIsRejected() {
         String source = """
                 define enum Roles as
