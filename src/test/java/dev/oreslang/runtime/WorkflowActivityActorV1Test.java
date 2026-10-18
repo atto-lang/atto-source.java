@@ -13,7 +13,7 @@ final class WorkflowActivityActorV1Test {
             throws Exception {
         try (var runtime = new ActorRuntime()) {
             var actor = WorkflowActivityActorV1.spawn(runtime);
-            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
             var outputs = actor.outputs();
 
             actor.send(new WorkflowActivityActorV1.Configure(
@@ -64,7 +64,7 @@ final class WorkflowActivityActorV1Test {
             assertInstanceOf(
                     WorkflowActivityActorV1.Stopping.class,
                     next(outputs));
-            actor.getDone().get(5, TimeUnit.SECONDS);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
         }
     }
 
@@ -73,7 +73,7 @@ final class WorkflowActivityActorV1Test {
             throws Exception {
         try (var runtime = new ActorRuntime()) {
             var actor = WorkflowActivityActorV1.spawn(runtime);
-            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
             var outputs = actor.outputs();
 
             var command = new DurableDevLoopV1.PushCode(
@@ -103,8 +103,8 @@ final class WorkflowActivityActorV1Test {
 
             assertThrows(
                     java.util.concurrent.ExecutionException.class,
-                    () -> actor.getDone().get(5, TimeUnit.SECONDS));
-            assertTrue(actor.failure().isPresent());
+                    () -> actor.raw().getDone().get(5, TimeUnit.SECONDS));
+            assertTrue(actor.raw().failure().isPresent());
         }
     }
 
@@ -113,6 +113,7 @@ final class WorkflowActivityActorV1Test {
             throws Exception {
         var step = outputs.next().get(5, TimeUnit.SECONDS);
         assertFalse(step.done());
-        return step.value().value();
+        return WorkflowActivityActorV1.decodeOutput(
+                step.value().value());
     }
 }
