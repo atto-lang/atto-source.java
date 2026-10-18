@@ -283,6 +283,37 @@ final class WorkflowJournalV1Test {
     }
 
     @Test
+    void knownUnexecutedClaimAfterCancellationIsAbandonedNotRequeued() {
+        var loop = new DurableDevLoopV1("run-cancel-release", 3);
+        var store = started(loop);
+        var active = store.claimNext(
+                "worker-a", 100L, 100L).orElseThrow();
+
+        append(store, loop.accept(
+                "cancel",
+                new DurableDevLoopV1.Cancel("operator request")));
+
+        store.releaseUnexecuted(
+                active.effectKey(),
+                active.claimToken(),
+                "worker://confirmed-not-started",
+                150L);
+
+        var effect = store.effect(
+                active.effectKey()).orElseThrow();
+        assertEquals(
+                WorkflowJournalV1.EffectState.ABANDONED,
+                effect.state());
+        assertFalse(effect.retryAllowed());
+
+        var next = store.claimNext(
+                "worker-next", 151L, 100L).orElseThrow();
+        assertInstanceOf(
+                DurableDevLoopV1.CancelWork.class,
+                next.command());
+    }
+
+    @Test
     void journalReplayReconstructsReducerStateAcrossFailureLoop() {
         var loop = new DurableDevLoopV1("run-replay-store", 3);
         var store = new WorkflowJournalV1();
