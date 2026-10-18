@@ -198,10 +198,22 @@ public final class TypeChecker {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) localNames.add(fn.name());
-                else if (declaration instanceof Ast.ClassDecl klass) localNames.add(klass.name());
+                else if (declaration instanceof Ast.ClassDecl klass) {
+                    if (klass.name().equals("HttpResponse")) {
+                        throw new IllegalArgumentException(
+                                "HttpResponse is a sealed transport response type; user classes cannot shadow it");
+                    }
+                    localNames.add(klass.name());
+                }
                 else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
-                else if (declaration instanceof Ast.TypeAliasDecl alias) localNames.add(alias.name());
+                else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                    if (alias.name().equals("HttpResponse")) {
+                        throw new IllegalArgumentException(
+                                "HttpResponse is a sealed transport response type; type aliases cannot shadow it");
+                    }
+                    localNames.add(alias.name());
+                }
             }
         }
 
