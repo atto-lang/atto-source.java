@@ -341,6 +341,46 @@ final class SourceActorHotUpgradeRuntimeTest {
     }
 
     @Test
+    void transferPublicationRejectsWrongPhysicalCandidate() throws Exception {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime source = new ActorRuntime(IsolatePolicy.developer());
+             ActorRuntime target = new ActorRuntime(IsolatePolicy.developer())) {
+            var image1 = store.publish("publish-bind-source.ores", program);
+            var image2 = store.publish("publish-bind-candidate.ores", Parser.parse(
+                    "pub routine main(): void { val version = 2; return; }"));
+            var old = new Executor(image1, 'a', '1', '2', false, null, null);
+            var next = new Executor(image2, 'b', '1', '2', true, null, null);
+            var sourceRef = source.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(),
+                    old,
+                    "Counter");
+            sourceRef.getReady().get(5, TimeUnit.SECONDS);
+
+            var transfer = source.tryBeginSourceActorTransfer(
+                    sourceRef,
+                    java.util.UUID.randomUUID(),
+                    1L).orElseThrow();
+            ActorRuntime.ActorRef<Object> staged =
+                    target.spawnCodeActorFromTransfer(transfer, next);
+            staged.getReady().get(5, TimeUnit.SECONDS);
+
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> transfer.retireSourceAfterPublication(sourceRef),
+                    "publication must bind to the exact staged physical candidate");
+
+            transfer.close();
+            assertTrue(staged.awaitTermination(5, TimeUnit.SECONDS));
+            sourceRef.send(1L);
+            drain(source, sourceRef);
+            sourceRef.stop();
+            assertTrue(sourceRef.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void concurrentCrossRuntimeRestoreHasExactlyOneWinner() throws Exception {
         Ast.Program program = Parser.parse("pub routine main(): void { return; }");
         try (SharedCodeImageStore store = new SharedCodeImageStore();
