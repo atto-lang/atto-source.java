@@ -38,6 +38,8 @@ fi
 
 command -v mvn >/dev/null || fail "Maven missing"
 command -v java >/dev/null || fail "Java missing"
+command -v javac >/dev/null || fail "javac missing"
+[[ "$(javac -version 2>&1)" == javac\ 25* ]] || fail "JDK 25 required"
 java -version >&2
 
 printf 'TASK_EXACT_HEAD_ADMITTED commit=%s tree=%s mode=%s\n' \
