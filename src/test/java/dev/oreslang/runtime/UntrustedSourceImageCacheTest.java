@@ -32,9 +32,13 @@ final class UntrustedSourceImageCacheTest {
         assertEquals(0, cache.liveImages());
         assertEquals(0L, cache.pinnedBytes());
         try (var newGeneration = cache.acquire("worker.ores", code)) {
-            assertNotSame(same, newGeneration.source(),
-                    "after last actor retires the old image must be reclaimable");
+            // The cache entry was evicted. Graal may still independently
+            // intern the underlying immutable Source, so object inequality
+            // is NOT an executable-image reclamation proof.
+            assertNotNull(newGeneration.source());
+            assertEquals(1, cache.liveImages());
         }
+        assertEquals(0, cache.liveImages());
     }
 
     @Test
