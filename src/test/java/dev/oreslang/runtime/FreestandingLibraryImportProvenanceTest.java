@@ -52,12 +52,19 @@ final class FreestandingLibraryImportProvenanceTest {
     @Test
     void onlyBareCanonicalImportsAreReserved() {
         for (String name : new String[]{"core/math","alloc/vec",
-                "actor/runtime","otp/supervisor"}) {
+                "actor/runtime","otp/supervisor","core\\math",
+                "alloc\\vec","actor\\runtime","otp\\supervisor"}) {
             assertTrue(CoreLibrarySources.isReservedFreestandingImport(name));
         }
         for (String local : new String[]{"./core/math","../core/math",
                 "core", "core_local/math", "std/core", "std/otp/supervisor"}) {
             assertFalse(CoreLibrarySources.isReservedFreestandingImport(local));
         }
+        // Neither slash variant can cause a packaged stdlib name to resolve
+        // from the application search path instead of the trusted source.
+        assertTrue(CoreLibrarySources.isCoreImport("std/core"));
+        assertTrue(CoreLibrarySources.isCoreImport("std\\core"));
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.unitId("std\\core"));
     }
 }
