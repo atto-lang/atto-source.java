@@ -42,8 +42,11 @@ public final class ActorArena implements AutoCloseable {
             return new ActorArena(owner, durable, ephemeral);
         } catch (RuntimeException | Error failure) {
             try { durable.close(); }
-            catch (RuntimeException closing) { failure.addSuppressed(closing); }
-            throw failure;
+            catch (RuntimeException | Error closing) {
+                failure = mergeRetirementFailure(failure, closing);
+            }
+            rethrowRetirementFailure(failure);
+            throw new AssertionError("unreachable");
         }
     }
 
@@ -93,17 +96,19 @@ public final class ActorArena implements AutoCloseable {
             Throwable cleanupFailure = null;
             if (scratchPin != null) {
                 try { scratchPin.close(); }
-                catch (RuntimeException | Error closing) { cleanupFailure = closing; }
+                catch (RuntimeException | Error closing) {
+                    cleanupFailure = mergeRetirementFailure(cleanupFailure, closing);
+                }
             }
             try { persistentPin.close(); }
             catch (RuntimeException | Error closing) {
-                if (cleanupFailure == null) cleanupFailure = closing;
-                else if (cleanupFailure != closing) cleanupFailure.addSuppressed(closing);
+                cleanupFailure = mergeRetirementFailure(cleanupFailure, closing);
             }
-            if (cleanupFailure != null && cleanupFailure != failure) {
-                failure.addSuppressed(cleanupFailure);
+            if (cleanupFailure != null) {
+                failure = mergeRetirementFailure(failure, cleanupFailure);
             }
-            throw failure;
+            rethrowRetirementFailure(failure);
+            throw new AssertionError("unreachable");
         }
     }
 
@@ -124,14 +129,14 @@ public final class ActorArena implements AutoCloseable {
             // and the enclosing actor lease counter settle successfully.
             Throwable failure = null;
             try { scratchPin.close(); }
-            catch (RuntimeException | Error error) { failure = error; }
+            catch (RuntimeException | Error error) {
+                failure = mergeRetirementFailure(failure, error);
+            }
             try { persistentPin.close(); }
             catch (RuntimeException | Error error) {
-                if (failure == null) failure = error;
-                else if (failure != error) failure.addSuppressed(error);
+                failure = mergeRetirementFailure(failure, error);
             }
-            if (failure instanceof RuntimeException error) throw error;
-            if (failure instanceof Error error) throw error;
+            rethrowRetirementFailure(failure);
             synchronized (ActorArena.this) {
                 if (!accounted.get()) {
                     if (externalLeases <= 0) {
@@ -215,6 +220,30 @@ public final class ActorArena implements AutoCloseable {
         public boolean done() { return done; }
     }
 
+    static boolean isVmFatalRetirementFailure(Throwable failure) {
+        return failure instanceof VirtualMachineError
+                || failure instanceof ThreadDeath
+                || failure instanceof LinkageError;
+    }
+
+    static Throwable mergeRetirementFailure(Throwable current, Throwable next) {
+        Objects.requireNonNull(next, "next");
+        if (current == null || current == next) return current == null ? next : current;
+        if (isVmFatalRetirementFailure(next) && !isVmFatalRetirementFailure(current)) {
+            next.addSuppressed(current);
+            return next;
+        }
+        current.addSuppressed(next);
+        return current;
+    }
+
+    static void rethrowRetirementFailure(Throwable failure) {
+        if (failure == null) return;
+        if (failure instanceof RuntimeException runtime) throw runtime;
+        if (failure instanceof Error error) throw error;
+        throw new IllegalStateException("unexpected checked actor arena retirement failure", failure);
+    }
+
     private void requireOwner() {
         // No temporary MemoryReservation object on the hot read/write path.
         owner.requireOwnerActive();
@@ -239,14 +268,14 @@ public final class ActorArena implements AutoCloseable {
         // completed; do not unregister this arena on incomplete cleanup.
         Throwable failure = null;
         try { scratch.close(); }
-        catch (RuntimeException | Error error) { failure = error; }
+        catch (RuntimeException | Error error) {
+            failure = mergeRetirementFailure(failure, error);
+        }
         try { persistent.close(); }
         catch (RuntimeException | Error error) {
-            if (failure == null) failure = error;
-            else if (failure != error) failure.addSuppressed(error);
+            failure = mergeRetirementFailure(failure, error);
         }
-        if (failure instanceof RuntimeException error) throw error;
-        if (failure instanceof Error error) throw error;
+        rethrowRetirementFailure(failure);
         owner.unregisterArena(this);
     }
 }
