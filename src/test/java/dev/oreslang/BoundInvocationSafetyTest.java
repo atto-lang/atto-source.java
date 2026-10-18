@@ -192,7 +192,12 @@ final class BoundInvocationSafetyTest {
 
         BoundInvocation constructorBound =
                 BoundInvocation.bindLiteralClassConstructor(klass, construction());
-        assertEquals(2, constructorBound.schedule().steps().size() - 2);
+        assertEquals(List.of(
+                dev.oreslang.types.OptionalCallEvaluationSchedule.Operation.EVALUATE_ARGUMENT,
+                dev.oreslang.types.OptionalCallEvaluationSchedule.Operation.MATERIALIZE_ABI_SLOT,
+                dev.oreslang.types.OptionalCallEvaluationSchedule.Operation.INVOKE),
+                constructorBound.schedule().steps().stream()
+                        .map(step -> step.operation()).toList());
         assertEquals(BoundInvocation.Readiness.SHAPE_ONLY, constructorBound.readiness());
         assertThrows(IllegalStateException.class, constructorBound::requireExecutable);
     }
