@@ -4957,7 +4957,9 @@ public final class ActorRuntime implements AutoCloseable {
                             && !cell.scheduled.get()
                             && cell.queuedMessages == 0
                             && !cell.sourceReceiveSuspended
+                            && !cell.endRequested && !cell.finalCleanupActive
                             && cell.activeMail == null
+                            && cell.children.isEmpty()
                             && cell.pendingOperations.isEmpty();
                 }
             }
@@ -4987,8 +4989,15 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = actors.get(ref.id());
         if (cell == null) throw terminated(ref);
         synchronized (cell.lifecycleLock) {
-            if (cell.stopped.get() || cell.finalized || cell.sealing)
+            if (cell.stopped.get() || cell.finalized || cell.sealing
+                    || cell.endRequested)
                 throw terminated(ref);
+            // No ready actor/initialized state implies there is no safe
+            // checkpoint: a lazy initializer must not be mistaken for idle.
+            if (!ref.readyFuture.isDone()
+                    || (cell.behavior == null && cell.codeActorState == null))
+                throw new IllegalStateException(
+                        "actor must finish initialization before ingress can be frozen");
             if (cell.upgradeIngressTicket != null)
                 throw new IllegalStateException("actor hot-upgrade ingress is already frozen");
             final Object ticket = new Object();
