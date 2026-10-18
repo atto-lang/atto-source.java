@@ -5354,10 +5354,11 @@ public final class ActorRuntime implements AutoCloseable {
 
             synchronized (cell.lifecycleLock) {
                 if (!freeze.schedulerDrained()) return Optional.empty();
-                if (cell.outputChannel.size() != 0) {
+                if (cell.outputChannel.size() != 0
+                        || cell.outputChannel.pendingRegistrations() != 0) {
                     throw new IllegalStateException(
                             "cross-context actor upgrade requires parent-visible output "
-                                    + "to be drained before route migration");
+                                    + "and pending output readers to be drained before route migration");
                 }
                 if (cell.codeExecutor == null || cell.codeActorState == null)
                     throw new IllegalStateException(
@@ -5404,9 +5405,10 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "source actor changed while cross-context checkpoint was staged");
                 }
-                if (cell.outputChannel.size() != 0) {
+                if (cell.outputChannel.size() != 0
+                        || cell.outputChannel.pendingRegistrations() != 0) {
                     throw new IllegalStateException(
-                            "source actor emitted output while cross-context checkpoint staged");
+                            "source actor output/readers changed while cross-context checkpoint staged");
                 }
             }
 
