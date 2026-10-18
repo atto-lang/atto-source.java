@@ -30,6 +30,17 @@ public final class TreeShaker {
     public static Result shake(Ast.Program checkedProgram, BuildOptions options) {
         Objects.requireNonNull(checkedProgram, "checkedProgram");
         Objects.requireNonNull(options, "options");
+        // Public optimization APIs must not erase unsupported enum/pattern
+        // declarations and thereby launder an unlinked AST into a build.
+        // Real nominal enum support needs exact binding retention and value ABI.
+        for (Ast.ModuleDecl module : checkedProgram.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.EnumDecl || decl instanceof Ast.PatternDecl) {
+                    throw new IllegalArgumentException(
+                            "enum/pattern optimization requires compiler-bound callable and nominal identities");
+                }
+            }
+        }
         return new Engine(checkedProgram, options).run();
     }
 
