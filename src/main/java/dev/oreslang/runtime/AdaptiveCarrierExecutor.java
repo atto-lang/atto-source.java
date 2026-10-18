@@ -119,6 +119,12 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
         public void reconcileCreatedThreads() {
             OresCarrierPermitPool.reconcile(delegate);
         }
+
+        @Override
+        public boolean awaitPhysicalTermination(long timeout, TimeUnit unit)
+                throws InterruptedException {
+            return OresCarrierPermitPool.awaitPhysicalTermination(delegate, timeout, unit);
+        }
     }
 
     private void reconcileCreatedThreads() {
@@ -317,6 +323,21 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
         } finally {
             admission.unlock();
         }
+    }
+
+    @Override
+    public boolean awaitTermination(long timeout, TimeUnit unit)
+            throws InterruptedException {
+        Objects.requireNonNull(unit, "unit");
+        if (timeout < 0L)
+            throw new IllegalArgumentException("timeout must be non-negative");
+        long budget = unit.toNanos(timeout);
+        long started = System.nanoTime();
+        if (!super.awaitTermination(timeout, unit)) return false;
+        long elapsed = System.nanoTime() - started;
+        long remaining = Math.max(0L, budget - elapsed);
+        return OresCarrierPermitPool.awaitPhysicalTermination(
+                getThreadFactory(), remaining, TimeUnit.NANOSECONDS);
     }
 
     @Override protected void afterExecute(Runnable task, Throwable failure) {
