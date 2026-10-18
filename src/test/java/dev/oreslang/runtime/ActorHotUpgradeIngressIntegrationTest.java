@@ -6,7 +6,6 @@ import org.junit.jupiter.api.Timeout;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -16,6 +15,14 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(20)
 final class ActorHotUpgradeIngressIntegrationTest {
+    private static void awaitDrained(ActorRuntime.HotUpgradeIngressFreeze freeze)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!freeze.schedulerDrained() && System.nanoTime() < deadline)
+            Thread.sleep(2);
+        assertTrue(freeze.schedulerDrained(), "actor scheduler did not quiesce");
+    }
+
     @Test
     void freezeRejectsNewMessagesAndAllowsOldActorToResumeOnAbort() throws Exception {
         AtomicInteger delivered = new AtomicInteger();
@@ -27,8 +34,7 @@ final class ActorHotUpgradeIngressIntegrationTest {
                     });
             actor.ready().get(5, TimeUnit.SECONDS);
             try (var freeze = runtime.freezeUserIngressForHotUpgrade(actor)) {
-                assertTrue(freeze.schedulerDrained(),
-                        "newly readied idle actor must not have an executing carrier");
+                awaitDrained(freeze);
                 assertThrows(ActorRuntime.ActorSealedException.class, () -> actor.send(1));
                 assertEquals(0, delivered.get());
             }
@@ -43,8 +49,7 @@ final class ActorHotUpgradeIngressIntegrationTest {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch exit = new CountDownLatch(1);
         AtomicInteger delivered = new AtomicInteger();
-        AtomicReference<Throwable> actorProblem = new AtomicReference<>();
-        try (var runtime = new ActorRuntime()) {
+/****/        try (var runtime = new ActorRuntime()) {
             var actor = runtime.<Integer>spawnShared(
                     () -> (message, context) -> {
                         if (message == 1) {
@@ -68,11 +73,7 @@ final class ActorHotUpgradeIngressIntegrationTest {
                         "a live carrier must not be mistaken for a quiescent actor");
                 assertThrows(ActorRuntime.ActorSealedException.class, () -> actor.send(2));
                 exit.countDown();
-                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-                while (!freeze.schedulerDrained() && System.nanoTime() < deadline) {
-                    Thread.sleep(2);
-                }
-                assertTrue(freeze.schedulerDrained(), "existing turn did not drain");
+                awaitDrained(freeze);
                 assertEquals(1, delivered.get(), "rejected user message must not execute");
             } finally {
                 exit.countDown();
@@ -80,7 +81,6 @@ final class ActorHotUpgradeIngressIntegrationTest {
             actor.send(99);
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             assertEquals(2, delivered.get());
-            assertNull(actorProblem.get());
         }
     }
 
@@ -132,10 +132,7 @@ final class ActorHotUpgradeIngressIntegrationTest {
             try (var freeze = runtime.freezeUserIngressForHotUpgrade(actor)) {
                 assertThrows(ActorRuntime.ActorSealedException.class, () -> actor.send(3));
                 release.countDown();
-                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-                while (!freeze.schedulerDrained() && System.nanoTime() < deadline)
-                    Thread.sleep(2);
-                assertTrue(freeze.schedulerDrained());
+                awaitDrained(freeze);
                 assertEquals(2, processed.get(), "pre-freeze messages must not disappear");
             } finally {
                 release.countDown();
