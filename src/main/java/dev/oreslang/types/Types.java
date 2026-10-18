@@ -126,6 +126,13 @@ public final class Types {
      * Keep void separate from a future first-class Unit singleton.</p>
      */
     public static void requireValueShape(Type type, String location) {
+        requireValueShape(type, location, 0);
+    }
+
+    private static void requireValueShape(Type type, String location, int depth) {
+        if (depth > 64) {
+            throw new IllegalArgumentException("stored value shape exceeds maximum nesting depth");
+        }
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(location, "location");
         if (type == Primitive.VOID) {
@@ -134,29 +141,29 @@ public final class Types {
                     + "for explicitly tagged completion");
         }
         if (type instanceof SelfType self) {
-            requireValueShape(self.bound(), location + " receiver");
+            requireValueShape(self.bound(), location + " receiver", depth + 1);
         } else if (type instanceof Borrow borrow) {
-            requireValueShape(borrow.target(), location + " borrowed element");
+            requireValueShape(borrow.target(), location + " borrowed element", depth + 1);
         } else if (type instanceof ListType list) {
-            requireValueShape(list.element(), location + " collection element");
+            requireValueShape(list.element(), location + " collection element", depth + 1);
         } else if (type instanceof Tuple tuple) {
             for (Type item : tuple.elements()) {
-                requireValueShape(item, location + " tuple element");
+                requireValueShape(item, location + " tuple element", depth + 1);
             }
         } else if (type instanceof Record record) {
             for (Map.Entry<String, Type> field : record.members().entrySet()) {
-                requireValueShape(field.getValue(), location + "." + field.getKey());
+                requireValueShape(field.getValue(), location + "." + field.getKey(), depth + 1);
             }
         } else if (type instanceof Union union) {
             for (Type item : union.options()) {
-                requireValueShape(item, location + " union case");
+                requireValueShape(item, location + " union case", depth + 1);
             }
         } else if (type instanceof Function function) {
             for (Type param : function.parameters()) {
-                requireValueShape(param, location + " callable parameter");
+                requireValueShape(param, location + " callable parameter", depth + 1);
             }
             if (function.result() != Primitive.VOID) {
-                requireValueShape(function.result(), location + " callable result");
+                requireValueShape(function.result(), location + " callable result", depth + 1);
             }
         } else if (type instanceof Named named) {
             if (named.arguments().size() == 1
@@ -167,13 +174,13 @@ public final class Types {
             if (named.name().equals("Result") && named.arguments().size() == 2) {
                 Type ok = named.arguments().get(0);
                 if (ok != Primitive.VOID) {
-                    requireValueShape(ok, location + " Result success");
+                    requireValueShape(ok, location + " Result success", depth + 1);
                 }
-                requireValueShape(named.arguments().get(1), location + " Result error");
+                requireValueShape(named.arguments().get(1), location + " Result error", depth + 1);
                 return;
             }
             for (Type parameter : named.arguments()) {
-                requireValueShape(parameter, location + " generic argument");
+                requireValueShape(parameter, location + " generic argument", depth + 1);
             }
         }
     }
