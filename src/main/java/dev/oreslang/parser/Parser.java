@@ -800,7 +800,7 @@ public final class Parser {
 
     private Ast.ClassDecl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility,
-            ActorPrelude prelude, List<Ast.Annotation> annotations) {
+            ActorPrelude prelude, List<Ast.Annotation> classAnnotations) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -827,7 +827,7 @@ public final class Parser {
                 : (prelude.transport() == Ast.ActorTransport.FFI || prelude.transport() == Ast.ActorTransport.PROXY
                     ? Ast.ActorDirection.OUTBOUND : Ast.ActorDirection.INBOUND);
         boolean directionAnnotationSeen = false;
-        for (Ast.Annotation annotation : annotations) {
+        for (Ast.Annotation annotation : classAnnotations) {
             Ast.ActorDirection requested = switch (annotation.name()) {
                 case "Inbound" -> Ast.ActorDirection.INBOUND;
                 case "Outbound" -> Ast.ActorDirection.OUTBOUND;
@@ -846,7 +846,7 @@ public final class Parser {
         }
         Ast.ActorSpecialization specialization = new Ast.ActorSpecialization(
                 prelude.replyRole(), prelude.transport(), direction, prelude.serial(),
-                requirements, effects, annotations);
+                requirements, effects, classAnnotations);
 
         boolean braceStyle = match(LBRACE);
         if (!braceStyle) match(AS);
