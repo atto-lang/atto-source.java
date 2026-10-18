@@ -1833,6 +1833,11 @@ public final class OwnershipChecker {
         // valid, since neither transfers any owned state.
         if (receiverType != null && receiverType.isBorrow()) {
             Ast.TypeRef target = receiverType.borrowedTarget();
+            if (member.member().equals("flatten")
+                    && target.name().equals("Future")
+                    && target.arguments().size() == 1) {
+                throw error("Future.flatten cannot consume a borrowed Future");
+            }
             boolean borrowedSum = (target.name().equals("Option")
                     && target.arguments().size() == 1)
                     || (target.name().equals("Result")
