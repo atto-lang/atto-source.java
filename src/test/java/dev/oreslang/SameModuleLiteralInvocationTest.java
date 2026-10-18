@@ -284,4 +284,35 @@ final class SameModuleLiteralInvocationTest {
                         new Ast.Program(List.of(contracted)), calling, call(calling)));
     }
 
+
+    @Test
+    void classAndInterfaceNamesCollidingWithFunctionOrModuleNeedResolver() {
+        Ast.Program original = program();
+        Ast.ModuleDecl source = original.modules().getFirst();
+        Ast.FunctionDecl calling = caller(original);
+        Ast.StagedCallExpr staged = call(calling);
+
+        Ast.ClassDecl sameNameClass = new Ast.ClassDecl(
+                "target", false, List.of(), List.of(), List.of());
+        Ast.InterfaceDecl sameNameInterface = new Ast.InterfaceDecl(
+                "app", Ast.Visibility.PRIVATE, List.of(), List.of(), List.of(), false);
+        for (Ast.Decl competing : List.<Ast.Decl>of(
+                sameNameClass, sameNameInterface)) {
+            Ast.ModuleDecl ambiguous = new Ast.ModuleDecl(
+                    source.name(), List.of(source.declarations().getFirst(),
+                            calling, competing));
+            assertThrows(IllegalArgumentException.class,
+                    () -> SameModuleLiteralInvocation.inspect(
+                            new Ast.Program(List.of(ambiguous)), calling, staged));
+        }
+
+        Ast.ClassDecl unrelated = new Ast.ClassDecl(
+                "Unrelated", false, List.of(), List.of(), List.of());
+        Ast.ModuleDecl safe = new Ast.ModuleDecl(
+                source.name(), List.of(source.declarations().getFirst(),
+                        calling, unrelated));
+        assertDoesNotThrow(() -> SameModuleLiteralInvocation.inspect(
+                new Ast.Program(List.of(safe)), calling, staged));
+    }
+
 }
