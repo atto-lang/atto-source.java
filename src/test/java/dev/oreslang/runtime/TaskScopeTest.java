@@ -222,6 +222,35 @@ public class TaskScopeTest {
         }
     }
 
+    @Test void cancellationVersusPhysicalExitDoesNotRetainScopeChildren() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            TaskScope scope = scheduler.newTaskScope();
+            for (int i = 0; i < 200; i++) {
+                CountDownLatch started = new CountDownLatch(1);
+                CountDownLatch release = new CountDownLatch(1);
+                TaskHandle<Integer> child = scope.startTask(resume -> {
+                    started.countDown();
+                    awaitUninterruptibly(release);
+                    return OresScheduler.done(2);
+                });
+                assertTrue(started.await(3, TimeUnit.SECONDS));
+                Thread canceller = new Thread(() -> child.cancel("racing"));
+                canceller.start();
+                release.countDown();
+                canceller.join(3000);
+                assertFalse(canceller.isAlive());
+                TaskHandle.TaskOutcome<Integer> outcome =
+                        child.getDone().get(3, TimeUnit.SECONDS);
+                assertTrue(outcome instanceof TaskHandle.Success<?>
+                        || outcome instanceof TaskHandle.Cancelled<?>);
+                assertEquals(0, scope.liveCancellationChildren(),
+                        "completed/cancelled child retained at iteration " + i);
+            }
+            scope.seal();
+            scope.getDone().get(3, TimeUnit.SECONDS);
+        }
+    }
+
     @Test void schedulerRejectionDoesNotLeakScopeJoinSlots() throws Exception {
         OresScheduler scheduler = new OresScheduler(1);
         TaskScope scope = scheduler.newTaskScope();
