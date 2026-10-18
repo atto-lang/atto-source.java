@@ -81,6 +81,20 @@ final class CallerRoleImportBoundaryTest {
     }
 
     @Test
+    void inheritedProtectedStaticMethodIsRejectedOnClassImport() {
+        String source = """
+                define enum Roles as A end
+                define class Base as
+                    @CallableBy(Roles.A)
+                    pub static fnc guarded(): void {}
+                end
+                define pub class Child extends Base as end
+                """;
+        assertThrows(IllegalArgumentException.class, () -> link(
+                source, "import class Child from \"provider.ores\";"));
+    }
+
+    @Test
     void protectedPublicStaticMethodInImportedClassIsRejected() {
         String source = """
                 define enum Roles as
