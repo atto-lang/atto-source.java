@@ -622,6 +622,7 @@ public final class TreeShaker {
                         klass.visibility(),
                         klass.isAbstract(),
                         klass.actorKind(),
+                        klass.actorBoundary(),
                         klass.genericParameters(),
                         klass.parents(),
                         klass.interfaces(),
