@@ -67,7 +67,8 @@ public final class LiteralNamedCallPreflight {
         Objects.requireNonNull(module, "module");
         Objects.requireNonNull(caller, "caller");
         Objects.requireNonNull(call, "call");
-        if (!program.imports().isEmpty() || program.modules().size() != 1
+        if (program.namespace() != null || !program.imports().isEmpty()
+                || program.modules().size() != 1
                 || program.modules().getFirst() != module
                 || !module.annotations().isEmpty() || !module.contracts().isEmpty()) {
             throw new IllegalArgumentException(
@@ -80,15 +81,26 @@ public final class LiteralNamedCallPreflight {
                 || caller.structural() || caller.nonLexical()
                 || !caller.genericParameters().isEmpty()
                 || !caller.genericSpecs().isEmpty()
-                || !caller.annotations().isEmpty()) {
+                || !caller.annotations().isEmpty()
+                || caller.name().equals("init")
+                || caller.parameters().stream().anyMatch(p ->
+                        p.optional() || p.structural() || p.mutable()
+                                || p.type().isBorrow())) {
             throw new IllegalArgumentException("unproved lexical caller identity or effects");
         }
         if (caller.body().isEmpty()
                 || !(caller.body().getFirst() instanceof Ast.BindingStmt binding)
-                || binding.initializer() != call) {
+                || binding.initializer() != call
+                || binding.kind() != Ast.BindingKind.CONST
+                || binding.declaredType() != null
+                || binding.inferredTypeName() != null) {
             throw new IllegalArgumentException("staged call not the original first caller binding");
         }
         if (!(call.callee() instanceof Ast.NameExpr callee)
+                || call.typeArgumentsPresent()
+                || call.arguments().isEmpty()
+                || call.arguments().stream().anyMatch(item -> item.label() == null)
+                || binding.name().equals(callee.name())
                 || callee.name().equals("init")
                 || caller.parameters().stream().anyMatch(p -> p.name().equals(callee.name()))
                 || module.declarations().stream().anyMatch(decl ->

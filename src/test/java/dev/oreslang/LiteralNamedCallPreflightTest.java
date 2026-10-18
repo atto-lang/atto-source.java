@@ -165,4 +165,56 @@ final class LiteralNamedCallPreflightTest {
                 LiteralNamedCallPreflight.inspect(
                         collisionProgram, collided, caller, call));
     }
+
+    @Test
+    void positionalOmissionIsNotNamedOnlyPreflightEvidence() {
+        Ast.Program p = program("int a, string? b, bool c",
+                "7, omit, true", "");
+        assertThrows(IllegalArgumentException.class, () -> inspect(p));
+    }
+
+    @Test
+    void namespacedProgramNeedsRealImportAndVisibilityAnalysis() {
+        Ast.Program ordinary = simple();
+        Ast.Program namespaced = new Ast.Program(
+                "tenant", ordinary.imports(), ordinary.modules());
+        assertThrows(IllegalArgumentException.class, () ->
+                LiteralNamedCallPreflight.inspect(namespaced,
+                        namespaced.modules().getFirst(), caller(namespaced), call(namespaced)));
+    }
+
+    @Test
+    void optionalCallerParametersNeedFullCallableAbiProof() {
+        Ast.Program p = program("int a, bool c",
+                "c: true, a: 7", "int? unused");
+        assertThrows(IllegalArgumentException.class, () -> inspect(p));
+    }
+
+    @Test
+    void localBindingMayNotShadowItsCalleeDuringPreflight() {
+        Ast.Program p = Parser.parse("""
+                define module app as
+                    pub fnc work(int a, bool c): int { return a; }
+                    pub fnc caller(): void {
+                        const work = work(c: true, a: 7);
+                        return;
+                    }
+                end
+                """);
+        assertThrows(IllegalArgumentException.class, () -> inspect(p));
+    }
+
+    @Test
+    void mutableFirstBindingRequiresIndependentLexicalLifetimeProof() {
+        Ast.Program p = Parser.parse("""
+                define module app as
+                    pub fnc work(int a, bool c): int { return a; }
+                    pub fnc caller(): void {
+                        let result = work(c: true, a: 7);
+                        return;
+                    }
+                end
+                """);
+        assertThrows(IllegalArgumentException.class, () -> inspect(p));
+    }
 }
