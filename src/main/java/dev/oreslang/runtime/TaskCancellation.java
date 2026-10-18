@@ -56,6 +56,32 @@ final class TaskCancellation {
         return cancelled;
     }
 
+    /**
+     * Retire a physically completed task from its lifetime owner. This is
+     * distinct from cancellation: it must only be called after scheduler
+     * quiescence AND terminal-result publication. Without retirement, a
+     * long-lived scope retains every successfully completed child token.
+     *
+     * A concurrent parent cancellation either observes this child while it
+     * is still live or observes a completed child already unlinked from the
+     * tree. The graph lock supplies the linearization point.
+     */
+    void retire() {
+        synchronized (GRAPH_LOCK) {
+            if (owner != null) owner.children.remove(this);
+            owner = null;
+            revokers.clear();
+            observers.clear();
+        }
+    }
+
+    /** Runtime diagnostic for bounded lifetime-tree retention tests. */
+    int ownedChildCount() {
+        synchronized (GRAPH_LOCK) {
+            return children.size();
+        }
+    }
+
     /** Null until cancellation; writing reason precedes volatile cancelled. */
     String cancellationReason() {
         return cancellationReason;
