@@ -3192,7 +3192,16 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("call-site type arguments require a declared generic function or method");
             }
             Type callee = typeOf(call.callee(), env, generics, self);
-            if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
+            if (!(callee instanceof Function fn)) {
+                // Only genuinely unresolved dynamic/imported callables may
+                // retain the legacy deferred check. A known non-function
+                // cannot be called, including after `x |> stage` lowering.
+                if (callee != Unknown.INSTANCE && !(callee instanceof Generic)) {
+                    throw new IllegalArgumentException(
+                            "attempted to call a non-callable value of type " + callee);
+                }
+                return Unknown.INSTANCE;
+            }
             List<ExpandedCallArgument> expanded =
                     expandFixedCallArguments(
                             call.arguments(), env, generics, self,
