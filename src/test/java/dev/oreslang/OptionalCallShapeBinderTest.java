@@ -52,14 +52,14 @@ final class OptionalCallShapeBinderTest {
         assertEquals(List.of(1), named.callItemIndexByEvaluatedSource());
         assertEquals(List.of(0, 2), named.omittedCallItemIndices());
         assertEquals(3, named.callItemCount());
-        assertEquals(List.of(2, 0), named.explicitlyOmittedParameterIndices());
+        assertEquals(List.of(1, 0), named.explicitlyOmittedParameterIndices());
 
         Plan positional = OptionalCallShapeBinder.bind(params, List.of(
                 Argument.underscore(), Argument.positionalOmission(),
                 Argument.positional(), Argument.positional()));
         assertEquals(List.of(2, 3), positional.callItemIndexByEvaluatedSource());
         assertEquals(List.of(0, 1), positional.omittedCallItemIndices());
-        assertEquals(List.of(2, 3), positional.variadicSourceIndices().stream()
+        assertEquals(List.of(3), positional.variadicSourceIndices().stream()
                 .map(positional::callItemIndex).toList());
     }
 
