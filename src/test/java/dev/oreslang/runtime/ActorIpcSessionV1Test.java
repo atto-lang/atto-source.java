@@ -230,6 +230,71 @@ final class ActorIpcSessionV1Test {
     }
 
     @Test
+    void readyDoesNotAskGuestToSelfAttestManifestOrSupervisorPolicy() {
+        ActorArtifact<Object> expected = artifactWithReadyCommitments(
+                "ImageWorker",
+                MANIFEST,
+                ARTIFACT,
+                MESSAGE_ABI,
+                STATE_SCHEMA,
+                WIRE_CODEC,
+                WORKER_POLICY);
+        ActorArtifact<Object> worker = artifactWithReadyCommitments(
+                "ImageWorker",
+                "ab".repeat(32),
+                ARTIFACT,
+                MESSAGE_ABI,
+                STATE_SCHEMA,
+                WIRE_CODEC,
+                "cd".repeat(32));
+
+        try (ActorIpcSessionV1 session = ActorIpcSessionV1.create(
+                expected, UUID.randomUUID(), 1, 1);
+             ActorIpcSessionV1.BootstrapMaterial bootstrap =
+                     session.claimBootstrapForTrustedLauncher()) {
+            assertDoesNotThrow(() -> session.acceptWorkerFrame(worker(
+                    bootstrap, worker,
+                    ActorIpcSessionV1.Lane.CONTROL,
+                    ActorIpcSessionV1.FrameKind.READY,
+                    1, 0, new byte[0])));
+            assertTrue(session.ready());
+        }
+    }
+
+    @Test
+    void readyRejectsWrongIntrinsicWorkerCommitments() {
+        ActorArtifact<Object> expected = artifact(
+                "ImageWorker", MESSAGE_ABI, ARTIFACT);
+        var wrongState = artifactWithReadyCommitments(
+                "ImageWorker", MANIFEST, ARTIFACT, MESSAGE_ABI,
+                "77".repeat(32), WIRE_CODEC, WORKER_POLICY);
+        var wrongCodec = artifactWithReadyCommitments(
+                "ImageWorker", MANIFEST, ARTIFACT, MESSAGE_ABI,
+                STATE_SCHEMA, "88".repeat(32), WORKER_POLICY);
+        var wrongType = artifactWithReadyCommitments(
+                "OtherWorker", MANIFEST, ARTIFACT, MESSAGE_ABI,
+                STATE_SCHEMA, WIRE_CODEC, WORKER_POLICY);
+
+        for (ActorArtifact<?> wrong :
+                java.util.List.of(wrongState, wrongCodec, wrongType)) {
+            try (ActorIpcSessionV1 session = ActorIpcSessionV1.create(
+                    expected, UUID.randomUUID(), 1, 1);
+                 ActorIpcSessionV1.BootstrapMaterial bootstrap =
+                         session.claimBootstrapForTrustedLauncher()) {
+                ActorIpcSessionV1.ProtocolException failure = assertThrows(
+                        ActorIpcSessionV1.ProtocolException.class,
+                        () -> session.acceptWorkerFrame(worker(
+                                bootstrap, wrong,
+                                ActorIpcSessionV1.Lane.CONTROL,
+                                ActorIpcSessionV1.FrameKind.READY,
+                                1, 0, new byte[0])));
+                assertEquals(ActorIpcSessionV1.Reason.STATE, failure.reason());
+                assertTrue(session.poisoned());
+            }
+        }
+    }
+
+    @Test
     void nonReadyFirstFrameFailsClosed() {
         ActorArtifact<Object> artifact = artifact(
                 "ImageWorker", MESSAGE_ABI, ARTIFACT);
@@ -552,17 +617,35 @@ final class ActorIpcSessionV1Test {
             String actorType,
             String messageAbi,
             String artifactSha) {
-        return ActorArtifact.mint(
-                UUID.randomUUID(),
-                UUID.randomUUID(),
+        return artifactWithReadyCommitments(
                 actorType,
-                Ast.ActorKind.PRIVATE,
                 MANIFEST,
                 artifactSha,
                 messageAbi,
                 STATE_SCHEMA,
                 WIRE_CODEC,
-                WORKER_POLICY,
+                WORKER_POLICY);
+    }
+
+    private static ActorArtifact<Object> artifactWithReadyCommitments(
+            String actorType,
+            String manifestSha,
+            String artifactSha,
+            String messageAbi,
+            String stateSchema,
+            String wireCodec,
+            String workerPolicy) {
+        return ActorArtifact.mint(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                actorType,
+                Ast.ActorKind.PRIVATE,
+                manifestSha,
+                artifactSha,
+                messageAbi,
+                stateSchema,
+                wireCodec,
+                workerPolicy,
                 "llvm",
                 "0.1.0-test",
                 "aa".repeat(20),
