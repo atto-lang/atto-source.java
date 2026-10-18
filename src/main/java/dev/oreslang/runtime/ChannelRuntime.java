@@ -342,6 +342,17 @@ public final class ChannelRuntime {
     }
 
     /** One immutable Future completion, not another concurrently running actor. */
+    /**
+     * An already-started Future is completion observation, not a lazily
+     * reservable I/O operation. Losing this arm detaches its runtime waiter
+     * but MUST NOT cancel the producer or roll back effects it performed.
+     *
+     * <p>In particular, constructing a Future with an eager TCP read, write,
+     * or accept starts that operation independently of select arbitration.
+     * A later channel winner does not undo kernel I/O. A genuinely atomic
+     * selectable socket operation needs a separate lazy reservation and
+     * winner-authorized commit protocol; do not represent it as FutureCase.
+     */
     public record FutureCase<T>(OresFuture<T> future) implements SelectCase {
         public FutureCase {
             Objects.requireNonNull(future, "future");
