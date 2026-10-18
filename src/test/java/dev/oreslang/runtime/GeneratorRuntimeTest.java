@@ -71,6 +71,27 @@ final class GeneratorRuntimeTest {
         });
     }
     @Test
+    void producerSubmissionRejectionIsStickyAndNeverRunsGuestBody() {
+        assertTimeoutPreemptively(java.time.Duration.ofSeconds(3), () -> {
+            java.util.concurrent.atomic.AtomicInteger guestEffects =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            AsyncRuntime runtime = new AsyncRuntime();
+            var generator = GeneratorRuntime.generator(runtime, emitter -> {
+                guestEffects.incrementAndGet();
+                emitter.emit(1);
+            });
+            runtime.close(); // Submission is rejected synchronously.
+            try (generator) {
+                for (int i = 0; i < 3; i++) {
+                    assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                            generator::nextStep);
+                }
+                assertEquals(0, guestEffects.get());
+            }
+        });
+    }
+
+    @Test
     void asyncPullsUseOresFutureIncludingTerminalPulls() throws Exception {
         try (AsyncRuntime runtime = new AsyncRuntime();
              var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(42))) {
