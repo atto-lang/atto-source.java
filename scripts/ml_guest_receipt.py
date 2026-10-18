@@ -73,7 +73,7 @@ def make_receipt(expected_sha, report, output_file, build_info, jar):
     require(isinstance(build, dict) and all(k in build for k in
             ('build_mode', 'default_execution_mode', 'guest_execution')), 'CLI build-info missing fields')
     require(all(isinstance(build[k], str) and 0 < len(build[k]) <= 128
-                and '\\n' not in build[k] and '\\r' not in build[k]
+                and '\n' not in build[k] and '\r' not in build[k]
                 for k in ('build_mode', 'default_execution_mode', 'guest_execution')),
             'invalid CLI build-info values')
     artifact = Path(jar)
