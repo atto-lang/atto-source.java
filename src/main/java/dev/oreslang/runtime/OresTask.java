@@ -18,9 +18,15 @@ import java.util.Objects;
  */
 public final class OresTask<T> implements Awaitable<T> {
     private final OresFuture<T> completion;
+    private final OresFuture<?> quiescence;
 
     OresTask(OresFuture<T> completion) {
+        this(completion, completion);
+    }
+
+    OresTask(OresFuture<T> completion, OresFuture<?> quiescence) {
         this.completion = Objects.requireNonNull(completion, "completion");
+        this.quiescence = Objects.requireNonNull(quiescence, "quiescence");
     }
 
     @Override
@@ -52,5 +58,32 @@ public final class OresTask<T> implements Awaitable<T> {
 
     public boolean cancel() {
         return completion.cancel(true);
+    }
+
+    /**
+     * A fresh, independently cancellable observation of physical Task exit.
+     * Cancelling this observer never cancels the producer or another observer.
+     * Unlike isDone(), this waits for the host turn to return (including
+     * cleanup). For scheduler frames, terminal publication is already fenced
+     * on quiescence. Cancellation/failure is not rethrown by this barrier.
+     */
+    public OresFuture<Void> getDone() {
+        OresFuture<Void> observer = new OresFuture<>();
+        OresFuture.RuntimeWaiterRegistration<?> registration =
+                quiescence.whenCompleteRuntimeCancellable(
+                        (ignored, failure) -> observer.completeFromRuntime(null));
+        observer.whenCompleteRuntime((value, failure) -> registration.detach());
+        return observer;
+    }
+
+    /** Request cancellation, then return a nonblocking cleanup/join barrier. */
+    public OresFuture<Void> cancelAndJoin() {
+        OresFuture<Void> barrier = getDone();
+        cancel();
+        return barrier;
+    }
+
+    public boolean isQuiescent() {
+        return quiescence.isDone();
     }
 }
