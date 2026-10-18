@@ -243,14 +243,19 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     /** Explicit retirement permits old actors/requests to drain before teardown. */
-    public synchronized void retire(long generationId) {
-        Generation generation = generations.remove(generationId);
-        if (generation != null) {
-            boolean removed = active.compareAndSet(generation, null);
-            removed |= activeByCodeUnit.remove(generation.codeUnitId(), generation);
-            if (removed) advanceRoutingEpoch();
-            generation.close();
+    public void retire(long generationId) {
+        final Generation generation;
+        synchronized (this) {
+            generation = generations.remove(generationId);
+            if (generation != null) {
+                boolean removed = active.compareAndSet(generation, null);
+                removed |= activeByCodeUnit.remove(generation.codeUnitId(), generation);
+                if (removed) advanceRoutingEpoch();
+            }
         }
+        // Never close a potentially executing guest context under the manager
+        // routing monitor: callbacks and unwind handlers may re-enter the host.
+        if (generation != null) generation.close();
     }
 
     public synchronized int liveGenerations() { return generations.size(); }
@@ -270,16 +275,18 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     @Override
-    public synchronized void close() {
-        if (closed) {
-            return;
+    public void close() {
+        final java.util.List<Generation> toClose;
+        synchronized (this) {
+            if (closed) return;
+            closed = true;
+            // Atomically seal the manager and detach all generations. Context
+            // cleanup is intentionally outside this monitor.
+            toClose = java.util.List.copyOf(generations.values());
+            generations.clear();
+            activeByCodeUnit.clear();
+            active.set(null);
         }
-        closed = true;
-        // Snapshot first: each Generation.close() re-enters onGenerationClosed.
-        java.util.List<Generation> toClose = java.util.List.copyOf(generations.values());
-        generations.clear();
-        activeByCodeUnit.clear();
-        active.set(null);
         // Closing is terminal; in-flight candidates cannot publish afterward.
         Throwable failure = null;
         for (Generation generation : toClose) {
