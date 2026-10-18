@@ -290,3 +290,89 @@ have not been executed through full Maven on the exact PR head. Neither
 source repository currently offers usable Actions runner execution; the
 private-source cross-org export policy presently authorizes no destination
 and must not be bypassed by mirroring a Git tree. Stay in DRAFT.
+
+
+## Third audit pass: upstream integration, external-work leases, native checkpoint parity
+
+The draft branches have been reconciled with the current source-repository
+`main` history through two-parent Git commits preserving every feature-file
+blob and unrelated upstream changes. The merge bases were inspected; no
+overlapping feature-file edits were present in the newly merged work.
+
+### Java actor runtime
+
+An actor upgrade reservation still blocks new user messages. The runtime now
+also provides a **package-private trusted host** API
+`pinExternalWorkForHotUpgrade(ActorRef)`. Its idempotent
+`HotUpgradeExternalLease` represents one external callback, timer, FFI
+operation, device request or shared resource whose owner independently
+guarantees that it cannot execute after the lease closes. Under the same
+`lifecycleLock` as `freezeUserIngressForHotUpgrade`, a new external lease
+is refused after ingress freezes, while existing leases remain accounted.
+`schedulerDrained()` now rejects quiescence while any registered lease is
+open. Terminated, ending, sealing or force-fenced actors cannot admit new
+external work. Tokens are constructed before counters are incremented, and
+double-close is safe, including on a foreign completion thread. Stale
+supervisor freeze tokens cannot release a later freeze. New real-runtime
+JUnit tests cover idle/active/draining actors, freeze versus pin,
+concurrent release and foreign-runtime ownership.
+
+**This is not automatic native-resource capture.** A Java callback, JNI
+native frame, GPU command or OS registration that has not been wrapped by the
+host broker's matching acquire/release discipline is still outside this
+proof. Neither actor state nor code image can be safely retired based solely
+on `schedulerDrained()`. Outstanding leases may outlive actor shutdown,
+and lifetime/cleanup ownership must remain with the registered broker.
+Do not expose these supervisor-only APIs as guest methods.
+
+### Native checkpoint wire format
+
+LLVM now has `ActorCheckpointEnvelopeV1.hpp`, an independent C++17 host
+encoder/decoder using the same big-endian 168-byte header, maximum 1 MiB
+opaque state, 32-byte SHA-256 corruption trailer, and strict
+actor/incarnation/code/state-schema/message-ABI/capability receipts as
+Java and Python. A **host-supplied SHA-256 provider is mandatory**; this
+does not pull OpenSSL, libc, JIT or any OS API into the freestanding core.
+The optional OpenSSL-backed CTest fixture verifies the exact independent
+Java/Python golden SHA-256 for a 202-byte checkpoint, 1,024 randomized
+roundtrips, bit flips, truncations, trailing bytes, foreign IDs/ABIs and the
+maximum payload. C++ deliberately rejects unsigned native incarnations
+above the maximum positive Java signed 64-bit epoch; cross-backend wire
+semantics must not differ at the sign bit.
+
+The checksum is not a signature; authenticated compiler receipts, immutable
+state graph validation, source actor state capture, trusted worker image
+admission, atomic `ActorRef` routing and publication/rollback remain
+future work. Native PIC test-only `dlopen` still cannot load unverified
+or untrusted executable code.
+
+### Execution evidence and CI safety
+
+- Byte-for-byte native header Git blob
+  `93785beee271551afb44dbd668403e732fd32ae2`.
+- Byte-for-byte native CTest Git blob
+  `3e7233df8ba3e1c49b68315c3a8aed09c59226f9`.
+- Both reconstructed independently in a local Clang 17 host toolchain;
+  `-std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror -UNDEBUG`
+  + OpenSSL Crypto **PASS**; ASan+UBSan with leak detection **PASS**;
+  **50 additional optimized executions PASS** on the latest blobs.
+- The earlier native checkpoint stage additionally passed 100 repeated
+  executions; these are host-only wire tests, not guest LLVM IR execution.
+- New Java `ActorRuntime` external lease JUnit tests have **not yet run**
+  under Maven/JDK25/Graal; do not infer their success from native testing.
+- Source-org Actions jobs continue to report **zero executed steps**.
+  The source repo's private CI destination approval allowlist is empty, and
+  the review-pinned transfer dispatcher is not independently authorized.
+  Never export a private source tree to an unrelated funded organization
+  merely to obtain runner minutes. Use an approved in-org/self-hosted runner
+  or complete the independent authorization path first.
+
+### Remaining production release gate
+
+In order: (1) authenticated compiler image/ABI receipts;
+(2) complete automatic generation pinning in all runtime brokers;
+(3) deterministic actor-owned state graph snapshot and restore;
+(4) stable logical ActorRef dispatch with audited atomic commit and rollback;
+(5) genuine source-generated AOT and optionally ORC-image execution in
+OS-protected workers where required; (6) exact-head full compiler, native
+image, sanitizer, concurrency and crash-injection suites.
