@@ -33,9 +33,11 @@ final class OresCancellationSourceTest {
         try (OresCancellationSource parent = new OresCancellationSource();
              OresCancellationSource linked =
                      OresCancellationSource.linked(parent.token())) {
-            assertEquals(1, parent.notification().pendingRuntimeWaiterCount());
+            assertEquals(1, parent.linkedChildCountForTest());
+            assertEquals(0, parent.notification().pendingRuntimeWaiterCount(),
+                    "directed links must not occupy ordinary observer slots");
             assertTrue(linked.cancel());
-            assertEquals(0, parent.notification().pendingRuntimeWaiterCount());
+            assertEquals(0, parent.linkedChildCountForTest());
             assertFalse(parent.isCancellationRequested());
         }
     }
