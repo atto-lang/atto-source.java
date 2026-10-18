@@ -464,6 +464,30 @@ final class SameModuleLiteralInvocationTest {
                 withCaller(module, scalar), scalar, staged));
     }
 
+    @Test
+    void forgedEmptyStatementAndUninitializedLocalNeedSemanticProof() {
+        Ast.Program original = program();
+        Ast.ModuleDecl module = original.modules().getFirst();
+        Ast.FunctionDecl source = caller(original);
+        Ast.StagedCallExpr staged = call(source);
+
+        for (Ast.Stmt unproved : List.<Ast.Stmt>of(
+                new Ast.ExprStmt(null),
+                new Ast.BindingStmt(Ast.BindingKind.CONST, null, "missing", null))) {
+            Ast.FunctionDecl forged = withBody(source, List.of(
+                    unproved, source.body().getFirst(), new Ast.ReturnStmt(null)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> SameModuleLiteralInvocation.inspect(
+                            withCaller(module, forged), forged, staged));
+        }
+        Ast.FunctionDecl ordinary = withBody(source, List.of(
+                new Ast.BindingStmt(Ast.BindingKind.CONST, null, "present",
+                        new Ast.LiteralExpr(7L)),
+                source.body().getFirst(), new Ast.ReturnStmt(null)));
+        assertDoesNotThrow(() -> SameModuleLiteralInvocation.inspect(
+                withCaller(module, ordinary), ordinary, staged));
+    }
+
     private static Ast.FunctionDecl withBody(Ast.FunctionDecl source, List<Ast.Stmt> body) {
         return new Ast.FunctionDecl(
                 source.name(), source.kind(), source.visibility(), source.async(),
