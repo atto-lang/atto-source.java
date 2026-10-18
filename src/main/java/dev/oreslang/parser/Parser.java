@@ -796,7 +796,7 @@ public final class Parser {
 
     private Ast.ClassDecl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix,
-            List<Ast.Annotation> annotations) {
+            List<Ast.Annotation> actorAnnotations) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -870,7 +870,7 @@ public final class Parser {
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
-                prefix.role(), prefix.transport(), annotations);
+                prefix.role(), prefix.transport(), actorAnnotations);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
