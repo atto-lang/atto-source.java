@@ -2320,7 +2320,7 @@ public final class TypeChecker {
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) {
                 rejectUnimportedModuleNamespace(name.name());
-                return moduleShape(moduleNamespace);
+                throw new IllegalArgumentException("module namespaces are compile-time declarations, not runtime values");
             }
             Ast.ClassDecl classNamespace = findClass(name.name());
             if (classNamespace != null) {
