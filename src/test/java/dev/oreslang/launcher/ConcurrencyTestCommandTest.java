@@ -38,6 +38,7 @@ final class ConcurrencyTestCommandTest {
     @Test
     void testCommandDoesNotCountOrdinaryProgramAsPassingTests() throws Exception {
         assertEquals(1, ConcurrencyTestCommand.run(new String[]{
-                "examples/together.ores", "--seed=11"}));
+                "examples/together.ores", "--seed=11",
+                "--trace-output=" + tmp.resolve("ordinary.trace")}));
     }
 }
