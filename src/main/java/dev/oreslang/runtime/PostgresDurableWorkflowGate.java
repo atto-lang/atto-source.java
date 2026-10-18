@@ -101,11 +101,21 @@ public final class PostgresDurableWorkflowGate {
                 "installation_id=EXCLUDED.installation_id,repository_id=EXCLUDED.repository_id,"+
                 "expected_ref=EXCLUDED.expected_ref,expected_sha=EXCLUDED.expected_sha,"+
                 "iteration=EXCLUDED.iteration,state_version=EXCLUDED.state_version,"+
-                "stage='waiting_webhook'")){
+                "stage='waiting_webhook' WHERE "+
+                "(ores_durable_webhook_wait.state_version<EXCLUDED.state_version AND "+
+                "ores_durable_webhook_wait.iteration<EXCLUDED.iteration) OR "+
+                "(ores_durable_webhook_wait.stage='waiting_webhook' AND "+
+                "ores_durable_webhook_wait.state_version=EXCLUDED.state_version AND "+
+                "ores_durable_webhook_wait.iteration=EXCLUDED.iteration AND "+
+                "ores_durable_webhook_wait.installation_id=EXCLUDED.installation_id AND "+
+                "ores_durable_webhook_wait.repository_id=EXCLUDED.repository_id AND "+
+                "ores_durable_webhook_wait.expected_sha=EXCLUDED.expected_sha AND "+
+                "ores_durable_webhook_wait.expected_ref=EXCLUDED.expected_ref)")){
                 key(p,1,a);p.setLong(5,expected.installationId());p.setLong(6,expected.repositoryId());
                 p.setString(7,expected.ref());p.setString(8,expected.sha());
                 p.setLong(9,expected.iteration());p.setLong(10,expected.stateVersion());
-                p.executeUpdate();
+                if(p.executeUpdate()!=1)
+                    throw new IllegalStateException("cannot reopen completed/changed expected push");
             }
             return null;
         });
@@ -128,9 +138,16 @@ public final class PostgresDurableWorkflowGate {
             // The exact delivery identity is idempotent even after an expectation
             // has advanced from waiting_webhook to done.
             try(PreparedStatement p=c.prepareStatement(
-                "SELECT 1 FROM ores_durable_inbox WHERE "+KEY+" AND delivery_id=?")){
+                "SELECT payload FROM ores_durable_inbox WHERE "+KEY+" AND delivery_id=?")){
                 key(p,1,authorizedAddress);p.setString(5,event.deliveryId());
-                try(ResultSet r=p.executeQuery()){if(r.next())return Admission.DUPLICATE;}
+                try(ResultSet r=p.executeQuery()){
+                    if(r.next()){
+                        // Same delivery identifier but different signed content
+                        // is a collision, not a successful replay.
+                        return java.security.MessageDigest.isEqual(r.getBytes(1),event.encodedEvent())
+                            ? Admission.DUPLICATE : Admission.STALE;
+                    }
+                }
             }
             try(PreparedStatement p=c.prepareStatement(
                 "SELECT 1 FROM ores_durable_webhook_wait WHERE "+KEY+
