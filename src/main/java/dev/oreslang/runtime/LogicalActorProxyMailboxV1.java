@@ -48,6 +48,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             long retainedBytes,
             int queuedMessages,
             int outstandingMessages,
+            int sparseCompletedMessages,
             boolean dispatchFrozen,
             boolean closed) { }
 
@@ -94,6 +95,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                 dispatchFrozen = false;
                 activeFreeze = null;
                 consumed = true;
+                checkStructuralInvariantsLocked();
                 lock.notifyAll();
             }
         }
@@ -104,6 +106,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                 dispatchFrozen = false;
                 activeFreeze = null;
                 consumed = true;
+                checkStructuralInvariantsLocked();
                 lock.notifyAll();
             }
         }
@@ -196,6 +199,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             queued.addLast(envelope);
             retainedMessages++;
             retainedBytes = nextBytes;
+            checkStructuralInvariantsLocked();
             lock.notifyAll();
             return envelope;
         }
@@ -216,24 +220,24 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             if (highestDispatchedSequence - completionWatermark >= maxMessages) {
                 return null;
             }
-            Envelope envelope = queued.pollFirst();
+            Envelope envelope = queued.peekFirst();
             if (envelope == null) return null;
 
-            Envelope prior =
-                    outstanding.put(
-                            envelope.messageSequence(),
-                            envelope);
-            if (prior != null) {
-                throw new IllegalStateException(
-                        "duplicate outstanding logical message sequence");
-            }
-            if (envelope.messageSequence()
-                    != Math.addExact(highestDispatchedSequence, 1L)) {
+            long expectedSequence =
+                    Math.addExact(highestDispatchedSequence, 1L);
+            if (envelope.messageSequence() != expectedSequence) {
                 throw new IllegalStateException(
                         "logical proxy FIFO dispatch sequence corrupted");
             }
-            highestDispatchedSequence =
-                    envelope.messageSequence();
+            if (outstanding.containsKey(envelope.messageSequence())) {
+                throw new IllegalStateException(
+                        "duplicate outstanding logical message sequence");
+            }
+
+            queued.removeFirst();
+            outstanding.put(envelope.messageSequence(), envelope);
+            highestDispatchedSequence = envelope.messageSequence();
+            checkStructuralInvariantsLocked();
             return envelope;
         }
     }
@@ -245,7 +249,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
     public void complete(long messageSequence) {
         synchronized (lock) {
             requireOpenLocked();
-            Envelope envelope = outstanding.remove(messageSequence);
+            Envelope envelope = outstanding.get(messageSequence);
             if (envelope == null) {
                 if (messageSequence <= completionWatermark
                         || completedBeyondWatermark.contains(messageSequence)) {
@@ -257,34 +261,53 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                                 + messageSequence);
             }
 
-            retainedMessages--;
-            retainedBytes -= envelope.retainedBytes();
-            if (retainedMessages < 0 || retainedBytes < 0) {
+            long nextWatermark =
+                    completionWatermark == Long.MAX_VALUE
+                            ? Long.MAX_VALUE
+                            : completionWatermark + 1L;
+            boolean advancesWatermark = messageSequence == nextWatermark;
+            boolean sparseCompletion = messageSequence > completionWatermark
+                    && !advancesWatermark;
+            if (!advancesWatermark && !sparseCompletion) {
+                throw new IllegalStateException(
+                        "completion watermark moved backwards");
+            }
+            if (sparseCompletion) {
+                if (completedBeyondWatermark.size() >= maxMessages) {
+                    throw new IllegalStateException(
+                            "logical completion gap metadata exceeded bounded dispatch window");
+                }
+                if (completedBeyondWatermark.contains(messageSequence)) {
+                    throw new IllegalStateException(
+                            "duplicate sparse logical completion");
+                }
+            }
+
+            int nextRetainedMessages = retainedMessages - 1;
+            long nextRetainedBytes = retainedBytes - envelope.retainedBytes();
+            if (nextRetainedMessages < 0 || nextRetainedBytes < 0) {
                 throw new IllegalStateException(
                         "logical proxy capacity accounting underflow");
             }
 
-            if (messageSequence
-                    == Math.addExact(completionWatermark, 1L)) {
+            // Commit the completion only after every failure condition above
+            // has been checked, so rejected completions cannot partially refund
+            // credits or remove an outstanding envelope.
+            outstanding.remove(messageSequence);
+            retainedMessages = nextRetainedMessages;
+            retainedBytes = nextRetainedBytes;
+
+            if (advancesWatermark) {
                 completionWatermark = messageSequence;
                 while (completionWatermark != Long.MAX_VALUE
                         && completedBeyondWatermark.remove(
                                 completionWatermark + 1L)) {
                     completionWatermark++;
                 }
-            } else if (messageSequence > completionWatermark) {
-                if (completedBeyondWatermark.size() >= maxMessages) {
-                    throw new IllegalStateException(
-                            "logical completion gap metadata exceeded bounded dispatch window");
-                }
-                if (!completedBeyondWatermark.add(messageSequence)) {
-                    throw new IllegalStateException(
-                            "duplicate sparse logical completion");
-                }
             } else {
-                throw new IllegalStateException(
-                        "completion watermark moved backwards");
+                completedBeyondWatermark.add(messageSequence);
             }
+            checkStructuralInvariantsLocked();
             lock.notifyAll();
         }
     }
@@ -306,12 +329,14 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                             routeEpoch,
                             highestDispatchedSequence);
             activeFreeze = ticket;
+            checkStructuralInvariantsLocked();
             return ticket;
         }
     }
 
     public Snapshot snapshot() {
         synchronized (lock) {
+            checkStructuralInvariantsLocked();
             return new Snapshot(
                     routeEpoch,
                     nextMessageSequence,
@@ -321,6 +346,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                     retainedBytes,
                     queued.size(),
                     outstanding.size(),
+                    completedBeyondWatermark.size(),
                     dispatchFrozen,
                     closed);
         }
@@ -331,6 +357,37 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             if (sequence <= watermark) return false;
         }
         return true;
+    }
+
+    private void checkStructuralInvariantsLocked() {
+        if (retainedMessages < 0 || retainedMessages > maxMessages
+                || retainedMessages != queued.size() + outstanding.size()) {
+            throw new IllegalStateException(
+                    "logical proxy message accounting invariant violated");
+        }
+        if (retainedBytes < 0 || retainedBytes > maxRetainedBytes) {
+            throw new IllegalStateException(
+                    "logical proxy byte accounting invariant violated");
+        }
+        if (completionWatermark < 0
+                || completionWatermark > highestDispatchedSequence
+                || highestDispatchedSequence >= nextMessageSequence) {
+            throw new IllegalStateException(
+                    "logical proxy sequence invariant violated");
+        }
+        if (highestDispatchedSequence - completionWatermark > maxMessages
+                || completedBeyondWatermark.size() > maxMessages) {
+            throw new IllegalStateException(
+                    "logical proxy bounded completion-window invariant violated");
+        }
+        if (!closed && dispatchFrozen != (activeFreeze != null)) {
+            throw new IllegalStateException(
+                    "logical proxy freeze-state invariant violated");
+        }
+        if (activeFreeze != null && activeFreeze.routeEpoch != routeEpoch) {
+            throw new IllegalStateException(
+                    "logical proxy freeze route invariant violated");
+        }
     }
 
     private void requireTicketLocked(FreezeTicket ticket) {
@@ -370,6 +427,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             completedBeyondWatermark.clear();
             retainedMessages = 0;
             retainedBytes = 0;
+            checkStructuralInvariantsLocked();
             lock.notifyAll();
         }
     }
