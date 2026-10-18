@@ -35,6 +35,9 @@ public final class HotReloadManager implements AutoCloseable {
     private final ExecutionProfile executionProfile;
     private final AtomicLong sequence = new AtomicLong();
     private boolean closed;
+    // Host monitor protected: routing changes invalidate speculative upgrade candidates.
+    // A single monotonic epoch also prevents A -> B -> A slot ABA.
+    private long routingEpoch;
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
     private final Map<Long, Generation> generations = new LinkedHashMap<>();
@@ -88,7 +91,7 @@ public final class HotReloadManager implements AutoCloseable {
     public synchronized Generation load(String name, String sourceText) {
         validateAdmissionInputs(name, sourceText);
         OresCompiler.validateForIsolate(sourceText, guestPolicy);
-        return stage(name, digest(sourceText), sourceText);
+        return stage(name, digest(sourceText), sourceText, true);
     }
 
     /**
@@ -100,7 +103,7 @@ public final class HotReloadManager implements AutoCloseable {
         java.util.Objects.requireNonNull(unit, "unit");
         validateAdmissionInputs(unit.unitId(), unit.sourceText());
         CapabilityChecker.check(unit.program(), guestPolicy);
-        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), true);
     }
 
     private void validateAdmissionInputs(
@@ -125,7 +128,7 @@ public final class HotReloadManager implements AutoCloseable {
         }
     }
 
-    private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
+    private Generation stage(String codeUnitId, String sourceDigest, String sourceText, boolean publish) {
         requireOpen();
         if (guestPolicy.adversarial()
                 && generations.size() >= MAX_ADVERSARIAL_LIVE_GENERATIONS) {
@@ -142,8 +145,11 @@ public final class HotReloadManager implements AutoCloseable {
                     .buildLiteral();
             Generation generation = new Generation(this, id, codeUnitId, sourceDigest, context, source, executionProfile);
             generations.put(id, generation);
-            activeByCodeUnit.put(codeUnitId, generation);
-            active.set(generation);
+            if (publish) {
+                advanceRoutingEpoch();
+                activeByCodeUnit.put(codeUnitId, generation);
+                active.set(generation);
+            }
             return generation;
         } catch (RuntimeException failure) {
             context.close(true);
@@ -151,17 +157,59 @@ public final class HotReloadManager implements AutoCloseable {
         }
     }
 
-    public synchronized Generation loadAndStart(String name, String sourceText) {
-        Generation generation = load(name, sourceText);
+    /**
+     * Transactional replacement for the generic source-loader path. The candidate
+     * is NOT routable until its entrypoint returns successfully. An optimistic
+     * supervisor routing epoch rejects stale publications (including A/B/A).
+     * Existing generation-scoped users remain pinned to their old context.
+     *
+     * This is NOT actor state migration, actor mailbox fencing, or protection
+     * against irreversible external side effects during guest initialization.
+     */
+    public Generation reloadAndStart(String name, String sourceText) {
+        final Generation candidate;
+        final long expectedRoutingEpoch;
+        synchronized (this) {
+            validateAdmissionInputs(name, sourceText);
+            OresCompiler.validateForIsolate(sourceText, guestPolicy);
+            candidate = stage(name, digest(sourceText), sourceText, false);
+            expectedRoutingEpoch = routingEpoch;
+        }
         try {
-            generation.start();
-            return generation;
+            candidate.start();
+            synchronized (this) {
+                requireOpen();
+                if (routingEpoch != expectedRoutingEpoch
+                        || generations.get(candidate.id()) != candidate
+                        || candidate.closed()) {
+                    throw new IllegalStateException(
+                            "stale hot-reload candidate: routing changed during initialization");
+                }
+                advanceRoutingEpoch();
+                activeByCodeUnit.put(name, candidate);
+                active.set(candidate);
+                return candidate;
+            }
         } catch (RuntimeException | Error failure) {
-            // Generation.start() closes its context on most guest failures,
-            // but the manager must also release its registry/quota reservation.
-            retire(generation.id());
+            try {
+                retire(candidate.id());
+            } catch (RuntimeException | Error cleanupFailure) {
+                if (cleanupFailure != failure) failure.addSuppressed(cleanupFailure);
+            }
             throw failure;
         }
+    }
+
+    /** Compatibility alias; successful initialization precedes routing publication. */
+    public Generation loadAndStart(String name, String sourceText) {
+        return reloadAndStart(name, sourceText);
+    }
+
+    private void advanceRoutingEpoch() {
+        if (routingEpoch == Long.MAX_VALUE) {
+            throw new IllegalStateException("hot-reload routing epoch exhausted");
+        }
+        ++routingEpoch;
     }
 
     /** Last generation staged, retained for compatibility with the single-unit API. */
@@ -180,8 +228,9 @@ public final class HotReloadManager implements AutoCloseable {
     public synchronized void retire(long generationId) {
         Generation generation = generations.remove(generationId);
         if (generation != null) {
-            active.compareAndSet(generation, null);
-            activeByCodeUnit.remove(generation.codeUnitId(), generation);
+            boolean removed = active.compareAndSet(generation, null);
+            removed |= activeByCodeUnit.remove(generation.codeUnitId(), generation);
+            if (removed) advanceRoutingEpoch();
             generation.close();
         }
     }
@@ -191,8 +240,9 @@ public final class HotReloadManager implements AutoCloseable {
     /** Closed guest contexts must not remain in the manager's active registry. */
     private synchronized void onGenerationClosed(Generation generation) {
         generations.remove(generation.id(), generation);
-        activeByCodeUnit.remove(generation.codeUnitId(), generation);
-        active.compareAndSet(generation, null);
+        boolean removed = activeByCodeUnit.remove(generation.codeUnitId(), generation);
+        removed |= active.compareAndSet(generation, null);
+        if (removed && !closed) advanceRoutingEpoch();
     }
 
     private void requireOpen() {
@@ -212,6 +262,7 @@ public final class HotReloadManager implements AutoCloseable {
         generations.clear();
         activeByCodeUnit.clear();
         active.set(null);
+        // Closing is terminal; in-flight candidates cannot publish afterward.
         Throwable failure = null;
         for (Generation generation : toClose) {
             try {
