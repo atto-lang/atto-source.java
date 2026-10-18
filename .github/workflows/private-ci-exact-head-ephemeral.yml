@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - security/review-pinned-private-ci-dispatcher-v2-20261017
+      - hardening/canonical-review-pinned-ledger-20261017
 
 permissions:
   contents: read
@@ -16,7 +17,7 @@ concurrency:
 jobs:
   deny-unapproved-runner:
     # Hosted-only denial: no source checkout. Never interpret skipped as passing.
-    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.repository_id != '1400792274' || github.event.repository.fork == true || github.event.repository.private != true || github.ref != 'refs/heads/security/review-pinned-private-ci-dispatcher-v2-20261017' || github.ref_protected != true || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == '' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != github.sha || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE == '' }}
+    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.repository_id != '1400792274' || github.event.repository.fork == true || github.event.repository.private != true || !(github.ref == 'refs/heads/security/review-pinned-private-ci-dispatcher-v2-20261017' || github.ref == 'refs/heads/hardening/canonical-review-pinned-ledger-20261017') || github.ref_protected != true || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == '' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != github.sha || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -26,7 +27,7 @@ jobs:
           exit 1
 
   approved-source-validation:
-    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.repository_id == '1400792274' && github.event.repository.fork == false && github.event.repository.private == true && github.ref == 'refs/heads/security/review-pinned-private-ci-dispatcher-v2-20261017' && github.ref_protected == true && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.repository_id == '1400792274' && github.event.repository.fork == false && github.event.repository.private == true && (github.ref == 'refs/heads/security/review-pinned-private-ci-dispatcher-v2-20261017' || github.ref == 'refs/heads/hardening/canonical-review-pinned-ledger-20261017') && github.ref_protected == true && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}
     runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
     timeout-minutes: 120
     env:
@@ -40,7 +41,10 @@ jobs:
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
           test "$GITHUB_EVENT_NAME" = "push"
-          test "$GITHUB_REF" = "refs/heads/security/review-pinned-private-ci-dispatcher-v2-20261017"
+          case "$GITHUB_REF" in
+            refs/heads/security/review-pinned-private-ci-dispatcher-v2-20261017|refs/heads/hardening/canonical-review-pinned-ledger-20261017) ;;
+            *) echo "Exact reviewed source branch required" >&2; exit 1 ;;
+          esac
           test "$GITHUB_REF_PROTECTED" = "true"
           test "$APPROVED_RUNNER" = "true"
           test "$APPROVED_SHA" = "$GITHUB_SHA"
