@@ -31,7 +31,8 @@ public final class ConstructorSemanticIr {
 
         public boolean canTransitionTo(ConstructionPhase next) {
             Objects.requireNonNull(next, "next construction phase");
-            return next.ordinal() >= ordinal();
+            // No skipped stages; an idempotent state transition is permitted.
+            return next == this || next.ordinal() == ordinal() + 1;
         }
     }
 
@@ -148,7 +149,18 @@ public final class ConstructorSemanticIr {
         public ConstructionState transitionTo(ConstructionPhase next) {
             if (!phase.canTransitionTo(next)) {
                 throw new IllegalArgumentException(
-                        "construction phase cannot move backward from " + phase + " to " + next);
+                        "construction phase must advance one step from " + phase + " to " + next);
+            }
+            // Until field policy metadata distinguishes mutable repeated writes,
+            // use the strictly safe exactly-once subset for semantic IR publication.
+            if ((next == ConstructionPhase.INITIALIZED || next == ConstructionPhase.CONSTRUCTED)
+                    && !fields.completeExactlyOnce()) {
+                throw new IllegalArgumentException(
+                        "construction cannot advance to " + next + " with incomplete field proofs");
+            }
+            if (next == ConstructionPhase.CONSTRUCTED && !pendingCleanups.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "construction cannot publish with pending cleanup obligations");
             }
             return new ConstructionState(region, next, fields, pendingCleanups);
         }
@@ -185,7 +197,9 @@ public final class ConstructorSemanticIr {
         }
 
         public boolean publishable() {
-            return phase == ConstructionPhase.CONSTRUCTED && fields.completeExactlyOnce();
+            return phase == ConstructionPhase.CONSTRUCTED
+                    && fields.completeExactlyOnce()
+                    && pendingCleanups.isEmpty();
         }
     }
 
