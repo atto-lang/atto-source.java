@@ -78,15 +78,18 @@ selector are superseded by this section.
   **before** calling `ActorRuntime.close()`; otherwise a bound notification
   might wait forever on workers already shut down.
 - The optional `-Dores.runtime.carriers.global.max=N` property accepts
-  4..256. It enforces a static upper bound over ordinary CONTROL + actor
-  carriers: CONTROL reserve=1, and each of PRIVATE, SHARED, UNTRUSTED gets
-  `floor((N-1)/3)`. This includes native-affinity lane capacity and caps
-  Java non-affine growth. CONTROL can therefore still start while every
-  actor-domain quota is occupied.
+  5..256. It enforces a static upper bound over ordinary CONTROL + actor +
+  lifecycle-observer execution carriers: CONTROL reserve=1; PRIVATE, SHARED
+  and UNTRUSTED receive equal isolated shares; the remaining 1..3 slots are
+  reserved for the lazy terminal-observer domain. This includes native-affinity
+  lane capacity and caps Java non-affine growth. CONTROL and terminal cleanup
+  therefore retain explicit headroom while actor-domain quotas are occupied.
 - This is **not** a dynamic, work-conserving global permit scheduler: idle
   domain quotas cannot yet be borrowed. By default (property absent), legacy
-  independent per-domain limits remain. Reactors and explicit user-owned
-  `OresScheduler(N)` threads are excluded from this execution-carrier cap.
+  independent per-domain limits remain. NIO reactor/readiness threads,
+  the independent watchdog, and explicit user-owned `OresScheduler(N)`
+  threads are excluded from this execution-carrier cap and are reported as
+  separate host resources.
 - A direct byte-identical `OresCarrierBudget` source blob was compiled
   locally with JDK 21, and 261 positive/negative budget smoke cases passed.
   Source-repository JDK25/Graal CI still cannot execute runner steps; the
