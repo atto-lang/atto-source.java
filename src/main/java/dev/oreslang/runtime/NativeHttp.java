@@ -480,10 +480,24 @@ public final class NativeHttp implements AutoCloseable {
             synchronized (state) {
                 checkOwner();
                 if (state.committed || state.busy) throw new IllegalStateException("response already started");
-                if (!name.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]+") || value.chars().anyMatch(c -> c < 32 || c == 127))
+                if (name == null || value == null
+                        || !name.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+                        || value.chars().anyMatch(c -> c < 32 || c == 127 || c > 255))
                     throw new IllegalArgumentException("invalid HTTP header");
-                if (Set.of("content-length", "transfer-encoding", "connection", "trailer", "upgrade").contains(name.toLowerCase(Locale.ROOT)))
+                if (Set.of("content-length", "transfer-encoding", "connection", "trailer", "upgrade",
+                        "te", "host", "keep-alive", "proxy-connection", "http2-settings",
+                        "proxy-authenticate", "proxy-authorization").contains(name.toLowerCase(Locale.ROOT)))
                     throw new IllegalArgumentException("transport-owned response header");
+                int fields = 1, bytes = name.length() + value.length() + 4;
+                for (Map.Entry<String, List<String>> existing : state.raw.getResponseHeaders().entrySet()) {
+                    if (existing.getKey().equalsIgnoreCase(name)) continue;
+                    for (String item : existing.getValue()) {
+                        fields++;
+                        bytes += existing.getKey().length() + item.length() + 4;
+                    }
+                }
+                if (fields > 100 || bytes > 32768)
+                    throw new IllegalArgumentException("response headers exceed configured bounds");
                 state.raw.getResponseHeaders().set(name, value);
             }
         }
