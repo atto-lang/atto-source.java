@@ -61,11 +61,15 @@ public final class ConstructorSemanticIr {
             Objects.requireNonNull(receiverBinding, "receiver binding");
             Objects.requireNonNull(source, "source constructor");
             userParameters = List.copyOf(userParameters);
-            if (key.effectiveArity() != userParameters.size()) {
+            if (key.effectiveArity() != userParameters.size()
+                    || source.arity() != key.effectiveArity()
+                    || !source.parameters().equals(userParameters)) {
                 throw new IllegalArgumentException(
-                        "constructor key arity " + key.effectiveArity()
-                                + " does not match " + userParameters.size()
-                                + " caller-visible parameters");
+                        "constructor semantic parameters must match exact source declaration");
+            }
+            if (delegatesTo != null && delegatesTo.equals(key)) {
+                throw new IllegalArgumentException(
+                        "constructor cannot delegate directly to itself");
             }
             if (delegatesTo != null && !key.owner().equals(delegatesTo.owner())) {
                 throw new IllegalArgumentException(
