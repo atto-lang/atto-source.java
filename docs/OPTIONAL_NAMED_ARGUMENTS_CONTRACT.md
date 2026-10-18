@@ -528,3 +528,19 @@ unimplemented. `requireExecutable()` always throws; existing independent
 TypeChecker/OwnershipChecker/interpreter stage admission remains fail-closed.
 JUnit test methods are committed, but passing JDK25 Maven or Graal/LLVM
 guest-language runs is not yet established.
+
+### Hardened shape-only admission (2026-10-18)
+
+Additional fail-closed conditions prevent the preview from claiming that
+effectful/async/generator/routine functions or annotated functions already
+have a verified invocation contract. Class method previews now reject
+static or abstract methods, explicit/specialized self receivers, structural
+methods, async/suspending methods and methods with annotations until receiver,
+dispatch, effect and `@CallableBy` authorization are proved. Annotated
+constructors also require a separate authorization check. The direct-class
+preview continues to reject abstract class construction, synthetic
+constructor ABI and unlowered constructor `self` receiver erasure.
+
+These checks narrow planning admission; they do **not** enable calls.
+This IR still cannot establish caller lexical scope or trusted source types,
+and `requireExecutable()` remains an unconditional error.

@@ -193,4 +193,95 @@ final class BoundInvocationTest {
                                 List.of(), false, args),
                         List.of(BOOL, INT)));
     }
+
+    @Test
+    void staticAbstractAndReceiverSpecializedMethodsStayFailClosed() {
+        Ast.ClassDecl owner = (Ast.ClassDecl) Parser.parse("""
+                define module app as
+                    define class Box as
+                        pub fnc work(int a, bool c): int { return a; }
+                    end
+                end
+                """).modules().getFirst().declarations().getFirst();
+        Ast.MethodDecl original = owner.methods().getFirst();
+        var items = List.of(
+                Ast.CallArgument.named("c", new Ast.LiteralExpr(true)),
+                Ast.CallArgument.named("a", new Ast.LiteralExpr(7L)));
+        Ast.StagedCallExpr call = new Ast.StagedCallExpr(
+                new Ast.MemberExpr(new Ast.NameExpr("box"), "work"),
+                List.of(), false, items);
+        assertDoesNotThrow(() ->
+                BoundInvocation.bindClassMethod(owner, call, List.of(BOOL, INT)));
+        for (int mode = 0; mode < 7; mode++) {
+            Ast.MethodDecl unsafe = new Ast.MethodDecl(
+                    original.name(), original.visibility(),
+                    mode == 0, mode == 1, mode == 2, mode == 3,
+                    mode == 4,
+                    mode == 5 ? Ast.TypeRef.simple("Box") : null,
+                    original.genericParameters(), original.parameters(),
+                    original.returnType(),
+                    mode == 6 ? List.of(new Ast.Annotation("CallableBy", List.of(INT)))
+                              : original.annotations(),
+                    original.body());
+            Ast.ClassDecl unproved = new Ast.ClassDecl(
+                    owner.name(), owner.visibility(), owner.isAbstract(), owner.actorKind(),
+                    owner.genericParameters(), owner.parents(), owner.interfaces(),
+                    owner.fields(), owner.constructor(), List.of(unsafe));
+            assertThrows(IllegalArgumentException.class,
+                    () -> BoundInvocation.bindClassMethod(unproved, call, List.of(BOOL, INT)),
+                    "unsafe method variant " + mode);
+        }
+    }
+
+    @Test
+    void effectfulAndAnnotatedFunctionTargetsRequireIndependentProof() {
+        Ast.ModuleDecl owner = owner();
+        Ast.FunctionDecl baseline = (Ast.FunctionDecl) owner.declarations().getFirst();
+        for (int mode = 0; mode < 5; mode++) {
+            Ast.FunctionDecl unsafe = new Ast.FunctionDecl(
+                    baseline.name(),
+                    mode == 0 ? Ast.CallableKind.ROUTINE : baseline.kind(),
+                    baseline.visibility(),
+                    mode == 1, mode == 2, mode == 3,
+                    baseline.structural(), baseline.nonLexical(),
+                    baseline.trapped(), baseline.actorKind(),
+                    baseline.genericParameters(), baseline.parameters(),
+                    baseline.returnType(),
+                    mode == 4 ? List.of(new Ast.Annotation("CallerRole", List.of(INT)))
+                              : baseline.annotations(),
+                    baseline.body(), baseline.genericSpecs());
+            Ast.ModuleDecl unproved = new Ast.ModuleDecl(
+                    owner.name(), owner.annotations(), owner.contracts(), List.of(unsafe));
+            assertThrows(IllegalArgumentException.class,
+                    () -> BoundInvocation.bindModuleFunction(unproved, call("work"), List.of(BOOL, INT)),
+                    "unsafe function variant " + mode);
+        }
+    }
+
+    @Test
+    void annotatedConstructorsRequireAuthorizationBeforeBinding() {
+        Ast.ClassDecl base = (Ast.ClassDecl) Parser.parse("""
+                define module app as
+                    define class Box as
+                        constructor(int a, bool c) { return; }
+                    end
+                end
+                """).modules().getFirst().declarations().getFirst();
+        Ast.ConstructorDecl original = base.constructor();
+        Ast.ConstructorDecl restricted = new Ast.ConstructorDecl(
+                original.visibility(), original.parameters(),
+                List.of(new Ast.Annotation("CallableBy", List.of(INT))),
+                original.body());
+        Ast.ClassDecl owner = new Ast.ClassDecl(
+                base.name(), base.visibility(), base.isAbstract(), base.actorKind(),
+                base.genericParameters(), base.parents(), base.interfaces(),
+                base.fields(), restricted, base.methods());
+        var args = List.of(
+                Ast.CallArgument.named("c", new Ast.LiteralExpr(true)),
+                Ast.CallArgument.named("a", new Ast.LiteralExpr(5L)));
+        assertThrows(IllegalArgumentException.class, () ->
+                BoundInvocation.bindClassConstructor(owner,
+                        new Ast.StagedNewExpr(Ast.TypeRef.simple("Box"), args, false),
+                        List.of(BOOL, INT)));
+    }
 }

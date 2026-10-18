@@ -31,6 +31,13 @@ public final class BoundInvocation {
         this.declarationOrdinal = ordinal;
         this.preview = Objects.requireNonNull(preview);
         this.assertedSourceTypes = List.copyOf(assertedSourceTypes);
+        if (preview.arguments().sourceExpressions().size() != this.assertedSourceTypes.size()) {
+            throw new IllegalArgumentException("every evaluated source must have one claimed type");
+        }
+        if ((kind == Kind.CLASS_CONSTRUCTOR)
+                != (preview.kind() == OptionalCallAbiPreview.InvocationKind.CLASS_CONSTRUCTOR)) {
+            throw new IllegalArgumentException("bound call kind disagrees with invocation preview");
+        }
         if (ordinal < 0) throw new IllegalArgumentException("negative declaration ordinal");
         boolean owned = switch (kind) {
             case MODULE_FUNCTION -> owner instanceof Ast.ModuleDecl module
@@ -90,8 +97,13 @@ public final class BoundInvocation {
             if (module.declarations().get(i) instanceof Ast.FunctionDecl f
                     && f.name().equals(name)) {
                 if (!f.genericParameters().isEmpty() || !f.genericSpecs().isEmpty()
-                        || f.actorKind() != Ast.ActorKind.NONE) {
-                    throw new IllegalArgumentException("generic or actor target not proved");
+                        || f.actorKind() != Ast.ActorKind.NONE
+                        || f.kind() != Ast.CallableKind.FNC
+                        || f.async() || f.suspends() || f.generator()
+                        || f.structural() || f.nonLexical() || f.trapped()
+                        || !f.annotations().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "generic, actor, effectful, routine or annotated function target not proved");
                 }
                 candidates.add(f);
                 ordinals.add(i);
@@ -127,8 +139,13 @@ public final class BoundInvocation {
         for (int i = 0; i < owner.methods().size(); i++) {
             Ast.MethodDecl method = owner.methods().get(i);
             if (method.name().equals(member.member())) {
-                if (!method.genericParameters().isEmpty()) {
-                    throw new IllegalArgumentException("generic method requires verified substitution");
+                if (!method.genericParameters().isEmpty()
+                        || method.isStatic() || method.isAbstract()
+                        || method.async() || method.suspends() || method.structural()
+                        || method.explicitReceiverType() != null
+                        || !method.annotations().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "generic, static, abstract, effectful, receiver-specialized or annotated method requires separate proof");
                 }
                 candidates.add(method);
                 ordinals.add(i);
@@ -162,6 +179,10 @@ public final class BoundInvocation {
         Ast.ConstructorDecl constructor = owner.constructor();
         if (constructor == null) {
             throw new IllegalArgumentException("synthetic constructor requires separate proof");
+        }
+        if (!constructor.annotations().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "annotated constructor requires independent authorization proof");
         }
         // An optional leading constructor self is a receiver binder, never a
         // guest value argument. Until the constructor parser and checker issue
