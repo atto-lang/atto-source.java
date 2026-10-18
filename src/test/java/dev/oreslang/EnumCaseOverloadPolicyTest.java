@@ -152,8 +152,8 @@ final class EnumCaseOverloadPolicyTest {
             assertThrows(IllegalArgumentException.class, () ->
                     enumType("root." + (char) cp + "Foo"));
         }
-        assertThrows(IllegalArgumentException.class, () -> enumType("root.\u0000Foo"));
-        assertThrows(IllegalArgumentException.class, () -> enumType("root.\uD800"));
+        assertThrows(IllegalArgumentException.class, () -> enumType("root." + (char) 0x0000 + "Foo"));
+        assertThrows(IllegalArgumentException.class, () -> enumType("root." + (char) 0xD800));
         assertThrows(IllegalArgumentException.class, () ->
                 new EnumInfo("root.X", List.of("A", "A"), true));
         ArrayList<Parameter> mutable = new ArrayList<>(List.of(enumType("root.Foo")));
