@@ -107,6 +107,25 @@ Protected-source branch-policy and authorizing blob checks remain mandatory
 separate gates. The shell guard remains available for standalone diagnostics
 and its own test suite; it is not an export authorization authority.
 
+## Trusted GitHub CLI executable
+
+Private-source publication uses an authenticated GitHub CLI and must not
+resolve the executable through the caller's `PATH`. The publisher requires
+an **OS-packaged, root-owned, executable regular file at `/usr/bin/gh`**.
+Its `/`, `/usr`, and `/usr/bin` parent directories must also be
+root-owned and not group/other writable. Missing binaries, symlinks,
+non-root owners, nonexecutable files and writable path components fail
+closed before GitHub credentials are passed to a subprocess.
+
+The GitHub subprocess environment retains supported authentication tokens
+but overrides `PATH` and `GH_HOST`, disables prompts, and omits dynamic
+loader overrides. Administrator-managed hosts where `gh` is installed
+elsewhere (including typical Homebrew locations) must provision the trusted
+system package path, or develop and independently review an equivalent
+executable-pinning policy; do not bypass the check with a user-writable
+symlink. This requirement applies to the publisher, not its local offline
+regression runner.
+
 ## Destination-bound source snapshot publisher
 
 The only supported transfer entry point is **not an arbitrary command
