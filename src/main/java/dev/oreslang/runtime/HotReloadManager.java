@@ -447,6 +447,14 @@ public final class HotReloadManager implements AutoCloseable {
             return actorRoutePins;
         }
 
+        HotReloadManager ownerForActorRouting() {
+            HotReloadManager manager = owner.get();
+            if (manager == null)
+                throw new IllegalStateException(
+                        "generation owner is no longer available");
+            return manager;
+        }
+
         public long id() { return id; }
         public String codeUnitId() { return codeUnitId; }
         public String sha256() { return sha256; }
