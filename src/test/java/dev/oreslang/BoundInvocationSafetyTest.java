@@ -138,6 +138,48 @@ final class BoundInvocationSafetyTest {
     }
 
     @Test
+    void qualifiedModuleNameMustNotBeShadowedByAnotherCallableOrValue() {
+        Ast.ModuleDecl original = Parser.parse("""
+                define module app as
+                    pub fnc work(int a): int { return a; }
+                end
+                """).modules().getFirst();
+        Ast.StagedCallExpr qualified = new Ast.StagedCallExpr(
+                new Ast.MemberExpr(new Ast.NameExpr("app"), "work"),
+                List.of(), false,
+                List.of(Ast.CallArgument.named("a", new Ast.LiteralExpr(3L))));
+        assertDoesNotThrow(() -> BoundInvocation.bindLiteralModuleFunction(
+                original, qualified));
+
+        Ast.ModuleDecl other = Parser.parse("""
+                define module unrelated as
+                    pub fnc app(): int { return 2; }
+                end
+                """).modules().getFirst();
+        Ast.FunctionDecl collidingCallable = (Ast.FunctionDecl)
+                other.declarations().getFirst();
+        for (Ast.Decl collision : List.<Ast.Decl>of(
+                collidingCallable,
+                new Ast.FieldDecl("app", Ast.Visibility.PRIVATE,
+                        Ast.BindingKind.CONST, INT, new Ast.LiteralExpr(2L)),
+                new Ast.TypeAliasDecl("app", List.of(), INT))) {
+            Ast.ModuleDecl forged = new Ast.ModuleDecl(
+                    "app", List.of(original.declarations().getFirst(), collision));
+            assertThrows(IllegalArgumentException.class,
+                    () -> BoundInvocation.bindLiteralModuleFunction(forged, qualified));
+        }
+
+        // The module's own name does not conflict merely because a distinct
+        // function or field appears in the same declaration set.
+        Ast.ModuleDecl disjoint = new Ast.ModuleDecl(
+                "app", List.of(original.declarations().getFirst(),
+                new Ast.FieldDecl("other", Ast.Visibility.PRIVATE,
+                        Ast.BindingKind.CONST, INT, new Ast.LiteralExpr(2L))));
+        assertDoesNotThrow(() -> BoundInvocation.bindLiteralModuleFunction(
+                disjoint, qualified));
+    }
+
+    @Test
     void forgedClassFieldAndMethodCollisionRequiresMemberResolution() {
         Ast.ClassDecl original = concreteBox();
         Ast.StagedCallExpr call = new Ast.StagedCallExpr(
