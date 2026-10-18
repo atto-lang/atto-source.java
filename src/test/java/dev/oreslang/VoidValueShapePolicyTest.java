@@ -46,6 +46,18 @@ final class VoidValueShapePolicyTest {
     }
 
     @Test
+    void pathologicalNestedValueShapesFailWithBoundedDiagnostic() {
+        Types.Type nested = Primitive.INT;
+        for (int i = 0; i < 80; i++) {
+            nested = new Types.Named("Option", List.of(nested));
+        }
+        rejects("maximum nesting depth", nested);
+        Types.Type shallow = new Types.Named("Option", List.of(
+                new Types.Named("Future", List.of(Primitive.VOID))));
+        assertDoesNotThrow(() -> Types.requireValueShape(shallow, "valid tagged completion"));
+    }
+
+    @Test
     void callableMayReturnVoidButMayNotAcceptVoidParameter() {
         assertDoesNotThrow(() -> Types.requireValueShape(
                 new Types.Function(List.of(Primitive.INT), Primitive.VOID), "callable"));
