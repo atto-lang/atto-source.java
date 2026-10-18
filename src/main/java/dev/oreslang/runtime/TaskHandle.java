@@ -34,7 +34,7 @@ public final class TaskHandle<T> {
         }
     }
 
-    private final TaskCancellation cancellation = new TaskCancellation();
+    private final TaskCancellation cancellation;
     // Observation only: cancelling getDone() must never forge a quiescence
     // witness or suppress the scheduler's eventual terminal outcome.
     private final OresFuture<TaskOutcome<T>> done =
@@ -45,7 +45,8 @@ public final class TaskHandle<T> {
     private final AtomicBoolean published = new AtomicBoolean();
     private final TaskCancellation.Subscription revoker;
 
-    private TaskHandle() {
+    private TaskHandle(TaskCancellation parent) {
+        cancellation = parent == null ? new TaskCancellation() : parent.child();
         // The source Future might not exist when cancellation arrives. bind()
         // rechecks the token after publication, and the admission wrapper
         // checks it at every compiler-generated resume boundary.
@@ -130,9 +131,15 @@ public final class TaskHandle<T> {
      * wired by the subsequent explicit TaskScope/actor integration.
      */
     static <T> TaskHandle<T> start(OresScheduler scheduler, OresScheduler.Task<T> task) {
+        return start(scheduler, task, null);
+    }
+
+    static <T> TaskHandle<T> start(
+            OresScheduler scheduler, OresScheduler.Task<T> task,
+            TaskCancellation parent) {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(task, "task");
-        TaskHandle<T> handle = new TaskHandle<>();
+        TaskHandle<T> handle = new TaskHandle<>(parent);
         OresFuture<T> source;
         try {
             source = scheduler.start(resume -> {
@@ -143,6 +150,7 @@ public final class TaskHandle<T> {
             }, handle::onQuiescent);
         } catch (RuntimeException | Error failure) {
             handle.revoker.close();
+            handle.cancellation.cancel("admission rejected");
             throw failure;
         }
 
