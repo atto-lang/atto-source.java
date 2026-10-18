@@ -64,6 +64,20 @@ final class EnumTag32SchemaVisibilityTest {
     }
 
     @Test
+    void stagedJavaAndNativeAotLayoutsRejectUnportableUnicodeIds() {
+        // The general Java lexer may allow these, but portable AOT cannot
+        // silently create an identity not representable by the native stage.
+        assertThrows(IllegalArgumentException.class,
+                () -> new EnumTag32Plan.CaseTag("État", 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new EnumTag32Plan("root.Café", CASES, true));
+        assertThrows(IllegalArgumentException.class,
+                () -> new EnumTag32Plan("roöt.Foo", CASES));
+        assertDoesNotThrow(() -> new EnumTag32Plan(
+                "root._Foo42", CASES, true));
+    }
+
+    @Test
     void tagOrNominalIdentityChangeInvalidatesCachedSchema() {
         EnumTag32Plan old = new EnumTag32Plan("root.Foo", CASES, true);
         EnumTag32Plan newTag = new EnumTag32Plan("root.Foo", List.of(
