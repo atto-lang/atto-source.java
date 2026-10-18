@@ -34,7 +34,11 @@ public final class CoreLibrarySources {
     private CoreLibrarySources() { }
 
     public static boolean isCoreImport(String importPath) {
-        return importPath != null && importPath.startsWith(IMPORT_PREFIX);
+        // A Windows-style separator must never skip the trusted std/ loader
+        // and fall through to an application-owned std/core.ores path.
+        return importPath != null
+                && (importPath.startsWith(IMPORT_PREFIX)
+                        || importPath.startsWith("std\\"));
     }
 
     /**
@@ -47,11 +51,14 @@ public final class CoreLibrarySources {
      * This is an admission guard, not yet a freestanding module resolver.
      */
     public static boolean isReservedFreestandingImport(String importPath) {
-        return importPath != null
-                && (importPath.startsWith("core/")
-                        || importPath.startsWith("alloc/")
-                        || importPath.startsWith("actor/")
-                        || importPath.startsWith("otp/"));
+        if (importPath == null) return false;
+        // Filesystem resolution normalizes backslash to slash, so policy
+        // checks must classify the same path form *before* that resolution.
+        String normalized = importPath.replace('\\', '/');
+        return normalized.startsWith("core/")
+                || normalized.startsWith("alloc/")
+                || normalized.startsWith("actor/")
+                || normalized.startsWith("otp/");
     }
 
     public static Set<String> packagedSourcePaths() {
