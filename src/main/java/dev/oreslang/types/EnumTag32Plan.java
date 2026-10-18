@@ -94,6 +94,11 @@ public final class EnumTag32Plan {
         if (identity == null || identity.isEmpty()) {
             throw new IllegalArgumentException("missing resolved enum ID");
         }
+        // Avoid allocating a potentially huge UTF-8 copy for a malformed
+        // imported/compiler-created nominal identity.
+        if (identity.length() > EnumAstIdentity.MAX_ID_BYTES) {
+            throw new IllegalArgumentException("resolved enum ID character limit exceeded");
+        }
         if (identity.getBytes(StandardCharsets.UTF_8).length > EnumAstIdentity.MAX_ID_BYTES) {
             throw new IllegalArgumentException("resolved enum ID exceeds canonical ABI byte limit");
         }
