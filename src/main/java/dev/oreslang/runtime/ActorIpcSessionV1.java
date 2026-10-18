@@ -33,7 +33,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     private static final int HMAC_BYTES = 32;
     private static final int HEADER_BYTES = 116;
     private static final int MIN_FRAME_BYTES = HEADER_BYTES + HMAC_BYTES;
-    private static final int READY_PAYLOAD_BYTES = 32 * 8 + 16;
+    private static final int READY_PAYLOAD_BYTES = 32 * 6 + 16;
     private static final int LANE_OFFSET = 12;
     private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -764,13 +764,26 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         }
         ByteBuffer out = ByteBuffer.allocate(READY_PAYLOAD_BYTES)
                 .order(ByteOrder.BIG_ENDIAN);
+        /*
+         * READY contains only commitments the running worker can independently
+         * know or measure without trusting host expectations. In particular:
+         *
+         * - manifestSha256 is excluded because the signed manifest commits the
+         *   final artifact SHA; embedding that manifest digest back into the
+         *   same executable would create a circular fixed-point requirement.
+         * - workerPolicySha256 is excluded because OS/sandbox policy is
+         *   supervisor-enforced launch state, not a fact the guest can prove.
+         *
+         * The launcher executes a sealed exact object, so the worker can hash
+         * that object directly for artifactSha256. Compiler-owned ABI/schema/
+         * codec/type commitments are intrinsic build metadata, while the route
+         * code-generation UUID is supplied in the one-shot bootstrap.
+         */
         out.put(challenge);
-        out.put(digestBytes(artifact.manifestSha256()));
         out.put(digestBytes(artifact.artifactSha256()));
         out.put(digestBytes(artifact.messageAbiSha256()));
         out.put(digestBytes(artifact.stateSchemaSha256()));
         out.put(digestBytes(artifact.wireCodecSha256()));
-        out.put(digestBytes(artifact.workerPolicySha256()));
         out.put(sha256(artifact.actorTypeName().getBytes(StandardCharsets.UTF_8)));
         putUuid(out, codeGenerationId);
         return out.array();
