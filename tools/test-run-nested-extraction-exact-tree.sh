@@ -14,7 +14,9 @@ cat > "$work/bin/java" <<'MOCKJAVA'
 printf '    java.specification.version = %s\n' "${MOCK_JAVA_MAJOR:-25}" >&2
 printf '    java.runtime.name = %s\n' "${MOCK_JAVA_RUNTIME:-Oracle GraalVM}" >&2
 printf '    java.vendor.version = %s\n' "${MOCK_JAVA_VENDOR_VERSION:-Oracle Corporation}" >&2
-printf '    java.home = %s\n' "${MOCK_JAVA_HOME_PROP:-/opt/pinned-graalvm25}" >&2
+if [[ "${MOCK_JAVA_OMIT_HOME:-0}" != 1 ]]; then
+    printf '    java.home = %s\n' "${MOCK_JAVA_HOME_PROP:-/opt/pinned-graalvm25}" >&2
+fi
 printf '    user.home = %s\n' "${MOCK_JAVA_USER_HOME:-/home/ci}" >&2
 MOCKJAVA
 cat > "$work/bin/mvn" <<'MOCKMVN'
@@ -69,6 +71,11 @@ attempt 69 "$expected" . targeted
 [[ ! -s "$MOCK_MAVEN_LOG" ]]
 unset MOCK_JAVA_MAJOR
 echo 'PASS non-JDK25 blocks Maven execution'
+export MOCK_JAVA_OMIT_HOME=1
+attempt 69 "$expected" . targeted
+[[ ! -s "$MOCK_MAVEN_LOG" ]]
+unset MOCK_JAVA_OMIT_HOME
+echo 'PASS missing PATH Java home property rejects Maven execution'
 export MOCK_JAVA_RUNTIME='OpenJDK Runtime Environment'
 attempt 69 "$expected" . targeted
 [[ ! -s "$MOCK_MAVEN_LOG" ]]
@@ -105,7 +112,9 @@ cat > "$work/java-home-25/bin/java" <<'GOODHOMEJAVA'
 printf '    java.specification.version = 25\n' >&2
 printf '    java.runtime.name = %s\n' "${MOCK_HOME_JAVA_RUNTIME:-Oracle GraalVM}" >&2
 printf '    java.vendor.version = %s\n' "${MOCK_HOME_JAVA_VENDOR_VERSION:-Oracle Corporation}" >&2
-printf '    java.home = %s\n' "${MOCK_HOME_JAVA_HOME_PROP:-/opt/pinned-graalvm25}" >&2
+if [[ "${MOCK_HOME_JAVA_OMIT_HOME:-0}" != 1 ]]; then
+    printf '    java.home = %s\n' "${MOCK_HOME_JAVA_HOME_PROP:-/opt/pinned-graalvm25}" >&2
+fi
 printf '    user.home = %s\n' "${MOCK_HOME_JAVA_USER_HOME:-/home/ci}" >&2
 GOODHOMEJAVA
 chmod +x "$work/java-home-21/bin/java" "$work/java-home-25/bin/java"
@@ -123,6 +132,11 @@ attempt 69 "$expected" . targeted
 [[ ! -s "$MOCK_MAVEN_LOG" ]]
 unset MOCK_HOME_JAVA_HOME_PROP
 echo 'PASS distinct GraalVM JDK25 installations cannot be mixed'
+export MOCK_HOME_JAVA_OMIT_HOME=1
+attempt 69 "$expected" . targeted
+[[ ! -s "$MOCK_MAVEN_LOG" ]]
+unset MOCK_HOME_JAVA_OMIT_HOME
+echo 'PASS missing JAVA_HOME Java home property rejects Maven execution'
 
 export MOCK_HOME_JAVA_RUNTIME='OpenJDK Runtime Environment'
 attempt 69 "$expected" . targeted
