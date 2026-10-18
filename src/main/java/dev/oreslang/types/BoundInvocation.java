@@ -203,7 +203,25 @@ public final class BoundInvocation {
         List<Integer> ordinals = new ArrayList<>();
         List<List<Ast.Param>> signatures = new ArrayList<>();
         for (int i = 0; i < module.declarations().size(); i++) {
-            if (module.declarations().get(i) instanceof Ast.FunctionDecl f
+            Ast.Decl declaration = module.declarations().get(i);
+            // A module field or type can participate in value/callable name
+            // resolution. Shape-only binding cannot decide that a same-name
+            // declaration is irrelevant without the real lexical resolver.
+            String competingName = null;
+            if (declaration instanceof Ast.FieldDecl field) {
+                competingName = field.name();
+            } else if (declaration instanceof Ast.ClassDecl klass) {
+                competingName = klass.name();
+            } else if (declaration instanceof Ast.InterfaceDecl iface) {
+                competingName = iface.name();
+            } else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                competingName = alias.name();
+            }
+            if (name.equals(competingName)) {
+                throw new IllegalArgumentException(
+                        "module callable name collides with an unproved declaration");
+            }
+            if (declaration instanceof Ast.FunctionDecl f
                     && f.name().equals(name)) {
                 if (!f.genericParameters().isEmpty() || !f.genericSpecs().isEmpty()
                         || f.actorKind() != Ast.ActorKind.NONE
@@ -243,6 +261,15 @@ public final class BoundInvocation {
                 || member.receiver() == null) {
             throw new IllegalArgumentException(
                     "method call requires a non-null member receiver expression");
+        }
+        // AST producers may construct a class with a field and method of
+        // identical spelling, bypassing parser/TypeChecker member resolution.
+        // Do not guess that box.member selects the method rather than field.
+        for (Ast.FieldDecl field : owner.fields()) {
+            if (field.name().equals(member.member())) {
+                throw new IllegalArgumentException(
+                        "method name collides with unproved class field resolution");
+            }
         }
         List<Ast.MethodDecl> candidates = new ArrayList<>();
         List<Integer> ordinals = new ArrayList<>();
