@@ -182,6 +182,17 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         if (readyTimeout.isNegative() || readyTimeout.isZero())
             throw new IllegalArgumentException("ready timeout must be positive");
         requireBlockingHostSurface("spawn a logical source actor");
+        // This V1 source router runs actors in same-JVM ActorRuntime pools.
+        // Distinct Truffle contexts are NOT proof of a protected per-actor
+        // address space, and selecting UNTRUSTED does not instantiate a new
+        // protected worker for each actor. Never silently downgrade private
+        // or untrusted actor isolation during a hot-upgrade route.
+        if (kind != ActorRuntime.ActorKind.SHARED) {
+            throw new SecurityException(
+                    "logical actor hot-upgrade v1 requires SHARED actor kind; "
+                            + "PRIVATE and UNTRUSTED require a verified per-actor "
+                            + "protected worker/isolate migration backend");
+        }
 
         HotReloadManager.ActorGenerationView view =
                 generation.linkActorGeneration(actorTypeName);
