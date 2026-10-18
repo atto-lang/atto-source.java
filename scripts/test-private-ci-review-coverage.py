@@ -111,6 +111,20 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not trigger"):
             validate(self.owners, damaged)
 
+    def test_duplicate_trigger_is_rejected(self):
+        beginning, separator, push_block = self.workflow.partition("  push:\n")
+        self.assertTrue(separator)
+        extra = "      - 'scripts/test-private-ci-review-coverage.py'\n"
+        damaged = beginning + separator + extra + push_block
+        with self.assertRaisesRegex(ValueError, "duplicated"):
+            validate(self.owners, damaged)
+
+    def test_missing_runner_self_test_is_rejected(self):
+        damaged = self.workflow.replace(
+            "bash scripts/test-run-private-ci-regressions-local.sh", "")
+        with self.assertRaisesRegex(ValueError, "runner self-test"):
+            validate(self.owners, damaged)
+
     def test_missing_test_invocation_is_rejected(self):
         damaged = self.workflow.replace(
             "python3 -B scripts/test-private-ci-review-coverage.py", "")
