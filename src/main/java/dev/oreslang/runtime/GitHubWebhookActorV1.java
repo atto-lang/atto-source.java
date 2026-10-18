@@ -51,13 +51,13 @@ public final class GitHubWebhookActorV1 {
     public record ReceiveCiWebhook(
             GitHubWebhookSecurityV1.Headers headers,
             byte[] rawBody,
-            GitHubCiCorrelationV1.Observed observed)
+            GitHubWorkflowRunPayloadV1.GitTreeProof treeProof)
             implements Message {
         public ReceiveCiWebhook {
             headers = Objects.requireNonNull(headers, "headers");
             Objects.requireNonNull(rawBody, "rawBody");
             rawBody = rawBody.clone();
-            observed = Objects.requireNonNull(observed, "observed");
+            treeProof = Objects.requireNonNull(treeProof, "treeProof");
         }
 
         @Override
@@ -90,6 +90,7 @@ public final class GitHubWebhookActorV1 {
             String deliveryId,
             String payloadSha256,
             long workflowRunId,
+            String treeProofReceiptRef,
             DurableDevLoopV1.CiCompleted event)
             implements Output {
         public Matched {
@@ -97,6 +98,8 @@ public final class GitHubWebhookActorV1 {
             deliveryId = requireText(deliveryId, "deliveryId");
             payloadSha256 = requireText(
                     payloadSha256, "payloadSha256");
+            treeProofReceiptRef = requireText(
+                    treeProofReceiptRef, "treeProofReceiptRef");
             event = Objects.requireNonNull(event, "event");
             if (workflowRunId <= 0) {
                 throw new IllegalArgumentException(
@@ -172,6 +175,8 @@ public final class GitHubWebhookActorV1 {
                                 map, "payloadSha256"),
                         WorkflowActorWireV1.longValue(
                                 map, "workflowRunId"),
+                        WorkflowActorWireV1.string(
+                                map, "treeProofReceiptRef"),
                         ci);
             }
             case "unmatched" -> new Unmatched(
@@ -243,6 +248,25 @@ public final class GitHubWebhookActorV1 {
                         secret,
                         receive.rawBody(),
                         receive.headers());
+                if (!"workflow_run".equals(verified.eventName())) {
+                    emit(
+                            context,
+                            new Unmatched(
+                                    verified.deliveryId(),
+                                    verified.payloadSha256(),
+                                    "unsupported GitHub event type "
+                                            + verified.eventName()));
+                    return;
+                }
+
+                GitHubWorkflowRunPayloadV1.Parsed parsed =
+                        GitHubWorkflowRunPayloadV1.parse(
+                                receive.rawBody());
+                receive.treeProof().verifyCommit(
+                        parsed.commitSha());
+                GitHubCiCorrelationV1.Observed observed =
+                        parsed.observed(
+                                receive.treeProof().treeSha());
 
                 int matched = 0;
                 String lastReason =
@@ -250,7 +274,7 @@ public final class GitHubWebhookActorV1 {
                 for (var expectation : expectations.values()) {
                     var result = GitHubCiCorrelationV1.correlate(
                             expectation,
-                            receive.observed());
+                            observed);
                     if (!result.matched()) {
                         lastReason = result.reason();
                         continue;
@@ -262,7 +286,8 @@ public final class GitHubWebhookActorV1 {
                                     expectation.runId(),
                                     verified.deliveryId(),
                                     verified.payloadSha256(),
-                                    receive.observed().workflowRunId(),
+                                    observed.workflowRunId(),
+                                    receive.treeProof().receiptRef(),
                                     result.event()));
                 }
 
@@ -331,9 +356,9 @@ public final class GitHubWebhookActorV1 {
                             WorkflowActorWireV1.headers(value.headers()),
                     "rawBody",
                             WorkflowActorWireV1.bytes(value.rawBody()),
-                    "observed",
-                            WorkflowActorWireV1.observed(
-                                    value.observed()));
+                    "treeProof",
+                            WorkflowActorWireV1.treeProof(
+                                    value.treeProof()));
         }
         if (message instanceof Shutdown) {
             return WorkflowActorWireV1.map("type", "shutdown");
@@ -357,7 +382,7 @@ public final class GitHubWebhookActorV1 {
             case "receive_ci" -> new ReceiveCiWebhook(
                     WorkflowActorWireV1.headers(map.get("headers")),
                     WorkflowActorWireV1.bytes(map.get("rawBody")),
-                    WorkflowActorWireV1.observed(map.get("observed")));
+                    WorkflowActorWireV1.treeProof(map.get("treeProof")));
             case "shutdown" -> new Shutdown();
             default -> throw new IllegalArgumentException(
                     "unknown GitHub ingress message type "
@@ -386,6 +411,7 @@ public final class GitHubWebhookActorV1 {
                     "deliveryId", value.deliveryId(),
                     "payloadSha256", value.payloadSha256(),
                     "workflowRunId", value.workflowRunId(),
+                    "treeProofReceiptRef", value.treeProofReceiptRef(),
                     "event", WorkflowActorWireV1.event(value.event()));
         }
         if (output instanceof Unmatched value) {
