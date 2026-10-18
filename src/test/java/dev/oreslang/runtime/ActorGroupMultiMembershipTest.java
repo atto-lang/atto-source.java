@@ -302,6 +302,16 @@ final class ActorGroupMultiMembershipTest {
                         privateFailure::getMessage);
             }
 
+            // SharedMutex transport has its own payload validator and must
+            // independently reject CONTROL-plane join authority before later
+            // ownership walkers can mask a regression in that boundary.
+            OresMutex.Shared<Object> sharedMutex =
+                    OresMutex.shared((Object) java.util.List.of(capability));
+            IllegalArgumentException mutexFailure = assertThrows(
+                    IllegalArgumentException.class, () -> shared.send(sharedMutex));
+            assertTrue(mutexFailure.getMessage().contains("CONTROL invitation"),
+                    mutexFailure::getMessage);
+
             // Frozen/shared containers and reusable state are not an
             // alternative path for raw join authority to reach DATA actors.
             assertThrows(IllegalArgumentException.class,
