@@ -155,6 +155,8 @@ public final class HttpResponseDraft {
         Objects.requireNonNull(cancelled, "cancelled");
         Objects.requireNonNull(activeBody, "activeBody");
         if (!handedOff.get()) throw new IllegalStateException("response not handed off");
+        if (!emissionStarted.compareAndSet(false, true))
+            throw new IllegalStateException("response already emitted");
         if (cancelled.getAsBoolean()) throw new IOException("HTTP response cancelled before headers");
         for (Map.Entry<String, String> field : headers)
             raw.getResponseHeaders().add(field.getKey(), field.getValue());
