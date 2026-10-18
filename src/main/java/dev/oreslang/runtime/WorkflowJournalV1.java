@@ -49,6 +49,7 @@ public final class WorkflowJournalV1 {
 
     public record StoreSnapshot(
             String runId,
+            Integer maxIterations,
             long nextSequence,
             int journalEntries,
             int pendingEffects,
@@ -98,8 +99,10 @@ public final class WorkflowJournalV1 {
             new LinkedHashMap<>();
 
     private String runId;
+    private Integer maxIterations;
     private long nextSequence = 1L;
     private long nextClaimNumber = 1L;
+    private long lastObservedMillis = -1L;
 
     /**
      * Atomically append one reducer transition and register all emitted effects.
@@ -118,6 +121,16 @@ public final class WorkflowJournalV1 {
         if (runId != null && !runId.equals(incomingRunId)) {
             throw new IllegalArgumentException(
                     "journal cannot mix workflow run ids");
+        }
+        int incomingMaxIterations = snapshot.maxIterations();
+        if (incomingMaxIterations <= 0 || incomingMaxIterations > 10_000) {
+            throw new IllegalArgumentException(
+                    "snapshot maxIterations must be in [1, 10000]");
+        }
+        if (maxIterations != null
+                && maxIterations.intValue() != incomingMaxIterations) {
+            throw new IllegalArgumentException(
+                    "journal cannot change workflow iteration budget");
         }
 
         if (entry.sequence() != nextSequence) {
@@ -154,21 +167,25 @@ public final class WorkflowJournalV1 {
 
             DurableDevLoopV1.Command duplicate =
                     newEffects.putIfAbsent(key, command);
-            if (duplicate != null && !duplicate.equals(command)) {
+            if (duplicate != null) {
                 throw new IllegalStateException(
-                        "transition emitted conflicting effect key " + key);
+                        "transition emitted duplicate effect key " + key);
             }
 
             MutableEffect existing = effects.get(key);
-            if (existing != null && !existing.command.equals(command)) {
+            if (existing != null) {
                 throw new IllegalStateException(
-                        "stable effect key collision for " + key);
+                        "stable effect key already has an originating transition: "
+                                + key);
             }
         }
 
         long followingSequence = Math.addExact(nextSequence, 1L);
         if (runId == null) {
             runId = incomingRunId;
+        }
+        if (maxIterations == null) {
+            maxIterations = incomingMaxIterations;
         }
         journal.add(entry);
         nextSequence = followingSequence;
@@ -195,6 +212,7 @@ public final class WorkflowJournalV1 {
                     "leaseMillis must be in (0, "
                             + MAX_LEASE_MILLIS + "]");
         }
+        observeClockLocked(nowMillis);
 
         expireClaimsLocked(nowMillis);
 
@@ -268,6 +286,7 @@ public final class WorkflowJournalV1 {
      */
     public synchronized int expireClaims(long nowMillis) {
         requireClock(nowMillis);
+        observeClockLocked(nowMillis);
         return expireClaimsLocked(nowMillis);
     }
 
@@ -340,6 +359,7 @@ public final class WorkflowJournalV1 {
 
         return new StoreSnapshot(
                 runId,
+                maxIterations,
                 nextSequence,
                 journal.size(),
                 pending,
@@ -351,14 +371,21 @@ public final class WorkflowJournalV1 {
     /**
      * Rebuild a dev-loop reducer from the durable journal.
      */
-    public synchronized DurableDevLoopV1.ReplayResult replayDevLoop(
-            int maxIterations) {
-        if (runId == null) {
+    public synchronized DurableDevLoopV1.ReplayResult replayDevLoop() {
+        if (runId == null || maxIterations == null) {
             throw new IllegalStateException(
                     "cannot replay an empty workflow journal");
         }
         return DurableDevLoopV1.replay(
                 runId, maxIterations, List.copyOf(journal));
+    }
+
+    private void observeClockLocked(long nowMillis) {
+        if (nowMillis < lastObservedMillis) {
+            throw new IllegalArgumentException(
+                    "workflow journal clock must not move backwards");
+        }
+        lastObservedMillis = nowMillis;
     }
 
     private int expireClaimsLocked(long nowMillis) {
