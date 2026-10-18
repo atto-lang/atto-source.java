@@ -594,7 +594,6 @@ public final class OresEvalRootNode extends RootNode {
             // from signed/source-artifact provenance required by native loaders.
             return SourceActorCheckpointCodecV1.digest(
                     "ores-source-actor-code-v1\n"
-                            + codeUnitId + "\n"
                             + klass.name() + "\n"
                             + program.toString());
         }
