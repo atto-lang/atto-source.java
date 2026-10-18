@@ -113,7 +113,14 @@ public final class SameModuleLiteralInvocation {
         }
 
         int siteOccurrences = 0;
+        boolean terminated = false;
         for (Ast.Stmt statement : caller.body()) {
+            // This witness recognizes only a linear body. No statement after a
+            // direct return is reachable, even if its staged-call AST matches.
+            if (terminated) {
+                throw new IllegalArgumentException(
+                        "unreachable statement requires trusted CFG reachability proof");
+            }
             // This tiny preview has no recursive lexical CFG/effect checker.
             // Do not let an unrelated nested expression, lambda, defer, or
             // branch hide a second use of the same AST node or a conflicting
@@ -141,6 +148,9 @@ public final class SameModuleLiteralInvocation {
             } else if (value != null && !(value instanceof Ast.LiteralExpr)) {
                 throw new IllegalArgumentException(
                         "other expression requires lexical/effect and nested callsite proof");
+            }
+            if (statement instanceof Ast.ReturnStmt) {
+                terminated = true;
             }
         }
         if (siteOccurrences != 1) {
