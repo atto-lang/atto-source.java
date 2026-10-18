@@ -364,6 +364,52 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
     }
 
     @Test
+    void rejectedCompetingMailboxSendCannotReleaseAnotherPublisherClaim()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var gotData = new CountDownLatch(1);
+            var deliveries = new AtomicInteger();
+            var source = runtime.<String>spawnShared(() -> (value, ctx) -> {
+                assertEquals("one-admitted", value);
+                deliveries.incrementAndGet();
+                gotData.countDown();
+            });
+            var worker = runtime.<String>spawnShared(() -> (value, ctx) -> { });
+            var sink = runtime.<String>spawnShared(() -> (value, ctx) -> { });
+            var session = new ActorPipelineRouteSession(linearGraph(), 93, 4,
+                    Map.of("source", source.id(),
+                            "worker", worker.id(), "sink", sink.id()));
+            var frame = session.ingress("source");
+            // Model another publisher holding the exclusive pre-enqueue
+            // reservation. This rejected send must NOT clear its claim.
+            ActorPipelineRouteSession.claimMailboxAdmission(frame);
+            assertThrows(IllegalStateException.class, () ->
+                    runtime.sendWithPipelineFrame(
+                            source, "duplicate", frame, testAuthority(session)));
+            assertThrows(IllegalStateException.class, () ->
+                    ActorPipelineRouteSession.claimMailboxAdmission(frame),
+                    "failed second sender improperly aborted first sender's claim");
+            assertEquals(1, session.outstanding(),
+                    "competing publisher changed active route-credit accounting");
+            ActorPipelineRouteSession.abortMailboxAdmission(frame);
+            runtime.sendWithPipelineFrame(
+                    source, "one-admitted", frame, testAuthority(session));
+            assertTrue(gotData.await(5, TimeUnit.SECONDS));
+            source.drain().get(5, TimeUnit.SECONDS);
+            assertTrue(ActorPipelineRouteSession.wasMailboxPublished(frame));
+            assertEquals(1, deliveries.get(),
+                    "failed competing sender published duplicate mailbox DATA");
+            assertEquals(0, session.outstanding());
+            source.stop();
+            worker.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            worker.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void finalMailboxRejectsWrongActorAndUnboundSessionBeforeQueueing()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
