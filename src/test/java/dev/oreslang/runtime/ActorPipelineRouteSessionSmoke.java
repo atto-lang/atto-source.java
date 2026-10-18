@@ -218,21 +218,25 @@ public final class ActorPipelineRouteSessionSmoke {
         // only the exact predecessor frame consumed by this return may
         // be restored. A sibling can have the same path and still have a
         // different one-shot publication authority.
-        var siblingA = retry.forwardTo(retryRoot, "worker-a");
-        var siblingB = retry.forwardTo(retryRoot, "worker-a");
+        var siblings = new ActorPipelineRouteSession(plan, 22, 4);
+        var sharedRoot = siblings.ingress("source");
+        var siblingA = siblings.forwardTo(sharedRoot, "worker-a");
+        var siblingB = siblings.forwardTo(sharedRoot, "worker-a");
         // At this point both siblings have identical actor path and flow.
-        var siblingBack = retry.returnOneHop(siblingA);
+        var siblingBack = siblings.returnOneHop(siblingA);
         try {
-            retry.restoreRejectedReturn(siblingB, siblingBack);
+            siblings.restoreRejectedReturn(siblingB, siblingBack);
             throw new AssertionError("same-path sibling forged rollback");
         } catch (IllegalStateException expected) { }
-        retry.restoreRejectedReturn(siblingA, siblingBack);
-        retry.complete(siblingA);
+        siblings.restoreRejectedReturn(siblingA, siblingBack);
+        siblings.complete(siblingA);
         try {
-            retry.restoreRejectedReturn(siblingA, siblingBack);
+            siblings.restoreRejectedReturn(siblingA, siblingBack);
             throw new AssertionError("spent reverse rollback was replayed");
         } catch (IllegalStateException expected) { }
-        retry.complete(siblingB);
+        siblings.complete(siblingB);
+        siblings.complete(sharedRoot);
+        check(siblings.outstanding() == 0, "sibling return rollback leaked credits");
 
         var successfulReply = retry.returnToOrigin(retrySink);
         check(successfulReply.receiver().equals("source")
