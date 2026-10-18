@@ -6491,7 +6491,8 @@ public final class OresEvalRootNode extends RootNode {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
                 // nlex discards captured values and private-member authority,
                 // but MUST preserve declaration-origin lexical isolation.
-                Env captured = nonLexical ? env.lexicalBoundaryOnly() : env.snapshot();
+                Env captured = nonLexical ? env.lexicalBoundaryOnly()
+                        : env.snapshotCaptures(LambdaCapturePlanner.captures(lambda));
                 return tailCallable(args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured, nonLexical);
