@@ -108,6 +108,21 @@ public final class TypeChecker {
     public record TypeCheckResult(Ast.Program program, List<String> warnings) {
         public TypeCheckResult { warnings = List.copyOf(warnings); }
     }
+    public record LinkedInterfaceMetadata(
+            Ast.InterfaceDecl declaration,
+            String canonicalOwner) {
+        public LinkedInterfaceMetadata {
+            if (declaration == null
+                    || declaration.visibility() != Ast.Visibility.PUBLIC
+                    || canonicalOwner == null
+                    || canonicalOwner.isBlank()) {
+                throw new IllegalArgumentException(
+                        "linked interface metadata requires a public declaration "
+                                + "and stable canonical owner");
+            }
+        }
+    }
+
     /** The one explicit struct literal currently permitted to omit declared fields. */
     private Ast.ObjectExpr permittedPartialStructInitializer;
 
@@ -155,7 +170,7 @@ public final class TypeChecker {
             Ast.Program program,
             Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
-            Map<String, Ast.InterfaceDecl> linkedInterfaces) {
+            Map<String, LinkedInterfaceMetadata> linkedInterfaces) {
         if (linkedClasses == null || linkedAliases == null || linkedInterfaces == null) {
             throw new IllegalArgumentException(
                     "linked public class/interface metadata cannot be null");
@@ -199,11 +214,13 @@ public final class TypeChecker {
                     "orphaned linked class field alias metadata");
         }
 
-        for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedInterfaces.entrySet()) {
+        for (Map.Entry<String, LinkedInterfaceMetadata> entry
+                : linkedInterfaces.entrySet()) {
             String localName = entry.getKey();
-            Ast.InterfaceDecl declaration = entry.getValue();
-            if (localName == null || localName.isBlank() || declaration == null
-                    || declaration.visibility() != Ast.Visibility.PUBLIC) {
+            LinkedInterfaceMetadata metadata = entry.getValue();
+            Ast.InterfaceDecl declaration =
+                    metadata == null ? null : metadata.declaration();
+            if (localName == null || localName.isBlank() || declaration == null) {
                 throw new IllegalArgumentException(
                         "invalid linked public interface/contract: " + localName);
             }
@@ -218,7 +235,13 @@ public final class TypeChecker {
                         "linked public contract was not uniquely imported: " + localName);
             }
             checker.interfaces.put(localName, declaration);
-            checker.interfaceOwners.put(declaration, "<linked:" + localName + ">");
+            String previousOwner = checker.interfaceOwners.putIfAbsent(
+                    declaration, metadata.canonicalOwner());
+            if (previousOwner != null
+                    && !previousOwner.equals(metadata.canonicalOwner())) {
+                throw new IllegalArgumentException(
+                        "linked contract declaration has conflicting canonical identities");
+            }
         }
 
         checker.validate(program);
