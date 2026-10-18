@@ -88,6 +88,12 @@ public final class CheckedScalarInvocationWitness {
                         "formal type/ownership requires full compiler resolution");
             }
         }
+        // A return signature is only a source declaration, not a proof of
+        // the implementation's type or effects. This tiny issuer may inspect
+        // only a single expression-free return of a scalar literal or
+        // immutable, required scalar formal (or bare return for void).
+        // All other callee bodies require the real recursive checker.
+        requireLocallyProvableCalleeBody(selected);
         // Indexes are source expressions, not raw call items. Each omission has
         // NO expression and no type; typed None is not inferred from an AST name.
         List<Ast.TypeRef> literalTypes = new ArrayList<>();
@@ -144,6 +150,56 @@ public final class CheckedScalarInvocationWitness {
         }
         return new CheckedScalarInvocationWitness(
                 lexical, selected, selected.returnType(), site, literalTypes);
+    }
+
+    /**
+     * Conservative declaration-body guard, NOT general function checking.
+     *
+     * The preview must not mistake a source-declared result type for an
+     * independently verified implementation: a malformed return body can be
+     * constructed directly in the AST without going through TypeChecker.
+     * Admitting only a single pure return removes this ambiguity without
+     * inventing ownership, effect or runtime authority.
+     */
+    private static void requireLocallyProvableCalleeBody(Ast.FunctionDecl selected) {
+        if (selected.body().size() != 1
+                || !(selected.body().getFirst() instanceof Ast.ReturnStmt ret)) {
+            throw new IllegalArgumentException(
+                    "callee body requires full semantic and effect checking");
+        }
+        if ("void".equals(selected.returnType().name())) {
+            if (ret.value() != null) {
+                throw new IllegalArgumentException(
+                        "void callee return value requires semantic validation");
+            }
+            return;
+        }
+        if (ret.value() instanceof Ast.LiteralExpr literal) {
+            if (!selected.returnType().equals(
+                    OptionalCallLiteralStage.exactScalarLiteralType(literal))) {
+                throw new IllegalArgumentException(
+                        "callee literal return contradicts its declared scalar result");
+            }
+            return;
+        }
+        if (ret.value() instanceof Ast.NameExpr name) {
+            Ast.Param returned = null;
+            for (Ast.Param param : selected.parameters()) {
+                if (!param.name().equals(name.name())) continue;
+                if (returned != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate formal name requires declaration checking");
+                }
+                returned = param;
+            }
+            if (returned != null && !returned.optional()
+                    && !returned.mutable() && !returned.structural()
+                    && selected.returnType().equals(returned.valueType())) {
+                return;
+            }
+        }
+        throw new IllegalArgumentException(
+                "callee return expression requires full semantic and effect checking");
     }
 
     private static boolean exactScalar(Ast.TypeRef t) {

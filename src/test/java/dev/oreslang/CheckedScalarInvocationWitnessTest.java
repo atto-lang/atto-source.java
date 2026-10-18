@@ -211,4 +211,110 @@ final class CheckedScalarInvocationWitnessTest {
                 module.name(), module.annotations(), module.contracts(),
                 List.of(module.declarations().getFirst(), caller))));
     }
+    @Test
+    void selectedReturnTypeIsNotAProofOfCalleeImplementation() {
+        for (String body : List.of(
+                "return true;",
+                "return \"oops\";",
+                "return;")) {
+            Ast.Program parsed = Parser.parse("""
+                    define module app as
+                        pub fnc target(int a): int { %s }
+                        pub fnc caller(): void {
+                            const value = target(a: 5);
+                            return;
+                        }
+                    end
+                    """.formatted(body));
+            Ast.FunctionDecl f = caller(parsed);
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.inspectStagedScalarInvocation(
+                            parsed, f, call(f)), body);
+        }
+    }
+
+    @Test
+    void uncheckedCalleeSideEffectsAndFallthroughCannotClaimScalarProof() {
+        for (String body : List.of(
+                "const before = 3; return a;",
+                "return a + 1;",
+                "const before = 3;",
+                "return target(a: a);")) {
+            Ast.Program parsed = Parser.parse("""
+                    define module app as
+                        pub fnc target(int a): int { %s }
+                        pub fnc caller(): void {
+                            const value = target(a: 5);
+                            return;
+                        }
+                    end
+                    """.formatted(body));
+            Ast.FunctionDecl f = caller(parsed);
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.inspectStagedScalarInvocation(
+                            parsed, f, call(f)), body);
+        }
+    }
+
+    @Test
+    void mismatchBetweenCalleeFormalAndReturnedScalarIsRejected() {
+        Ast.Program parsed = Parser.parse("""
+                define module app as
+                    pub fnc target(int a, bool enabled): int {
+                        return enabled;
+                    }
+                    pub fnc caller(): void {
+                        const value = target(a: 5, enabled: true);
+                        return;
+                    }
+                end
+                """);
+        Ast.FunctionDecl f = caller(parsed);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.inspectStagedScalarInvocation(
+                        parsed, f, call(f)));
+    }
+
+    @Test
+    void simpleLiteralAndRequiredFormalReturnsRetainNarrowWitness() {
+        for (String body : List.of("return a;", "return 5;")) {
+            Ast.Program parsed = Parser.parse("""
+                    define module app as
+                        pub fnc target(int a): int { %s }
+                        pub fnc caller(): void {
+                            const value = target(a: 5);
+                            return;
+                        }
+                    end
+                    """.formatted(body));
+            Ast.FunctionDecl f = caller(parsed);
+            var witness = TypeChecker.inspectStagedScalarInvocation(
+                    parsed, f, call(f));
+            assertEquals(Ast.TypeRef.simple("int"), witness.resultType());
+            assertThrows(IllegalStateException.class, witness::requireExecutable);
+        }
+    }
+
+    @Test
+    void validVoidOnlyBareReturnCanBePreviewedAsExpressionStatement() {
+        Ast.Program parsed = Parser.parse("""
+                define module app as
+                    pub fnc target(int a): void { return; }
+                    pub fnc caller(): void {
+                        target(a: 5);
+                        return;
+                    }
+                end
+                """);
+        Ast.FunctionDecl f = caller(parsed);
+        Ast.StagedCallExpr invocation =
+                (Ast.StagedCallExpr) ((Ast.ExprStmt) f.body().getFirst()).expression();
+        var witness = TypeChecker.inspectStagedScalarInvocation(
+                parsed, f, invocation);
+        assertEquals(CheckedScalarInvocationWitness.ResultSite.EXPRESSION_STATEMENT,
+                witness.resultSite());
+        assertEquals(Ast.TypeRef.simple("void"), witness.resultType());
+        assertThrows(IllegalStateException.class, witness::requireExecutable);
+    }
+
 }
