@@ -292,6 +292,10 @@ final class VmNioTcpListenerTest {
                     try (var peer = new Socket(
                             InetAddress.getByName("127.0.0.1"), listener.localPort())) {
                         var connection = accepting.get(3, TimeUnit.SECONDS);
+                        // Leave an actual VM selector read outstanding while
+                        // both teardown owners race: close must retire the FD
+                        // and drain terminal read credit exactly once.
+                        var pendingRead = connection.readBytesAsync(1);
                         var go = new java.util.concurrent.CountDownLatch(1);
                         var failures = new java.util.concurrent.atomic.AtomicReference<Throwable>();
                         Thread a = Thread.ofPlatform().start(() -> {
@@ -313,6 +317,9 @@ final class VmNioTcpListenerTest {
                         assertFalse(b.isAlive(), "listener closer blocked");
                         assertNull(failures.get(), "parallel close failed");
                         assertTrue(listener.isTerminated());
+                        assertTrue(pendingRead.isDone(),
+                                "pending read stranded by concurrent shutdown");
+                        connection.closeAsync().get(3, TimeUnit.SECONDS);
                         assertEquals(0, listener.pendingOperations());
                     }
                 }
