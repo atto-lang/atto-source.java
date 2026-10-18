@@ -301,8 +301,12 @@ public final class MessagePackCollectionCodec {
             throw new IllegalArgumentException("shape digest must be SHA-256");
         Writer writer = new Writer(scratch);
         try {
+            // Decode peak includes the header-selection schema string
+            // (TaggedMessageCodec), the full-decode schema string, Reader/
+            // digest temporaries and object headers. Charge both UTF-16
+            // strings here rather than only the final payload graph.
             writer.addDecodedBytes(
-                    Math.addExact(128L, Math.multiplyExact(2L, schemaId.length())));
+                    Math.addExact(320L, Math.multiplyExact(4L, schemaId.length())));
             writer.arrayHeader(4);
             writer.signedInt(VERSION);
             writer.string(schemaId);
