@@ -19,7 +19,6 @@ import org.junit.jupiter.api.Test;
  * Java actor identity alone does not prove protected guest isolation.
  */
 final class TrustedActorLoopbackEgressBridgeRuntimeTest {
-    private static volatile TrustedActorLoopbackEgressBridge bridge;
     private static volatile AtomicLong observedTicket;
     private static volatile CountDownLatch submitted;
     private static volatile CountDownLatch completed;
@@ -57,7 +56,7 @@ final class TrustedActorLoopbackEgressBridgeRuntimeTest {
             var actor = runtime.<String>spawnUntrusted(context -> (message, turn) -> {
                 try {
                     if ("start".equals(message)) {
-                        long id = bridge.submitGetFromCurrentActor();
+                        long id = TrustedActorLoopbackEgressBridge.submitGetFromCurrentActor();
                         observedTicket.set(id);
                         // Ordinary direct networking stays DENIED.
                         try {
@@ -66,7 +65,7 @@ final class TrustedActorLoopbackEgressBridgeRuntimeTest {
                         } catch (SecurityException expected) { }
                         submitted.countDown();
                     } else if ("poll".equals(message)) {
-                        var outcome = bridge.pollFromCurrentActor(observedTicket.get());
+                        var outcome = TrustedActorLoopbackEgressBridge.pollFromCurrentActor(observedTicket.get());
                         if (outcome.state() != TrustedActorLoopbackEgressBridge.State.PENDING) {
                             response.set(outcome);
                             completed.countDown();
@@ -80,7 +79,7 @@ final class TrustedActorLoopbackEgressBridgeRuntimeTest {
             });
             var foreign = runtime.<String>spawnUntrusted(context -> (message, turn) -> {
                 try {
-                    bridge.submitGetFromCurrentActor();
+                    TrustedActorLoopbackEgressBridge.submitGetFromCurrentActor();
                     actorFailure.set(new AssertionError("foreign actor used bound bridge"));
                 } catch (SecurityException expected) {
                     spoofDenied.countDown();
@@ -95,10 +94,10 @@ final class TrustedActorLoopbackEgressBridgeRuntimeTest {
             var tenant = gate.createHostScope(policy, clock);
             try (var executor = Executors.newSingleThreadExecutor()) {
                 try {
-                    bridge = new TrustedActorLoopbackEgressBridge(
+                    try (var binding = new TrustedActorLoopbackEgressBridge(
                             runtime, actor, gate, child, supervisor, tenant,
-                            server.getLocalPort(), executor);
-                    assertThrows(SecurityException.class, () -> bridge.submitGetFromCurrentActor());
+                            server.getLocalPort(), executor)) {
+                    assertThrows(SecurityException.class, () -> TrustedActorLoopbackEgressBridge.submitGetFromCurrentActor());
                     foreign.send("attempt");
                     assertTrue(spoofDenied.await(3, TimeUnit.SECONDS));
                     actor.send("start");
@@ -114,16 +113,14 @@ final class TrustedActorLoopbackEgressBridgeRuntimeTest {
                     assertEquals(TrustedActorLoopbackEgressBridge.State.OK,
                             response.get().state());
                     assertEquals(200, response.get().httpStatus());
+                    }
                 } finally {
-                    if (bridge != null) bridge.close();
-                    bridge = null;
                     child.close(); supervisor.close(); tenant.close();
                 }
             }
             service.join(3000);
             assertEquals(null, serverError.get());
         } finally {
-            bridge = null;
             observedTicket = null;
             submitted = null;
             completed = null;
