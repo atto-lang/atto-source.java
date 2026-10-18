@@ -975,13 +975,32 @@ public final class Ast {
      * intentionally NOT an executable CallExpr: generic type, ownership and
      * Option<T> lowering have not been verified. The type checker rejects it.
      */
+    private static List<CallArgument> checkedStagedArguments(List<CallArgument> source) {
+        List<CallArgument> items = List.copyOf(source);
+        boolean seenNamed = false;
+        boolean hasStagedItem = false;
+        for (CallArgument item : items) {
+            if (item.label() != null) {
+                seenNamed = true;
+                hasStagedItem = true;
+            } else if (seenNamed) {
+                throw new IllegalArgumentException("positional call argument after named argument");
+            }
+            if (item.omitted()) hasStagedItem = true;
+        }
+        if (!hasStagedItem) {
+            throw new IllegalArgumentException("ordinary calls must retain legacy call AST");
+        }
+        return items;
+    }
+
     public record StagedCallExpr(
             Expr callee, List<TypeRef> typeArguments,
             boolean typeArgumentsPresent, List<CallArgument> arguments) implements Expr {
         public StagedCallExpr {
             java.util.Objects.requireNonNull(callee, "callee");
             typeArguments = List.copyOf(typeArguments);
-            arguments = List.copyOf(arguments);
+            arguments = checkedStagedArguments(arguments);
             if (!typeArgumentsPresent && !typeArguments.isEmpty()) {
                 throw new IllegalArgumentException("call-site type arguments require explicit marker");
             }
@@ -993,7 +1012,10 @@ public final class Ast {
             TypeRef type, List<CallArgument> arguments, boolean actorSpawn) implements Expr {
         public StagedNewExpr {
             java.util.Objects.requireNonNull(type, "constructed type");
-            arguments = List.copyOf(arguments);
+            arguments = checkedStagedArguments(arguments);
+            if (arguments.stream().anyMatch(CallArgument::spread)) {
+                throw new IllegalArgumentException("class and actor constructors do not admit unproved spreads");
+            }
         }
     }
 
