@@ -142,7 +142,7 @@ final class WorkflowActorWireV1Test {
     @Test
     void malformedWireValuesFailClosed() {
         assertThrows(
-                IllegalArgumentException.class,
+                IllegalStateException.class,
                 () -> WorkflowActorWireV1.event(
                         WorkflowActorWireV1.map(
                                 "type", "unknown",
