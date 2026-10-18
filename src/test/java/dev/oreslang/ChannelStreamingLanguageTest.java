@@ -201,6 +201,29 @@ final class ChannelStreamingLanguageTest {
     }
 
     @Test
+    void asyncGeneratorFinallyRunsOnceAfterNormalExhaustion() throws Exception {
+        assertEquals("12F|", run("""
+                async generator fnc numbers(): int {
+                  try {
+                    yield 1;
+                    yield 2;
+                  } finally {
+                    stdio.stdout.write("F");
+                  }
+                  return;
+                }
+
+                pub async routine main(): void {
+                  for await const value of numbers() {
+                    stdio.stdout.write(value);
+                  }
+                  stdio.stdout.write("|");
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void channelHandlesAreAsyncTaskSafeButNotGeneralCapabilityEscapeHatches() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 async fnc ok(Channel<int> input): void {
