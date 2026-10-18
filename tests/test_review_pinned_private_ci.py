@@ -124,6 +124,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             "carrier_reviews": self.write("carrier-reviews.json",
                 self.reviews(CARRIER_HEAD, rid=14)),
             "incident_comments": self.write("incident.json", [self.resume_comment()]),
+            "carrier_incident_comments": self.write("carrier-incident.json", [self.resume_comment(cid=199)]),
             "source_commit": self.write("source-commit.json", {
                 "sha": SOURCE_COMMIT,
                 "commit": {"tree": {"sha": SOURCE_TREE}},
@@ -165,13 +166,14 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         with self.assertRaises(MOD.Denied):
             self.run_fixture(fx)
 
-    def test_valid_exact_head_authority_emits_schema2_receipt(self):
+    def test_valid_exact_head_authority_emits_schema3_receipt(self):
         receipt = self.run_fixture(self.fixture())
-        self.assertEqual(receipt["schema"], 2)
+        self.assertEqual(receipt["schema"], 3)
         self.assertEqual(receipt["source_commit_sha"], SOURCE_COMMIT)
         self.assertEqual(receipt["source_tree_sha"], SOURCE_TREE)
         self.assertEqual(receipt["carrier_base_sha"], CARRIER_HEAD)
         self.assertEqual(receipt["incident_resume_comment_id"], 99)
+        self.assertEqual(receipt["carrier_incident_resume_comment_id"], 199)
         self.assertEqual(receipt["publisher_review_id"], 11)
         self.assertEqual(receipt["carrier_review_id"], 14)
         self.assertEqual(receipt["independent_reviewer_login"], REVIEWER_LOGIN)
@@ -406,6 +408,16 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         self.assertDenied(lambda fx: fx.__setitem__(
             "incident_comments", self.write("incident-old-head.json", [
                 self.resume_comment(publisher="a" * 40)])))
+
+
+    def test_missing_carrier_incident_resume_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "carrier_incident_comments", self.write("carrier-incident-empty.json", [])))
+
+    def test_carrier_incident_resume_wrong_head_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "carrier_incident_comments", self.write("carrier-incident-old-head.json", [
+                self.resume_comment(cid=199, publisher="a" * 40)])))
 
     def test_source_tree_mismatch_denied(self):
         self.assertDenied(lambda fx: fx.__setitem__(
