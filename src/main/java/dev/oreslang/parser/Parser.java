@@ -1712,8 +1712,20 @@ public final class Parser {
             match(SEMICOLON);
             return statement;
         }
+        if (check(DO) && isContextualIdentifierAt(current + 1, "task")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 2).type() == LBRACE) {
+            advance(); // do
+            advance(); // contextual task
+            Ast.TaskBlockStmt statement = new Ast.TaskBlockStmt(parseBlock());
+            match(SEMICOLON);
+            return statement;
+        }
         if (check(NB) && checkNext(LBRACE)) {
-            throw error(peek(), "bare 'nb { ... }' must be bound to Task<T>; use 'do nb { ... }' to discard the handle");
+            throw error(peek(), "bare 'nb { ... }' must be bound to Task<T>; use 'do task { ... }' to discard its handle");
+        }
+        if (isContextualIdentifier("task") && checkNext(LBRACE)) {
+            throw error(peek(), "bare 'task { ... }' must be used as an expression; use 'do task { ... }' to discard its handle");
         }
         // The value-producing static select expression is not lowered yet.
         // Preserve historical statement sources until expression migration
@@ -3571,6 +3583,13 @@ public final class Parser {
                     : "'async' in expression position must prefix a lambda parameter list");
             return task ? new Ast.TaskLambdaExpr(body) : new Ast.AsyncLambdaExpr(body);
         }
+        // New canonical spelling of the lightweight Task expression.
+        // Keep the legacy 'nb {}' spelling source compatible, and keep
+        // 'task' contextual to avoid capturing ordinary task identifiers.
+        if (isContextualIdentifier("task") && checkNext(LBRACE)) {
+            advance();
+            return new Ast.TaskExpr(parseBlock());
+        }
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
@@ -4102,6 +4121,12 @@ public final class Parser {
      * legal variable/parameter names. Grammar productions opt into their keyword
      * meaning explicitly at switch/select arms and match guards.</p>
      */
+    private boolean isContextualIdentifierAt(int position, String keyword) {
+        return position >= 0 && position < tokens.size()
+                && tokens.get(position).type() == IDENT
+                && tokens.get(position).lexeme().equals(keyword);
+    }
+
     private boolean matchContextualKeyword(String... keywords) {
         if (!check(IDENT)) return false;
         String lexeme = peek().lexeme();
