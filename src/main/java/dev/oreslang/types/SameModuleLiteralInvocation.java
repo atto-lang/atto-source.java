@@ -58,6 +58,15 @@ public final class SameModuleLiteralInvocation {
         if (!program.imports().isEmpty()) {
             throw new IllegalArgumentException("imported lexical scope requires compiler resolution");
         }
+        if (caller.actorKind() != Ast.ActorKind.NONE
+                || caller.kind() != Ast.CallableKind.FNC
+                || caller.async() || caller.suspends() || caller.generator()
+                || caller.nonLexical() || caller.structural() || caller.trapped()
+                || !caller.genericParameters().isEmpty()
+                || !caller.annotations().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "actor, routine, generic, effectful or annotated caller needs trusted lexical authority");
+        }
         Ast.ModuleDecl declaringModule = null;
         int ownerHits = 0;
         for (Ast.ModuleDecl module : program.modules()) {
@@ -91,8 +100,18 @@ public final class SameModuleLiteralInvocation {
                 siteOccurrences++;
             }
             if (statement instanceof Ast.BindingStmt binding
-                    && binding.name().equals(targetName)) {
-                throw new IllegalArgumentException("local binding could shadow direct target");
+                    && (binding.name().equals(targetName)
+                        || binding.name().equals(declaringModule.name()))) {
+                throw new IllegalArgumentException("local binding could shadow target or module namespace");
+            }
+            if (statement instanceof Ast.DestructureStmt destructure) {
+                for (Ast.DestructureBinding binding : destructure.bindings()) {
+                    if (binding.name().equals(targetName)
+                            || binding.name().equals(declaringModule.name())) {
+                        throw new IllegalArgumentException(
+                                "destructure binding could shadow target or module namespace");
+                    }
+                }
             }
         }
         if (siteOccurrences != 1) {
