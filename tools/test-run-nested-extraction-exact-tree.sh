@@ -12,6 +12,7 @@ printf 'program\n' > "$work/checkout/source.ores"
 cat > "$work/bin/java" <<'MOCKJAVA'
 #!/usr/bin/env bash
 printf '    java.specification.version = %s\n' "${MOCK_JAVA_MAJOR:-25}" >&2
+printf '    java.runtime.name = %s\n' "${MOCK_JAVA_RUNTIME:-Oracle GraalVM}" >&2
 MOCKJAVA
 cat > "$work/bin/mvn" <<'MOCKMVN'
 #!/usr/bin/env bash
@@ -42,6 +43,9 @@ attempt() {
 }
 attempt 0 "$expected" . targeted
 grep -q -- '-DfailIfNoTests=true test' "$MOCK_MAVEN_LOG"
+grep -q -- 'NestedExtractionCallableEscapeTest' "$MOCK_MAVEN_LOG"
+grep -q -- 'NestedFutureFlattenCycleRegressionTest' "$MOCK_MAVEN_LOG"
+grep -q -- 'NestedOptionResultBoundaryRegressionTest' "$MOCK_MAVEN_LOG"
 [[ "$(wc -l < "$MOCK_MAVEN_LOG")" -eq 1 ]]
 echo 'PASS clean tree invokes targeted Maven once'
 attempt 66 '0000000000000000000000000000000000000000' . targeted
@@ -62,6 +66,11 @@ attempt 69 "$expected" . targeted
 [[ ! -s "$MOCK_MAVEN_LOG" ]]
 unset MOCK_JAVA_MAJOR
 echo 'PASS non-JDK25 blocks Maven execution'
+export MOCK_JAVA_RUNTIME='OpenJDK Runtime Environment'
+attempt 69 "$expected" . targeted
+[[ ! -s "$MOCK_MAVEN_LOG" ]]
+unset MOCK_JAVA_RUNTIME
+echo 'PASS non-GraalVM PATH JDK25 blocks Maven execution'
 mkdir -p "$work/java-home-21/bin" "$work/java-home-25/bin"
 cat > "$work/java-home-21/bin/java" <<'BADHOMEJAVA'
 #!/usr/bin/env bash
@@ -70,6 +79,7 @@ BADHOMEJAVA
 cat > "$work/java-home-25/bin/java" <<'GOODHOMEJAVA'
 #!/usr/bin/env bash
 printf '    java.specification.version = 25\n' >&2
+printf '    java.runtime.name = %s\n' "${MOCK_HOME_JAVA_RUNTIME:-Oracle GraalVM}" >&2
 GOODHOMEJAVA
 chmod +x "$work/java-home-21/bin/java" "$work/java-home-25/bin/java"
 export JAVA_HOME="$work/java-home-21"
@@ -79,7 +89,12 @@ echo 'PASS mismatched JAVA_HOME rejects Maven despite PATH JDK25'
 export JAVA_HOME="$work/java-home-25"
 attempt 0 "$expected" . targeted
 grep -q -- '-DfailIfNoTests=true test' "$MOCK_MAVEN_LOG"
-echo 'PASS matching JAVA_HOME JDK25 invokes Maven'
+echo 'PASS matching JAVA_HOME GraalVM JDK25 invokes Maven'
+export MOCK_HOME_JAVA_RUNTIME='OpenJDK Runtime Environment'
+attempt 69 "$expected" . targeted
+[[ ! -s "$MOCK_MAVEN_LOG" ]]
+unset MOCK_HOME_JAVA_RUNTIME
+echo 'PASS non-GraalVM JAVA_HOME JDK25 blocks Maven execution'
 unset JAVA_HOME
 attempt 64 "$expected" . '../../outside' targeted
 [[ ! -s "$MOCK_MAVEN_LOG" ]]
