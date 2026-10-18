@@ -6,8 +6,10 @@ import java.util.concurrent.RejectedExecutionException;
 /**
  * Explicit host/runtime lifetime owner for scheduled Tasks.
  *
- * <p>Closing the scope requests cancellation but never parks the invoking
- * scheduler carrier. {@link #getDone()} is an observation-only Future and
+ * <p>Closing the scope requests cancellation and does not itself join
+ * running children. Cancellation hooks and Future subscribers may execute
+ * synchronously, so a bounded nonparking cancellation latency is NOT promised.
+ * {@link #getDone()} is an observation-only Future and
  * settles only after the scope is sealed and every admitted TaskHandle has
  * reported physical scheduler quiescence. This class does not expose guest
  * actor/tenant cancellation rights or a source-language TaskScope type.</p>
