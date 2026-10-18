@@ -261,9 +261,15 @@ def committed_source_tree(source, trusted_root):
     if not relative.parts:
         raise Denied("source must be an explicit tracked subdirectory")
 
+    # Git environment overlays must not redirect HEAD/index/worktree attestation
+    # to a caller-selected repository. The regular inherited environment is
+    # otherwise retained (e.g. PATH, locale). No source content is logged.
+    git_env = {key: value for key, value in os.environ.items()
+               if not key.startswith("GIT_")}
+
     def git(*args):
         try:
-            result = subprocess.run(["git", *args], cwd=trusted,
+            result = subprocess.run(["git", *args], cwd=trusted, env=git_env,
                                     capture_output=True, text=True,
                                     timeout=30, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -284,8 +290,8 @@ def committed_source_tree(source, trusted_root):
     try:
         result = subprocess.run(
             ["bash", str(verifier), expected, relative.as_posix()],
-            cwd=trusted, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=120, check=False)
+            cwd=trusted, env=git_env, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=120, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("source verifier execution unavailable") from exc
     if result.returncode:
