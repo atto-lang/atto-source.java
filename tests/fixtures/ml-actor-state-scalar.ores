@@ -1,0 +1,155 @@
+// Proposed executable gate for Java/Graal actor state; NOT proven as a guest
+// execution on this exact tree. Uses int scalars to avoid pretending Tensor<f64>
+// or GPU-backed parameter storage is implemented.
+// Expected stdout (each own line): 20, 30, 2, -4, -2, 5, 5, 2, -1, 10.
+//
+// This is a single actor performing a scalar differentiable step. Gradient
+// contribution is x * upstream_gradient. Two microbatches are admitted at
+// weight version 1; SGD with integer learning_rate 1 publishes weight 5,
+// version 2. Gradients carry a unique microbatch identifier and step.
+// It is NOT tensor autograd nor a multi-stage training proof.
+//
+// The only persistent guest-owned instance data is the sole state schema.
+// State is NEVER accessed through self.state or an ordinary instance field.
+define actor VersionedScalarStage as
+    state {
+        weight: int = 10;
+        version: int = 1;
+        accumulated_gradient: int = 0;
+        pending_gradients: int = 0;
+        step: int = 1;
+        seen_first: bool = false;
+        seen_second: bool = false;
+    }
+
+    // Reads a copied scalar snapshot under a shared read permit; multiplication
+    // occurs OUTSIDE the state loan.
+    private forward(int x): int with state.read {
+        const weight = using state.read(|s| -> s.weight);
+        return weight * x;
+    }
+
+    // VJP of y=w*x: dL/dw += x * upstream_gradient.
+    // The producer's expected version must match the currently committed one.
+    // No await, select, I/O, GPU operation, or actor send in the callback.
+    private accumulate(int expected_step, int expected_version, int microbatch, int x, int upstream): int
+        with state.read, state.write
+    {
+        const contribution = x * upstream;
+        return using state.write(critical |s| -> {
+            if s.version != expected_version; do
+                return -1;
+            fi
+            if s.step != expected_step; do
+                return -5;
+            fi
+            if microbatch != 1 && microbatch != 2; do
+                return -3;
+            fi
+            if microbatch == 1; do
+                if s.seen_first; do
+                    return -4;
+                fi
+                s.seen_first = true;
+            fi
+            if microbatch == 2; do
+                if s.seen_second; do
+                    return -4;
+                fi
+                s.seen_second = true;
+            fi
+            s.accumulated_gradient = s.accumulated_gradient + contribution;
+            s.pending_gradients = s.pending_gradients + 1;
+            return s.accumulated_gradient;
+        });
+    }
+
+    // Single local state publication: compare expected version, require all
+    // two uniquely identified backward contributions, update weight and version together.
+    // Real tensor-backed ML must prepare independent frozen parameter buffers
+    // before entering this critical write scope.
+    private commit(int expected_step, int expected_version): int with state.read, state.write {
+        return self.handle_state(critical write |s| -> {
+            if s.version != expected_version; do
+                return -1;
+            fi
+            if s.step != expected_step; do
+                return -5;
+            fi
+            if s.pending_gradients != 2 || !s.seen_first || !s.seen_second; do
+                return -2;
+            fi
+            s.weight = s.weight - s.accumulated_gradient;
+            s.accumulated_gradient = 0;
+            s.pending_gradients = 0;
+            s.seen_first = false;
+            s.seen_second = false;
+            s.step = s.step + 1;
+            s.version = s.version + 1;
+            return s.weight;
+        });
+    }
+
+    private version(): int with state.read {
+        return self.handle_state(critical read |s| -> s.version);
+    }
+
+    // ActorRef callers ONLY send messages; they never invoke actor user methods.
+    receive(ActorMail<String> mail): void {
+        if mail.value == "forward1"; do
+            stdio.println(self.forward(2));
+            return;
+        fi
+        if mail.value == "forward2"; do
+            stdio.println(self.forward(3));
+            return;
+        fi
+        if mail.value == "grad1"; do
+            stdio.println(self.accumulate(1, 1, 1, 2, 1));
+            return;
+        fi
+        if mail.value == "duplicate"; do
+            stdio.println(self.accumulate(1, 1, 1, 2, 1));
+            return;
+        fi
+        if mail.value == "early"; do
+            stdio.println(self.commit(1, 1));
+            return;
+        fi
+        if mail.value == "grad2"; do
+            stdio.println(self.accumulate(1, 1, 2, 3, 1));
+            return;
+        fi
+        if mail.value == "commit"; do
+            stdio.println(self.commit(1, 1));
+            stdio.println(self.version());
+            return;
+        fi
+        if mail.value == "stale"; do
+            stdio.println(self.accumulate(1, 2, 1));
+            return;
+        fi
+        if mail.value == "after"; do
+            stdio.println(self.forward(2));
+            self.end();
+            return;
+        fi
+        return;
+    }
+end
+
+pub async routine main(): void {
+    val worker = spawn VersionedScalarStage();
+    await worker.ready;
+    worker.send("forward1");
+    worker.send("forward2");
+    worker.send("grad1");
+    worker.send("duplicate");
+    worker.send("early");
+    worker.send("grad2");
+    worker.send("commit");
+    worker.send("stale");
+    worker.send("after");
+    await worker.done;
+    return;
+}
