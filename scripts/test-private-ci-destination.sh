@@ -36,8 +36,17 @@ expect_fail() {
 }
 expect_wrapper_reject() {
   rm -f "$MOCK_EXEC_LOG"
-  if "$script_dir/run-in-private-ci-destination.sh" "$1" --source-dir "$work/fixture/source" --branch ci/oreslang-test > "$work/out" 2>&1; then
+  if "$script_dir/run-in-private-ci-destination.sh" "$1" --source-dir "$work/fixture/source" --branch ci/oreslang-test --expected-source-tree 0000000000000000000000000000000000000000 --source-pr 1286 --expected-source-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > "$work/out" 2>&1; then
     echo 'Unsafe destination executed publishing' >&2; exit 1;
+  fi
+  test ! -e "$MOCK_EXEC_LOG"
+  grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
+}
+expect_wrapper_merged_reject() {
+  rm -f "$MOCK_EXEC_LOG"
+  if "$script_dir/run-in-private-ci-destination.sh" "$1" --source-dir "$work/fixture/source" --branch ci/oreslang-merged-test --expected-source-tree 0000000000000000000000000000000000000000 --source-merged-pr 1286 --expected-source-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > "$work/out" 2>&1; then
+    echo 'Unsafe merged-main destination executed publishing' >&2
+    exit 1
   fi
   test ! -e "$MOCK_EXEC_LOG"
   grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
@@ -47,6 +56,7 @@ for visibility in public internal null; do
   export MOCK_VISIBILITY="$visibility"
   expect_fail trusted/ci
   expect_wrapper_reject trusted/ci
+  expect_wrapper_merged_reject trusted/ci
 done
 export MOCK_VISIBILITY=private MOCK_PRIVATE_FLAG=false
 expect_fail trusted/ci
@@ -61,6 +71,7 @@ expect_fail trusted
 expect_fail 'trusted/ci;echo unsafe'
 expect_fail
 expect_wrapper_reject other/repo
+expect_wrapper_merged_reject other/repo
 export MOCK_API_FAILURE=true
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci

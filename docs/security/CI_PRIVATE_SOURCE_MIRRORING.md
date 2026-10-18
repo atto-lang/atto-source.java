@@ -17,6 +17,82 @@ Run the checked transfer from trusted, reviewed source, not an untrusted PR
 checkout. If an approval policy can be modified by the code under test, treat
 the result as untrusted.
 
+**Active blocker (2026-10-18):** GitHub reports `main` as
+`protected: false`, despite checked-in CODEOWNERS metadata. That metadata
+does not enforce a review by itself. Administrators must turn on protection
+before source mirroring is approved (tracked in private issue #1368). The
+publisher now fails closed unless authenticated branch/protection metadata
+confirms: protected `main`, at least one mandatory approving review, required
+CODEOWNER review, and administrator enforcement. Ruleset-only configurations
+cannot silently bypass these checks and need separately reviewed support.
+
+The trusted-main verification additionally rejects stale code-owner approval
+configurations (approvals must be dismissed after new commits), explicit
+user/team/app exemptions from required pull-request reviews, enabled or
+unknown force-push/deletion permissions, and any admin review bypass.
+The publisher checks these controls before accessing source and again before
+each destination Git write. A branch with `protected: false` or inaccessible
+protection metadata is **not** an approved source of an export.
+
+**Runner-credential limitation:** GitHub's
+`GET /repos/{owner}/{repo}/branches/{branch}/protection` endpoint requires
+repository **Administration:read** permission. A default Actions
+`GITHUB_TOKEN` with `contents:read` cannot satisfy that requirement.
+Consequently, this publisher fails closed under an ordinary unprivileged
+runner even after branch protection is enabled. Do not grant a broadly
+privileged reusable secret to a temporary runner or bypass the inspection.
+A separately reviewed, narrowly scoped attestation/runner authorization
+design is required before enabling a real cross-organization transfer.
+Source-free simulations cannot substitute for that end-to-end proof.
+
+The publisher also retrieves the canonical source repository's
+`.github/private-ci-approved-repositories.txt` from the authenticated
+GitHub API at `ores-truffle-oreslang/oreslang-source.java` on `main`. The
+returned blob identity, encoding and byte length must be valid, and its
+contents must SHA-256 match the checked-out local allowlist **before
+collecting source**. Protected-main agreement is checked again before
+creating the destination branch ref. Editing an unreviewed checkout's local
+allowlist cannot independently authorize a private-source transfer.
+
+This runtime check does **not** prove the GitHub `main` branch has adequate
+branch protection, nor does it validate CODEOWNER review, ACLs or cache and
+artifact retention. Maintainers/security owners must establish those
+controls independently. A forged local script can bypass its own checks;
+run only reviewed publisher code from a trusted checkout.
+
+## Reviewed merged-main snapshots
+
+The publisher's `--source-merged-pr` mode is separate from the
+`--source-pr` mode used for still-open pull requests. It permits the exact
+Git tree of a **current, protected `main` tip** only when that tip equals
+the named, already merged pull request's `merge_commit_sha`. The PR must
+belong to the canonical source repository and target `main`, and the
+CODEOWNER's approval must apply to the PR's exact pre-merge HEAD commit.
+The approval's submitted time must **not be later** than the merge timestamp;
+timestamps must be valid timezone-aware instants. Closed-but-unmerged PRs,
+old main commits, shifted main tips and later or missing reviews are rejected.
+The complete attestation and branch protection are checked again before
+each destination write, not only during initial preflight.
+
+For the separately authorized post-merge mode:
+
+```bash
+scripts/run-in-private-ci-destination.sh APPROVED_PRIVATE_OWNER/REPO \
+  --source-dir ./verified-source-tree \
+  --branch ci/oreslang-verified-main \
+  --expected-source-tree VERIFIED_MAIN_TREE_SHA \
+  --source-merged-pr REVIEWED_MERGED_PR_NUMBER \
+  --expected-source-commit VERIFIED_LIVE_MAIN_COMMIT_SHA
+```
+
+**Important, October 18, 2026:** merged Java PR #1286 currently has
+no recorded CODEOWNER review, and source `main` is unprotected. Therefore
+that PR **does not qualify** for an export, even though its merge commit
+and tree are known. Do not bypass this denial or manufacture a retrospective
+review; establish independently reviewed authorization via a protected
+source policy and suitable reviewed source snapshot instead. No destination
+is approved in the current `main` allowlist.
+
 ## Destination-bound source snapshot publisher
 
 The only supported transfer entry point is **not an arbitrary command
@@ -26,7 +102,10 @@ directory, and a new isolated CI branch:
 ```bash
 scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --source-dir ./verified-source-tree \
-  --branch ci/oreslang-verified-20261013
+  --branch ci/oreslang-verified-20261013 \
+  --expected-source-tree EXACT_SOURCE_PR_GIT_TREE_SHA \
+  --source-pr 1286 \
+  --expected-source-commit EXACT_SOURCE_PR_HEAD_COMMIT_SHA
 ```
 
 The checked-in policy file must explicitly list the destination. The
@@ -39,6 +118,55 @@ then a **fresh standalone source tree with no `base_tree`**, followed by a
 root tree that replaces the **entire** `private-oreslang-source/` directory
 in the destination's default tree. This removes stale files from previous
 snapshots while preserving unrelated destination workflows and files.
+The destination workflow/tooling baseline is pinned to the exact default
+branch name and commit SHA observed before uploading. Before **each** Git
+blob/tree/commit/ref write, the publisher re-fetches destination identity,
+default-branch name and live HEAD SHA; a move, branch switch, missing ref or
+malformed SHA aborts further writes rather than publishing a CI branch based
+on stale workflow definitions. This is fail-closed defense-in-depth and cannot
+eliminate the narrow check-to-write race or dangling blobs already sent.
+
+The publisher additionally checks **destination-side branch protection**
+before the first upload and before every subsequent Git write. The exact
+pinned destination default HEAD must be protected by mandatory CODEOWNER
+review, stale-review dismissal, administrator enforcement, zero user/team/app
+review-bypass grants, and disabled force-pushes/deletions. Inaccessible or
+malformed protection metadata fails closed. This is separate from source-side
+authorization: a stable destination commit does not by itself prove that
+changes to the workflows it contains were independently reviewed.
+
+The destination's default branch is pinned to one exact
+`refs/heads/BRANCH` reference with explicit Git object type `commit`.
+Missing or ambiguous ref names, annotated-tag targets, malformed tree
+objects, and default-branch movement during upload are denied. These
+checks happen before source writes and before each subsequent Git write.
+
+Before writing even one private Git blob, the publisher requires a 40-hex source tree SHA independently verified from the intended source PR commit.
+It also requires the **specific source PR number** and the **expected source
+PR HEAD commit SHA**. Through the authenticated GitHub API it checks that the
+PR remains open, its head and base belong to the canonical private source
+repository, its target is `main`, the PR's current head exactly matches the
+pinned commit, and the pinned commit's Git tree exactly matches the supplied
+tree. It additionally requires a live, independently submitted **exact-HEAD
+CODEOWNER approval** from the trusted security reviewer: an open same-repo PR
+with a matching SHA is not itself authorization. Draft PRs, self-review,
+prior-commit approvals, dismissed/changes-requested current approvals, invalid
+review chronology and incomplete review pagination all fail closed.
+Review timestamps are parsed as timezone-aware instants, rather than compared
+as raw strings. This approval is rechecked prior to each destination write.
+The mock suite exercises missing, stale, revoked and reordered approvals;
+these tests are not a substitute for running the complete publisher suite.
+It rechecks both PR HEAD and commit/tree **before every Git
+blob/tree/commit/ref write**, including the final destination-ref creation:
+a force-push, new commit, closure or retargeting stops the *next* write,
+rather than permitting additional uploaded blobs while waiting for ref
+publication. Already-uploaded objects may remain dangling in the private
+destination; pre-write rechecks cannot eliminate that retention or the
+check-to-write race.
+Do not derive the source PR number and expected source commit from an
+unreviewed workflow input; the authorized CI operator must independently
+choose and attest them. It reconstructs the canonical Git tree from the complete collected paths, modes and bytes and refuses a mismatched snapshot. It then requires GitHub's fresh isolated destination subtree SHA to match that same source tree before creating any commit/ref. A digest supplied by unreviewed PR policy is not independent authorization.
+
 Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated.
 
@@ -46,8 +174,14 @@ The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
 checkout**, and walks the source **through directory file descriptors** to
 prevent parent-directory symlink swap races. It rejects symbolic links,
-hardlinks to outside files, FIFOs, `.git` directories, and other unsafe
-filesystem objects. Directory enumeration is bounded to 4,096 entries,
+hardlinks to outside files, FIFOs, `.git` directories (including
+case-insensitive spellings such as `.GIT`), and other unsafe
+filesystem objects. The canonical Git-tree digest independently rejects
+unsafe path components, including `.git`, control/NUL/DEL bytes,
+backslashes, empty components, parent traversal and duplicates. The
+collector and digest must have matching fail-closed name admission
+semantics, because digest callers must not be able to bypass collector
+validation. Directory enumeration is bounded to 4,096 entries,
 1,024 directories and a maximum depth of 64. It verifies every uploaded
 Git blob SHA-1 against the source bytes. It checks that the reviewed
 destination policy has not changed

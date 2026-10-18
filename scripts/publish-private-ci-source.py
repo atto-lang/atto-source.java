@@ -6,6 +6,7 @@ writes target the exact repository checked by the private-source policy.
 """
 import argparse
 import base64
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -24,6 +25,11 @@ MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
+# The protected source repository is fixed in reviewed code, not a caller input.
+TRUSTED_SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
+TRUSTED_SOURCE_REF = "main"
+TRUSTED_SOURCE_REVIEWER = "ORESoftware"
+MAX_PR_REVIEWS = 100
 
 
 class Denied(RuntimeError):
@@ -54,6 +60,13 @@ def gh_api(route, method="GET", payload=None):
         data = json.loads(p.stdout)
     except json.JSONDecodeError as exc:
         raise Denied("invalid GitHub API JSON response") from exc
+    # The documented PR reviews endpoint returns a list, not a JSON object.
+    # Admit it only at this fixed, trusted source-repository route.
+    if (route.startswith(f"repos/{TRUSTED_SOURCE_REPOSITORY}/pulls/")
+            and route.endswith("/reviews?per_page=100")):
+        if not isinstance(data, list):
+            raise Denied("invalid source PR review response shape")
+        return {"reviews": data}
     if not isinstance(data, dict):
         raise Denied("unexpected GitHub response shape")
     return data
@@ -135,6 +148,257 @@ def checked_policy_fingerprint(root, repository):
         raise Denied("destination approval was revoked or absent")
     return hashlib.sha256(contents).digest()
 
+
+def require_trusted_branch_controls():
+    """Fail closed unless canonical main enforces CODEOWNER reviews and no admin bypass.
+
+    GitHub's CODEOWNERS file alone does not enforce review. The repository
+    administrator must actually enable branch protection; ruleset-only
+    configurations need a separately reviewed attestation implementation.
+    """
+    prefix = f"repos/{TRUSTED_SOURCE_REPOSITORY}/branches/{TRUSTED_SOURCE_REF}"
+    branch = gh_api(prefix)
+    if branch.get("name") != TRUSTED_SOURCE_REF or branch.get("protected") is not True:
+        raise Denied("source main branch is not protected")
+    protection = gh_api(prefix + "/protection")
+    reviews = protection.get("required_pull_request_reviews")
+    admins = protection.get("enforce_admins")
+    if not isinstance(reviews, dict):
+        raise Denied("source main lacks required pull-request reviews")
+    count = reviews.get("required_approving_review_count")
+    if (reviews.get("require_code_owner_reviews") is not True
+            or not isinstance(count, int) or isinstance(count, bool)
+            or count < 1):
+        raise Denied("source main lacks enforced CODEOWNER approval")
+    if not isinstance(admins, dict) or admins.get("enabled") is not True:
+        raise Denied("source main permits admin bypass of review controls")
+    if reviews.get("dismiss_stale_reviews") is not True:
+        raise Denied("source main permits approvals for outdated revisions")
+    for setting in ("allow_force_pushes", "allow_deletions"):
+        rule = protection.get(setting)
+        if not isinstance(rule, dict) or rule.get("enabled") is not False:
+            raise Denied("source main permits force-push, deletion or unknown bypass settings")
+    # Classic branch protection permits named teams/users/apps to bypass
+    # mandatory PR review. Admin enforcement alone does not eliminate these
+    # exceptions; fail closed rather than trusting a nominal CODEOWNER rule.
+    bypass = reviews.get("bypass_pull_request_allowances", {})
+    if not isinstance(bypass, dict) or any(
+            key not in ("users", "teams", "apps") for key in bypass):
+        raise Denied("source main review bypass allowances are malformed")
+    for actors in bypass.values():
+        if not isinstance(actors, list) or actors:
+            raise Denied("source main allows actor bypass of security reviews")
+
+
+
+def require_destination_branch_controls(repository, default, expected_head):
+    """Require independently reviewed destination workflows at the pinned HEAD."""
+    branch_route = f"repos/{repository}/branches/{default}"
+    branch = gh_api(branch_route)
+    if (branch.get("name") != default or branch.get("protected") is not True
+            or not isinstance(branch.get("commit"), dict)
+            or branch["commit"].get("sha") != expected_head):
+        raise Denied("destination default branch is unprotected or changed")
+    protection = gh_api(branch_route + "/protection")
+    reviews = protection.get("required_pull_request_reviews")
+    admins = protection.get("enforce_admins")
+    if not isinstance(reviews, dict):
+        raise Denied("destination workflows lack required pull-request review")
+    count = reviews.get("required_approving_review_count")
+    if (reviews.get("require_code_owner_reviews") is not True
+            or reviews.get("dismiss_stale_reviews") is not True
+            or not isinstance(count, int) or isinstance(count, bool) or count < 1
+            or not isinstance(admins, dict)
+            or admins.get("enabled") is not True):
+        raise Denied("destination workflow review protection is insufficient")
+    for setting in ("allow_force_pushes", "allow_deletions"):
+        rule = protection.get(setting)
+        if not isinstance(rule, dict) or rule.get("enabled") is not False:
+            raise Denied("destination default branch permits unsafe writes")
+    bypass = reviews.get("bypass_pull_request_allowances", {})
+    if (not isinstance(bypass, dict)
+            or any(k not in ("users", "teams", "apps") for k in bypass)):
+        raise Denied("destination review bypass data is malformed")
+    for actors in bypass.values():
+        if not isinstance(actors, list) or actors:
+            raise Denied("destination allows bypass of mandatory workflow review")
+
+
+def require_protected_main_policy(repository, local_policy_digest):
+    """Require the checked-out policy to match authoritative trusted main.
+
+    An unreviewed checkout must never self-authorize by adding a destination
+    to its local allowlist. The GitHub API response is authenticated via gh.
+    Recheck before creating the destination ref to catch policy revocation.
+    """
+    require_trusted_branch_controls()
+    route = (f"repos/{TRUSTED_SOURCE_REPOSITORY}/contents/"
+             f".github/private-ci-approved-repositories.txt"
+             f"?ref={TRUSTED_SOURCE_REF}")
+    result = gh_api(route)
+    if result.get("type") != "file" or result.get("encoding") != "base64":
+        raise Denied("protected main approval policy unavailable")
+    encoded = result.get("content")
+    declared_size = result.get("size")
+    if (not isinstance(encoded, str)
+            or not isinstance(declared_size, int)
+            or isinstance(declared_size, bool)
+            or declared_size < 0 or declared_size > 16 * 1024):
+        raise Denied("protected main policy payload is invalid")
+    try:
+        contents = base64.b64decode("".join(encoded.split()), validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise Denied("protected main policy cannot be decoded") from exc
+    if len(contents) != declared_size:
+        raise Denied("protected main policy size mismatch")
+    expected_blob = hashlib.sha1(
+        b"blob " + str(len(contents)).encode("ascii") + bytes([0]) + contents
+    ).hexdigest()
+    if valid_sha(result.get("sha")) != expected_blob:
+        raise Denied("protected main policy blob digest mismatch")
+    if hashlib.sha256(contents).digest() != local_policy_digest:
+        raise Denied("local approval policy differs from protected source main")
+    # checked_policy_fingerprint validates the exact local policy's entries,
+    # including this repository; matching bytes pins that authorization to
+    # the protected source main branch rather than an unreviewed PR branch.
+
+
+
+def require_source_codeowner_approval(pr_number, review_commit, author):
+    """Require a live independent CODEOWNER approval of an exact source commit."""
+    review_commit = valid_sha(review_commit)
+    # An open PR need not have been reviewed. Never treat an attacker-created
+    # same-repository PR and a caller-supplied matching SHA as source authority.
+    # Require an explicit current CODEOWNER approval for this exact HEAD.
+    reviews_response = gh_api(
+        f"repos/{TRUSTED_SOURCE_REPOSITORY}/pulls/{pr_number}/reviews?per_page=100")
+    reviews = reviews_response.get("reviews")
+    if (not isinstance(reviews, list) or len(reviews) >= MAX_PR_REVIEWS):
+        raise Denied("source PR reviews are missing or pagination is incomplete")
+    if author.casefold() == TRUSTED_SOURCE_REVIEWER.casefold():
+        raise Denied("source PR author cannot self-authorize CI export")
+    owner_reviews = []
+    for review in reviews:
+        if not isinstance(review, dict):
+            raise Denied("source PR review data is malformed")
+        user = review.get("user")
+        if not isinstance(user, dict) or not isinstance(user.get("login"), str):
+            raise Denied("source PR reviewer identity is missing")
+        if user["login"].casefold() == TRUSTED_SOURCE_REVIEWER.casefold():
+            if not isinstance(review.get("id"), int) or isinstance(review["id"], bool):
+                raise Denied("source PR CODEOWNER review identity is invalid")
+            stamp = review.get("submitted_at")
+            if not isinstance(stamp, str):
+                raise Denied("source PR CODEOWNER review chronology is invalid")
+            try:
+                instant = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise Denied("source PR CODEOWNER review timestamp is malformed") from exc
+            if instant.tzinfo is None or instant.utcoffset() is None:
+                raise Denied("source PR CODEOWNER review timestamp lacks timezone")
+            owner_reviews.append((instant, review["id"], review))
+    if not owner_reviews:
+        raise Denied("source PR has no independent CODEOWNER approval")
+    # Compare parsed instants: lexicographic ISO strings are unsafe when
+    # fractional seconds or timezone offsets differ.
+    if len({item[1] for item in owner_reviews}) != len(owner_reviews):
+        raise Denied("source PR CODEOWNER review ids are duplicated")
+    owner_reviews.sort(key=lambda item: (item[0], item[1]))
+    current = owner_reviews[-1][2]
+    if current.get("state") != "APPROVED" or current.get("commit_id") != review_commit:
+        raise Denied("source PR lacks current exact-HEAD CODEOWNER approval")
+    return owner_reviews[-1][0]
+
+
+def require_source_pr_attestation(pr_number, source_commit, expected_tree):
+    """Bind the offered source Git tree to a live same-repo PR HEAD.
+
+    Self-consistent source bytes and a caller-provided Git tree SHA do not
+    establish which reviewed source change is being exported. Query the
+    canonical private source repository and fail closed if the branch moves.
+    """
+    if (not isinstance(pr_number, int) or isinstance(pr_number, bool)
+            or pr_number < 1 or pr_number > 1_000_000_000):
+        raise Denied("source PR number is invalid")
+    source_commit = valid_sha(source_commit)
+    expected_tree = valid_sha(expected_tree)
+    pr = gh_api(f"repos/{TRUSTED_SOURCE_REPOSITORY}/pulls/{pr_number}")
+    head = pr.get("head")
+    base = pr.get("base")
+    if (pr.get("number") != pr_number
+            or pr.get("state") != "open"
+            or pr.get("draft") is not False
+            or not isinstance(pr.get("user"), dict)
+            or not isinstance(pr["user"].get("login"), str)
+            or not isinstance(head, dict)
+            or not isinstance(base, dict)
+            or head.get("sha") != source_commit
+            or not isinstance(head.get("repo"), dict)
+            or head["repo"].get("full_name") != TRUSTED_SOURCE_REPOSITORY
+            or not isinstance(base.get("repo"), dict)
+            or base["repo"].get("full_name") != TRUSTED_SOURCE_REPOSITORY
+            or base.get("ref") != TRUSTED_SOURCE_REF):
+        raise Denied("source PR provenance is missing, foreign or changed")
+    commit = gh_api(f"repos/{TRUSTED_SOURCE_REPOSITORY}/git/commits/{source_commit}")
+    if (commit.get("sha") != source_commit
+            or not isinstance(commit.get("tree"), dict)
+            or commit["tree"].get("sha") != expected_tree):
+        raise Denied("source PR HEAD commit/tree does not match attested snapshot")
+
+    require_source_codeowner_approval(pr_number, source_commit, pr["user"]["login"])
+
+
+
+
+def require_merged_main_attestation(pr_number, merge_commit, expected_tree):
+    """Only a reviewed merged PR at the current protected-main HEAD qualifies."""
+    if (not isinstance(pr_number, int) or isinstance(pr_number, bool)
+            or pr_number < 1 or pr_number > 1_000_000_000):
+        raise Denied("merged source PR number is invalid")
+    merge_commit = valid_sha(merge_commit)
+    expected_tree = valid_sha(expected_tree)
+    pr = gh_api(f"repos/{TRUSTED_SOURCE_REPOSITORY}/pulls/{pr_number}")
+    head = pr.get("head")
+    base = pr.get("base")
+    if (pr.get("number") != pr_number
+            or pr.get("state") != "closed"
+            or pr.get("merged") is not True
+            or pr.get("draft") is not False
+            or not isinstance(pr.get("merged_at"), str)
+            or pr.get("merge_commit_sha") != merge_commit
+            or not isinstance(pr.get("user"), dict)
+            or not isinstance(pr["user"].get("login"), str)
+            or not isinstance(head, dict) or not isinstance(base, dict)
+            or not isinstance(head.get("repo"), dict)
+            or head["repo"].get("full_name") != TRUSTED_SOURCE_REPOSITORY
+            or not isinstance(base.get("repo"), dict)
+            or base["repo"].get("full_name") != TRUSTED_SOURCE_REPOSITORY
+            or base.get("ref") != TRUSTED_SOURCE_REF):
+        raise Denied("merged source PR provenance is missing or changed")
+    reviewed_head = valid_sha(head.get("sha"))
+    approval_at = require_source_codeowner_approval(
+        pr_number, reviewed_head, pr["user"]["login"])
+    try:
+        merged_at = datetime.fromisoformat(pr["merged_at"].replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise Denied("merged source PR timestamp is invalid") from exc
+    if (merged_at.tzinfo is None or merged_at.utcoffset() is None
+            or approval_at > merged_at):
+        raise Denied("source CODEOWNER approval must precede PR merge")
+    current = gh_api(f"repos/{TRUSTED_SOURCE_REPOSITORY}/branches/{TRUSTED_SOURCE_REF}")
+    if (current.get("name") != TRUSTED_SOURCE_REF
+            or current.get("protected") is not True
+            or not isinstance(current.get("commit"), dict)
+            or current["commit"].get("sha") != merge_commit):
+        raise Denied("protected main HEAD no longer matches approved merge")
+    commit = gh_api(f"repos/{TRUSTED_SOURCE_REPOSITORY}/git/commits/{merge_commit}")
+    if (commit.get("sha") != merge_commit
+            or not isinstance(commit.get("tree"), dict)
+            or commit["tree"].get("sha") != expected_tree):
+        raise Denied("merged source main commit/tree does not match snapshot")
+
+
+
 def collect_source(root, trusted_root):
     """Snapshot regular files using descriptor-relative, no-follow traversal.
 
@@ -183,7 +447,7 @@ def collect_source(root, trusted_root):
             raise Denied("source directory cannot be listed safely") from exc
         names.sort()
         for name in names:
-            if (name in (".", "..", ".git")
+            if (name in (".", "..") or name.casefold() == ".git"
                     or any(ord(ch) < 32 or ord(ch) == 127 for ch in name)
                     or "\\" in name):
                 raise Denied("source path contains unsupported name")
@@ -246,31 +510,145 @@ def collect_source(root, trusted_root):
     return sorted(entries, key=lambda item: item[0])
 
 
-def publish(repository, source, branch, trusted_root):
+
+def git_tree_digest(files):
+    """Reconstruct the canonical Git tree SHA from source bytes and file modes.
+
+    A Git SHA for each uploaded blob alone does not prove that the *complete*
+    directory snapshot matches the reviewed source commit. Git tree entries
+    sort directories as names with a trailing slash, so use that ordering.
+    """
+    root = {}
+    for rel, data, mode in files:
+        if mode not in ("100644", "100755"):
+            raise Denied("source snapshot contains unsupported Git file mode")
+        if not isinstance(rel, str) or not isinstance(data, bytes):
+            raise Denied("source snapshot contains invalid entry types")
+        components = rel.split("/")
+        if (not components
+                or any(not component or component in (".", "..")
+                       or component.casefold() == ".git"
+                       or "\\" in component
+                       or any(ord(char) < 32 or ord(char) == 127
+                              for char in component)
+                       for component in components)):
+            raise Denied("source snapshot contains noncanonical path")
+        node = root
+        for component in components[:-1]:
+            child = node.setdefault(component, {})
+            if not isinstance(child, dict):
+                raise Denied("source snapshot file/directory collision")
+            node = child
+        basename = components[-1]
+        if basename in node:
+            raise Denied("duplicate source snapshot path")
+        blob = hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
+                            + bytes([0]) + data).digest()
+        node[basename] = (mode, blob)
+
+    def digest(directory):
+        encoded = []
+        for name, entry in directory.items():
+            try:
+                name_bytes = name.encode("utf-8")
+            except UnicodeError as exc:
+                raise Denied("source path cannot be represented as UTF-8") from exc
+            if isinstance(entry, dict):
+                mode = b"40000"
+                sha = digest(entry)
+                sort_key = name_bytes + b"/"
+            else:
+                mode = entry[0].encode("ascii")
+                sha = entry[1]
+                sort_key = name_bytes
+            encoded.append((sort_key, mode + b" " + name_bytes
+                            + bytes([0]) + sha))
+        body = b"".join(record for _, record in sorted(encoded,
+                                                       key=lambda item: item[0]))
+        return hashlib.sha1(b"tree " + str(len(body)).encode("ascii")
+                            + bytes([0]) + body).digest()
+
+    return digest(root).hex()
+
+def publish(repository, source, branch, trusted_root, expected_tree=None,
+            source_pr=None, source_commit=None, merged_pr=None):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
+    # Reject an absent, malformed, or caller-substituted proof before reading
+    # sensitive source bytes or invoking the destination preflight.
+    expected_tree = valid_sha(expected_tree)
+    selected = merged_pr if merged_pr is not None else source_pr
+    if ((source_pr is None) == (merged_pr is None)
+            or not isinstance(selected, int) or isinstance(selected, bool)
+            or selected < 1 or selected > 1_000_000_000):
+        raise Denied("specify exactly one open or merged PR source")
+    source_commit = valid_sha(source_commit)
+    def verify_source():
+        if merged_pr is not None:
+            require_merged_main_attestation(merged_pr, source_commit, expected_tree)
+        else:
+            require_source_pr_attestation(source_pr, source_commit, expected_tree)
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
-    trusted = trusted_root.resolve(strict=True)
-    checked_source = source.resolve(strict=True)
+    require_protected_main_policy(repository, approved_policy)
+    verify_source()
     try:
+        trusted = trusted_root.resolve(strict=True)
+        checked_source = source.resolve(strict=True)
         checked_source.relative_to(trusted)
-    except ValueError as exc:
-        raise Denied("source directory escapes the trusted checkout") from exc
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise Denied("source directory escapes trusted checkout or is unavailable") from exc
     files = collect_source(source, trusted_root)
+    actual_source_tree = git_tree_digest(files)
+    if actual_source_tree != expected_tree:
+        raise Denied("source snapshot does not match the independently attested Git tree")
     base = checked_repo(repository)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
         raise Denied("destination default branch is invalid")
     base_ref = gh_api(f"repos/{repository}/git/ref/heads/{default}")
-    base_sha = valid_sha(base_ref.get("object", {}).get("sha"))
+    if (base_ref.get("ref") != "refs/heads/" + default):
+        raise Denied("destination default branch ref identity is inconsistent")
+    base_object = base_ref.get("object")
+    if (not isinstance(base_object, dict)
+            or base_object.get("type") != "commit"):
+        raise Denied("destination default ref must target a commit")
+    base_sha = valid_sha(base_object.get("sha"))
+    require_destination_branch_controls(repository, default, base_sha)
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
-    base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
+    if base_commit.get("sha", base_sha) != base_sha:
+        raise Denied("destination default commit identity changed")
+    base_tree_object = base_commit.get("tree")
+    if not isinstance(base_tree_object, dict):
+        raise Denied("destination default commit tree is malformed")
+    base_tree = valid_sha(base_tree_object.get("sha"))
     def authorize_write():
+        # Re-check the independently protected policy BEFORE each blob write:
+        # revocation after the first upload must stop further orphaned blobs,
+        # not only the eventual creation of the CI branch reference.
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
-        checked_repo(repository)
+        require_protected_main_policy(repository, approved_policy)
+        # Source PR HEAD/commit can move *after* the first private blob was
+        # uploaded. Abort before the next Git write, not just before the ref.
+        verify_source()
+        # The destination's workflow/tooling base is pinned too. A move of
+        # default HEAD (or a default-branch switch) must stop additional
+        # source blob uploads before creating a stale CI branch.
+        current_destination = checked_repo(repository)
+        if current_destination.get("default_branch") != default:
+            raise Denied("destination default branch changed during transfer")
+        live_ref = gh_api(f"repos/{repository}/git/ref/heads/{default}")
+        if live_ref.get("ref") != "refs/heads/" + default:
+            raise Denied("destination default ref identity changed during transfer")
+        live_object = live_ref.get("object")
+        if (not isinstance(live_object, dict)
+                or live_object.get("type") != "commit"):
+            raise Denied("destination default ref must target a commit")
+        if valid_sha(live_object.get("sha")) != base_sha:
+            raise Denied("destination default HEAD changed during transfer")
+        require_destination_branch_controls(repository, default, base_sha)
 
     elements = []
     for rel, data, mode in files:
@@ -292,6 +670,8 @@ def publish(repository, source, branch, trusted_root):
     isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
                       payload={"tree": elements})
     isolated_sha = valid_sha(isolated.get("sha"))
+    if isolated_sha != expected_tree:
+        raise Denied("destination source subtree does not match attested Git tree")
     # Replace the entire PREFIX subtree atomically in the new root tree.
     # Preserve unrelated destination files and CI workflows from base_tree.
     authorize_write()
@@ -307,6 +687,8 @@ def publish(repository, source, branch, trusted_root):
     })
     commit_sha = valid_sha(commit.get("sha"))
     authorize_write()
+    require_protected_main_policy(repository, approved_policy)
+    verify_source()
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
@@ -321,11 +703,23 @@ def main(argv=None):
     p.add_argument("repository", help="approved private owner/repo")
     p.add_argument("--source-dir", required=True, type=Path)
     p.add_argument("--branch", required=True)
+    p.add_argument("--expected-source-tree", required=True,
+                   help="40-character independently attested Git tree SHA")
+    origin = p.add_mutually_exclusive_group(required=True)
+    origin.add_argument("--source-pr", type=int,
+                        help="approved open source PR")
+    origin.add_argument("--source-merged-pr", type=int,
+                        help="reviewed PR merged as protected main HEAD")
+    p.add_argument("--expected-source-commit", required=True,
+                   help="40-character exact source PR HEAD commit SHA")
     args = p.parse_args(argv)
     # Policy and code are taken from the same trusted checkout as this script.
     root = Path(__file__).resolve().parent.parent
     try:
-        commit, count = publish(args.repository, args.source_dir, args.branch, root)
+        commit, count = publish(args.repository, args.source_dir, args.branch,
+                                root, args.expected_source_tree,
+                                args.source_pr, args.expected_source_commit,
+                                args.source_merged_pr)
     except Denied as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
         return 1
