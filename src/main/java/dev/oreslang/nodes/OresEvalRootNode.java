@@ -211,28 +211,52 @@ public final class OresEvalRootNode extends RootNode {
         private void indexImports() {
             for (Ast.ImportDecl imported : program.imports()) {
                 ImportRules.validate(imported);
+                String scope = importScope(imported);
                 if (ImportRules.isJavaPath(imported.path())) {
-                    indexHostImport(imported);
+                    indexHostImport(scope, imported);
                     continue;
                 }
 
                 if (imported.wildcard()) {
-                    namespaceImports.put(imported.namespace(), imported);
+                    String key = importKey(scope, imported.namespace());
+                    if (namespaceImports.putIfAbsent(key, imported) != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate import binding " + imported.namespace()
+                                        + " in module " + scope);
+                    }
                 } else {
                     for (String sourceName : imported.names()) {
                         String localName = ImportRules.localName(imported, sourceName);
                         ImportedBinding previous = namedImports.putIfAbsent(
-                                localName,
+                                importKey(scope, localName),
                                 new ImportedBinding(imported, sourceName));
                         if (previous != null) {
-                            throw new IllegalArgumentException("duplicate import binding " + localName);
+                            throw new IllegalArgumentException(
+                                    "duplicate import binding " + localName
+                                            + " in module " + scope);
                         }
                     }
                 }
             }
         }
 
-        private void indexHostImport(Ast.ImportDecl imported) {
+        private static String importScope(Ast.ImportDecl imported) {
+            return imported.lexicalModule() == null
+                    ? Parser.ROOT_MODULE
+                    : imported.lexicalModule();
+        }
+
+        private static String lexicalImportScope(Env env) {
+            return env == null || env.lexicalModule() == null
+                    ? Parser.ROOT_MODULE
+                    : env.lexicalModule();
+        }
+
+        private static String importKey(String scope, String name) {
+            return scope + "\u0000" + name;
+        }
+
+        private void indexHostImport(String scope, Ast.ImportDecl imported) {
             String className = ImportRules.javaClassName(imported.path());
             HostClassFacade symbol = hostSymbols.computeIfAbsent(
                     className,
@@ -240,12 +264,12 @@ public final class OresEvalRootNode extends RootNode {
 
             if (imported.kind() == Ast.ImportKind.CLASS) {
                 String sourceName = imported.names().getFirst();
-                putHostClass(ImportRules.localName(imported, sourceName), symbol);
+                putHostClass(scope, ImportRules.localName(imported, sourceName), symbol);
                 return;
             }
 
             if (imported.kind() == Ast.ImportKind.FUNCTION && imported.wildcard()) {
-                putHostClass(imported.namespace(), new HostClassFacade(className, symbol.symbol(), false));
+                putHostClass(scope, imported.namespace(), new HostClassFacade(className, symbol.symbol(), false));
                 return;
             }
 
@@ -257,7 +281,7 @@ public final class OresEvalRootNode extends RootNode {
                                 + "' does not export invocable static member '" + sourceName + "'");
                     }
                     String localName = ImportRules.localName(imported, sourceName);
-                    putHostFunction(localName, args -> {
+                    putHostFunction(scope, localName, args -> {
                         context.requireCapability(
                                 IsolatePolicy.Capability.JAVA_INTEROP,
                                 "Java host method " + className + "." + sourceName);
@@ -268,22 +292,28 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (imported.kind() == Ast.ImportKind.ALL) {
-                putHostClass(imported.namespace(), symbol);
+                putHostClass(scope, imported.namespace(), symbol);
                 return;
             }
 
             throw new IllegalArgumentException("unsupported Java host import kind: " + imported.kind());
         }
 
-        private void putHostClass(String name, HostClassFacade value) {
-            if (hostClasses.putIfAbsent(name, value) != null || hostFunctions.containsKey(name)) {
-                throw new IllegalArgumentException("duplicate Java host import binding " + name);
+        private void putHostClass(String scope, String name, HostClassFacade value) {
+            String key = importKey(scope, name);
+            if (hostClasses.putIfAbsent(key, value) != null || hostFunctions.containsKey(key)) {
+                throw new IllegalArgumentException(
+                        "duplicate Java host import binding " + name
+                                + " in module " + scope);
             }
         }
 
-        private void putHostFunction(String name, Invokable value) {
-            if (hostFunctions.putIfAbsent(name, value) != null || hostClasses.containsKey(name)) {
-                throw new IllegalArgumentException("duplicate Java host import binding " + name);
+        private void putHostFunction(String scope, String name, Invokable value) {
+            String key = importKey(scope, name);
+            if (hostFunctions.putIfAbsent(key, value) != null || hostClasses.containsKey(key)) {
+                throw new IllegalArgumentException(
+                        "duplicate Java host import binding " + name
+                                + " in module " + scope);
             }
         }
 
@@ -4572,7 +4602,7 @@ public final class OresEvalRootNode extends RootNode {
                         "DynamicStruct has been removed; use infer struct{...} or an explicit closed struct");
             }
             HostClassFacade hostClass =
-                    hostClasses.get(created.type().name());
+                    hostClasses.get(importKey(lexicalImportScope(env), created.type().name()));
             if (hostClass != null) {
                 context.requireCapability(
                         IsolatePolicy.Capability.JAVA_INTEROP,
@@ -4584,7 +4614,7 @@ public final class OresEvalRootNode extends RootNode {
             Evaluator owner = this;
             boolean externalConstruction = false;
             if (klass == null) {
-                Object imported = importedValue(created.type().name());
+                Object imported = importedValue(created.type().name(), env);
                 if (imported instanceof ClassFacade externalClass) {
                     owner = externalClass.owner();
                     klass = externalClass.klass();
@@ -5917,7 +5947,8 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (call.callee() instanceof Ast.NameExpr importedName) {
-                ImportedBinding directImport = namedImports.get(importedName.name());
+                ImportedBinding directImport = namedImports.get(
+                        importKey(lexicalImportScope(env), importedName.name()));
                 if (directImport != null
                         && directImport.declaration().kind() == Ast.ImportKind.FUNCTION) {
                     List<Object> args = evaluateArguments(call.arguments(), env);
@@ -6132,13 +6163,13 @@ public final class OresEvalRootNode extends RootNode {
                     requireOne(args, "Err");
                     return new ResultValue(false, args.getFirst());
                 };
-                HostClassFacade hostClass = hostClasses.get(name.name());
+                HostClassFacade hostClass = hostClasses.get(importKey(lexicalImportScope(env), name.name()));
                 if (hostClass != null) {
                     context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
                             "Java host class " + hostClass.className());
                     return hostClass;
                 }
-                Invokable hostFunction = hostFunctions.get(name.name());
+                Invokable hostFunction = hostFunctions.get(importKey(lexicalImportScope(env), name.name()));
                 if (hostFunction != null) return hostFunction;
                 Ast.ModuleDecl module = modules.get(name.name());
                 if (module != null) {
@@ -6150,7 +6181,7 @@ public final class OresEvalRootNode extends RootNode {
                     requireLexicalClassAccess(env, klass);
                     return new ClassFacade(this, klass);
                 }
-                Object imported = importedValue(name.name());
+                Object imported = importedValue(name.name(), env);
                 if (imported != Env.MISSING) return imported;
                 Ast.FunctionDecl fn = findSingleFunction(name.name());
                 if (fn != null) {
@@ -6385,7 +6416,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "DynamicStruct has been removed; use infer struct{...} or an explicit closed struct");
                 }
-                HostClassFacade hostClass = hostClasses.get(created.type().name());
+                HostClassFacade hostClass = hostClasses.get(importKey(lexicalImportScope(env), created.type().name()));
                 if (hostClass != null) {
                     context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
                             "Java host constructor " + hostClass.className());
@@ -6401,7 +6432,7 @@ public final class OresEvalRootNode extends RootNode {
                 Evaluator owner = this;
                 boolean externalConstruction = false;
                 if (klass == null) {
-                    Object imported = importedValue(created.type().name());
+                    Object imported = importedValue(created.type().name(), env);
                     if (imported instanceof ClassFacade externalClass) {
                         owner = externalClass.owner();
                         klass = externalClass.klass();
@@ -7471,13 +7502,14 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
-        private Object importedValue(String name) {
-            ImportedBinding direct = namedImports.get(name);
+        private Object importedValue(String name, Env env) {
+            String key = importKey(lexicalImportScope(env), name);
+            ImportedBinding direct = namedImports.get(key);
             if (direct != null) {
                 return importedTarget(direct.declaration())
                         .exportValue(direct.declaration().kind(), direct.sourceName());
             }
-            Ast.ImportDecl namespace = namespaceImports.get(name);
+            Ast.ImportDecl namespace = namespaceImports.get(key);
             if (namespace != null) return new ImportedNamespace(importedTarget(namespace), namespace.kind());
             return Env.MISSING;
         }
