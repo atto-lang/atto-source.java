@@ -118,3 +118,31 @@ subtype relation, prohibition of implicit invocation and arbitrary
 properties, reserved intrinsic names, nested actor-data capability rejection,
 and preservation of legitimate in-process callable use. Independent JDK 25,
 Native Image and cross-backend conformance are still required.
+
+
+## Runtime lexical capture hardening (October 17, 2026)
+
+The interpreter now constructs a **minimal lexical closure environment**:
+`LambdaCapturePlanner` performs an explicit AST walk of the lambda's free
+names, including nested lexical callbacks and their transitive dependencies.
+The nearest lexical declaration of each required name is retained as its
+existing `Slot`; the closure no longer snapshots all ancestor environments.
+Unreferenced receivers (`self`), shadowed parent capabilities, and unrelated
+locals must not be retained. Explicitly used receiver values remain governed
+by compiler ownership and constructor-escape checks. `nlex` lambdas continue
+to use a value-free declaration-origin lexical boundary.
+
+This optimization does **not** prove `Sendable` or `Serializable`,
+permit closure transfer between actors, or authorize supervisor CONTROL.
+Other runtime continuations that intentionally capture a full suspended
+activation are separate from lexical lambda creation and require their own
+state-lifetime audit.
+
+Regression coverage is staged in
+`LambdaCapturePlannerTest` and
+`scripts/test-lambda-capture-standalone.sh`, including a seeded 10,000-case
+lexical capture matrix. The latter compiles the real Oreslang AST and planner,
+without Maven. Neither JUnit nor the complete guest-runtime GC/reachability
+and Native Image tests have passed on this exact branch head yet. Retain
+security issue #1267 until those release gates run successfully and any
+captures escaping through async callbacks are separately audited.
