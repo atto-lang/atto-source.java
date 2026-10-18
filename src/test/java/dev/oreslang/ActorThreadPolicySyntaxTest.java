@@ -181,4 +181,29 @@ final class ActorThreadPolicySyntaxTest {
                         ParallelJavaAdapter.class.getAnnotation(ActorThreads.class)));
     }
 
+    @Test
+    void actorThreadIntegerSeparatorsMustBeBetweenDigits() {
+        String[] malformed = {
+                "define actor Worker with threads(max: 1_) as end",
+                "define actor Worker with threads(max: 1__) as end",
+                "define actor Worker with threads(min: 1_, max: 1) as end",
+                "@ActorThreads(max = 1_) define actor Worker as end",
+                "@ActorThreads(min = 1__, max = 1) define actor Worker as end",
+                "@ActorThreads(min = 1, max = 1_) define actor Worker as end"
+        };
+        for (String source : malformed) {
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(source), source);
+            assertTrue(failure.getMessage().contains("separator"), source);
+        }
+        // A correctly placed numeric separator is allowed even though
+        // actor execution admission still limits the numeric range to 1..3.
+        assertEquals(new Ast.ActorThreadPolicy(1, 1),
+                actor(Parser.parse("define actor Worker with threads(min: 0_1, max: 1) as end"))
+                        .actorThreads());
+        assertEquals(new Ast.ActorThreadPolicy(1, 1),
+                actor(Parser.parse("@ActorThreads(min = 0_1, max = 1) define actor Worker as end"))
+                        .actorThreads());
+    }
+
 }
