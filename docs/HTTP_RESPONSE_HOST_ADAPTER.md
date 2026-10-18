@@ -150,6 +150,46 @@ checked on October 18 show zero-step runner failures; neither a funded runner
 nor protected approval for cross-org source copying has been demonstrated.
 No cross-repository export is authorized.
 
+## Response preflight and atomic exchange claim (2026-10-18)
+
+An additional audit found that the initial Java adapter marked the HTTP
+exchange committed before validating the combined response headers. A
+rejected validation therefore consumed the exchange and could obscure whether
+headers had reached the wire.
+
+The hardened path is now:
+
+1. `HttpResponseDraft.preflight(exchange)` validates metadata and the entire
+   staged-plus-new header budget without consuming an affine response handle,
+   setting headers, or initiating network I/O.
+2. Under the **same State monitor** protecting terminal cancellation and header
+   mutation, `NativeHttp.Exchange.respond(HttpResponseDraft)` checks the
+   terminal and committed flags, preflights, claims the response exactly once,
+   and marks the exchange committed with its status.
+3. The asynchronous I/O worker calls `writeClaimedTo(...)`, which checks
+   cancellation before emitting headers, streams through bounded chunks,
+   and defers completion/release to the existing exchange state machine.
+
+This creates one linearization point for ownership claim versus deadline/actor
+cancellation and ensures **validation failures cannot mark a response
+committed**. Once physical socket I/O begins, a racing cancellation may
+terminate a partially emitted response; no stronger wire-level rollback is
+claimed. The standalone writer's public-internal `writeTo` path uses the
+same preflight before consuming its handle.
+
+A new standalone real-HTTP regression tests an over-budget staged header map,
+a rejected preflight, correction, and successful emission from the **same**
+response instance. Its exact committed Git blobs were independently matched
+against JDK21-compiled local source:
+- `HttpResponseDraft.java`: `f8d0d3779496a7b83c5c0ee9447e400ee3098849`.
+- `HttpResponsePreflightCheck.java`: `ff30e8244e9dc58ae3cff6c5c5982795291f4d00`.
+
+Five consecutive local preflight regression runs passed. The test is
+reproducible via `bash scripts/test-http-response-preflight.sh`.
+**The full `NativeHttp`/Graal compilation and tests are not verified by this
+standalone test**; the source repo's JDK25 CI still requires an admitted runner.
+The repository's reviewed private-source mirror allowlist remains empty.
+
 ## Next implementation gates
 
 1. Establish a private, authorized CI runner; the source repository's checked-in
