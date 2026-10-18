@@ -20,6 +20,18 @@ public final class PostgresStoreSmoke {
         throw new AssertionError("expected rejection: " + why);
     }
     private static byte[] bytes(String s) { return s.getBytes(StandardCharsets.UTF_8); }
+    /** Simulate lease deadline after abrupt process loss; never used in the host adapter. */
+    private static void expire(org.postgresql.ds.PGSimpleDataSource ds,
+                               DurableActorStore.Address key) throws Exception {
+        try (var c=ds.getConnection(); var p=c.prepareStatement(
+                "UPDATE ores_durable_actor SET lease_expires_at=clock_timestamp()-interval '1 second' " +
+                "WHERE tenant_id=? AND workflow_id=? AND run_id=? AND node_id=?")) {
+            p.setString(1,key.tenantId()); p.setString(2,key.workflowId());
+            p.setString(3,key.runId()); p.setString(4,key.nodeId());
+            if(p.executeUpdate()!=1)throw new AssertionError("lease fixture failed");
+        }
+    }
+
 
     public static void main(String[] args) throws Exception {
         String jdbc = System.getenv("AI_DEV_LOOP_JDBC_URL");
@@ -56,6 +68,10 @@ public final class PostgresStoreSmoke {
 
         // Simulate process loss: use a fresh store adapter against the same live database.
         var rebooted = new PostgresDurableActorStore(ds);
+        rejects(() -> rebooted.activate(key),"live actor cannot be displaced");
+        check(first.renew(key,a.epoch()),"owned actor can renew");
+        expire(ds,key);
+        check(!first.renew(key,a.epoch()),"expired actor cannot renew");
         var b = rebooted.activate(key);
         check(b.epoch()==2 && b.inbox().isEmpty(), "persisted acked inbox and new epoch");
         check(b.snapshot().stateVersion()==1, "persisted state");
@@ -79,6 +95,7 @@ public final class PostgresStoreSmoke {
         var next = new DurableActorStore.Snapshot(0,1,"code-gen-A",2,bytes("next"));
         rejects(() -> rebooted.commitTurn(new DurableActorStore.Turn(key,c.epoch(),1,"msg-2",next,List.of(bad))),
             "duplicate outbox intent rollback");
+        expire(ds,key); // restart after a failed transaction
         var d = rebooted.activate(key);
         check(d.epoch()==4 && d.snapshot().stateVersion()==1 && d.inbox().size()==1,
             "failed transaction rolled back all tables");
@@ -93,6 +110,7 @@ public final class PostgresStoreSmoke {
         var coordinator = new DurableActivationCoordinator(rebooted, address -> true);
         check(coordinator.deliver(key,
             new DurableActorStore.Inbound("msg-3",bytes("wake"))), "dormant queue");
+        expire(ds,key); // supervised takeover after worker loss
         var restored = coordinator.restore(key);
         check(restored.epoch()==5 && restored.inbox().size()==1,
             "coordinator persisted identity and delivered mail");
