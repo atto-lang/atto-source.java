@@ -303,6 +303,19 @@ public final class ReturnCleanupChecker {
             expression(conditional.condition(), scope, inDefer, state);
             expression(conditional.whenTrue(), scope, inDefer, state);
             expression(conditional.whenFalse(), scope, inDefer, state);
+        } else if (expr instanceof Ast.MatchExpr matched) {
+            // Unlike the statement form, value-match arms store expressions
+            // directly. They still run as part of return/defer evaluation:
+            // skipping them could hide reassignment of a returned binding or
+            // an unsafe deferred local callback. Pattern bindings are scoped
+            // per arm and must not be mistaken for the outer returned value.
+            expression(matched.subject(), scope, inDefer, state);
+            for (Ast.MatchValueArm arm : matched.arms()) {
+                Scope armScope = new Scope(scope);
+                bindPattern(arm.pattern(), armScope);
+                expression(arm.guard(), armScope, inDefer, state);
+                expression(arm.value(), armScope, inDefer, state);
+            }
         } else if (expr instanceof Ast.TypeTestExpr test) {
             expression(test.value(), scope, inDefer, state);
         } else if (expr instanceof Ast.PatternTestExpr test) {
@@ -356,6 +369,20 @@ public final class ReturnCleanupChecker {
             tuple.elements().forEach(e -> expression(e, scope, inDefer, state));
         } else if (expr instanceof Ast.ObjectExpr object) {
             object.fields().forEach(f -> expression(f.value(), scope, inDefer, state));
+        } else if (expr instanceof Ast.StagedCallExpr
+                || expr instanceof Ast.StagedNewExpr) {
+            // These ASTs are not executable until optional-argument ABI and
+            // ownership effects are checked. Never ignore an unlowered call
+            // during cleanup proof, even for a direct checker API caller.
+            throw new IllegalArgumentException(
+                    "staged call cannot bypass deferred return cleanup analysis");
+        } else if (!(expr instanceof Ast.LiteralExpr
+                || expr instanceof Ast.NameExpr)) {
+            // Exhaustively review every expression added to Ast.Expr. A new
+            // expression whose children may mutate a returned value must
+            // never silently evade the cleanup/ownership phase.
+            throw new IllegalArgumentException(
+                    "unreviewed expression in deferred return cleanup analysis");
         }
     }
 }
