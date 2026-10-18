@@ -486,15 +486,13 @@ final class DurableDevLoopEndToEndV1Test {
             String eventId,
             DurableDevLoopV1.Event event,
             DurableDevLoopV1.Phase expectedPhase) throws Exception {
-        workflow.send(new DurableDevLoopActorV1.CompleteEffect(
+        workflow.send(new DurableDevLoopActorV1.CompleteAndDeliver(
                 claim.effectKey(),
                 claim.claimToken(),
                 receipt,
-                now));
-        nextWorkflow(outputs);
-
-        workflow.send(new DurableDevLoopActorV1.Deliver(
-                eventId, event));
+                now,
+                eventId,
+                event));
         var transition = assertInstanceOf(
                 DurableDevLoopActorV1.Transitioned.class,
                 nextWorkflow(outputs));
