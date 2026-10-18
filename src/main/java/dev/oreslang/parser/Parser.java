@@ -793,8 +793,8 @@ public final class Parser {
         // Current scheduler leases one physical worker per actor incarnation.
         // Fail closed: parsing a parallel policy must not silently run it serially.
         if (threads.max() > 1) {
-            throw error(previous(), "parallel actor threads require scheduler admission, "
-                    + "state effects and backend lowering; max > 1 is not yet supported");
+            throw error(previous(), "parallel actor threads require compiler-proven per-turn actor state isolation, "
+                    + "scheduler admission, state effects and backend lowering; max > 1 is not yet supported");
         }
 
         boolean braceStyle = match(LBRACE);
