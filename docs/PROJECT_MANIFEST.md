@@ -35,6 +35,37 @@ consumes. Additional compiler, target, profile, dependency, workspace, and
 actor-policy sections should be added version-by-version rather than accepted
 and silently ignored.
 
+## Library profile (Java/Graal fail-closed admission)
+
+The version 1 project manifest now recognizes one optional `[build]` setting:
+
+```toml
+[build]
+library_profile = "hosted"
+```
+
+Allowed request values are `hosted`, `freestanding-core`,
+`freestanding-alloc`, `freestanding-actor`, and `freestanding-otp`.
+An omitted value is `hosted` for backward compatibility. Unknown,
+misspelled or non-string `library_profile` values fail manifest admission;
+unrecognized `[build]` keys are rejected instead of silently ignored.
+
+**Important:** the Java/Graal compiler and `LinkedProgramRunner` currently
+support only `hosted`. Requesting any freestanding library profile produces
+a descriptive hard error *before import traversal, parsing, compilation or
+execution*. Merely recognizing the manifest value does not grant `no_std`
+capability or supply heap-free code generation. This guard closes the silent
+hosted-compile fallback; it is **not** a working freestanding backend.
+
+The next compiler milestone is trusted canonical `core/*`, `alloc/*`,
+`actor/*`, `otp/*` and `std/*` source resolution plus effect inference.
+The existing `std/core` is a hosted compatibility module, not a freestanding
+core import. The target-profile validator draft must not be called with
+arbitrary user-produced source-unit labels as authority.
+
+See [target profile draft #16](https://github.com/ores-truffle-oreslang/oreslang-target-profiles/pull/16)
+and [Java admission issue #1209](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1209).
+
 ## Import resolution
 
 Oreslang source identity remains filesystem/path based. The manifest does not
