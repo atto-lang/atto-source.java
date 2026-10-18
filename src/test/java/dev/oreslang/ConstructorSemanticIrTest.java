@@ -164,4 +164,54 @@ final class ConstructorSemanticIrTest {
                         false);
         assertThrows(IllegalArgumentException.class, expandingGeneric::requireWellFormed);
     }
+    @Test
+    void mutableFieldMayBeReassignedBeforePublishingConstructedInstance() {
+        ConstructorFlowState complete = ConstructorFlowState.blank(List.of("fixed", "mutable"))
+                .write("fixed").write("mutable").write("mutable");
+        assertFalse(complete.completeExactlyOnce());
+        assertTrue(complete.completeWithFixedFields(Set.of("fixed")));
+
+        ConstructorSemanticIr.ConstructionState state =
+                new ConstructorSemanticIr.ConstructionState(
+                        new ConstructorSemanticIr.ConstructionRegionId("Pair", 0, 0),
+                        ConstructorSemanticIr.ConstructionPhase.INITIALIZING,
+                        complete,
+                        List.of()).withFixedFields(Set.of("fixed"));
+        assertFalse(state.publishable());
+        assertTrue(state.transitionTo(ConstructorSemanticIr.ConstructionPhase.CONSTRUCTED).publishable());
+        assertFalse(new ConstructorSemanticIr.ConstructionState(
+                state.region(), ConstructorSemanticIr.ConstructionPhase.CONSTRUCTED,
+                complete, List.of()).publishable());
+    }
+
+    @Test
+    void missingMutableFieldPreventsPublicationEvenWhenFixedFieldIsComplete() {
+        ConstructorFlowState incomplete = ConstructorFlowState.blank(List.of("fixed", "mutable"))
+                .write("fixed");
+        assertFalse(incomplete.completeWithFixedFields(Set.of("fixed")));
+        ConstructorSemanticIr.ConstructionState state =
+                new ConstructorSemanticIr.ConstructionState(
+                        new ConstructorSemanticIr.ConstructionRegionId("Pair", 0, 0),
+                        ConstructorSemanticIr.ConstructionPhase.CONSTRUCTED,
+                        incomplete,
+                        List.of()).withFixedFields(Set.of("fixed"));
+        assertFalse(state.publishable());
+    }
+
+    @Test
+    void differingFixedFieldContractsCannotJoinOrReferenceUnknownFields() {
+        ConstructorFlowState state = ConstructorFlowState.blank(List.of("x")).write("x");
+        ConstructorSemanticIr.ConstructionState baseline =
+                new ConstructorSemanticIr.ConstructionState(
+                        new ConstructorSemanticIr.ConstructionRegionId("Box", 0, 0),
+                        ConstructorSemanticIr.ConstructionPhase.INITIALIZING,
+                        state, List.of());
+        ConstructorSemanticIr.ConstructionState allMutable = baseline.withFixedFields(Set.of());
+        assertThrows(IllegalArgumentException.class, () -> baseline.join(allMutable));
+        assertThrows(IllegalArgumentException.class,
+                () -> baseline.withFixedFields(Set.of("notDeclared")));
+        assertThrows(IllegalArgumentException.class,
+                () -> state.completeWithFixedFields(Set.of("notDeclared")));
+    }
+
 }
