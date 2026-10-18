@@ -1,0 +1,8 @@
+pub async routine main(): void {
+    do match true over
+        on true when true -> { stdio.println("first"); }
+        on true when true -> { stdio.println("wrong"); }
+        on _ -> { stdio.println("fallback"); }
+    end
+    return;
+}

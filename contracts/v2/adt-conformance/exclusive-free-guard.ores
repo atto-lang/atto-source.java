@@ -1,0 +1,8 @@
+fnc classify(bool value, int threshold): int {
+    match value
+        true when threshold < 0 -> { return 1; }
+        true when threshold >= 0 -> { return 2; }
+        false -> { return 0; }
+        else -> { return 3; }
+    end
+}
