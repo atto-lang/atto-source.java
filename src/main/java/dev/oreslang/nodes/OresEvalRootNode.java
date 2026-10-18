@@ -6564,54 +6564,17 @@ public final class OresEvalRootNode extends RootNode {
         private Object member(Object receiver, String name, Env env) {
             if (receiver instanceof OresObject object) return objectMember(object, name, env);
             if (receiver instanceof List<?> list) return listMember(list, name);
+            if (receiver instanceof String text) return stringMember(text, name, env);
+            if (receiver instanceof NativeHttp.Exchange exchange) return httpExchangeMember(exchange, name, env);
+            if (receiver instanceof NativeHttp.Handler handler) return httpHandlerMember(handler, name, env);
+            if (receiver instanceof ProcessFacade process) return processMember(process, name, env);
+            if (receiver instanceof ActorRuntime.ActorInboxMail<?> mail) return actorMailMember(mail, name, env);
+            return builtinMember(receiver, name, env);
+        }
 
-            if (receiver instanceof String text) {
-                if (name.equals("split_literal")) {
-                    return (Invokable) args -> {
-                        requireOne(args, "string.split_literal");
-                        String delimiter = requireString(args.getFirst(), "string.split_literal delimiter");
-                        if (delimiter.isEmpty()) throw new IllegalArgumentException("split_literal delimiter cannot be empty");
-                        return new java.util.ArrayList<>(java.util.Arrays.asList(text.split(java.util.regex.Pattern.quote(delimiter), -1)));
-                    };
-                }
-                if (name.equals("trim")) {
-                    return (Invokable) args -> { requireZero(args, "string.trim"); return text.trim(); };
-                }
-                if (name.equals("is_identifier") || name.equals("is_route_segment")) {
-                    return (Invokable) args -> {
-                        requireZero(args, "string." + name);
-                        return name.equals("is_identifier")
-                            ? text.matches("[A-Za-z_][A-Za-z0-9_]*")
-                            : text.matches("(?:[A-Za-z0-9_-]+|\\[[A-Za-z_][A-Za-z0-9_]*\\])");
-                    };
-                }
-                if (name.equals("starts_with") || name.equals("ends_with") || name.equals("contains_literal")) {
-                    return (Invokable) args -> {
-                        requireOne(args, "string." + name);
-                        String needle = requireString(args.getFirst(), "string." + name + " needle");
-                        return switch (name) {
-                            case "starts_with" -> text.startsWith(needle);
-                            case "ends_with" -> text.endsWith(needle);
-                            default -> text.contains(needle);
-                        };
-                    };
-                }
-                if (!name.equals("replace_literal")) {
-                    throw new IllegalArgumentException("unknown string member " + name);
-                }
-                return (Invokable) args -> {
-                    if (args.size() != 2 || !(args.get(0) instanceof String needle)
-                            || !(args.get(1) instanceof String replacement)) {
-                        throw new IllegalArgumentException("string.replace_literal expects two strings");
-                    }
-                    if (needle.isEmpty()) {
-                        throw new IllegalArgumentException("string.replace_literal needle must not be empty");
-                    }
-                    // Storage-level operation only: literal, non-recursive, no regex/host interop.
-                    // Context-sensitive escaping policy belongs in Oreslang libraries.
-                    return text.replace(needle, replacement);
-                };
-            }
+        private Object builtinMember(Object receiver, String name, Env env) {
+
+
             if (receiver instanceof HostClassFacade host) {
                 context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
                         "Java host class " + host.className());
@@ -6741,27 +6704,7 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown network socket member " + name);
                 };
             }
-            if (receiver instanceof NativeHttp.Handler handler) {
-                return switch (name) {
-                    case "isolated" -> handler.isolated();
-                    case "created" -> handler.created();
-                    case "reused" -> handler.reused();
-                    case "pooled" -> (Invokable) args -> {
-                        if (args.size() != 1) throw new IllegalArgumentException("pooled requires worker count");
-                        if (!(args.get(0) instanceof Number number) || !isIntegral(number))
-                            throw new IllegalArgumentException("pooled requires an integer worker count");
-                        long size = number.longValue();
-                        if (size < 1 || size > 4096) throw new IllegalArgumentException("HTTP pool size must be 1..4096");
-                        return handler.pooled((int) size);
-                    };
-                    case "dispatch" -> (Invokable) args -> {
-                        if (args.size() != 1 || !(args.get(0) instanceof NativeHttp.Exchange exchange))
-                            throw new IllegalArgumentException("dispatch requires HTTP exchange");
-                        handler.dispatch(exchange); return null;
-                    };
-                    default -> throw new IllegalArgumentException("unknown HTTP handler member " + name);
-                };
-            }
+
             if (receiver instanceof NativeHttp.Server server) {
                 return switch (name) {
                     case "port" -> (long) server.port();
@@ -6798,76 +6741,7 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown HTTP server member " + name);
                 };
             }
-            if (receiver instanceof NativeHttp.Exchange exchange) {
-                return switch (name) {
-                    case "can_respond" -> exchange.canRespond();
-                    case "server_timing" -> exchange.serverTiming();
-                    case "actor_startup_ns" -> exchange.startupNanos();
-                    case "move_to_claim_ns" -> exchange.transferNanos();
-                    case "request_id" -> exchange.requestId();
-                    case "admitted_ns" -> exchange.admittedNanos();
-                    case "http_queued_ns" -> exchange.queuedNanos();
-                    case "accept_ready_ns" -> exchange.acceptReadyNanos();
-                    case "completion" -> exchange.completion();
-                    case "operation_id" -> exchange.operationId();
-                    case "pipeline_id" -> (long) exchange.pipelineId();
-                    case "contract_id" -> (long) exchange.contractId();
-                    case "set_route" -> (Invokable) args -> {
-                        if (args.size() != 3) throw new IllegalArgumentException("set_route requires operation, pipeline, contract");
-                        exchange.route(requireString(args.get(0), "operation"), ((Number) args.get(1)).intValue(), ((Number) args.get(2)).intValue()); return null;
-                    };
-                    case "add_param" -> (Invokable) args -> {
-                        requireTwo(args, "add_param"); exchange.addParam(requireString(args.get(0), "name"), requireString(args.get(1), "value")); return null;
-                    };
-                    case "param" -> (Invokable) args -> exchange.param(requireStringArg(args, "param"));
-                    case "param_size" -> (Invokable) args -> (long) exchange.paramSize(requireStringArg(args, "param_size"));
-                    case "param_at" -> (Invokable) args -> {
-                        requireTwo(args, "param_at"); return exchange.paramAt(requireString(args.get(0), "name"), ((Number) args.get(1)).intValue());
-                    };
-                    case "cookie" -> (Invokable) args -> exchange.cookie(requireStringArg(args, "cookie"));
-                    case "method" -> exchange.method();
-                    case "target" -> exchange.target();
-                    case "path_size" -> (long) exchange.pathSize();
-                    case "path_at" -> (Invokable) args -> {
-                        if (args.size() != 1) throw new IllegalArgumentException("path_at requires index");
-                        return exchange.pathAt(((Number) args.get(0)).intValue());
-                    };
-                    case "header" -> (Invokable) args -> exchange.header(requireStringArg(args, "header"));
-                    case "query" -> (Invokable) args -> exchange.query(requireStringArg(args, "query"));
-                    case "set_header" -> (Invokable) args -> {
-                        requireTwo(args, "set_header"); exchange.setHeader(requireString(args.get(0), "name"), requireString(args.get(1), "value")); return null;
-                    };
-                    case "move_to" -> (Invokable) args -> {
-                        if (args.size() != 1 || !(args.get(0) instanceof ActorRuntime.ActorRef<?> ref))
-                            throw new IllegalArgumentException("move_to requires actor reference");
-                        return exchange.moveTo(ref);
-                    };
-                    case "read_chunk" -> (Invokable) args -> {
-                        if (args.size() != 1) throw new IllegalArgumentException("read_chunk requires maximum byte count");
-                        return exchange.readChunk(((Number) args.get(0)).intValue());
-                    };
-                    case "write_bytes" -> (Invokable) args -> {
-                        if (args.size() != 1 || !(args.get(0) instanceof List<?> bytes)) throw new IllegalArgumentException("write_bytes requires byte array");
-                        return exchange.writeBytes(bytes);
-                    };
-                    case "respond_bytes" -> (Invokable) args -> {
-                        if (args.size() != 3 || !(args.get(2) instanceof List<?> bytes)) throw new IllegalArgumentException("respond_bytes requires status, content type, byte array");
-                        return exchange.respondBytes(((Number) args.get(0)).intValue(), requireString(args.get(1), "content type"), bytes);
-                    };
-                    case "body_text" -> (Invokable) args -> { requireZero(args, "body_text"); return exchange.bodyText(); };
-                    case "respond" -> (Invokable) args -> {
-                        if (args.size() != 3) throw new IllegalArgumentException("respond requires status, content type, body");
-                        return exchange.respond(((Number) args.get(0)).intValue(), requireString(args.get(1), "content type"), requireString(args.get(2), "body"));
-                    };
-                    case "start" -> (Invokable) args -> {
-                        requireTwo(args, "start"); return exchange.start(((Number) args.get(0)).intValue(), requireString(args.get(1), "content type"));
-                    };
-                    case "write" -> (Invokable) args -> exchange.write(requireStringArg(args, "write"));
-                    case "finish" -> (Invokable) args -> { requireZero(args, "finish"); return exchange.finish(); };
-                    case "abort" -> (Invokable) args -> { requireZero(args, "abort"); exchange.abort(); return null; };
-                    default -> throw new IllegalArgumentException("unknown HTTP exchange member " + name);
-                };
-            }
+
             if (receiver instanceof HttpFacade http) {
                 return switch (name) {
                     case "handler" -> (Invokable) args -> {
@@ -6913,19 +6787,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.equals("process")) return new ProcessFacade(std.context());
                 throw new IllegalArgumentException("unknown std member " + name);
             }
-            if (receiver instanceof ProcessFacade process) {
-                return switch (name) {
-                    case "monotonic_ns" -> (Invokable) args -> { requireZero(args, "process.monotonic_ns"); return System.nanoTime(); };
-                    case "unique_id" -> (Invokable) args -> { requireZero(args, "process.unique_id"); return java.util.UUID.randomUUID().toString(); };
-                    case "unix_ms" -> (Invokable) args -> { requireZero(args, "process.unix_ms"); return System.currentTimeMillis(); };
-                    case "context_id" -> process.contextId();
-                    case "descriptor" -> process.descriptor();
-                    case "share_readonly" -> (Invokable) process::shareReadonly;
-                    case "gc" -> (Invokable) process::gc;
-                    case "exit" -> (Invokable) process::exit;
-                    default -> throw new IllegalArgumentException("unknown process member " + name);
-                };
-            }
+
             if (receiver instanceof ActorFacade actor) {
                 return switch (name) {
                     case "gc" -> (Invokable) actor::gc;
@@ -7049,18 +6911,7 @@ public final class OresEvalRootNode extends RootNode {
                             "unknown ActorOutput member " + name);
                 };
             }
-            if (receiver instanceof ActorRuntime.ActorInboxMail<?> mail) {
-                return switch (name) {
-                    case "value" -> mail.value();
-                    case "recipient" -> mail.recipient();
-                    case "sender" -> mail.sender().isPresent()
-                            ? new OptionValue(true, mail.sender().orElseThrow())
-                            : new OptionValue(false, null);
-                    case "sequence" -> mail.sequence();
-                    default -> throw new IllegalArgumentException(
-                            "unknown ActorMail member " + name);
-                };
-            }
+
             if (receiver instanceof OresFuture<?> future) {
                 return switch (name) {
                     case "map" -> (Invokable) args -> {
@@ -7180,6 +7031,174 @@ public final class OresEvalRootNode extends RootNode {
                 return hostMember(receiver, "host object", name);
             }
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
+        }
+
+        private Object stringMember(String text, String name, Env env) {
+                if (name.equals("split_literal")) {
+                    return (Invokable) args -> {
+                        requireOne(args, "string.split_literal");
+                        String delimiter = requireString(args.getFirst(), "string.split_literal delimiter");
+                        if (delimiter.isEmpty()) throw new IllegalArgumentException("split_literal delimiter cannot be empty");
+                        return new java.util.ArrayList<>(java.util.Arrays.asList(text.split(java.util.regex.Pattern.quote(delimiter), -1)));
+                    };
+                }
+                if (name.equals("trim")) {
+                    return (Invokable) args -> { requireZero(args, "string.trim"); return text.trim(); };
+                }
+                if (name.equals("is_identifier") || name.equals("is_route_segment")) {
+                    return (Invokable) args -> {
+                        requireZero(args, "string." + name);
+                        return name.equals("is_identifier")
+                            ? text.matches("[A-Za-z_][A-Za-z0-9_]*")
+                            : text.matches("(?:[A-Za-z0-9_-]+|\\[[A-Za-z_][A-Za-z0-9_]*\\])");
+                    };
+                }
+                if (name.equals("starts_with") || name.equals("ends_with") || name.equals("contains_literal")) {
+                    return (Invokable) args -> {
+                        requireOne(args, "string." + name);
+                        String needle = requireString(args.getFirst(), "string." + name + " needle");
+                        return switch (name) {
+                            case "starts_with" -> text.startsWith(needle);
+                            case "ends_with" -> text.endsWith(needle);
+                            default -> text.contains(needle);
+                        };
+                    };
+                }
+                if (!name.equals("replace_literal")) {
+                    throw new IllegalArgumentException("unknown string member " + name);
+                }
+                return (Invokable) args -> {
+                    if (args.size() != 2 || !(args.get(0) instanceof String needle)
+                            || !(args.get(1) instanceof String replacement)) {
+                        throw new IllegalArgumentException("string.replace_literal expects two strings");
+                    }
+                    if (needle.isEmpty()) {
+                        throw new IllegalArgumentException("string.replace_literal needle must not be empty");
+                    }
+                    // Storage-level operation only: literal, non-recursive, no regex/host interop.
+                    // Context-sensitive escaping policy belongs in Oreslang libraries.
+                    return text.replace(needle, replacement);
+                };
+        }
+
+        private Object httpExchangeMember(NativeHttp.Exchange exchange, String name, Env env) {
+                return switch (name) {
+                    case "can_respond" -> exchange.canRespond();
+                    case "server_timing" -> exchange.serverTiming();
+                    case "actor_startup_ns" -> exchange.startupNanos();
+                    case "move_to_claim_ns" -> exchange.transferNanos();
+                    case "request_id" -> exchange.requestId();
+                    case "admitted_ns" -> exchange.admittedNanos();
+                    case "http_queued_ns" -> exchange.queuedNanos();
+                    case "accept_ready_ns" -> exchange.acceptReadyNanos();
+                    case "completion" -> exchange.completion();
+                    case "operation_id" -> exchange.operationId();
+                    case "pipeline_id" -> (long) exchange.pipelineId();
+                    case "contract_id" -> (long) exchange.contractId();
+                    case "set_route" -> (Invokable) args -> {
+                        if (args.size() != 3) throw new IllegalArgumentException("set_route requires operation, pipeline, contract");
+                        exchange.route(requireString(args.get(0), "operation"), ((Number) args.get(1)).intValue(), ((Number) args.get(2)).intValue()); return null;
+                    };
+                    case "add_param" -> (Invokable) args -> {
+                        requireTwo(args, "add_param"); exchange.addParam(requireString(args.get(0), "name"), requireString(args.get(1), "value")); return null;
+                    };
+                    case "param" -> (Invokable) args -> exchange.param(requireStringArg(args, "param"));
+                    case "param_size" -> (Invokable) args -> (long) exchange.paramSize(requireStringArg(args, "param_size"));
+                    case "param_at" -> (Invokable) args -> {
+                        requireTwo(args, "param_at"); return exchange.paramAt(requireString(args.get(0), "name"), ((Number) args.get(1)).intValue());
+                    };
+                    case "cookie" -> (Invokable) args -> exchange.cookie(requireStringArg(args, "cookie"));
+                    case "method" -> exchange.method();
+                    case "target" -> exchange.target();
+                    case "path_size" -> (long) exchange.pathSize();
+                    case "path_at" -> (Invokable) args -> {
+                        if (args.size() != 1) throw new IllegalArgumentException("path_at requires index");
+                        return exchange.pathAt(((Number) args.get(0)).intValue());
+                    };
+                    case "header" -> (Invokable) args -> exchange.header(requireStringArg(args, "header"));
+                    case "query" -> (Invokable) args -> exchange.query(requireStringArg(args, "query"));
+                    case "set_header" -> (Invokable) args -> {
+                        requireTwo(args, "set_header"); exchange.setHeader(requireString(args.get(0), "name"), requireString(args.get(1), "value")); return null;
+                    };
+                    case "move_to" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof ActorRuntime.ActorRef<?> ref))
+                            throw new IllegalArgumentException("move_to requires actor reference");
+                        return exchange.moveTo(ref);
+                    };
+                    case "read_chunk" -> (Invokable) args -> {
+                        if (args.size() != 1) throw new IllegalArgumentException("read_chunk requires maximum byte count");
+                        return exchange.readChunk(((Number) args.get(0)).intValue());
+                    };
+                    case "write_bytes" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof List<?> bytes)) throw new IllegalArgumentException("write_bytes requires byte array");
+                        return exchange.writeBytes(bytes);
+                    };
+                    case "respond_bytes" -> (Invokable) args -> {
+                        if (args.size() != 3 || !(args.get(2) instanceof List<?> bytes)) throw new IllegalArgumentException("respond_bytes requires status, content type, byte array");
+                        return exchange.respondBytes(((Number) args.get(0)).intValue(), requireString(args.get(1), "content type"), bytes);
+                    };
+                    case "body_text" -> (Invokable) args -> { requireZero(args, "body_text"); return exchange.bodyText(); };
+                    case "respond" -> (Invokable) args -> {
+                        if (args.size() != 3) throw new IllegalArgumentException("respond requires status, content type, body");
+                        return exchange.respond(((Number) args.get(0)).intValue(), requireString(args.get(1), "content type"), requireString(args.get(2), "body"));
+                    };
+                    case "start" -> (Invokable) args -> {
+                        requireTwo(args, "start"); return exchange.start(((Number) args.get(0)).intValue(), requireString(args.get(1), "content type"));
+                    };
+                    case "write" -> (Invokable) args -> exchange.write(requireStringArg(args, "write"));
+                    case "finish" -> (Invokable) args -> { requireZero(args, "finish"); return exchange.finish(); };
+                    case "abort" -> (Invokable) args -> { requireZero(args, "abort"); exchange.abort(); return null; };
+                    default -> throw new IllegalArgumentException("unknown HTTP exchange member " + name);
+                };
+        }
+
+        private Object httpHandlerMember(NativeHttp.Handler handler, String name, Env env) {
+                return switch (name) {
+                    case "isolated" -> handler.isolated();
+                    case "created" -> handler.created();
+                    case "reused" -> handler.reused();
+                    case "pooled" -> (Invokable) args -> {
+                        if (args.size() != 1) throw new IllegalArgumentException("pooled requires worker count");
+                        if (!(args.get(0) instanceof Number number) || !isIntegral(number))
+                            throw new IllegalArgumentException("pooled requires an integer worker count");
+                        long size = number.longValue();
+                        if (size < 1 || size > 4096) throw new IllegalArgumentException("HTTP pool size must be 1..4096");
+                        return handler.pooled((int) size);
+                    };
+                    case "dispatch" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof NativeHttp.Exchange exchange))
+                            throw new IllegalArgumentException("dispatch requires HTTP exchange");
+                        handler.dispatch(exchange); return null;
+                    };
+                    default -> throw new IllegalArgumentException("unknown HTTP handler member " + name);
+                };
+        }
+
+        private Object processMember(ProcessFacade process, String name, Env env) {
+                return switch (name) {
+                    case "monotonic_ns" -> (Invokable) args -> { requireZero(args, "process.monotonic_ns"); return System.nanoTime(); };
+                    case "unique_id" -> (Invokable) args -> { requireZero(args, "process.unique_id"); return java.util.UUID.randomUUID().toString(); };
+                    case "unix_ms" -> (Invokable) args -> { requireZero(args, "process.unix_ms"); return System.currentTimeMillis(); };
+                    case "context_id" -> process.contextId();
+                    case "descriptor" -> process.descriptor();
+                    case "share_readonly" -> (Invokable) process::shareReadonly;
+                    case "gc" -> (Invokable) process::gc;
+                    case "exit" -> (Invokable) process::exit;
+                    default -> throw new IllegalArgumentException("unknown process member " + name);
+                };
+        }
+
+        private Object actorMailMember(ActorRuntime.ActorInboxMail<?> mail, String name, Env env) {
+                return switch (name) {
+                    case "value" -> mail.value();
+                    case "recipient" -> mail.recipient();
+                    case "sender" -> mail.sender().isPresent()
+                            ? new OptionValue(true, mail.sender().orElseThrow())
+                            : new OptionValue(false, null);
+                    case "sequence" -> mail.sequence();
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorMail member " + name);
+                };
         }
 
         private Object objectMember(OresObject object, String name, Env env) {
