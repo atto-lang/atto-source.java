@@ -1,6 +1,11 @@
 package dev.oreslang.runtime;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
+import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -115,6 +120,68 @@ public final class TypedWorkflowGraphV1 {
         return edges.stream()
                 .filter(edge -> edge.fromNode().equals(nodeId))
                 .toList();
+    }
+
+    /**
+     * Stable digest of the validated graph contract, independent of caller map
+     * insertion order. Durable runs pin this digest before execution.
+     */
+    public String fingerprint() {
+        try {
+            MessageDigest digest =
+                    MessageDigest.getInstance("SHA-256");
+
+            nodes.values().stream()
+                    .sorted(Comparator.comparing(Node::id))
+                    .forEach(node -> {
+                        update(digest, "node");
+                        update(digest, node.id());
+                        update(digest, node.kind().name());
+                        update(digest, node.inputType());
+                        node.outcomeTypes().entrySet().stream()
+                                .sorted(Map.Entry.comparingByKey())
+                                .forEach(entry -> {
+                                    update(digest, "outcome");
+                                    update(digest, entry.getKey());
+                                    update(digest, entry.getValue());
+                                });
+                    });
+
+            edges.stream()
+                    .sorted(Comparator
+                            .comparing(Edge::fromNode)
+                            .thenComparing(Edge::outcome)
+                            .thenComparing(Edge::toNode))
+                    .forEach(edge -> {
+                        update(digest, "edge");
+                        update(digest, edge.fromNode());
+                        update(digest, edge.outcome());
+                        update(digest, edge.toNode());
+                        update(
+                                digest,
+                                edge.maxTraversals() == null
+                                        ? "-"
+                                        : edge.maxTraversals().toString());
+                    });
+
+            update(digest, "start");
+            update(digest, startNode);
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(
+                    "SHA-256 is unavailable", impossible);
+        }
+    }
+
+    private static void update(
+            MessageDigest digest,
+            String value) {
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        digest.update((byte) (bytes.length >>> 24));
+        digest.update((byte) (bytes.length >>> 16));
+        digest.update((byte) (bytes.length >>> 8));
+        digest.update((byte) bytes.length);
+        digest.update(bytes);
     }
 
     private void validate() {
