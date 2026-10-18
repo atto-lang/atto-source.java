@@ -35,58 +35,39 @@ as a harmless primitive argument because ownership lookup chose a different
 same-name function. The ownership pass now keys module function/routine
 signatures by the same arity as the compiler and runtime.
 
-## Future type-directed overloads (not yet implemented)
+## Nominal enum extension (not enabled in source dispatch)
 
-Proposed stable key for a distinct overload is:
+The normative policy is [NOMINAL_ENUM_OVERLOAD_CONTRACT.md](NOMINAL_ENUM_OVERLOAD_CONTRACT.md),
+which supersedes the earlier primitive-ranking proposal in issue #843.
 
-```
-(declaration namespace, static-or-instance domain, function name,
- expanded explicit argument arity, canonical admitted parameter-type IDs)
-```
+1. Resolve namespace, receiver domain, name and expanded explicit arity first.
+2. Validate every pair in the selected same-arity family. Each differing
+   position must contain distinct eligible nominal enum declaration IDs;
+   all other positions must match exactly. Primitive differences invalidate
+   the family even when another position differs by enum.
+3. Require a static enum identity proof at every differing position. `Any`,
+   `Unknown`, enum cases, payload values and numeric conversions cannot
+   establish these proofs. Reject an unprovable or nonunique choice.
+4. Bind the declaration, then check every argument's assignability,
+   accessibility, ownership and effects. These checks cannot select another
+   overload. A single arity slot needs no type-based selection.
+5. Carry the resolved symbol through ownership, callbacks, imports, virtual
+   override tables and every backend. Only exact-signature virtual overrides
+   may vary with the dynamic receiver.
 
-The `fnc`/`routine` kind remains **not** a discriminant; neither does
-the return type, overload source order, effect type, or generic parameter name.
+`TypedOverloadResolver` is a compiler-side model, not a source feature.
+Its selection API now requires a registry of compiler-verified eligible
+nominal enum IDs. The caller must validate complete declared enum payloads
+before registering them; parsed names and runtime tags are not proof.
+The model does not implement that declaration analysis or enable source
+same-arity declarations. Primitive argument types remain useful for signature
+identity and subsequent compatibility checks, but never rank candidates.
 
-Candidate resolution must use static types before runtime dispatch:
+## Remaining release gates
 
-1. Filter by callable namespace, receiver domain and arity.
-2. Reject candidates with unsatisfied accessibility, ownership, effects
-   or type constraints before allowing them to become runtime symbols.
-3. Rank exact primitive and enum **type** identity above safe numeric
-   widening. Example: `f(int)` wins over `f(float)` on a known int
-   argument, but float wins on a known float argument.
-4. Where conversions tie, fail with an ambiguity diagnostic listing each
-   candidate. Never silently use source-order, callback identity, tag shape
-   or return type as a tie breaker.
-5. Emit a resolved, versioned ABI symbol and carry it through ownership,
-   Truffle, native lowering and all method-vtable/inherited slots.
-
-`f(Color)` and `f(Direction)` are future distinct overloads because
-enums are **nominal declarations**. `f(Color.Red)` and `f(Color.Blue)`
-are not: those are variants of the same parameter type `Color` and
-belong in `match`. Overloading on different erased generic
-`Option<int>` / `Option<String>` (or `Enum<int>` / `Enum<String>`
-without runtime reification) is forbidden. Partial `Any`/`Unknown`
-static types, mixed numeric promotions (e.g. multiple equally ranked
-widening paths), and structural interfaces must fail closed until
-precisely defined.
-
-No constructor is selected from the actual message's variant tag as a
-substitute for static typed overload resolution; actor message ownership
-and immutable type descriptors must be checked first. Runtime dispatch
-may use only a compiler-proven selector, even on GraalVM where the JVM
-would normally erase generic payload parameters.
-
-## Parity prerequisites
-
-- Java TypeChecker/OwnershipChecker and Truffle's AST/vtables agree for
-  fnc, routine, instance method and static fnc calls.
-- Java/Graal JIT, Native Image AOT/hybrid, and LLVM select the same source
-  declaration on shared conformance fixtures.
-- Inherited, overridden, interface-bound, actor and async calls preserve
-  chosen overload identity, argument conversions and ownership effects.
-- Static callback extraction has contextual signature selection.
-- Exact-match/widening/ambiguity/property-based tests cover primitive
-  tuples, multiple nominal enums and cross-module identical short names.
-- `Box<T>` recursive enum payloads and serializer tags must be executable
-  and independently verified before type-specific enum overloads are enabled.
+Source enum dispatch remains disabled until declaration identities, complete
+payload eligibility, resolved call IDs, ownership, imports, callbacks,
+inheritance and native lowering are implemented together. Verify actual
+compiled execution on every supported backend before claiming parity.
+Current JUnit interpreter execution and host policy tests do not prove
+optimizing Graal JIT, Native Image, native enum ABI or actor-wire parity.

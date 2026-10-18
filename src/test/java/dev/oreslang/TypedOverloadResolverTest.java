@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -22,46 +23,44 @@ final class TypedOverloadResolverTest {
                 new Signature(Domain.MODULE, "library.pick", List.of(params)));
     }
 
+    private static final Set<String> ELIGIBLE = Set.of(
+            "graphics.Color", "weather.Color", "graphics.Direction",
+            "__root__.Color", "__root__.Direction");
+
+    private static <T> Candidate<T> select(Domain domain, String name,
+            List<TypeKey> arguments, List<Candidate<T>> candidates) {
+        return TypedOverloadResolver.select(domain, name, arguments, candidates, ELIGIBLE);
+    }
+
     @Test
-    void exactPrimitiveOverloadsBeatNumericConversionsRegardlessOfDeclarationOrder() {
+    void primitiveDistinctionsRejectEvenWhenAnExactMatchExists() {
         Candidate<String> floating = candidate("float", primitive("float"));
         Candidate<String> integer = candidate("int", primitive("int"));
         for (List<Candidate<String>> order : List.of(List.of(floating, integer), List.of(integer, floating))) {
-            assertEquals("int", TypedOverloadResolver.select(
-                    Domain.MODULE, "library.pick", List.of(primitive("int")), order).declaration());
-            assertEquals("float", TypedOverloadResolver.select(
-                    Domain.MODULE, "library.pick", List.of(primitive("float")), order).declaration());
+            for (String actual : List.of("int", "float")) {
+                var error = assertThrows(IllegalArgumentException.class, () -> select(
+                        Domain.MODULE, "library.pick", List.of(primitive(actual)), order));
+                assertTrue(error.getMessage().contains("invalid same-arity"));
+            }
         }
     }
 
     @Test
-    void numericPromotionRequiresOneUniqueBestCandidate() {
-        Candidate<String> onlyFloat = candidate("float", primitive("float"));
-        assertEquals("float", TypedOverloadResolver.select(
-                Domain.MODULE, "library.pick", List.of(primitive("int")),
-                List.of(onlyFloat)).declaration());
-
-        IllegalArgumentException ambiguous = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypedOverloadResolver.select(
-                        Domain.MODULE, "library.pick", List.of(primitive("int")),
-                        List.of(candidate("float", primitive("float")),
-                                candidate("decimal", primitive("decimal")))));
-        assertTrue(ambiguous.getMessage().contains("ambiguous overload"));
+    void aritySelectionLeavesArgumentCompatibilityToTheCaller() {
+        // The only slot wins even with incompatible argument types; normal
+        // assignability must reject those afterwards, never choose a new slot.
+        var onlyFloat = candidate("float", primitive("float"));
+        for (TypeKey argument : List.of(primitive("int"), primitive("String"), TypeKey.unknown())) {
+            assertSame(onlyFloat, select(Domain.MODULE, "library.pick", List.of(argument), List.of(onlyFloat)));
+        }
     }
 
     @Test
-    void incomparableMultiParameterCandidatesAreAmbiguousNotSourceOrdered() {
-        Candidate<String> left = candidate("left", primitive("int"), primitive("float"));
-        Candidate<String> right = candidate("right", primitive("float"), primitive("int"));
-        for (List<Candidate<String>> order : List.of(List.of(left, right), List.of(right, left))) {
-            IllegalArgumentException ambiguous = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> TypedOverloadResolver.select(
-                            Domain.MODULE, "library.pick",
-                            List.of(primitive("int"), primitive("int")), order));
-            assertTrue(ambiguous.getMessage().contains("ambiguous overload"));
-        }
+    void anEnumDifferenceCannotExcuseAnotherPrimitiveDifference() {
+        var left = candidate("left", TypeKey.nominalEnum("graphics.Color"), primitive("int"));
+        var right = candidate("right", TypeKey.nominalEnum("graphics.Direction"), primitive("float"));
+        assertThrows(IllegalArgumentException.class, () -> select(Domain.MODULE, "library.pick",
+                left.signature().parameters(), List.of(left, right)));
     }
 
     @Test
@@ -73,11 +72,11 @@ final class TypedOverloadResolverTest {
                 candidate("graphics color", colors),
                 candidate("weather color", unrelated),
                 candidate("direction", directions));
-        assertEquals("graphics color", TypedOverloadResolver.select(
+        assertEquals("graphics color", select(
                 Domain.MODULE, "library.pick", List.of(colors), candidates).declaration());
-        assertEquals("weather color", TypedOverloadResolver.select(
+        assertEquals("weather color", select(
                 Domain.MODULE, "library.pick", List.of(unrelated), candidates).declaration());
-        assertEquals("direction", TypedOverloadResolver.select(
+        assertEquals("direction", select(
                 Domain.MODULE, "library.pick", List.of(directions), candidates).declaration());
         assertThrows(IllegalArgumentException.class, () -> TypeKey.nominalEnum("Color"));
         assertThrows(IllegalArgumentException.class, () -> TypeKey.nominalEnum("Color."));
@@ -87,10 +86,12 @@ final class TypedOverloadResolverTest {
 
     @Test
     void dynamicArgumentsAndErasedGenericTypeKeysAreNotAdmitted() {
-        List<Candidate<String>> candidates = List.of(candidate("int", primitive("int")));
+        List<Candidate<String>> candidates = List.of(
+                candidate("color", TypeKey.nominalEnum("graphics.Color")),
+                candidate("direction", TypeKey.nominalEnum("graphics.Direction")));
         for (TypeKey argument : List.of(TypeKey.any(), TypeKey.unknown())) {
             IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
-                    () -> TypedOverloadResolver.select(
+                    () -> select(
                             Domain.MODULE, "library.pick", List.of(argument), candidates));
             assertTrue(denied.getMessage().contains("narrow or cast"));
         }
@@ -135,13 +136,11 @@ final class TypedOverloadResolverTest {
     }
 
     @Test
-    void parsedSameArityPrimitiveAndEnumSignaturesAreRankedButNotYetAdmitted() {
+    void parsedEnumSignaturesSelectNominallyButSourceDispatchRemainsGated() {
         // The enum parser is independently staged in PR #834. This test
         // verifies signature handling from parsed type references without
         // requiring that separate draft PR to have merged.
         var program = dev.oreslang.parser.Parser.parse("""
-                fnc describe(int value): int { return 1; }
-                fnc describe(float value): int { return 2; }
                 fnc describe(Color value): int { return 3; }
                 fnc describe(Direction value): int { return 4; }
                 """);
@@ -156,13 +155,9 @@ final class TypedOverloadResolverTest {
             candidates.add(new Candidate<>(fn.parameters().getFirst().type().name(),
                     new Signature(Domain.MODULE, "__root__." + fn.name(), params)));
         }
-        assertEquals("int", TypedOverloadResolver.select(Domain.MODULE, "__root__.describe",
-                List.of(primitive("int")), candidates).declaration());
-        assertEquals("float", TypedOverloadResolver.select(Domain.MODULE, "__root__.describe",
-                List.of(primitive("float")), candidates).declaration());
-        assertEquals("Color", TypedOverloadResolver.select(Domain.MODULE, "__root__.describe",
+        assertEquals("Color", select(Domain.MODULE, "__root__.describe",
                 List.of(TypeKey.nominalEnum("__root__.Color")), candidates).declaration());
-        assertEquals("Direction", TypedOverloadResolver.select(Domain.MODULE, "__root__.describe",
+        assertEquals("Direction", select(Domain.MODULE, "__root__.describe",
                 List.of(TypeKey.nominalEnum("__root__.Direction")), candidates).declaration());
     }
 
@@ -175,7 +170,7 @@ final class TypedOverloadResolverTest {
                 List.of(primitive("bool")));
         assertEquals(first.symbolId(), second.symbolId());
         IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class,
-                () -> TypedOverloadResolver.select(Domain.MODULE, "library.pick",
+                () -> select(Domain.MODULE, "library.pick",
                         List.of(primitive("bool")),
                         List.of(new Candidate<>("first", first),
                                 new Candidate<>("second", second))));
@@ -293,10 +288,10 @@ final class TypedOverloadResolverTest {
         Candidate<String> right = candidate("right", primitive("float"), primitive("int"));
         List<TypeKey> arguments = List.of(primitive("int"), primitive("int"));
         String a = assertThrows(IllegalArgumentException.class, () ->
-                TypedOverloadResolver.select(Domain.MODULE, "library.pick",
+                select(Domain.MODULE, "library.pick",
                         arguments, List.of(left, right))).getMessage();
         String b = assertThrows(IllegalArgumentException.class, () ->
-                TypedOverloadResolver.select(Domain.MODULE, "library.pick",
+                select(Domain.MODULE, "library.pick",
                         arguments, List.of(right, left))).getMessage();
         assertEquals(a, b);
     }
@@ -311,7 +306,7 @@ final class TypedOverloadResolverTest {
                 List.of(primitive("int"), primitive("int")));
         assertNotEquals(instance.symbolId(), statik.symbolId());
         assertNotEquals(two.symbolId(), candidate("one", primitive("int")).signature().symbolId());
-        assertThrows(IllegalArgumentException.class, () -> TypedOverloadResolver.select(
+        assertThrows(IllegalArgumentException.class, () -> select(
                 Domain.STATIC, "Picker.select", List.of(primitive("int")),
                 List.of(new Candidate<>("instance", instance))));
     }
@@ -332,17 +327,42 @@ final class TypedOverloadResolverTest {
 
     @Test
     void randomizedCandidateOrderCannotInfluenceWinnerOrTie() {
-        Candidate<String> exact = candidate("exact", primitive("int"), primitive("int"));
-        Candidate<String> widened = candidate("widened", primitive("float"), primitive("float"));
-        Candidate<String> other = candidate("other", primitive("decimal"), primitive("float"));
+        Candidate<String> exact = candidate("exact", TypeKey.nominalEnum("graphics.Color"), primitive("int"));
+        Candidate<String> widened = candidate("direction", TypeKey.nominalEnum("graphics.Direction"), primitive("int"));
+        Candidate<String> other = candidate("weather", TypeKey.nominalEnum("weather.Color"), primitive("int"));
         ArrayList<Candidate<String>> all = new ArrayList<>(List.of(exact, widened, other));
         Random random = new Random(4831L);
         for (int repetition = 0; repetition < 100; repetition++) {
             java.util.Collections.shuffle(all, random);
-            assertEquals("exact", TypedOverloadResolver.select(
+            assertEquals("exact", select(
                     Domain.MODULE, "library.pick",
-                    List.of(primitive("int"), primitive("int")), all).declaration());
+                    List.of(TypeKey.nominalEnum("graphics.Color"), primitive("int")), all).declaration());
         }
+    }
+
+    @Test
+    void everyDifferingPositionNeedsProofAndEveryEnumNeedsEligibility() {
+        var color = TypeKey.nominalEnum("graphics.Color");
+        var direction = TypeKey.nominalEnum("graphics.Direction");
+        var left = candidate("left", color, color);
+        var right = candidate("right", direction, direction);
+        for (List<TypeKey> args : List.of(List.of(color, TypeKey.unknown()),
+                List.of(TypeKey.any(), color), List.of(color, direction))) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    select(Domain.MODULE, "library.pick", args, List.of(left, right)));
+        }
+        assertEquals(left, select(Domain.MODULE, "library.pick", List.of(color, color), List.of(left, right)));
+        assertThrows(IllegalArgumentException.class, () -> TypedOverloadResolver.select(
+                Domain.MODULE, "library.pick", List.of(color, color), List.of(left, right), Set.of(color.identity())));
+    }
+
+    @Test
+    void boundsRejectOversizedSameArityFamilies() {
+        var one = candidate("one", primitive("int"));
+        assertThrows(IllegalArgumentException.class, () -> select(Domain.MODULE, "library.pick",
+                List.of(primitive("int")), java.util.Collections.nCopies(129, one)));
+        assertThrows(IllegalArgumentException.class, () -> select(Domain.MODULE, "library.pick",
+                java.util.Collections.nCopies(65, primitive("int")), List.of(one)));
     }
 
     @Test

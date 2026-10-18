@@ -2,7 +2,6 @@ package dev.oreslang.ast;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -16,7 +15,8 @@ import java.util.Set;
  * dispatch. A compiler may enable typed overload declarations only after the
  * selected signature is carried to ownership analysis, interpreter lowering,
  * native code, callbacks and method vtables. Until then this is an executable
- * specification/oracle for deterministic overload ranking.
+ * specification/oracle for arity-first, nominal-enum-only selection.
+ * Primitive conversions and payload values never select a declaration.
  */
 public final class TypedOverloadResolver {
     private TypedOverloadResolver() { }
@@ -219,78 +219,97 @@ public final class TypedOverloadResolver {
         }
     }
 
+    public static final int MAX_SAME_ARITY_CANDIDATES = 128;
+    public static final int MAX_OVERLOAD_ARITY = 64;
+
     /**
-     * Select a single best candidate without source-order preference.
+     * Select by domain/name/arity, then only by proven nominal enum identity.
+     * The registry must contain compiler-resolved enum declaration IDs whose
+     * complete payload layouts have already passed eligibility validation.
+     * This is not a runtime type registry and cannot be populated from values.
      *
-     * <p>Candidate dominance is componentwise (Pareto), not total-score
-     * ranking: f(int,float) and f(float,int) are ambiguous for (int,int).
-     * The caller must still prove candidate accessibility, effects and
-     * ownership before publishing a resolved symbol.
+     * <p>Validate the entire same-arity family before considering arguments:
+     * an exact match must not hide an illegal primitive-distinguished pair.
+     * All differing positions require static enum proofs. The caller must
+     * check assignability, visibility, ownership and effects of the selected
+     * declaration separately, even for a single arity slot.
      */
     public static <T> Candidate<T> select(
             Domain domain, String qualifiedName, List<TypeKey> arguments,
-            List<Candidate<T>> candidates) {
+            List<Candidate<T>> candidates, Set<String> verifiedEligibleEnumIds) {
         Objects.requireNonNull(domain, "domain");
         Objects.requireNonNull(qualifiedName, "qualifiedName");
         arguments = List.copyOf(arguments);
         candidates = List.copyOf(candidates);
-        if (arguments.stream().anyMatch(arg -> arg.kind() == Kind.DYNAMIC)) {
-            throw new IllegalArgumentException(
-                    "dynamic Any/Unknown cannot select a typed overload of " + qualifiedName
-                            + "; narrow or cast arguments explicitly");
+        verifiedEligibleEnumIds = Set.copyOf(verifiedEligibleEnumIds);
+        if (arguments.size() > MAX_OVERLOAD_ARITY) {
+            throw new IllegalArgumentException("nominal enum overload arity bound exceeded");
         }
-
-        Set<Signature> identities = new HashSet<>();
-        List<Candidate<T>> eligible = new ArrayList<>();
-        List<int[]> ranks = new ArrayList<>();
+        List<Candidate<T>> family = new ArrayList<>();
         for (Candidate<T> candidate : candidates) {
             Signature signature = candidate.signature();
-            if (signature.domain() != domain || !signature.qualifiedName().equals(qualifiedName)) {
-                continue;
-            }
-            if (!identities.add(signature)) {
-                throw new IllegalArgumentException("duplicate typed overload: " + signature);
-            }
-            if (signature.arity() != arguments.size()) continue;
-            int[] costs = new int[arguments.size()];
-            boolean accepts = true;
-            for (int i = 0; i < costs.length; i++) {
-                costs[i] = conversionCost(arguments.get(i), signature.parameters().get(i));
-                if (costs[i] < 0) {
-                    accepts = false;
-                    break;
-                }
-            }
-            if (accepts) {
-                eligible.add(candidate);
-                ranks.add(costs);
-            }
+            if (signature.domain() == domain && signature.qualifiedName().equals(qualifiedName)
+                    && signature.arity() == arguments.size()) family.add(candidate);
         }
-        if (eligible.isEmpty()) {
+        if (family.isEmpty()) {
             throw new IllegalArgumentException("no matching overload of " + qualifiedName
-                    + " with arity " + arguments.size() + " and types " + arguments);
+                    + " with arity " + arguments.size());
         }
-        List<Candidate<T>> best = new ArrayList<>();
-        for (int i = 0; i < eligible.size(); i++) {
-            boolean dominated = false;
-            for (int j = 0; j < eligible.size(); j++) {
-                if (i != j && dominates(ranks.get(j), ranks.get(i))) {
-                    dominated = true;
+        if (family.size() > MAX_SAME_ARITY_CANDIDATES) {
+            throw new IllegalArgumentException("nominal enum overload candidate bound exceeded");
+        }
+        Set<Integer> discriminators = new java.util.TreeSet<>();
+        boolean duplicate = false, invalid = false;
+        for (int i = 0; i < family.size(); i++) {
+            Signature left = family.get(i).signature();
+            for (int j = 0; j < i; j++) {
+                Signature right = family.get(j).signature();
+                if (left.equals(right)) duplicate = true;
+                for (int p = 0; p < left.arity(); p++) {
+                    TypeKey a = left.parameters().get(p), b = right.parameters().get(p);
+                    if (a.equals(b)) continue;
+                    if (a.kind() != Kind.NOMINAL_ENUM || b.kind() != Kind.NOMINAL_ENUM) {
+                        invalid = true;
+                    } else {
+                        discriminators.add(p);
+                    }
+                }
+            }
+        }
+        // Stable diagnostics regardless of declaration order.
+        if (duplicate) throw new IllegalArgumentException("duplicate typed overload of " + qualifiedName);
+        if (invalid) throw new IllegalArgumentException(
+                "invalid same-arity overload family of " + qualifiedName
+                        + "; only distinct eligible nominal enums may distinguish parameters");
+        for (int position : discriminators) {
+            for (Candidate<T> candidate : family) {
+                TypeKey key = candidate.signature().parameters().get(position);
+                if (!verifiedEligibleEnumIds.contains(key.identity())) {
+                    throw new IllegalArgumentException("unverified or ineligible nominal enum overload symbol");
+                }
+            }
+            if (arguments.get(position).kind() != Kind.NOMINAL_ENUM) {
+                throw new IllegalArgumentException("missing static nominal enum proof at position "
+                        + position + "; narrow or cast arguments explicitly");
+            }
+        }
+        Candidate<T> chosen = null;
+        for (Candidate<T> candidate : family) {
+            boolean matches = true;
+            for (int position : discriminators) {
+                if (!candidate.signature().parameters().get(position).equals(arguments.get(position))) {
+                    matches = false;
                     break;
                 }
             }
-            if (!dominated) best.add(eligible.get(i));
+            if (matches) {
+                if (chosen != null) throw new IllegalArgumentException("ambiguous overload of " + qualifiedName);
+                chosen = candidate;
+            }
         }
-        if (best.size() != 1) {
-            // Stable diagnostics regardless of declaration/import iteration
-            // order (HashMap/vtable order must never leak into error output).
-            List<String> alternatives = best.stream()
-                    .map(x -> x.signature().toString())
-                    .sorted().toList();
-            throw new IllegalArgumentException("ambiguous overload of " + qualifiedName
-                    + " for " + arguments + ": " + alternatives);
-        }
-        return best.getFirst();
+        if (chosen == null) throw new IllegalArgumentException(
+                "cannot statically bind a unique enum overload of " + qualifiedName);
+        return chosen;
     }
 
     /** Reject malformed UTF-16 rather than silently replacing its code units
@@ -310,25 +329,4 @@ public final class TypedOverloadResolver {
         }
     }
 
-    private static boolean dominates(int[] a, int[] b) {
-        boolean strictlyBetter = false;
-        for (int i = 0; i < a.length; i++) {
-            if (a[i] > b[i]) return false;
-            if (a[i] < b[i]) strictlyBetter = true;
-        }
-        return strictlyBetter;
-    }
-
-    private static int conversionCost(TypeKey actual, TypeKey formal) {
-        if (actual.equals(formal)) return 0;
-        if (actual.kind() != Kind.PRIMITIVE || formal.kind() != Kind.PRIMITIVE) return -1;
-        // Mirror the current source type-checker's numeric assignment
-        // compatibility. A numeric promotion is still strictly less
-        // specific than exact identity; it is not promised to be lossless.
-        String from = actual.identity(), to = formal.identity();
-        if (from.equals("int") && (to.equals("float") || to.equals("decimal")
-                || to.equals("complex"))) return 1;
-        if ((from.equals("float") || from.equals("decimal")) && to.equals("complex")) return 1;
-        return -1;
-    }
 }
