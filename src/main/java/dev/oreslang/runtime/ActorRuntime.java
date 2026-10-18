@@ -4949,12 +4949,17 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 if (released.get() || cell.upgradeIngressTicket != ticket
                         || cell.stopped.get() || cell.finalized) return false;
-                return !cell.carrierActive && cell.activeTurns == 0
-                        && !cell.scheduled.get()
-                        && cell.queuedMessages == 0
-                        && !cell.sourceReceiveSuspended
-                        && cell.activeMail == null
-                        && cell.pendingOperations.isEmpty();
+                // Counters are owned by mailboxAccountingLock, not lifecycleLock.
+                // Acquiring both follows the same lifecycle -> accounting order
+                // used for normal actor-message reservation.
+                synchronized (cell.mailboxAccountingLock) {
+                    return !cell.carrierActive && cell.activeTurns == 0
+                            && !cell.scheduled.get()
+                            && cell.queuedMessages == 0
+                            && !cell.sourceReceiveSuspended
+                            && cell.activeMail == null
+                            && cell.pendingOperations.isEmpty();
+                }
             }
         }
 
