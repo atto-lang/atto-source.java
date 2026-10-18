@@ -35,6 +35,15 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     }
 
     /**
+     * Package-private host-test/embedding seam. The Polyglot Context must
+     * already be entered on the calling thread. Guest Oreslang code has no
+     * Java reference to this language object or internal context.
+     */
+    static OresContext currentEnteredContextForHost() {
+        return getCurrentContext(OresLanguage.class);
+    }
+
+    /**
      * Host-owned actor dispatcher and async workers may enter the context.
      * Guest source still has no raw thread-creation authority; that remains controlled by
      * IsolatePolicy and the Polyglot Context builder.
