@@ -482,9 +482,10 @@ public final class Parser {
             Ast.TypeRef returnType = check(LBRACE)
                     ? Ast.TypeRef.simple("void")
                     : parseTypeRef();
+            Ast.EffectSpec effects = parseCheckedEffects();
             List<Ast.Stmt> body = parseBlock();
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
-                    generics, params, returnType, annotations, body, specs);
+                    generics, params, returnType, annotations, body, specs, effects);
         }
 
         consume(LPAREN, "expected '(' after callable name or '=' for lambda-style declaration");
@@ -492,9 +493,47 @@ public final class Parser {
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
+        Ast.EffectSpec effects = parseCheckedEffects();
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
-                returnType, annotations, body, specs);
+                returnType, annotations, body, specs, effects);
+    }
+
+    private Ast.EffectSpec parseCheckedEffects() {
+        List<Ast.TypeRef> thrown = new ArrayList<>();
+        List<Ast.TypeRef> raised = new ArrayList<>();
+        List<Ast.TypeRef> panicked = new ArrayList<>();
+        boolean sawThrows = false;
+        boolean sawRaises = false;
+        boolean sawPanics = false;
+        while (check(THROWS) || check(RAISES) || check(PANICS)) {
+            Token clause = advance();
+            List<Ast.TypeRef> target;
+            if (clause.type() == THROWS) {
+                if (sawThrows) throw error(clause, "duplicate throws effect clause");
+                sawThrows = true;
+                target = thrown;
+            } else if (clause.type() == RAISES) {
+                if (sawRaises) throw error(clause, "duplicate raises effect clause");
+                sawRaises = true;
+                target = raised;
+            } else {
+                if (sawPanics) throw error(clause, "duplicate panics effect clause");
+                sawPanics = true;
+                target = panicked;
+            }
+            if (check(LBRACE) || check(THROWS) || check(RAISES) || check(PANICS)) {
+                throw error(peek(), clause.lexeme() + " requires at least one effect type");
+            }
+            target.add(parseTypeRef());
+            while (match(COMMA)) {
+                if (check(LBRACE) || check(THROWS) || check(RAISES) || check(PANICS)) {
+                    throw error(peek(), "trailing comma in " + clause.lexeme() + " effect list");
+                }
+                target.add(parseTypeRef());
+            }
+        }
+        return new Ast.EffectSpec(thrown, raised, panicked);
     }
 
     private Ast.ClassDecl parseClass(

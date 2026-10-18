@@ -216,6 +216,29 @@ public final class Ast {
         }
     }
 
+    /** Checked exceptional effects declared by one callable signature. */
+    public record EffectSpec(
+            List<TypeRef> throwsTypes,
+            List<TypeRef> raisesTypes,
+            List<TypeRef> panicsTypes) {
+        public EffectSpec {
+            throwsTypes = List.copyOf(throwsTypes);
+            raisesTypes = List.copyOf(raisesTypes);
+            panicsTypes = List.copyOf(panicsTypes);
+            if (new HashSet<>(throwsTypes).size() != throwsTypes.size()
+                    || new HashSet<>(raisesTypes).size() != raisesTypes.size()
+                    || new HashSet<>(panicsTypes).size() != panicsTypes.size()) {
+                throw new IllegalArgumentException("duplicate checked effect type");
+            }
+        }
+        public static EffectSpec none() {
+            return new EffectSpec(List.of(), List.of(), List.of());
+        }
+        public boolean isEmpty() {
+            return throwsTypes.isEmpty() && raisesTypes.isEmpty() && panicsTypes.isEmpty();
+        }
+    }
+
     public record FunctionDecl(
             String name,
             CallableKind kind,
@@ -232,7 +255,20 @@ public final class Ast {
             TypeRef returnType,
             List<Annotation> annotations,
             List<Stmt> body,
-            List<GenericParameter> genericSpecs) implements Decl {
+            List<GenericParameter> genericSpecs,
+            EffectSpec effects) implements Decl {
+        /** Preserve the pre-effects canonical FunctionDecl constructor ABI. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean suspends, boolean generator, boolean structural,
+                            boolean nonLexical, boolean trapped, ActorKind actorKind,
+                            List<String> genericParameters, List<Param> parameters,
+                            TypeRef returnType, List<Annotation> annotations,
+                            List<Stmt> body, List<GenericParameter> genericSpecs) {
+            this(name, kind, visibility, async, suspends, generator, structural,
+                    nonLexical, trapped, actorKind, genericParameters, parameters,
+                    returnType, annotations, body, genericSpecs, EffectSpec.none());
+        }
+
         /** Preserve the pre-default FunctionDecl constructor ABI. */
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             boolean suspends, boolean generator, boolean structural,
@@ -268,6 +304,7 @@ public final class Ast {
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
+            effects = java.util.Objects.requireNonNull(effects, "checked effects");
         }
 
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,

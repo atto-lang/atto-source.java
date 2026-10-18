@@ -27,7 +27,9 @@ public final class Lexer {
         KEYWORDS.put("return", RETURN); KEYWORDS.put("defer", DEFER);
         // Reserved until compiler-checked typed effects and source lowering exist.
         KEYWORDS.put("throw", THROW); KEYWORDS.put("raise", RAISE);
-        KEYWORDS.put("panic", PANIC); KEYWORDS.put("recover", RECOVER); KEYWORDS.put("val", VAL); KEYWORDS.put("const", CONST);
+        KEYWORDS.put("panic", PANIC); KEYWORDS.put("recover", RECOVER);
+        KEYWORDS.put("throws", THROWS); KEYWORDS.put("raises", RAISES);
+        KEYWORDS.put("panics", PANICS); KEYWORDS.put("val", VAL); KEYWORDS.put("const", CONST);
         KEYWORDS.put("let", LET); KEYWORDS.put("mut", MUT); KEYWORDS.put("self", SELF); KEYWORDS.put("true", TRUE); KEYWORDS.put("false", FALSE);
         KEYWORDS.put("null", NULL); KEYWORDS.put("obj", OBJ); KEYWORDS.put("arr", ARR);
         // Accelerator/host execution domains are reserved even before backend lowering.

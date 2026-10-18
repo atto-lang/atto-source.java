@@ -100,6 +100,7 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private boolean currentMaySuspend;
+    private Ast.EffectSpec currentEffects = Ast.EffectSpec.none();
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -451,6 +452,12 @@ public final class TypeChecker {
         for (Ast.Decl decl : module.declarations()) {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.actorKind() == Ast.ActorKind.NONE) {
+                if (!fn.effects().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "effectful function '" + module.name() + "." + fn.name()
+                                    + "' cannot be represented as a structural module value "
+                                    + "until Function types carry checked effect metadata");
+                }
                 Type signature = callableContractType(
                         fn.genericParameters(), fn.parameters(), fn.returnType(), fn.async(), fn.generator(), Set.of(), null);
                 if (fn.trapped() && signature instanceof Function trappedSignature) {
@@ -541,6 +548,69 @@ public final class TypeChecker {
                     "suspends " + label + " requires an async or suspends caller");
     }
 
+    private static boolean mentionsEffectGeneric(Ast.TypeRef type, Set<String> generics) {
+        if (generics.contains(type.name())) return true;
+        return type.arguments().stream().anyMatch(argument ->
+                mentionsEffectGeneric(argument, generics));
+    }
+
+    private void validateCheckedEffects(Ast.FunctionDecl fn, Set<String> generics) {
+        Ast.EffectSpec effects = fn.effects();
+        if (effects.isEmpty()) return;
+        if (fn.async() || fn.suspends() || fn.generator() || fn.trapped()
+                || fn.actorKind() != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "checked throws/raises/panics currently require a synchronous "
+                            + "ordinary callable; async/suspends/generator/trap/actor "
+                            + "effect propagation is not enabled");
+        }
+        if (fn.name().equals("main")) {
+            throw new IllegalArgumentException(
+                    "program entrypoint 'main' cannot declare unchecked terminal effects; "
+                            + "handle them before the process boundary");
+        }
+        for (Ast.TypeRef type : java.util.stream.Stream.of(
+                effects.throwsTypes(), effects.raisesTypes(), effects.panicsTypes())
+                .flatMap(java.util.Collection::stream).toList()) {
+            if (type.inferArguments() || mentionsEffectGeneric(type, generics)) {
+                throw new IllegalArgumentException(
+                        "checked effect types must be concrete at declaration time: " + type);
+            }
+            Type resolved = resolve(type, generics, null);
+            if (resolved == Primitive.VOID || resolved instanceof Borrow) {
+                throw new IllegalArgumentException(
+                        "checked effect type must be an owned non-void value: " + type);
+            }
+        }
+    }
+
+    private static void requireEffectCategoryCovered(
+            List<Ast.TypeRef> required,
+            List<Ast.TypeRef> declared,
+            String category,
+            String label) {
+        for (Ast.TypeRef effect : required) {
+            if (!declared.contains(effect)) {
+                throw new IllegalArgumentException(
+                        label + " declares checked " + category + " " + effect
+                                + " but caller signature does not cover it; "
+                                + "effect subtyping is not enabled in v1");
+            }
+        }
+    }
+
+    private static void requireEffectsCovered(
+            Ast.EffectSpec required,
+            Ast.EffectSpec declared,
+            String label) {
+        requireEffectCategoryCovered(
+                required.throwsTypes(), declared.throwsTypes(), "throws", label);
+        requireEffectCategoryCovered(
+                required.raisesTypes(), declared.raisesTypes(), "raises", label);
+        requireEffectCategoryCovered(
+                required.panicsTypes(), declared.panicsTypes(), "panics", label);
+    }
+
     private void checkFunction(String module, Ast.FunctionDecl fn) {
         if (fn.name().endsWith("_blocking") && !fn.suspends())
             throw new IllegalArgumentException(
@@ -565,6 +635,7 @@ public final class TypeChecker {
                     || fn.structural()
                     || fn.nonLexical()
                     || fn.trapped()
+                    || !fn.effects().isEmpty()
                     || fn.actorKind() != Ast.ActorKind.NONE
                     || !fn.genericParameters().isEmpty()
                     || !fn.parameters().isEmpty()
@@ -598,6 +669,7 @@ public final class TypeChecker {
                 fn.genericParameters(),
                 (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         validateFunctionGenericDefaults(fn);
+        validateCheckedEffects(fn, generics);
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
         List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
@@ -667,7 +739,9 @@ public final class TypeChecker {
         currentGenerator = fn.generator();
         currentAsyncCallable = fn.async();
         boolean previousMaySuspend = currentMaySuspend;
+        Ast.EffectSpec previousEffects = currentEffects;
         currentMaySuspend = fn.async() || fn.suspends();
+        currentEffects = fn.effects();
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
@@ -675,6 +749,7 @@ public final class TypeChecker {
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
             currentMaySuspend = previousMaySuspend;
+            currentEffects = previousEffects;
         }
 
         if (!fn.generator() && returns != Primitive.VOID && !definitelyReturns(fn.body())) {
@@ -2131,6 +2206,11 @@ public final class TypeChecker {
                             "generic callable '" + fn.name()
                                     + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                 }
+                if (!fn.effects().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "effectful function '" + fn.name()
+                                    + "' is direct-call-only until Function types carry checked effects");
+                }
                 return trapFunctionType(fn, Set.of(), null);
             }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
@@ -2433,6 +2513,7 @@ public final class TypeChecker {
                                         + "use mailbox-oriented actor composition");
                     }
                     String label = "function " + functionName.name();
+                    requireEffectsCovered(target.effects(), currentEffects, label);
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
                     Type result = checkGenericCallable(
                             target.genericParameters(),
@@ -2473,6 +2554,7 @@ public final class TypeChecker {
                                         + "use mailbox-oriented actor composition");
                     }
                     String label = "function " + namespace.name() + "." + qualifiedCall.member();
+                    requireEffectsCovered(target.effects(), currentEffects, label);
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
                     Type result = checkGenericCallable(
                             target.genericParameters(),
