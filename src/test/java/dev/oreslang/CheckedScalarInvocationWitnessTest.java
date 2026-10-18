@@ -196,6 +196,41 @@ final class CheckedScalarInvocationWitnessTest {
                 () -> TypeChecker.inspectStagedScalarInvocation(modified, changed, invoked));
     }
 
+    @Test
+    void mutableLocalBindingsRequireOwnershipProofBeforeScalarWitness() {
+        Ast.Program original = program();
+        Ast.FunctionDecl source = caller(original);
+        Ast.StagedCallExpr staged = call(source);
+
+        for (Ast.BindingStmt mutable : List.of(
+                new Ast.BindingStmt(Ast.BindingKind.VAL,
+                        Ast.TypeRef.simple("int"), "scratch",
+                        new Ast.LiteralExpr(4L)),
+                new Ast.BindingStmt(Ast.BindingKind.LET,
+                        Ast.TypeRef.simple("int"), "scratch",
+                        new Ast.LiteralExpr(4L)),
+                new Ast.BindingStmt(Ast.BindingKind.CONST,
+                        Ast.TypeRef.simple("int"), "scratch",
+                        new Ast.LiteralExpr(4L), true))) {
+            Ast.FunctionDecl changed = withBody(source, List.of(
+                    mutable, source.body().getFirst(), new Ast.ReturnStmt(null)));
+            Ast.Program forged = withCaller(original, changed);
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.inspectStagedScalarInvocation(
+                            forged, changed, staged));
+        }
+
+        Ast.BindingStmt immutable = new Ast.BindingStmt(
+                Ast.BindingKind.CONST, Ast.TypeRef.simple("int"),
+                "scratch", new Ast.LiteralExpr(4L), false);
+        Ast.FunctionDecl safe = withBody(source, List.of(
+                immutable, source.body().getFirst(), new Ast.ReturnStmt(null)));
+        Ast.Program valid = withCaller(original, safe);
+        var witness = TypeChecker.inspectStagedScalarInvocation(valid, safe, staged);
+        assertEquals(BoundInvocation.Readiness.SHAPE_ONLY, witness.readiness());
+        assertThrows(IllegalStateException.class, witness::requireExecutable);
+    }
+
     private static Ast.FunctionDecl withBody(Ast.FunctionDecl source, List<Ast.Stmt> body) {
         return new Ast.FunctionDecl(
                 source.name(), source.kind(), source.visibility(), source.async(),
