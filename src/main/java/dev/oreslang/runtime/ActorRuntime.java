@@ -2465,6 +2465,26 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorGroupId id() { return id; }
 
+        /** Internal routing authority: a group may select only its own
+         * runtime's actors. Neither a guest ActorGroupId nor a Mailman may
+         * substitute for the supervisor-installed group object. */
+        boolean ownedByRuntime(ActorRuntime runtime) {
+            return ActorRuntime.this == runtime;
+        }
+
+        /** Snapshot admitted cooperative membership at one boundary. The
+         * checked graph further intersects this with its authorized edges.
+         * Join/leave after selection affects later selections, never the
+         * immutable return path of already-admitted DATA. */
+        Set<ActorId> pipelineMemberSnapshot() {
+            requireCallerRuntimeAffinity("snapshot ActorGroup routing members");
+            requireNotActorGroupMailman("snapshot ActorGroup routing members");
+            synchronized (groupMembershipLock) {
+                requireOpen();
+                return Set.copyOf(members);
+            }
+        }
+
         public Optional<ActorId> creatorId() {
             requireObserver("inspect ActorGroup creator");
             return Optional.ofNullable(creator);
