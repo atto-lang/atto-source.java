@@ -49,8 +49,8 @@ public final class PostgresQuotaSmoke {
             "consumption frees one inbox slot");
         var blocked= new DurableActorStore.Outbound("o2","idempotent-key-two",bytes("test"));
         var two = new DurableActorStore.Snapshot(0,1,"code-v1",2,bytes("two"));
-        rejects(() -> store.commitTurn(new DurableActorStore.Turn(address,first.epoch(),1,
-            "m2",two,List.of(blocked))),"pending outbox must stop at one entry");
+        rejects(() -> store.commitOwnedTurn(new DurableActorStore.Turn(address,first.epoch(),1,
+            "m2",two,List.of(blocked)),firstOwner),"pending outbox must stop at one entry");
         try (var c=ds.getConnection();
              var p=c.prepareStatement("UPDATE ores_durable_actor SET lease_until=clock_timestamp()-interval '1 second' "+
                 "WHERE tenant_id=? AND workflow_id=? AND run_id=? AND node_id=?")) {
