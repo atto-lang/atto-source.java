@@ -502,3 +502,23 @@ loan/move/effect checks, constructor self rules and executable Option ABI
 are **not proven by a preview**. The compiler, ownership checker and
 interpreter continue rejecting staged guest calls and `T?` formals;
 this is not a green Java, GraalVM or LLVM runtime feature.
+
+## Staged owner-bound module invocation plan (2026-10-18)
+
+`BoundInvocation.bindModuleFunction` now binds a named/omitted call to an
+**original parsed function declaration object** from the supplied module.
+The result retains the owner, declaration ordinal, immutable source-first
+invocation preview and formal-order ABI slot mapping. The candidate family
+comes from the parsed module rather than an arbitrary name-to-signature
+dictionary. The conservative optional-arity overlap policy is applied before
+choosing a declaration. Both local names and precisely module-qualified
+names have static shape support; indirect calls and unproved generics and
+actors are rejected.
+
+This is **not a trusted executable IR**. Caller-supplied
+`assertedSourceTypes` do not prove types; lexical import/visibility, effect,
+ownership, receiver evaluation, coercions and `Option<T>` lowering remain
+unimplemented. `requireExecutable()` always throws; existing independent
+TypeChecker/OwnershipChecker/interpreter stage admission remains fail-closed.
+JUnit test methods are committed, but passing JDK25 Maven or Graal/LLVM
+guest-language runs is not yet established.
