@@ -125,6 +125,31 @@ final class DurableDevLoopV1Test {
         assertEquals(4, duplicate.snapshot().uniqueDeliveryIds());
     }
 
+
+    @Test
+    void reusedDeliveryIdWithDifferentPayloadIsConflictNotDuplicate() {
+        var loop = readyForCi("run-conflict", 3, sha('a'));
+
+        var first = loop.accept(
+                "gh-delivery-conflict",
+                new DurableDevLoopV1.CiCompleted(
+                        sha('a'),
+                        DurableDevLoopV1.CiConclusion.SUCCESS,
+                        "artifact://tests/current"));
+        assertEquals(DurableDevLoopV1.Disposition.APPLIED,
+                first.journalEntry().disposition());
+
+        var conflict = loop.accept(
+                "gh-delivery-conflict",
+                new DurableDevLoopV1.EvaluationPassed(sha('a')));
+        assertEquals(DurableDevLoopV1.Disposition.CONFLICT,
+                conflict.journalEntry().disposition());
+        assertEquals(DurableDevLoopV1.Phase.EVALUATING,
+                conflict.snapshot().phase());
+        assertTrue(conflict.commands().isEmpty());
+        assertEquals(4, conflict.snapshot().uniqueDeliveryIds());
+    }
+
     @Test
     void failedCiProducesBugReportThenFeedsNextCodingIteration() {
         var loop = readyForCi("run-loop", 3, sha('a'));
