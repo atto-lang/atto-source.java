@@ -299,6 +299,26 @@ public class TaskHandleTest {
         }
     }
 
+    @Test void cancelledParentBeforeTaskAdmissionProducesCancelledOutcome() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            for (int i = 0; i < 100; i++) {
+                TaskCancellation parent = new TaskCancellation();
+                assertTrue(parent.cancel("parent shutdown"));
+                AtomicBoolean guestRan = new AtomicBoolean();
+                TaskHandle<Integer> h = TaskHandle.start(scheduler, resume -> {
+                    guestRan.set(true);
+                    return OresScheduler.done(5);
+                }, parent);
+                TaskHandle.TaskOutcome<Integer> outcome = done(h);
+                assertInstanceOf(TaskHandle.Cancelled.class, outcome,
+                        "pre-admission cancellation must not be treated as guest failure");
+                assertEquals("parent shutdown",
+                        ((TaskHandle.Cancelled<Integer>) outcome).reason());
+                assertFalse(guestRan.get());
+            }
+        }
+    }
+
     @Test void guestCancellationExceptionWithoutRequestIsFailure() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskHandle<Integer> h = scheduler.startTracked(r -> {
