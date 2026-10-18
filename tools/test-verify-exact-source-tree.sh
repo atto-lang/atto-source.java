@@ -71,8 +71,8 @@ assert_status 68 'tracked symlink rejected' "$symlink_tree" source
 git rm -q source/shortcut.ores
 git commit -qm unlink
 # Filenames may contain literal newlines; never split git index output on them.
-printf 'odd file\n' > 
-source/line\nbreak.ores'
+odd_name="$(printf 'source/line\nbreak.ores')"
+printf 'odd file\n' > "$odd_name"
 git add source
 git commit -qm odd-name
 odd_tree="$(git rev-parse 'HEAD:source')"
