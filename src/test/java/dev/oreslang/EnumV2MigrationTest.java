@@ -111,6 +111,24 @@ final class EnumV2MigrationTest {
     }
 
     @Test
+    void forgedLegacyDescriptorsRejectUnlexableNamesAtConstruction() {
+        for (String name : List.of("9Bad", "Bad.Name", "A-B", "A B",
+                "A" + (char) 0x200b + "B", "A".repeat(513))) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new EnumV2Migration.LegacyVariant(name, null, 1L));
+            assertThrows(IllegalArgumentException.class,
+                    () -> new EnumV2Migration.LegacyEnum(
+                            name, Ast.Visibility.PRIVATE,
+                            List.of(new EnumV2Migration.LegacyVariant("Good", null, 1L))));
+        }
+        // Existing public source Unicode identifiers remain valid at the
+        // schema layer even when the provisional native AOT layout is ASCII-only.
+        assertDoesNotThrow(() ->
+                new EnumV2Migration.LegacyEnum("Café", Ast.Visibility.PUBLIC,
+                        List.of(new EnumV2Migration.LegacyVariant("Été", null, 1L))));
+    }
+
+    @Test
     void compatibilityConstructorsDefaultToPrivateRatherThanPublic() {
         Ast.EnumDecl legacySyntax = new Ast.EnumDecl(
                 "Foo", List.of(new Ast.EnumCase("A", null, 1)));
