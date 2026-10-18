@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.sql.DriverManager;
 import java.util.List;
 import java.util.Map;
 
@@ -135,6 +136,66 @@ final class SqliteTypedWorkflowRunV1Test {
         assertEquals(
                 first.fingerprint(),
                 second.fingerprint());
+    }
+
+    @Test
+    void validButImpossiblePersistedCursorFailsHistoryReplay()
+            throws Exception {
+        Path db = tempDir.resolve("cursor-tamper.db");
+        var graph = DevLoopWorkflowDefinitionV1.create(2);
+
+        try (var run = SqliteTypedWorkflowRunV1.open(
+                db, "generic-cursor-tamper", graph)) {
+            run.advance("accepted", "dev.goal.v1");
+        }
+
+        try (var connection = DriverManager.getConnection(
+                "jdbc:sqlite:" + db.toAbsolutePath());
+             var statement = connection.createStatement()) {
+            assertEquals(
+                    1,
+                    statement.executeUpdate("""
+                            UPDATE typed_workflow_runs
+                            SET current_node = 'completed'
+                            WHERE run_id = 'generic-cursor-tamper'
+                            """));
+        }
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> SqliteTypedWorkflowRunV1.open(
+                        db, "generic-cursor-tamper", graph));
+    }
+
+    @Test
+    void tamperedOrderedHistoryFailsClosedEvenWithSameGraphFingerprint()
+            throws Exception {
+        Path db = tempDir.resolve("history-tamper.db");
+        var graph = DevLoopWorkflowDefinitionV1.create(2);
+
+        try (var run = SqliteTypedWorkflowRunV1.open(
+                db, "generic-history-tamper", graph)) {
+            run.advance("accepted", "dev.goal.v1");
+            run.advance("planned", "dev.coding-context.v1");
+        }
+
+        try (var connection = DriverManager.getConnection(
+                "jdbc:sqlite:" + db.toAbsolutePath());
+             var statement = connection.createStatement()) {
+            assertEquals(
+                    1,
+                    statement.executeUpdate("""
+                            UPDATE typed_workflow_history
+                            SET to_node = 'completed'
+                            WHERE run_id = 'generic-history-tamper'
+                              AND revision = 1
+                            """));
+        }
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> SqliteTypedWorkflowRunV1.open(
+                        db, "generic-history-tamper", graph));
     }
 
     @Test
