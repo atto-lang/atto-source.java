@@ -330,6 +330,142 @@ final class WorkflowSupervisorActorV1Test {
         }
     }
 
+    @Test
+    void reservationMustReferenceDurableEffectWithMatchingKind()
+            throws Exception {
+        Path db = tempDir.resolve("reserve-authority.db");
+        var loop = new DurableDevLoopV1("run-reserve-authority", 3);
+        try (var workflow = SqliteWorkflowJournalV1.open(db)) {
+            workflow.append(loop.accept(
+                    "start",
+                    new DurableDevLoopV1.Start("goal")));
+        }
+
+        var policy = new WorkflowSupervisorPolicyV1.Policy(
+                10_000L,
+                1_000L,
+                3,
+                2_000_000L,
+                1,
+                false);
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = WorkflowSupervisorActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new WorkflowSupervisorActorV1.Configure(
+                    db.toString(),
+                    "run-reserve-authority",
+                    policy,
+                    100L,
+                    db.toString()));
+            next(outputs);
+
+            actor.send(new WorkflowSupervisorActorV1.Reserve(
+                    "devloop/run-reserve-authority/iteration/1/code",
+                    WorkflowActivityProtocolV1.Kind.GIT,
+                    200L,
+                    100L,
+                    100_000L,
+                    0,
+                    false));
+
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> actor.raw().getDone().get(
+                            5, TimeUnit.SECONDS));
+            assertTrue(actor.raw().failure().isPresent());
+        }
+    }
+
+    @Test
+    void settlementOverageCancelsDurableWorkflowImmediately()
+            throws Exception {
+        Path db = tempDir.resolve("settlement-cancels-workflow.db");
+        var loop = new DurableDevLoopV1("run-settlement-cancel", 3);
+        try (var workflow = SqliteWorkflowJournalV1.open(db)) {
+            workflow.append(loop.accept(
+                    "start",
+                    new DurableDevLoopV1.Start("goal")));
+        }
+
+        var policy = new WorkflowSupervisorPolicyV1.Policy(
+                10_000L,
+                500L,
+                3,
+                2_000_000L,
+                1,
+                false);
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = WorkflowSupervisorActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new WorkflowSupervisorActorV1.Configure(
+                    db.toString(),
+                    "run-settlement-cancel",
+                    policy,
+                    100L,
+                    db.toString()));
+            next(outputs);
+
+            actor.send(new WorkflowSupervisorActorV1.Reserve(
+                    "devloop/run-settlement-cancel/iteration/1/code",
+                    WorkflowActivityProtocolV1.Kind.CODING,
+                    200L,
+                    400L,
+                    100_000L,
+                    0,
+                    false));
+            var reserved = assertInstanceOf(
+                    WorkflowSupervisorActorV1.AdmissionEvaluated.class,
+                    next(outputs));
+            assertEquals(
+                    WorkflowSupervisorPolicyV1.Decision.ALLOW,
+                    reserved.admission().decision());
+
+            actor.send(new WorkflowSupervisorActorV1.SettleUsage(
+                    "devloop/run-settlement-cancel/iteration/1/code",
+                    700L,
+                    100_000L));
+            var settled = assertInstanceOf(
+                    WorkflowSupervisorActorV1.UsagePublished.class,
+                    next(outputs));
+            assertTrue(settled.usage().cancelled());
+            assertEquals(
+                    "model_token_budget_exhausted_after_settlement",
+                    settled.usage().cancellationReason());
+
+            actor.send(new WorkflowSupervisorActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
+        }
+
+        try (var workflow = SqliteWorkflowJournalV1.open(db)) {
+            var snapshot = workflow.replayDevLoop().machine().snapshot();
+            assertEquals(
+                    DurableDevLoopV1.Phase.CANCELLED,
+                    snapshot.phase());
+            assertEquals(
+                    "model_token_budget_exhausted_after_settlement",
+                    snapshot.cancelReason());
+            assertEquals(
+                    WorkflowJournalV1.EffectState.ABANDONED,
+                    workflow.effect(
+                            "devloop/run-settlement-cancel/iteration/1/code")
+                            .orElseThrow()
+                            .state());
+            assertEquals(
+                    WorkflowJournalV1.EffectState.PENDING,
+                    workflow.effect(
+                            "devloop/run-settlement-cancel/cancel")
+                            .orElseThrow()
+                            .state());
+        }
+    }
+
     private static Object next(
             ActorRuntime.ActorOutputStream<Object> outputs)
             throws Exception {
