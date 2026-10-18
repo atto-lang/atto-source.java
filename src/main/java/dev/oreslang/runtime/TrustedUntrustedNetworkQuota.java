@@ -71,6 +71,17 @@ final class TrustedUntrustedNetworkQuota implements AutoCloseable {
             this.http = http;
         }
 
+        /**
+         * Trusted gate preflight. Caller holds its admission lock, and all
+         * host Scope.close operations take that same lock. Check every scope
+         * before changing ANY component of a hierarchical reservation.
+         */
+        boolean canCommitDispatch() {
+            synchronized (owner) {
+                return !owner.closed && lifecycle.get() == 0;
+            }
+        }
+
         /** Call immediately before performing external I/O. */
         boolean commitDispatch() {
             // A supervisor may revoke a quota after admission but before
