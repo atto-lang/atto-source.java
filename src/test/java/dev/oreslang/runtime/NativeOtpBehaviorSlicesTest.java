@@ -132,6 +132,49 @@ final class NativeOtpBehaviorSlicesTest {
     }
 
     @Test
+    void guestOtpAccountingAndGenerationHelpersFailClosedAtBoundaries() throws Exception {
+        Path entry = Files.createTempFile("ores-otp-boundaries-", ".ores");
+        try {
+            Files.writeString(entry, """
+                    import module Registry from "std/otp/registry";
+                    import module Events from "std/otp/event_manager";
+                    import module Statem from "std/otp/gen_statem";
+                    import module GenServer from "std/otp/gen_server";
+                    import module Supervisor from "std/otp/supervisor";
+                    pub routine main(): void {
+                      stdio.println(Registry.registration_matches(4, 5, 6, 4, 5, 6));
+                      stdio.println(Registry.registration_matches(4, 5, 6, 9, 5, 6));
+                      stdio.println(Registry.registration_matches(4, 5, 6, 4, 9, 6));
+                      stdio.println(Registry.registration_matches(4, 5, 6, 4, 5, 9));
+                      stdio.println(Registry.registration_matches(0, 5, 6, 0, 5, 6));
+                      stdio.println(Events.delivery_capacity_allows(1, 1, 1, 4).unwrap());
+                      stdio.println(Events.delivery_capacity_allows(1, 1, 2, 4).unwrap());
+                      stdio.println(Events.delivery_capacity_allows(1, 1, 3, 4).is_err());
+                      stdio.println(Statem.timer_due(10, 10, 10).unwrap());
+                      stdio.println(Statem.timer_due(10, 9, 10).is_err());
+                      stdio.println(GenServer.pending_capacity_allows(1, 1, 0, 2).unwrap());
+                      stdio.println(GenServer.pending_capacity_allows(1, 1, 1, 2).is_err());
+                      stdio.println(Supervisor.restart_budget_allows(2, 2, 4).unwrap());
+                      stdio.println(Supervisor.restart_budget_allows(2, 3, 4).unwrap());
+                      return;
+                    }
+                    """);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ByteArrayOutputStream err = new ByteArrayOutputStream();
+            LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                    ExecutionProfile.serverJit(), out, err);
+            assertEquals(String.join("\\n", List.of(
+                    "true", "false", "false", "false", "false",
+                    "true", "false", "true", "true", "true",
+                    "false", "true", "true", "false")),
+                    out.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""),
+                    () -> err.toString(StandardCharsets.UTF_8));
+        } finally {
+            Files.deleteIfExists(entry);
+        }
+    }
+
+    @Test
     void traversalAndUnregisteredOtpModulesStillFailClosed() {
         assertThrows(IllegalArgumentException.class,
                 () -> CoreLibrarySources.source("std/otp/../core"));
