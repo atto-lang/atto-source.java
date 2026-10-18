@@ -278,6 +278,47 @@ class NativeHttpTest {
         }
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void physicalHostExecutorRetirementTimesOutWithoutFalseSuccessAndCanRetry()
+            throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        ExecutorService blocked = Executors.newSingleThreadExecutor();
+        ExecutorService idle = Executors.newSingleThreadExecutor();
+        try {
+            blocked.execute(() -> {
+                entered.countDown();
+                while (release.getCount() != 0) {
+                    try {
+                        release.await();
+                    } catch (InterruptedException ignored) {
+                        // Deliberately model a non-cooperative host operation.
+                    }
+                }
+            });
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            IllegalStateException timedOut = assertThrows(
+                    IllegalStateException.class,
+                    () -> NativeHttp.shutdownAndAwaitPhysicalExit(
+                            TimeUnit.MILLISECONDS.toNanos(25), blocked, idle));
+            assertTrue(timedOut.getMessage().contains("physically terminate"));
+            assertFalse(blocked.isTerminated(),
+                    "shutdownNow interrupt is not proof of physical worker exit");
+
+            release.countDown();
+            assertDoesNotThrow(() -> NativeHttp.shutdownAndAwaitPhysicalExit(
+                    TimeUnit.SECONDS.toNanos(5), blocked, idle));
+            assertTrue(blocked.isTerminated());
+            assertTrue(idle.isTerminated());
+        } finally {
+            release.countDown();
+            blocked.shutdownNow();
+            idle.shutdownNow();
+        }
+    }
+
     @Test void shutdownPublishesTerminalStateEvenWhenAbortCleanupThrows() {
         var publication = new java.util.concurrent.atomic.AtomicInteger();
         var aborted = new IllegalStateException("abort failed");
@@ -388,6 +429,24 @@ class NativeHttpTest {
         assertEquals(List.of("cancel", "release"), calls);
     }
 
+    @Test
+    void vmFatalCleanupDominatesOrdinaryCancellationAfterReleaseStillRuns() {
+        var calls = new java.util.ArrayList<String>();
+        var ordinary = new IllegalStateException("ordinary cancellation");
+        var fatal = new OutOfMemoryError("synthetic HTTP fatal cleanup");
+
+        OutOfMemoryError actual = assertThrows(OutOfMemoryError.class, () ->
+                NativeHttp.runCancellationThenCleanup(
+                        () -> { calls.add("cancel"); throw ordinary; },
+                        () -> { calls.add("release"); throw fatal; }));
+
+        assertSame(fatal, actual, "VM-fatal cleanup must retain identity");
+        assertEquals(List.of("cancel", "release"), calls,
+                "cleanup must run even after cancellation failure");
+        assertTrue(java.util.Arrays.asList(actual.getSuppressed()).contains(ordinary),
+                "ordinary cancellation must remain attached to the dominant fatal");
+    }
+
     @org.junit.jupiter.api.RepeatedTest(100)
     void timeoutDetachesPendingPhysicalQuiescenceCallback() {
         OresFuture<Void> waitingOnStalledActor = new OresFuture<>();
@@ -477,6 +536,26 @@ class NativeHttpTest {
                 "a failed abort must not skip later accepted exchanges");
         assertArrayEquals(new Throwable[] { second }, result.getSuppressed());
         assertNull(NativeHttp.abortEveryAccepted(List.of(1, 2), ignored -> { }));
+    }
+
+    @Test
+    void fatalAcceptedCleanupRetainsIdentityAfterExhaustiveVisit() {
+        var visited = new java.util.ArrayList<Integer>();
+        var ordinary = new IllegalStateException("ordinary abort");
+        var fatal = new OutOfMemoryError("synthetic accepted-state fatal");
+
+        OutOfMemoryError actual = assertThrows(OutOfMemoryError.class, () ->
+                NativeHttp.abortEveryAccepted(List.of(0, 1, 2, 3, 4), state -> {
+                    visited.add(state);
+                    if (state == 0) throw ordinary;
+                    if (state == 2) throw fatal;
+                }));
+
+        assertSame(fatal, actual);
+        assertEquals(List.of(0, 1, 2, 3, 4), visited,
+                "VM-fatal failure must not skip independent accepted cleanup");
+        assertTrue(java.util.Arrays.asList(actual.getSuppressed()).contains(ordinary),
+                "earlier ordinary cleanup failure must remain visible");
     }
 
     @org.junit.jupiter.api.RepeatedTest(12)

@@ -426,36 +426,94 @@ public final class OresContext implements AutoCloseable {
         return Map.copyOf(descriptor);
     }
 
+    /**
+     * Two host-I/O subsystems are siblings: always attempt to seal/retire both
+     * before deciding whether context teardown may advance to guest runtimes.
+     */
+    private static boolean isVmFatalCloseFailure(Throwable failure) {
+        return failure instanceof VirtualMachineError
+                || failure instanceof ThreadDeath
+                || failure instanceof LinkageError;
+    }
+
+    private static Throwable mergeCloseFailure(Throwable current, Throwable next) {
+        Objects.requireNonNull(next, "next");
+        if (current == null || current == next) return current == null ? next : current;
+        if (isVmFatalCloseFailure(next) && !isVmFatalCloseFailure(current)) {
+            next.addSuppressed(current);
+            return next;
+        }
+        current.addSuppressed(next);
+        return current;
+    }
+
+    private static void rethrowCloseFailure(Throwable failure) {
+        if (failure == null) return;
+        if (failure instanceof RuntimeException error) throw error;
+        if (failure instanceof Error error) throw error;
+        throw new IllegalStateException("unexpected checked context close failure", failure);
+    }
+
+    static void closeIndependentHostServices(Runnable first, Runnable second) {
+        Objects.requireNonNull(first);
+        Objects.requireNonNull(second);
+        Throwable failure = null;
+        try {
+            first.run();
+        } catch (RuntimeException | Error error) {
+            failure = error;
+        }
+        try {
+            second.run();
+        } catch (RuntimeException | Error error) {
+            failure = mergeCloseFailure(failure, error);
+        }
+        rethrowCloseFailure(failure);
+    }
+
+    /**
+     * Dependency-ordered shutdown. A failed predecessor may still own or call
+     * into every successor, so later phases must remain intact for retry.
+     */
+    static void runDependentClosePhases(
+            Runnable asyncClose,
+            Runnable actorClose,
+            Runnable vmClose,
+            Runnable finalRelease) {
+        Objects.requireNonNull(asyncClose).run();
+        Objects.requireNonNull(actorClose).run();
+        Objects.requireNonNull(vmClose).run();
+        Objects.requireNonNull(finalRelease).run();
+    }
+
+    private void releaseRetiredContextResources() {
+        synchronized (this) {
+            // Close immutable code-image storage before dropping the lookup
+            // tables, but only after VM physical retirement succeeded.
+            sharedCodeImages.close();
+            linkedCodeUnits.clear();
+            linkedImportResolutions.clear();
+        }
+        garbageCollector.close();
+    }
+
     @Override
     public void close() {
-        nativeIo.close();
-        http.close();
-        RuntimeException failure = null;
         try {
-            asyncRuntime.close();
-        } catch (RuntimeException asyncFailure) {
-            failure = asyncFailure;
-        }
-        try {
-            actors.close();
-        } catch (RuntimeException actorFailure) {
-            if (failure == null) failure = actorFailure;
-            else failure.addSuppressed(actorFailure);
-        }
-        try {
-            vm.close();
-        } catch (RuntimeException vmFailure) {
-            if (failure == null) failure = vmFailure;
-            else failure.addSuppressed(vmFailure);
+            // Host I/O may still call into async/actor/VM state. Prove both
+            // physical host domains retired before revoking deeper runtimes.
+            closeIndependentHostServices(nativeIo::close, http::close);
+
+            // These phases are strictly dependent. In particular, an actor
+            // physical-shutdown timeout must preserve VM/code images so a live
+            // carrier cannot execute against already-retired runtime state.
+            runDependentClosePhases(
+                    asyncRuntime::close,
+                    actors::close,
+                    vm::close,
+                    this::releaseRetiredContextResources);
         } finally {
-            synchronized (this) {
-                linkedCodeUnits.clear();
-                linkedImportResolutions.clear();
-                sharedCodeImages.close();
-            }
-            garbageCollector.close();
             output.flush();
         }
-        if (failure != null) throw failure;
     }
 }

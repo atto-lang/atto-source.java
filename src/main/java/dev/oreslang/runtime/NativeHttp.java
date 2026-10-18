@@ -17,14 +17,47 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** HTTP/1.1 transport. Guest code sees revocable exchange capabilities, never sockets. */
 public final class NativeHttp implements AutoCloseable {
+    private static final long HOST_EXECUTOR_CLOSE_WAIT_NANOS = TimeUnit.SECONDS.toNanos(5);
+    private static final ThreadLocal<Boolean> HTTP_HOST_WORKER =
+            ThreadLocal.withInitial(() -> Boolean.FALSE);
+    private static final AtomicLong HTTP_IO_THREAD_IDS = new AtomicLong();
+
+    private static void runHttpHostWorker(Runnable task) {
+        boolean previous = Boolean.TRUE.equals(HTTP_HOST_WORKER.get());
+        HTTP_HOST_WORKER.set(Boolean.TRUE);
+        try {
+            task.run();
+        } finally {
+            if (previous) HTTP_HOST_WORKER.set(Boolean.TRUE);
+            else HTTP_HOST_WORKER.remove();
+        }
+    }
+
+    private static Thread newHttpIoThread(Runnable task) {
+        return Thread.ofVirtual()
+                .name("ores-http-io-" + HTTP_IO_THREAD_IDS.getAndIncrement())
+                .unstarted(() -> runHttpHostWorker(task));
+    }
+
+    private static Thread newHttpTimerThread(Runnable task) {
+        Thread thread = new Thread(
+                () -> runHttpHostWorker(task),
+                "ores-http-deadlines");
+        thread.setDaemon(true);
+        return thread;
+    }
+
     private final OresContext context;
     private final Set<Server> servers = ConcurrentHashMap.newKeySet();
     private final Map<String, Exchange> transfers = new ConcurrentHashMap<>();
-    private final ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
-    private final ScheduledThreadPoolExecutor timers = new ScheduledThreadPoolExecutor(1, r -> {
-        Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
-    });
+    private final ExecutorService io =
+            Executors.newThreadPerTaskExecutor(NativeHttp::newHttpIoThread);
+    private final ScheduledThreadPoolExecutor timers =
+            new ScheduledThreadPoolExecutor(1, NativeHttp::newHttpTimerThread);
     private volatile boolean closed;
+    private final Object retirementLock = new Object();
+    private boolean retired;
+    private Thread retiringThread;
     private final Set<Handler> pools = ConcurrentHashMap.newKeySet();
 
     public NativeHttp(OresContext context) {
@@ -263,6 +296,10 @@ public final class NativeHttp implements AutoCloseable {
         Exchange exchange = transfers.get(token);
         if (exchange == null) throw new IllegalStateException("unknown or already claimed HTTP transfer");
         synchronized (exchange.state) {
+            // Runtime close seals transfer capability use before beginning
+            // transport/worker teardown. A claim already holding this state
+            // monitor linearizes before close; later claims fail closed.
+            if (closed) throw new IllegalStateException("HTTP runtime closed");
             exchange.checkOwner();
             if (!transfers.remove(token, exchange)) throw new IllegalStateException("HTTP transfer already claimed");
             exchange.state.ticket = null;
@@ -972,24 +1009,46 @@ public final class NativeHttp implements AutoCloseable {
      * Even a failing actor cancellation must not strand the socket and request
      * admission. Preserve cancellation failure and suppress cleanup failure.
      */
+    static boolean isVmFatal(Throwable failure) {
+        return failure instanceof VirtualMachineError
+                || failure instanceof ThreadDeath
+                || failure instanceof LinkageError;
+    }
+
+    /**
+     * Preserve deterministic failure precedence during teardown. VM-fatal
+     * failures dominate ordinary retryable cleanup failures, while every
+     * independently admitted cleanup action is still attempted.
+     */
+    static Throwable mergeCleanupFailure(Throwable current, Throwable next) {
+        Objects.requireNonNull(next, "next");
+        if (current == null || current == next) return current == null ? next : current;
+        if (isVmFatal(next) && !isVmFatal(current)) {
+            next.addSuppressed(current);
+            return next;
+        }
+        current.addSuppressed(next);
+        return current;
+    }
+
+    static void rethrowCleanupFailure(Throwable failure) {
+        if (failure == null) return;
+        if (failure instanceof RuntimeException runtime) throw runtime;
+        if (failure instanceof Error error) throw error;
+        throw new IllegalStateException("unexpected checked HTTP cleanup failure", failure);
+    }
+
     static void runCancellationThenCleanup(Runnable cancel, Runnable cleanup) {
         Objects.requireNonNull(cancel, "cancel");
         Objects.requireNonNull(cleanup, "cleanup");
-        Throwable cancellationFailure = null;
+        Throwable failure = null;
         try { cancel.run(); }
-        catch (RuntimeException | Error failure) { cancellationFailure = failure; }
+        catch (RuntimeException | Error cancelFailure) { failure = cancelFailure; }
         try { cleanup.run(); }
         catch (RuntimeException | Error cleanupFailure) {
-            if (cancellationFailure == null) {
-                if (cleanupFailure instanceof Error fatal) throw fatal;
-                throw (RuntimeException) cleanupFailure;
-            }
-            if (cancellationFailure != cleanupFailure) {
-                cancellationFailure.addSuppressed(cleanupFailure);
-            }
+            failure = mergeCleanupFailure(failure, cleanupFailure);
         }
-        if (cancellationFailure instanceof Error fatal) throw fatal;
-        if (cancellationFailure instanceof RuntimeException failure) throw failure;
+        rethrowCleanupFailure(failure);
     }
 
     /** Only an active runtime/listener can admit a new actor transfer. */
@@ -1042,21 +1101,31 @@ public final class NativeHttp implements AutoCloseable {
             List<T> accepted, java.util.function.Consumer<? super T> abort) {
         Objects.requireNonNull(accepted);
         Objects.requireNonNull(abort);
-        RuntimeException first = null;
+        RuntimeException firstOrdinary = null;
+        Throwable fatal = null;
         for (T state : accepted) {
-            try { abort.accept(state); }
-            catch (RuntimeException | Error failure) {
-                // A failed host callback must not strand later accepted HTTP
-                // states. Preserve non-runtime Errors as the cause of a
-                // terminal failure; never convert failed abort into success.
+            try {
+                abort.accept(state);
+            } catch (RuntimeException | Error failure) {
+                // Continue visiting all already-admitted states. VM-fatal
+                // failures retain their identity and dominate ordinary errors
+                // only after exhaustive cleanup has completed.
+                if (isVmFatal(failure)) {
+                    fatal = mergeCleanupFailure(fatal, failure);
+                    continue;
+                }
                 RuntimeException reported = failure instanceof RuntimeException runtime
                         ? runtime
                         : new IllegalStateException("HTTP accepted-state cleanup failed", failure);
-                if (first == null) first = reported;
-                else if (first != reported) first.addSuppressed(reported);
+                if (firstOrdinary == null) firstOrdinary = reported;
+                else if (firstOrdinary != reported) firstOrdinary.addSuppressed(reported);
             }
         }
-        return first;
+        if (fatal != null) {
+            if (firstOrdinary != null) fatal = mergeCleanupFailure(fatal, firstOrdinary);
+            rethrowCleanupFailure(fatal);
+        }
+        return firstOrdinary;
     }
 
     /** Guard the producer side of HTTP accept notifications against lock re-entry. */
@@ -1135,31 +1204,103 @@ public final class NativeHttp implements AutoCloseable {
     private static void reject(HttpExchange raw, int status) {
         try { raw.sendResponseHeaders(status, -1); } catch (IOException ignored) { } finally { raw.close(); }
     }
-    @Override public synchronized void close() {
-        if (closed) return;
-        closed = true;
-        RuntimeException failure = null;
-        try {
-            // Context teardown must not stop after one listener or actor pool
-            // throws during cleanup. Otherwise other transports and actors
-            // remain live while the surrounding polyglot Context is closing.
-            RuntimeException serverFailure = abortEveryAccepted(
-                    List.copyOf(servers), Server::close);
-            RuntimeException poolFailure = abortEveryAccepted(
-                    List.copyOf(pools), Handler::stopPool);
-            failure = serverFailure != null ? serverFailure : poolFailure;
-            if (serverFailure != null && poolFailure != null
-                    && serverFailure != poolFailure) {
-                serverFailure.addSuppressed(poolFailure);
-            }
-        } finally {
-            // Always release host executors and capability tables even if
-            // a transport or actor cancellation unexpectedly failed.
-            pools.clear();
-            timers.shutdownNow();
-            io.shutdownNow();
-            transfers.clear();
+    /**
+     * Stop both HTTP host executors and prove their physical worker exit.
+     * A timed-out shutdown is retryable: callers retain the surrounding
+     * capability tables until a later invocation observes termination.
+     */
+    static void shutdownAndAwaitPhysicalExit(
+            long timeoutNanos,
+            ExecutorService... executors) {
+        if (timeoutNanos < 0) throw new IllegalArgumentException("negative HTTP shutdown timeout");
+        Objects.requireNonNull(executors, "executors");
+        for (ExecutorService executor : executors) {
+            Objects.requireNonNull(executor, "executor");
+            executor.shutdownNow();
         }
-        if (failure != null) throw failure;
+        long deadline = System.nanoTime() + timeoutNanos;
+        for (ExecutorService executor : executors) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) {
+                throw new IllegalStateException(
+                        "HTTP host executor did not physically terminate before close deadline");
+            }
+            try {
+                if (!executor.awaitTermination(remaining, TimeUnit.NANOSECONDS)) {
+                    throw new IllegalStateException(
+                            "HTTP host executor did not physically terminate before close deadline");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(
+                        "interrupted before HTTP host executor physical exit",
+                        interrupted);
+            }
+        }
+    }
+
+    @Override public void close() {
+        // Waiting for an executor from one of its own tasks cannot prove
+        // physical exit: the current task itself is one of the live workers.
+        if (Boolean.TRUE.equals(HTTP_HOST_WORKER.get())) {
+            throw new IllegalStateException(
+                    "HTTP runtime close cannot wait for physical exit from an HTTP host worker");
+        }
+
+        synchronized (retirementLock) {
+            if (retired) return;
+            if (retiringThread == Thread.currentThread()) {
+                throw new IllegalStateException("HTTP runtime retirement cannot be re-entered");
+            }
+            retiringThread = Thread.currentThread();
+            try {
+                // Seal public admission/transfer use exactly once, but do not
+                // equate logical sealing with physical executor retirement.
+                synchronized (this) {
+                    closed = true;
+                }
+
+                Throwable failure = null;
+                // Listener and pool cleanup are independent siblings: always
+                // attempt both, even if one reports a VM-fatal failure.
+                try {
+                    RuntimeException serverFailure = abortEveryAccepted(
+                            List.copyOf(servers), Server::close);
+                    if (serverFailure != null) {
+                        failure = mergeCleanupFailure(failure, serverFailure);
+                    }
+                } catch (RuntimeException | Error serverFailure) {
+                    failure = mergeCleanupFailure(failure, serverFailure);
+                }
+                try {
+                    RuntimeException poolFailure = abortEveryAccepted(
+                            List.copyOf(pools), Handler::stopPool);
+                    if (poolFailure != null) {
+                        failure = mergeCleanupFailure(failure, poolFailure);
+                    }
+                } catch (RuntimeException | Error poolFailure) {
+                    failure = mergeCleanupFailure(failure, poolFailure);
+                }
+
+                try {
+                    shutdownAndAwaitPhysicalExit(
+                            HOST_EXECUTOR_CLOSE_WAIT_NANOS, timers, io);
+                } catch (RuntimeException | Error physicalFailure) {
+                    failure = mergeCleanupFailure(failure, physicalFailure);
+                }
+
+                // Preserve capability tables and pool/server ownership on any
+                // failed cleanup or physical-exit timeout. A later close()
+                // retries the same sealed runtime without re-admitting work.
+                rethrowCleanupFailure(failure);
+
+                transfers.clear();
+                pools.clear();
+                servers.clear();
+                retired = true;
+            } finally {
+                retiringThread = null;
+            }
+        }
     }
 }

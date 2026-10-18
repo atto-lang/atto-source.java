@@ -7,6 +7,8 @@ on:
       - "src/main/java/dev/oreslang/runtime/NativeHttp.java"
       - "src/test/java/dev/oreslang/runtime/ActorCarrierQuiescenceTest.java"
       - "src/test/java/dev/oreslang/runtime/NativeHttpTest.java"
+      - "src/main/java/dev/oreslang/runtime/OresContext.java"
+      - "src/test/java/dev/oreslang/runtime/OresContextCloseOrderingTest.java"
       - ".github/workflows/http-pooled-actor-quiescence.yml"
 
 permissions:
@@ -38,7 +40,7 @@ jobs:
           distribution: graalvm
           cache: maven
       - name: Reproduce carrier-exit barrier and pooled HTTP lifecycle
-        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=ActorCarrierQuiescenceTest,NativeHttpTest test
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=ActorCarrierQuiescenceTest,NativeHttpTest,OresContextCloseOrderingTest test
       - name: Repeat intermittent pooled-worker shutdown regression
         shell: bash
         run: |
@@ -46,4 +48,8 @@ jobs:
           for attempt in 1 2 3; do
             echo "Native HTTP shutdown repeat $attempt/3"
             mvn -B -ntp -Dores.runtime.carriers=native "-Dtest=NativeHttpTest#pooledActorsReuseMailboxWithoutRetainingExchangeAdmission" test
+          done
+          for attempt in 1 2 3; do
+            echo "Native HTTP physical host-worker retirement $attempt/3"
+            mvn -B -ntp -Dores.runtime.carriers=native "-Dtest=NativeHttpTest#physicalHostExecutorRetirementTimesOutWithoutFalseSuccessAndCanRetry" test
           done
