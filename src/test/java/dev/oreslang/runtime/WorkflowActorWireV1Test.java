@@ -101,6 +101,16 @@ final class WorkflowActorWireV1Test {
                 WorkflowActorWireV1.activityOutcome(
                         WorkflowActorWireV1.activityOutcome(
                                 outcome)));
+
+        var completed = new WorkflowActivityProtocolV1.Completed(
+                "effect/cancel",
+                "claim/terminal",
+                "receipt://cancel");
+        assertEquals(
+                completed,
+                WorkflowActorWireV1.activityOutcome(
+                        WorkflowActorWireV1.activityOutcome(
+                                completed)));
     }
 
     @Test
