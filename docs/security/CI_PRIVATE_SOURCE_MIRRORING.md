@@ -135,6 +135,21 @@ malformed protection metadata fails closed. This is separate from source-side
 authorization: a stable destination commit does not by itself prove that
 changes to the workflows it contains were independently reviewed.
 
+Because a branch-protection toggle cannot prove that any workflow is actually
+owned, the publisher also reads `.github/CODEOWNERS` from the **pinned
+destination commit SHA**, verifies its declared length and Git blob digest,
+and requires the final two effective non-comment rules to be, in order:
+
+```text
+/.github/ @ORESoftware
+/.github/CODEOWNERS @ORESoftware
+```
+
+The final-rule requirement is deliberately conservative: if a later rule
+overrides workflow ownership, or if CODEOWNERS cannot be read or validated,
+export is denied. These rules must be installed through an independently
+reviewed destination PR; an unreviewed local policy change is not authority.
+
 The destination's default branch is pinned to one exact
 `refs/heads/BRANCH` reference with explicit Git object type `commit`.
 Missing or ambiguous ref names, annotated-tag targets, malformed tree
