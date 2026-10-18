@@ -362,7 +362,8 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             router.ingress("source", "begin");
             try {
                 assertTrue(sinkEntered.await(6, TimeUnit.SECONDS));
-                worker.stop();
+                assertTrue(runtime.cancel(worker),
+                        "host must seal cancelled upstream worker");
                 // Do NOT await finalization while another SHARED actor
                 // deliberately occupies a carrier on releaseSink. A
                 // single-carrier executor could otherwise deadlock the test.
