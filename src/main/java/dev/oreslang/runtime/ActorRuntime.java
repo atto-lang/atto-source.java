@@ -2426,6 +2426,11 @@ public final class ActorRuntime implements AutoCloseable {
         private final int memberLimit;
         private final int eventTopicLimit;
         private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
+        /** Immutable copy-on-write selection snapshot. Mutations publish
+         * while already holding groupMembershipLock; user DATA turns never
+         * block a carrier on join, leave, or event-bus teardown. */
+        private final AtomicReference<Set<ActorId>> pipelineMembers =
+                new AtomicReference<>(Set.of());
         // Explicitly lifecycle-managed workers, distinct from cooperating
         // members: membership never grants cancellation authority.
         private final Map<ActorId, ActorRef<?>> managedWorkers = new ConcurrentHashMap<>();
@@ -2461,6 +2466,12 @@ public final class ActorRuntime implements AutoCloseable {
                             creatorPolicy.maxMailboxMessages()));
             this.eventBus = new ActorEventBus(ActorRuntime.this, this);
             if (creator != null) members.add(creator);
+            pipelineMembers.set(Set.copyOf(members));
+        }
+
+        /** Must be called under groupMembershipLock after membership changes. */
+        private void publishPipelineMembers() {
+            pipelineMembers.set(Set.copyOf(members));
         }
 
         public ActorGroupId id() { return id; }
@@ -2479,10 +2490,8 @@ public final class ActorRuntime implements AutoCloseable {
         Set<ActorId> pipelineMemberSnapshot() {
             requireCallerRuntimeAffinity("snapshot ActorGroup routing members");
             requireNotActorGroupMailman("snapshot ActorGroup routing members");
-            synchronized (groupMembershipLock) {
-                requireOpen();
-                return Set.copyOf(members);
-            }
+            requireOpen();
+            return pipelineMembers.get();
         }
 
         public Optional<ActorId> creatorId() {
@@ -2839,6 +2848,7 @@ public final class ActorRuntime implements AutoCloseable {
                         if (joined.isEmpty()) groupMemberships.remove(actorId);
                         throw new IllegalStateException("ActorGroup or actor closed during join");
                     }
+                    publishPipelineMembers();
                 }
             }
         }
@@ -2925,6 +2935,7 @@ public final class ActorRuntime implements AutoCloseable {
                     joined.remove(id);
                     if (joined.isEmpty()) groupMemberships.remove(actorId);
                 }
+                publishPipelineMembers();
                 // Rejoin must not overtake subscription draining for the old
                 // membership and inadvertently inherit a previous channel.
                 eventBus.removeActor(actorId);
@@ -2977,6 +2988,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 members.clear();
+                pipelineMembers.set(Set.of());
                 if (creator != null) {
                     Set<ActorGroupId> created = createdGroupsByActor.get(creator);
                     if (created != null) {
