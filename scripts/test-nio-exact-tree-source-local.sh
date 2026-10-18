@@ -85,7 +85,10 @@ if [[ -n "$unsafe_index_entries" ]]; then
   printf 'ERROR: Git index contains hidden/sparse tracked entries; refusing exact-tree qualification.\n' >&2
   exit 72
 fi
-if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+# Ignore repository-local overrides that can hide a tracked executable-bit
+# mutation, even though HEAD/tree and default git status appear unchanged.
+# Disable filesystem monitor caching for identity verification as well.
+if [[ -n "$(git -c core.fileMode=true -c core.fsmonitor=false status --porcelain --untracked-files=all)" ]]; then
   printf 'ERROR: dirty or untracked source checkout, refusing to run tests.\n' >&2
   exit 67
 fi
@@ -150,7 +153,7 @@ stage=postflight-source-identity
   printf 'ERROR: Git index flags changed during qualification.\n' >&2
   exit 72
 }
-[[ -z "$(git status --porcelain --untracked-files=all)" ]] || {
+[[ -z "$(git -c core.fileMode=true -c core.fsmonitor=false status --porcelain --untracked-files=all)" ]] || {
   printf 'ERROR: tracked or untracked source changed during qualification.\n' >&2
   exit 70
 }
