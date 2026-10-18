@@ -37,6 +37,38 @@ final class StaticModuleNamespaceConfinementTest {
     }
 
     @Test
+    void moduleStaticWritesRespectDeclaredBindingMutability() {
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(MODULE + """
+                    routine main(): void {
+                        Catalog.version = 5;
+                        return;
+                    }
+                    """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module WritableCatalog as
+                    pub let counter: int = 0;
+                end
+                routine main(): void {
+                    WritableCatalog.counter = 5;
+                    return;
+                }
+                """)));
+    }
+
+    @Test
+    void staticFunctionCanBeReifiedWithoutReifyingItsModule() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(MODULE + """
+                routine main(): void {
+                    const f = Catalog.get;
+                    const result = f();
+                    return;
+                }
+                """)));
+    }
+
+    @Test
     void noModuleNamespaceCanBePassedToAnyTypedParameter() {
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse(MODULE + """
