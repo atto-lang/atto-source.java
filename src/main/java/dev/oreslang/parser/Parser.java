@@ -1046,8 +1046,13 @@ public final class Parser {
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
-        else {
+        if (check(IDENT) && checkNext(COLON)) {
+            name = advance().lexeme();
+            consume(COLON, "expected ':' after module binding name");
+            type = parseTypeRef();
+        } else if (check(IDENT) && checkNext(EQUAL)) {
+            name = advance().lexeme();
+        } else {
             type = parseTypeRef();
             name = consume(IDENT, "expected binding name").lexeme();
         }
