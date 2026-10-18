@@ -612,6 +612,39 @@ final class GitHubWebhookActorV1Test {
         }
     }
 
+    @Test
+    void webhookActorKeepsPersistentStateInPrivateMemoryAndRetiresIt()
+            throws Exception {
+        byte[] secret =
+                "0123456789abcdef0123456789abcdef"
+                        .getBytes(StandardCharsets.UTF_8);
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = GitHubWebhookActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new GitHubWebhookActorV1.Configure(secret));
+            assertInstanceOf(
+                    GitHubWebhookActorV1.Ready.class,
+                    next(outputs));
+            assertTrue(
+                    runtime.privateMemoryBytes() > 0L,
+                    "configured webhook state must live in private actor memory");
+
+            actor.send(new GitHubWebhookActorV1.Shutdown());
+            assertInstanceOf(
+                    GitHubWebhookActorV1.Stopping.class,
+                    next(outputs));
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
+
+            assertEquals(
+                    0L,
+                    runtime.privateMemoryBytes(),
+                    "webhook teardown must retire private state memory");
+        }
+    }
+
     private static Object next(
             ActorRuntime.ActorOutputStream<Object> outputs)
             throws Exception {
