@@ -6855,6 +6855,8 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private int activeTerminationCascades;
         private boolean terminationCascadeComplete;
+        /** Fail closed if any cascade aborted before dispatching all children. */
+        private boolean terminationCascadeFailed;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
@@ -7775,6 +7777,7 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleLock.notifyAll();
             }
 
+            boolean cascadeDispatchComplete = false;
             try {
                 // Sealing/cancelling a scope can settle Futures and execute
                 // trusted callbacks inline. Never hold the actor lifecycle
@@ -7796,15 +7799,20 @@ public final class ActorRuntime implements AutoCloseable {
                             child.ref.id(),
                             "parent actor " + ref.id() + " terminated"));
                 }
+                cascadeDispatchComplete = true;
             } finally {
                 if (ownedTaskScope != null) {
                     synchronized (lifecycleLock) {
+                        if (!cascadeDispatchComplete) terminationCascadeFailed = true;
                         if (activeTerminationCascades <= 0) {
                             throw new IllegalStateException(
                                     "actor Task termination cascade accounting underflow");
                         }
                         if (--activeTerminationCascades == 0) {
-                            terminationCascadeComplete = true;
+                            // Do not release actor memory if a fatal host
+                            // callback interrupted the cancellation cascade
+                            // before every pending operation/child was handled.
+                            terminationCascadeComplete = !terminationCascadeFailed;
                         }
                         // A TaskScope completion callback could have arrived
                         // during this cascade; recheck after its last action.
