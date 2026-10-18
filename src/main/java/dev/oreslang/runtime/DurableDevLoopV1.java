@@ -241,7 +241,9 @@ public final class DurableDevLoopV1 {
 
     private final String runId;
     private final int maxIterations;
-    private final Map<String, Event> seenEvents = new HashMap<>();
+    private record DeliveryRecord(Event event, boolean sealed) { }
+
+    private final Map<String, DeliveryRecord> seenEvents = new HashMap<>();
     private final List<JournalEntry> journal = new ArrayList<>();
 
     private Phase phase = Phase.CREATED;
