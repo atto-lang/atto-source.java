@@ -5,8 +5,6 @@ on:
       - 'examples/marketing-actor-pipeline-three-stage.ores'
       - 'src/test/java/dev/oreslang/MarketingActorPipelineConformanceTest.java'
       - 'contracts/conformance/language-motion-v1.json'
-      - 'scripts/check-language-motion-evidence.py'
-      - 'scripts/test_language_motion_evidence.py'
       - '.github/workflows/marketing-actor-pipeline-conformance.yml'
   workflow_dispatch:
 permissions:
@@ -20,11 +18,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Reject unpinned fixtures and unsupported verification claims
+      - name: Reject unearned compilation verification claims
+        shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/check-language-motion-evidence.py
-          python3 -m unittest -v scripts/test_language_motion_evidence.py
+          jq -e --arg blob '87136de0c131a20ca3891d88f6b69f0d13177b3a' '
+            .schema_version == 1
+            and .candidate.not_in_main == true
+            and .candidate.baseline_compiler_revision == "00c344e05a5265a340a5dc68c012caa7e375115d"
+            and .public_site.merged_revision == "b499725f5eb345c8b3828f1e70c9fc8fed836d21"
+            and (.examples | length == 4)
+            and ([.examples[].public_property] | sort) == ["httpCode","mlCode","pipelineCode","selectCode"]
+            and ([.examples[] | select(.id == "three-actor-pipeline") | .source_blob_sha1] == [$blob])
+            and ([.examples[] | select(.id == "three-actor-pipeline") | .java_status] == ["pending_ci"])
+            and (all(.examples[]; .java_status != "verified" and .llvm_status != "verified" and .ci_evidence_url == null))
+          ' contracts/conformance/language-motion-v1.json
       - name: Set up GraalVM 25
         uses: graalvm/setup-graalvm@v1
         with:
