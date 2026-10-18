@@ -129,4 +129,75 @@ final class NamedCallPositionalProjectionTest {
         assertThrows(IllegalStateException.class, receipt::requireExecutable);
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(p));
     }
+
+    @Test
+    void unrelatedFunctionMustNotInfluenceProjectedCallTarget() {
+        Ast.Program program = Parser.parse("""
+                define module app as
+                    pub fnc work(int a, bool c): int { return a; }
+                    pub fnc helper(int n): int { return n; }
+                    pub fnc caller(): void {
+                        const result = work(c: true, a: 7);
+                        return;
+                    }
+                end
+                """);
+        Ast.ModuleDecl module = program.modules().getFirst();
+        Ast.FunctionDecl caller = (Ast.FunctionDecl) module.declarations().get(2);
+        Ast.StagedCallExpr call = (Ast.StagedCallExpr)
+                ((Ast.BindingStmt) caller.body().getFirst()).initializer();
+        var inspected = LiteralNamedCallPreflight.inspect(program, module, caller, call);
+        assertThrows(IllegalArgumentException.class,
+                () -> NamedCallPositionalProjection.check(inspected));
+    }
+
+    @Test
+    void unrelatedClassMustNotBeInterpretedAsCheckedCallScope() {
+        Ast.Program source = parse("int a, bool c", "c: true, a: 7", "return a;");
+        Ast.ModuleDecl original = source.modules().getFirst();
+        Ast.ClassDecl extra = new Ast.ClassDecl(
+                "Unrelated", Ast.Visibility.PRIVATE, false, Ast.ActorKind.NONE,
+                List.of(), List.of(), List.of(), List.of(), null, List.of());
+        Ast.ModuleDecl module = new Ast.ModuleDecl(
+                original.name(), original.annotations(), original.contracts(),
+                List.of(original.declarations().get(0),
+                        original.declarations().get(1), extra));
+        Ast.Program program = new Ast.Program(List.of(module));
+        Ast.FunctionDecl caller = (Ast.FunctionDecl) module.declarations().get(1);
+        Ast.StagedCallExpr call = (Ast.StagedCallExpr)
+                ((Ast.BindingStmt) caller.body().getFirst()).initializer();
+        var inspected = LiteralNamedCallPreflight.inspect(program, module, caller, call);
+        assertThrows(IllegalArgumentException.class,
+                () -> NamedCallPositionalProjection.check(inspected));
+    }
+
+    @Test
+    void everyThreeArgumentScalarPermutationRetainsOriginalFormalDestinations() {
+        String[] items = {"a: 1", "b: 2", "c: 3"};
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                if (i == j) continue;
+                int k = 3 - i - j;
+                String named = items[i] + ", " + items[j] + ", " + items[k];
+                Ast.Program p = parse("int a, int b, int c", named, "return a;");
+                var preview = preview(p);
+                var receipt = assertDoesNotThrow(
+                        () -> NamedCallPositionalProjection.check(preview), named);
+                assertEquals(3, receipt.checkedScalarFormalCount());
+                var slots = preview.recipe().abiSlots();
+                assertEquals(List.of(0, 1, 2), slots.stream()
+                        .map(dev.oreslang.types.OptionalCallTempLowering.AbiSlot::formalIndex)
+                        .toList());
+                assertEquals(List.of("a", "b", "c"), slots.stream()
+                        .map(dev.oreslang.types.OptionalCallTempLowering.AbiSlot::name)
+                        .toList());
+                assertEquals(List.of(i, j, k), preview.recipe().argumentTemps().stream()
+                        .map(temp -> slots.stream()
+                                .filter(slot -> slot.tempIndex() == temp.tempIndex())
+                                .findFirst().orElseThrow().formalIndex()).toList());
+                assertThrows(IllegalStateException.class, receipt::requireExecutable);
+                assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(p));
+            }
+        }
+    }
 }

@@ -65,6 +65,24 @@ public final class NamedCallPositionalProjection {
         }
 
         Ast.StagedCallExpr call = original.call();
+        // The diagnostic checker resolves ordinary calls by name + value arity.
+        // Freeze this bridge to a two-declaration module: a unique selected
+        // function and its distinct lexical caller. Otherwise annotations,
+        // unrelated declarations or alternate overloads could alter ordinary
+        // call resolution without changing the shape-only selected target.
+        Ast.ModuleDecl owner = original.module();
+        Ast.FunctionDecl selected = (Ast.FunctionDecl) bound.selectedDeclaration();
+        Ast.FunctionDecl caller = original.caller();
+        if (!(call.callee() instanceof Ast.NameExpr named)
+                || owner.declarations().size() != 2
+                || selected == caller
+                || !named.name().equals(selected.name())
+                || owner.declarations().stream().filter(x -> x == selected).count() != 1
+                || owner.declarations().stream().filter(x -> x == caller).count() != 1
+                || selected.parameters().size() != recipe.abiSlots().size()) {
+            throw new IllegalArgumentException(
+                    "positional projection requires unique original name/arity target and caller");
+        }
         if (!(call.callee() instanceof Ast.NameExpr)
                 || call.typeArgumentsPresent()
                 || call.arguments().isEmpty()
@@ -109,7 +127,6 @@ public final class NamedCallPositionalProjection {
         }
 
         Ast.CallExpr positional = new Ast.CallExpr(call.callee(), declaredOrder);
-        Ast.FunctionDecl caller = original.caller();
         if (caller.body().isEmpty()
                 || !(caller.body().getFirst() instanceof Ast.BindingStmt binding)
                 || binding.initializer() != call) {
@@ -127,7 +144,7 @@ public final class NamedCallPositionalProjection {
                 caller.genericParameters(), caller.parameters(), caller.returnType(),
                 caller.annotations(), body, caller.genericSpecs());
 
-        Ast.ModuleDecl module = original.module();
+        Ast.ModuleDecl module = owner;
         List<Ast.Decl> declarations = new ArrayList<>(module.declarations());
         boolean replaced = false;
         for (int index = 0; index < declarations.size(); index++) {
