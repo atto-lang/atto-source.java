@@ -815,24 +815,19 @@ public final class TypeChecker {
                 new LinkedHashSet<>());
         if (origin == null || origin == klass) return;
 
-        MethodOrigin resolvedOrigin = null;
-        Map<Ast.MethodArity, List<MethodOrigin>> inherited =
-                inheritedMethodOrigins(
-                        klass, nominalClassType(klass), false, new LinkedHashSet<>());
-        for (MethodOrigin candidate :
-                inherited.getOrDefault(implementation.overloadIdentity(), List.of())) {
-            if (candidate.owner() != origin) continue;
-            if (resolvedOrigin != null
-                    && !resolvedOrigin.ownerType().equals(candidate.ownerType())) {
+        List<Named> originViews = privateAbstractOriginViews(
+                klass, nominalClassType(klass), origin, new LinkedHashSet<>());
+        if (originViews.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "private abstract slot provenance lost for " + klass.name());
+        }
+        Named resolvedOriginType = originViews.getFirst();
+        for (Named candidate : originViews) {
+            if (!resolvedOriginType.equals(candidate)) {
                 throw new IllegalArgumentException(
                         "ambiguous generic private abstract slot view for "
                                 + klass.name() + "." + implementation.name());
             }
-            resolvedOrigin = candidate;
-        }
-        if (resolvedOrigin == null) {
-            throw new IllegalArgumentException(
-                    "private abstract slot provenance lost for " + klass.name());
         }
 
         Ast.MethodDecl contract = null;
@@ -862,7 +857,7 @@ public final class TypeChecker {
         }
 
         Map<String, Type> requiredBindings =
-                new HashMap<>(classGenericBindings(origin, resolvedOrigin.ownerType()));
+                new HashMap<>(classGenericBindings(origin, resolvedOriginType));
         Map<String, Type> actualBindings =
                 new HashMap<>(classGenericBindings(klass, nominalClassType(klass)));
         for (int i = 0; i < contract.genericParameters().size(); i++) {
@@ -920,6 +915,34 @@ public final class TypeChecker {
                     "incompatible private abstract method override '"
                             + klass.name() + "." + implementation.name()
                             + "': original superclass signature or effects differ");
+        }
+    }
+
+    private List<Named> privateAbstractOriginViews(
+            Ast.ClassDecl klass,
+            Named klassType,
+            Ast.ClassDecl origin,
+            Set<Ast.ClassDecl> stack) {
+        if (!stack.add(klass)) {
+            throw new IllegalArgumentException(
+                    "inheritance cycle involving class '" + klass.name() + "'");
+        }
+        try {
+            if (klass == origin) {
+                return List.of(canonicalClassView(origin, klassType));
+            }
+            List<Named> result = new ArrayList<>();
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+                if (parent == null) continue;
+                Named parentType =
+                        resolveParentView(klass, klassType, parentRef, parent);
+                result.addAll(privateAbstractOriginViews(
+                        parent, parentType, origin, stack));
+            }
+            return List.copyOf(result);
+        } finally {
+            stack.remove(klass);
         }
     }
 
