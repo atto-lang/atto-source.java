@@ -188,6 +188,17 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void forgedCallPlansCannotDuplicateOrSkipSourceEvaluations() {
+        for (List<Integer> invalid : List.of(
+                List.of(0, 0), List.of(1, -1), List.of(-2), List.of(0, 3))) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new Plan(invalid), invalid.toString());
+        }
+        assertEquals(List.of(1, -1, 0),
+                new Plan(List.of(1, -1, 0)).sourceIndexByParameter());
+    }
+
+    @Test
     void emptyCallAndConstructorReceiverErasureAreSimpleArityCases() {
         assertEquals(List.of(),
                 OptionalCallShapeBinder.bind(List.of(), List.of()).sourceIndexByParameter());
