@@ -436,12 +436,22 @@ public final class ConstructorSemanticIr {
         public CapturePlan {
             bindings = List.copyOf(bindings);
             java.util.HashSet<CaptureBindingId> ids = new java.util.HashSet<>();
+            CaptureBindingId recursiveSelf = null;
             for (ResolvedCaptureBinding binding : bindings) {
                 Objects.requireNonNull(binding, "capture binding");
                 if (!ids.add(binding.bindingId())) {
                     throw new IllegalArgumentException(
                             "duplicate semantic capture binding id: "
                                     + binding.bindingId().declarationId());
+                }
+                if (binding.origin() == CaptureOrigin.RECURSIVE_SELF) {
+                    if (recursiveSelf != null) {
+                        throw new IllegalArgumentException(
+                                "one callable capture plan cannot contain multiple recursive self fixpoint cells: "
+                                        + recursiveSelf.declarationId() + " and "
+                                        + binding.bindingId().declarationId());
+                    }
+                    recursiveSelf = binding.bindingId();
                 }
             }
         }
