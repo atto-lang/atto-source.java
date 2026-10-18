@@ -2469,9 +2469,17 @@ public final class ActorRuntime implements AutoCloseable {
             pipelineMembers.set(Set.copyOf(members));
         }
 
-        /** Must be called under groupMembershipLock after membership changes. */
+        /** Must be called under groupMembershipLock after membership changes.
+         * Out-of-memory during snapshot materialization must never leave an
+         * old grant to an actor that just left or terminated. Publishing the
+         * shared empty immutable set is allocation-free and fail closed. */
         private void publishPipelineMembers() {
-            pipelineMembers.set(Set.copyOf(members));
+            try {
+                pipelineMembers.set(Set.copyOf(members));
+            } catch (OutOfMemoryError memoryExhausted) {
+                pipelineMembers.set(Set.of());
+                throw memoryExhausted;
+            }
         }
 
         public ActorGroupId id() { return id; }
