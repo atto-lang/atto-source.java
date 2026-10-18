@@ -148,4 +148,56 @@ final class OresCancellationSourceTest {
         }
     }
 
+
+    @Test
+    void deepLinkedCancellationUsesBoundedJavaStackAndDetachesAllUpstreams() {
+        final int depth = 8_192;
+        java.util.ArrayList<OresCancellationSource> sources =
+                new java.util.ArrayList<>(depth + 1);
+        OresCancellationSource root = new OresCancellationSource();
+        sources.add(root);
+        try {
+            OresCancellationSource previous = root;
+            for (int i = 0; i < depth; i++) {
+                previous = OresCancellationSource.linked(previous.token());
+                sources.add(previous);
+            }
+            AtomicInteger leafDelivery = new AtomicInteger();
+            previous.token().onCancellationRequested(leafDelivery::incrementAndGet);
+            assertTrue(root.cancel());
+            assertEquals(1, leafDelivery.get());
+            for (OresCancellationSource current : sources) {
+                assertTrue(current.isCancellationRequested());
+                assertEquals(0, current.notification().pendingRuntimeWaiterCount());
+            }
+            assertFalse(root.cancel());
+        } finally {
+            for (int i = sources.size() - 1; i >= 0; i--) {
+                sources.get(i).close();
+            }
+        }
+    }
+
+    @Test
+    void diamondLinkedCancellationIsIdempotentWithoutCancellingUnrelatedSource() {
+        try (OresCancellationSource root = new OresCancellationSource();
+             OresCancellationSource unrelated = new OresCancellationSource();
+             OresCancellationSource left = OresCancellationSource.linked(root.token());
+             OresCancellationSource right = OresCancellationSource.linked(root.token());
+             OresCancellationSource child =
+                     OresCancellationSource.linked(left.token(), right.token())) {
+            AtomicInteger deliveries = new AtomicInteger();
+            child.token().onCancellationRequested(deliveries::incrementAndGet);
+            assertTrue(root.cancel());
+            assertTrue(left.isCancellationRequested());
+            assertTrue(right.isCancellationRequested());
+            assertTrue(child.isCancellationRequested());
+            assertFalse(unrelated.isCancellationRequested());
+            assertEquals(1, deliveries.get());
+            assertEquals(0, left.notification().pendingRuntimeWaiterCount());
+            assertEquals(0, right.notification().pendingRuntimeWaiterCount());
+        }
+    }
+
+
 }
