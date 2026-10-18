@@ -40,7 +40,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
      * Java reference to this language object or internal context.
      */
     @SuppressWarnings("deprecation")
-    static OresContext currentEnteredContextForHost() {
+    public static OresContext currentEnteredContextForHost() {
         return getCurrentContext(OresLanguage.class);
     }
 
