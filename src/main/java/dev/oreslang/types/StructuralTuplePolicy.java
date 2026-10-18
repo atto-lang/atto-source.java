@@ -88,10 +88,14 @@ public final class StructuralTuplePolicy {
 
     public record Shape(List<Slot> slots, boolean structural) {
         public Shape {
-            slots = List.copyOf(slots);
+            Objects.requireNonNull(slots, "structural tuple slots");
+            // Reject huge/adversarial collections BEFORE traversal/copying.
+            // A malicious frontend list may be cheap to size but dangerous
+            // to iterate, and does not deserve an O(n) proof allocation.
             if (slots.size() > MAX_ARITY) {
                 throw new IllegalArgumentException("structural tuple width exceeds 64 slots");
             }
+            slots = List.copyOf(slots);
             boolean optionalStarted = false;
             for (Slot slot : slots) {
                 Objects.requireNonNull(slot, "slot");
