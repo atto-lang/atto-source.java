@@ -14,3 +14,5 @@
 /tools/verify-exact-source-tree.sh @ORESoftware
 /tools/test-verify-exact-source-tree.sh @ORESoftware
 /scripts/test-private-ci-review-coverage.py @ORESoftware
+/scripts/run-private-ci-regressions-local.sh @ORESoftware
+/scripts/test-run-private-ci-regressions-local.sh @ORESoftware
