@@ -39,8 +39,9 @@ public final class ActorExecutionGrantGate {
         if (incarnation <= 0) {
             throw new IllegalArgumentException("actor incarnation must be positive");
         }
-        if (maxSlots < 1) {
-            throw new IllegalArgumentException("actor execution max slots must be positive");
+        if (maxSlots < 1 || maxSlots > 3) {
+            throw new IllegalArgumentException(
+                    "actor execution max slots require 1 <= max <= 3");
         }
         this.incarnation = incarnation;
         this.maxSlots = maxSlots;
