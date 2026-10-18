@@ -145,8 +145,9 @@ public final class WorkflowSupervisorPolicyV1 {
                     "spend_budget_exhausted");
         }
 
-        int nextCiRuns = usage.ciRuns()
-                + (activity == WorkflowActivityProtocolV1.Kind.CI ? 1 : 0);
+        int nextCiRuns = Math.addExact(
+                usage.ciRuns(),
+                activity == WorkflowActivityProtocolV1.Kind.CI ? 1 : 0);
         if (nextCiRuns > policy.maxCiRuns()) {
             return cancelAdmission(
                     usage,
