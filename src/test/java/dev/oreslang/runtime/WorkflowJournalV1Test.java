@@ -379,6 +379,24 @@ final class WorkflowJournalV1Test {
         assertEquals(1, store.snapshot().journalEntries());
     }
 
+
+    @Test
+    void leaseOverflowFailsBeforeTrustedClockMutation() {
+        var loop = new DurableDevLoopV1("run-lease-overflow", 3);
+        var store = started(loop);
+
+        assertThrows(
+                ArithmeticException.class,
+                () -> store.claimNext(
+                        "worker-overflow",
+                        Long.MAX_VALUE - 5L,
+                        10L));
+
+        var claim = store.claimNext(
+                "worker-good", 100L, 50L).orElseThrow();
+        assertEquals(150L, claim.leaseUntilMillis());
+    }
+
     @Test
     void journalClockCannotMoveBackwards() {
         var loop = new DurableDevLoopV1("run-clock", 3);
