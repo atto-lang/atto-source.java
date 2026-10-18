@@ -95,13 +95,18 @@ def bounded_bytes(path, limit, label):
             os.close(directory_fd)
             directory_fd = next_fd
         fd = os.open(parts[-1], file_flags, dir_fd=directory_fd)
-        with os.fdopen(fd, "rb") as stream:
-            before = os.fstat(stream.fileno())
+        try:
+            # Retain responsibility for the original descriptor throughout.
+            # Rejected special-file metadata and failed stream wrapping must
+            # not leak descriptors across repeated admission attempts.
+            before = os.fstat(fd)
             if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
                     or not 0 < before.st_size <= limit):
                 raise Denied("invalid " + label + " input file")
-            raw = stream.read(limit + 1)
-            after = os.fstat(stream.fileno())
+            raw = os.read(fd, limit + 1)
+            after = os.fstat(fd)
+        finally:
+            os.close(fd)
     except OSError as exc:
         raise Denied("unsafe " + label + " input path") from exc
     finally:
