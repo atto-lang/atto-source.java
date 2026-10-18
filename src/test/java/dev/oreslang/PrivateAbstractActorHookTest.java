@@ -358,6 +358,21 @@ final class PrivateAbstractActorHookTest {
     }
 
     @Test
+    void genericOriginViewSurvivesIntermediateOverride() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define abstract class Root<T> as
+                  private abstract receive(T value): T;
+                end
+                define class Middle<U> extends Root<U> as
+                  private receive(U value): U { return value; }
+                end
+                define class Worker extends Middle<int> as
+                  private receive(int value): int { return value + 1; }
+                end
+                """)));
+    }
+
+    @Test
     void privateAbstractMethodGenericsAreAlphaEquivalentByPosition() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define abstract class Framework as
