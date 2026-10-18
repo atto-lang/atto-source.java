@@ -1880,9 +1880,10 @@ public final class TypeChecker {
     private Type resolveStaticMemberReceiver(Type receiver) {
         if (receiver instanceof ModuleNamespace namespace) {
             Ast.ModuleDecl module = modules.get(namespace.moduleName());
+            if (module == null) module = linkedModuleNamespaces.get(namespace.moduleName());
             if (module == null) {
                 throw new IllegalArgumentException(
-                        "unknown compile-time module namespace '" + namespace.moduleName() + "'");
+                        "unverified compile-time module namespace '" + namespace.moduleName() + "'");
             }
             return moduleShape(module);
         }
