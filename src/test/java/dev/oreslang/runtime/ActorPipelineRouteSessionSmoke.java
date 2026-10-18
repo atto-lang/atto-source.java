@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -110,6 +111,59 @@ public final class ActorPipelineRouteSessionSmoke {
                 "reverse delivery leaked quota at capacity boundary");
         returns.close();
 
+        // A real router must bind immutable actor identities before it can
+        // publish any route frame into a user mailbox. The standalone
+        // selector-only session deliberately has no real mailbox authority.
+        var authenticated = new ActorPipelineRouteSession(plan, 18, 5,
+                Map.of("source", "id-0", "worker-a", "id-1",
+                        "worker-b", "id-2", "sink", "id-3"));
+        var authorizedRoot = authenticated.ingress("source");
+        ActorPipelineRouteSession.requireMailboxRecipient(authorizedRoot, "id-0");
+        try {
+            ActorPipelineRouteSession.requireMailboxRecipient(authorizedRoot, "id-1");
+            throw new AssertionError("wrong-recipient DATA acquired frame authority");
+        } catch (SecurityException expected) { }
+        check(authenticated.outstanding() == 1,
+                "wrong recipient bypassed live frame accounting");
+        authenticated.complete(authorizedRoot);
+        var unbound = new ActorPipelineRouteSession(plan, 18, 4);
+        var unboundRoot = unbound.ingress("source");
+        try {
+            ActorPipelineRouteSession.requireMailboxRecipient(unboundRoot, "id-0");
+            throw new AssertionError("selector-only frame published user DATA");
+        } catch (SecurityException expected) { }
+        unbound.complete(unboundRoot);
+
+        // Model both failure paths: no envelope allocated, and a real
+        // mailbox rejection that already called envelope.close() to retire
+        // its attempted return frame. Neither may consume the source's
+        // legitimate one-shot reply right or reuse a spent route ID.
+        var retry = new ActorPipelineRouteSession(plan, 21, 4);
+        var retryRoot = retry.ingress("source");
+        var retryWorker = retry.forwardTo(retryRoot, "worker-a");
+        var retrySink = retry.forward(retryWorker);
+        var rejectedReturn = retry.returnOneHop(retrySink);
+        retry.restoreRejectedReturn(retrySink, rejectedReturn);
+        check(retry.outstanding() == 3,
+                "rejected reverse selection failed to restore live source");
+        reject(() -> retry.complete(rejectedReturn),
+                "failed reverse route could be replayed");
+        var rejectedReply = retry.returnToOrigin(retrySink);
+        ActorPipelineRouteSession.retireDelivered(rejectedReply);
+        retry.restoreRejectedReturn(retrySink, rejectedReply);
+        check(retry.outstanding() == 3,
+                "already-retired envelope prevented original frame rollback");
+        var successfulReply = retry.returnToOrigin(retrySink);
+        check(successfulReply.receiver().equals("source")
+                        && successfulReply.routeId() > rejectedReply.routeId(),
+                "retry recycled an old route ID or forged origin");
+        retry.complete(successfulReply);
+        retry.complete(retryWorker);
+        retry.complete(retryRoot);
+        check(retry.outstanding() == 0,
+                "reverse rejection/retry leaked VM correlation credits");
+        retry.close();
+
         var old = ledger.ingress("source");
         reject(() -> ledger.advanceGeneration(8),
                 "clean generation change lost an in-flight message");
@@ -205,6 +259,6 @@ public final class ActorPipelineRouteSessionSmoke {
         check(errors.get() == 0 && parallel.outstanding() == 1,
                 "concurrent branches raced or leaked");
         parallel.complete(r);
-        System.out.println("ORES_ACTOR_REPLY_CORRELATION_OK cases=17 concurrent_branches=2000");
+        System.out.println("ORES_ACTOR_REPLY_CORRELATION_OK cases=19 concurrent_branches=2000");
     }
 }
