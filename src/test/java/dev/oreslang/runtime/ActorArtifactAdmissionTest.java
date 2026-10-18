@@ -458,6 +458,36 @@ final class ActorArtifactAdmissionTest {
     }
 
     @Test
+    void rawManifestParsingOccursOnlyAfterSupervisorAuthority() throws Exception {
+        byte[] executable = "ELF-authority-first".getBytes(StandardCharsets.UTF_8);
+        KeyPair keys = keyPair();
+        var manifest = sign(manifest(executable, List.of()), keys);
+        var attestation = attestation("ImageWorker", manifest);
+        var trustCalled = new java.util.concurrent.atomic.AtomicBoolean();
+
+        try (ActorRuntime insufficient = new ActorRuntime(IsolatePolicy.developer())) {
+            SecurityException denied = assertThrows(
+                    SecurityException.class,
+                    () -> insufficient.admitIpcActorArtifact(
+                            "ImageWorker",
+                            Ast.ActorKind.PRIVATE,
+                            "{ definitely-not-json".getBytes(StandardCharsets.UTF_8),
+                            executable,
+                            attestation,
+                            ignored -> trustCalled.set(true),
+                            (builder, keyId) -> keys.getPublic(),
+                            targetPolicy(),
+                            privateWorkerPolicy()));
+            assertTrue(
+                    denied.getMessage().contains("IPC")
+                            || denied.getMessage().contains("CHILD_PROCESS"),
+                    denied.getMessage());
+            assertFalse(trustCalled.get(),
+                    "unauthorized caller must fail before raw-manifest/trust work");
+        }
+    }
+
+    @Test
     void runtimeAdmissionUsesActualSupervisorAuthorityAndBindsRuntime()
             throws Exception {
         byte[] executable = "ELF-runtime-bound".getBytes(StandardCharsets.UTF_8);
