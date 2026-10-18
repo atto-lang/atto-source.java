@@ -45,22 +45,20 @@ jobs:
         with:
           persist-credentials: false
       - name: Validate CI security review coverage
-        run: python3 -B scripts/test-private-ci-review-coverage.py
+        run: python3 -I -B scripts/test-private-ci-review-coverage.py
       - name: Validate offline regression runner
         run: bash scripts/test-run-private-ci-regressions-local.sh
-      - name: Assert private CI guard fail-closed behavior
+      - name: Execute exact source-free publisher suite with isolated Python
         run: |
           set -euo pipefail
-          bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
-          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/test-private-ci-merged-main.py scripts/test-private-ci-review-coverage.py
-          bash -n scripts/run-private-ci-regressions-local.sh scripts/test-run-private-ci-regressions-local.sh
-          bash scripts/test-private-ci-destination.sh
           bash -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh
           bash tools/test-verify-exact-source-tree.sh
-          for attempt in 1 2 3; do
-            echo "Private publisher adversarial pass ${attempt}/3"
-            python3 -B scripts/test-publish-private-ci-source.py
-          done
-          # This separate module is also imported through load_tests above.
-          # Run it explicitly so CI logs and evidence always show its verdict.
-          python3 -B scripts/test-private-ci-merged-main.py
+          echo "CI_PRIVATE_PUBLISHER_PROVENANCE|commit=$(git rev-parse HEAD)|tree=$(git rev-parse 'HEAD^{tree}')|run=$GITHUB_RUN_ID|attempt=$GITHUB_RUN_ATTEMPT"
+          PRIVATE_CI_TEST_REPEATS=3 bash scripts/run-private-ci-regressions-local.sh
+          echo "CI_PRIVATE_PUBLISHER_SUITE_PASS|commit=$(git rev-parse HEAD)|tree=$(git rev-parse 'HEAD^{tree}')"
+          {
+            echo '### Source-free private publisher regressions'
+            echo "Git commit: $(git rev-parse HEAD)"
+            echo "Git tree: $(git rev-parse 'HEAD^{tree}')"
+            echo 'Outcome: exact-tree Bash verifier and full offline publisher x3 passed'
+          } >> "$GITHUB_STEP_SUMMARY"
