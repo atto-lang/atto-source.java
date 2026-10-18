@@ -115,6 +115,42 @@ final class CallerRoleIncrementalAbiTest {
     }
 
     @Test
+    void privateRoleEnumSchemaChangesInvalidatePublicCallablePolicyAbi() {
+        String baseline = IncrementalCompiler.abiDigest(Parser.parse("""
+                define enum Roles as
+                    A = 1
+                end
+                @CallableBy(Roles.A)
+                pub fnc protectedFn(): void {}
+                """));
+        String retagged = IncrementalCompiler.abiDigest(Parser.parse("""
+                define enum Roles as
+                    A = 7
+                end
+                @CallableBy(Roles.A)
+                pub fnc protectedFn(): void {}
+                """));
+        assertNotEquals(baseline, retagged);
+    }
+
+    @Test
+    void privateEnumWithoutExportedCallerPolicyDoesNotAlterPublicAbi() {
+        String baseline = IncrementalCompiler.abiDigest(Parser.parse("""
+                define enum Internal as
+                    A = 1
+                end
+                pub fnc ordinary(): void {}
+                """));
+        String modified = IncrementalCompiler.abiDigest(Parser.parse("""
+                define enum Internal as
+                    A = 7
+                end
+                pub fnc ordinary(): void {}
+                """));
+        assertEquals(baseline, modified);
+    }
+
+    @Test
     void implementationChangesDoNotModifyExportedPolicyAbi() {
         String first = fingerprint("""
                 @CallableBy(Callers.A)
