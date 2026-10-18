@@ -233,6 +233,8 @@ def verified_child_env():
 
 
 MAX_GITHUB_API_JSON_BYTES = 2 * 1024 * 1024
+PER_WRITE_ADMISSION_READS = 28
+FIXED_API_RESERVE = 160
 
 
 def strict_github_api_json(raw):
@@ -1107,9 +1109,11 @@ def require_private_ci_api_budget(file_count, estimated_writes=None):
         raise Denied("GitHub core API budget unavailable")
     # Each write revalidates both source and carrier CODEOWNERS, the pinned
     # carrier validation-workflow blob, and all immutable approvals. Reserve
-    # three extra reads per write: pinned carrier workflow, incident repository
-    # identity, and exact incident state.
-    required = 27 * estimated_writes + 160
+    # Four extra reads per reauthorized write are now dedicated to the
+    # carrier workflow plus incident repository identity and both exact P0
+    # issue states (#22 and #77). Keep this coefficient centralized so tests
+    # cannot silently drift from the admission call graph.
+    required = PER_WRITE_ADMISSION_READS * estimated_writes + FIXED_API_RESERVE
     if remaining < required:
         raise Denied("insufficient GitHub core API budget for safe private CI export")
 
