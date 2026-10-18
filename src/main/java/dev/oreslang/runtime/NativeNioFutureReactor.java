@@ -491,6 +491,30 @@ public final class NativeNioFutureReactor implements AutoCloseable {
         while (quantum++ < 128 && (next = commands.poll()) != null) next.run();
     }
 
+    /**
+     * A failing host-side terminal observer must never strand later admitted
+     * operations. Returns the first failure and retains all later failures
+     * as suppressed; this helper invokes every independent cleanup action.
+     */
+    static <T> Throwable exhaustTerminalCleanup(
+            Iterable<T> items, java.util.function.Consumer<? super T> cleanup) {
+        Throwable first = null;
+        for (T item : items) {
+            try { cleanup.accept(item); }
+            catch (Throwable failure) {
+                if (first == null) first = failure;
+                else if (first != failure) first.addSuppressed(failure);
+            }
+        }
+        return first;
+    }
+
+    private void recordTerminalCleanupFailure(Throwable failure) {
+        if (failure == null) return;
+        if (terminalFailure == null) terminalFailure = failure;
+        else if (terminalFailure != failure) terminalFailure.addSuppressed(failure);
+    }
+
     private void run() {
         try {
             while (!shuttingDown.get()) {
@@ -532,16 +556,19 @@ public final class NativeNioFutureReactor implements AutoCloseable {
                 // operations from being failed. Their identity registry is
                 // independent of the command queue and selection keys.
                 try { drainCommands(); } catch (Throwable drainedFailure) {
-                    if (terminalFailure == null) terminalFailure = drainedFailure;
+                    recordTerminalCleanupFailure(drainedFailure);
                 }
                 IOException failure = new IOException("TCP reactor terminated", terminalFailure);
-                while (!accepts.isEmpty()) fail(accepts.removeFirst().future, failure);
-                for (Connection connection : Set.copyOf(connections)) {
-                    try { closeConnection(connection, failure); }
-                    catch (RuntimeException cleanupFailure) {
-                        if (terminalFailure != null) terminalFailure.addSuppressed(cleanupFailure);
+                while (!accepts.isEmpty()) {
+                    var accepted = accepts.removeFirst();
+                    try { fail(accepted.future, failure); }
+                    catch (Throwable cleanupFailure) {
+                        recordTerminalCleanupFailure(cleanupFailure);
                     }
                 }
+                recordTerminalCleanupFailure(exhaustTerminalCleanup(
+                        Set.copyOf(connections),
+                        connection -> closeConnection(connection, failure)));
                 // The queues may contain operations whose command itself threw
                 // before registering as an active read/write/accept.
                 Set<OresFuture<?>> forgotten;
@@ -551,8 +578,8 @@ public final class NativeNioFutureReactor implements AutoCloseable {
                     pending.set(0);
                     commands.clear();
                 }
-                for (OresFuture<?> future : forgotten)
-                    future.failFromRuntime(failure);
+                recordTerminalCleanupFailure(exhaustTerminalCleanup(
+                        forgotten, future -> future.failFromRuntime(failure)));
             } finally {
                 try { listener.close(); } catch (IOException ignored) { }
                 try { selector.close(); } catch (IOException ignored) { }
@@ -560,7 +587,8 @@ public final class NativeNioFutureReactor implements AutoCloseable {
                 // a resumed task may immediately open a new listener, and
                 // capacity accounting must already see this reactor stopped.
                 stopped.countDown();
-                terminated.completeFromRuntime(null);
+                if (terminalFailure == null) terminated.completeFromRuntime(null);
+                else terminated.failFromRuntime(terminalFailure);
             }
         }
     }
