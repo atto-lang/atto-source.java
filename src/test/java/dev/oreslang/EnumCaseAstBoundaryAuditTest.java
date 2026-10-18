@@ -32,6 +32,35 @@ final class EnumCaseAstBoundaryAuditTest {
     }
 
     @Test
+    void importAwareTypeCheckerDoesNotBypassSyntaxOnlyEnumOrPatternGate() {
+        for (String source : List.of(
+                "define enum Foo as A, B end",
+                "define match pattern P as Foo.A end")) {
+            Ast.Program parsed = Parser.parse(source);
+            // Both public typechecking entrypoints must reject BEFORE
+            // annotation expansion, imported-symbol collection or linking.
+            IllegalArgumentException ordinary = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> dev.oreslang.types.TypeChecker.checkTypes(parsed));
+            IllegalArgumentException imported = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> dev.oreslang.types.TypeChecker.checkTypesWithImportedClasses(
+                            parsed, java.util.Map.of(), java.util.Map.of()));
+            assertTrue(ordinary.getMessage().contains("syntax-only"));
+            assertEquals(ordinary.getMessage(), imported.getMessage(),
+                    "import-aware admission must be identical to ordinary admission");
+            assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.types.TypeChecker.checkTypesWithImportedClasses(
+                            parsed, null, null),
+                    "a malformed import-map must not skip the early enum gate");
+        }
+        Ast.Program ordinary = Parser.parse("fnc main(): int { return 42; }");
+        assertDoesNotThrow(() ->
+                dev.oreslang.types.TypeChecker.checkTypesWithImportedClasses(
+                        ordinary, java.util.Map.of(), java.util.Map.of()));
+    }
+
+    @Test
     void directTreeShakerRefusesEnumAstBeforePruningDeadDeclarations() {
         Ast.Program program = Parser.parse("""
                 define enum Foo as A, B end
