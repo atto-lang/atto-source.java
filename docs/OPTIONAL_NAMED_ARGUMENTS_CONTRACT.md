@@ -958,3 +958,20 @@ permutations, explicit/implicit omission, supplied Some wrapping,
 immutability, invalid source types and required omissions, and refusal of
 unverified existing Option values. No actual repository JUnit pass is
 established until a funded runner executes the exact Git tree.
+
+
+## Non-finite scalar values require independent source/type proof
+
+The narrow `OptionalCallLiteralStage.exactScalarLiteralType` AST oracle and
+its downstream `CheckedLiteralOptionAbi` value envelopes accept Java `Double`
+payloads as source `float` values **only when finite**. This is a
+fail-closed source-origin restriction: an arbitrary Java caller can construct
+`Ast.LiteralExpr(Double.NaN)` or either infinity without demonstrating a
+corresponding Oreslang literal spelling or type/effect proof.
+
+This is **not** a language-wide prohibition of IEEE-754 NaN/infinity results
+from verified arithmetic or library operations. Those semantics require the
+real compiler and runtime, not these literal-only previews. Finite values,
+including `+0.0` and `-0.0`, remain admitted by the scalar oracle. The
+`CheckedLiteralOptionAbi` and direct literal-call planner JUnit regressions
+are committed but unexecuted pending JDK25 Maven Actions capacity.
