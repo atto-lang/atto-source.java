@@ -122,6 +122,27 @@ public final class OresTaskScope implements AutoCloseable {
 
     /** Cancel all owned descendants. Does NOT imply physical quiescence. */
     public boolean cancel() {
+        List<Runnable> notifications = new ArrayList<>();
+        // First close all child admissions and revoke all Task producers.
+        // Future cancellation notifies arbitrary synchronous host waiters;
+        // notifying one child before revoking its siblings can otherwise
+        // indefinitely delay their cancellation.
+        boolean won = cancelTree(notifications);
+        Throwable firstFailure = null;
+        for (Runnable notification : notifications) {
+            try {
+                notification.run();
+            } catch (RuntimeException | Error failure) {
+                if (firstFailure == null) firstFailure = failure;
+                else firstFailure.addSuppressed(failure);
+            }
+        }
+        if (firstFailure instanceof RuntimeException failure) throw failure;
+        if (firstFailure instanceof Error failure) throw failure;
+        return won;
+    }
+
+    private boolean cancelTree(List<Runnable> notifications) {
         final List<OresTaskScope> scopes;
         final List<OresTask<?>> owned;
         synchronized (gate) {
@@ -130,10 +151,14 @@ public final class OresTaskScope implements AutoCloseable {
             scopes = new ArrayList<>(childScopes);
             owned = new ArrayList<>(tasks);
         }
-        // Snapshot first, then revoke outside the admission lock. Once the
-        // snapshot exists, new children cannot be admitted.
-        for (OresTaskScope scope : scopes) scope.cancel();
-        for (OresTask<?> task : owned) task.cancel();
+        // Lock-free recursion: no parent/child monitor is held while a child
+        // is revoked, and no callback may run before the full cancellation
+        // tree has had its revocation opportunity.
+        for (OresTaskScope scope : scopes) scope.cancelTree(notifications);
+        for (OresTask<?> task : owned) {
+            Runnable notification = task.cancelDeferredNotification();
+            if (notification != null) notifications.add(notification);
+        }
         return true;
     }
 
@@ -161,19 +186,59 @@ public final class OresTaskScope implements AutoCloseable {
             joinExistingClose();
             return;
         }
+        Throwable firstFailure = null;
         try {
-            for (OresTaskScope scope : scopes) scope.close();
-            for (OresTask<?> task : owned) AsyncRuntime.await(task.getDone());
-        } catch (RuntimeException | Error failure) {
-            closeFailure = failure;
-            throw failure;
+            for (OresTaskScope scope : scopes) {
+                try {
+                    scope.close();
+                } catch (RuntimeException | Error failure) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else firstFailure.addSuppressed(failure);
+                }
+            }
+            for (OresTask<?> task : owned) {
+                try {
+                    awaitPhysicalExit(task.getDone());
+                } catch (RuntimeException | Error failure) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else firstFailure.addSuppressed(failure);
+                }
+            }
+            closeFailure = firstFailure;
+            if (firstFailure instanceof RuntimeException failure) throw failure;
+            if (firstFailure instanceof Error failure) throw failure;
         } finally {
+            // Other close callers must see a failure rather than treating an
+            // exceptional join as successful physical quiescence.
+            closeFailure = firstFailure;
             fullyJoined.countDown();
-            if (closeFailure == null && parent != null) {
+            if (firstFailure == null && parent != null) {
                 synchronized (parent.gate) {
                     parent.childScopes.remove(this);
                 }
             }
+        }
+    }
+
+    /** Wait through host interruption; releasing owned frames is mandatory. */
+    private static void awaitPhysicalExit(OresFuture<Void> observed) {
+        CountDownLatch exited = new CountDownLatch(1);
+        OresFuture.RuntimeWaiterRegistration<Void> registration =
+                observed.whenCompleteRuntimeCancellable(
+                        (value, failure) -> exited.countDown());
+        boolean interrupted = false;
+        try {
+            for (;;) {
+                try {
+                    exited.await();
+                    break;
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+        } finally {
+            registration.detach();
+            if (interrupted) Thread.currentThread().interrupt();
         }
     }
 
