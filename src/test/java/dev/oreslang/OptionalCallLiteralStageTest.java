@@ -240,6 +240,39 @@ final class OptionalCallLiteralStageTest {
     }
 
     @Test
+    void localLiteralCandidatesRefuseUnprovedNominalMutableAndBorrowedSlots() {
+        Ast.Program program = Parser.parse("""
+                pub fnc f(int a, string? label, bool enabled): int {
+                    return a;
+                }
+                """);
+        Ast.ModuleDecl module = program.modules().getFirst();
+        Ast.FunctionDecl fn = (Ast.FunctionDecl) module.declarations().getFirst();
+        Ast.StagedCallExpr call = new Ast.StagedCallExpr(new Ast.NameExpr("f"),
+                List.of(), false, List.of(
+                    Ast.CallArgument.named("a", new Ast.LiteralExpr(5L)),
+                    Ast.CallArgument.named("enabled", new Ast.LiteralExpr(true))));
+
+        for (Ast.Param replacement : List.of(
+                new Ast.Param(INT, "a", true, false),
+                new Ast.Param(INT, "a", false, true),
+                new Ast.Param(Ast.TypeRef.simple("UnresolvedNominal"), "a"),
+                new Ast.Param(Ast.TypeRef.borrowed(INT, false), "a"),
+                new Ast.Param(new Ast.TypeRef("Option", List.of(INT), false), "a"))) {
+            var modifiedFormals = new java.util.ArrayList<>(fn.parameters());
+            modifiedFormals.set(0, replacement);
+            var modified = new Ast.FunctionDecl(fn.name(), fn.kind(), fn.visibility(),
+                    false, Ast.ActorKind.NONE, List.of(), List.copyOf(modifiedFormals),
+                    fn.returnType(), List.of(), fn.body());
+            var candidateProgram = new Ast.Program(List.of(
+                    new Ast.ModuleDecl(module.name(), List.of(modified))));
+            assertThrows(IllegalArgumentException.class,
+                    () -> OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
+                            candidateProgram, call));
+        }
+    }
+
+    @Test
     void directScalarsRejectIncorrectClaimedTypeInGeneralAbiPreview() {
         var params = List.of(new Ast.Param(INT, "x"));
         var call = List.of(Ast.CallArgument.named("x", new Ast.LiteralExpr(7L)));
