@@ -601,7 +601,13 @@ public final class ActorRuntime implements AutoCloseable {
     /** Actor-created groups remain structurally owned even after creator leaves. */
     private final Map<ActorId, Set<ActorGroupId>> createdGroupsByActor =
             new java.util.HashMap<>();
+    /** Logically live actors still present in the registry. */
     private final AtomicInteger actorCount = new AtomicInteger();
+    /**
+     * Bounded spawn capacity remains charged through terminal-observer
+     * retirement so blocked host callbacks cannot enable replacement churn.
+     */
+    private final AtomicInteger actorCapacityInUse = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
@@ -1180,6 +1186,12 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public int actorCount() { return actorCount.get(); }
+
+    /** Live + terminal-observer-retained actor slots charged to maxActors. */
+    public int reservedActorSlots() {
+        requireSupervisorContext("inspect reserved actor slots");
+        return actorCapacityInUse.get();
+    }
 
     /**
      * Compiler/runtime hook for fair static-select sites.
@@ -4747,6 +4759,7 @@ public final class ActorRuntime implements AutoCloseable {
                 } else {
                     actors.put(id, cell);
                 }
+                actorCount.incrementAndGet();
                 return ref;
             } catch (RuntimeException | Error failure) {
                 // Roll back every registry when spawn admission fails. In
@@ -4763,7 +4776,11 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                     }
                 }
-                actorCount.decrementAndGet();
+                int remainingCapacity = actorCapacityInUse.decrementAndGet();
+                if (remainingCapacity < 0) {
+                    actorCapacityInUse.incrementAndGet();
+                    lifecyclePublicationFailures.incrementAndGet();
+                }
                 throw failure;
             }
         }
@@ -5031,12 +5048,12 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void reserveActorSlot() {
         while (true) {
-            int current = actorCount.get();
+            int current = actorCapacityInUse.get();
             if (current >= dispatcherConfig.maxActors()) {
                 throw new IllegalStateException(
                         "actor runtime limit exceeded: maximum " + dispatcherConfig.maxActors());
             }
-            if (actorCount.compareAndSet(current, current + 1)) return;
+            if (actorCapacityInUse.compareAndSet(current, current + 1)) return;
         }
     }
 
@@ -5073,6 +5090,11 @@ public final class ActorRuntime implements AutoCloseable {
 
         try {
             if (actors.remove(cell.ref.id(), cell)) {
+                int remainingLive = actorCount.decrementAndGet();
+                if (remainingLive < 0) {
+                    actorCount.incrementAndGet();
+                    lifecyclePublicationFailures.incrementAndGet();
+                }
                 if (!cell.actorSlotReleasePending.compareAndSet(false, true)) {
                     lifecyclePublicationFailures.incrementAndGet();
                 }
@@ -5092,9 +5114,9 @@ public final class ActorRuntime implements AutoCloseable {
             lifecyclePublicationFailures.incrementAndGet();
             return;
         }
-        int remaining = actorCount.decrementAndGet();
+        int remaining = actorCapacityInUse.decrementAndGet();
         if (remaining < 0) {
-            actorCount.incrementAndGet();
+            actorCapacityInUse.incrementAndGet();
             lifecyclePublicationFailures.incrementAndGet();
         }
     }
@@ -7131,6 +7153,7 @@ public final class ActorRuntime implements AutoCloseable {
                 || !dispatchersTerminated
                 || !lifecycleObserversTerminated
                 || actorCount.get() != 0
+                || actorCapacityInUse.get() != 0
                 || interrupted) {
             if (interrupted) {
                 for (ActorCell<?> cell : snapshot) {
@@ -7147,10 +7170,12 @@ public final class ActorRuntime implements AutoCloseable {
                             + finalizationPublicationsDrained
                             + ", lifecycleObserversTerminated="
                             + lifecycleObserversTerminated
-                            + ", retainedActorSlots=" + actorCount.get());
+                            + ", liveActors=" + actorCount.get()
+                            + ", retainedActorSlots=" + actorCapacityInUse.get());
         }
         actors.clear();
         actorCount.set(0);
+        actorCapacityInUse.set(0);
     }
 
     private ExecutorService dispatcherFor(ActorKind kind) {
