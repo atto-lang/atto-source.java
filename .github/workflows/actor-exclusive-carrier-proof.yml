@@ -40,7 +40,7 @@ jobs:
       - name: Compile and run actual actor execution boundary tests
         run: >
           mvn -B -ntp -Dores.runtime.carriers=native
-          -Dtest=ActorDispatchIdentityTest,ActorMailboxExecutionBoundaryTest,ActorOffCarrierTurnExecutorTest,VersionedActorCellTest,ActorThreadPolicySyntaxTest,ActorThreadPolicyHardeningTest,ActorExecutionGrantGateTest
+          -Dtest=ActorDispatchIdentityTest,ActorMailboxExecutionBoundaryTest,ActorOffCarrierTurnExecutorTest,VersionedActorCellTest,ActorThreadPolicySyntaxTest,ActorThreadPolicyHardeningTest,ActorThreadsLegacyCompatibilityTest,ActorExecutionGrantGateTest,ActorThreadPolicyRuntimeTest
           test
 
   tla-plus-tlc:
