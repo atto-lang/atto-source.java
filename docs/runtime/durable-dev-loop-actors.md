@@ -1,6 +1,6 @@
 # Durable actor development loops
 
-Status: **v1 reducer plus journal/outbox reference model implemented; persistent adapters and actor/tool wiring are follow-up work.**
+Status: **v1 reducer, SQLite journal/outbox, ActorRuntime coordinator, activity protocol, GitHub CI ingress, durable supervisor accounting, UI projection and typed workflow graph are implemented as Java/Graal reference layers. Guest-language single-state actor integration remains gated on the canonical actor state-loan work.**
 
 This document defines the first Oreslang architecture for long-running actor
 workflows whose execution can be projected into UI nodes while surviving
@@ -51,12 +51,16 @@ It independently replays and verifies every supplied reducer transition before
 accepting it, atomically records transitions and effect origins, leases pending
 effects to workers, and enforces the lease deadline again when a worker reports
 completion or known-nonexecution. Expired claims become AMBIGUOUS rather than
-being blindly retried. Terminal transitions mark older not-yet-started effects
-ABANDONED, while already-claimed effects remain visible until completion or
-reconciliation. The store also pins maxIterations as durable run policy and
-rejects backwards clock observations, lease-overflow partial mutations, forged
-snapshots/commands, and reused effect origins. It is currently an in-memory
-semantics model, not a persistence backend.
+being blindly retried. Claim tokens are opaque random-nonce capabilities bound
+to run, effect, attempt and global claim number; persisted claim structure is
+revalidated on restore. Terminal transitions mark older not-yet-started effects
+ABANDONED and revoke retry authority on pre-terminal claimed/ambiguous work.
+
+SqliteWorkflowJournalV1 is the persistent reference adapter. It uses WAL,
+synchronous=FULL and BEGIN IMMEDIATE transactions, reconstructs state by
+deterministic replay on every reload, rejects tampered lifecycle data, and
+invalidates a handle if rollback or recovery cannot be proven. Real
+child-process kill tests cover both sides of the SQLite COMMIT boundary.
 
 ## State ownership
 
@@ -93,12 +97,16 @@ AwaitCi, Evaluate, CreateBugReport, or RequestApproval.
 Every emitted command has a stable effectKey. The production actor runtime
 must use that key in a durable outbox/effect journal:
 
-1. append the accepted event/transition durably;
-2. append or recover the pending effect by effectKey;
-3. execute the external operation with that idempotency key when the provider
-   supports one;
-4. persist the result/receipt before publishing the corresponding completion
-   event back to the actor.
+1. append the accepted event/transition and newly emitted effects durably;
+2. claim a pending effect with an opaque attempt-bound claim token;
+3. execute the external operation with the stable effect key when the provider
+   supports idempotency;
+4. for commands that produce a workflow event, atomically persist the external
+   receipt and append the causal event with CompleteAndDeliver/completeAndAppend;
+5. for terminal side effects that produce no new reducer event (CancelWork and
+   Escalate), persist completion directly;
+6. if execution may have happened but the receipt is uncertain, mark the effect
+   AMBIGUOUS and reconcile provider state before any retry.
 
 Replay may regenerate the same command keys, but the effect journal prevents
 already-completed effects from being executed again.
@@ -110,6 +118,13 @@ If it was already claimed or ambiguous, its retry authority is revoked while
 the claim/ambiguity remains visible for receipt recording or reconciliation.
 This rule is iteration-aware: CI, evaluation and approval outcomes retire the
 effect for the workflow's current iteration, not an assumed first iteration.
+
+Effect completion and causal event delivery are one durability boundary.
+DurableDevLoopActorV1 rejects split CompleteEffect or direct Deliver calls for
+event-producing commands. A retry after a committed transaction but lost actor
+reply is idempotent; the original applied transition is returned without
+growing the journal. The reference layer can also repair the legacy inverse
+split where the event committed while its effect was still claimed.
 
 This is intentionally not an "exactly once network effects" claim. The runtime
 must support at-least-once delivery, deduplication, idempotency and explicit
@@ -126,8 +141,12 @@ STALE and cannot advance the run, even if it is otherwise successful.
 V1 accepts exact 40-hex or 64-hex object ids to remain compatible with SHA-1
 repositories and future SHA-256 repositories.
 
-For mirrored CI, a future CIActor must also record proof that the tested Git
-tree is byte-for-byte the intended source tree before accepting the result.
+For mirrored CI, the correlation layer requires the exact Git tree object id
+when the expectation pins a tree. GitHubWebhookActorV1 verifies the HMAC over
+the exact raw webhook body, rejects ambiguous multi-run matches, replays an
+exact previously matched GitHub delivery deterministically, and rejects reuse of
+a matched delivery id with a different signed payload. Unmatched deliveries are
+not sealed so an event that arrived before run registration can be retried.
 
 ## Delivery deduplication and audit
 
@@ -161,14 +180,31 @@ bug report is recorded:
   emitted with the bug report as feedback;
 - if the budget is exhausted, the workflow enters FAILED and emits Escalate.
 
-Additional limits should be enforced above the reducer for wall-clock time,
-model/token spend, CI spend, filesystem/network capabilities and protected Git
-operations.
+WorkflowSupervisorActorV1 and SqliteWorkflowSupervisorLedgerV1 enforce
+wall-clock, model-token, CI-run, spend, ambiguity and protected-write policy.
+Concurrent SQLite connections serialize admission so remaining budget cannot be
+double-spent. When connected to the workflow journal, cancellation is
+workflow-authoritative: the reducer reaches CANCELLED before the accounting
+ledger is updated, and restart reconciles a committed workflow cancellation
+back into the ledger. Terminal workflow state also blocks further admission.
+
+WorkflowActivityProtocolV1 grants explicit capabilities by activity kind.
+Succeeded is reserved for commands that must emit a causal reducer event;
+Completed is reserved for terminal side effects such as CancelWork/Escalate
+that intentionally produce no new workflow event.
 
 ## Proposed Oreslang surface
 
 The exact syntax below is a design target; it is not asserted as implemented
 compiler grammar yet.
+
+The Java reference actor does **not** relax the language-level invariant that a
+concrete Oreslang actor should own persistent guest data through one state
+schema and verified lexical/critical state loans. Current canonical main still
+contains legacy actor examples, while the single-state/state-loan work is being
+reconciled on separate actor-language branches. A guest DevLoopActor must not
+be advertised as executable until that canonical language/runtime support
+lands; this reference layer is the durability contract it must implement.
 
 ~~~ores
 define enum DevLoopMessages as
@@ -217,11 +253,11 @@ end
 
 ## UI contract
 
-The workflow UI consumes immutable actor projections such as. The Java
-reference backend now includes WorkflowRunProjectionV1, which refuses to
+The Java reference backend includes WorkflowRunProjectionV1, which refuses to
 project reducer/store revision skew, exposes effect counts and exact workflow
 revision, and surfaces approval/ambiguous-effect attention states without
-granting mutation authority.
+granting mutation authority. WorkflowViewActorV1 publishes those immutable
+projections to UI clients.
 
 The workflow UI consumes immutable actor projections such as:
 
@@ -261,39 +297,55 @@ The supervisor should distinguish:
 AI/model failures are activity failures, not reasons to replay an old model call
 as if it were deterministic.
 
+WorkflowEffectReconcilerV1 handles ambiguous provider effects conservatively:
+an exact expected Git commit+tree proves a push completed; an unchanged
+pre-push ref can be retried; unexpected remote movement requires human review.
+Create-style APIs reconcile via a stable effect marker and require a unique
+match before accepting completion.
+
 ## Current executable conformance
 
-DurableDevLoopV1Test covers:
+The branch now includes executable Java/Graal reference tests for:
 
-- happy-path code -> push -> exact CI -> evaluation -> approval;
-- stale commit CI rejection;
-- duplicate delivery-id no-op behavior;
-- CI failure -> bug report -> next coding iteration;
-- bounded iteration exhaustion and escalation;
-- evaluation failure using existing test evidence;
-- deterministic journal replay and stable regenerated effect keys;
-- cancellation before start;
-- malformed Git object-id rejection.
+- deterministic reducer transitions, duplicate/conflict/stale delivery handling,
+  bounded retries and replay;
+- journal/outbox claim leasing, opaque claim capabilities, causal retirement,
+  receipt reconciliation and fail-closed persistent restore;
+- SQLite transaction fault injection at every pre-COMMIT stage plus real
+  child-process death before and after COMMIT;
+- atomic effect receipt + causal event commit, including response-loss retry and
+  legacy split repair;
+- ActorRuntime coordinator recovery and rejection of split causal completion;
+- authenticated GitHub workflow_run parsing, exact repository/commit/tree/
+  workflow matching, ambiguous-correlation rejection and delivery replay rules;
+- capability-checked coding/Git/CI/evaluation/bug-report/approval/cancel/
+  escalation activity actors with eventful versus terminal completion semantics;
+- durable supervisor budget accounting, concurrent budget serialization,
+  workflow-authoritative cancellation and restart reconciliation;
+- immutable workflow UI projection and actor subscription surfaces;
+- typed workflow graph validation, canonical graph fingerprints, persisted
+  traversal history, bounded-cycle enforcement and cross-connection advances.
 
-WorkflowJournalV1Test additionally covers outbox claims, receipts, ambiguous
-lease expiry, explicit reconciliation, policy pinning, atomic append failure,
-effect-origin uniqueness and monotonic-clock enforcement.
-
-WorkflowRunProjectionV1Test covers normal UI projection, ambiguous-effect
-attention, approval attention and fail-closed reducer/store revision skew.
+The generic typed workflow runtime deliberately starts with one active control
+token. Parallel fan-out/join and compensation are later graph primitives, not
+implicit behavior in v1.
 
 ## Next implementation slices
 
-1. Add persistent WorkflowJournalV1 adapters (initially SQLite/PostgreSQL) with
-   atomic journal+outbox transactions and recovery fixtures.
-2. Wrap DurableDevLoopV1 in a real Oreslang DevLoopActor using the single actor
-   state schema and verified state-loan API.
-3. Add authenticated GitHub webhook ingress with delivery-id dedupe and
-   repository/run/commit correlation.
-4. Add Git/CI effect adapters that bind receipts to exact commit/tree identity.
-5. Add AI coding/evaluation activities with explicit tool capabilities,
-   sandboxing and spend/iteration policy.
-6. Add WorkflowRunProjection and subscription messages for a UI node/timeline.
-7. Add Java/LLVM conformance fixtures for the same journal/state-machine traces.
-8. Add process-crash/fault-injection tests against the persistent adapters at
-   every transition/effect boundary.
+1. Integrate the durable coordinator with the canonical Oreslang single-state
+   actor/state-loan surface once that language work lands; do not regress to
+   ordinary actor instance fields.
+2. Add PostgreSQL persistence with the same replay, atomic receipt+event,
+   leasing and crash/reconciliation contracts as the SQLite reference.
+3. Persist/rebuild shared webhook registrations and delivery receipts so ingress
+   restart does not depend on in-memory registration order.
+4. Add concrete sandboxed coding/Git/CI/model adapters that consume
+   WorkflowActivityProtocolV1 claims and provider-specific reconciliation.
+5. Add parallel fan-out/join, durable timers/waits and compensation as explicit
+   typed graph primitives.
+6. Add Java/LLVM differential trace fixtures for reducer, journal and typed
+   workflow execution.
+7. Add formal/model checks for terminal-state monotonicity, claim uniqueness,
+   bounded cycles, cancellation authority and causal effect retirement.
+8. Restore exact-tree GitHub Actions evidence when a private validation
+   destination is explicitly approved by the repository's protected CI policy.
