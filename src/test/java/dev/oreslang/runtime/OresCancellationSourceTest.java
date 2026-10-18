@@ -309,4 +309,45 @@ final class OresCancellationSourceTest {
         }
     }
 
+
+    @Test
+    void racingLinkRegistrationWithCancellationNeverLeavesChildLive() throws Exception {
+        for (int iteration = 0; iteration < 128; iteration++) {
+            try (OresCancellationSource parent = new OresCancellationSource()) {
+                CountDownLatch start = new CountDownLatch(1);
+                java.util.concurrent.atomic.AtomicReference<OresCancellationSource> child =
+                        new java.util.concurrent.atomic.AtomicReference<>();
+                java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                        new java.util.concurrent.atomic.AtomicReference<>();
+                Thread registrar = Thread.ofVirtual().start(() -> {
+                    try {
+                        start.await();
+                        child.set(OresCancellationSource.linked(parent.token()));
+                    } catch (Throwable problem) {
+                        failure.set(problem);
+                    }
+                });
+                Thread canceller = Thread.ofVirtual().start(() -> {
+                    try {
+                        start.await();
+                        parent.cancel();
+                    } catch (Throwable problem) {
+                        failure.set(problem);
+                    }
+                });
+                start.countDown();
+                registrar.join();
+                canceller.join();
+                assertNull(failure.get());
+                assertTrue(parent.isCancellationRequested());
+                OresCancellationSource linked = child.get();
+                assertNotNull(linked);
+                try (linked) {
+                    assertTrue(linked.isCancellationRequested(),
+                            "link must be claimed before or immediately after parent");
+                }
+            }
+        }
+    }
+
 }
