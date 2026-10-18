@@ -175,7 +175,19 @@ public final class TypeChecker {
             Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, LinkedInterfaceMetadata> linkedInterfaces) {
-        if (linkedClasses == null || linkedAliases == null || linkedInterfaces == null) {
+        return checkTypesWithLinkedImports(
+                program, linkedClasses, linkedAliases, linkedInterfaces, Map.of());
+    }
+
+    /** Linker-authenticated imported module namespaces; never guest values. */
+    public static Ast.Program checkTypesWithLinkedImports(
+            Ast.Program program,
+            Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, LinkedInterfaceMetadata> linkedInterfaces,
+            Map<String, Ast.ModuleDecl> linkedModules) {
+        if (linkedModules == null
+                || linkedClasses == null || linkedAliases == null || linkedInterfaces == null) {
             throw new IllegalArgumentException(
                     "linked public class/interface metadata cannot be null");
         }
