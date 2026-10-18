@@ -46,6 +46,33 @@ final class EnumCaseAstBoundaryAuditTest {
     }
 
     @Test
+    void forgedAstCannotBypassEnumNameTagAndCountChecks() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.EnumCase("A", null, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.EnumCase("", null, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.EnumDecl("", List.of(new Ast.EnumCase("A", null, 1))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.EnumDecl("Empty", List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.EnumDecl("Duplicate", List.of(
+                        new Ast.EnumCase("A", null, 1),
+                        new Ast.EnumCase("A", null, 2))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.EnumDecl("OutOfOrder", List.of(
+                        new Ast.EnumCase("A", null, 2),
+                        new Ast.EnumCase("B", null, 1))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.EnumDecl("RepeatedTag", List.of(
+                        new Ast.EnumCase("A", null, 1),
+                        new Ast.EnumCase("B", null, 1))));
+        assertDoesNotThrow(() -> new Ast.EnumDecl("Good", List.of(
+                new Ast.EnumCase("A", null, 1),
+                new Ast.EnumCase("B", Ast.TypeRef.simple("int"), 3))));
+    }
+
+    @Test
     void unrelatedLegacyProgramsStillPassOptimizerAndOwnership() {
         Ast.Program ordinary = Parser.parse("fnc main(): int { return 42; }");
         assertDoesNotThrow(() -> OwnershipChecker.check(ordinary));
