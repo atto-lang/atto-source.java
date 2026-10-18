@@ -19,6 +19,7 @@ import dev.oreslang.runtime.VmNioTcpListener;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ActorFailure;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
@@ -4868,7 +4869,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean isTrappableFailure(RuntimeException failure) {
             return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
-                    failure, OresPanic.class);
+                    failure, ActorFailure.Panic.class);
         }
 
         // Cleanup may add suppressed diagnostics but must not replace a
@@ -4887,7 +4888,7 @@ public final class OresEvalRootNode extends RootNode {
         // Fatal panic and scheduler cancellation remain uncatchable.
         private boolean isGuestCatchableFailure(Throwable failure) {
             return dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
-                    failure, OresPanic.class);
+                    failure, ActorFailure.Panic.class);
         }
 
         private Object callFunctionBodyUnchecked(Ast.FunctionDecl fn, List<?> args) {
@@ -5283,7 +5284,7 @@ public final class OresEvalRootNode extends RootNode {
                     try { executeBlock(tried.body(), env, true); }
                     catch (TailCallSignal signal) { throw signal; }
                     catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
-                    catch (OresPanic panic) { throw panic; }
+                    catch (ActorFailure.Panic panic) { throw panic; }
                     catch (RuntimeException failure) {
                         // Guest catch may recover explicit denials and other ordinary
                         // errors, but must never consume panic or scheduler control.
@@ -7381,7 +7382,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "is_none" -> (Invokable) args -> { requireZero(args, "Option.is_none"); return !option.present(); };
                 case "unwrap" -> (Invokable) args -> {
                     requireZero(args, "Option.unwrap");
-                    if (!option.present()) throw new OresPanic("called Option::unwrap() on a None value");
+                    if (!option.present()) throw new ActorFailure.Panic("called Option::unwrap() on a None value");
                     return option.value();
                 };
                 case "unwrap_safe" -> (Invokable) args -> {
@@ -7392,7 +7393,7 @@ public final class OresEvalRootNode extends RootNode {
                 };
                 case "expect" -> (Invokable) args -> {
                     String message = requireStringArg(args, "Option.expect");
-                    if (!option.present()) throw new OresPanic(message);
+                    if (!option.present()) throw new ActorFailure.Panic(message);
                     return option.value();
                 };
                 case "unwrap_or" -> (Invokable) args -> {
@@ -7410,7 +7411,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "unwrap" -> (Invokable) args -> {
                     requireZero(args, "Result.unwrap");
                     if (!result.ok()) {
-                        throw new OresPanic("called Result::unwrap() on an Err value: " + display(result.value()));
+                        throw new ActorFailure.Panic("called Result::unwrap() on an Err value: " + display(result.value()));
                     }
                     return result.value();
                 };
@@ -7420,7 +7421,7 @@ public final class OresEvalRootNode extends RootNode {
                 };
                 case "expect" -> (Invokable) args -> {
                     String message = requireStringArg(args, "Result.expect");
-                    if (!result.ok()) throw new OresPanic(message + ": " + display(result.value()));
+                    if (!result.ok()) throw new ActorFailure.Panic(message + ": " + display(result.value()));
                     return result.value();
                 };
                 case "unwrap_or" -> (Invokable) args -> {
@@ -9649,9 +9650,6 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
-    }
-    private static final class OresPanic extends RuntimeException {
-        private OresPanic(String message) { super(message, null, true, false); }
     }
     private static final class OresCastError extends RuntimeException {
         private OresCastError(String message) { super(message, null, false, false); }
