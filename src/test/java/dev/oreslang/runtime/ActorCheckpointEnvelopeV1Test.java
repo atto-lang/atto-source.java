@@ -6,6 +6,8 @@ import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.Random;
 import java.util.UUID;
+import java.util.HexFormat;
+import java.security.MessageDigest;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -16,6 +18,17 @@ final class ActorCheckpointEnvelopeV1Test {
     private static ActorCheckpointEnvelopeV1.Header expected() {
         return new ActorCheckpointEnvelopeV1.Header(
                 ID, 42, digest('a'), digest('b'), digest('c'), digest('d'));
+    }
+
+    @Test
+    void matchesIndependentNativePythonWireGolden() throws Exception {
+        byte[] bytes = ActorCheckpointEnvelopeV1.encode(
+                new ActorCheckpointEnvelopeV1.Snapshot(
+                        expected(), new byte[]{0x0a, (byte) 0xff}));
+        assertEquals(202, bytes.length);
+        assertEquals("c054268972740370c1be5ff20ceeda21edd17282a69692203acca15b4e6c1793",
+                HexFormat.of().formatHex(
+                        MessageDigest.getInstance("SHA-256").digest(bytes)));
     }
 
     @Test
