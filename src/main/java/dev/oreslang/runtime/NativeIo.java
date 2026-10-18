@@ -232,6 +232,7 @@ public final class NativeIo {
             String method,
             String rawUri,
             String body) {
+        TrustedNetworkIngressGuard.rejectUntrustedDirectNetwork("http."+method);
         URI uri = checkedHttpUri(rawUri);
         String endpoint = networkEndpoint(uri);
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "http." + method.toLowerCase());
