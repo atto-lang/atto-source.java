@@ -56,6 +56,37 @@ final class CriticalPhysicalRetirementTest {
     }
 
     @Test
+    void successfulResultIsNotPublishedUntilPhysicalCleanupFinishes() throws Exception {
+        CountDownLatch cleanupEntered = new CountDownLatch(1);
+        CountDownLatch letCleanupFinish = new CountDownLatch(1);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.startWithPhysicalRetirement(
+                    resume -> OresScheduler.done(33),
+                    () -> {
+                        cleanupEntered.countDown();
+                        try {
+                            // Instrumented test-only latch. Production cleanup
+                            // must be nonparking and must not execute guest code.
+                            if (!letCleanupFinish.await(5, TimeUnit.SECONDS)) {
+                                throw new AssertionError("cleanup barrier timeout");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
+                    });
+            try {
+                assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
+                assertFalse(task.isDone(),
+                        "result must not publish while cleanup callback runs");
+            } finally {
+                letCleanupFinish.countDown();
+            }
+            assertEquals(33, task.get(5, TimeUnit.SECONDS).intValue());
+        }
+    }
+
+    @Test
     void cancellationOfSuspendedOwnerReleasesExactlyOnceWithoutCarrierPark() throws Exception {
         CriticalGate gate = new CriticalGate();
         CriticalGate.Ticket owner = gate.newTicket();
