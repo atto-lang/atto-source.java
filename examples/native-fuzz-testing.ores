@@ -1,0 +1,21 @@
+import class TestCase, TestSuite, TestOptions, RunSummary, TestOutcome from '../stdlib/testing';
+import fnc expect_true, fuzz_int_cases, run_suite, require_success from '../stdlib/testing';
+
+fnc square_is_non_negative(int input): TestOutcome {
+  return expect_true(input * input >= 0, "squaring a bounded input stays non-negative");
+}
+
+fnc generated_inputs(): TestOutcome {
+  return fuzz_int_cases("squares", 17, 97, square_is_non_negative);
+}
+
+pub routine main(): void {
+  val TestSuite suite = new TestSuite(
+    "fuzz",
+    arr[new TestCase("int/squares", generated_inputs, false, "")]
+  );
+  val TestOptions options = new TestOptions("", false, true);
+  val RunSummary results = run_suite(&suite, &options);
+  require_success(&results);
+  return;
+}
