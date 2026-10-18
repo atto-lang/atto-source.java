@@ -7,7 +7,6 @@ on:
       - "tests/java-ml-guest-junit-guard.test.mjs"
       - "tests/fixtures/ml-actor-state-scalar.ores"
       - "tests/golden/ml-actor-state-scalar.stdout"
-      - "tests/golden/ml-actor-state-scalar.stdout"
       - "stdlib/**"
       - "pom.xml"
       - ".github/workflows/ml-scalar-actor-guest.yml"
@@ -20,7 +19,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout exact source PR head, never a cross-org carrier
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -36,18 +35,17 @@ jobs:
       - name: Fail closed on scalar fixture/golden drift before installing GraalVM
         run: |
           set -euo pipefail
-          test "$(git hash-object -- tests/fixtures/ml-actor-state-scalar.ores)" = "4ae673f093a16538da784d15819debbef439b0db"
-          test "$(git hash-object -- tests/golden/ml-actor-state-scalar.stdout)" = "9921f755979832f6b20e20923cc94f6f3bf6e05b"
+          test "$(git hash-object -- tests/fixtures/ml-actor-state-scalar.ores)" = "26a3cb34b126185d56f5d2c7ff370cab953b0b4b"
+          test "$(git hash-object -- tests/golden/ml-actor-state-scalar.stdout)" = "867f4ca71a20b58b1f35e239d4bef160f7ef5342"
           echo "ML_SCALAR_FIXTURE_AND_GOLDEN=EXACT_REVIEWED_BLOBS"
       - name: Host-only JUnit structural regression (not guest evidence)
         run: node --test tests/java-ml-guest-junit-guard.test.mjs
       - name: Install pinned GraalVM/JDK 25
-        uses: graalvm/setup-graalvm@v1
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # pinned from source-local security CI
         with:
           version: '25.3'
           java-version: '25'
           distribution: 'graalvm'
-          cache: maven
       - name: Show Java and Maven toolchain
         run: |
           java -version
@@ -55,7 +53,7 @@ jobs:
       - name: Execute real parser, effect, ownership and scalar actor guest
         run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=MlActorStateScalarGuestTest test
       - name: Full JVM verification (only after guest passes)
-        run: mvn -B -ntp -Dores.runtime.carriers=native verify
+        run: mvn -B -ntp -Dores.runtime.carriers=native clean verify
       - name: Certifying evidence boundary
         run: |
           echo "JAVA_GRAAL_ML_SCALAR_GUEST=EXECUTED"
