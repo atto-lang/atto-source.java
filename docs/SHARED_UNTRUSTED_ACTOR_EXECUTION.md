@@ -207,6 +207,45 @@ Integration with standalone #1306 must be reviewed before merging this
 stack: avoid re-applying its older pool implementation without restoring
 the code-image lease admission and retirement invariants from this branch.
 
+## Atomic publication and pool shutdown audit (2026-10-18)
+
+**Publication:** `HotReloadManager.loadAndStart()` now stages a candidate
+without making it visible through `active()` or `active(codeUnitId)`.
+Only after the guest successfully completes parse, link, init, and the
+admission deadline is its generation published. A failed candidate is
+retired independently, so the previous live module and its Context/code
+lease remain published and available. Explicit `load()` retains its
+existing staging/activation behavior for callers that deliberately manage
+`Generation.start()`; **that API is not a transactional reload**.
+
+The trusted JVM regression in `IsolationHotReloadTest` and the native-gated
+regression in `SharedUntrustedIsolatePoolTest` cover failed replacement,
+previous-generation preservation, and later successful replacement.
+This does **not** implement state migration, running-handler transfer,
+immutable compiler-produced code-executor rebinding, or cross-context
+actor upgrades; those belong to the separate #1270 audit and require
+their own isolation and ABI proof.
+
+**Acquisition rollback:** the group/context creation window is now inside
+the rollback handler; failed acquisition closes any successfully created
+Context before returning. Ordinary guest cleanup failures stay sanitized;
+host-VM fatal teardown errors retain priority. Manager shutdown attempts
+all Contexts and the owned Engine even when an earlier generation fails.
+
+**Shutdown linearization:** when `SharedUntrustedIsolatePool.close()`
+publishes its pool-wide close intent, existing group supervisor adapters
+must immediately deny new Source admissions and Context access, even if
+the group-specific admission monitor is occupied. A native-gated race
+test holds that monitor while another thread starts pool retirement,
+then checks both denials before allowing teardown to complete.
+
+**Evidence boundary:** these tests are authored in the draft stack but
+have not received a successful full Maven/GraalVM Native Image run on the
+current head. Do not treat local host checks, model testing, mergeability,
+or CI workflows that report zero executed steps as physical isolation
+or safe hot-upgrade certification. The private-CI export policy remains
+deny-by-default until reviewed approvals actually land on protected main.
+
 ## Tests and remaining release gates
 
 `SharedUntrustedActorSupervisorTest` verifies configuration, fail-closed
