@@ -56,9 +56,17 @@ immutable role index after proving enum declarations and role references.
 `requireDirectCall` works with the **resolved callee AST declaration
 object**, not a string or user-controlled role parameter. The Java
 TypeChecker now hooks the index into direct function/routine, module-qualified,
-static method and nominal instance-method branches. Guarded function values
-and static references are fail-closed; lambda body checking clears its caller
-roles to avoid inheriting authority.
+static method and nominal instance-method branches. The index derives the
+current caller's role set **only from the identity of its checked declaration**:
+user-provided role strings or sets cannot authorize calls. Unindexed guarded
+AST targets and reified function values fail closed. Lambda body checking
+clears its caller identity to avoid inheriting authority.
+
+**Staged restriction:** `@CallableBy` is rejected on all instance methods,
+including private methods, until actual virtual dispatch and override-policy
+preservation have a proven sealed method contract. `@CallerRole` on ordinary
+instance methods and `@CallableBy` on static class functions are supported by
+the standalone static index; the executable enum frontend remains gated.
 
 **Important remaining soundness gates** (not assertions of support):
 
