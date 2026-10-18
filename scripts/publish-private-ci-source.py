@@ -744,6 +744,15 @@ def publish(repository, source, branch, trusted_root, expected_tree=None,
             or confirmed.get("type") != "commit"
             or confirmed.get("sha") != commit_sha):
         raise Denied("GitHub did not confirm the attested CI commit at the created ref")
+    # Read the newly created branch independently. A successful POST response
+    # does not by itself prove that the live ref targets this exact commit.
+    live_created = gh_api(f"repos/{repository}/git/ref/heads/{branch}")
+    live_object = live_created.get("object")
+    if (live_created.get("ref") != "refs/heads/" + branch
+            or not isinstance(live_object, dict)
+            or live_object.get("type") != "commit"
+            or live_object.get("sha") != commit_sha):
+        raise Denied("created CI ref read-back differs from attested commit")
     return commit_sha, len(files)
 
 
