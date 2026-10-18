@@ -60,7 +60,7 @@ jobs:
                       'report_count': len(reports), **totals}
           out = pathlib.Path('target/ci-evidence/host.json')
           out.parent.mkdir(parents=True, exist_ok=True)
-          out.write_text(json.dumps(evidence, sort_keys=True) + '\\n', encoding='utf-8')
+          out.write_text(json.dumps(evidence, sort_keys=True) + chr(10), encoding='utf-8')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
@@ -157,7 +157,7 @@ jobs:
                       'report_count': len(reports), **totals}
           out = pathlib.Path('target/ci-evidence/native.json')
           out.parent.mkdir(parents=True, exist_ok=True)
-          out.write_text(json.dumps(evidence, sort_keys=True) + '\\n', encoding='utf-8')
+          out.write_text(json.dumps(evidence, sort_keys=True) + chr(10), encoding='utf-8')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
