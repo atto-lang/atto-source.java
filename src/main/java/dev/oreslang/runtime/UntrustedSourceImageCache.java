@@ -4,6 +4,9 @@ import dev.oreslang.OresLanguage;
 import org.graalvm.polyglot.Source;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.CharBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
@@ -19,7 +22,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * or SharedCodeImageStore. Code identity is (logical unit, exact source digest);
  * actor identities, contexts, mailboxes, capabilities, and mutable module state
  * are never shared. A Source cache hit is NOT proof of compiled machine-code
- * sharing while the language still uses ContextPolicy.EXCLUSIVE.</p>
+ * sharing without an explicit Engine and ContextPolicy.SHARED; even then,
+ * physical executable-page deduplication needs native measurements.</p>
  *
  * <p>References are pinned until their owning sandbox Context has been
  * <em>confirmed</em> closed, including during hot-reload generation overlap.
@@ -47,16 +51,54 @@ final class UntrustedSourceImageCache {
         this.maxBytes = maxBytes;
     }
 
-    synchronized Lease acquire(String codeUnitId, String sourceText) {
+    /**
+     * Cheap bounded preflight for the trusted supervisor; this does not parse
+     * or type-check attacker-controlled Oreslang or grant import authority.
+     * Call it BEFORE building a costly native guest isolate.
+     */
+    static void validateCandidate(String codeUnitId, String sourceText) {
+        strictSourceBytes(codeUnitId, sourceText);
+    }
+
+    private static byte[] strictSourceBytes(String codeUnitId, String sourceText) {
         Objects.requireNonNull(codeUnitId, "codeUnitId");
         Objects.requireNonNull(sourceText, "sourceText");
-        if (codeUnitId.isBlank() || codeUnitId.length() > MAX_CODE_UNIT_CHARS) {
+        if (codeUnitId.isBlank() || codeUnitId.length() > MAX_CODE_UNIT_CHARS
+                || codeUnitId.codePoints().anyMatch(Character::isISOControl)) {
             throw new IllegalArgumentException("invalid bounded untrusted code-unit identity");
         }
-        byte[] bytes = sourceText.getBytes(StandardCharsets.UTF_8);
-        if (bytes.length == 0 || bytes.length > MAX_SOURCE_BYTES) {
-            throw new IllegalArgumentException("untrusted source byte budget exceeded");
+        for (int i = 0; i < codeUnitId.length(); i++) {
+            char c = codeUnitId.charAt(i);
+            if (Character.isHighSurrogate(c)) {
+                if (++i >= codeUnitId.length()
+                        || !Character.isLowSurrogate(codeUnitId.charAt(i))) {
+                    throw new IllegalArgumentException("malformed code-unit identity");
+                }
+            } else if (Character.isLowSurrogate(c)) {
+                throw new IllegalArgumentException("malformed code-unit identity");
+            }
         }
+        try {
+            var encoded = StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(sourceText));
+            int bytes = encoded.remaining();
+            if (bytes == 0 || bytes > MAX_SOURCE_BYTES) {
+                throw new IllegalArgumentException("untrusted source byte budget exceeded");
+            }
+            byte[] result = new byte[bytes];
+            encoded.get(result);
+            return result;
+        } catch (CharacterCodingException malformed) {
+            // Malformed UTF-16 must never silently coalesce into replacement
+            // bytes, which would create ambiguous content hashes and cache keys.
+            throw new IllegalArgumentException("malformed UTF-8 source input");
+        }
+    }
+
+    synchronized Lease acquire(String codeUnitId, String sourceText) {
+        byte[] bytes = strictSourceBytes(codeUnitId, sourceText);
         Key key = new Key(codeUnitId, sha256(bytes));
         Entry entry = live.get(key);
         if (entry != null) {
