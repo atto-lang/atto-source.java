@@ -110,6 +110,12 @@ final class ActorPipelineRouteSession {
     // recipient identity; graph instance strings are not capabilities.
     private final Map<String, ?> runtimeRecipients;
     private final IdentityHashMap<MailFrame, Boolean> active = new IdentityHashMap<>();
+    // A trusted close/generation fence must not retire or reuse a frame
+    // while a publisher has claimed it but not yet committed its mailbox
+    // DATA. Count is allocated once and updated without boxing/locking at
+    // the post-enqueue commit boundary.
+    private final java.util.concurrent.atomic.AtomicInteger claimedPublications =
+            new java.util.concurrent.atomic.AtomicInteger();
     // Cursor is scoped to this trusted graph session / generation.
     // Mutable one-element slots are preallocated once per graph source.
     // Generation changes reset values, NEVER erase selectors. Avoids the
@@ -166,23 +172,37 @@ final class ActorPipelineRouteSession {
      * freezing/copying, quotas or mailbox write. A failure prior to actual
      * enqueue releases this claim and leaves the frame retryable. */
     static void claimMailboxAdmission(MailFrame frame) {
-        if (frame == null) return;
-        frame.session.requireLive(frame);
+        if (frame != null) frame.session.claimPublishedFrame(frame);
+    }
+
+    private synchronized void claimPublishedFrame(MailFrame frame) {
+        // Generation validation and claim are ONE admission operation:
+        // a concurrent close/abort cannot fence the epoch in between.
+        requireActive(frame);
         if (!frame.publicationState.compareAndSet(0, 1))
             throw new IllegalStateException(
                     "routed DATA already admitted or being published");
+        claimedPublications.incrementAndGet();
     }
 
     /** Only called when the final mailbox enqueue did NOT succeed. */
     static void abortMailboxAdmission(MailFrame frame) {
-        if (frame != null) frame.publicationState.compareAndSet(1, 0);
+        if (frame != null && frame.publicationState.compareAndSet(1, 0))
+            frame.session.claimedPublications.decrementAndGet();
     }
 
     /** Exactly the successful bounded mailbox tryWrite linearization:
      * cannot allocate, acquire a session lock or throw after enqueue.
      * claimMailboxAdmission already validated and reserved the token. */
     static void markMailboxPublished(MailFrame frame) {
-        if (frame != null) frame.publicationState.set(2);
+        if (frame != null) {
+            // No allocation/monitor/exception between successful tryWrite
+            // and this irreversible marker. The claimed-publication
+            // counter is released only by its owning successful sender.
+            int prior = frame.publicationState.getAndSet(2);
+            if (prior == 1)
+                frame.session.claimedPublications.decrementAndGet();
+        }
     }
 
     static boolean wasMailboxPublished(MailFrame frame) {
@@ -506,7 +526,7 @@ final class ActorPipelineRouteSession {
     }
 
     private void rejectPublicationFence() {
-        if (publicationInProgress) {
+        if (publicationInProgress || claimedPublications.get() != 0) {
             throw new IllegalStateException(
                     "cannot fence pipeline generation during mailbox publication");
         }
