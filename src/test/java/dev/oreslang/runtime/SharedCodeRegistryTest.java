@@ -193,6 +193,37 @@ final class SharedCodeRegistryTest {
     }
 
     @Test
+    void revokingOrClosingScopeForbidsNewImageAcquisitionsButPreservesPinnedLeases() {
+        SharedCodeRegistry registry = new SharedCodeRegistry();
+        IsolatePolicy policy = IsolatePolicy.developer();
+        String code = "pub routine main(): void { return; }";
+        try (var scope = registry.newSupervisorScope(policy)) {
+            registry.approveForAdversarialSharing(scope, policy, "worker.ores", code);
+            SharedCodeRegistry.Lease old =
+                    registry.acquireApprovedForAdversarialSharing(scope, "worker.ores", code);
+            try {
+                registry.revokeForAdversarialSharing(scope, policy, "worker.ores", code);
+                assertThrows(SecurityException.class, () ->
+                        registry.acquireApprovedForAdversarialSharing(
+                                scope, "worker.ores", code));
+                assertEquals(1, registry.liveImages(),
+                        "revocation must not invalidate an already-running image lease");
+                assertNotNull(old.source());
+
+                registry.approveForAdversarialSharing(scope, policy, "worker.ores", code);
+                scope.close();
+                assertThrows(SecurityException.class, () ->
+                        registry.acquireApprovedForAdversarialSharing(
+                                scope, "worker.ores", code));
+                assertEquals(1, registry.liveImages());
+            } finally {
+                old.close();
+            }
+        }
+        assertEquals(0, registry.liveImages());
+    }
+
+    @Test
     void hotLoaderCannotBorrowForeignSupervisorOrRegistryAuthority() {
         IsolatePolicy owner = IsolatePolicy.developer();
         IsolatePolicy other = IsolatePolicy.developer();
