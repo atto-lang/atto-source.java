@@ -158,6 +158,10 @@ DOCTYPE/ENTITY restrictions to decoded text: multi-byte UTF-16/UTF-32
 declarations must not bypass the XML policy. A source-free regression
 reproduced the previous UTF-16 entity-policy bypass; the stricter checker
 rejects it without treating synthetic evidence as JUnit compilation.
+When a `<testsuites>` wrapper declares aggregate counters, the verifier
+cross-checks them against the child suites; an outer failure/skip cannot be
+hidden by clean child reports. This was previously an incorrect source-free
+PASS, and now has both rejection and acceptance regression cases.
 These tests are source-free: no JDK25, JUnit, GraalVM or LLVM qualification.
 
 The regressions cover wrong commit/tree, hidden tracked source changes using

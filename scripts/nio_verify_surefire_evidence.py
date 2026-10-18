@@ -84,6 +84,14 @@ def check_report(path: Path) -> tuple[int, set[str]]:
             raise ValueError('JUnit counters contradict testcase elements')
         if failed or errors:
             raise ValueError('JUnit suite contains failures/errors')
+    # A <testsuites> wrapper may publish authoritative aggregate counters.
+    # Do not let failed/skipped results hide behind clean child suites.
+    if tag == 'testsuites':
+        for field in ('tests', 'skipped', 'failures', 'errors'):
+            if field in root.attrib:
+                expected = sum(count(suite, field) for suite in suites)
+                if count(root, field) != expected:
+                    raise ValueError(f'JUnit wrapper {field} counter contradicts suites')
     return executed, names
 
 

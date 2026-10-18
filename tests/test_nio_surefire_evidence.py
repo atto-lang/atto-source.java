@@ -90,6 +90,20 @@ class SurefireEvidenceTests(unittest.TestCase):
         self.marker.symlink_to(outside)
         self.check()
 
+    def test_testsuites_wrapper_counter_mismatch_rejected(self):
+        suite = SUITES[0]
+        p = self.report(suite)
+        p.write_text('<testsuites tests="19" failures="4" errors="0" '
+                     'skipped="0">' + self.xml(suite) + '</testsuites>')
+        self.check()
+
+    def test_testsuites_wrapper_correct_aggregates_allowed(self):
+        suite = SUITES[0]
+        p = self.report(suite)
+        p.write_text('<testsuites tests="1" failures="0" errors="0" '
+                     'skipped="0">' + self.xml(suite) + '</testsuites>')
+        self.check(0)
+
     def test_utf16_dtd_entity_is_rejected(self):
         # Previously passed: <!DOCTYPE> in UTF-16 escapes byte-level ASCII
         # declaration checks, and ElementTree expands the internal entity.
