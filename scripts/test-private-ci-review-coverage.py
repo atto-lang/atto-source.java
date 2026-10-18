@@ -22,6 +22,8 @@ SECURITY_PATHS = (
     "scripts/test-private-ci-merged-main.py",
     "scripts/test-private-ci-review-coverage.py",
     "scripts/test-publish-private-ci-source.py",
+    "scripts/run-private-ci-regressions-local.sh",
+    "scripts/test-run-private-ci-regressions-local.sh",
     "tools/verify-exact-source-tree.sh",
     "tools/test-verify-exact-source-tree.sh",
 )
@@ -70,6 +72,8 @@ def validate(codeowners, workflow):
             raise ValueError(event + " does not trigger on " + sorted(missing)[0])
     if "python3 -B scripts/test-private-ci-review-coverage.py" not in workflow:
         raise ValueError("CODEOWNER/workflow coverage regression test is not executed")
+    if "bash scripts/test-run-private-ci-regressions-local.sh" not in workflow:
+        raise ValueError("offline private-CI regression runner self-test is not executed")
 
 
 class ProtectedReviewCoverageTests(unittest.TestCase):
