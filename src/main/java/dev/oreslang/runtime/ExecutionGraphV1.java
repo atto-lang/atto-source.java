@@ -248,30 +248,78 @@ public final class ExecutionGraphV1 {
             } catch (UnsupportedOperationException ex) {
                 return OresFuture.failed(ex);
             }
+
             AtomicBoolean cancelled = new AtomicBoolean();
             AtomicBoolean started = new AtomicBoolean();
+            // Executor.execute(...) is an external admission boundary. A
+            // scheduler may start a worker on another carrier and still throw,
+            // so evaluation must not begin until execute(...) returns normally.
+            java.util.concurrent.CountDownLatch schedulerAdmitted =
+                    new java.util.concurrent.CountDownLatch(1);
+            AtomicBoolean schedulerAccepted = new AtomicBoolean();
+            AtomicBoolean scheduling = new AtomicBoolean(true);
+            AtomicBoolean inlineAttempted = new AtomicBoolean();
+            Thread submittingThread = Thread.currentThread();
             OresFuture<T> result = new OresFuture<>(() -> cancelled.set(true));
+
             try {
                 executor.execute(() -> {
-                    if (!started.compareAndSet(false, true) || result.isDone()) return;
+                    if (!started.compareAndSet(false, true)
+                            || cancelled.get() || result.isDone()) return;
                     try {
-                        // A direct/inline Executor handed to an actor is not
-                        // asynchronous. Refuse it rather than accidentally
-                        // running CPU-bound work inside a mailbox turn.
+                        // A direct/inline executor is not nonblocking. Defer
+                        // the terminal error until execute(...) returns so an
+                        // inline-then-throw scheduler preserves its real cause.
+                        if (scheduling.get() && Thread.currentThread() == submittingThread) {
+                            inlineAttempted.set(true);
+                            return;
+                        }
+                        try {
+                            if (!schedulerAdmitted.await(30,
+                                    java.util.concurrent.TimeUnit.SECONDS)) {
+                                result.failFromRuntime(
+                                        new java.util.concurrent.RejectedExecutionException(
+                                                "trusted CPU executor admission timed out"));
+                                return;
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            result.failFromRuntime(interrupted);
+                            return;
+                        }
+                        if (!schedulerAccepted.get()
+                                || cancelled.get() || result.isDone()) return;
+
+                        // Only an admitted asynchronous worker may evaluate.
                         if (ActorRuntime.inActorExecution()) {
                             throw new IllegalStateException(
                                     "CPU graph worker cannot execute on an actor carrier");
                         }
                         T value = evaluate(cancelled);
-                        if (!result.isDone()) result.completeFromRuntime(value);
+                        if (!cancelled.get() && !result.isDone()) {
+                            result.completeFromRuntime(value);
+                        }
                     } catch (CancellationException ex) {
                         result.cancel(false);
                     } catch (Throwable ex) {
                         result.failFromRuntime(ex);
                     }
                 });
+                if (inlineAttempted.get()) {
+                    cancelled.set(true);
+                    result.failFromRuntime(new IllegalStateException(
+                            "CPU graph requires a queued worker executor, not inline dispatch"));
+                } else {
+                    schedulerAccepted.set(true);
+                }
             } catch (RuntimeException ex) {
+                // A broken scheduler may have retained or already started the
+                // worker before rejecting. Open the gate only in rejected state.
+                cancelled.set(true);
                 result.failFromRuntime(ex);
+            } finally {
+                scheduling.set(false);
+                schedulerAdmitted.countDown();
             }
             return result;
         }
