@@ -322,9 +322,22 @@ public final class SqliteWorkflowSupervisorLedgerV1
         boolean committed = false;
         try {
             execute("BEGIN IMMEDIATE");
+            WorkflowSupervisorPolicyV1.Usage current =
+                    readUsage();
+            if (current.cancelled()) {
+                if (!current.cancellationReason().equals(reason)) {
+                    throw new IllegalStateException(
+                            "workflow cancellation reason is immutable: "
+                                    + current.cancellationReason());
+                }
+                execute("COMMIT");
+                committed = true;
+                return current;
+            }
+
             WorkflowSupervisorPolicyV1.Usage cancelled =
                     WorkflowSupervisorPolicyV1.cancel(
-                            readUsage(), reason);
+                            current, reason);
             writeUsage(cancelled);
             execute("COMMIT");
             committed = true;
