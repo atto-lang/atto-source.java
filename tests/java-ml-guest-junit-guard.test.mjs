@@ -125,3 +125,14 @@ test("nominal guest positive-control and equal-tag foreign enum denial are manda
   assert.match(negative,/Parser\.parse\(wrongNominalIdentity\)/);
   assert.match(negative,/assertRejected\(omittedCase\)/);
 });
+
+// INTENTIONAL RED ADMISSION GATE until the enum parser/typechecker from
+// PR #623 is integrated into this with/using compiler branch. Source-only
+// fixture spelling is insufficient: this parser currently lacks enums.
+const parser=readFileSync(new URL("../src/main/java/dev/oreslang/parser/Parser.java",import.meta.url),"utf8");
+test("ML guest branch integrates a real nominal enum parser prerequisite",()=>{
+  assert.match(parser,/private Ast\.EnumDecl parseTaggedEnum\(\)/,
+      "nominal enum declarations absent; integrate ADT compiler PR #623 before claiming ML guest conformance");
+  assert.match(parser,/match\(ENUM\)/,
+      "nominal enum syntax not dispatched by parser; full guest is not admissible");
+});
