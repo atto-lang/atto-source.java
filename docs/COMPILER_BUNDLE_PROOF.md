@@ -10,7 +10,8 @@ The stand-alone verifier **must** receive the trusted expected Git commit **and 
 python3 scripts/ci/compiler_bundle.py verify \
   --bundle /reviewed/private-bundle \
   --source-commit '<independently reviewed 40-hex commit>' \
-  --source-tree '<independently reviewed 40-hex Git tree>'
+  --source-tree '<independently reviewed 40-hex Git tree>' \
+  --expected-manifest-sha256 '<independently reviewed 64-hex manifest digest>'
 ```
 
 The receipt is *self-reported*, not a signed reproducible-build or SLSA attestation: it cannot prevent a compromised build, self-consistent malicious files, poisoned Maven dependencies, or a compromised runner. An independent reviewer must pin and attest the complete build inputs, compare the external artifact digest, and operate an isolated trust domain. The script relies on a POSIX JVM launcher and a provisioned Java runtime. Artifact upload remains private to the original source repo and expires after one day.
@@ -18,3 +19,7 @@ The receipt is *self-reported*, not a signed reproducible-build or SLSA attestat
 **Release gates still open:** Actions runner/budget administration, exact source build+test execution, independently reviewed binary provenance, both private source incidents `oreslang-platform-conformance#22` and `#77`, and real positive/negative Java compiler checks and six ML guest executions under the three-repo source lock. This draft is not an approved private-source mirror publisher, and it does not authorize bypassing the existing independent CI security policy.
 
 The new workflow also runs the **real bundled Java OresMain** against a known valid checked-in example (`examples/together.ores`) and a synthetic malformed `.ores` file. It requires successful positive `--check` without stdout, plus a negative exit status `1`, no stdout, and a positioned `path:line:column: error:` diagnostic. This gate is unverified until a source-org runner actually executes the job, and it does not constitute execution of the six ML guest programs.
+
+### Hardening: passive inspection versus opt-in execution
+
+The verifier no longer runs the JVM launcher by default. It inspects the canonical artifact manifest, exact files, runtime JAR closure, Git commit and tree pins, and the caller-supplied expected manifest SHA-256. To actively test a *trusted* launcher, pass `--probe-launcher` separately. An executable with plausible self-reported hashes can still be malicious: hash matching is not a sandbox or a signed compiler provenance claim. The workflow sets a local digest and uses `--probe-launcher` only after compiling and creating the bundle inside the original private source-org runner. An independent reviewer must obtain an expected digest out-of-band before trusting an externally supplied bundle. All artifact ancestor path components must be nonsymlinks.
