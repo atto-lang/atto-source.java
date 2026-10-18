@@ -26,30 +26,37 @@ public final class TaskScope implements AutoCloseable {
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
     }
 
-    /** Atomically admit a child or reject a scope which has started closing. */
+    /** Atomically reserve a child slot or reject a sealed scope. */
     public <T> TaskHandle<T> startTask(OresScheduler.Task<T> task) {
         Objects.requireNonNull(task, "task");
-        TaskHandle<T> child;
         synchronized (admissionLock) {
             if (sealed) {
                 throw new RejectedExecutionException("TaskScope is sealed");
             }
-            // The scheduler can reject concurrently, but a rejected task
-            // must never consume a scope join slot indefinitely.
+            // Reservation linearizes against seal/cancel. Keep the monitor
+            // free of scheduler dispatch: runtime-owned schedulers may run a
+            // complete guest turn synchronously during TaskHandle.start().
             active++;
-            try {
-                // Reserve the join slot before starting the scheduler task.
-                // Its result may already be terminal by the time we subscribe.
-                child = TaskHandle.start(scheduler, task, cancellation);
-            } catch (RuntimeException | Error admissionFailure) {
-                active--;
-                throw admissionFailure;
-            }
         }
-        // OresFuture may invoke already-terminal subscribers synchronously.
-        // Never register under admissionLock: childDone() can publish the
-        // scope's done Future and call arbitrary observers immediately.
-        // A concurrent seal/cancel still sees the reserved active slot.
+        final TaskHandle<T> child;
+        try {
+            child = TaskHandle.start(scheduler, task, cancellation);
+        } catch (RuntimeException | Error admissionFailure) {
+            // The reservation is already visible to concurrent seal/cancel;
+            // undo it under the same lock, then publish completion outside.
+            final boolean publish;
+            synchronized (admissionLock) {
+                active--;
+                publish = sealed && active == 0;
+            }
+            if (publish) done.completeFromRuntime(null);
+            throw admissionFailure;
+        }
+        // The child may have finished before callback registration. In that
+        // case, OresFuture invokes subscribers synchronously; never deliver
+        // arbitrary scope completion observers while holding admissionLock.
+        // Any seal/cancel racing this interval sees active > 0 and waits for
+        // childDone() after its actual scheduler quiescence.
         child.getDone().whenCompleteRuntime((outcome, failure) -> childDone());
         return child;
     }
