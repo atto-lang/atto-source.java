@@ -695,6 +695,13 @@ def publish(repository, source, branch, trusted_root, expected_tree=None,
     })
     if created.get("ref") != "refs/heads/" + branch:
         raise Denied("GitHub did not confirm creation of requested isolated CI branch")
+    # A created branch name alone is not proof that it targets the attested
+    # commit. Reject malformed, missing, or wrong Git object acknowledgements.
+    confirmed = created.get("object")
+    if (not isinstance(confirmed, dict)
+            or confirmed.get("type") != "commit"
+            or confirmed.get("sha") != commit_sha):
+        raise Denied("GitHub did not confirm the attested CI commit at the created ref")
     return commit_sha, len(files)
 
 
