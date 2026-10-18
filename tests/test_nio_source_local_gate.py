@@ -56,7 +56,9 @@ if [ "$1" = "-version" ]; then
   exit 0
 fi
 case " $* " in
-  *" clean "*) rm -rf target; exit 0 ;;
+  *" clean "*)
+    if [ "${FAKE_SKIP_CLEAN:-0}" = 1 ]; then exit 0; fi
+    rm -rf target; exit 0 ;;
   *" verify "*)
     if [ "${FAKE_FAIL_VERIFY:-0}" = 1 ]; then exit 9; fi ;;
 esac
@@ -122,6 +124,18 @@ exit 0
         result = self.gate()
         self.assertEqual(68, result.returncode, result.stderr)
         self.assertEqual("do-not-touch\n", marker.read_text())
+
+    def test_successful_clean_that_leaves_stale_target_fails_closed(self):
+        target = self.root / "target"
+        target.mkdir()
+        (target / "stale.class").write_text("old compiler output")
+        environment = self.env.copy()
+        environment["FAKE_SKIP_CLEAN"] = "1"
+        completed = self.gate(env=environment)
+        self.assertEqual(71, completed.returncode, completed.stderr)
+        self.assertIn("result=FAIL", self.receipt())
+        self.assertIn("stage=clean-stale-build", self.receipt())
+        self.assertFalse((target / "nio-exact-tree-gate" / "targeted-junit.log").exists())
 
     def test_nonzero_maven_exit_survives_tee_and_receipt(self):
         environment = self.env.copy()
