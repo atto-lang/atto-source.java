@@ -50,7 +50,8 @@ a nominal reference view, not an implicit heap-boxing operation.
 4. `new dyn I()` and `spawn dyn I()` are rejected. No constructor,
    allocator, or actor capability is manufactured by erasure. Erased
    interface views inside ActorRef, ActorMail, ActorOutput, Channel and
-   SharedMutex type arguments are rejected until safe transport exists.
+   SharedMutex type arguments are rejected until safe transport exists,
+   including when type aliases hide the erased view.
 5. Existing class/interface method name-and-arity dispatch is preserved.
    The `dyn` marker does not change overload identity or permit
    first-class bound methods.
