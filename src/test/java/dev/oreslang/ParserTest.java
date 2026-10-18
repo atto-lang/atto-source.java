@@ -17,6 +17,47 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ParserTest {
 
     @Test
+    void bothPipeDeclarationSpellingsPreserveOmittableFormalMetadata() {
+        for (String declaration : List.of(
+                "pub fnc bridge = |string? label| -> { return; }",
+                "pub fnc bridge = |label: string?| -> { return; }")) {
+            Ast.Program program = assertDoesNotThrow(
+                    () -> Parser.parse(declaration), declaration);
+            Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                    program.modules().getFirst().declarations().getFirst();
+            assertTrue(fn.parameters().getFirst().optional(), declaration);
+            assertEquals(Ast.TypeRef.simple("string"),
+                    fn.parameters().getFirst().valueType());
+            assertEquals("Option", fn.parameters().getFirst().calleeType().name());
+            assertThrows(IllegalArgumentException.class,
+                    () -> OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(program));
+        }
+    }
+
+    @Test
+    void nameFirstTypedPipeLambdaRemainsFailClosedBeforeOptionLowering() {
+        Ast.Program program = Parser.parse("""
+                pub fnc main(): void {
+                    const cb = (|label: string?| -> label);
+                    return;
+                }
+                """);
+        Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                program.modules().getFirst().declarations().getFirst();
+        Ast.BindingStmt binding = (Ast.BindingStmt) fn.body().getFirst();
+        Ast.LambdaExpr lambda = (Ast.LambdaExpr) binding.initializer();
+        assertEquals("label", lambda.parameters().getFirst().name());
+        assertTrue(lambda.parameters().getFirst().optional());
+        assertEquals(Ast.TypeRef.simple("string"),
+                lambda.parameters().getFirst().valueType());
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(program));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(program));
+    }
+
+
+    @Test
     void preflightRejectsOptionalLambdaInUnusedNestedExpressionBeforeExecution() {
         Ast.Program parsed = Parser.parse("""
                 pub fnc neverCalled(): void {
