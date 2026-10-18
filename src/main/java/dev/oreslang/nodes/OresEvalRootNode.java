@@ -671,6 +671,18 @@ public final class OresEvalRootNode extends RootNode {
                         "source spawn target '" + actorTypeName
                                 + "' is not an actor");
             }
+            // Runtime backstop for untyped/externally linked evaluator entrypoints.
+            // Never reinterpret declared HTTP/IPC/TCP/FFI/proxy/WS protocols
+            // as mailbox actors or mint their capabilities through generic spawn.
+            Ast.ActorSpecialization spec = klass.actorSpecialization();
+            if (spec.transport() != Ast.ActorTransport.MAIL
+                    || spec.replyRole() != Ast.ActorReplyRole.STREAM
+                    || !spec.requirements().isEmpty() || !spec.effects().isEmpty()
+                    || !spec.annotations().isEmpty()) {
+                throw new SecurityException("actor '" + actorTypeName
+                        + "' has an unbound transport/unary/capability contract; "
+                        + "source actor startup is denied");
+            }
             return klass;
         }
 
