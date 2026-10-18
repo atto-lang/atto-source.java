@@ -252,6 +252,41 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void underscoreIsExactlyTheSameOmissionPlanAsOmit() {
+        assertEquals(Argument.positionalOmission(), Argument.underscore());
+        assertEquals(Argument.namedOmission("b"), Argument.namedUnderscore("b"));
+
+        Plan spelledOmit = OptionalCallShapeBinder.bind(FOO, List.of(
+                Argument.positional(), Argument.positionalOmission(), Argument.positional()));
+        Plan spelledUnderscore = OptionalCallShapeBinder.bind(FOO, List.of(
+                Argument.positional(), Argument.underscore(), Argument.positional()));
+        assertEquals(spelledOmit, spelledUnderscore);
+        assertEquals(List.of(0, -1, 1), spelledUnderscore.sourceIndexByParameter());
+        assertEquals(List.of(1), spelledUnderscore.explicitlyOmittedParameterIndices());
+        assertEquals(2, spelledUnderscore.suppliedArgumentCount());
+
+        Plan named = OptionalCallShapeBinder.bind(FOO, List.of(
+                Argument.named("a"), Argument.namedUnderscore("b"), Argument.named("c")));
+        assertEquals(List.of(0, -1, 1), named.sourceIndexByParameter());
+        assertTrue(named.explicitlyOmitted(1));
+    }
+
+    @Test
+    void underscoreIsNotAValueAndCannotSkipRequiredOrRestSlots() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.bind(FOO, List.of(
+                        Argument.underscore(), Argument.positional(), Argument.positional())));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.bind(
+                        List.of(Parameter.required("head"), Parameter.variadic("tail")),
+                        List.of(Argument.positional(), Argument.underscore())));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.bind(FOO, List.of(
+                        Argument.positional(), Argument.underscore(),
+                        Argument.named("b"), Argument.named("c"))));
+    }
+
+    @Test
     void omissionAndExplicitOptionNoneHaveDistinctCompileTimePlans() {
         Plan explicitOmit = OptionalCallShapeBinder.bind(FOO, List.of(
                 Argument.positional(), Argument.positionalOmission(), Argument.positional()));
