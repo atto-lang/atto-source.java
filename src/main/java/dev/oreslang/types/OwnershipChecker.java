@@ -1878,6 +1878,18 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
         }
 
+        // An affine sum payload cannot be taken from a projected field/index
+        // until projection-level move tracking is available. A read-only check
+        // of holder.option would otherwise allow repeated extraction.
+        // Copyable Option/Result projections remain safe to observe/extract.
+        if (receiver.kind == ValueKind.MOVE_ONLY
+                && (member.receiver() instanceof Ast.MemberExpr
+                    || member.receiver() instanceof Ast.IndexExpr)) {
+            throw error(member.member()
+                    + " cannot consume an affine Option/Result projection; "
+                    + "move the owned value into a named local first");
+        }
+
         if (member.receiver() instanceof Ast.NameExpr receiverName) {
             VarState state = scope.lookup(receiverName.name());
             if (state != null && state.kind == ValueKind.MOVE_ONLY) move(state, receiverName.name());
