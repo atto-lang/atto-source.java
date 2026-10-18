@@ -67,6 +67,9 @@ public final class OresMain {
     }
 
     private static int runForExitStatus(String[] args) throws Exception {
+        if (args.length > 0 && args[0].equals("test")) {
+            return ConcurrencyTestCommand.run(java.util.Arrays.copyOfRange(args, 1, args.length));
+        }
         if (args.length == 1 && args[0].equals("--build-info")) {
             System.out.println("{\"build_mode\":\"" + NativeBuildMode.kind().name().toLowerCase(Locale.ROOT)
                     + "\",\"default_execution_mode\":\"" + NativeBuildMode.defaultExecutionMode()
