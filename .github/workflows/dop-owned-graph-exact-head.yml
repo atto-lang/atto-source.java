@@ -48,6 +48,7 @@ jobs:
             printf 'DOP_GRAPH_RUNTIME_BLOB=%s\n' "$(git hash-object src/main/java/dev/oreslang/runtime/DopGraphCpuIntegrationV1.java)"
             printf 'DOP_GRAPH_EXECUTION_BLOB=%s\n' "$(git hash-object src/main/java/dev/oreslang/runtime/ExecutionGraphV1.java)"
             printf 'DOP_GRAPH_TEST_BLOB=%s\n' "$(git hash-object src/test/java/dev/oreslang/runtime/DopGraphCpuIntegrationV1Test.java)"
+            printf 'DOP_GRAPH_CHANNEL_TEST_BLOB=%s\n' "$(git hash-object src/test/java/dev/oreslang/runtime/ExecutionGraphChannelV1Test.java)"
             printf '%s\n' 'DOP_GRAPH_SCOPE=host-only owned F32 CPU region and independent I64 graph'
           } > "$RUNNER_TEMP/dop-graph-evidence/provenance.txt"
       - name: Install Java 21 for standalone source assertions
@@ -106,7 +107,24 @@ jobs:
           for field in ('failures', 'errors', 'skipped'):
               if int(graph_root.attrib.get(field, '0')) != 0:
                   raise SystemExit('ExecutionGraphV1 contains nonpassing cases: ' + field)
-          print('Verified executed DOP and standalone graph scheduler-admission regressions in Surefire XML')
+
+          channel_report = pathlib.Path('target/surefire-reports/TEST-dev.oreslang.runtime.ExecutionGraphChannelV1Test.xml')
+          if not channel_report.is_file():
+              raise SystemExit('Missing exact ExecutionGraphChannelV1 Surefire XML')
+          channel_root = ET.parse(channel_report).getroot()
+          channel_required = {
+              'inlineCpuExecutorFailsWithoutRegisteringChannelWrite',
+              'inlineThenRejectPreservesSchedulerFailureWithoutPublication',
+              'cancellationBeforeCpuDispatchMustNotPublish',
+              'cancellingPendingBackpressuredWriteRefundsRegistration',
+          }
+          channel_methods = {node.attrib.get('name') for node in channel_root.iter('testcase')}
+          if not channel_required.issubset(channel_methods):
+              raise SystemExit('Missing executed channel admission regressions: ' + repr(sorted(channel_required - channel_methods)))
+          for field in ('failures', 'errors', 'skipped'):
+              if int(channel_root.attrib.get(field, '0')) != 0:
+                  raise SystemExit('ExecutionGraphChannelV1 contains nonpassing cases: ' + field)
+          print('Verified executed DOP, graph, and channel scheduler-admission regressions in Surefire XML')
           PY
       - name: Record passing exact-head test suite
         shell: bash
