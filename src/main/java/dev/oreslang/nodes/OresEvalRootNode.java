@@ -144,6 +144,8 @@ public final class OresEvalRootNode extends RootNode {
         // Identity keys avoid recursively hashing record-based AST bodies.
         private final Map<Object, Boolean> suspensionResults =
                 java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+        private final Map<Ast.Stmt, Boolean> inlineStatementResults =
+                java.util.Collections.synchronizedMap(new IdentityHashMap<>());
         // Cache immutable declaration metadata only; visibility and live field
         // values are checked on every access. Class identity is not AST equality.
         private final Map<Ast.ClassDecl, java.util.concurrent.ConcurrentHashMap<String, Optional<OwnedField>>> fieldLookups =
@@ -1725,6 +1727,19 @@ public final class OresEvalRootNode extends RootNode {
          * synchronous function containing a loop into an async task would
          * silently change its return value and actor protocol.
          */
+        private boolean canExecuteStatementInline(Ast.Stmt stmt) {
+            Boolean cached = inlineStatementResults.get(stmt);
+            if (cached != null) return cached;
+            // Analyze each immutable statement once, using a fresh recursive
+            // seen set. Do not cache path-dependent recursive partial results.
+            boolean inline = !(stmt instanceof Ast.ReturnStmt)
+                    && !containsSourceLoop(stmt)
+                    && !statementContainsPotentialSuspension(stmt,
+                            java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+            inlineStatementResults.put(stmt, inline);
+            return inline;
+        }
+
         private boolean containsSourceLoop(Ast.Stmt stmt) {
             if (stmt instanceof Ast.ForStmt
                     || stmt instanceof Ast.LoopStmt
@@ -1773,12 +1788,7 @@ public final class OresEvalRootNode extends RootNode {
             Ast.Stmt stmt = statements.get(index);
             // Source tasks must carry returns as SourceFlow, not as a tail-call
             // signal, including when a discarded do-select value is a call.
-            if (!(stmt instanceof Ast.ReturnStmt)
-                    && !containsSourceLoop(stmt)
-                    && !statementContainsPotentialSuspension(
-                    stmt,
-                    java.util.Collections.newSetFromMap(
-                            new IdentityHashMap<>()))) {
+            if (canExecuteStatementInline(stmt)) {
                 try {
                     executeStatement(stmt, env, defers, false);
                 } catch (ReturnSignal returned) {
