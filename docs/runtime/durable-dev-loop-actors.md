@@ -47,11 +47,16 @@ state-machine kernel intended to sit inside DevLoopActor. It deliberately
 does not perform side effects.
 
 WorkflowJournalV1 is the executable reference for the journal/outbox boundary.
-It atomically records reducer transitions and effect origins, leases pending
-effects to workers, marks expired claims AMBIGUOUS rather than blindly retrying,
-requires explicit reconciliation, pins maxIterations as durable run policy, and
-rejects backwards clock observations or reused effect origins. It is currently
-an in-memory semantics model, not a persistence backend.
+It independently replays and verifies every supplied reducer transition before
+accepting it, atomically records transitions and effect origins, leases pending
+effects to workers, and enforces the lease deadline again when a worker reports
+completion or known-nonexecution. Expired claims become AMBIGUOUS rather than
+being blindly retried. Terminal transitions mark older not-yet-started effects
+ABANDONED, while already-claimed effects remain visible until completion or
+reconciliation. The store also pins maxIterations as durable run policy and
+rejects backwards clock observations, lease-overflow partial mutations, forged
+snapshots/commands, and reused effect origins. It is currently an in-memory
+semantics model, not a persistence backend.
 
 ## State ownership
 
@@ -125,7 +130,8 @@ The v1 reducer assigns every delivery a monotonic journal sequence and records
 one of:
 
 - APPLIED: state advanced and zero or more commands were emitted;
-- DUPLICATE: the delivery id was already seen;
+- DUPLICATE: the delivery id was already seen with the exact same immutable event;
+- CONFLICT: the delivery id was reused with a different event payload;
 - STALE: the event was well-formed but targeted an obsolete commit;
 - REJECTED: the event is not legal in the current phase.
 
@@ -240,8 +246,9 @@ The supervisor should distinguish:
 - ambiguous remote effect: reconcile provider state before retry;
 - invalid/stale external event: audit but do not advance;
 - retry/iteration budget exhaustion: escalate;
-- explicit cancellation: enter terminal CANCELLED, revoke pending work where
-  possible and reject later state-advancing events.
+- explicit cancellation: enter terminal CANCELLED, abandon pending work that
+  never started, leave already-claimed work visible for reconciliation, and
+  reject later state-advancing events.
 
 AI/model failures are activity failures, not reasons to replay an old model call
 as if it were deterministic.
