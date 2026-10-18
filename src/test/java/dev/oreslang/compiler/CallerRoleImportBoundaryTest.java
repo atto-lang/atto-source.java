@@ -155,6 +155,17 @@ final class CallerRoleImportBoundaryTest {
     }
 
     @Test
+    void cyclicClassParentsCannotBeUsedAsImportPolicyProof() {
+        String source = """
+                define pub class First extends Second as end
+                define class Second extends First as end
+                """;
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> link(source, "import class First from \"provider.ores\";"))
+                .getMessage().contains("cyclic inherited class hierarchy"));
+    }
+
+    @Test
     void protectedPublicStaticMethodInImportedClassIsRejected() {
         String source = """
                 define enum Roles as
