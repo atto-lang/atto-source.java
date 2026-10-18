@@ -9,6 +9,7 @@ import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.NativeBuildMode;
 import dev.oreslang.runtime.CorePerf;
 import dev.oreslang.runtime.CoreDebug;
+import dev.oreslang.runtime.CoreLog;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
 import dev.oreslang.runtime.PermissionCheckMode;
@@ -75,6 +76,7 @@ public final class OresMain {
         }
         String perfEnv = System.getenv("ORES_CORE_PERF");
         boolean corePerf = "true".equalsIgnoreCase(perfEnv) || "1".equals(perfEnv);
+        String coreLogLevel = System.getenv().getOrDefault("ORES_CORE_LOG_LEVEL", "off");
         String debugEnv = System.getenv("ORES_CORE_DEBUG");
         boolean coreDebug = "true".equalsIgnoreCase(debugEnv) || "1".equals(debugEnv);
         boolean strict = false;
@@ -98,6 +100,9 @@ public final class OresMain {
                 else if (arg.equals("--check")) checkOnly = true;
                 else if (arg.equals("--core-perf")) corePerf = true;
                 else if (arg.equals("--no-core-perf")) corePerf = false;
+                else if (arg.startsWith("--core-log-level="))
+                    coreLogLevel = arg.substring("--core-log-level=".length());
+                else if (arg.equals("--no-core-log")) coreLogLevel = "off";
                 else if (arg.equals("--core-debug")) coreDebug = true;
                 else if (arg.equals("--no-core-debug")) coreDebug = false;
                 else if (arg.equals("--build-analysis")) buildAnalysis = true;
@@ -157,6 +162,13 @@ public final class OresMain {
             throw new UsageException("--check and --build-analysis are mutually exclusive");
         }
 
+        final CoreLog.Level admittedLogLevel;
+        try {
+            admittedLogLevel = CoreLog.Level.parse(coreLogLevel);
+        } catch (IllegalArgumentException badLogLevel) {
+            throw new UsageException(badLogLevel.getMessage());
+        }
+        CoreLog.configure(admittedLogLevel);
         CorePerf.configure(corePerf);
         CoreDebug.configure(coreDebug);
         try {
@@ -333,7 +345,8 @@ public final class OresMain {
                         + "[--allow-ffi[=PATH,...]] [--deny-ffi[=PATH,...]] "
                         + "[--allow-import[=PATH,...]] [--deny-import[=PATH,...]] "
                         + "[--no-prompt] [--define=name=value ...] [--entry=symbol ...] "
-                        + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] [--mode=aot|jit|hybrid] "
+                        + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] "
+                        + "[--core-log-level=off|error|warn|info|debug|trace] [--no-core-log] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
                         + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
                         + "[file.ores|file.java]");
