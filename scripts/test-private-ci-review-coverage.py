@@ -172,15 +172,15 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
 
     def test_missing_test_invocation_is_rejected(self):
         damaged = self.workflow.replace(
-            "python3 -B scripts/test-private-ci-review-coverage.py", "")
+            "python3 -I -B scripts/test-private-ci-review-coverage.py", "")
         with self.assertRaisesRegex(ValueError, "unconditional and executable"):
             validate(self.owners, damaged)
 
 
     def test_commented_out_security_invocation_is_rejected(self):
         damaged = self.workflow.replace(
-            "run: python3 -B scripts/test-private-ci-review-coverage.py",
-            "# run: python3 -B scripts/test-private-ci-review-coverage.py")
+            "run: python3 -I -B scripts/test-private-ci-review-coverage.py",
+            "# run: python3 -I -B scripts/test-private-ci-review-coverage.py")
         with self.assertRaisesRegex(ValueError, "unconditional and executable"):
             validate(self.owners, damaged)
 
@@ -193,32 +193,32 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
 
     def test_disabled_security_step_is_rejected(self):
         damaged = self.workflow.replace(
-            "        run: python3 -B scripts/test-private-ci-review-coverage.py",
+            "        run: python3 -I -B scripts/test-private-ci-review-coverage.py",
             "        if: false\n"
-            "        run: python3 -B scripts/test-private-ci-review-coverage.py")
+            "        run: python3 -I -B scripts/test-private-ci-review-coverage.py")
         with self.assertRaisesRegex(ValueError, "unconditional and executable"):
             validate(self.owners, damaged)
 
     def test_continue_on_error_security_step_is_rejected(self):
         damaged = self.workflow.replace(
-            "        run: python3 -B scripts/test-private-ci-review-coverage.py",
+            "        run: python3 -I -B scripts/test-private-ci-review-coverage.py",
             "        continue-on-error: true\n"
-            "        run: python3 -B scripts/test-private-ci-review-coverage.py")
+            "        run: python3 -I -B scripts/test-private-ci-review-coverage.py")
         with self.assertRaisesRegex(ValueError, "unconditional and executable"):
             validate(self.owners, damaged)
 
     def test_nonexecuting_shell_block_is_rejected(self):
         damaged = self.workflow.replace(
-            "        run: python3 -B scripts/test-private-ci-review-coverage.py",
+            "        run: python3 -I -B scripts/test-private-ci-review-coverage.py",
             "        run: |\n"
             "          exit 0\n"
-            "          python3 -B scripts/test-private-ci-review-coverage.py")
+            "          python3 -I -B scripts/test-private-ci-review-coverage.py")
         with self.assertRaisesRegex(ValueError, "unconditional and executable"):
             validate(self.owners, damaged)
 
     def test_duplicated_security_step_is_rejected(self):
         block = ("      - name: Validate CI security review coverage\n"
-                 "        run: python3 -B scripts/test-private-ci-review-coverage.py\n")
+                 "        run: python3 -I -B scripts/test-private-ci-review-coverage.py\n")
         damaged = self.workflow.replace(block, block + block)
         with self.assertRaisesRegex(ValueError, "duplicated required executable step"):
             validate(self.owners, damaged)
