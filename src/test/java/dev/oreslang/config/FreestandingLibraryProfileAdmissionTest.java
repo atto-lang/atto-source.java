@@ -7,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -69,6 +70,29 @@ final class FreestandingLibraryProfileAdmissionTest {
             assertTrue(denied.getMessage().contains(profile));
             assertTrue(denied.getMessage().contains("not yet supported"));
         }
+    }
+
+    @Test
+    void executionEntryPointAlsoRejectsBeforeParsingOrUsingHostPolicy() throws Exception {
+        Path entry = temp.resolve("main.ores");
+        // Even invalid guest syntax and missing host policy must not be reached.
+        Files.writeString(entry, "not valid Oreslang source !!!");
+        manifest("library_profile = \"freestanding-core\"");
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.runWithExitStatus(
+                        entry, null, null, null, null, Set.of(), Map.of(), null, null));
+        assertTrue(denied.getMessage().contains("freestanding-core"));
+        assertTrue(denied.getMessage().contains("not yet supported"));
+    }
+
+    @Test
+    void nestedBuildAuthorityIsNotSilentlyAccepted() throws Exception {
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresProjectConfig.load(manifest(
+                        "[build.extra]\nallow_io = true"), Map.of()));
+        assertTrue(denied.getMessage().contains("unknown build configuration"));
     }
 
     @Test
