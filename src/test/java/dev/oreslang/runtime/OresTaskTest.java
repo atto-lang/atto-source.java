@@ -84,4 +84,14 @@ final class OresTaskTest {
                     () -> runtime.submitDetached(() -> null, null));
         }
     }
+    @Test
+    void explicitFutureProjectionDoesNotCreateSecondTaskOrFutureLayer() {
+        try (AsyncRuntime runtime = new AsyncRuntime()) {
+            OresTask<Integer> task = runtime.submitTask(() -> 9);
+            OresFuture<Integer> observed = task.asFuture();
+            assertSame(task.getAwaited(), observed);
+            assertEquals(9, AsyncRuntime.await(observed));
+        }
+    }
+
 }
