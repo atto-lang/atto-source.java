@@ -43,8 +43,8 @@ final class NativeCanonicalCoreTest {
                 ExecutionProfile.serverJit(), out, err);
         assertTrue(build.units().containsKey("@core/numeric.ores"));
         String stdout = out.toString(StandardCharsets.UTF_8);
-        assertEquals("4\\n10",
-                stdout.replace("\\r\\n", "\\n").trim(),
+        assertEquals("4\n10",
+                stdout.replace("\r\n", "\n").trim(),
                 () -> "stdout=" + stdout + " stderr="
                         + err.toString(StandardCharsets.UTF_8));
     }
