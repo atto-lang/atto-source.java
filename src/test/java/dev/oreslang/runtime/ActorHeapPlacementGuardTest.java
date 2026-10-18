@@ -85,7 +85,7 @@ final class ActorHeapPlacementGuardTest {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var observed = new java.util.concurrent.atomic.AtomicReference<Throwable>();
             var completed = new java.util.concurrent.CountDownLatch(1);
-            var actor = runtime.<String>spawnPrivate(ctx -> (mail, context) -> {
+            var actor = runtime.<String>spawnPrivate(() -> (mail, context) -> {
                 try {
                     assertThrows(SecurityException.class,
                             () -> context.runtime().heapStatusFor(context.self()));
@@ -98,7 +98,7 @@ final class ActorHeapPlacementGuardTest {
                     assertThrows(SecurityException.class,
                             () -> context.runtime().<String>spawnWithHeapPlacement(
                                     ActorRuntime.ActorKind.PRIVATE,
-                                    runtime.policyCeiling(),
+                                    context.runtime().policyCeiling(),
                                     ActorRuntime.ActorHeapPlacement.ACTOR_ARENA,
                                     child -> (input, next) -> {}));
                 } catch (Throwable failure) {
