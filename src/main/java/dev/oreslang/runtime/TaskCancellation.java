@@ -67,12 +67,19 @@ final class TaskCancellation {
      * tree. The graph lock supplies the linearization point.
      */
     void retire() {
+        List<Registration> detached = new ArrayList<>();
         synchronized (GRAPH_LOCK) {
             if (owner != null) owner.children.remove(this);
             owner = null;
+            detached.addAll(revokers);
+            detached.addAll(observers);
             revokers.clear();
             observers.clear();
         }
+        // Release retained callback captures even when the caller keeps a
+        // Subscription reference after task completion. Do not invoke hooks.
+        // The graph lock cannot be held while detaching registrations.
+        for (Registration registration : detached) registration.close();
     }
 
     /** Runtime diagnostic for bounded lifetime-tree retention tests. */
