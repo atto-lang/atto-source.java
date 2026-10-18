@@ -34,7 +34,17 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
 
     private record CaseCodec(TaggedMessageContracts.Case source,
                              String schemaId,
-                             MessagePackCollectionCodec.Shape shape) { }
+                             MessagePackCollectionCodec.Shape shape,
+                             byte[] descriptorHash) {
+        private CaseCodec {
+            Objects.requireNonNull(source);
+            Objects.requireNonNull(schemaId);
+            Objects.requireNonNull(shape);
+            descriptorHash = Objects.requireNonNull(descriptorHash).clone();
+            if (descriptorHash.length != 32)
+                throw new IllegalArgumentException("tagged case shape digest must be SHA-256");
+        }
+    }
     private final Map<String, CaseCodec> byName;
     private final Map<String, CaseCodec> bySchemaId;
 
@@ -90,7 +100,11 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
                         source.payload());
             String variantIdentity = source.qualifiedName() + "#" + source.tag();
             String id = "oreslang.enum." + domainHash + "." + digestHex(variantIdentity);
-            CaseCodec cc = new CaseCodec(source, id, tuple);
+            CaseCodec cc = new CaseCodec(
+                    source,
+                    id,
+                    tuple,
+                    MessagePackCollectionCodec.shapeDigest(tuple));
             if (entries.putIfAbsent(source.qualifiedName(), cc) != null) {
                 throw new IllegalArgumentException("duplicate case in pattern: " + source.qualifiedName());
             }
@@ -215,6 +229,7 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
                         cc.schemaId(),
                         cc.shape(),
                         List.of(tagged.enumName(), (long) tagged.tag()),
+                        cc.descriptorHash(),
                         scratch);
             } else {
                 if (tagged.payload() == null) {
@@ -228,6 +243,7 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
                                 tagged.enumName(),
                                 (long) tagged.tag(),
                                 tagged.payload()),
+                        cc.descriptorHash(),
                         scratch);
             }
             return new MessagePackCollectionCodec.EncodedMailboxFrame(
@@ -251,7 +267,11 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
             throw new IllegalArgumentException(
                     "unknown enum message schema in this actor pattern");
         }
-        Object decoded = MessagePackCollectionCodec.decode(cc.schemaId(), cc.shape(), bytes);
+        Object decoded = MessagePackCollectionCodec.decode(
+                cc.schemaId(),
+                cc.shape(),
+                cc.descriptorHash(),
+                bytes);
         if (!(decoded instanceof List<?> value)
                 || value.size() != (cc.source().payload() == null ? 2 : 3)
                 || !Objects.equals(value.get(0), cc.source().owner())
