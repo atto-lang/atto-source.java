@@ -19,10 +19,25 @@ import javax.sql.DataSource;
 public final class PostgresDurableActorStore implements DurableActorStore {
     private static final String KEY = "tenant_id=? AND workflow_id=? AND run_id=? AND node_id=?";
     private static final int MAX_PAYLOAD = 16 * 1024 * 1024;
+    private static final long MAX_PENDING_BYTES = 32L * 1024L * 1024L;
+    private static final int DEFAULT_PENDING_LIMIT = 256;
     private final DataSource source;
+    private final int maxPendingInbox;
+    private final int maxPendingOutbox;
 
     public PostgresDurableActorStore(DataSource source) {
+        this(source, DEFAULT_PENDING_LIMIT, DEFAULT_PENDING_LIMIT);
+    }
+
+    /** Package-private for deterministic quota tests; no bypass through negative quotas. */
+    PostgresDurableActorStore(DataSource source, int maxPendingInbox, int maxPendingOutbox) {
         this.source = Objects.requireNonNull(source, "source");
+        if (maxPendingInbox < 1 || maxPendingInbox > DEFAULT_PENDING_LIMIT ||
+            maxPendingOutbox < 1 || maxPendingOutbox > DEFAULT_PENDING_LIMIT) {
+            throw new IllegalArgumentException("pending quotas must be within 1..256");
+        }
+        this.maxPendingInbox = maxPendingInbox;
+        this.maxPendingOutbox = maxPendingOutbox;
     }
 
     public static final class StaleActivationException extends IllegalStateException {
@@ -108,6 +123,12 @@ public final class PostgresDurableActorStore implements DurableActorStore {
                 bindShifted(p, 2, key);
                 if (p.executeUpdate() != 1) throw new IllegalStateException("actor vanished");
             }
+            long pendingInbox = pendingCount(c, "ores_durable_inbox", key);
+            long pendingOutbox = pendingCount(c, "ores_durable_outbox", key);
+            if (pendingMessages(pendingInbox) > maxPendingInbox ||
+                pendingMessages(pendingOutbox) > maxPendingOutbox) {
+                throw new IllegalStateException("pending queue exceeds actor quota");
+            }
             List<Inbound> inbox = new ArrayList<>();
             try (PreparedStatement p = c.prepareStatement(
                     "SELECT delivery_id,payload FROM ores_durable_inbox WHERE " + KEY +
@@ -130,6 +151,38 @@ public final class PostgresDurableActorStore implements DurableActorStore {
         });
     }
 
+    /** Requires a previously locked actor row so concurrent admissions cannot overrun quotas. */
+    private static long pendingCount(Connection c, String table, Address key)
+            throws SQLException {
+        // Internal fixed table names ONLY; no user-provided SQL identifiers.
+        if (!"ores_durable_inbox".equals(table) && !"ores_durable_outbox".equals(table)) {
+            throw new IllegalArgumentException("unrecognized durable queue");
+        }
+        String filter = "ores_durable_inbox".equals(table) ? "NOT consumed" : "receipt_id IS NULL";
+        try (PreparedStatement p = c.prepareStatement(
+                "SELECT COUNT(*),COALESCE(SUM(OCTET_LENGTH(payload)),0) FROM " + table +
+                " WHERE " + KEY + " AND " + filter)) {
+            bind(p, key);
+            try (ResultSet rs = p.executeQuery()) {
+                rs.next();
+                long count = rs.getLong(1);
+                long bytes = rs.getLong(2);
+                if (count < 0 || bytes < 0 || bytes > MAX_PENDING_BYTES) {
+                    throw new IllegalStateException("persisted queue exceeds admission budget");
+                }
+                return (count << 32) | bytes;
+            }
+        }
+    }
+
+    private static long pendingMessages(long countsAndBytes) {
+        return countsAndBytes >>> 32;
+    }
+
+    private static long pendingBytes(long countsAndBytes) {
+        return countsAndBytes & 0xffffffffL;
+    }
+
     private static void bindShifted(PreparedStatement p, int at, Address key) throws SQLException {
         p.setString(at, key.tenantId()); p.setString(at + 1, key.workflowId());
         p.setString(at + 2, key.runId()); p.setString(at + 3, key.nodeId());
@@ -139,6 +192,27 @@ public final class PostgresDurableActorStore implements DurableActorStore {
     public boolean enqueue(Address key, Inbound message) {
         Objects.requireNonNull(key); Objects.requireNonNull(message);
         return transact(c -> {
+            // Serialize quota admission with activate, commit and hibernate.
+            try (PreparedStatement p = c.prepareStatement(
+                    "SELECT 1 FROM ores_durable_actor WHERE " + KEY + " FOR UPDATE")) {
+                bind(p, key);
+                try (ResultSet rs = p.executeQuery()) {
+                    if (!rs.next()) throw new IllegalStateException("unknown actor");
+                }
+            }
+            try (PreparedStatement p = c.prepareStatement(
+                    "SELECT 1 FROM ores_durable_inbox WHERE " + KEY + " AND delivery_id=?")) {
+                bind(p, key);
+                p.setString(5, message.deliveryId());
+                try (ResultSet rs = p.executeQuery()) {
+                    if (rs.next()) return false; // idempotent even when full
+                }
+            }
+            long pending = pendingCount(c, "ores_durable_inbox", key);
+            if (pendingMessages(pending) >= maxPendingInbox ||
+                pendingBytes(pending) + message.payload().length > MAX_PENDING_BYTES) {
+                throw new IllegalStateException("durable inbox admission quota exhausted");
+            }
             try (PreparedStatement p = c.prepareStatement(
                     "INSERT INTO ores_durable_inbox (tenant_id,workflow_id,run_id,node_id," +
                     "delivery_id,payload) VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING")) {
@@ -187,6 +261,18 @@ public final class PostgresDurableActorStore implements DurableActorStore {
                 bind(p, key);
                 p.setString(5, turn.consumedDeliveryId());
                 if (p.executeUpdate() != 1) throw new IllegalStateException("unknown/consumed delivery");
+            }
+            long pending = pendingCount(c, "ores_durable_outbox", key);
+            long newBytes = 0;
+            for (Outbound outgoing : turn.outgoing()) {
+                newBytes += outgoing.payload().length;
+                if (newBytes > MAX_PENDING_BYTES) {
+                    throw new IllegalStateException("outbox payload admission quota exhausted");
+                }
+            }
+            if (pendingMessages(pending) + turn.outgoing().size() > maxPendingOutbox ||
+                pendingBytes(pending) + newBytes > MAX_PENDING_BYTES) {
+                throw new IllegalStateException("durable outbox admission quota exhausted");
             }
             for (Outbound msg : turn.outgoing()) {
                 try (PreparedStatement p = c.prepareStatement(
