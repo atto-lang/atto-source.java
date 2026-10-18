@@ -194,6 +194,14 @@ public final class WorkflowActivityActorV1 {
 
             if (message instanceof Dispatch dispatch) {
                 WorkflowJournalV1.Claim claim = dispatch.claim();
+                if (claim.workerId() != null
+                        && !workerId.equals(claim.workerId())) {
+                    throw new SecurityException(
+                            "activity worker "
+                                    + workerId
+                                    + " cannot execute claim leased to "
+                                    + claim.workerId());
+                }
                 WorkflowJournalV1.Claim existing =
                         inFlight.get(claim.effectKey());
                 if (existing != null) {
