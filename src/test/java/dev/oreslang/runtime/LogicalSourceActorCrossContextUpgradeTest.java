@@ -276,8 +276,10 @@ final class LogicalSourceActorCrossContextUpgradeTest {
                 assertTrue(failure.getMessage().contains("protected worker/isolate"),
                         failure::getMessage);
             }
-            assertEquals(0, generation.actorRoutePins(),
-                    "refused physical isolation cannot pin or create an actor");
+            assertEquals(1, manager.liveGenerations(),
+                    "refused physical isolation must not stage extra generations");
+            assertDoesNotThrow(generation::close,
+                    "refused routes must not leave a generation lifetime pin");
         }
     }
 
