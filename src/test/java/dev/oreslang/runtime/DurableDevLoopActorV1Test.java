@@ -85,7 +85,8 @@ final class DurableDevLoopActorV1Test {
     }
 
     @Test
-    void actorClaimsAndCompletesDurableEffectByMessages() throws Exception {
+    void actorClaimsAndAtomicallyCompletesDurableEffectWithOutcome()
+            throws Exception {
         Path db = tempDir.resolve("actor-effect.db");
 
         try (var runtime = new ActorRuntime()) {
@@ -112,25 +113,23 @@ final class DurableDevLoopActorV1Test {
                     DurableDevLoopV1.RequestCode.class,
                     claimed.claim().command());
 
-            actor.send(new DurableDevLoopActorV1.CompleteEffect(
+            actor.send(new DurableDevLoopActorV1.CompleteAndDeliver(
                     claimed.claim().effectKey(),
                     claimed.claim().claimToken(),
                     "receipt://code/1",
-                    150L));
+                    150L,
+                    "code-1",
+                    new DurableDevLoopV1.CodeChanged(
+                            1, "patch://one")));
             var completed = assertInstanceOf(
-                    DurableDevLoopActorV1.EffectUpdated.class,
+                    DurableDevLoopActorV1.Transitioned.class,
                     next(outputs));
+            assertEquals(
+                    DurableDevLoopV1.Phase.WAITING_FOR_PUSH,
+                    completed.projection().phase());
             assertEquals(
                     1,
                     completed.projection().completedEffects());
-
-            actor.send(new DurableDevLoopActorV1.QueryProjection());
-            var projection = assertInstanceOf(
-                    DurableDevLoopActorV1.ProjectionPublished.class,
-                    next(outputs));
-            assertEquals(
-                    DurableDevLoopV1.Phase.CODING,
-                    projection.projection().phase());
 
             actor.send(new DurableDevLoopActorV1.Shutdown("done"));
             next(outputs);
@@ -145,6 +144,64 @@ final class DurableDevLoopActorV1Test {
                     WorkflowJournalV1.EffectState.COMPLETED,
                     effect.state());
             assertEquals("receipt://code/1", effect.receiptRef());
+            assertEquals(
+                    DurableDevLoopV1.Phase.WAITING_FOR_PUSH,
+                    store.replayDevLoop().machine().snapshot().phase());
+            assertEquals(
+                    WorkflowJournalV1.EffectState.PENDING,
+                    store.effect(
+                            "devloop/run-effect/iteration/1/push")
+                            .orElseThrow()
+                            .state());
+        }
+    }
+
+    @Test
+    void actorRejectsSplitCompletionForEffectThatRequiresOutcome()
+            throws Exception {
+        Path db = tempDir.resolve("actor-split-completion.db");
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = DurableDevLoopActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new DurableDevLoopActorV1.OpenRun(
+                    db.toString(),
+                    "run-split",
+                    3,
+                    "start",
+                    "goal"));
+            next(outputs);
+
+            actor.send(new DurableDevLoopActorV1.ClaimEffect(
+                    "coder-1", 100L, 100L));
+            var claimed = assertInstanceOf(
+                    DurableDevLoopActorV1.EffectClaimed.class,
+                    next(outputs));
+
+            actor.send(new DurableDevLoopActorV1.CompleteEffect(
+                    claimed.claim().effectKey(),
+                    claimed.claim().claimToken(),
+                    "receipt://unsafe",
+                    150L));
+
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> actor.raw().getDone().get(
+                            5, TimeUnit.SECONDS));
+            assertTrue(actor.raw().failure().isPresent());
+        }
+
+        try (var store = SqliteWorkflowJournalV1.open(db)) {
+            var effect = store.effect(
+                    "devloop/run-split/iteration/1/code")
+                    .orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.CLAIMED,
+                    effect.state());
+            assertNull(effect.receiptRef());
+            assertEquals(1, store.journal().size());
         }
     }
 
