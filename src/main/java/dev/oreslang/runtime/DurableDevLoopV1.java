@@ -545,6 +545,14 @@ public final class DurableDevLoopV1 {
             return;
         }
 
+        if (phase == Phase.CANCELLED) {
+            if (cancelReason == null) {
+                throw new IllegalStateException(
+                        "cancelled workflow lacks reason");
+            }
+            return;
+        }
+
         if (goal == null || iteration <= 0) {
             throw new IllegalStateException(
                     "started workflow lacks goal/iteration");
@@ -573,12 +581,8 @@ public final class DurableDevLoopV1 {
                             phase + " requires exact expected commit");
                 }
             }
-            case CANCELLED -> {
-                if (cancelReason == null) {
-                    throw new IllegalStateException(
-                            "cancelled workflow lacks reason");
-                }
-            }
+            case CANCELLED -> throw new IllegalStateException(
+                    "cancelled handled above");
             case CREATED -> throw new IllegalStateException(
                     "created handled above");
         }
