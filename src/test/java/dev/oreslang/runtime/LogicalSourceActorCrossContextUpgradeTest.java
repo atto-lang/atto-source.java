@@ -284,6 +284,52 @@ final class LogicalSourceActorCrossContextUpgradeTest {
     }
 
     @Test
+    void interruptedLogicalOutputReadDoesNotPinOldCodeImage() throws Exception {
+        String firstSource = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 2; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { return; }
+                """;
+        String secondSource = firstSource.replace(
+                "self.count = 2; return;", "self.count = 999; return;");
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("interrupt-v1.ores", firstSource);
+            var second = manager.stageActorGeneration("interrupt-v2.ores", secondSource);
+            try (LogicalSourceActorRouterV1 router =
+                         LogicalSourceActorRouterV1.spawn(
+                                 first, ActorRuntime.ActorKind.SHARED,
+                                 "Counter", WAIT)) {
+                var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                Thread reader = Thread.ofPlatform().start(() -> {
+                    Thread.currentThread().interrupt();
+                    try {
+                        router.ref().nextOutput(WAIT);
+                        failure.set(new AssertionError("interrupted read unexpectedly succeeded"));
+                    } catch (InterruptedException expected) {
+                        // The router must cancel the pending output subscription.
+                    } catch (Throwable unexpected) {
+                        failure.set(unexpected);
+                    }
+                });
+                reader.join(5000);
+                assertFalse(reader.isAlive(), "interrupted logical reader did not stop");
+                assertNull(failure.get());
+                assertTrue(router.upgradeTo(second, WAIT));
+                router.ref().send(40L);
+                assertEquals(42L, next(router.ref()));
+            }
+        }
+    }
+
+    @Test
     void timedOutLogicalOutputReadDoesNotStrandHotUpgrade() throws Exception {
         String v1 = """
                 define actor Counter as
