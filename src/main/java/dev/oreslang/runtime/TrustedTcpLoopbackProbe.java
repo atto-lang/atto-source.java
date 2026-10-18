@@ -130,8 +130,7 @@ final class TrustedTcpLoopbackProbe implements AutoCloseable {
 
     @Override public synchronized void close() {
         requireHost();
-        if (closed) return;
-        closed = true;
+        closed = true; // repeat attempts to close any channels still tracked
         RuntimeException first = null;
         for (var connection : owned) {
             try {
