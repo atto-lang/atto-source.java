@@ -143,3 +143,20 @@ new tests; PR #1386 must remain draft until the gate is repaired and executed.
 The prior exact-source private mirror represented the previous commit only.
 New audit/test commits invalidate its exact-head test provenance. Never use
 an older successful tree hash to claim that a newer branch was tested.
+
+## 2026-10-18 namespace confinement implementation (unverified)
+
+Java frontend now has an internal `Types.ModuleNamespace` marker, disallowed in
+normal assignability (including the unknown/generic cases). `TypeChecker`
+rejects bare local module names and imported module / wildcard namespace aliases
+as runtime values. Explicit direct member receivers consult module conformance
+shapes through `typeOfStaticNamespaceReceiver` instead of widening namespaces
+to structural records in every expression context. Lexical locals take priority
+over same-named static namespaces.
+
+Additional adversarial fixtures cover value bindings, function arguments,
+return values, tuples, Option payloads, imported aliases and shadowing.
+These are committed *tests*, not a validated test receipt. Do not claim these
+changes solve all compiler or interpreter escape vectors until full Maven/JDK25,
+ownership and linked-module tests execute on the exact commit. Native backend
+admission remains fail-closed until guest lowering is implemented.
