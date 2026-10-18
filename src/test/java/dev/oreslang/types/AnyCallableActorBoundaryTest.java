@@ -49,6 +49,9 @@ final class AnyCallableActorBoundaryTest {
     @Test
     void intrinsicNameHasNoModuleOrScopeQualificationBypass() {
         assertEquals("AnyCallable", TypeChecker.actorBoundarySimpleName("AnyCallable"));
+        assertEquals("ActorRef", TypeChecker.actorBoundarySimpleName("ActorRef"));
+        assertEquals("NetworkCodec", TypeChecker.actorBoundarySimpleName("NetworkCodec"));
+        assertEquals("A", TypeChecker.actorBoundarySimpleName("A"));
         assertEquals("AnyCallable", TypeChecker.actorBoundarySimpleName("pkg.AnyCallable"));
         assertEquals("AnyCallable", TypeChecker.actorBoundarySimpleName("pkg::AnyCallable"));
         assertEquals("ActorMessageCodec",
