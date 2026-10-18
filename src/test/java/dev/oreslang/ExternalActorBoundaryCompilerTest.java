@@ -114,6 +114,9 @@ final class ExternalActorBoundaryCompilerTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define ffi actor NativeWorker as
                   extern suspends fnc native_call(i32 value): i64;
+                  receive(ActorMail<String> mail): void {
+                    return;
+                  }
                 end
                 """)));
 
@@ -182,6 +185,9 @@ final class ExternalActorBoundaryCompilerTest {
         Ast.Program ffiExpanded = AnnotationExpander.expand(Parser.parse("""
                 define pub ffi actor NativeWorker as
                   extern suspends fnc native_call(i32 value): i64;
+                  receive(ActorMail<String> mail): void {
+                    return;
+                  }
                 end
                 """));
         Ast.ClassDecl ffiActor = ffiExpanded.modules().stream()
