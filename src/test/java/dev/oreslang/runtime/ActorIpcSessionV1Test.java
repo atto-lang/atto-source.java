@@ -354,6 +354,60 @@ final class ActorIpcSessionV1Test {
     }
 
     @Test
+    void inboundAndOutboundBuffersAreSnapshottedAcrossTrustBoundary() {
+        ActorArtifact<Object> artifact = artifact(
+                "ImageWorker", MESSAGE_ABI, ARTIFACT);
+        try (ActorIpcSessionV1 session = ActorIpcSessionV1.create(
+                artifact, UUID.randomUUID(), 1, 1);
+             ActorIpcSessionV1.BootstrapMaterial bootstrap =
+                     session.claimBootstrapForTrustedLauncher()) {
+            ready(session, bootstrap, artifact);
+
+            byte[] workerPayload = new byte[]{10, 20, 30};
+            byte[] wire = worker(
+                    bootstrap, artifact,
+                    ActorIpcSessionV1.Lane.DATA,
+                    ActorIpcSessionV1.FrameKind.OUTPUT,
+                    1, 9, workerPayload);
+            ActorIpcSessionV1.Frame accepted = session.acceptWorkerFrame(wire);
+            Arrays.fill(wire, (byte) 0);
+            Arrays.fill(workerPayload, (byte) 0);
+            assertArrayEquals(new byte[]{10, 20, 30}, accepted.payload(),
+                    "accepted frame must own an immutable payload snapshot");
+
+            byte[] supervisorPayload = new byte[]{1, 2, 3, 4};
+            byte[] outbound = session.encodeSupervisorData(10, supervisorPayload);
+            Arrays.fill(supervisorPayload, (byte) 0);
+            int payloadLength = ByteBuffer.wrap(outbound)
+                    .order(ByteOrder.BIG_ENDIAN)
+                    .getInt(112);
+            assertEquals(4, payloadLength);
+            assertArrayEquals(
+                    new byte[]{1, 2, 3, 4},
+                    Arrays.copyOfRange(outbound, 116, 120),
+                    "authenticated outbound frame must not retain caller payload storage");
+        }
+    }
+
+    @Test
+    void oversizedInboundFramePoisonsBeforeProtocolDecode() {
+        ActorArtifact<Object> artifact = artifact(
+                "ImageWorker", MESSAGE_ABI, ARTIFACT);
+        try (ActorIpcSessionV1 session = ActorIpcSessionV1.create(
+                artifact, UUID.randomUUID(), 1, 1);
+             ActorIpcSessionV1.BootstrapMaterial bootstrap =
+                     session.claimBootstrapForTrustedLauncher()) {
+            byte[] oversized = new byte[
+                    116 + ActorIpcSessionV1.MAX_PAYLOAD_BYTES + 32 + 1];
+            ActorIpcSessionV1.ProtocolException failure = assertThrows(
+                    ActorIpcSessionV1.ProtocolException.class,
+                    () -> session.acceptWorkerFrame(oversized));
+            assertEquals(ActorIpcSessionV1.Reason.MALFORMED, failure.reason());
+            assertTrue(session.poisoned());
+        }
+    }
+
+    @Test
     void payloadSizeBoundIsCheckedBeforeFrameAllocation() {
         ActorArtifact<Object> artifact = artifact(
                 "ImageWorker", MESSAGE_ABI, ARTIFACT);
