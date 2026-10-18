@@ -31,6 +31,12 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=all)"
           echo "JAVA_GUEST_SOURCE_SHA=$EXPECTED_SHA"
           echo "CROSS_ORG_PRIVATE_SOURCE_EXPORT=NONE"
+      - name: Fail closed on scalar fixture/golden drift before installing GraalVM
+        run: |
+          set -euo pipefail
+          test "$(git hash-object -- tests/fixtures/ml-actor-state-scalar.ores)" = "4ae673f093a16538da784d15819debbef439b0db"
+          test "$(git hash-object -- tests/golden/ml-actor-state-scalar.stdout)" = "9921f755979832f6b20e20923cc94f6f3bf6e05b"
+          echo "ML_SCALAR_FIXTURE_AND_GOLDEN=EXACT_REVIEWED_BLOBS"
       - name: Install pinned GraalVM/JDK 25
         uses: graalvm/setup-graalvm@v1
         with:
