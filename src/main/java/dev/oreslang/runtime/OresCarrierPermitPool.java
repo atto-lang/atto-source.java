@@ -6,6 +6,7 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.UnaryOperator;
 
 /**
@@ -233,7 +234,7 @@ final class OresCarrierPermitPool {
         private final UnaryOperator<Runnable> decorateWorkerLoop;
         private final java.util.concurrent.atomic.AtomicInteger next =
                 new java.util.concurrent.atomic.AtomicInteger();
-        private final ConcurrentHashMap<Thread, Permit> live = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<Thread, WorkerLease> live = new ConcurrentHashMap<>();
         private final Object physicalDrain = new Object();
         private final ThreadLocal<ArrayList<Thread>> createdByCaller =
                 ThreadLocal.withInitial(ArrayList::new);
@@ -247,6 +248,36 @@ final class OresCarrierPermitPool {
             this.domain = domain;
             this.prefix = prefix;
             this.decorateWorkerLoop = decorateWorkerLoop;
+        }
+
+        private static final class WorkerLease {
+            private static final int RESERVED = 0;
+            private static final int ENTERED = 1;
+            private static final int RELEASED = 2;
+
+            private final Permit permit;
+            private final AtomicInteger state = new AtomicInteger(RESERVED);
+
+            private WorkerLease(Permit permit) { this.permit = permit; }
+
+            boolean enter() {
+                return state.compareAndSet(RESERVED, ENTERED);
+            }
+
+            boolean abandon() {
+                if (!state.compareAndSet(RESERVED, RELEASED)) return false;
+                permit.close();
+                return true;
+            }
+
+            void retire() {
+                if (!state.compareAndSet(ENTERED, RELEASED)) {
+                    throw new IllegalStateException(
+                            "JVM carrier permit retired from invalid lease state "
+                                    + state.get());
+                }
+                permit.close();
+            }
         }
 
         @Override
@@ -270,36 +301,72 @@ final class OresCarrierPermitPool {
                 throw failure;
             }
 
-            Runnable tracked = () -> {
-                try {
-                    decorated.run();
-                } finally {
-                    // processWorkerExit() may synchronously attempt a
-                    // replacement on this same worker thread. Reconcile any
-                    // replacement Thread object that was created but never
-                    // started before releasing this exiting carrier's permit.
-                    reconcileCreatedThreads();
-                    Thread current = Thread.currentThread();
-                    Permit owned = live.remove(current);
-                    if (owned == null) {
-                        throw new IllegalStateException(
-                                "physical carrier permit missing at JVM worker exit");
-                    }
-                    owned.close();
-                    signalPhysicalDrain();
-                }
-            };
-
+            WorkerLease lease = new WorkerLease(permit);
             final Thread thread;
             try {
-                thread = new Thread(tracked, prefix + next.incrementAndGet());
+                thread = new Thread(() -> {
+                    Thread current = Thread.currentThread();
+                    WorkerLease owned = live.get(current);
+                    if (owned == null || owned != lease || !lease.enter()) {
+                        // If reconciliation won a startup race, never execute
+                        // runtime work without a physical execution permit.
+                        live.remove(current, lease);
+                        signalPhysicalDrain();
+                        return;
+                    }
+                    try {
+                        decorated.run();
+                    } finally {
+                        // processWorkerExit() may synchronously attempt a
+                        // replacement on this same worker thread. Reconcile any
+                        // replacement Thread object that was created but never
+                        // entered before retiring this carrier.
+                        reconcileCreatedThreads();
+                        lease.retire();
+                        if (!live.remove(current, lease)) {
+                            throw new IllegalStateException(
+                                    "JVM carrier lease disappeared before retirement");
+                        }
+                        signalPhysicalDrain();
+                    }
+                }, prefix + next.incrementAndGet());
                 thread.setDaemon(true);
-                live.put(thread, permit);
-                createdByCaller.get().add(thread);
+                live.put(thread, lease);
+                try {
+                    createdByCaller.get().add(thread);
+                } catch (RuntimeException | Error bookkeepingFailure) {
+                    if (lease.abandon()) {
+                        live.remove(thread, lease);
+                        signalPhysicalDrain();
+                    }
+                    throw bookkeepingFailure;
+                }
                 return thread;
             } catch (RuntimeException | Error failure) {
-                permit.close();
+                if (lease.abandon()) signalPhysicalDrain();
                 throw failure;
+            }
+        }
+
+        @Override
+        public void reconcileCreatedThreads() {
+            ArrayList<Thread> created = createdByCaller.get();
+            if (created.isEmpty()) {
+                createdByCaller.remove();
+                return;
+            }
+            try {
+                for (Thread thread : created) {
+                    WorkerLease lease = live.get(thread);
+                    if (lease == null || thread.getState() != Thread.State.NEW) continue;
+                    if (lease.abandon()) {
+                        live.remove(thread, lease);
+                        signalPhysicalDrain();
+                    }
+                }
+            } finally {
+                created.clear();
+                createdByCaller.remove();
             }
         }
 
