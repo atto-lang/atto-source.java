@@ -12,13 +12,57 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * verified digests; guest code must never obtain this coordinator or mint them.
  */
 final class ActorUpgradeEpochGate implements AutoCloseable {
+    // This is an *admission description*, not proof that the process or
+    // isolate exists. The trusted loader must attest physical placement.
+    enum ActorKind { SHARED, PRIVATE, UNTRUSTED }
+    enum ProtectionDomain {
+        TRUSTED_HOST, TRUSTED_PROCESS, SANDBOX_ISOLATE, SANDBOX_PROCESS
+    }
+    enum CodeMode {
+        GRAAL_INTERPRETED, GRAAL_JIT, GRAAL_NATIVE_AOT,
+        LLVM_PIC_AOT, LLVM_ORC_JIT, WASM_AOT
+    }
+    enum LeaseKind {
+        ACTOR_TURN, SUSPENDED_TASK, FFI_CALLBACK, SHARED_REGION,
+        OUTPUT_READER, EXTERNAL_OPERATION
+    }
+
+    record Placement(ActorKind actorKind, ProtectionDomain protection,
+                     String sharedCellSchemaSha256) {
+        Placement {
+            Objects.requireNonNull(actorKind, "actor kind");
+            Objects.requireNonNull(protection, "protection domain");
+            Image.validateDigest(sharedCellSchemaSha256);
+            if (actorKind == ActorKind.UNTRUSTED) {
+                if (protection != ProtectionDomain.SANDBOX_PROCESS
+                        && protection != ProtectionDomain.SANDBOX_ISOLATE)
+                    throw new SecurityException(
+                            "untrusted actor requires an independently enforced sandbox");
+            } else if (protection == ProtectionDomain.SANDBOX_PROCESS
+                    || protection == ProtectionDomain.SANDBOX_ISOLATE) {
+                throw new SecurityException(
+                        "trusted and untrusted actor protection domains cannot be conflated");
+            }
+        }
+    }
+
     record Image(String codeSha256, String stateSchemaSha256,
-                 String messageAbiSha256, String capabilitySha256) {
+                 String messageAbiSha256, String capabilitySha256,
+                 CodeMode codeMode) {
         Image {
+            Objects.requireNonNull(codeMode, "code mode");
             validateDigest(codeSha256);
             validateDigest(stateSchemaSha256);
             validateDigest(messageAbiSha256);
             validateDigest(capabilitySha256);
+        }
+
+        // Compatibility with the old host-only gate constructor. The execution
+        // backend can change between generations without changing actor ABI.
+        Image(String codeSha256, String stateSchemaSha256,
+              String messageAbiSha256, String capabilitySha256) {
+            this(codeSha256, stateSchemaSha256, messageAbiSha256,
+                    capabilitySha256, CodeMode.GRAAL_INTERPRETED);
         }
 
         private static void validateDigest(String sha) {
@@ -37,14 +81,17 @@ final class ActorUpgradeEpochGate implements AutoCloseable {
     static final class Lease implements AutoCloseable {
         private final ActorUpgradeEpochGate owner;
         private final long epoch;
+        private final LeaseKind kind;
         private final AtomicBoolean released = new AtomicBoolean();
 
-        private Lease(ActorUpgradeEpochGate owner, long epoch) {
+        private Lease(ActorUpgradeEpochGate owner, long epoch, LeaseKind kind) {
             this.owner = owner;
             this.epoch = epoch;
+            this.kind = kind;
         }
 
         long epoch() { return epoch; }
+        LeaseKind kind() { return kind; }
 
         @Override public synchronized void close() {
             // Accounting and authorization retirement share the gate lock.
@@ -66,22 +113,36 @@ final class ActorUpgradeEpochGate implements AutoCloseable {
     }
 
     private final long actorIdentity;
+    private final Placement placement;
+    private final int[] pinsByKind = new int[LeaseKind.values().length];
     private long epoch = 1;
     private int pins;
     private boolean closed;
     private Image active;
     private Candidate candidate;
 
+    // Legacy host-only gate defaults to SHARED/TRUSTED_HOST. Security-sensitive
+    // loaders MUST pass an explicit Placement and prove its isolation.
     ActorUpgradeEpochGate(long actorIdentity, Image initial) {
-        if (actorIdentity <= 0) throw new IllegalArgumentException("actor identity must be positive");
-        this.actorIdentity = actorIdentity;
-        this.active = Objects.requireNonNull(initial);
+        this(actorIdentity, new Placement(ActorKind.SHARED,
+                ProtectionDomain.TRUSTED_HOST, "0".repeat(64)), initial);
     }
 
+    ActorUpgradeEpochGate(long actorIdentity, Placement placement, Image initial) {
+        if (actorIdentity <= 0) throw new IllegalArgumentException("actor identity must be positive");
+        this.actorIdentity = actorIdentity;
+        this.placement = Objects.requireNonNull(placement, "placement");
+        this.active = Objects.requireNonNull(initial, "initial image");
+    }
+
+    synchronized Placement placement() { return placement; }
     synchronized long actorIdentity() { return actorIdentity; }
     synchronized long epoch() { return epoch; }
     synchronized Image image() { return active; }
     synchronized int livePins() { return pins; }
+    synchronized int livePins(LeaseKind kind) {
+        return pinsByKind[Objects.requireNonNull(kind, "lease kind").ordinal()];
+    }
     synchronized boolean frozen() { return candidate != null; }
     synchronized boolean retired() { return closed && pins == 0; }
 
@@ -89,15 +150,20 @@ final class ActorUpgradeEpochGate implements AutoCloseable {
      * A live operation pins its generation. Includes suspended continuations
      * and asynchronous callbacks once integrated into the actor scheduler.
      */
-    synchronized Lease pin() {
+    synchronized Lease pin() { return pin(LeaseKind.ACTOR_TURN); }
+
+    synchronized Lease pin(LeaseKind kind) {
+        Objects.requireNonNull(kind, "lease kind");
         if (closed || candidate != null)
             throw new IllegalStateException("actor is closed or upgrade-frozen");
-        if (pins == Integer.MAX_VALUE)
+        int slot = kind.ordinal();
+        if (pins == Integer.MAX_VALUE || pinsByKind[slot] == Integer.MAX_VALUE)
             throw new IllegalStateException("actor pin limit exhausted");
-        // Allocate the lease BEFORE charging a pin. On OOME (or any
-        // allocation failure), the supervisor must not strand reclamation.
-        Lease lease = new Lease(this, epoch);
+        // Allocate before charging either counter. Every await/Task, FFI and
+        // shared-region lease must live until its real exit/cleanup barrier.
+        Lease lease = new Lease(this, epoch, kind);
         ++pins;
+        ++pinsByKind[slot];
         return lease;
     }
 
@@ -111,6 +177,13 @@ final class ActorUpgradeEpochGate implements AutoCloseable {
      * capabilities: unsupported state migration MUST fail closed.
      */
     synchronized Candidate prepare(Image proposed) {
+        return prepare(placement, proposed);
+    }
+
+    synchronized Candidate prepare(Placement target, Image proposed) {
+        if (!placement.equals(Objects.requireNonNull(target, "target placement")))
+            throw new SecurityException(
+                    "actor upgrade cannot change actor kind, protection domain or shared-cell ABI");
         if (closed || candidate != null)
             throw new IllegalStateException("actor already closed or preparing upgrade");
         Objects.requireNonNull(proposed, "proposed");
@@ -147,8 +220,11 @@ final class ActorUpgradeEpochGate implements AutoCloseable {
 
     private synchronized void release(Lease lease) {
         if (lease.released.get()) return;
-        if (pins <= 0) throw new IllegalStateException("actor pin accounting underflow");
+        int slot = lease.kind.ordinal();
+        if (pins <= 0 || pinsByKind[slot] <= 0)
+            throw new IllegalStateException("actor pin accounting underflow");
         --pins;
+        --pinsByKind[slot];
         // permits(), publish() and livePins() cannot observe a retired pin
         // while its lease still authorizes work.
         lease.released.set(true);
