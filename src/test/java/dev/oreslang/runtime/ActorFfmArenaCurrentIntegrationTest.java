@@ -432,7 +432,38 @@ final class ActorFfmArenaCurrentIntegrationTest {
     }
 
 
+
     @Test
+    void escapingTaskPublishedBeforeArenaPinsArenaCreatedLater() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
+
+        var arenaRef = new AtomicReference<ActorArena>();
+        var admitted = new CountDownLatch(1);
+        OresFuture<Integer> pending = new OresFuture<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                runtime.startActorTask(resume -> OresScheduler.await(pending));
+                var arena = turn.localMemory().orElseThrow().newActorArena(1, 1);
+                arenaRef.set(arena);
+                assertEquals(1, arena.outstandingExternalLeases(),
+                        "an already-escaping task must pin an arena created later in the same incarnation");
+                admitted.countDown();
+            });
+
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("publish-before-arena");
+            assertTrue(admitted.await(5, TimeUnit.SECONDS));
+            assertEquals(1, arenaRef.get().outstandingExternalLeases());
+            assertTrue(actor.cancel());
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, arenaRef.get().outstandingExternalLeases());
+            assertTrue(arenaRef.get().physicallyClosed());
+            pending.completeFromRuntime(1);
+        }
+    }
+
+@Test
     void scratchScopeCannotEscapeMailboxBoundary() throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
 
