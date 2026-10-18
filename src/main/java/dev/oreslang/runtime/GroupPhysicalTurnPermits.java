@@ -34,7 +34,7 @@ final class GroupPhysicalTurnPermits {
         }
     }
 
-    enum Admission { GRANTED, QUEUED, DUPLICATE, QUEUE_FULL, RETRY, CLOSED }
+    enum Admission { GRANTED, QUEUED, DUPLICATE, INCARNATION_BUSY, QUEUE_FULL, RETRY, CLOSED }
     record Request(Admission status, Grant grant) { }
     record Release(boolean released, boolean retry, Grant successor) { }
     enum Cancellation { CANCELLED, ACTIVE, ABSENT, RETRY }
@@ -47,6 +47,9 @@ final class GroupPhysicalTurnPermits {
     private final Map<Actor, Grant> active = new HashMap<>();
     private final ArrayDeque<Actor> queue = new ArrayDeque<>();
     private final Set<Actor> queued = new HashSet<>();
+    // One lifecycle incarnation of each actor ID may own/queue a physical
+    // permit. A restarted incarnation may not overlap a predecessor's turn.
+    private final Map<Long, Actor> reservedIncarnations = new HashMap<>();
     private long nextTicket = 1;
     private boolean sealed;
 
@@ -65,8 +68,11 @@ final class GroupPhysicalTurnPermits {
         if (!lock.tryLock()) return new Request(Admission.RETRY, null);
         try {
             if (sealed) return new Request(Admission.CLOSED, null);
-            if (active.containsKey(actor) || queued.contains(actor))
-                return new Request(Admission.DUPLICATE, null);
+            Actor existing = reservedIncarnations.get(actor.id());
+            if (existing != null) {
+                return new Request(existing.equals(actor)
+                        ? Admission.DUPLICATE : Admission.INCARNATION_BUSY, null);
+            }
             if (active.size() < limit && queue.isEmpty()) {
                 Grant grant = grantUnderLock(actor);
                 return grant == null
@@ -77,6 +83,7 @@ final class GroupPhysicalTurnPermits {
                 return new Request(Admission.QUEUE_FULL, null);
             queued.add(actor);
             queue.addLast(actor);
+            reservedIncarnations.put(actor.id(), actor);
             return new Request(Admission.QUEUED, null);
         } finally {
             lock.unlock();
@@ -99,6 +106,7 @@ final class GroupPhysicalTurnPermits {
             if (held != grant)
                 return new Release(false, false, null);
             active.remove(grant.actor());
+            reservedIncarnations.remove(grant.actor().id(), grant.actor());
             if (!sealed && !queue.isEmpty()) {
                 Actor successor = queue.removeFirst();
                 queued.remove(successor);
@@ -120,6 +128,8 @@ final class GroupPhysicalTurnPermits {
             if (!queued.remove(actor)) return Cancellation.ABSENT;
             if (!queue.remove(actor))
                 throw new IllegalStateException("queue/index divergence");
+            if (!reservedIncarnations.remove(actor.id(), actor))
+                throw new IllegalStateException("incarnation/index divergence");
             return Cancellation.CANCELLED;
         } finally {
             lock.unlock();
@@ -156,11 +166,14 @@ final class GroupPhysicalTurnPermits {
         }
         Grant grant = new Grant(actor, nextTicket++);
         active.put(actor, grant);
+        reservedIncarnations.put(actor.id(), actor);
         return grant;
     }
 
     private void sealUnderLock() {
         sealed = true;
+        for (Actor waiting : queue)
+            reservedIncarnations.remove(waiting.id(), waiting);
         queue.clear();
         queued.clear();
     }
