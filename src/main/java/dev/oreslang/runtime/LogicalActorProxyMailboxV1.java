@@ -244,6 +244,43 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
     }
 
     /**
+     * Trusted transport rollback ONLY after proving physical send did not
+     * accept the message. Polling dispatch reserves sequence ownership before
+     * physical admission; without this operation an admission rejection would
+     * strand retained byte/message credits and prevent route quiescence.
+     *
+     * This is deliberately package-private; never expose it to guest actors
+     * or use it after an ambiguous send acknowledgement. An uncertain send
+     * must instead stay outstanding/quarantined until the supervisor resolves
+     * its identity, or a retry could duplicate an already accepted message.
+     *
+     * Only the highest dispatched, still outstanding sequence can be restored,
+     * before another dispatch and while no upgrade freeze ticket is active.
+     */
+    void requeueProvenUnsent(long messageSequence) {
+        synchronized (lock) {
+            requireOpenLocked();
+            if (dispatchFrozen || activeFreeze != null) {
+                throw new IllegalStateException(
+                        "cannot roll back physical dispatch while upgrade is frozen");
+            }
+            if (messageSequence != highestDispatchedSequence
+                    || messageSequence <= completionWatermark
+                    || !outstanding.containsKey(messageSequence)) {
+                throw new IllegalStateException(
+                        "physical dispatch rollback requires the latest outstanding sequence");
+            }
+            Envelope envelope = outstanding.remove(messageSequence);
+            highestDispatchedSequence--;
+            queued.addFirst(envelope);
+            // This is not logical completion: retain all message/byte credits
+            // and preserve the original admission sequence for the next send.
+            checkStructuralInvariantsLocked();
+            lock.notifyAll();
+        }
+    }
+
+    /**
      * Logical mail completion. This is the point at which proxy capacity is
      * refunded. Completion order may differ from admission/dispatch order.
      */
