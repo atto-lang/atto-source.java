@@ -332,21 +332,27 @@ public final class VmNioTcpListener implements AutoCloseable {
             final boolean quiesced;
             synchronized (gate) {
                 if (terminated) return;
+                // Keep the connection in the listener's ownership set until
+                // descriptor close finishes. Removing it here lets another
+                // thread observe listenerClosed while the socket is still open.
                 terminated = true;
-                connections.remove(this);
                 snapshot = new ArrayList<>(outstanding);
                 quiesced = activeOperations == 0;
             }
-            // Close the descriptor before publishing any terminal operation
-            // drain. Otherwise a synchronous cancellation subscriber can drive
-            // connectionClosed/listenerClosed to completion while the FD is
-            // still open on this stack.
+            // Retire the descriptor BEFORE allowing listener-wide quiescence
+            // or terminal operation notifications to become visible.
             try { channel.close(); } catch (IOException ignored) { }
+            synchronized (gate) {
+                connections.remove(this);
+            }
             // Revoke only still-cancellable operations. An already committed
             // kernel write may instead fail after descriptor close, but must
             // never be reported as cleanly cancelled.
             for (OresFuture<?> pending : snapshot) pending.cancel(false);
             if (quiesced) connectionClosed.completeFromRuntime(null);
+            // A concurrent listener close may have found this connection
+            // still registered while waiting for the descriptor-close fence.
+            completeListenerCloseIfQuiesced();
         }
     }
 }
