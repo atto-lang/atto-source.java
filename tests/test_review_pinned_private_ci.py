@@ -692,6 +692,29 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         with self.assertRaises(MOD.Denied):
             MOD.load_json(invalid)
 
+    def test_verifier_directory_denials_do_not_leak_descriptors(self):
+        proc = Path("/proc/self/fd")
+        if not proc.is_dir():
+            self.skipTest("Linux /proc/self/fd unavailable")
+        candidate = self.root / "rejected-directory"
+        candidate.mkdir()
+        before = len(list(proc.iterdir()))
+        for _ in range(64):
+            with self.assertRaises(MOD.Denied):
+                MOD.bounded_bytes(candidate, MOD.MAX_LEDGER, "ledger")
+        self.assertEqual(len(list(proc.iterdir())), before)
+
+    def test_verifier_bad_payload_denials_do_not_leak_descriptors(self):
+        proc = Path("/proc/self/fd")
+        if not proc.is_dir():
+            self.skipTest("Linux /proc/self/fd unavailable")
+        path = self.write("invalid-bytes.json", b"\xef\xbb\xbf{}")
+        before = len(list(proc.iterdir()))
+        for _ in range(64):
+            with self.assertRaises(MOD.Denied):
+                MOD.load_json(path)
+        self.assertEqual(len(list(proc.iterdir())), before)
+
     def test_wrong_destination_id_denied(self):
         def mutate(fx):
             d = {"id": 1, "full_name": MOD.CARRIER_REPO, "private": True,
@@ -809,6 +832,28 @@ class WorkflowSecureInputOpenTests(unittest.TestCase):
             os.mkfifo("pipe")
             with self.assertRaises(SystemExit):
                 self.read_regular("pipe")
+
+    def test_repeated_directory_rejections_do_not_leak_descriptors(self):
+        proc = Path("/proc/self/fd")
+        if not proc.is_dir():
+            self.skipTest("Linux /proc/self/fd unavailable")
+        Path("dir").mkdir()
+        before = len(list(proc.iterdir()))
+        for _ in range(64):
+            with self.assertRaises(SystemExit):
+                self.read_regular("dir")
+        self.assertEqual(len(list(proc.iterdir())), before)
+
+    def test_bad_payload_rejections_do_not_leak_descriptors(self):
+        proc = Path("/proc/self/fd")
+        if not proc.is_dir():
+            self.skipTest("Linux /proc/self/fd unavailable")
+        Path("payload").write_bytes(b"\xef\xbb\xbf{}")
+        before = len(list(proc.iterdir()))
+        for _ in range(64):
+            with self.assertRaises(SystemExit):
+                self.read_regular("payload")
+        self.assertEqual(len(list(proc.iterdir())), before)
 
     def test_empty_oversized_or_invalid_encoding_rejected(self):
         for name, data in (("empty", b""),
