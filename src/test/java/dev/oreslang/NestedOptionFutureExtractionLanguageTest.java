@@ -81,6 +81,21 @@ final class NestedOptionFutureExtractionLanguageTest {
     }
 
     @Test
+    void unwrapAllStopsAtResultPayloadWithoutExtractingItsVariant() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val Result<int, String> result = Ok(42);
+                  val Option<Option<Result<int, String>>> nested = Some(Some(result));
+                  val Result<int, String> leaf = nested.unwrap_all();
+                  stdio.stdout.write(leaf.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("42", run(program));
+    }
+
+    @Test
     void nestedOptionExtractionCannotConsumeAnAffineOwnerTwice() {
         for (String operation : new String[] {"unwrap_all", "flatten"}) {
             String program = """
