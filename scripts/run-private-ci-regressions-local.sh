@@ -72,7 +72,42 @@ bash "$script_dir/test-private-ci-destination.sh"
 echo 'PRIVATE_CI_REVIEW_COVERAGE_PASSED=1'
 for ((i=1; i<=repeats; i++)); do
   printf 'PRIVATE_CI_FULL_PYTHON_RUN=%d/%d\n' "$i" "$repeats"
-  "$python_bin" -I -B "$script_dir/test-publish-private-ci-source.py"
+  "$python_bin" -I -B - "$script_dir" <<'FULL_SUITE'
+import importlib.util
+from pathlib import Path
+import sys
+import unittest
+
+root = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location(
+    "publisher_offline_test_suite", root / "test-publish-private-ci-source.py")
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+if not callable(getattr(module, "load_tests", None)):
+    raise SystemExit("PRIVATE_CI_TEST_INVENTORY_MISSING_LOAD_TESTS")
+suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+def each_test(group):
+    for item in group:
+        if isinstance(item, unittest.TestSuite):
+            yield from each_test(item)
+        else:
+            yield item
+cases = list(each_test(suite))
+ids = [case.id() for case in cases]
+publisher = sum(".DestinationBoundPublisherTests." in identifier for identifier in ids)
+merged = sum(".MergedMainProvenanceTests." in identifier for identifier in ids)
+if (len(ids) < 107 or publisher < 97 or merged < 10
+        or publisher + merged != len(ids) or len(set(ids)) != len(ids)):
+    raise SystemExit(
+        "PRIVATE_CI_TEST_INVENTORY_REJECTED: "
+        f"publisher={publisher} merged={merged} total={len(ids)}")
+print(f"PRIVATE_CI_TEST_INVENTORY_OK publisher={publisher} "
+      f"merged={merged} total={len(ids)}", flush=True)
+result = unittest.TextTestRunner(verbosity=2).run(suite)
+if not result.wasSuccessful() or result.testsRun != len(ids):
+    raise SystemExit("PRIVATE_CI_FULL_PYTHON_TEST_FAILURE")
+FULL_SUITE
 done
 fingerprint > "$manifest_after"
 if ! cmp -s "$manifest_before" "$manifest_after"; then
