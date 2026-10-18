@@ -49,7 +49,7 @@ final class NonBlockingVoidSelectExpressionTest {
                   receive(ActorMail<String> mail): void {
                     stdio.stdout.write("before:");
                     await nb select first {
-                      default: -> {
+                      default -> {
                         stdio.stdout.write("arm:");
                         defer stdio.stdout.write("cleanup:");
                       }
@@ -75,7 +75,7 @@ final class NonBlockingVoidSelectExpressionTest {
                 define actor Worker as
                   receive(ActorMail<String> mail): void {
                     const Future<void> pending = nb select first {
-                      default: -> { stdio.stdout.write("arm:"); }
+                      default -> { stdio.stdout.write("arm:"); }
                     };
                     stdio.stdout.write("before:");
                     await pending;
@@ -101,7 +101,7 @@ final class NonBlockingVoidSelectExpressionTest {
                         actor fnc invalid(Channel<int> inbox): void {
                           const Future<void> pending = nb select first {
                             when readch inbox: int x -> { stdio.stdout.write(x); }
-                            default: -> { return 42; }
+                            default -> { return 42; }
                           };
                           return;
                         }
@@ -114,7 +114,7 @@ final class NonBlockingVoidSelectExpressionTest {
                 () -> OresCompiler.parseAndTypeCheck("""
                         actor fnc invalid(): void {
                           const int answer = await nb select first {
-                            default: -> { stdio.stdout.write("ready"); }
+                            default -> { stdio.stdout.write("ready"); }
                           };
                           return;
                         }
@@ -129,7 +129,7 @@ final class NonBlockingVoidSelectExpressionTest {
             String source = """
                     actor fnc invalid(): void {
                       %s = await nb select first {
-                        default: -> { stdio.stdout.write("side-effect"); }
+                        default -> { stdio.stdout.write("side-effect"); }
                       };
                       return;
                     }
@@ -145,7 +145,7 @@ final class NonBlockingVoidSelectExpressionTest {
                 () -> OresCompiler.parseAndTypeCheck("""
                         fnc invalid(): void {
                           const Future<void> pending = nb select first {
-                            default: -> { stdio.stdout.write("side-effect"); }
+                            default -> { stdio.stdout.write("side-effect"); }
                           };
                           return;
                         }
