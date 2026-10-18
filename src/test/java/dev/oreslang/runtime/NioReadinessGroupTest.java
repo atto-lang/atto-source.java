@@ -134,67 +134,62 @@ final class NioReadinessGroupTest {
         }
     }
 
-    @Test void coldBoundExecutorBootstrapCannotBlockSelectorProgress() throws Exception {
+    @Test void coldBoundExecutorBootstrapCompletesBeforeSelectorStarts() throws Exception {
         var bootstrapEntered = new java.util.concurrent.CountDownLatch(1);
         var releaseBootstrap = new java.util.concurrent.CountDownLatch(1);
         var callbackPool = java.util.concurrent.Executors.newSingleThreadExecutor(task ->
                 Thread.ofPlatform().daemon(true).name("nio-bound-callback-test").unstarted(task));
-        var first = java.nio.channels.Pipe.open();
-        var second = java.nio.channels.Pipe.open();
+        var pipe = java.nio.channels.Pipe.open();
         try (var group = new NioReadinessGroup(1, 16, 16);
-             var firstSource = first.source();
-             var firstSink = first.sink();
-             var secondSource = second.source();
-             var secondSink = second.sink()) {
-            firstSource.configureBlocking(false);
-            secondSource.configureBlocking(false);
-
-            var coldTargetCalls = new java.util.concurrent.atomic.AtomicInteger();
+             var source = pipe.source();
+             var sink = pipe.sink()) {
+            source.configureBlocking(false);
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
             group.bindVmCompletionExecutor(command -> {
-                if (coldTargetCalls.getAndIncrement() == 0) {
+                int call = calls.getAndIncrement();
+                if (call == 0) {
+                    assertFalse(NioReadinessGroup.onReactorThread(),
+                            "cold bootstrap must run on watch-admission caller");
                     bootstrapEntered.countDown();
                     try {
                         if (!releaseBootstrap.await(3, TimeUnit.SECONDS))
                             throw new RejectedExecutionException("test bootstrap timed out");
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
-                        throw new RejectedExecutionException("test bootstrap interrupted", interrupted);
+                        throw new RejectedExecutionException(
+                                "test bootstrap interrupted", interrupted);
                     }
                 }
-                callbackPool.execute(() -> {
-                    try { command.run(); }
-                    finally { group.retryStagedNotifications(); }
-                });
+                callbackPool.execute(command);
             }, true);
 
-            var firstReady = group.watch(firstSource, SelectionKey.OP_READ);
-            var secondReady = group.watch(secondSource, SelectionKey.OP_READ);
+            var admitted = new java.util.concurrent.atomic.AtomicReference<OresFuture<Integer>>();
+            var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Thread admission = Thread.ofPlatform().start(() -> {
+                try {
+                    admitted.set(group.watch(source, SelectionKey.OP_READ));
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                }
+            });
+            assertTrue(bootstrapEntered.await(2, TimeUnit.SECONDS));
+            assertEquals(0, group.reactorCount(),
+                    "selector must not exist while cold completion bootstrap is blocked");
             assertEquals(0, group.completionCarrierCount(),
-                    "pending I/O alone must not start the bootstrap helper");
-            assertEquals(1, group.reactorCount());
-
-            firstSink.write(java.nio.ByteBuffer.wrap(new byte[] {1}));
-            secondSink.write(java.nio.ByteBuffer.wrap(new byte[] {2}));
-            assertTrue(bootstrapEntered.await(2, TimeUnit.SECONDS),
-                    "first runnable completion must bootstrap the cold bound executor off-selector");
-
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (group.pendingCount() != 0 && System.nanoTime() < deadline)
-                Thread.sleep(1);
-            assertEquals(0, group.pendingCount(),
-                    "selector must continue retiring ready watches while bound bootstrap is blocked");
-            assertFalse(firstReady.isDone(),
-                    "actual completion remains staged until the bound executor is bootstrapped");
-            assertFalse(secondReady.isDone(),
-                    "actual completion delivery must wait while off-selector submission is blocked");
-            assertTrue(group.completionCarrierCount() >= 1,
-                    "the transient helper exists only after runnable completion demand");
+                    "bound mode must never provision the transitional helper pool");
 
             releaseBootstrap.countDown();
-            assertTrue((firstReady.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
-            assertTrue((secondReady.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
+            admission.join(3_000);
+            assertFalse(admission.isAlive());
+            assertNull(failure.get());
+            assertNotNull(admitted.get());
             assertEquals(1, group.reactorCount());
-            assertEquals(0, group.pendingNotifications());
+
+            sink.write(java.nio.ByteBuffer.wrap(new byte[] {1}));
+            assertTrue((admitted.get().get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
+            assertTrue(calls.get() >= 2,
+                    "one admission bootstrap plus one terminal delivery expected");
+            assertEquals(0, group.completionCarrierCount());
 
             group.close();
             assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
@@ -205,76 +200,31 @@ final class NioReadinessGroupTest {
         }
     }
 
-    @Test void earlyCapacitySignalDuringBootstrapCannotStrandStagedTail() throws Exception {
-        var firstRanBeforeBootstrapReturned = new java.util.concurrent.CountDownLatch(1);
-        var targetCalls = new java.util.concurrent.atomic.AtomicInteger();
-        var first = java.nio.channels.Pipe.open();
-        var second = java.nio.channels.Pipe.open();
-        try (var group = new NioReadinessGroup(1, 16, 16);
-             var firstSource = first.source();
-             var firstSink = first.sink();
-             var secondSource = second.source();
-             var secondSink = second.sink()) {
-            firstSource.configureBlocking(false);
-            secondSource.configureBlocking(false);
-
+    @Test void invalidWatchNeverBootstrapsBoundCompletionCarrier() throws Exception {
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        try (var group = new NioReadinessGroup(1, 8, 8);
+             var pipe = java.nio.channels.Pipe.open();
+             var source = pipe.source()) {
+            source.configureBlocking(false);
             group.bindVmCompletionExecutor(command -> {
-                int call = targetCalls.getAndIncrement();
-                if (call == 0) {
-                    long pendingDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-                    while (group.pendingCount() != 0 && System.nanoTime() < pendingDeadline) {
-                        try { Thread.sleep(1); }
-                        catch (InterruptedException interrupted) {
-                            Thread.currentThread().interrupt();
-                            throw new RejectedExecutionException(
-                                    "bootstrap staging wait interrupted", interrupted);
-                        }
-                    }
-                    if (group.pendingCount() != 0)
-                        throw new RejectedExecutionException(
-                                "selector did not stage the second completion");
-                }
-                var ran = new java.util.concurrent.CountDownLatch(1);
-                Thread.ofPlatform().daemon(true)
-                        .name("nio-bootstrap-race-target-" + call)
-                        .start(() -> {
-                            try {
-                                command.run();
-                                // Model ActorRuntime's completion-capacity hook:
-                                // this first retry intentionally happens before
-                                // target.execute() returns to the bootstrap helper.
-                                group.retryStagedNotifications();
-                                if (call == 0) firstRanBeforeBootstrapReturned.countDown();
-                            } finally {
-                                ran.countDown();
-                            }
-                        });
-                try {
-                    if (!ran.await(2, TimeUnit.SECONDS))
-                        throw new RejectedExecutionException("target delivery timed out");
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw new RejectedExecutionException("target delivery interrupted", interrupted);
-                }
+                calls.incrementAndGet();
+                command.run();
             }, true);
 
-            var one = group.watch(firstSource, SelectionKey.OP_READ);
-            var two = group.watch(secondSource, SelectionKey.OP_READ);
-            firstSink.write(java.nio.ByteBuffer.wrap(new byte[] {1}));
-            secondSink.write(java.nio.ByteBuffer.wrap(new byte[] {2}));
+            assertThrows(IllegalArgumentException.class,
+                    () -> group.watch(source, 0));
+            assertEquals(0, calls.get());
+            assertEquals(0, group.reactorCount());
 
-            assertTrue(firstRanBeforeBootstrapReturned.await(2, TimeUnit.SECONDS),
-                    "first capacity retry must race before bootstrap publication");
-            assertTrue((one.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
-            assertTrue((two.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0,
-                    "post-publication helper retry must drain the staged tail");
-            assertEquals(0, group.pendingNotifications());
-            assertEquals(0, group.stagedNotificationCount());
-
+            source.close();
+            var rejected = group.watch(source, SelectionKey.OP_READ);
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> rejected.get(1, TimeUnit.SECONDS));
+            assertEquals(0, calls.get(),
+                    "closed/rejected admission must not bootstrap completion carriers");
+            assertEquals(0, group.reactorCount());
             group.close();
-            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
-            assertEquals(0, group.completionCarrierCount(),
-                    "bootstrap helper must be gone at NIO quiescence");
+            assertTrue(group.awaitStopped(1, TimeUnit.SECONDS));
         }
     }
 
