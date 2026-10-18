@@ -7657,6 +7657,10 @@ public final class TypeChecker {
         return ref.name().equals("self") || ref.arguments().stream().anyMatch(this::dynMentionsSelf);
     }
 
+    private boolean containsDynTypeRef(Ast.TypeRef ref) {
+        return ref.isDyn() || ref.arguments().stream().anyMatch(this::containsDynTypeRef);
+    }
+
     private List<Ast.TypeRef> positionalTypeArguments(Ast.TypeRef ref) {
         return ref.arguments().stream()
                 .filter(argument -> !argument.isNamedParameter() && !argument.isSequenceShape())
@@ -7981,6 +7985,15 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "named generic type arguments in type position are not supported yet; "
                             + "use positional type arguments");
+        }
+        // Trait-object references are process-local in this phase. Moving an
+        // erased interface value into an actor/mailbox/channel contract would
+        // manufacture cross-actor pointer authority without a proxy ABI.
+        if (Set.of("ActorRef", "ActorMail", "ActorOutput", "ActorOutputStream",
+                "Channel", "SharedMutex").contains(ref.name())
+                && ref.arguments().stream().anyMatch(this::containsDynTypeRef)) {
+            throw new IllegalArgumentException(
+                    ref.name() + " cannot contain dyn interface views without a verified transport/ownership ABI");
         }
         if (ref.isDyn()) {
             Ast.TypeRef target = ref.dynTarget();
