@@ -383,6 +383,10 @@ public final class OwnershipChecker {
             }
             return;
         }
+        if (stmt instanceof Ast.TaskBlockStmt task) {
+            checkTaskBody(task.body(), scope);
+            return;
+        }
         if (stmt instanceof Ast.BlockStmt block) {
             checkBlock(block.body(), scope, returnType);
             return;
@@ -1200,6 +1204,10 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.AwaitExpr awaited) {
             checkSuspensionBorrows(scope, "await");
             ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
+            if (awaitedValue.type.name().equals("Task") && awaitedValue.type.arguments().size() == 1) {
+                Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
+                return new ValueInfo(result, kindOfType(result), null);
+            }
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
@@ -1330,6 +1338,15 @@ public final class OwnershipChecker {
                     ? Ast.TypeRef.readonlyRecordType(members)
                     : Ast.TypeRef.recordType(members);
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
+        }
+        if (expr instanceof Ast.TaskExpr task) return checkTaskBody(task.body(), scope);
+        if (expr instanceof Ast.TaskLambdaExpr taskLambda) {
+            rejectBorrowedScheduledParameters(taskLambda.lambda());
+            return checkLambda(taskLambda.lambda(), scope, null);
+        }
+        if (expr instanceof Ast.AsyncLambdaExpr asyncLambda) {
+            rejectBorrowedScheduledParameters(asyncLambda.lambda());
+            return checkLambda(asyncLambda.lambda(), scope, null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
@@ -2385,6 +2402,48 @@ public final class OwnershipChecker {
                 + "'; returned borrows must originate from an incoming borrowed parameter/receiver so they cannot outlive their owner");
     }
 
+    /**
+     * An nb block owns an independently scheduled activation. Analyze it as
+     * an escaping zero-argument closure before Task submission: this moves
+     * affine captures now and rejects borrows, actor self and MutexGuards.
+     */
+    private ValueInfo checkTaskBody(List<Ast.Stmt> body, Scope outer) {
+        if (initializingClass != null) {
+            throw error("Task cannot launch from a partially initialized constructor");
+        }
+        if (mutexCriticalSectionDepth > 0 || outer.hasLiveMutexGuard()) {
+            throw error("Task cannot launch while a MutexGuard/critical section is live");
+        }
+        checkLambda(new Ast.LambdaExpr(List.of(), null, body), outer, null);
+        return new ValueInfo(new Ast.TypeRef(
+                "Task", List.of(Ast.TypeRef.inferred()), false), ValueKind.MOVE_ONLY, null);
+    }
+
+    private static boolean containsBorrowType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsBorrowType(argument)) return true;
+        }
+        return false;
+    }
+
+    private void rejectBorrowedScheduledParameters(Ast.LambdaExpr lambda) {
+        if (initializingClass != null || mutexCriticalSectionDepth > 0) {
+            throw error("async/Task lambda cannot escape constructor or protected critical section");
+        }
+        for (Ast.Param parameter : lambda.parameters()) {
+            if (containsBorrowType(parameter.type())) {
+                throw error("async/Task parameter '" + parameter.name()
+                        + "' must own its data; borrowed arguments cannot outlive the caller");
+            }
+            if (containsMutexGuardType(parameter.type())) {
+                throw error("async/Task parameter '" + parameter.name()
+                        + "' cannot carry a MutexGuard");
+            }
+        }
+    }
+
     private ValueInfo checkLambda(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
         return checkLambda(lambda, outer, recursiveBinding, false);
     }
@@ -2506,6 +2565,10 @@ public final class OwnershipChecker {
                 scanExpr(yielded.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
+            else if (stmt instanceof Ast.TaskBlockStmt s) {
+                // Transitive free captures must be visible to enclosing lambdas.
+                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            }
             else if (stmt instanceof Ast.BlockStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.LoopStmt s) {
@@ -2653,6 +2716,15 @@ public final class OwnershipChecker {
             for (Ast.ObjectField field : e.fields()) {
                 scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
             }
+        }
+        else if (expr instanceof Ast.TaskExpr task) {
+            scanStatements(task.body(), locals, outer, recursiveBinding, captures);
+        }
+        else if (expr instanceof Ast.TaskLambdaExpr taskLambda) {
+            scanExpr(taskLambda.lambda(), locals, outer, recursiveBinding, captures, false);
+        }
+        else if (expr instanceof Ast.AsyncLambdaExpr asyncLambda) {
+            scanExpr(asyncLambda.lambda(), locals, outer, recursiveBinding, captures, false);
         }
         else if (expr instanceof Ast.LambdaExpr lambda) {
             // A lexical nested closure can reference values that belong to an
