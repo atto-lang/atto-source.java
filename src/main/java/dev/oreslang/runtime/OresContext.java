@@ -143,6 +143,32 @@ public final class OresContext implements AutoCloseable {
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
+
+    /**
+     * Host/compiler-only launch path for a fully lowered, heap-owned
+     * continuation frame. OresScheduler.Await resumes it asynchronously
+     * without parking a physical actor/root worker.
+     *
+     * Actor child Tasks need mailbox-affine ownership, cancellation and
+     * completion delivery first. Untrusted Tasks need inherited deadline
+     * and fuel accounting. Both deliberately fail closed here instead of
+     * giving guest code a new unrestricted scheduling domain.
+     *
+     * The source compiler currently cannot construct safe Task frames,
+     * so its TaskExpr/TaskLambdaExpr type gate MUST remain in place.
+     */
+    public <T> OresTask<T> startCompilerTaskFrame(OresScheduler.Task<T> frame) {
+        java.util.Objects.requireNonNull(frame, "frame");
+        if (ActorRuntime.inActorExecution()) {
+            throw new IllegalStateException(
+                    "actor-owned Task continuations require mailbox-affine admission and termination fencing");
+        }
+        if (isolatePolicy.adversarial()) {
+            throw new SecurityException(
+                    "untrusted Task continuations require inherited wall deadline and fuel budget");
+        }
+        return new OresTask<>(vm.rootScheduler().start(frame));
+    }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
