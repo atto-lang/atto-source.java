@@ -333,8 +333,8 @@ public final class Ast {
     /** Execution-slot bounds, separate from in-flight messages and connections. */
     public record ActorThreadPolicy(int min, int max) {
         public ActorThreadPolicy {
-            if (min < 1 || max < min) {
-                throw new IllegalArgumentException("actor threads require 1 <= min <= max");
+            if (min < 1 || max < min || max > 3) {
+                throw new IllegalArgumentException("actor threads require 1 <= min <= max <= 3");
             }
         }
         public static ActorThreadPolicy defaults() { return new ActorThreadPolicy(1, 1); }
