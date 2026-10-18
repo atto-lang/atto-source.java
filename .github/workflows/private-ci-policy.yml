@@ -23,18 +23,31 @@ jobs:
           python3 -I - <<'PY'
           import ast
           import json
+          import os
           import re
+          import stat
           from pathlib import Path
 
           base = Path(".github")
 
           def read_regular(path, max_bytes=256 * 1024):
-              target = Path(path)
-              if not target.is_file() or target.is_symlink():
-                  raise SystemExit("private CI security input must be a regular non-symlink file: " + str(path))
-              raw = target.read_bytes()
-              if (not raw or len(raw) > max_bytes or raw.startswith(b"\xef\xbb\xbf")
-                      or b"\x00" in raw):
+              # A symlink/regular-file check followed by read_bytes is racy.
+              # Validate the inode opened with no-follow semantics instead.
+              if not hasattr(os, "O_NOFOLLOW"):
+                  raise SystemExit("secure evidence opening unsupported")
+              try:
+                  fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW |
+                               os.O_NONBLOCK | os.O_CLOEXEC)
+                  with os.fdopen(fd, "rb") as stream:
+                      info = os.fstat(stream.fileno())
+                      if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= max_bytes:
+                          raise SystemExit("private CI security input must be bounded regular file: " + str(path))
+                      raw = stream.read(max_bytes + 1)
+                      if len(raw) != info.st_size:
+                          raise SystemExit("private CI security input changed during read: " + str(path))
+              except OSError as exc:
+                  raise SystemExit("private CI security input cannot be safely opened: " + str(path)) from exc
+              if raw.startswith(b"\xef\xbb\xbf") or b"\x00" in raw:
                   raise SystemExit("private CI security input bytes invalid: " + str(path))
               try:
                   return raw.decode("utf-8")
