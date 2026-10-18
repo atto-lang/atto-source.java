@@ -256,3 +256,34 @@ Remaining race gates: simultaneous graph registration/cancellation, blocked
 arbitrary host callbacks (which cannot be preempted), exception and
 physical-cleanup accounting, bounded work admission, deadline/capability
 propagation, and runtime-specific scheduler/actor quiescence.
+
+## Concurrent scope-claim and retirement verification (October 18 follow-up)
+
+An idempotency audit found a parent cancellation traversal previously skipped
+a child scope as soon as its cancellation flag was claimed. A concurrent
+canceller can claim that flag before traversing its grandchildren, leaving
+a parent `close()` dependent on the other thread making progress. The iterative
+walk now revisits already-claimed child subtrees (without reporting a second
+winning cancellation claim). Task cancellation is still CAS-idempotent, so
+re-walking does not run producers twice or revive cancelled work.
+
+A checked-in JUnit regression models the real intermediate state where
+a child has claimed cancellation but not yet visited its grandchild.
+It verifies parent cancellation reaches the grandchild, cancels its live
+Task, preserves repeat-cancel return values, and joins physical Task exit.
+
+The independent source-free runner model successfully executed
+[funded Actions run 39176814665](https://github.com/gha-indie-worker/gha-indie-worker-e2e/actions/runs/39176814665):
+50,260 synthetic checks across 10,000 artificial claim/traversal
+interleavings and a 4,096-level nested supervision tree. It also probes the
+distinction between logical cancellation, physical completion and a failed
+trusted retirement outcome. This run **did not contain or execute private
+Oreslang source**, and does not validate Java compiler/runtime behavior.
+
+The Task handle's `getDone()` result is intentionally different from
+`getAwaited()`: failure/cancellation of the ordinary Task result must not
+be mistaken for failed physical cleanup, but failure of a trusted retirement
+fence must be preserved in every live `getDone()` observer. Additional Java
+JUnit tests now exercise failed retirement, independent observer detachment,
+and successful physical cleanup after Task cancellation. A source-local
+GraalVM/JDK 25 execution and Native Image pass are still required.
