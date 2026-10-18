@@ -43,9 +43,10 @@ final class NativeCanonicalCoreTest {
                 ExecutionProfile.serverJit(), out, err);
         assertTrue(build.units().containsKey("@core/numeric.ores"));
         String stdout = out.toString(StandardCharsets.UTF_8);
-        assertTrue(stdout.contains("4"), () -> "stdout=" + stdout
-                + " stderr=" + err.toString(StandardCharsets.UTF_8));
-        assertTrue(stdout.contains("10"), () -> "stdout=" + stdout);
+        assertEquals("4\\n10",
+                stdout.replace("\\r\\n", "\\n").trim(),
+                () -> "stdout=" + stdout + " stderr="
+                        + err.toString(StandardCharsets.UTF_8));
     }
 
     @Test
@@ -56,9 +57,16 @@ final class NativeCanonicalCoreTest {
         Path entry = temp.resolve("entry.ores");
         Files.writeString(entry, """
                 import module numeric from "core/numeric";
-                pub routine main(): void { return; }
+                pub routine main(): void {
+                    stdio.println(numeric.min_int(9, 4));
+                    return;
+                }
                 """);
-        var build = LinkedProgramRunner.validate(entry, Map.of());
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var build = LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), out, new ByteArrayOutputStream());
         assertTrue(build.units().containsKey("@core/numeric.ores"));
+        assertEquals("4", out.toString(StandardCharsets.UTF_8).trim(),
+                "project-local core/numeric.ores must never shadow trusted core");
     }
 }
