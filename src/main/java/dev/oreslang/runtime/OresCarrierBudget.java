@@ -8,10 +8,12 @@ package dev.oreslang.runtime;
  * lifecycle-observer host domain. Together those runtime-owned execution
  * carriers cannot exceed this ceiling, even with native affinity lanes.
  *
- * <p>This is deliberately not yet a work-conserving shared worker pool:
- * unused permits cannot be borrowed between domains without proving
- * affinity/UNTRUSTED isolation. Reactor threads and explicit user-owned
- * OresScheduler(N) threads remain separate resources and are reported
+ * <p>The configured partition supplies conservative preferred capacities, while
+ * the VM-wide permit coordinator protects one reserve per execution domain and
+ * allows JVM non-affine execution domains to borrow otherwise idle permits.
+ * Affine/native actor pools remain conservative until their carrier lifecycle
+ * can acknowledge individual retirement safely. Reactor threads and explicit
+ * user-owned OresScheduler(N) threads remain separate resources and are reported
  * independently; they are not actor/CONTROL/lifecycle execution carriers.
  */
 record OresCarrierBudget(
@@ -67,5 +69,13 @@ record OresCarrierBudget(
     int allocatedCeiling() {
         return controlReserve + privateMaximum + sharedMaximum
                 + untrustedMaximum + lifecycleObserverMaximum;
+    }
+
+    /**
+     * Largest number of permits one domain may hold while preserving one
+     * protected permit for each other runtime execution domain.
+     */
+    int borrowingMaximumPerDomain() {
+        return maximum - (OresCarrierPermitPool.Domain.values().length - 1);
     }
 }
