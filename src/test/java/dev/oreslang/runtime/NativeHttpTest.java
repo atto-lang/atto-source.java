@@ -1095,4 +1095,19 @@ class NativeHttpTest {
         assertArrayEquals(new Throwable[]{later}, result.getSuppressed());
     }
 
+    @Test
+    void uncheckedCancellationErrorStillReleasesHttpRequestAdmission() {
+        var order = new java.util.ArrayList<String>();
+        var cancellationError = new AssertionError("injected actor STOP failure");
+        var closeError = new IllegalStateException("injected socket close failure");
+        AssertionError observed = assertThrows(AssertionError.class, () ->
+                NativeHttp.runCancellationThenCleanup(
+                        () -> { order.add("cancel"); throw cancellationError; },
+                        () -> { order.add("release"); throw closeError; }));
+        assertSame(cancellationError, observed);
+        assertEquals(List.of("cancel", "release"), order,
+                "socket/admission cleanup must run after unchecked cancellation Error");
+        assertArrayEquals(new Throwable[]{closeError}, observed.getSuppressed());
+    }
+
 }
