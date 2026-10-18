@@ -84,6 +84,23 @@ final class TaskSpellingSyntaxTest {
     }
 
     @Test
+    void taskCancellationAndPostCleanupJoinParseButRemainRuntimeGated() {
+        String source = """
+                pub fnc main(): void {
+                    let Task<int> job = nb task { return 7; };
+                    job.cancel();
+                    await job.get_done();
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(source));
+        // Parsing these member names does not mean Task execution, actor
+        // supervision or physical quiescence has been compiled.
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
     void taskIdentifierRemainsLegalCallableName() {
         assertDoesNotThrow(() -> Parser.parse("""
                 pub fnc task(): int { return 3; }
