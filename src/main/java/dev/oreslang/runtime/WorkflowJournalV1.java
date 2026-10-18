@@ -53,7 +53,42 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
             DurableDevLoopV1.Command command,
             String claimToken,
             int attempt,
-            long leaseUntilMillis) { }
+            long leaseUntilMillis,
+            String workerId) {
+        public Claim {
+            effectKey = requireText(effectKey, "effectKey", 2_048);
+            command = Objects.requireNonNull(command, "command");
+            claimToken = requireText(
+                    claimToken, "claimToken", 2_048);
+            if (attempt <= 0) {
+                throw new IllegalArgumentException(
+                        "claim attempt must be positive");
+            }
+            if (leaseUntilMillis <= 0) {
+                throw new IllegalArgumentException(
+                        "claim lease deadline must be positive");
+            }
+            if (workerId != null) {
+                workerId = requireText(
+                        workerId, "workerId", 512);
+            }
+        }
+
+        public Claim(
+                String effectKey,
+                DurableDevLoopV1.Command command,
+                String claimToken,
+                int attempt,
+                long leaseUntilMillis) {
+            this(
+                    effectKey,
+                    command,
+                    claimToken,
+                    attempt,
+                    leaseUntilMillis,
+                    null);
+        }
+    }
 
     public record StoreSnapshot(
             String runId,
@@ -290,7 +325,8 @@ public final class WorkflowJournalV1 implements WorkflowJournalStoreV1 {
                     effect.command,
                     token,
                     nextAttempt,
-                    leaseUntil));
+                    leaseUntil,
+                    workerId));
         }
 
         return Optional.empty();
