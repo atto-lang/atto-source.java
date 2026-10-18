@@ -158,7 +158,8 @@ final class ImportGraph {
                 }
                 if (classes && decl instanceof Ast.ClassDecl klass
                         && klass.visibility() == Ast.Visibility.PUBLIC
-                        && (imported.wildcard() || imported.names().contains(klass.name()))) {
+                        && (imported.kind() == Ast.ImportKind.MODULE
+                            || imported.wildcard() || imported.names().contains(klass.name()))) {
                     for (Ast.MethodDecl method : klass.methods()) {
                         if (method.visibility() == Ast.Visibility.PUBLIC
                                 && hasCallerPolicy(method.annotations())) {
