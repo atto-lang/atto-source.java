@@ -142,6 +142,14 @@ final class CallerRoleContractsTest {
     }
 
     @Test
+    void protectedHostEntryPointIsRejected() {
+        assertTrue(failure(ROLES + """
+                @CallableBy(Callers.A)
+                pub fnc main(): void {}
+                """).contains("host/runtime entry point"));
+    }
+
+    @Test
     void executableCompilerIngressStillFailsClosedUntilEnumLoweringIsReady() {
         Ast.Program program = Parser.parse(ROLES + """
                 @CallableBy(Callers.A)
