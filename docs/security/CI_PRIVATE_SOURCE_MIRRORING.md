@@ -352,3 +352,67 @@ remains **not authorized**. Neither source-free funded-runner results nor
 the local runner's synthetic smoke tests constitute execution of the full
 publisher suite.
 
+
+
+## Operator checkpoint: enforce and independently verify branch protection
+
+The private-CI publisher **must not export** Oreslang private source while
+\`ores-truffle-oreslang/oreslang-source.java\` or a proposed destination such
+as \`sagitta-stack/sagitta-infra\` reports \`branches/main.protected=false\`.
+A checked-in CODEOWNERS file alone is not a branch protection rule. As of
+2026-10-18, both repositories reported unprotected \`main\`.
+
+An independent repository administrator should configure **classic branch
+protection** for each repository's \`main\` (rather than assuming rulesets are
+interpreted by the current publisher attestation). Apply only after reviewing
+whether required status checks, existing policies, merge modes and CODEOWNERS
+coverage need to be retained. The required controls are:
+
+- Mandatory pull-request reviews, at least one approval, and mandatory
+  CODEOWNER review; dismiss stale approvals when new commits arrive.
+- Require last-push approval and resolution of conversations as a further
+  defense in depth. This is stricter than the publisher's minimum admission.
+- Enforce restrictions for repository administrators; no named user, team
+  or app may bypass review.
+- Disable force pushes and branch deletion. Keep the destination private
+  and verify its access, runner, workflow, artifact and cache retention controls.
+
+A minimal GitHub REST branch-protection **proposal**, not an authorization
+to apply automatically, is:
+
+\`\`\`json
+{
+  "required_status_checks": null,
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": true,
+    "required_approving_review_count": 1,
+    "require_last_push_approval": true
+  },
+  "restrictions": null,
+  "required_conversation_resolution": true,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+\`\`\`
+
+This example leaves required status checks unspecified, so **do not blindly
+overwrite an existing protection** with it. Capture the current default
+branch SHA and policy first. Only make reviewed changes on exact known private
+repositories using an admin-authorized GitHub identity. Re-read the live
+\`branches/main\` and \`branches/main/protection\` endpoints *after* applying
+and fail closed if any effective control differs or the default tip moved.
+
+This administrative step is distinct from the destination allowlist approval.
+Do not populate \`.github/private-ci-approved-repositories.txt\`, mark security
+PRs ready, merge an approval, or create a private source blob as a substitute
+for independently reviewed protection and private destination approval.
+
+**Execution evidence is separate:** GitHub Actions failures with no
+\`jobs[].steps\` prove neither passing nor failing unit assertions. The complete
+private publisher suite must run against the exact reviewed source head in an
+authorized execution environment; independently authored source-free CI models
+cannot substitute for that suite. Incident #832 (earlier public CI exposure)
+requires separate retention and Git-object containment before signing off
+cross-organization private source movement.
