@@ -5389,15 +5389,27 @@ public final class ActorRuntime implements AutoCloseable {
          * logical route must happen first. This transition is irreversible:
          * a published transfer can never reopen the old route.
          */
-        public void retireSourceAfterPublication() {
+        public void retireSourceAfterPublication(
+                ActorRef<Object> publishedCandidate) {
             requireSupervisorContext("retire source actor after hot-upgrade publication");
+            Objects.requireNonNull(publishedCandidate, "publishedCandidate");
             synchronized (transferLock) {
-                if (transferState == TransferState.PUBLISHED) return;
+                if (transferState == TransferState.PUBLISHED) {
+                    if (stagedCandidate != publishedCandidate) {
+                        throw new IllegalStateException(
+                                "published source actor transfer candidate changed");
+                    }
+                    return;
+                }
                 if (transferState != TransferState.CLAIMED
                         || stagedCandidate == null) {
                     throw new IllegalStateException(
                             "source actor transfer cannot publish from state "
                                     + transferState);
+                }
+                if (stagedCandidate != publishedCandidate) {
+                    throw new IllegalStateException(
+                            "source actor transfer publication does not match staged candidate");
                 }
                 transferState = TransferState.PUBLISHED;
             }
