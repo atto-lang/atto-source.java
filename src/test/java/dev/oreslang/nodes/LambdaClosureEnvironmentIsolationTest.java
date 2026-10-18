@@ -19,7 +19,7 @@ final class LambdaClosureEnvironmentIsolationTest {
     private static final class EnvAccess {
         final Class<?> type;
         final Constructor<?> ctor;
-        final Method define, lookup, assign, project;
+        final Method define, lookup, assign, reserve, initialize, discardReservation, project;
         final Field parent, slots, constructingObject;
 
         EnvAccess() throws Exception {
@@ -29,8 +29,13 @@ final class LambdaClosureEnvironmentIsolationTest {
             define = type.getDeclaredMethod("define", String.class, Object.class, Ast.BindingKind.class);
             lookup = type.getDeclaredMethod("lookup", String.class);
             assign = type.getDeclaredMethod("assign", String.class, Object.class);
+            reserve = type.getDeclaredMethod("reserve", String.class, Ast.BindingKind.class);
+            initialize = type.getDeclaredMethod("initialize", String.class, Object.class);
+            discardReservation = type.getDeclaredMethod("discardReservation", String.class);
             project = type.getDeclaredMethod("snapshotCaptures", Set.class);
-            for (Method m : new Method[] { define, lookup, assign, project }) m.setAccessible(true);
+            for (Method m : new Method[] {
+                    define, lookup, assign, reserve, initialize, discardReservation, project
+            }) m.setAccessible(true);
             parent = type.getDeclaredField("parent");
             slots = type.getDeclaredField("slots");
             constructingObject = type.getDeclaredField("constructingObject");
@@ -81,6 +86,23 @@ final class LambdaClosureEnvironmentIsolationTest {
         a.assign.invoke(closure, "counter", 9);
         assertEquals(9, a.lookup.invoke(inner, "counter"));
         assertEquals(111, a.lookup.invoke(root, "counter"));
+    }
+
+    @Test void recursiveReservationIsSharedWithClosureAndCanRollbackAtomically() throws Exception {
+        EnvAccess a = new EnvAccess();
+        Object root = a.frame(null);
+        a.reserve.invoke(root, "recur", Ast.BindingKind.VAL);
+        Object closure = a.capture(root, "recur");
+        Object callable = new Object();
+        a.initialize.invoke(root, "recur", callable);
+        assertSame(callable, a.lookup.invoke(closure, "recur"),
+                "recursive closure must share the reserved self Slot");
+
+        Object failed = a.frame(null);
+        a.reserve.invoke(failed, "broken", Ast.BindingKind.VAL);
+        a.discardReservation.invoke(failed, "broken");
+        assertFalse(a.bindings(failed).containsKey("broken"),
+                "failed recursive initializer must not leave a MISSING reservation");
     }
 
     @Test void explicitSelfCaptureStillRequiresAReferencedSlot() throws Exception {
