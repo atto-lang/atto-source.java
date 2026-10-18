@@ -265,6 +265,20 @@ public final class IncrementalCompiler {
                 }
                 abi.append(")\n");
             }
+            for (Ast.ForeignDecl foreign : klass.foreignDeclarations()) {
+                abi.append(" foreign ")
+                        .append(foreign.suspends() ? "suspends " : "")
+                        .append(foreign.name())
+                        .append("#arity").append(foreign.arity());
+                appendParams(abi, foreign.parameters());
+                abi.append("=>")
+                        .append(typeRef(foreign.returnType()))
+                        .append(" symbol=")
+                        .append(foreign.symbolIdentity().length())
+                        .append(':')
+                        .append(foreign.symbolIdentity())
+                        .append('\n');
+            }
             for (Ast.FieldDecl field : klass.fields()) {
                 String fromJsonKey = AnnotationExpander.fromJsonKey(field);
                 if (fromJsonKey != null) {
