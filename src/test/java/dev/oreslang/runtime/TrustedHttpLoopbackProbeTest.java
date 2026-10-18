@@ -38,7 +38,9 @@ final class TrustedHttpLoopbackProbeTest {
             server.setDaemon(true);
             server.start();
             var gate = new TrustedHierarchicalNetworkGate();
-            var clock = (java.util.function.LongSupplier) System::nanoTime;
+            long startNanos = System.nanoTime();
+            var clock = (java.util.function.LongSupplier)
+                    () -> Math.max(0L, System.nanoTime() - startNanos);
             var limits = new TrustedUntrustedNetworkQuota.Policy(100, 10, 1, 10, 10, 2);
             var child = gate.createHostScope(limits, clock);
             var parent = gate.createHostScope(limits, clock);
@@ -55,11 +57,21 @@ final class TrustedHttpLoopbackProbeTest {
                         gate.tryStartHttp(child, parent, tenant).status());
                 respond.countDown();
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
-                while (System.nanoTime() < deadline
-                        && gate.tryStartHttp(child, parent, tenant).status()
-                            == TrustedUntrustedNetworkQuota.Status.TOO_MANY_IN_FLIGHT) {
+                boolean released = false;
+                while (System.nanoTime() < deadline) {
+                    var attempt = gate.tryStartHttp(child, parent, tenant);
+                    if (attempt.lease() != null) {
+                        attempt.lease().close();
+                        released = true;
+                        break;
+                    }
+                    if (attempt.status()
+                            != TrustedUntrustedNetworkQuota.Status.TOO_MANY_IN_FLIGHT) {
+                        throw new AssertionError("unexpected retry status: " + attempt.status());
+                    }
                     Thread.sleep(5);
                 }
+                assertTrue(released);
             } finally {
                 respond.countDown();
                 server.join(3000);
