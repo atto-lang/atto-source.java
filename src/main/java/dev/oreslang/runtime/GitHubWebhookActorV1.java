@@ -14,6 +14,8 @@ import java.util.Objects;
  */
 public final class GitHubWebhookActorV1 {
 
+    private static final int MAX_MATCHED_DELIVERIES = 4_096;
+
     public sealed interface Message permits Configure, RegisterRun,
             UnregisterRun, ReceiveCiWebhook, Shutdown { }
 
@@ -198,9 +200,15 @@ public final class GitHubWebhookActorV1 {
 
     private static final class Behavior
             implements ActorRuntime.Behavior<Object> {
+        private record MatchedDelivery(
+                String payloadSha256,
+                Matched output) { }
+
         private byte[] secret;
         private final Map<String, GitHubCiCorrelationV1.Expectation>
                 expectations = new LinkedHashMap<>();
+        private final LinkedHashMap<String, MatchedDelivery>
+                matchedDeliveries = new LinkedHashMap<>();
 
         @Override
         public void onMessage(
@@ -248,6 +256,24 @@ public final class GitHubWebhookActorV1 {
                         secret,
                         receive.rawBody(),
                         receive.headers());
+                MatchedDelivery priorDelivery =
+                        matchedDeliveries.get(verified.deliveryId());
+                if (priorDelivery != null) {
+                    if (!priorDelivery.payloadSha256().equals(
+                            verified.payloadSha256())) {
+                        emit(
+                                context,
+                                new Unmatched(
+                                        verified.deliveryId(),
+                                        verified.payloadSha256(),
+                                        "GitHub delivery id was reused with "
+                                                + "different signed payload"));
+                    } else {
+                        emit(context, priorDelivery.output());
+                    }
+                    return;
+                }
+
                 if (!"workflow_run".equals(verified.eventName())) {
                     emit(
                             context,
@@ -287,15 +313,18 @@ public final class GitHubWebhookActorV1 {
                 }
 
                 if (matched == 1) {
-                    emit(
-                            context,
-                            new Matched(
-                                    matchedRunId,
-                                    verified.deliveryId(),
-                                    verified.payloadSha256(),
-                                    observed.workflowRunId(),
-                                    receive.treeProof().receiptRef(),
-                                    matchedResult.event()));
+                    Matched output = new Matched(
+                            matchedRunId,
+                            verified.deliveryId(),
+                            verified.payloadSha256(),
+                            observed.workflowRunId(),
+                            receive.treeProof().receiptRef(),
+                            matchedResult.event());
+                    rememberMatchedDelivery(
+                            verified.deliveryId(),
+                            verified.payloadSha256(),
+                            output);
+                    emit(context, output);
                 } else if (matched == 0) {
                     emit(
                             context,
@@ -321,6 +350,7 @@ public final class GitHubWebhookActorV1 {
                 Arrays.fill(secret, (byte) 0);
                 secret = null;
                 expectations.clear();
+                matchedDeliveries.clear();
                 context.runtime().endCurrentActor();
                 return;
             }
@@ -328,6 +358,25 @@ public final class GitHubWebhookActorV1 {
             throw new IllegalStateException(
                     "unsupported GitHub webhook actor message "
                             + message.getClass().getName());
+        }
+
+        private void rememberMatchedDelivery(
+                String deliveryId,
+                String payloadSha256,
+                Matched output) {
+            if (!matchedDeliveries.containsKey(deliveryId)
+                    && matchedDeliveries.size()
+                            >= MAX_MATCHED_DELIVERIES) {
+                var iterator =
+                        matchedDeliveries.keySet().iterator();
+                if (iterator.hasNext()) {
+                    iterator.next();
+                    iterator.remove();
+                }
+            }
+            matchedDeliveries.put(
+                    deliveryId,
+                    new MatchedDelivery(payloadSha256, output));
         }
 
         private void requireConfigured() {
