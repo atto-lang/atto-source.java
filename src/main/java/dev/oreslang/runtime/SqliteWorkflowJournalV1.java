@@ -258,9 +258,11 @@ public final class SqliteWorkflowJournalV1
 
     private <T> T mutate(Function<WorkflowJournalV1, T> operation) {
         requireOpen();
+        boolean transactionOpen = false;
         boolean transactionResolved = false;
         try {
             execute("BEGIN IMMEDIATE");
+            transactionOpen = true;
             faultInjector.hit(FaultPoint.AFTER_BEGIN);
 
             WorkflowJournalV1 candidate = loadVerifiedStore();
@@ -278,6 +280,7 @@ public final class SqliteWorkflowJournalV1
                         persistState(after);
                         faultInjector.hit(FaultPoint.BEFORE_COMMIT);
                         execute("COMMIT");
+                        transactionOpen = false;
                         transactionResolved = true;
                         delegate = candidate;
                         try {
@@ -288,16 +291,18 @@ public final class SqliteWorkflowJournalV1
                         }
                     } catch (RuntimeException | Error
                             | SQLException persistenceFailure) {
-                        if (!transactionResolved) {
+                        if (transactionOpen && !transactionResolved) {
                             rollbackAndReloadOrInvalidate(
                                     persistenceFailure);
+                            transactionOpen = false;
                             transactionResolved = true;
                         }
                         semanticFailure.addSuppressed(
                                 persistenceFailure);
                     }
-                } else {
+                } else if (transactionOpen && !transactionResolved) {
                     rollbackAndReloadOrInvalidate(semanticFailure);
+                    transactionOpen = false;
                     transactionResolved = true;
                 }
                 throw semanticFailure;
@@ -306,20 +311,25 @@ public final class SqliteWorkflowJournalV1
             persistState(candidate.persistentState());
             faultInjector.hit(FaultPoint.BEFORE_COMMIT);
             execute("COMMIT");
+            transactionOpen = false;
             transactionResolved = true;
             delegate = candidate;
 
             faultInjector.hit(FaultPoint.AFTER_COMMIT);
             return result;
         } catch (RuntimeException | Error failure) {
-            if (!transactionResolved && connection != null) {
+            if (transactionOpen
+                    && !transactionResolved
+                    && connection != null) {
                 rollbackAndReloadOrInvalidate(failure);
             }
             throw failure;
         } catch (SQLException failure) {
             IllegalStateException wrapped = new IllegalStateException(
                     "workflow SQLite mutation failed", failure);
-            if (!transactionResolved && connection != null) {
+            if (transactionOpen
+                    && !transactionResolved
+                    && connection != null) {
                 rollbackAndReloadOrInvalidate(wrapped);
             }
             throw wrapped;
