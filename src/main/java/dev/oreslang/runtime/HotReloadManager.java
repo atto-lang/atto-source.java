@@ -300,6 +300,14 @@ public final class HotReloadManager implements AutoCloseable {
         final java.util.List<Generation> toClose;
         synchronized (this) {
             if (closed) return;
+            for (Generation generation : generations.values()) {
+                if (generation.actorRoutePins() != 0) {
+                    throw new IllegalStateException(
+                            "cannot close HotReloadManager while generation "
+                                    + generation.id()
+                                    + " is pinned by a logical actor route");
+                }
+            }
             closed = true;
             // Atomically seal the manager and detach all generations. Context
             // cleanup is intentionally outside this monitor.
