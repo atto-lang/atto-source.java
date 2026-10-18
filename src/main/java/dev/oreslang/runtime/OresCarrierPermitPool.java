@@ -111,10 +111,14 @@ final class OresCarrierPermitPool {
             }
         }
 
+        // Construct the handle before committing counters, just as the bulk
+        // reservation path does. If allocation fails (e.g. OutOfMemoryError),
+        // the pool must not retain a permit that no caller can release.
+        Permit permit = new Permit(this, domain);
         held.put(domain, current + 1);
         total++;
         verifyLocked();
-        return new Permit(this, domain);
+        return permit;
     }
 
     /**
