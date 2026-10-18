@@ -115,6 +115,57 @@ by a successful exact-head Maven/Native Image run. Both PR #1138 and
 the alternate stacked compiler slice #1171 remain draft until their
 overlapping source changes are reconciled against a tested base.
 
+## ActorGroup-backed routing selection — 2026-10-17
+
+The Java host pipeline router may optionally bind to a **runtime-local
+ActorGroup** when the supervisor installs its checked, immutable DAG.
+ActorGroup is a cooperation/membership domain, NOT a new mailbox,
+scheduler, transport credential, or authority to send outside the graph.
+The group does not need to manage a worker's lifecycle to select it.
+
+At each routing attempt, the host takes a group-membership snapshot and
+**intersects actual member ActorIds with the immutable DAG's connected
+recipients and already-bound ActorRefs**. An actor's matching name alone
+is never sufficient. An actor joining or leaving changes *future*
+selection snapshots; once DATA is admitted, its generation, actor path,
+and return/reply destination remain sealed, even if membership changes.
+STOP, mailbox bounds and cancellation are still checked on actual
+per-recipient admission. Membership is not a promise of liveness.
+
+Supported Java host selection:
+- `forwardAll(payload)`: fan out to every current connected group member,
+  with one **per-edge partial-admission receipt**, ordered by the DAG.
+- `forwardSelected(Set<instanceId>, payload)`: explicit selective
+  fan-out. Every requested instance must be a connected AND currently
+  eligible member. Empty sets, outsider names, stale members, duplicate
+  or reordered graph edges fail before route frame reservation.
+- `forwardRoundRobin(payload)`: select the next eligible group member
+  while retaining a cursor over the **whole fixed graph edge order**.
+  A changed membership set cannot change graph indexes or authorize
+  an out-of-graph recipient. An attempted choice advances the cursor
+  even if later mailbox admission fails.
+- `forwardTo` and `forward`: respect group eligibility, with plain
+  `forward` requiring exactly one selected target.
+- `forwardByKey`: retains strict UTF-8 deterministic graph hashing
+  and fails closed if its designated recipient has left the group;
+  it deliberately does NOT silently rehash keys on membership changes.
+
+**Guest authority remains distinct:** the current Oreslang source
+`self.forward_all` is still rejected pending a typed per-edge receipt
+ABI; `forwardSelected` is currently a trusted Java host interface,
+not a guest-callable bearer group or actor-ref selector. Native LLVM,
+.NET, Wasm and Forge require a corresponding authenticated API and
+conformance tests before cross-backend parity can be claimed.
+
+Tests: the standalone route ledger smoke checks graph-subsequence
+selection, duplicate/invalid/empty selection denial, cursor behavior
+under expanding eligibility, and frame cleanup. The Java real-mailbox
+integration exercises one-member fanout, nonmember denial, selective
+fanout, late group join, two-branch routing with original edge indexes,
+two eligible RR turns, and actor-termination membership removal; group
+close must not stop a membership-only worker. Exact-head execution
+remains unverified while source Actions fail before job steps.
+
 ## Evidence required before promotion
 
 1. Exact-head Maven/JUnit compilation and execution of
