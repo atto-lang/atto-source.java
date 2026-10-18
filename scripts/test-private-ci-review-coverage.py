@@ -71,6 +71,37 @@ def require_active_security_job(workflow):
         raise ValueError("private-CI job runner is not pinned")
 
 
+def require_exact_publisher_execution(workflow):
+    """Pin the reviewed publisher execution step; reject masked or inert edits."""
+    name = "Execute exact source-free publisher suite with isolated Python"
+    starts = list(re.finditer(r"(?m)^      - (?:name|uses): ", workflow))
+    blocks = [workflow[m.start():starts[i + 1].start() if i + 1 < len(starts)
+                       else len(workflow)] for i, m in enumerate(starts)]
+    matching = [block for block in blocks
+                if block.splitlines()[0].strip() == "- name: " + name]
+    if len(matching) != 1:
+        raise ValueError("private-CI full publisher execution step is missing or duplicated")
+    expected = [
+        "- name: " + name,
+        "run: |",
+        "set -euo pipefail",
+        "bash -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh",
+        "bash tools/test-verify-exact-source-tree.sh",
+        'echo "CI_PRIVATE_PUBLISHER_PROVENANCE|commit=$(git rev-parse HEAD)|tree=$(git rev-parse \'HEAD^{tree}\')|run=$GITHUB_RUN_ID|attempt=$GITHUB_RUN_ATTEMPT"',
+        "PRIVATE_CI_TEST_REPEATS=3 bash scripts/run-private-ci-regressions-local.sh",
+        'echo "CI_PRIVATE_PUBLISHER_SUITE_PASS|commit=$(git rev-parse HEAD)|tree=$(git rev-parse \'HEAD^{tree}\')"',
+        "{",
+        "echo '### Source-free private publisher regressions'",
+        'echo "Git commit: $(git rev-parse HEAD)"',
+        'echo "Git tree: $(git rev-parse \'HEAD^{tree}\')"',
+        "echo 'Outcome: exact-tree Bash verifier and full offline publisher x3 passed'",
+        '} >> "$GITHUB_STEP_SUMMARY"',
+    ]
+    actual = [line.strip() for line in matching[0].splitlines() if line.strip()]
+    if actual != expected:
+        raise ValueError("private-CI full publisher test step was modified or disabled")
+
+
 def validate(codeowners, workflow):
     if len(SECURITY_PATHS) != len(set(SECURITY_PATHS)):
         raise ValueError("duplicated security manifest entry")
@@ -109,6 +140,7 @@ def validate(codeowners, workflow):
         if missing:
             raise ValueError(event + " does not trigger on " + sorted(missing)[0])
     require_active_security_job(workflow)
+    require_exact_publisher_execution(workflow)
     require_unconditional_test_step(
         workflow, "Validate CI security review coverage",
         "python3 -I -B scripts/test-private-ci-review-coverage.py")
@@ -242,6 +274,29 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
             "  preflight-regressions:\n",
             "  preflight-regressions:\n    needs: optional-security-job\n")
         with self.assertRaisesRegex(ValueError, "unsupported control"):
+            validate(self.owners, damaged)
+
+
+    def test_full_publisher_step_skip_is_denied(self):
+        damaged = self.workflow.replace(
+            "      - name: Execute exact source-free publisher suite with isolated Python\n",
+            "      - name: Execute exact source-free publisher suite with isolated Python\n"
+            "        " + "if: false" + "\n")
+        with self.assertRaisesRegex(ValueError, "full publisher test step"):
+            validate(self.owners, damaged)
+
+    def test_full_publisher_result_masking_is_denied(self):
+        damaged = self.workflow.replace(
+            "PRIVATE_CI_TEST_REPEATS=3 bash scripts/run-private-ci-regressions-local.sh",
+            "PRIVATE_CI_TEST_REPEATS=3 bash scripts/run-private-ci-regressions-local.sh || true")
+        with self.assertRaisesRegex(ValueError, "full publisher test step"):
+            validate(self.owners, damaged)
+
+    def test_full_publisher_early_exit_is_denied(self):
+        damaged = self.workflow.replace(
+            "          set -euo pipefail\n",
+            "          set -euo pipefail\n          exit 0\n")
+        with self.assertRaisesRegex(ValueError, "full publisher test step"):
             validate(self.owners, damaged)
 
 
