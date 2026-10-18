@@ -56,6 +56,14 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         }
     }
 
+    static int maxWireFrameBytes(Lane lane) {
+        Objects.requireNonNull(lane, "lane");
+        int maxPayload = lane == Lane.CONTROL
+                ? MAX_CONTROL_PAYLOAD_BYTES
+                : MAX_PAYLOAD_BYTES;
+        return Math.addExact(MIN_FRAME_BYTES, maxPayload);
+    }
+
     public enum FrameKind {
         READY(1),
         DATA(2),
