@@ -4,6 +4,8 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 
@@ -160,8 +162,8 @@ final class NestedFutureCycleInterleavingTest {
     void cancellingSharedConsumerDetachesWithoutRevokingOtherConsumer()
             throws Exception {
         OresFuture<Integer> producer = new OresFuture<>();
-        try (OresScheduler firstScheduler = new OresScheduler(1);
-             OresScheduler secondScheduler = new OresScheduler(1)) {
+        try (ControlledScheduler firstScheduler = new ControlledScheduler();
+             ControlledScheduler secondScheduler = new ControlledScheduler()) {
             OresFuture<Integer> first = firstScheduler.start(resume -> {
                 if (resume.initial()) return OresScheduler.await(producer);
                 if (resume.failure() != null) throw new IllegalStateException(resume.failure());
@@ -172,7 +174,11 @@ final class NestedFutureCycleInterleavingTest {
                 if (resume.failure() != null) throw new IllegalStateException(resume.failure());
                 return OresScheduler.done((Integer) resume.value());
             });
-            awaitRegisteredObservers(producer, 2);
+            // Each FIFO carrier fence runs after its task's first turn has
+            // installed the await registration. No polling or timing guess.
+            firstScheduler.awaitInitialTurn();
+            secondScheduler.awaitInitialTurn();
+            assertEquals(2, producer.pendingRuntimeWaiterCount());
             assertTrue(OresScheduler.hasAwaitDependency(first));
             assertTrue(OresScheduler.hasAwaitDependency(second));
             assertTrue(first.cancel(false));
@@ -191,7 +197,7 @@ final class NestedFutureCycleInterleavingTest {
     @Test
     void producerSettlementRacingConsumerCancellationNeverResurrectsObserver()
             throws Exception {
-        try (OresScheduler scheduler = new OresScheduler(2)) {
+        try (ControlledScheduler scheduler = new ControlledScheduler()) {
             for (int trial = 0; trial < 32; trial++) {
                 OresFuture<Integer> producer = new OresFuture<>();
                 OresFuture<Integer> consumer = scheduler.start(resume -> {
@@ -201,7 +207,8 @@ final class NestedFutureCycleInterleavingTest {
                     }
                     return OresScheduler.done((Integer) resume.value());
                 });
-                awaitRegisteredObservers(producer, 1);
+                scheduler.awaitInitialTurn();
+                assertEquals(1, producer.pendingRuntimeWaiterCount());
 
                 CountDownLatch race = new CountDownLatch(1);
                 CountDownLatch bothFinished = new CountDownLatch(2);
@@ -252,14 +259,34 @@ final class NestedFutureCycleInterleavingTest {
         }
     }
 
-    private static void awaitRegisteredObservers(OresFuture<?> producer, int count) {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS);
-        while (producer.pendingRuntimeWaiterCount() != count
-                && System.nanoTime() < deadline) {
-            Thread.onSpinWait();
+    /**
+     * One FIFO carrier per scheduler. Submitting a fence after start() is a
+     * deterministic proof that the prior first turn has returned from armAwait,
+     * unlike sleeping/spinning until a queue count happens to become visible.
+     */
+    private static final class ControlledScheduler implements AutoCloseable {
+        private final ExecutorService carrier = Executors.newSingleThreadExecutor();
+        private final OresScheduler scheduler =
+                OresScheduler.runtimeOwned("nested-future-interleaving", 1, carrier);
+
+        <T> OresFuture<T> start(OresScheduler.Task<T> task) {
+            return scheduler.start(task);
         }
-        assertEquals(count, producer.pendingRuntimeWaiterCount(),
-                "scheduler must install the required observers");
+
+        void awaitInitialTurn() throws Exception {
+            carrier.submit(() -> { }).get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        }
+
+        @Override
+        public void close() throws Exception {
+            try {
+                scheduler.close();
+            } finally {
+                carrier.shutdownNow();
+                assertTrue(carrier.awaitTermination(TIMEOUT_SECONDS, TimeUnit.SECONDS),
+                        "controlled test carrier must terminate");
+            }
+        }
     }
 
     private static boolean containsCycleDiagnostic(Throwable failure) {
