@@ -242,4 +242,21 @@ final class SupervisorRestartWindowTest {
     }
 
 
+    @Test
+    void retryDelayRemainsExactWhenAbsoluteDeadlineWouldOverflow() {
+        var gate = new SupervisorRestartWindow(1, 100);
+        assertEquals(0, gate.advance(0));
+        assertEquals(0, gate.advance(Long.MAX_VALUE - 20));
+        assertTrue(gate.tryAcquire(Long.MAX_VALUE - 19).allowed());
+
+        var denied = gate.tryAcquire(Long.MAX_VALUE - 18);
+        assertFalse(denied.allowed());
+        assertEquals(99L, denied.retryAfterNanos(),
+                "saturating the absolute deadline would incorrectly return 18");
+        assertFalse(gate.tryAcquireFast(Long.MAX_VALUE));
+        assertEquals(81L, gate.lastRetryAfterNanos(),
+                "denial at maximum representable elapsed time must retain positive delay");
+    }
+
+
 }
