@@ -115,3 +115,27 @@ but has **not** run against full source/GraalVM CI. Its source is pinned in
 the carrier manifest and explicitly marked unexecuted. No Oreslang guest
 compiler intrinsic has been wired, no general outbound destination is
 accepted, and direct UNTRUSTED `NativeIo` networking remains denied.
+
+## October 18 — actor reference ownership and automatic revocation
+
+The actor-to-egress registration now calls `runtime.isAlive(actor)` rather than
+`actor.isAlive()`. The supplied `ActorRuntime` therefore checks the exact
+`ActorRef` owner and live state. A foreign-runtime actor is rejected before
+a host HTTP client or registration can be constructed. After host registration
+the runtime-owned `actor.done().whenCompleteRuntime` callback removes the
+binding, seals access to outstanding result tickets, and schedules HTTP
+cancellation on a separate host thread rather than under actor teardown locks.
+Explicit host close also clears result tickets and retries HTTP shutdown.
+
+Added real-runtime JUnit methods for rejecting a foreign-runtime reference
+and ensuring actor finalization automatically unregisters the binding; those
+JUnit methods are authored, **not yet executed with actual ActorRuntime**.
+
+The [private host carrier run #39151659363](https://github.com/scintilla-run-test/gleam-runner-conformance/actions/runs/39151659363)
+passed 25 exact pinned Git blobs, 34 host JUnit-method invocations per round
+across five rounds, plus ten dedicated simulated-actor bridge rounds and ten
+real HTTP/TCP loopback rounds. The host-only evidence artifact is
+[downloadable here](https://github.com/scintilla-run-test/gleam-runner-conformance/actions/runs/39151659363/artifacts/12145646543).
+**The actor runtime in this carrier is a fake, manually selected identity
+shim.** This does not prove Graal protected-guest isolation, asynchronous
+teardown quiescence, actual language intrinsic lowering or full-source build.
