@@ -110,6 +110,17 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
         return current;
     }
 
+    static RuntimeException sanitizeGroupRetirementFailure(Throwable failure) {
+        // Do not accidentally convert process-fatal JVM/Linkage failure into
+        // a retryable ordinary exception while closing an untrusted Context.
+        if (isVmFatalRetirementFailure(failure)) {
+            if (failure instanceof Error fatal) throw fatal;
+        }
+        // Keep guest/native error messages and causes out of the trusted
+        // caller; the confirmed-close fence must still report failure.
+        return new IllegalStateException("untrusted group retirement failed");
+    }
+
     static void rethrowRetirementFailure(Throwable failure) {
         if (failure == null) return;
         if (failure instanceof RuntimeException runtime) throw runtime;
@@ -169,8 +180,8 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
                         groups.remove(this);
                     }
                 } catch (RuntimeException | Error error) {
-                    // No guest exception or native cause chain reaches the host.
-                    throw new IllegalStateException("untrusted group retirement failed");
+                    // Preserve VM-fatal identity, redact ordinary guest detail.
+                    throw sanitizeGroupRetirementFailure(error);
                 }
             });
         }
