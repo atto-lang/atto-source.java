@@ -1124,6 +1124,20 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            Ast.ClassDecl staticOwner = classNamespaceOf(member.receiver(), scope);
+            if (staticOwner != null) {
+                Ast.FieldDecl staticField =
+                        findLocalStaticField(staticOwner, member.member());
+                if (staticField != null) {
+                    Ast.TypeRef fieldType = ownershipFieldType(staticField);
+                    if (fieldType == null || !isCopyType(fieldType)) {
+                        throw error("static field '" + staticOwner.name() + "."
+                                + staticField.name()
+                                + "' does not have a copy/share-safe ownership shape");
+                    }
+                    return new ValueInfo(fieldType, ValueKind.COPY, null);
+                }
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -2061,6 +2075,21 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.MemberExpr member) {
+            Ast.ClassDecl staticOwner = classNamespaceOf(member.receiver(), scope);
+            if (staticOwner != null) {
+                Ast.FieldDecl field =
+                        findLocalStaticField(staticOwner, member.member());
+                if (field == null) {
+                    throw error("unknown static field '" + member.member()
+                            + "' on " + staticOwner.name());
+                }
+                if (field.bindingKind() != Ast.BindingKind.LET) {
+                    throw error("static field '" + staticOwner.name() + "."
+                            + member.member()
+                            + "' is immutable; declare it with let to permit reassignment");
+                }
+                return;
+            }
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             if (klass != null) {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
@@ -3059,6 +3088,15 @@ public final class OwnershipChecker {
                         param.name(), param.structural(), param.mutable()))
                 .toList();
         return new CallSignature(specialized, substituteType(result, bindings));
+    }
+
+    private Ast.FieldDecl findLocalStaticField(
+            Ast.ClassDecl klass,
+            String name) {
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.isStatic() && field.name().equals(name)) return field;
+        }
+        return null;
     }
 
     private Ast.FieldDecl findField(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
