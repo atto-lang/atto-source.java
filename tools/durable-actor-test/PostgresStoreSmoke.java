@@ -46,8 +46,8 @@ public final class PostgresStoreSmoke {
         }
 
         var first = new PostgresDurableActorStore(ds);
-        rejects(() -> first.activate(key), "legacy activation cannot mint hidden owner");
         var key = new DurableActorStore.Address("tenant-a", "workflow", "run", "editor");
+        rejects(() -> first.activate(key), "legacy activation cannot mint hidden owner");
         var other = new DurableActorStore.Address("tenant-b", "workflow", "run", "editor");
         var initial = new DurableActorStore.Snapshot(0, 1, "code-gen-A", 0, bytes("start"));
         check(first.initialize(key, initial), "initialized");
