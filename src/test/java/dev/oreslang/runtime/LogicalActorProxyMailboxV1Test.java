@@ -128,6 +128,40 @@ final class LogicalActorProxyMailboxV1Test {
     }
 
     @Test
+    void rejectedCompletionCannotPartiallyMutateCreditsOrSparseMetadata() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(
+                4, 16, 64)) {
+            mailbox.admit(new byte[] {1});
+            mailbox.admit(new byte[] {2});
+            mailbox.admit(new byte[] {3});
+            mailbox.pollDispatch();
+            mailbox.pollDispatch();
+            mailbox.pollDispatch();
+
+            mailbox.complete(3L);
+            var before = mailbox.snapshot();
+            assertEquals(1, before.sparseCompletedMessages());
+            assertEquals(2, before.retainedMessages());
+            assertEquals(2, before.outstandingMessages());
+
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> mailbox.complete(99L));
+
+            var after = mailbox.snapshot();
+            assertEquals(before.retainedMessages(), after.retainedMessages());
+            assertEquals(before.retainedBytes(), after.retainedBytes());
+            assertEquals(before.outstandingMessages(), after.outstandingMessages());
+            assertEquals(
+                    before.sparseCompletedMessages(),
+                    after.sparseCompletedMessages());
+            assertEquals(
+                    before.completionWatermark(),
+                    after.completionWatermark());
+        }
+    }
+
+    @Test
     void duplicateAndUndispatchedCompletionsFailClosed() {
         try (var mailbox = new LogicalActorProxyMailboxV1(
                 4, 8, 32)) {
