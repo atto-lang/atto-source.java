@@ -3580,14 +3580,34 @@ public final class Parser {
         }
     }
 
+    /**
+     * Do not consume a normal function call named suspend(...). The short
+     * modifier is contextual only when a pipe parameter list or typed
+     * "(...)->" lambda follows it.
+     */
+    private boolean looksLikeContextualSuspendLambda() {
+        if (!isContextualIdentifier("suspend")) return false;
+        if (checkNext(PIPE)) return true;
+        if (!checkNext(LPAREN)) return false;
+        int depth = 0;
+        for (int i = current + 1; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LPAREN) depth++;
+            else if (type == RPAREN && --depth == 0) {
+                return i + 1 < tokens.size()
+                        && tokens.get(i + 1).type() == ARROW;
+            }
+        }
+        return false;
+    }
+
     private Ast.Expr parsePrimary() {
         // 'suspends' is a callable effect, not a scheduler instruction.
         // Unlike async task it creates NO Task/Future; the caller's Task
         // executes its body and may cooperatively suspend. Preserve the AST
         // effect until typed suspension-aware function values are implemented.
         // 'suspend' is a contextual spelling only before lambda parameters.
-        if (check(SUSPENDS) || (isContextualIdentifier("suspend")
-                && (checkNext(PIPE) || (checkNext(LPAREN))))) {
+        if (check(SUSPENDS) || looksLikeContextualSuspendLambda()) {
             advance();
             Ast.LambdaExpr body;
             if (check(PIPE)) body = parsePipeLambda(false);
