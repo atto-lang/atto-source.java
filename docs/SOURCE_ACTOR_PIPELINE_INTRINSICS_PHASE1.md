@@ -80,6 +80,41 @@ The Java host reference still uses one generic payload type across forward and
 reverse directions. Full source pipeline lowering must type forward and
 backward ports separately and preserve Sendable/ownership rules.
 
+## 2026-10-17 security / rejection hardening
+
+The guest-intrinsic integration now reuses the final DATA-mailbox recipient
+check from the preceding host routing audit: an immutable graph-instance to
+**actual ActorId** binding is installed with the trusted session, and
+`ActorRuntime.sendWithPipelineFrame` independently verifies the live
+frame's bound recipient and SHARED destination kind **before mailbox
+reservation or payload serialization**. Merely pairing a live frame and
+`PipelineTurnAuthority` cannot send it to a different actor, and a
+selector-only session cannot publish guest DATA.
+
+A failed `backward` or direct `reply` mailbox admission no longer
+silently destroys the source receive's reverse-routing right. The router
+restores the source frame on a known prepublication `RuntimeException`;
+this also handles the path in which rejection-side
+`MessageEnvelope.close()` already retired the attempted child.
+Allocated route IDs remain spent (never reused). Fatal `Error` is
+not retryable and cannot be described as a safe rollback. An accepted
+envelope is not automatically retried: scheduling failure after DATA
+publication must remain distinguishable from admission failure.
+
+The compiler now rejects direct `self.forward*`, `self.backward` and
+`self.reply` calls in `on_start`: there cannot be a DATA mailbox turn
+or verified return path during startup. Other helper-method invocations
+still rely on the VM's runtime-authenticated receive guard. Tests cover
+wrong-recipient, unbound-session, valid recipient, failed backward followed
+by successful direct origin reply, and all enabled startup-hook negatives;
+the standalone route session smoke also covers rollback after envelope
+cleanup and spent route IDs.
+
+These source changes/tests are committed, not independently validated
+by a successful exact-head Maven/Native Image run. Both PR #1138 and
+the alternate stacked compiler slice #1171 remain draft until their
+overlapping source changes are reconciled against a tested base.
+
 ## Evidence required before promotion
 
 1. Exact-head Maven/JUnit compilation and execution of
