@@ -72,7 +72,7 @@ final class StaticModuleNamespaceConfinementTest {
     void noModuleNamespaceCanBePassedToAnyTypedParameter() {
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse(MODULE + """
-                    fnc consume(any value): void { return; }
+                    fnc consume(Any value): void { return; }
                     routine main(): void {
                         consume(Catalog);
                         return;
@@ -141,9 +141,7 @@ final class StaticModuleNamespaceConfinementTest {
 
     @Test
     void bareModuleNamespaceMustNeverBecomeRuntimeInstance() {
-        // Known red regression: current TypeChecker exposes moduleShape as a
-        // Record for NameExpr, while the evaluator creates a ModuleFacade.
-        // The full-AOT static-module contract requires this to be rejected.
+        // Reject before guest execution; internal dispatch facades are not values.
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse(MODULE + """
                     routine main(): void {
@@ -168,7 +166,7 @@ final class StaticModuleNamespaceConfinementTest {
     void moduleNamespaceCannotBeReturnedAsAnOrdinaryValue() {
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse(MODULE + """
-                    pub fnc leak(): any {
+                    pub fnc leak(): Any {
                         return Catalog;
                     }
                     """)));
