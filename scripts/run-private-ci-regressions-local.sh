@@ -11,7 +11,10 @@ if [[ ! "$repeats" =~ ^[1-9][0-9]?$ ]]; then
 fi
 files=(check-private-ci-destination.sh test-private-ci-destination.sh
        run-in-private-ci-destination.sh publish-private-ci-source.py
-       test-publish-private-ci-source.py test-private-ci-merged-main.py)
+       test-publish-private-ci-source.py test-private-ci-merged-main.py
+       test-private-ci-review-coverage.py
+       run-private-ci-regressions-local.sh
+       test-run-private-ci-regressions-local.sh)
 for file in "${files[@]}"; do
   if [[ ! -f "$script_dir/$file" || -L "$script_dir/$file" ]]; then
     printf 'PRIVATE_CI_MISSING_OR_SYMLINKED_FILE: %s\n' "$file" >&2
