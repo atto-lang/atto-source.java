@@ -206,6 +206,61 @@ final class DurableDevLoopActorV1Test {
     }
 
     @Test
+    void actorRejectsSplitDeliveryForCausalOutcome()
+            throws Exception {
+        Path db = tempDir.resolve("actor-split-delivery.db");
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = DurableDevLoopActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new DurableDevLoopActorV1.OpenRun(
+                    db.toString(),
+                    "run-split-delivery",
+                    3,
+                    "start",
+                    "goal"));
+            next(outputs);
+
+            actor.send(new DurableDevLoopActorV1.ClaimEffect(
+                    "coder-1", 100L, 100L));
+            var claimed = assertInstanceOf(
+                    DurableDevLoopActorV1.EffectClaimed.class,
+                    next(outputs));
+
+            actor.send(new DurableDevLoopActorV1.Deliver(
+                    "code-unsafe",
+                    new DurableDevLoopV1.CodeChanged(
+                            1, "patch://unsafe")));
+
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> actor.raw().getDone().get(
+                            5, TimeUnit.SECONDS));
+            assertTrue(actor.raw().failure().isPresent());
+
+            assertInstanceOf(
+                    DurableDevLoopV1.RequestCode.class,
+                    claimed.claim().command());
+        }
+
+        try (var store = SqliteWorkflowJournalV1.open(db)) {
+            var effect = store.effect(
+                    "devloop/run-split-delivery/iteration/1/code")
+                    .orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.CLAIMED,
+                    effect.state());
+            assertNull(effect.receiptRef());
+            assertEquals(1, store.journal().size());
+            assertEquals(
+                    DurableDevLoopV1.Phase.CODING,
+                    store.replayDevLoop().machine().snapshot().phase());
+        }
+    }
+
+    @Test
     void actorRejectsOpeningExistingDatabaseUnderDifferentGoal()
             throws Exception {
         Path db = tempDir.resolve("actor-goal.db");
