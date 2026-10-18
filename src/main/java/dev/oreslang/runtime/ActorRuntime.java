@@ -559,6 +559,7 @@ public final class ActorRuntime implements AutoCloseable {
             ActorArtifactAdmission.Manifest manifest,
             byte[] exactArtifactBytes,
             ActorArtifactAdmission.TrustedBuildAttestation attestation,
+            ActorArtifactAdmission.TrustedBuildAttestationPolicy attestationPolicy,
             ActorArtifactAdmission.TrustedKeyPolicy keyPolicy,
             ActorArtifactAdmission.TargetPolicy targetPolicy,
             IsolatePolicy workerPolicy) {
@@ -580,6 +581,7 @@ public final class ActorRuntime implements AutoCloseable {
                 manifest,
                 exactArtifactBytes,
                 attestation,
+                attestationPolicy,
                 keyPolicy,
                 targetPolicy,
                 policyCeiling,
