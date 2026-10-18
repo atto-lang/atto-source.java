@@ -5,8 +5,9 @@ This branch does **not** enable executable enum declarations. Java's public
 TypeChecker, OwnershipChecker, TreeShaker and guest evaluator intentionally
 reject enum/pattern declarations pending full runtime lowering. LLVM parity
 and authenticated cross-file symbol import/link signatures are not implemented.
-The incremental compiler now hashes staged policy and public enum schema
-metadata, but **does not** treat that hash as importer authorization. This is
+The incremental compiler now hashes staged policy, public enum schemas,
+and private enum schemas where a public role policy depends on them. These
+fingerprints **do not** authorize importers or prove call-site identity. This is
 an API correctness/compiler guidance contract, **not an authentication boundary**.
 
 ## Spelling and meaning
@@ -75,16 +76,20 @@ the standalone static index; the executable enum frontend remains gated.
 
 ## Incremental ABI and import boundary
 
-- `IncrementalCompiler.abiDigest` uses a versioned **v3** fingerprint for
+- `IncrementalCompiler.abiDigest` uses a versioned **v4** fingerprint for
   exported `@CallerRole` and `@CallableBy` metadata on public functions and
   methods. Role argument ordering is canonicalized for a stable digest.
   Public nominal enum case name, wire tag, payload type and declaration
-  visibility also affect the exported source ABI. These fingerprints enable
+  visibility also affect the exported source ABI. A module with publicly
+  exposed role metadata also includes its private local enum schemas in
+  the ABI to prevent policy meaning from changing under a stale cache.
+  Unrelated private enums are excluded. These fingerprints enable
   cache invalidation; they are **not** authenticated call-site metadata.
 - `ImportGraph.validateLinkedImports` currently **rejects** cross-source
   import of a protected public function or class static method, and module or
-  wildcard imports that expose one. A plain exported sibling function can
-  still be imported. This deliberately blocks a loss of `@CallableBy` when
+  wildcard imports that expose one, including protected public static
+  class methods reachable through whole-module imports. A plain exported
+  sibling function can still be imported. This deliberately blocks a loss of `@CallableBy` when
   an importer only sees an erased function signature.
 - Future policy-bearing imported declarations require exact source identity,
   authenticated linker-bound symbol IDs, verified role enum provenance and
