@@ -7,6 +7,8 @@ import java.util.Objects;
  * Experimental persistence port for future durable actors. No implementation is
  * installed by ActorRuntime yet. Storage drivers must provide atomic fencing,
  * inbox consumption, state CAS and outbox creation in ONE transaction.
+ * Events and durable timers are deliberately outside this v0 API until their
+ * typed payload and cancellation semantics are specified.
  *
  * <p>External side effects are NOT part of that transaction. Outbox dispatch
  * requires stable idempotency keys and receipt reconciliation.
@@ -103,8 +105,8 @@ public interface DurableActorStore {
     boolean enqueue(Address address, Inbound message);
 
     /**
-     * Consume delivery ID, write snapshot, append events/outbox and update timers
-     * atomically. Events/timers will be added to Turn when their contract is pinned.
+     * Consume delivery ID, write the next snapshot, and insert outbox intents
+     * atomically. Events/timers will be added when their contract is pinned.
      * A stale activation MUST fail without mutating storage.
      */
     long commitTurn(Turn turn);
