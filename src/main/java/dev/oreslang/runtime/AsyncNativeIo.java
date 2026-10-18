@@ -143,7 +143,10 @@ public final class AsyncNativeIo implements AutoCloseable {
                     try {
                         resource.close();
                         synchronized (this) { resources.remove(resource); }
-                    } catch (Exception failure) {
+                    } catch (Throwable failure) {
+                        // Failure, including a host Error, must not strand
+                        // unrelated closeable resources. The failed resource
+                        // remains registered for the next physical-close retry.
                         if (releaseFailure == null) {
                             releaseFailure = new IllegalStateException(
                                     "native I/O resources did not release after worker exit");
@@ -152,7 +155,18 @@ public final class AsyncNativeIo implements AutoCloseable {
                     }
                 }
                 for (OresFuture<?> future : failing) {
-                    future.failFromRuntime(new IllegalStateException("I/O context closed"));
+                    try {
+                        future.failFromRuntime(new IllegalStateException("I/O context closed"));
+                    } catch (Throwable failure) {
+                        // Subscriber publication is outside the admission
+                        // monitor. Attempt every pending settlement even if a
+                        // user/host callback fails while observing another.
+                        if (releaseFailure == null) {
+                            releaseFailure = new IllegalStateException(
+                                    "native I/O completion publication failed during physical shutdown");
+                        }
+                        releaseFailure.addSuppressed(failure);
+                    }
                 }
                 if (releaseFailure != null) throw releaseFailure;
                 retired = true;
