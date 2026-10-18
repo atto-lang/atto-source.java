@@ -3676,6 +3676,13 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
+            if (awaitedType instanceof Named task
+                    && task.name().equals("Task")
+                    && task.arguments().size() == 1) {
+                // Awaiting one Task joins only this Task; nested Task<Task<T>>
+                // requires another explicit await. No implicit flattening.
+                return task.arguments().getFirst();
+            }
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
                     && named.arguments().size() == 1) {
@@ -3689,7 +3696,7 @@ public final class TypeChecker {
                 return actorRef;
             }
             throw new IllegalArgumentException(
-                    "await requires Future<T> or ActorRef<T>; got " + awaitedType);
+                    "await requires Task<T>, Future<T> or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
             Type element = channelElementType(
