@@ -28,7 +28,7 @@ public final class SqliteGitHubWebhookLedgerV1 implements AutoCloseable {
         EXACT_REDELIVERY
     }
 
-    private static final int SCHEMA_VERSION = 1;
+    private static final int SCHEMA_VERSION = 2;
 
     private final Path databasePath;
     private Connection connection;
@@ -156,16 +156,52 @@ public final class SqliteGitHubWebhookLedgerV1 implements AutoCloseable {
             String deliveryId,
             String payloadSha256,
             String eventName) {
+        return recordDelivery(
+                deliveryId,
+                payloadSha256,
+                eventName,
+                null,
+                null,
+                null);
+    }
+
+    public synchronized DeliveryDisposition recordDelivery(
+            String deliveryId,
+            String payloadSha256,
+            String eventName,
+            String proofCommitSha,
+            String proofTreeSha,
+            String proofReceiptRef) {
         requireOpen();
         deliveryId = requireText(deliveryId, "deliveryId");
         payloadSha256 = normalizeSha256(
                 payloadSha256, "payloadSha256");
         eventName = requireText(eventName, "eventName");
+        if ((proofCommitSha == null)
+                != (proofTreeSha == null)
+                || (proofCommitSha == null)
+                != (proofReceiptRef == null)) {
+            throw new IllegalArgumentException(
+                    "tree proof identity must be entirely present or absent");
+        }
+        if (proofCommitSha != null) {
+            proofCommitSha = normalizeGitObjectId(
+                    proofCommitSha, "proofCommitSha");
+            proofTreeSha = normalizeGitObjectId(
+                    proofTreeSha, "proofTreeSha");
+            proofReceiptRef = requireText(
+                    proofReceiptRef, "proofReceiptRef");
+        }
         try {
             execute("BEGIN IMMEDIATE");
             try (PreparedStatement statement =
                          connection.prepareStatement("""
-                    SELECT payload_sha256, event_name
+                    SELECT
+                        payload_sha256,
+                        event_name,
+                        proof_commit_sha,
+                        proof_tree_sha,
+                        proof_receipt_ref
                     FROM github_webhook_deliveries
                     WHERE delivery_id = ?
                     """)) {
@@ -176,11 +212,27 @@ public final class SqliteGitHubWebhookLedgerV1 implements AutoCloseable {
                                 row.getString("payload_sha256");
                         String priorEvent =
                                 row.getString("event_name");
+                        String priorProofCommit =
+                                row.getString("proof_commit_sha");
+                        String priorProofTree =
+                                row.getString("proof_tree_sha");
+                        String priorProofReceipt =
+                                row.getString("proof_receipt_ref");
                         if (!payloadSha256.equals(priorDigest)
-                                || !eventName.equals(priorEvent)) {
+                                || !eventName.equals(priorEvent)
+                                || !Objects.equals(
+                                        proofCommitSha,
+                                        priorProofCommit)
+                                || !Objects.equals(
+                                        proofTreeSha,
+                                        priorProofTree)
+                                || !Objects.equals(
+                                        proofReceiptRef,
+                                        priorProofReceipt)) {
                             throw new SecurityException(
                                     "GitHub delivery id was reused with "
-                                            + "different authenticated content");
+                                            + "different authenticated/proof "
+                                            + "content");
                         }
                         execute("COMMIT");
                         return DeliveryDisposition.EXACT_REDELIVERY;
@@ -193,12 +245,18 @@ public final class SqliteGitHubWebhookLedgerV1 implements AutoCloseable {
                     INSERT INTO github_webhook_deliveries (
                         delivery_id,
                         payload_sha256,
-                        event_name
-                    ) VALUES (?, ?, ?)
+                        event_name,
+                        proof_commit_sha,
+                        proof_tree_sha,
+                        proof_receipt_ref
+                    ) VALUES (?, ?, ?, ?, ?, ?)
                     """)) {
                 statement.setString(1, deliveryId);
                 statement.setString(2, payloadSha256);
                 statement.setString(3, eventName);
+                statement.setString(4, proofCommitSha);
+                statement.setString(5, proofTreeSha);
+                statement.setString(6, proofReceiptRef);
                 statement.executeUpdate();
             }
             execute("COMMIT");
@@ -286,7 +344,19 @@ public final class SqliteGitHubWebhookLedgerV1 implements AutoCloseable {
                 CREATE TABLE IF NOT EXISTS github_webhook_deliveries (
                     delivery_id TEXT PRIMARY KEY,
                     payload_sha256 TEXT NOT NULL,
-                    event_name TEXT NOT NULL
+                    event_name TEXT NOT NULL,
+                    proof_commit_sha TEXT,
+                    proof_tree_sha TEXT,
+                    proof_receipt_ref TEXT,
+                    CHECK (
+                        (proof_commit_sha IS NULL
+                            AND proof_tree_sha IS NULL
+                            AND proof_receipt_ref IS NULL)
+                        OR
+                        (proof_commit_sha IS NOT NULL
+                            AND proof_tree_sha IS NOT NULL
+                            AND proof_receipt_ref IS NOT NULL)
+                    )
                 )
                 """);
     }
@@ -346,6 +416,20 @@ public final class SqliteGitHubWebhookLedgerV1 implements AutoCloseable {
             throw new IllegalStateException(
                     "GitHub webhook ledger is closed");
         }
+    }
+
+    private static String normalizeGitObjectId(
+            String value,
+            String name) {
+        String normalized = requireText(value, name)
+                .toLowerCase(java.util.Locale.ROOT);
+        if ((normalized.length() != 40
+                && normalized.length() != 64)
+                || !normalized.matches("[0-9a-f]+")) {
+            throw new IllegalArgumentException(
+                    name + " must be an exact 40- or 64-hex Git object id");
+        }
+        return normalized;
     }
 
     private static String normalizeSha256(
