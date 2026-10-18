@@ -512,8 +512,14 @@ invocation preview and formal-order ABI slot mapping. The candidate family
 comes from the parsed module rather than an arbitrary name-to-signature
 dictionary. The conservative optional-arity overlap policy is applied before
 choosing a declaration. Both local names and precisely module-qualified
-names have static shape support; indirect calls and unproved generics and
-actors are rejected.
+names have static shape support. The companion `bindClassMethod` and
+`bindClassConstructor` factories record original directly-declared methods
+and explicit non-actor constructors with the same immutable source/ABI plan.
+These class-specific previews reject generic classes, inheritance, actor
+construction, synthesized field-order constructors and targets not belonging
+to the supplied parsed owner. Actual receiver typing and constructor field
+initialization still require compiler proofs. Indirect calls and unproved
+generics/actors are rejected.
 
 This is **not a trusted executable IR**. Caller-supplied
 `assertedSourceTypes` do not prove types; lexical import/visibility, effect,
