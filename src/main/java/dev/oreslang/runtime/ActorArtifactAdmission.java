@@ -194,6 +194,16 @@ public final class ActorArtifactAdmission {
         }
     }
 
+    /**
+     * Verifies that build evidence came from the independently trusted
+     * attestation channel. Returning normally means authenticated; any failure
+     * must throw and admission fails closed.
+     */
+    @FunctionalInterface
+    public interface TrustedBuildAttestationPolicy {
+        void verify(TrustedBuildAttestation attestation);
+    }
+
     /** Host trust store; manifest data never supplies its own public key. */
     @FunctionalInterface
     public interface TrustedKeyPolicy {
@@ -225,6 +235,7 @@ public final class ActorArtifactAdmission {
             Manifest manifest,
             byte[] exactArtifactBytes,
             TrustedBuildAttestation attestation,
+            TrustedBuildAttestationPolicy attestationPolicy,
             TrustedKeyPolicy keyPolicy,
             TargetPolicy targetPolicy,
             IsolatePolicy supervisorPolicy,
@@ -234,7 +245,12 @@ public final class ActorArtifactAdmission {
         Objects.requireNonNull(actorKind, "actor kind");
         Objects.requireNonNull(manifest, "manifest");
         exactArtifactBytes = Objects.requireNonNull(exactArtifactBytes, "artifact bytes");
+        // Take ownership before any digest, trust callback or policy check.
+        // Caller-owned mutable storage must never be hashed and cloned in
+        // separate phases.
+        byte[] admittedBytes = exactArtifactBytes.clone();
         Objects.requireNonNull(attestation, "attestation");
+        Objects.requireNonNull(attestationPolicy, "attestation policy");
         Objects.requireNonNull(keyPolicy, "key policy");
         Objects.requireNonNull(targetPolicy, "target policy");
         Objects.requireNonNull(supervisorPolicy, "supervisor policy");
@@ -243,29 +259,43 @@ public final class ActorArtifactAdmission {
         if (actorKind != Ast.ActorKind.PRIVATE && actorKind != Ast.ActorKind.UNTRUSTED) {
             throw new SecurityException("IPC artifact requires PRIVATE or UNTRUSTED actor kind");
         }
-        if (!supervisorPolicy.allows(IsolatePolicy.Capability.HOT_CODE_LOAD)) {
-            throw new SecurityException("HOT_CODE_LOAD capability required to admit actor artifact");
+        for (IsolatePolicy.Capability capability : List.of(
+                IsolatePolicy.Capability.ACTOR_SPAWN,
+                IsolatePolicy.Capability.IPC,
+                IsolatePolicy.Capability.CHILD_PROCESS,
+                IsolatePolicy.Capability.HOT_CODE_LOAD)) {
+            if (!supervisorPolicy.allows(capability)) {
+                throw new SecurityException(
+                        capability + " capability required to admit IPC actor artifact");
+            }
         }
 
-        validateManifestSemantics(manifest, targetPolicy, exactArtifactBytes.length);
-        String artifactSha256 = sha256Hex(exactArtifactBytes);
+        validateManifestSemantics(manifest, targetPolicy, admittedBytes.length);
+        String artifactSha256 = sha256Hex(admittedBytes);
         if (!artifactSha256.equals(manifest.artifact().fileSha256())) {
             throw new SecurityException("artifact bytes sha256 does not match signed manifest");
         }
-        if (exactArtifactBytes.length != manifest.artifact().sizeBytes()) {
+        if (admittedBytes.length != manifest.artifact().sizeBytes()) {
             throw new SecurityException("artifact byte size does not match signed manifest");
         }
 
+        verifyTrustedBuildAttestation(attestation, attestationPolicy);
         validateAttestation(actorTypeName, actorKind, manifest, attestation);
         Set<IsolatePolicy.Capability> required =
                 resolveCapabilities(manifest.policy().requiredCapabilities());
-        if (!workerPolicy.capabilities().containsAll(required)) {
-            EnumSet<IsolatePolicy.Capability> excess = required.isEmpty()
+        if (!workerPolicy.capabilities().equals(required)) {
+            EnumSet<IsolatePolicy.Capability> missing = required.isEmpty()
                     ? EnumSet.noneOf(IsolatePolicy.Capability.class)
                     : EnumSet.copyOf(required);
-            excess.removeAll(workerPolicy.capabilities());
+            missing.removeAll(workerPolicy.capabilities());
+            EnumSet<IsolatePolicy.Capability> undeclared =
+                    workerPolicy.capabilities().isEmpty()
+                            ? EnumSet.noneOf(IsolatePolicy.Capability.class)
+                            : EnumSet.copyOf(workerPolicy.capabilities());
+            undeclared.removeAll(required);
             throw new SecurityException(
-                    "artifact requires capabilities outside worker policy: " + excess);
+                    "worker policy must exactly match signed artifact capabilities; "
+                            + "missing=" + missing + ", undeclared=" + undeclared);
         }
         if (actorKind == Ast.ActorKind.UNTRUSTED) {
             if (!workerPolicy.adversarial()) {
@@ -300,7 +330,7 @@ public final class ActorArtifactAdmission {
                 manifest.provenance().builderId(),
                 manifest.provenance().signature().keyId(),
                 required,
-                exactArtifactBytes);
+                admittedBytes);
     }
 
     static byte[] canonicalUnsignedManifest(Manifest manifest) {
@@ -351,6 +381,19 @@ public final class ActorArtifactAdmission {
             throw new SecurityException("only Ed25519 artifact signatures are admitted");
         }
         decodeCanonicalEd25519Signature(signature.valueBase64());
+    }
+
+    private static void verifyTrustedBuildAttestation(
+            TrustedBuildAttestation attestation,
+            TrustedBuildAttestationPolicy policy) {
+        try {
+            policy.verify(attestation);
+        } catch (SecurityException rejected) {
+            throw rejected;
+        } catch (RuntimeException failure) {
+            throw new SecurityException(
+                    "trusted build attestation policy failed closed", failure);
+        }
     }
 
     private static void validateAttestation(
