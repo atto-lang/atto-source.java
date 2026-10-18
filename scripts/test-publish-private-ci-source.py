@@ -168,6 +168,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             # The server must return the exact canonical digest of the isolated
             # source tree; no orphaned/stale destination files may survive.
             return {"sha": E if "base_tree" in payload else self.expected_source_tree()}
+        # Distinguish the default parent's earlier GET from the new commit's
+        # independent post-creation GET. POST /git/commits is already recorded.
+        if (route == "repos/trusted/ci/git/commits/" + A
+                and method == "GET"
+                and any(m == "POST" and path == "repos/trusted/ci/git/commits"
+                        for m, path, _ in self.route_calls)):
+            return {"sha": A, "tree": {"sha": E},
+                    "parents": [{"sha": A}]}
         mapping = {
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
@@ -1082,6 +1090,63 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[2][2]["base_tree"], B)
         self.assertEqual(writes[3][2]["tree"], E)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
+
+    def test_created_ci_commit_readback_precedes_ref_publication(self):
+        # The commit GET must independently authenticate its tree and parent
+        # before any newly created branch is made visible.
+        self.publish()
+        commit_reads = [
+            i for i, (method, route, _) in enumerate(self.route_calls)
+            if method == "GET" and route == "repos/trusted/ci/git/commits/" + A
+        ]
+        create_commit = next(
+            i for i, (method, route, _) in enumerate(self.route_calls)
+            if method == "POST" and route == "repos/trusted/ci/git/commits")
+        create_ref = next(
+            i for i, (method, route, _) in enumerate(self.route_calls)
+            if method == "POST" and route == "repos/trusted/ci/git/refs")
+        self.assertEqual(len(commit_reads), 2)
+        self.assertLess(commit_reads[0], create_commit)
+        self.assertLess(create_commit, commit_reads[1])
+        self.assertLess(commit_reads[1], create_ref)
+
+    def test_created_ci_commit_readback_fails_closed_before_ref(self):
+        expected = self.expected_source_tree()
+        original = self.fake_api
+        forged_responses = (
+            {},
+            {"sha": B, "tree": {"sha": E}, "parents": [{"sha": A}]},
+            {"sha": A, "tree": None, "parents": [{"sha": A}]},
+            {"sha": A, "tree": {"sha": B}, "parents": [{"sha": A}]},
+            {"sha": A, "tree": {"sha": E}},
+            {"sha": A, "tree": {"sha": E}, "parents": []},
+            {"sha": A, "tree": {"sha": E}, "parents": [{"sha": B}]},
+            {"sha": A, "tree": {"sha": E}, "parents": [{"sha": A}, {"sha": B}]},
+            {"sha": A, "tree": {"sha": E}, "parents": "not-a-list"},
+            {"sha": A, "tree": {"sha": E}, "parents": [None]},
+        )
+        for forged in forged_responses:
+            with self.subTest(forged=forged):
+                self.route_calls.clear()
+                self.mock_source_tree = expected
+                def api(route, method="GET", payload=None):
+                    if (method == "GET"
+                            and route == "repos/trusted/ci/git/commits/" + A
+                            and any(m == "POST"
+                                    and p == "repos/trusted/ci/git/commits"
+                                    for m, p, _ in self.route_calls)):
+                        self.route_calls.append((method, route, payload))
+                        return forged
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=api):
+                    with self.assertRaisesRegex(pub.Denied,
+                                                "created CI commit read-back"):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root, expected, 1286, A)
+                self.assertTrue(any(m == "POST" and r.endswith("/git/commits")
+                                    for m, r, _ in self.route_calls))
+                self.assertFalse(any(m == "POST" and r.endswith("/git/refs")
+                                     for m, r, _ in self.route_calls))
 
     def test_created_ci_ref_acknowledgement_must_match_exact_commit(self):
         # GitHub must acknowledge the attested commit, not merely the ref name.
