@@ -51,6 +51,10 @@ final class MlActorStateScalarGuestTest {
         assertDoesNotThrow(() -> verify(text));
         assertEquals(1, count(text, "    state {"));
         assertFalse(text.contains("self.state."));
+        assertTrue(text.contains("await worker.get_ready();"));
+        assertTrue(text.contains("await worker.get_done();"));
+        assertFalse(text.contains("await worker.ready;"));
+        assertFalse(text.contains("await worker.done;"));
         assertTrue(text.contains("with state.read"));
         assertTrue(text.contains("with state.read, state.write"));
         assertTrue(text.contains("using state.read("));
