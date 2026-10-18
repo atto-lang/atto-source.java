@@ -429,6 +429,10 @@ final class ActorObservabilityTest {
             assertTrue(pressure.sharedDomain().queuedTasks() >= 1);
             assertEquals(1, runtime.snapshot(second).orElseThrow().queuedUserMessages());
             assertEquals(0, pressure.lifecycleObserverCarriers());
+            assertEquals(4_096, pressure.terminalJournalCapacity());
+            assertEquals(0, pressure.terminalJournalBacklog());
+            assertEquals(1_024, pressure.watchdogNoticeCapacity());
+            assertEquals(0, pressure.watchdogNoticeBacklog());
 
             release.countDown();
             first.stop();
@@ -437,6 +441,64 @@ final class ActorObservabilityTest {
             assertTrue(second.awaitTermination(5, TimeUnit.SECONDS));
         } finally {
             release.countDown();
+        }
+    }
+
+    @Test
+    void schedulerSnapshotRemainsSafeDuringConcurrentActorChurn() throws Exception {
+        final int actorTotal = 256;
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8, actorTotal + 32));
+             var workers = java.util.concurrent.Executors.newFixedThreadPool(8)) {
+            var start = new CountDownLatch(1);
+            var finished = new CountDownLatch(actorTotal);
+            var failures = new java.util.concurrent.ConcurrentLinkedQueue<Throwable>();
+            var sampling = new java.util.concurrent.atomic.AtomicBoolean(true);
+            Thread sampler = Thread.ofPlatform().daemon(true).start(() -> {
+                try {
+                    while (sampling.get()) {
+                        var snap = runtime.schedulerSnapshot();
+                        assertTrue(snap.privateDomain().queuedTasks()
+                                <= snap.privateDomain().queueCapacity());
+                        assertTrue(snap.sharedDomain().queuedTasks()
+                                <= snap.sharedDomain().queueCapacity());
+                        assertTrue(snap.untrustedDomain().queuedTasks()
+                                <= snap.untrustedDomain().queueCapacity());
+                        assertTrue(snap.terminalJournalBacklog()
+                                <= snap.terminalJournalCapacity());
+                        assertTrue(snap.watchdogNoticeBacklog()
+                                <= snap.watchdogNoticeCapacity());
+                    }
+                } catch (Throwable failure) {
+                    failures.add(failure);
+                }
+            });
+
+            for (int i = 0; i < actorTotal; ++i) {
+                workers.execute(() -> {
+                    try {
+                        start.await();
+                        var actor = runtime.<Integer>spawnShared(
+                                () -> (message, context) -> context.self().stop());
+                        actor.send(1);
+                        if (!actor.awaitTermination(5, TimeUnit.SECONDS))
+                            throw new AssertionError("actor churn termination timed out");
+                    } catch (Throwable failure) {
+                        failures.add(failure);
+                    } finally {
+                        finished.countDown();
+                    }
+                });
+            }
+            start.countDown();
+            assertTrue(finished.await(15, TimeUnit.SECONDS));
+            sampling.set(false);
+            sampler.join(3_000L);
+            assertFalse(sampler.isAlive());
+            assertTrue(failures.isEmpty(), () -> "snapshot/churn failures: " + failures);
+            assertEquals(0, runtime.runtimeStats().liveActors());
+            assertEquals(actorTotal, runtime.runtimeStats().normalTerminations());
         }
     }
 
