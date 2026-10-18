@@ -471,6 +471,26 @@ class CommittedSourceTreeTests(unittest.TestCase):
         self.assertEqual(pub.git_tree_digest(
             pub.collect_source(self.source, self.root)), self.expected)
 
+    def test_inherited_git_repo_index_and_worktree_overrides_are_ignored(self):
+        import os
+        malicious = {
+            "GIT_DIR": str(self.root / "not-the-source-repository"),
+            "GIT_WORK_TREE": str(self.root / "untrusted-worktree"),
+            "GIT_INDEX_FILE": str(self.root / "untrusted-index"),
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.worktree",
+            "GIT_CONFIG_VALUE_0": str(self.root / "different-worktree"),
+        }
+        with patch.dict(os.environ, malicious):
+            self.assertEqual(pub.committed_source_tree(self.source, self.root),
+                             self.expected)
+
+    def test_source_checkout_root_is_not_silently_treated_as_subtree(self):
+        # The current exporter requires a tracked subtree. This prevents a
+        # policy checkout from silently becoming a mirror of arbitrary files.
+        with self.assertRaisesRegex(pub.Denied, "explicit tracked subdirectory"):
+            pub.committed_source_tree(self.root, self.root)
+
     def test_tracked_mutation_is_denied_before_any_upload(self):
         (self.source / "hello.ores").write_text("mutated\n")
         with self.assertRaisesRegex(pub.Denied, "differs from its committed"):
