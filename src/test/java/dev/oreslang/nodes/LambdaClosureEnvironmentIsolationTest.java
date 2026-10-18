@@ -55,6 +55,12 @@ final class LambdaClosureEnvironmentIsolationTest {
         }
     }
 
+    @Test void ambientFullEnvironmentSnapshotApiIsNotAvailable() throws Exception {
+        Class<?> env = Class.forName("dev.oreslang.nodes.OresEvalRootNode$Env");
+        assertThrows(NoSuchMethodException.class, () -> env.getDeclaredMethod("snapshot"),
+                "deferred runtime code must choose an explicit projected capture set");
+    }
+
     @Test void unusedReceiverAndCapabilityNeverReachTheClosureFrame() throws Exception {
         EnvAccess a = new EnvAccess();
         Object root = a.frame(null);
