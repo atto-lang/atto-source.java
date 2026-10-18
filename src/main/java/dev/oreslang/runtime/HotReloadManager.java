@@ -443,6 +443,11 @@ public final class HotReloadManager implements AutoCloseable {
             if (actorTypeName == null || actorTypeName.isBlank())
                 throw new IllegalArgumentException("actor type name cannot be blank");
             if (closed.get()) throw new IllegalStateException("generation is closed");
+            if (started.get()) {
+                throw new IllegalStateException(
+                        "logical actor routing v1 requires an actor-only generation "
+                                + "whose init/main has not executed");
+            }
 
             if (!actorLinked) {
                 Value parsed = context.parse(source);
@@ -479,8 +484,18 @@ public final class HotReloadManager implements AutoCloseable {
 
         /** Starts the staged generation exactly once. */
         public Value start() {
-            if (closed.get()) throw new IllegalStateException("generation is closed");
-            if (!started.compareAndSet(false, true)) throw new IllegalStateException("generation already started");
+            synchronized (this) {
+                if (closed.get())
+                    throw new IllegalStateException("generation is closed");
+                if (actorRoutePins != 0) {
+                    throw new IllegalStateException(
+                            "cannot execute generation init/main while "
+                                    + actorRoutePins
+                                    + " logical actor route(s) pin it");
+                }
+                if (!started.compareAndSet(false, true))
+                    throw new IllegalStateException("generation already started");
+            }
             try {
                 return context.eval(source);
             } catch (RuntimeException | Error failure) {
