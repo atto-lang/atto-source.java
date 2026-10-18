@@ -848,6 +848,46 @@ The second model was corrected during audit to keep logical incarnation stable
 and advance a route epoch; older modeling that incremented incarnation for a
 transparent code replacement was semantically wrong.
 
+### Bounded logical proxy integration gate (2026-10-18)
+
+The stacked `LogicalActorProxyMailboxV1` is a **trusted runtime
+substrate**, not yet the live `LogicalSourceActorRouterV1.send(Object)`
+implementation. Its immutable byte envelopes carry monotonic sequences,
+and its bounded message/byte credits remain charged across queueing,
+dispatch and incomplete actor delivery. A route-upgrade freeze pauses
+**dispatch** while retaining bounded admission; its ticket can commit
+only after the old dispatched prefix has completed.
+
+The audit reconciled the mailbox branch with the latest Java router,
+including timeout/interruption cancellation and fail-closed protected
+PRIVATE/UNTRUSTED placement admission. The proxy now also supports a
+package-private `requeueProvenUnsent(seq)` for an unequivocally failed
+physical send, provided that send was the latest outstanding dispatch
+and no freeze is active. It preserves FIFO sequence and all credits;
+it is **not** a retry after ambiguous transport delivery. If a broker
+cannot prove an actor did not accept the message, it must retain and
+resolve the outstanding delivery rather than redeliver potentially
+duplicated work. The companion JUnit cases cover FIFO/credits,
+disallowed stale requeues, sparse completions and competing freeze
+versus unsent rollback.
+
+The remaining live integration must atomically bind the proxy's
+dispatch reservation to `ActorRuntime` mailbox admission, and bind
+logical completion to an authenticated runtime `mail.done()`/terminal
+receipt. An arbitrary host `complete(sequence)` call is not proof
+that the actor processed a message. Code may acknowledge a send only
+after physical mailbox acceptance. Before promotion, drain the exact
+old-route dispatch watermark and preserve queued post-freeze bytes
+for the new route. The compiler must produce canonical typed immutable
+wire envelopes, not retain mutable `Object` graphs or raw
+cross-context pointers. Actor/scheduler threads may not be parked
+behind a host monitor.
+
+These additions are committed in the stacked draft but have **not**
+been confirmed by an executed JDK25/Maven/Graal workflow. Do not claim
+exactly-once effect semantics, live proxy integration, or fully
+migratable private/untrusted worker processes from this mailbox proof.
+
 ### Remaining production gates
 
 This remains v1 and intentionally excludes:
