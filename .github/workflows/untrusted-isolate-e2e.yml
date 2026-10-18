@@ -31,7 +31,7 @@ jobs:
       - name: Verify host-only source admission and tests not requiring an isolate
         run: >
           mvn -B -ntp
-          -Dtest=SourceActorSpawnExecutionTest,IsolationHotReloadTest,SharedUntrustedIsolatePoolTest,UntrustedSourceImageCacheTest,SharedTruffleCallTargetIsolationTest,SharedUntrustedActorSupervisorTest,SharedUntrustedActorSupervisorNoImageTest,ActorStrictHeapAdmissionTest,VerifiedCloseFenceTest,GuestAdmissionDeadlineTest
+          -Dtest=SourceActorSpawnExecutionTest,IsolationHotReloadTest,SharedUntrustedIsolatePoolTest,UntrustedSourceIdentityTest,UntrustedSourceImageCacheTest,SharedTruffleCallTargetIsolationTest,SharedUntrustedActorSupervisorTest,SharedUntrustedActorSupervisorNoImageTest,ActorStrictHeapAdmissionTest,VerifiedCloseFenceTest,GuestAdmissionDeadlineTest
           test
 
   native-isolate-e2e:
@@ -64,7 +64,7 @@ jobs:
           set -eu
           mvn -B -ntp \
             -DargLine="-Dpolyglot.engine.IsolateLibrary=${PWD}/target/liboresvm.so" \
-            -Dtest=SharedUntrustedIsolatePoolTest,UntrustedSourceImageCacheTest,SharedTruffleCallTargetIsolationTest,UntrustedJitCodeUnitTest,SharedUntrustedActorSupervisorTest,ActorStrictHeapAdmissionTest,VerifiedCloseFenceTest,GuestAdmissionDeadlineTest \
+            -Dtest=SharedUntrustedIsolatePoolTest,UntrustedSourceIdentityTest,UntrustedSourceImageCacheTest,SharedTruffleCallTargetIsolationTest,UntrustedJitCodeUnitTest,SharedUntrustedActorSupervisorTest,ActorStrictHeapAdmissionTest,VerifiedCloseFenceTest,GuestAdmissionDeadlineTest \
             test
       - name: Report actually executed integration tests
         if: always()
@@ -73,6 +73,7 @@ jobs:
           import xml.etree.ElementTree as ET
           names = [
               'target/surefire-reports/TEST-dev.oreslang.runtime.SharedUntrustedIsolatePoolTest.xml',
+              'target/surefire-reports/TEST-dev.oreslang.runtime.UntrustedSourceIdentityTest.xml',
               'target/surefire-reports/TEST-dev.oreslang.runtime.UntrustedSourceImageCacheTest.xml',
               'target/surefire-reports/TEST-dev.oreslang.runtime.SharedTruffleCallTargetIsolationTest.xml',
               'target/surefire-reports/TEST-dev.oreslang.runtime.UntrustedJitCodeUnitTest.xml',
