@@ -140,6 +140,24 @@ final class DeferredChannelOwnershipHardeningTest {
     }
 
     @Test
+    void callbackRejectsNominalCaptureWithUnresolvedInferredFieldShape() {
+        reject("""
+                define class Holder as
+                  pub val callback = || -> 42;
+                end
+
+                actor fnc bad(): void {
+                  val Channel<int> output = Channel.new<int>(1);
+                  val Holder holder = new Holder();
+                  nb cb writech output, 42 || -> {
+                    stdio.println(holder.callback());
+                  };
+                  return;
+                }
+                """, "cannot capture callable value 'holder'");
+    }
+
+    @Test
     void callbackRejectsCallableHiddenBehindTypeAlias() {
         reject("""
                 type Callback = () => int;
