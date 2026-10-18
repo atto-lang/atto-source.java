@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
+import com.sun.net.httpserver.HttpExchange;
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -10,6 +12,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
@@ -111,6 +115,41 @@ public final class HttpResponseDraft {
     public List<Map.Entry<String, String>> headers() { return headers; }
     public boolean ok() { return status >= 200 && status <= 299; }
     public int bufferedLength() { return bytes == null ? 0 : bytes.length; }
+
+    /**
+     * Trusted host-side emission of one response. Calling it consumes the
+     * envelope; the client controls byte demand via the blocking socket writer.
+     * Run only on an HTTP I/O virtual thread, never an actor scheduler carrier.
+     * This HTTP/1.1 adapter does not emit trailers.
+     */
+    void writeTo(HttpExchange raw, BooleanSupplier cancelled, Consumer<InputStream> activeBody) throws IOException {
+        Objects.requireNonNull(raw, "exchange");
+        Objects.requireNonNull(cancelled, "cancelled");
+        Objects.requireNonNull(activeBody, "activeBody");
+        claim();
+        for (Map.Entry<String, String> field : headers)
+            raw.getResponseHeaders().add(field.getKey(), field.getValue());
+        boolean suppress = raw.getRequestMethod().equals("HEAD") || !bodyPresent;
+        if (raw.getRequestMethod().equals("HEAD") && bodyPresent && !streaming())
+            raw.getResponseHeaders().set("Content-Length", Integer.toString(bufferedLength()));
+        long length = suppress ? -1 : streaming() ? 0 : bufferedLength() == 0 ? -1 : bufferedLength();
+        raw.sendResponseHeaders(status, length);
+        if (suppress) return;
+        try (InputStream input = openBody()) {
+            activeBody.accept(input);
+            try {
+                byte[] chunk = new byte[8192];
+                int count;
+                while ((count = input.read(chunk)) != -1) {
+                    if (cancelled.getAsBoolean()) throw new IOException("response cancelled");
+                    if (count == 0) throw new IOException("HTTP stream made no progress");
+                    raw.getResponseBody().write(chunk, 0, count);
+                }
+            } finally {
+                activeBody.accept(null);
+            }
+        }
+    }
 
     void claim() {
         if (!handedOff.compareAndSet(false, true))
