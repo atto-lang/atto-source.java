@@ -1824,8 +1824,7 @@ public final class TypeChecker {
             Ast.ModuleDecl module = modules.get(name.name());
             if (module != null) {
                 rejectUnimportedModuleNamespace(name.name());
-                ModuleNamespace namespace = new ModuleNamespace(module.name());
-                return moduleShape(modules.get(namespace.moduleName()));
+                return new ModuleNamespace(module.name());
             }
             if (importedModuleNamespaces.contains(name.name())) {
                 return Unknown.INSTANCE; // linked module members are checked at link time
