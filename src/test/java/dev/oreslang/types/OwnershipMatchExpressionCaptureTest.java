@@ -134,6 +134,25 @@ final class OwnershipMatchExpressionCaptureTest {
     }
 
     @Test
+    void classicForInitializerBindingShadowsOuterNameAcrossHeaderAndBody() throws Exception {
+        Ast.BindingStmt initializer = new Ast.BindingStmt(
+                Ast.BindingKind.LET, Ast.TypeRef.simple("int"), "loop",
+                new Ast.NameExpr("source"));
+        Ast.ForStmt loop = new Ast.ForStmt(
+                initializer,
+                new Ast.BinaryExpr("<", new Ast.NameExpr("loop"), new Ast.LiteralExpr(3)),
+                new Ast.AssignExpr(new Ast.NameExpr("loop"),
+                        new Ast.BinaryExpr("+", new Ast.NameExpr("loop"), new Ast.LiteralExpr(1))),
+                List.of(new Ast.ExprStmt(new Ast.NameExpr("loop"))));
+        Ast.LambdaExpr lambda = new Ast.LambdaExpr(
+                List.of(), null, List.of(loop, new Ast.ReturnStmt(new Ast.NameExpr("tail"))));
+        Set<String> expected = Set.of("source", "tail");
+        assertEquals(expected, capturedByOwnership(
+                lambda, "source", "tail", "loop", "self"));
+        assertEquals(expected, dev.oreslang.nodes.LambdaCapturePlanner.captures(lambda));
+    }
+
+    @Test
     void matchArmBorrowedValueCannotEscapeThroughClosure() throws Exception {
         Ast.LambdaExpr lambda = new Ast.LambdaExpr(List.of(),
                 new Ast.MatchExpr(new Ast.NameExpr("subject"),
