@@ -91,8 +91,11 @@ final class MlActorStateScalarGuestTest {
             // must execute here. A missing feature fails the test.
             assertDoesNotThrow(() -> context.eval(executable));
         }
-        assertEquals("-6\n-8\n20\n-7\n30\n-8\n2\n-4\n-2\n5\n5\n2\n-1\n50000\n50000\n100000000\n200000000\n-8\n2\n3\n-1\n10\n10\n",
-                stdout.toString(StandardCharsets.UTF_8));
+        String expected = Files.readString(Path.of("tests", "golden",
+                "ml-actor-state-scalar.stdout"));
+        assertEquals("9921f755979832f6b20e20923cc94f6f3bf6e05b",
+                gitBlobSha(expected), "scalar training output golden drifted");
+        assertEquals(expected, stdout.toString(StandardCharsets.UTF_8));
     }
 
     @Test void readEffectsDoNotGrantStateWriteAndLoanCannotEscape() {
@@ -188,7 +191,7 @@ final class MlActorStateScalarGuestTest {
         assertGuestRejectedBeforeMain("""
                 define actor Stage as
                   state { weight: int = 10; }
-                  invalid(): int with state.read {
+                  private invalid(): int with state.read {
                     return self.state.weight;
                   }
                 end
@@ -200,7 +203,7 @@ final class MlActorStateScalarGuestTest {
         assertGuestRejectedBeforeMain("""
                 define actor Stage as
                   state { weight: int = 10; }
-                  invalid(): int with state.read {
+                  private invalid(): int with state.read {
                     return using state.read(|s| -> {
                       s.weight = 13;
                       return s.weight;
@@ -215,7 +218,7 @@ final class MlActorStateScalarGuestTest {
         assertGuestRejectedBeforeMain("""
                 define actor Stage as
                   state { weight: int = 10; }
-                  invalid(): int with state.read {
+                  private invalid(): int with state.read {
                     return using state.read(|s| -> {
                       return s;
                     });
@@ -226,6 +229,39 @@ final class MlActorStateScalarGuestTest {
                   return;
                 }
                 """);
+    }
+
+    @Test void validSameShapeActorCanReachMain() throws Exception {
+        // A positive control ensures negative tests do not merely exploit an
+        // invalid actor-method grammar or a broken polyglot embedding.
+        String program = """
+                define actor Stage as
+                  state { weight: int = 10; }
+                  private value(): int with state.read {
+                    return using state.read(|s| -> { return s.weight; });
+                  }
+                end
+                pub routine main(): void {
+                  stdio.println("SAFE_MAIN_EXECUTED");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> verify(program));
+        // The negative case must be syntactically valid. A parser failure
+        // alone must never count as evidence of state-loan enforcement.
+        assertDoesNotThrow(() -> Parser.parse(invalidSource),
+                "invalid guest case must have valid actor and routine grammar");
+        assertThrows(IllegalArgumentException.class, () -> verify(invalidSource),
+                "the explicit state/effect/ownership passes must reject it");
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            Source executable = Source.newBuilder(OresLanguage.ID, program,
+                    "ml-valid-control.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            assertDoesNotThrow(() -> context.eval(executable));
+        }
+        assertEquals("SAFE_MAIN_EXECUTED\n", output.toString(StandardCharsets.UTF_8));
     }
 
     private static void assertGuestRejectedBeforeMain(String invalidSource) throws Exception {
