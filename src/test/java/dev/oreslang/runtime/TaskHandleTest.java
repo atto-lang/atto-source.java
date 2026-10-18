@@ -94,7 +94,7 @@ public class TaskHandleTest {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskHandle<Integer> h = scheduler.startTracked(r -> OresScheduler.done(11));
             assertEquals(new TaskHandle.Success<>(11), done(h));
-            h.cancel("late");
+            assertFalse(h.cancel("late"));
             assertEquals(new TaskHandle.Success<>(11), done(h));
         }
     }
@@ -299,6 +299,19 @@ public class TaskHandleTest {
         }
     }
 
+    @Test void guestCancellationExceptionWithoutRequestIsFailure() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> h = scheduler.startTracked(r -> {
+                throw new CancellationException("guest-thrown error");
+            });
+            TaskHandle.TaskOutcome<Integer> outcome = done(h);
+            assertInstanceOf(TaskHandle.Failed.class, outcome);
+            assertInstanceOf(CancellationException.class,
+                    ((TaskHandle.Failed<Integer>) outcome).failure());
+            assertFalse(h.isCancellationRequested());
+        }
+    }
+
     @Test void normalFailureDoesNotSetCancellationRequested() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskHandle<Integer> h = scheduler.startTracked(r -> {
@@ -316,7 +329,7 @@ public class TaskHandleTest {
             });
             TaskHandle.TaskOutcome<Integer> failed = done(h);
             assertInstanceOf(TaskHandle.Failed.class, failed);
-            h.cancel("late");
+            assertFalse(h.cancel("late"));
             assertEquals(failed, done(h));
         }
     }
