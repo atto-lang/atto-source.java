@@ -53,6 +53,30 @@ public final class HttpResponseDraftStandaloneCheck {
         rejected(copied::claim);
         rejected(HttpResponseDraft::withTrailers);
 
+        HttpResponseDraft disputed = HttpResponseDraft.text("one owner");
+        AtomicInteger claimsWon = new AtomicInteger();
+        try (var pool = Executors.newFixedThreadPool(12)) {
+            var ready = new java.util.concurrent.CountDownLatch(12);
+            var release = new java.util.concurrent.CountDownLatch(1);
+            var futures = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for (int i = 0; i < 12; i++) futures.add(pool.submit(() -> {
+                ready.countDown();
+                try {
+                    release.await();
+                    disputed.claim();
+                    claimsWon.incrementAndGet();
+                } catch (IllegalStateException expected) {
+                    // Another carrier won the affine claim.
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }));
+            check(ready.await(3, java.util.concurrent.TimeUnit.SECONDS), "carrier start barrier");
+            release.countDown();
+            for (var future : futures) future.get(3, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        check(claimsWon.get() == 1, "exactly one concurrent response handoff");
+
         AtomicInteger opened = new AtomicInteger();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 8);
         var workers = Executors.newCachedThreadPool();
@@ -69,9 +93,14 @@ public final class HttpResponseDraftStandaloneCheck {
                         return new ByteArrayInputStream("alpha-beta".getBytes(StandardCharsets.UTF_8));
                     }, 200, List.of());
                     case "/empty" -> HttpResponseDraft.empty(204, List.of());
+                    case "/cancel" -> HttpResponseDraft.streaming(() -> {
+                        opened.incrementAndGet();
+                        return new ByteArrayInputStream("never".getBytes(StandardCharsets.UTF_8));
+                    }, 200, List.of());
                     default -> HttpResponseDraft.text("head-only", 200, List.of());
                 };
-                response.writeTo(exchange, () -> false, ignored -> { });
+                response.writeTo(exchange,
+                        () -> exchange.getRequestURI().getPath().equals("/cancel"), ignored -> { });
             } finally {
                 exchange.close();
             }
@@ -103,6 +132,15 @@ public final class HttpResponseDraftStandaloneCheck {
             HttpResponse<byte[]> empty = client.send(HttpRequest.newBuilder(base.resolve("/empty")).build(),
                     HttpResponse.BodyHandlers.ofByteArray());
             check(empty.statusCode() == 204 && empty.body().length == 0, "bodyless response");
+            try {
+                client.send(HttpRequest.newBuilder(base.resolve("/cancel"))
+                                .timeout(java.time.Duration.ofSeconds(3)).build(),
+                        HttpResponse.BodyHandlers.ofString());
+                throw new AssertionError("cancelled response sent HTTP headers");
+            } catch (java.io.IOException expected) {
+                // Response must not commit headers after cancellation.
+            }
+            check(opened.get() == 1, "cancelled stream supplier must not run");
         } finally {
             server.stop(0);
             workers.shutdownNow();
