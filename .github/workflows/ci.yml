@@ -56,6 +56,8 @@ jobs:
           test -s /tmp/ores-concurrency.trace
           mvn -B -ntp -DskipTests exec:java -Dexec.args="test examples/native-testing.ores --replay=/tmp/ores-concurrency.trace --seed=37" | tee /tmp/ores-concurrency-replay.out
           grep -F "ORES_CONCURRENCY|RUN|seed=37" /tmp/ores-concurrency-replay.out
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="test examples/native-fuzz-testing.ores --fuzz --iterations=2 --seed=51" | tee /tmp/ores-native-fuzz.out
+          grep -F "ORES_TEST|SUMMARY|total=2|passed=2|failed=0|skipped=0|filtered=0" /tmp/ores-native-fuzz.out
 
   native-aot:
     runs-on: ubuntu-latest
