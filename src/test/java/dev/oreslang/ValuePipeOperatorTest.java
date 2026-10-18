@@ -427,4 +427,26 @@ final class ValuePipeOperatorTest {
                 directFailure::toString);
     }
 
+    @Test
+    void executesZeroArgumentRootWithNamedCallStages() throws Exception {
+        String sourceText = """
+                fnc fn1(): int { return 2; }
+                fnc fn2(int n): int { return n * 3; }
+                fnc fn3(int n): int { return n + 10; }
+                pub fnc main(): void {
+                    stdio.println(fn1() |> fn2() |> fn3());
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(sourceText)));
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, sourceText, "named-value-pipe.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("16", output.toString(StandardCharsets.UTF_8).trim());
+    }
+
 }
