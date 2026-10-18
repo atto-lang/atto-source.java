@@ -72,6 +72,34 @@ final class SqliteGitHubWebhookLedgerV1Test {
     }
 
     @Test
+    void deliveryIdCannotRebindTreeProofOnExactSignedPayload() {
+        Path db = tempDir.resolve("proof-conflict.db");
+
+        try (var ledger = SqliteGitHubWebhookLedgerV1.open(db)) {
+            assertEquals(
+                    SqliteGitHubWebhookLedgerV1.DeliveryDisposition
+                            .FIRST_SEEN,
+                    ledger.recordDelivery(
+                            "delivery-proof",
+                            "1".repeat(64),
+                            "workflow_run",
+                            sha('a'),
+                            sha('b'),
+                            "tree-proof://one"));
+
+            assertThrows(
+                    SecurityException.class,
+                    () -> ledger.recordDelivery(
+                            "delivery-proof",
+                            "1".repeat(64),
+                            "workflow_run",
+                            sha('a'),
+                            sha('c'),
+                            "tree-proof://two"));
+        }
+    }
+
+    @Test
     void conflictingRunRegistrationFailsClosedAcrossRestart() {
         Path db = tempDir.resolve("registration-conflict.db");
         var first = new GitHubCiCorrelationV1.Expectation(
