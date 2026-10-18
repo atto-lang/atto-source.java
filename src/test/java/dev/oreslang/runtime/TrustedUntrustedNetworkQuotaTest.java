@@ -123,6 +123,25 @@ final class TrustedUntrustedNetworkQuotaTest {
     }
 
     @Test
+    void connectionChurnDoesNotMintTcpStartTokens() {
+        AtomicLong clock = new AtomicLong();
+        var quota = new TrustedUntrustedNetworkQuota(
+                TrustedUntrustedNetworkQuota.Policy.initialDefault(), clock::get);
+        for (int i = 0; i < 2; i++) {
+            var ticket = quota.tryOpenTcp();
+            assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, ticket.status());
+            ticket.lease().close();
+        }
+        assertEquals(0, quota.tcpConnections());
+        assertEquals(TrustedUntrustedNetworkQuota.Status.RATE_LIMITED,
+                quota.tryOpenTcp().status());
+        clock.set(100_000_000);
+        var ticket = quota.tryOpenTcp();
+        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, ticket.status());
+        ticket.lease().close();
+    }
+
+    @Test
     void malformedPolicyRejected() {
         assertThrows(IllegalArgumentException.class,
                 () -> new TrustedUntrustedNetworkQuota.Policy(0, 2, 10, 10));
