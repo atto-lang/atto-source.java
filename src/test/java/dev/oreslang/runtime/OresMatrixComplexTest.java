@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class OresMatrixComplexTest {
     @Test
@@ -95,6 +96,50 @@ final class OresMatrixComplexTest {
         // 101*101*101 = 1,030,301 exact term products: modest input
         // allocations, but beyond the portable BigInteger reference budget.
         assertThrows(IllegalArgumentException.class, () -> left.matmul(right));
+    }
+
+    @Test
+    void zeroImaginaryComplexScalarsPreserveComplexMatrixAndVectorElementTypes() {
+        OresMatrix real = OresMatrix.fromRows(List.of(List.of(2.0)));
+        for (OresComplex factor : List.of(
+                new OresComplex(2.0, +0.0),
+                new OresComplex(2.0, -0.0))) {
+            OresMatrix scaled = real.scale(factor);
+            OresMatrix divided = real.divide(factor);
+            assertTrue(scaled.isComplex());
+            assertTrue(divided.isComplex());
+            assertInstanceOf(OresComplex.class, scaled.get(0, 0));
+            assertInstanceOf(OresComplex.class, divided.get(0, 0));
+            assertInstanceOf(OresComplex.class, scaled.trace());
+            assertInstanceOf(OresComplex.class, divided.trace());
+            assertInstanceOf(OresComplex.class, scaled.hermitian().get(0, 0));
+
+            OresVector vector = OresVector.fromValues(List.of(2.0));
+            assertInstanceOf(OresComplex.class, vector.scale(factor).get(0));
+            assertInstanceOf(OresComplex.class, vector.divide(factor).get(0));
+        }
+    }
+
+    @Test
+    void impossibleLiteralShapeFailsBeforeTraversingGuestProvidedRows() {
+        // The list advertises >32 MiB of real cells without materializing them.
+        // Accessing row 1 would be a correctness failure: preflight must reject
+        // the shape immediately after inspecting the first row.
+        List<Object> oversizedRows = new java.util.AbstractList<>() {
+            @Override
+            public Object get(int index) {
+                if (index != 0) throw new AssertionError(
+                        "oversized matrix was traversed before allocation preflight");
+                return List.of(1.0);
+            }
+
+            @Override
+            public int size() {
+                return 4_194_297;
+            }
+        };
+        assertThrows(IllegalArgumentException.class,
+                () -> OresMatrix.fromRows(oversizedRows));
     }
 
 }
