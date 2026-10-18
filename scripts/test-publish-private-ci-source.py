@@ -73,6 +73,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "https://api.github.com/repos/" + pub.SOURCE_INCIDENT_REPOSITORY
         ] * 300
         self.incident_closed_at = ["2026-10-17T17:00:00Z"] * 300
+        self.carrier_incident_issue_ids = [pub.CARRIER_INCIDENT_ISSUE_ID] * 300
+        self.carrier_incident_pull_requests = [None] * 300
+        self.carrier_incident_numbers = [pub.CARRIER_INCIDENT_NUMBER] * 300
+        self.carrier_incident_states = ["closed"] * 300
+        self.carrier_incident_reasons = ["completed"] * 300
+        self.carrier_incident_urls = [
+            "https://api.github.com/" + pub.CARRIER_INCIDENT_ROUTE
+        ] * 300
+        self.carrier_incident_repository_urls = [
+            "https://api.github.com/repos/" + pub.SOURCE_INCIDENT_REPOSITORY
+        ] * 300
+        self.carrier_incident_closed_at = ["2026-10-18T00:39:42Z"] * 300
         self.source_main_shas = [A] * 100
         self.visibility = ["private"] * 100
         self.repository_ids = [123] * 100
@@ -160,6 +172,17 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 "state": self.incident_states.pop(0),
                 "state_reason": self.incident_reasons.pop(0),
                 "closed_at": self.incident_closed_at.pop(0),
+            }
+        if route == pub.CARRIER_INCIDENT_ROUTE:
+            return {
+                "id": self.carrier_incident_issue_ids.pop(0),
+                "url": self.carrier_incident_urls.pop(0),
+                "repository_url": self.carrier_incident_repository_urls.pop(0),
+                "pull_request": self.carrier_incident_pull_requests.pop(0),
+                "number": self.carrier_incident_numbers.pop(0),
+                "state": self.carrier_incident_states.pop(0),
+                "state_reason": self.carrier_incident_reasons.pop(0),
+                "closed_at": self.carrier_incident_closed_at.pop(0),
             }
         if route == pub.PROTECTED_RULES_ROUTE:
             return {"enforce_admins": {"enabled": True},
@@ -294,6 +317,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
         self.assertEqual(self.dispatch_calls, [])
 
+    def test_open_private_carrier_incident_denies_before_private_source_read(self):
+        self.carrier_incident_states = ["open"] * 300
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("source read before carrier containment")):
+            with self.assertRaisesRegex(pub.Denied, "carrier incident #77 remains unresolved"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.assertEqual(self.dispatch_calls, [])
+
     def test_incident_metadata_must_be_completed_and_exactly_identified(self):
         substitutions = (
             ("incident_issue_ids", True),
@@ -373,6 +405,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         # incident before the next Git tree POST must abort the publication.
         self.incident_states = ["closed", "closed", "open"] + ["open"] * 297
         with self.assertRaisesRegex(pub.Denied, "incident #22 remains unresolved"):
+            self.publish()
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+        self.assertEqual(self.dispatch_calls, [])
+
+    def test_private_carrier_incident_reopened_between_writes_blocks_next_git_post(self):
+        # The second P0 must be revalidated before every write just like #22.
+        self.carrier_incident_states = ["closed", "closed", "open"] + ["open"] * 297
+        with self.assertRaisesRegex(pub.Denied, "carrier incident #77 remains unresolved"):
             self.publish()
         writes = [route for method, route, _ in self.route_calls if method == "POST"]
         self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
