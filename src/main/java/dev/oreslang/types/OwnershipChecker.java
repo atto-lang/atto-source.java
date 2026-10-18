@@ -3753,6 +3753,13 @@ public final class OwnershipChecker {
                         genericBindings(
                                 field.owner().genericParameters(),
                                 field.ownerType().arguments()));
+                // Ownership must not infer "safe" from an opaque field layout.
+                // The type checker may know more about an initializer, but until
+                // that resolved type is carried into shared semantic IR, detached
+                // continuation admission fails closed here.
+                if (fieldType == null || fieldType.name().equals("$infer$")) {
+                    return true;
+                }
                 Map<String, Ast.TypeAliasDecl> aliasesForField =
                         linkedClassAliases.getOrDefault(field.owner(), Map.of());
                 if (containsCallableCaptureType(
