@@ -188,6 +188,70 @@ final class NestedFutureCycleInterleavingTest {
         }
     }
 
+    @Test
+    void producerSettlementRacingConsumerCancellationNeverResurrectsObserver()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            for (int trial = 0; trial < 32; trial++) {
+                OresFuture<Integer> producer = new OresFuture<>();
+                OresFuture<Integer> consumer = scheduler.start(resume -> {
+                    if (resume.initial()) return OresScheduler.await(producer);
+                    if (resume.failure() != null) {
+                        throw new IllegalStateException("producer failed", resume.failure());
+                    }
+                    return OresScheduler.done((Integer) resume.value());
+                });
+                awaitRegisteredObservers(producer, 1);
+
+                CountDownLatch race = new CountDownLatch(1);
+                CountDownLatch bothFinished = new CountDownLatch(2);
+                java.util.concurrent.atomic.AtomicBoolean sourceSettled =
+                        new java.util.concurrent.atomic.AtomicBoolean();
+                Thread producerThread = Thread.ofPlatform().start(() -> {
+                    try {
+                        if (!race.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) return;
+                        sourceSettled.set(producer.completeFromRuntime(81));
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    } finally {
+                        bothFinished.countDown();
+                    }
+                });
+                Thread cancellingThread = Thread.ofPlatform().start(() -> {
+                    try {
+                        if (!race.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) return;
+                        consumer.cancel(false);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    } finally {
+                        bothFinished.countDown();
+                    }
+                });
+                race.countDown();
+                assertTrue(bothFinished.await(TIMEOUT_SECONDS, TimeUnit.SECONDS),
+                        "racing host threads must both finish");
+                producerThread.join(TimeUnit.SECONDS.toMillis(TIMEOUT_SECONDS));
+                cancellingThread.join(TimeUnit.SECONDS.toMillis(TIMEOUT_SECONDS));
+                assertFalse(producerThread.isAlive());
+                assertFalse(cancellingThread.isAlive());
+                assertTrue(sourceSettled.get(),
+                        "the independent producer must settle exactly once");
+                try {
+                    assertEquals(81, consumer.get(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+                    assertFalse(consumer.isCancelled());
+                } catch (java.util.concurrent.CancellationException cancelled) {
+                    assertTrue(consumer.isCancelled());
+                }
+                assertFalse(producer.isCancelled(),
+                        "consumer cancellation must not reach the producer");
+                assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                        "race must not retain a producer observer");
+                assertFalse(OresScheduler.hasAwaitDependency(consumer),
+                        "race must not retain an await graph edge");
+            }
+        }
+    }
+
     private static void awaitRegisteredObservers(OresFuture<?> producer, int count) {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS);
         while (producer.pendingRuntimeWaiterCount() != count
