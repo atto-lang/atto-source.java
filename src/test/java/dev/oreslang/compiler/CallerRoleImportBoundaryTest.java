@@ -117,6 +117,19 @@ final class CallerRoleImportBoundaryTest {
     }
 
     @Test
+    void protectedStaticActorMethodCannotEscapeViaActorImport() {
+        String source = """
+                define enum Roles as A end
+                define pub actor Worker as
+                    @CallableBy(Roles.A)
+                    pub static fnc privileged(): void {}
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> link(source, "import actor Worker from \"provider.ores\";"));
+    }
+
+    @Test
     void protectedPublicStaticMethodInImportedClassIsRejected() {
         String source = """
                 define enum Roles as
