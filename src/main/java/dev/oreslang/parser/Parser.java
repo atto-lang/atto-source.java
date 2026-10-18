@@ -1304,13 +1304,13 @@ public final class Parser {
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
                 consume(COLON, "expected ':' after compatibility parameter name");
-                Ast.TypeRef type = parseTypeRef();
+                Ast.TypeRef type = parseFormalTypeRef();
                 boolean mutable = match(MUT);
                 params.add(new Ast.Param(type, name, false, mutable));
                 continue;
             }
 
-            Ast.TypeRef type = parseTypeRef();
+            Ast.TypeRef type = parseFormalTypeRef();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "lambda-style callable declaration parameters require canonical 'Type name'").lexeme();
             if (structural && mutable) {
@@ -3728,6 +3728,14 @@ public final class Parser {
                 if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
                     params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+                } else if (check(IDENT) && checkNext(COLON)) {
+                    // Match declared pipe callables and parenthesized lambdas:
+                    // compatibility name-first formals preserve the T? slot marker.
+                    String name = advance().lexeme();
+                    consume(COLON, "expected ':' after compatibility lambda parameter name");
+                    Ast.TypeRef type = parseFormalTypeRef();
+                    boolean mutable = match(MUT);
+                    params.add(new Ast.Param(type, name, false, mutable));
                 } else {
                     Ast.TypeRef type = parseFormalTypeRef();
                     boolean mutable = match(MUT);
