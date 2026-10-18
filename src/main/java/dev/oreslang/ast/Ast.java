@@ -331,6 +331,7 @@ public final class Ast {
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
+            List<ForeignDecl> foreignDeclarations,
             List<MethodDecl> methods) implements Decl {
         public ClassDecl {
             actorKind = java.util.Objects.requireNonNull(actorKind, "actor kind");
@@ -339,11 +340,34 @@ public final class Ast {
                 throw new IllegalArgumentException(
                         "ordinary classes cannot carry an actor boundary");
             }
+            if (actorBoundary != ActorBoundary.FFI && !foreignDeclarations.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "foreign declarations require an ffi actor boundary");
+            }
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
+            foreignDeclarations = List.copyOf(foreignDeclarations);
             methods = List.copyOf(methods);
+        }
+
+        /** Boundary-aware compatibility constructor without foreign declarations. */
+        public ClassDecl(
+                String name,
+                Visibility visibility,
+                boolean isAbstract,
+                ActorKind actorKind,
+                ActorBoundary actorBoundary,
+                List<String> genericParameters,
+                List<TypeRef> parents,
+                List<TypeRef> interfaces,
+                List<FieldDecl> fields,
+                ConstructorDecl constructor,
+                List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, actorBoundary,
+                    genericParameters, parents, interfaces, fields, constructor,
+                    List.of(), methods);
         }
 
         /** Compatibility constructor: all existing actors/classes are local. */
@@ -359,7 +383,8 @@ public final class Ast {
                 ConstructorDecl constructor,
                 List<MethodDecl> methods) {
             this(name, visibility, isAbstract, actorKind, ActorBoundary.LOCAL,
-                    genericParameters, parents, interfaces, fields, constructor, methods);
+                    genericParameters, parents, interfaces, fields, constructor,
+                    List.of(), methods);
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
@@ -368,20 +393,45 @@ public final class Ast {
                          List<TypeRef> interfaces, List<FieldDecl> fields,
                          List<MethodDecl> methods) {
             this(name, Visibility.PRIVATE, isAbstract, actorKind, ActorBoundary.LOCAL,
-                    genericParameters, parents, interfaces, fields, null, methods);
+                    genericParameters, parents, interfaces, fields, null,
+                    List.of(), methods);
         }
 
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<TypeRef> parents, List<TypeRef> interfaces,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
             this(name, Visibility.PRIVATE, isAbstract, ActorKind.NONE, ActorBoundary.LOCAL,
-                    genericParameters, parents, interfaces, fields, null, methods);
+                    genericParameters, parents, interfaces, fields, null,
+                    List.of(), methods);
         }
 
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
             this(name, Visibility.PRIVATE, isAbstract, ActorKind.NONE, ActorBoundary.LOCAL,
-                    genericParameters, List.of(), List.of(), fields, null, methods);
+                    genericParameters, List.of(), List.of(), fields, null,
+                    List.of(), methods);
+        }
+    }
+
+    /**
+     * Compiler-owned foreign callable declaration. It is not a method:
+     * no receiver, no virtual dispatch and no guest body.
+     */
+    public record ForeignDecl(
+            String name,
+            boolean suspends,
+            List<Param> parameters,
+            TypeRef returnType,
+            String symbolIdentity) {
+        public ForeignDecl {
+            if (name == null || name.isBlank())
+                throw new IllegalArgumentException("foreign declaration name cannot be blank");
+            if (!suspends)
+                throw new IllegalArgumentException("ffi v1 foreign declarations must suspend");
+            parameters = List.copyOf(parameters);
+            java.util.Objects.requireNonNull(returnType, "foreign return type");
+            if (symbolIdentity == null || symbolIdentity.isBlank())
+                throw new IllegalArgumentException("foreign symbol identity cannot be blank");
         }
     }
 
