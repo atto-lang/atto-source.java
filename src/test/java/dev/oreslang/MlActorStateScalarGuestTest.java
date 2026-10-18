@@ -157,6 +157,48 @@ final class MlActorStateScalarGuestTest {
                 stdout.toString(StandardCharsets.UTF_8));
     }
 
+
+    @Test void actualGuestNominalErrorRoundTripAndExhaustiveResultMatch() throws Exception {
+        // A positive gate prevents parser errors or blanket enum refusal from
+        // being mistaken for successful negative semantic tests below.
+        String program = """
+                define enum LocalTrainingError as
+                    INVALID_INPUT = 1
+                    STALE_GRAPH = 2
+                end
+                pub fnc display(Result<int, LocalTrainingError> result): int {
+                    match result over
+                        on Ok(value) -> { return value; }
+                        on Err(problem) -> {
+                            match problem over
+                                on LocalTrainingError.INVALID_INPUT -> { return -7; }
+                                on LocalTrainingError.STALE_GRAPH -> { return -8; }
+                            end
+                        }
+                    end
+                }
+                pub routine main(): void {
+                    val Result<int, LocalTrainingError> rejected =
+                        Err(LocalTrainingError.STALE_GRAPH());
+                    val Result<int, LocalTrainingError> negative = Ok(-10);
+                    stdio.println(display(rejected));
+                    stdio.println(display(negative));
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> verify(program),
+                "closed nominal enum must pass parser/type/effect/ownership checks");
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            Source executable = Source.newBuilder(OresLanguage.ID, program,
+                    "ml-nominal-result-positive.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            assertDoesNotThrow(() -> context.eval(executable));
+        }
+        assertEquals("-8\n-10\n", output.toString(StandardCharsets.UTF_8));
+    }
+
     @Test void nominalTrainingErrorsRequireExactPayloadTypesAndExhaustiveCases() {
         String wrongErrorType = """
                 define enum TrainingError as
@@ -183,6 +225,28 @@ final class MlActorStateScalarGuestTest {
         assertDoesNotThrow(() -> Parser.parse(omittedCase),
                 "non-exhaustive negative must parse");
         assertRejected(omittedCase);
+
+        // Identical case names and numeric wire tags do NOT confer type
+        // identity. This negative must pass the parser and fail semantically.
+        String wrongNominalIdentity = """
+                define enum TrainingError as
+                    INVALID_INPUT = 1
+                end
+                define enum ForeignTrainingError as
+                    INVALID_INPUT = 1
+                end
+                pub fnc bad(): Result<int, TrainingError> {
+                    return Err(ForeignTrainingError.INVALID_INPUT());
+                }
+                pub routine main(): void {
+                    stdio.println("UNSAFE_MAIN_EXECUTED");
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(wrongNominalIdentity),
+                "nominal foreign-type negative must be syntactically valid");
+        assertRejected(wrongNominalIdentity);
+        assertGuestRejectedBeforeMain(wrongNominalIdentity);
     }
 
     @Test void readEffectsDoNotGrantStateWriteAndLoanCannotEscape() {

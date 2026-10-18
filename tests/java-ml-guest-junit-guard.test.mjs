@@ -109,3 +109,19 @@ test("graph epoch authority is separately checked in guest gate",()=>{
   assert.match(java,/graph_id: int = 202/);
   assert.match(java,/wrong_graph/);
 });
+
+test("nominal guest positive-control and equal-tag foreign enum denial are mandatory",()=>{
+  const positive=section("@Test void actualGuestNominalErrorRoundTripAndExhaustiveResultMatch()",
+      "@Test void nominalTrainingErrorsRequireExactPayloadTypesAndExhaustiveCases()");
+  assert.match(positive,/assertDoesNotThrow\(\(\) -> verify\(program\)/);
+  assert.match(positive,/context\.eval\(executable\)/);
+  assert.match(positive,/assertEquals\("-8\\n-10\\n"/);
+  assert.match(positive,/LocalTrainingError\.STALE_GRAPH\(\)/);
+  const negative=section("@Test void nominalTrainingErrorsRequireExactPayloadTypesAndExhaustiveCases()",
+      "@Test void readEffectsDoNotGrantStateWriteAndLoanCannotEscape()");
+  assert.match(negative,/ForeignTrainingError\.INVALID_INPUT\(\)/);
+  assert.match(negative,/assertRejected\(wrongNominalIdentity\)/);
+  assert.match(negative,/assertGuestRejectedBeforeMain\(wrongNominalIdentity\)/);
+  assert.match(negative,/Parser\.parse\(wrongNominalIdentity\)/);
+  assert.match(negative,/assertRejected\(omittedCase\)/);
+});
