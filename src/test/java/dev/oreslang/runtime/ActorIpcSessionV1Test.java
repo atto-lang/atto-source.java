@@ -155,6 +155,35 @@ final class ActorIpcSessionV1Test {
     }
 
     @Test
+    void validMacCannotOverrideLogicalRouteIdentity() throws Exception {
+        ActorArtifact<Object> artifact = artifact(
+                "ImageWorker", MESSAGE_ABI, ARTIFACT);
+        try (ActorIpcSessionV1 session = ActorIpcSessionV1.create(
+                artifact, UUID.randomUUID(), 3, 5);
+             ActorIpcSessionV1.BootstrapMaterial bootstrap =
+                     session.claimBootstrapForTrustedLauncher()) {
+            byte[] ready = worker(
+                    bootstrap, artifact,
+                    ActorIpcSessionV1.Lane.CONTROL,
+                    ActorIpcSessionV1.FrameKind.READY,
+                    1, 0, new byte[0]);
+
+            // routeEpoch is the i64 at offset 40. Re-MAC with the legitimate
+            // CONTROL key to prove identity validation is independent of MAC.
+            ByteBuffer.wrap(ready)
+                    .order(ByteOrder.BIG_ENDIAN)
+                    .putLong(40, 6L);
+            retag(bootstrap, ActorIpcSessionV1.Lane.CONTROL, ready);
+
+            ActorIpcSessionV1.ProtocolException failure = assertThrows(
+                    ActorIpcSessionV1.ProtocolException.class,
+                    () -> session.acceptWorkerFrame(ready));
+            assertEquals(ActorIpcSessionV1.Reason.IDENTITY, failure.reason());
+            assertTrue(session.poisoned());
+        }
+    }
+
+    @Test
     void wrongWorkerMessageAbiFailsEvenWithValidBootstrapMac() {
         ActorArtifact<Object> expected = artifact(
                 "ImageWorker", MESSAGE_ABI, ARTIFACT);
@@ -370,6 +399,29 @@ final class ActorIpcSessionV1Test {
                 frameSequence,
                 messageSequence,
                 payload);
+    }
+
+    private static void retag(
+            ActorIpcSessionV1.BootstrapMaterial bootstrap,
+            ActorIpcSessionV1.Lane lane,
+            byte[] frame) throws Exception {
+        byte[] master = bootstrap.masterKey();
+        byte[] label = ("ORESIPC1:"
+                + (lane == ActorIpcSessionV1.Lane.DATA ? "data" : "control"))
+                .getBytes(StandardCharsets.US_ASCII);
+        javax.crypto.Mac derive = javax.crypto.Mac.getInstance("HmacSHA256");
+        derive.init(new javax.crypto.spec.SecretKeySpec(master, "HmacSHA256"));
+        byte[] laneKey = derive.doFinal(label);
+        Arrays.fill(master, (byte) 0);
+
+        int bodyLength = frame.length - 32;
+        javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+        mac.init(new javax.crypto.spec.SecretKeySpec(laneKey, "HmacSHA256"));
+        mac.update(frame, 0, bodyLength);
+        byte[] tag = mac.doFinal();
+        System.arraycopy(tag, 0, frame, bodyLength, tag.length);
+        Arrays.fill(laneKey, (byte) 0);
+        Arrays.fill(tag, (byte) 0);
     }
 
     private static ActorArtifact<Object> artifact(
