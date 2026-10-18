@@ -203,7 +203,7 @@ final class NestedOptionFutureUnwrapTest {
                   return 17;
                 }
                 async fnc fail_inner(): int {
-                  throw "inner-stage failure";
+                  val Option<int> missing = None; return missing.unwrap();
                 }
 
                 pub fnc main(): void {
@@ -223,7 +223,7 @@ final class NestedOptionFutureUnwrapTest {
     void outerFutureFailureMustNotInvokeInnerFlattenStage() throws Exception {
         String program = """
                 async fnc fail_outer(): int {
-                  throw "outer-stage failure";
+                  val Option<int> missing = None; return missing.unwrap();
                 }
                 async fnc answer(): int {
                   return 17;
