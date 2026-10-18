@@ -123,10 +123,10 @@ public final class PostgresDurableActorStore implements DurableActorStore {
                 bindShifted(p, 2, key);
                 if (p.executeUpdate() != 1) throw new IllegalStateException("actor vanished");
             }
-            long pendingInbox = pendingCount(c, "ores_durable_inbox", key);
-            long pendingOutbox = pendingCount(c, "ores_durable_outbox", key);
-            if (pendingMessages(pendingInbox) > maxPendingInbox ||
-                pendingMessages(pendingOutbox) > maxPendingOutbox) {
+            Pending pendingInbox = pendingCount(c, "ores_durable_inbox", key);
+            Pending pendingOutbox = pendingCount(c, "ores_durable_outbox", key);
+            if (pendingInbox.count() > maxPendingInbox ||
+                pendingOutbox.count() > maxPendingOutbox) {
                 throw new IllegalStateException("pending queue exceeds actor quota");
             }
             List<Inbound> inbox = new ArrayList<>();
@@ -151,8 +151,10 @@ public final class PostgresDurableActorStore implements DurableActorStore {
         });
     }
 
+    private record Pending(long count, long bytes) { }
+
     /** Requires a previously locked actor row so concurrent admissions cannot overrun quotas. */
-    private static long pendingCount(Connection c, String table, Address key)
+    private static Pending pendingCount(Connection c, String table, Address key)
             throws SQLException {
         // Internal fixed table names ONLY; no user-provided SQL identifiers.
         if (!"ores_durable_inbox".equals(table) && !"ores_durable_outbox".equals(table)) {
@@ -170,17 +172,9 @@ public final class PostgresDurableActorStore implements DurableActorStore {
                 if (count < 0 || bytes < 0 || bytes > MAX_PENDING_BYTES) {
                     throw new IllegalStateException("persisted queue exceeds admission budget");
                 }
-                return (count << 32) | bytes;
+                return new Pending(count, bytes);
             }
         }
-    }
-
-    private static long pendingMessages(long countsAndBytes) {
-        return countsAndBytes >>> 32;
-    }
-
-    private static long pendingBytes(long countsAndBytes) {
-        return countsAndBytes & 0xffffffffL;
     }
 
     private static void bindShifted(PreparedStatement p, int at, Address key) throws SQLException {
@@ -208,9 +202,9 @@ public final class PostgresDurableActorStore implements DurableActorStore {
                     if (rs.next()) return false; // idempotent even when full
                 }
             }
-            long pending = pendingCount(c, "ores_durable_inbox", key);
-            if (pendingMessages(pending) >= maxPendingInbox ||
-                pendingBytes(pending) + message.payload().length > MAX_PENDING_BYTES) {
+            Pending pending = pendingCount(c, "ores_durable_inbox", key);
+            if (pending.count() >= maxPendingInbox ||
+                pending.bytes() + message.payload().length > MAX_PENDING_BYTES) {
                 throw new IllegalStateException("durable inbox admission quota exhausted");
             }
             try (PreparedStatement p = c.prepareStatement(
@@ -262,7 +256,7 @@ public final class PostgresDurableActorStore implements DurableActorStore {
                 p.setString(5, turn.consumedDeliveryId());
                 if (p.executeUpdate() != 1) throw new IllegalStateException("unknown/consumed delivery");
             }
-            long pending = pendingCount(c, "ores_durable_outbox", key);
+            Pending pending = pendingCount(c, "ores_durable_outbox", key);
             long newBytes = 0;
             for (Outbound outgoing : turn.outgoing()) {
                 newBytes += outgoing.payload().length;
@@ -270,8 +264,8 @@ public final class PostgresDurableActorStore implements DurableActorStore {
                     throw new IllegalStateException("outbox payload admission quota exhausted");
                 }
             }
-            if (pendingMessages(pending) + turn.outgoing().size() > maxPendingOutbox ||
-                pendingBytes(pending) + newBytes > MAX_PENDING_BYTES) {
+            if (pending.count() + turn.outgoing().size() > maxPendingOutbox ||
+                pending.bytes() + newBytes > MAX_PENDING_BYTES) {
                 throw new IllegalStateException("durable outbox admission quota exhausted");
             }
             for (Outbound msg : turn.outgoing()) {
