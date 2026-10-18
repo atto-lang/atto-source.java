@@ -1,0 +1,377 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Path;
+import java.sql.DriverManager;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class SqliteWorkflowJournalV1Test {
+
+    @TempDir
+    Path tempDir;
+
+    @Test
+    void emptyStoreReopensWithCanonicalInitialState() {
+        Path db = tempDir.resolve("empty.db");
+        try (var store = SqliteWorkflowJournalV1.open(db)) {
+            var snapshot = store.snapshot();
+            assertNull(snapshot.runId());
+            assertNull(snapshot.maxIterations());
+            assertEquals(1L, snapshot.nextSequence());
+            assertEquals(0, snapshot.journalEntries());
+            assertTrue(store.effects().isEmpty());
+        }
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            assertEquals(1L, reopened.snapshot().nextSequence());
+            assertEquals(0, reopened.snapshot().journalEntries());
+        }
+    }
+
+    @Test
+    void roundTripReplaysWorkflowAndEffectLifecycle() {
+        Path db = tempDir.resolve("roundtrip.db");
+        var loop = new DurableDevLoopV1("run-sqlite", 4);
+        String sha = sha('a');
+
+        try (var store = SqliteWorkflowJournalV1.open(db)) {
+            store.append(loop.accept(
+                    "start",
+                    new DurableDevLoopV1.Start("goal")));
+            var codeClaim = store.claimNext(
+                    "coder", 100L, 100L).orElseThrow();
+            store.complete(
+                    codeClaim.effectKey(),
+                    codeClaim.claimToken(),
+                    "receipt://code",
+                    150L);
+
+            store.append(loop.accept(
+                    "code",
+                    new DurableDevLoopV1.CodeChanged(
+                            1, "patch://one")));
+            store.append(loop.accept(
+                    "push",
+                    new DurableDevLoopV1.PushRecorded(
+                            1, sha)));
+
+            var ci = store.effect(
+                    "devloop/run-sqlite/iteration/1/ci/" + sha)
+                    .orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.PENDING,
+                    ci.state());
+        }
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            var replay = reopened.replayDevLoop();
+            assertEquals(DurableDevLoopV1.Phase.WAITING_FOR_CI,
+                    replay.machine().snapshot().phase());
+            assertEquals(3, reopened.journal().size());
+
+            var code = reopened.effect(
+                    "devloop/run-sqlite/iteration/1/code")
+                    .orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.COMPLETED,
+                    code.state());
+            assertEquals("receipt://code", code.receiptRef());
+
+            var ci = reopened.effect(
+                    "devloop/run-sqlite/iteration/1/ci/" + sha)
+                    .orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.PENDING,
+                    ci.state());
+        }
+    }
+
+    @Test
+    void claimedAndAmbiguousStateSurvivesReopen() {
+        Path db = tempDir.resolve("lease.db");
+        var loop = new DurableDevLoopV1("run-lease", 3);
+        String effectKey;
+
+        try (var store = SqliteWorkflowJournalV1.open(db)) {
+            store.append(loop.accept(
+                    "start",
+                    new DurableDevLoopV1.Start("goal")));
+            var claim = store.claimNext(
+                    "worker-a", 1_000L, 50L).orElseThrow();
+            effectKey = claim.effectKey();
+        }
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            var claimed = reopened.effect(effectKey).orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.CLAIMED,
+                    claimed.state());
+            assertEquals("worker-a", claimed.workerId());
+
+            assertEquals(1, reopened.expireClaims(1_050L));
+        }
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            var ambiguous = reopened.effect(effectKey).orElseThrow();
+            assertEquals(
+                    WorkflowJournalV1.EffectState.AMBIGUOUS,
+                    ambiguous.state());
+            assertNotNull(ambiguous.claimToken());
+            assertTrue(ambiguous.leaseUntilMillis() > 0);
+
+            reopened.resolveAmbiguousForRetry(
+                    effectKey,
+                    "reconcile://not-found");
+            assertEquals(
+                    WorkflowJournalV1.EffectState.PENDING,
+                    reopened.effect(effectKey).orElseThrow().state());
+        }
+    }
+
+    @Test
+    void everyPreCommitFaultRollsBackWholeJournalOutboxMutation() {
+        EnumSet<SqliteWorkflowJournalV1.FaultPoint> points =
+                EnumSet.of(
+                        SqliteWorkflowJournalV1.FaultPoint.AFTER_BEGIN,
+                        SqliteWorkflowJournalV1.FaultPoint.AFTER_META_WRITE,
+                        SqliteWorkflowJournalV1.FaultPoint.AFTER_JOURNAL_WRITE,
+                        SqliteWorkflowJournalV1.FaultPoint.AFTER_EFFECT_WRITE,
+                        SqliteWorkflowJournalV1.FaultPoint.BEFORE_COMMIT);
+
+        for (var point : points) {
+            Path db = tempDir.resolve(
+                    "rollback-" + point.name() + ".db");
+            seedStarted(db, "run-" + point.name());
+
+            try (var store = SqliteWorkflowJournalV1.open(
+                    db,
+                    actual -> {
+                        if (actual == point) {
+                            throw new SimulatedCrash(point);
+                        }
+                    })) {
+                var machine = store.replayDevLoop().machine();
+                assertThrows(
+                        SimulatedCrash.class,
+                        () -> store.append(machine.accept(
+                                "code",
+                                new DurableDevLoopV1.CodeChanged(
+                                        1, "patch://one"))));
+            }
+
+            try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+                assertEquals(1, reopened.journal().size(), point::name);
+                assertEquals(
+                        DurableDevLoopV1.Phase.CODING,
+                        reopened.replayDevLoop().machine()
+                                .snapshot().phase(),
+                        point::name);
+                assertEquals(1, reopened.effects().size(), point::name);
+                assertEquals(
+                        WorkflowJournalV1.EffectState.PENDING,
+                        reopened.effects().getFirst().state(),
+                        point::name);
+            }
+        }
+    }
+
+    @Test
+    void faultAfterCommitRecoversNewStateRatherThanOldState() {
+        Path db = tempDir.resolve("after-commit.db");
+        seedStarted(db, "run-after-commit");
+
+        try (var store = SqliteWorkflowJournalV1.open(
+                db,
+                point -> {
+                    if (point
+                            == SqliteWorkflowJournalV1.FaultPoint.AFTER_COMMIT) {
+                        throw new SimulatedCrash(point);
+                    }
+                })) {
+            var machine = store.replayDevLoop().machine();
+            assertThrows(
+                    SimulatedCrash.class,
+                    () -> store.append(machine.accept(
+                            "code",
+                            new DurableDevLoopV1.CodeChanged(
+                                    1, "patch://one"))));
+        }
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            assertEquals(2, reopened.journal().size());
+            assertEquals(
+                    DurableDevLoopV1.Phase.WAITING_FOR_PUSH,
+                    reopened.replayDevLoop().machine().snapshot().phase());
+            assertEquals(
+                    WorkflowJournalV1.EffectState.ABANDONED,
+                    reopened.effect(
+                            "devloop/run-after-commit/iteration/1/code")
+                            .orElseThrow()
+                            .state());
+            assertEquals(
+                    WorkflowJournalV1.EffectState.PENDING,
+                    reopened.effect(
+                            "devloop/run-after-commit/iteration/1/push")
+                            .orElseThrow()
+                            .state());
+        }
+    }
+
+    @Test
+    void separateConnectionsHaveSingleWinnerForOnePendingEffect()
+            throws Exception {
+        Path db = tempDir.resolve("two-connections.db");
+        seedStarted(db, "run-two-connections");
+
+        try (var first = SqliteWorkflowJournalV1.open(db);
+             var second = SqliteWorkflowJournalV1.open(db);
+             var pool = Executors.newFixedThreadPool(2)) {
+            var start = new CountDownLatch(1);
+            var results = new ArrayList<
+                    java.util.concurrent.Future<
+                            java.util.Optional<WorkflowJournalV1.Claim>>>();
+
+            results.add(pool.submit(() -> {
+                start.await();
+                return first.claimNext(
+                        "worker-a", 100L, 100L);
+            }));
+            results.add(pool.submit(() -> {
+                start.await();
+                return second.claimNext(
+                        "worker-b", 100L, 100L);
+            }));
+            start.countDown();
+
+            List<WorkflowJournalV1.Claim> winners =
+                    new ArrayList<>();
+            for (var result : results) {
+                result.get(10, TimeUnit.SECONDS)
+                        .ifPresent(winners::add);
+            }
+            assertEquals(1, winners.size());
+        }
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            assertEquals(1, reopened.snapshot().claimedEffects());
+            assertEquals(0, reopened.snapshot().pendingEffects());
+        }
+    }
+
+    @Test
+    void tamperedEffectCommandFailsClosedOnOpen() throws Exception {
+        Path db = tempDir.resolve("tamper.db");
+        seedStarted(db, "run-tamper");
+
+        try (var connection = DriverManager.getConnection(
+                "jdbc:sqlite:" + db.toAbsolutePath());
+             var statement = connection.createStatement()) {
+            assertEquals(
+                    1,
+                    statement.executeUpdate("""
+                            UPDATE workflow_effects
+                            SET command_text1 = 'tampered goal'
+                            WHERE command_type = 'request_code'
+                            """));
+        }
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> SqliteWorkflowJournalV1.open(db));
+    }
+
+    @Test
+    void realChildProcessCrashBeforeCommitRecoversOldState()
+            throws Exception {
+        Path db = tempDir.resolve("process-before.db");
+        seedStarted(db, "run-process-before");
+
+        int exit = runCrashWorker(
+                db,
+                SqliteWorkflowJournalV1.FaultPoint.BEFORE_COMMIT);
+        assertNotEquals(0, exit);
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            assertEquals(1, reopened.journal().size());
+            assertEquals(
+                    DurableDevLoopV1.Phase.CODING,
+                    reopened.replayDevLoop().machine().snapshot().phase());
+        }
+    }
+
+    @Test
+    void realChildProcessCrashAfterCommitRecoversNewState()
+            throws Exception {
+        Path db = tempDir.resolve("process-after.db");
+        seedStarted(db, "run-process-after");
+
+        int exit = runCrashWorker(
+                db,
+                SqliteWorkflowJournalV1.FaultPoint.AFTER_COMMIT);
+        assertNotEquals(0, exit);
+
+        try (var reopened = SqliteWorkflowJournalV1.open(db)) {
+            assertEquals(2, reopened.journal().size());
+            assertEquals(
+                    DurableDevLoopV1.Phase.WAITING_FOR_PUSH,
+                    reopened.replayDevLoop().machine().snapshot().phase());
+        }
+    }
+
+    private static int runCrashWorker(
+            Path database,
+            SqliteWorkflowJournalV1.FaultPoint point)
+            throws Exception {
+        String classPath = System.getProperty(
+                "surefire.test.class.path",
+                System.getProperty("java.class.path"));
+        Process process = new ProcessBuilder(
+                Path.of(
+                        System.getProperty("java.home"),
+                        "bin",
+                        "java").toString(),
+                "-cp",
+                classPath,
+                SqliteWorkflowJournalCrashWorkerV1.class.getName(),
+                database.toAbsolutePath().toString(),
+                point.name())
+                .redirectErrorStream(true)
+                .start();
+        boolean exited = process.waitFor(20, TimeUnit.SECONDS);
+        if (!exited) {
+            process.destroyForcibly();
+            fail("crash worker did not terminate");
+        }
+        return process.exitValue();
+    }
+
+    private static void seedStarted(Path db, String runId) {
+        var loop = new DurableDevLoopV1(runId, 3);
+        try (var store = SqliteWorkflowJournalV1.open(db)) {
+            store.append(loop.accept(
+                    "start",
+                    new DurableDevLoopV1.Start("goal")));
+        }
+    }
+
+    private static String sha(char value) {
+        return String.valueOf(value).repeat(40);
+    }
+
+    private static final class SimulatedCrash
+            extends RuntimeException {
+        private SimulatedCrash(
+                SqliteWorkflowJournalV1.FaultPoint point) {
+            super(point.name());
+        }
+    }
+}
