@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -171,18 +173,18 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
     private final ActorReliabilityKernel reliability;
 
     /*
-     * Ticket has identity equality. Linked collections preserve admission order
-     * for deterministic close/target-failure settlement while remaining O(1)
-     * for direct removals.
+     * Ticket has identity equality. Keep the global hot-path indices compact;
+     * ordering is required only inside per-target/deadline buckets and in the
+     * ledger's insertion-preserving close result.
      */
     private final Map<GenServerReplyLedger.Ticket, PendingCall<R>> active =
-            new LinkedHashMap<>();
+            new IdentityHashMap<>();
     private final Map<GenServerReplyLedger.Target, Set<GenServerReplyLedger.Ticket>> byTarget =
-            new LinkedHashMap<>();
+            new HashMap<>();
     private final NavigableMap<Long, Set<GenServerReplyLedger.Ticket>> byDeadline =
             new TreeMap<>();
     private final Map<GenServerReplyLedger.Ticket, Long> deadlineByTicket =
-            new LinkedHashMap<>();
+            new IdentityHashMap<>();
 
     private boolean closed;
     private boolean hasClockSample;
