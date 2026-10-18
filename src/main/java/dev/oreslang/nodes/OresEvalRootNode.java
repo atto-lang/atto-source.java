@@ -7011,6 +7011,12 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return chainFuture(future, callback, true, false);
                     };
+                    case "flatten" -> (Invokable) args -> {
+                        requireZero(args, "Future.flatten");
+                        // Use the owned scheduler's continuation path.  In particular,
+                        // a producer callback must never execute guest code inline.
+                        return chainFuture(future, values -> values.getFirst(), true, false);
+                    };
                     case "onSuccess" -> (Invokable) args -> {
                         requireOne(args, "Future.onSuccess");
                         if (!(args.getFirst() instanceof Invokable callback)) {
@@ -7260,6 +7266,28 @@ public final class OresEvalRootNode extends RootNode {
                     requireZero(args, "Option.unwrap");
                     if (!option.present()) throw new OresPanic("called Option::unwrap() on a None value");
                     return option.value();
+                };
+                case "unwrap_all" -> (Invokable) args -> {
+                    requireZero(args, "Option.unwrap_all");
+                    Object current = option;
+                    // Iterative rather than recursive: bounded by the input value's
+                    // nesting, not the Java call stack.
+                    while (current instanceof OptionValue layer) {
+                        if (!layer.present()) {
+                            throw new OresPanic("called Option::unwrap_all() on a None value");
+                        }
+                        current = layer.value();
+                    }
+                    return current;
+                };
+                case "flatten" -> (Invokable) args -> {
+                    requireZero(args, "Option.flatten");
+                    if (!option.present()) return option;
+                    if (!(option.value() instanceof OptionValue nested)) {
+                        throw new IllegalArgumentException(
+                                "Option.flatten requires an inner Option value");
+                    }
+                    return nested;
                 };
                 case "unwrap_safe" -> (Invokable) args -> {
                     requireZero(args, "Option.unwrap_safe");
