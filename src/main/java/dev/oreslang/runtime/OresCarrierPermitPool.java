@@ -252,7 +252,6 @@ final class OresCarrierPermitPool {
                 throw failure;
             }
 
-            final Thread[] holder = new Thread[1];
             Runnable tracked = () -> {
                 try {
                     decorated.run();
@@ -276,7 +275,6 @@ final class OresCarrierPermitPool {
             try {
                 thread = new Thread(tracked, prefix + next.incrementAndGet());
                 thread.setDaemon(true);
-                holder[0] = thread;
                 live.put(thread, permit);
                 createdByCaller.get().add(thread);
                 return thread;
