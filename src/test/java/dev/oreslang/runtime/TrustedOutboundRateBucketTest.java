@@ -30,7 +30,7 @@ final class TrustedOutboundRateBucketTest {
         var bucket = new TrustedOutboundRateBucket(1, 2, clock::get);
         assertTrue(bucket.tryConsume(2));
         assertFalse(bucket.tryConsume(1));
-        bucket.refundFailedSend(2);
+        bucket.rollbackUnpublished(2);
         assertEquals(2L, bucket.remaining());
         assertTrue(bucket.tryConsume(2));
         assertFalse(bucket.tryConsume(1));
@@ -61,7 +61,7 @@ final class TrustedOutboundRateBucketTest {
         var bucket = new TrustedOutboundRateBucket(20, 5, clock::get);
         assertThrows(IllegalArgumentException.class, () -> bucket.tryConsume(0));
         assertThrows(IllegalArgumentException.class, () -> bucket.tryConsume(6));
-        assertThrows(IllegalArgumentException.class, () -> bucket.refundFailedSend(-1));
+        assertThrows(IllegalArgumentException.class, () -> bucket.rollbackUnpublished(-1));
     }
 
     @Test
