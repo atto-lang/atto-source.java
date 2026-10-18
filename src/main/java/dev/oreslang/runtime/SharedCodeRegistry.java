@@ -156,6 +156,23 @@ public final class SharedCodeRegistry {
         return false;
     }
 
+    /**
+     * Auth check and the first pinned code-image lease are ONE synchronized
+     * admission decision. Without this, a revoke/close may race the earlier
+     * canShare() check and allow a NEW lease after authority retirement.
+     * An already-acquired lease may drain after revocation.
+     */
+    public synchronized Lease acquireApprovedForAdversarialSharing(
+            SharingScope scope, String codeUnitId, String sourceText) {
+        requireLiveScope(scope);
+        requireIdentity(codeUnitId, sourceText);
+        if (!adversarialShareAllowlist.contains(
+                new ScopedApproval(scope, new Key(codeUnitId, digest(sourceText))))) {
+            throw new SecurityException("adversarial code sharing approval was revoked or absent");
+        }
+        return acquire(codeUnitId, sourceText);
+    }
+
     private static void requireIdentity(String codeUnitId, String sourceText) {
         Objects.requireNonNull(codeUnitId, "codeUnitId");
         Objects.requireNonNull(sourceText, "sourceText");
