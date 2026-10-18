@@ -200,4 +200,69 @@ final class OresCancellationSourceTest {
     }
 
 
+
+    @Test
+    void blockedSiblingObserverDoesNotDelayTransitiveRevocation() throws Exception {
+        try (OresCancellationSource root = new OresCancellationSource();
+             OresCancellationSource first = OresCancellationSource.linked(root.token());
+             OresCancellationSource second = OresCancellationSource.linked(root.token())) {
+            CountDownLatch callbackEntered = new CountDownLatch(1);
+            CountDownLatch releaseCallback = new CountDownLatch(1);
+            CountDownLatch finished = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<Throwable> failed =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            AtomicInteger secondCallbacks = new AtomicInteger();
+            first.token().onCancellationRequested(() -> {
+                callbackEntered.countDown();
+                try {
+                    releaseCallback.await();
+                } catch (InterruptedException interruption) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            second.token().onCancellationRequested(secondCallbacks::incrementAndGet);
+
+            Thread canceller = Thread.ofVirtual().start(() -> {
+                try {
+                    root.cancel();
+                } catch (Throwable failure) {
+                    failed.set(failure);
+                } finally {
+                    finished.countDown();
+                }
+            });
+            try {
+                assertTrue(callbackEntered.await(2, TimeUnit.SECONDS));
+                assertTrue(first.isCancellationRequested());
+                assertTrue(second.isCancellationRequested(),
+                        "sibling must be revoked before blocking host callback");
+                assertFalse(finished.await(100, TimeUnit.MILLISECONDS));
+            } finally {
+                releaseCallback.countDown();
+                canceller.join();
+            }
+            assertNull(failed.get());
+            assertEquals(1, secondCallbacks.get());
+            assertEquals(0, root.notification().pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test
+    void throwingListenerCannotSuppressCancellationOfOtherLinkedChildren() {
+        try (OresCancellationSource root = new OresCancellationSource();
+             OresCancellationSource first = OresCancellationSource.linked(root.token());
+             OresCancellationSource second = OresCancellationSource.linked(root.token())) {
+            AtomicInteger delivered = new AtomicInteger();
+            first.token().onCancellationRequested(() -> {
+                throw new IllegalStateException("simulated observer error");
+            });
+            first.token().onCancellationRequested(delivered::incrementAndGet);
+            second.token().onCancellationRequested(delivered::incrementAndGet);
+            assertTrue(root.cancel());
+            assertTrue(first.isCancellationRequested());
+            assertTrue(second.isCancellationRequested());
+            assertEquals(2, delivered.get());
+        }
+    }
+
 }
