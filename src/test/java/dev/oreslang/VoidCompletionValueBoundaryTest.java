@@ -64,6 +64,21 @@ final class VoidCompletionValueBoundaryTest {
     }
 
     @Test
+    void nestedVoidStorageIsRejectedBeforeAnyValueCanEscape() {
+        for (String type : new String[] {
+                "Array<void>", "List<void>", "Option<Array<void>>",
+                "Future<List<void>>", "Result<List<void>, String>",
+                "Result<int, void>"
+        }) {
+            String source = "define class Invalid as val " + type + " value; end";
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source), type);
+            assertTrue(error.getMessage().contains("void"), error::getMessage);
+        }
+    }
+
+    @Test
     void optionVoidAndFutureVoidNeverImplicitlyConvertToEachOther() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(DECLARATIONS + """
