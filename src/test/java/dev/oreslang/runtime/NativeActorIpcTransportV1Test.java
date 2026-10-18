@@ -143,6 +143,13 @@ final class NativeActorIpcTransportV1Test {
                         NativeActorIpcTransportV1.ReadTimeoutException.class,
                         () -> transport.readDataFrame(25));
 
+                byte[] unblock =
+                        "unblock-data".getBytes(StandardCharsets.US_ASCII);
+                transport.writeDataFrame(unblock);
+                assertArrayEquals(
+                        unblock,
+                        transport.readDataFrame(2_000));
+
                 byte[] trigger =
                         "PART".getBytes(StandardCharsets.US_ASCII);
                 transport.writeControlFrame(trigger);
