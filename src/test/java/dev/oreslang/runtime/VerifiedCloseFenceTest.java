@@ -165,4 +165,41 @@ final class VerifiedCloseFenceTest {
         assertFalse(VerifiedCloseFence.isVmFatal(new AssertionError("ordinary nonfatal")));
         assertTrue(VerifiedCloseFence.isVmFatal(vmFatal));
     }
+    @Test
+    void fatalFailedSpawnTeardownTakesPrecedenceWithoutGuestExceptionLeakage() {
+        var guest = new IllegalStateException("guest source: private tenant implementation");
+        var fatal = new LinkageError("host native isolate close failed");
+        Throwable chosen = VerifiedCloseFence.preferFatalSpawnCleanup(guest, fatal);
+        assertSame(fatal, chosen, "fatal Engine/Context retirement must stay VM-fatal");
+        assertEquals(1, chosen.getSuppressed().length);
+        assertNotSame(guest, chosen.getSuppressed()[0],
+                "do not attach raw guest throwable to host fatal error");
+        assertFalse(chosen.getSuppressed()[0].getMessage().contains("private tenant"));
+        assertNull(chosen.getSuppressed()[0].getCause());
+        assertSame(fatal, assertThrows(LinkageError.class,
+                () -> VerifiedCloseFence.rethrowRetirementFailure(chosen)));
+    }
+
+    @Test
+    void ordinaryFailedSpawnTeardownStaysSanitizedAndReservesSlot() {
+        var rejectedGuest = new IllegalArgumentException("untrusted guest data");
+        var cleanup = new IllegalStateException("guest leaked cleanup details");
+        Throwable chosen = VerifiedCloseFence.preferFatalSpawnCleanup(rejectedGuest, cleanup);
+        assertSame(rejectedGuest, chosen, "original admission failure remains primary");
+        assertEquals(1, chosen.getSuppressed().length);
+        assertNotSame(cleanup, chosen.getSuppressed()[0]);
+        assertTrue(chosen.getSuppressed()[0].getMessage().contains("reservation retained"));
+        assertNull(chosen.getSuppressed()[0].getCause());
+    }
+
+    @Test
+    void alreadyFatalSpawnFailureCannotBeDemotedByCleanup() {
+        var admission = new OutOfMemoryError("VM failure during admission");
+        var later = new LinkageError("VM failure during close");
+        assertSame(admission,
+                VerifiedCloseFence.preferFatalSpawnCleanup(admission, later));
+        assertEquals(1, admission.getSuppressed().length);
+        assertNotSame(later, admission.getSuppressed()[0]);
+    }
+
 }
