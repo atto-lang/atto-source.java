@@ -26,6 +26,26 @@ final class LambdaCaptureStatements {
             value(s.value(), locals, free);
         } else if (stmt instanceof Ast.ExprStmt s) {
             value(s.expression(), locals, free);
+        } else if (stmt instanceof Ast.DestructureStmt s) {
+            value(s.initializer(), locals, free);
+            for (Ast.DestructureBinding b : s.bindings())
+                if (!b.isDiscard()) locals.add(b.name());
+        } else if (stmt instanceof Ast.YieldStmt s) {
+            value(s.value(), locals, free);
+        } else if (stmt instanceof Ast.DeferStmt s) {
+            value(s.expression(), locals, free);
+        } else if (stmt instanceof Ast.BlockStmt s) {
+            scan(s.body(), locals, free);
+        } else if (stmt instanceof Ast.LoopStmt s) {
+            scan(s.body(), locals, free);
+        } else if (stmt instanceof Ast.IfStmt s) {
+            for (Ast.IfBranch arm : s.branches()) {
+                value(arm.condition(), locals, free);
+                Set<String> branch = new HashSet<>(locals);
+                LambdaCaptureExpressions.condition(arm.condition(), branch);
+                scan(arm.body(), branch, free);
+            }
+            scan(s.elseBody(), locals, free);
         } else {
             throw new IllegalArgumentException("unsupported lexical capture statement " + stmt);
         }
