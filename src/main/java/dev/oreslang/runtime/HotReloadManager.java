@@ -213,7 +213,10 @@ public final class HotReloadManager implements AutoCloseable {
         try {
             Source source;
             if (shareCodeImage) {
-                codeImage = SharedCodeRegistry.process().acquire(codeUnitId, sourceText);
+                codeImage = guestPolicy.adversarial()
+                        ? SharedCodeRegistry.process().acquireApprovedForAdversarialSharing(
+                                sharingScope, codeUnitId, sourceText)
+                        : SharedCodeRegistry.process().acquire(codeUnitId, sourceText);
                 if (!codeImage.sha256().equals(sourceDigest)) {
                     throw new IllegalArgumentException(
                             "compiled code-unit source digest mismatch");
