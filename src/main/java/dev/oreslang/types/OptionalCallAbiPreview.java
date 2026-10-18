@@ -162,14 +162,13 @@ public final class OptionalCallAbiPreview {
             requireExactConcreteType(supplied);
         }
 
-        // A null LiteralExpr cannot become Some(null) merely because a caller
-        // supplied a forged claimed type. Real calls must still be checked by
-        // the independent type checker; this is an extra AST-level safeguard.
-        for (Ast.Expr expression : expressions) {
-            if (expression instanceof Ast.LiteralExpr literal && literal.value() == null) {
-                throw new IllegalArgumentException(
-                        "null literal cannot be used as a supplied optional/required value");
-            }
+        // Scalar literal ASTs expose an independently knowable nominal type.
+        // Do not accept a caller-provided type assertion that contradicts
+        // the literal (including null). Other expression types still require
+        // independent semantic checking and are NOT authenticated here.
+        for (int source = 0; source < expressions.size(); source++) {
+            OptionalCallLiteralStage.requireMatchingLiteralType(
+                    expressions.get(source), evaluatedTypes.get(source));
         }
 
         Map<Integer, Integer> explicitOrigins = new HashMap<>();
