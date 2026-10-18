@@ -309,7 +309,21 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     try {
                         replacement.stop();
                     } catch (RuntimeException ignored) {
-                        // Old route rollback remains authoritative.
+                        // Rollback still keeps the old route authoritative.
+                    }
+                    if (!candidate.runtime().physicallyFinalizedForHotUpgrade(
+                            replacement)) {
+                        synchronized (routeLock) {
+                            retiredRoutes.add(new Route(
+                                    candidateGeneration,
+                                    candidateLease,
+                                    candidate,
+                                    replacement,
+                                    prior.incarnation));
+                        }
+                        // The candidate context must stay pinned until its
+                        // unpublished physical actor actually finalizes.
+                        candidateLeaseTransferred = true;
                     }
                 }
                 if (transfer != null) transfer.close();
@@ -347,7 +361,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         int released = 0;
         for (int i = retiredRoutes.size() - 1; i >= 0; --i) {
             Route old = retiredRoutes.get(i);
-            if (!old.physical.isAlive()) {
+            if (old.view.runtime().physicallyFinalizedForHotUpgrade(
+                    old.physical)) {
                 retiredRoutes.remove(i);
                 old.generationLease.close();
                 released++;
