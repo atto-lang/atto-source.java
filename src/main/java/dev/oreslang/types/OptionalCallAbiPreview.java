@@ -99,6 +99,28 @@ public final class OptionalCallAbiPreview {
                     throw new IllegalArgumentException("ABI plan drops a source expression");
                 }
             }
+            // Every explicit omission is a raw call item, whereas implicit
+            // omission has no raw origin. Reconstructed previews must never
+            // invent gaps in the parsed call list or reverse lexical effects.
+            for (int item = 0; item < seenCallItems.size(); item++) {
+                if (!seenCallItems.contains(item)) {
+                    throw new IllegalArgumentException(
+                            "ABI preview has a missing original call-item origin");
+                }
+            }
+            int[] rawIndexBySource = new int[sourceExpressions.size()];
+            for (Slot slot : abiSlots) {
+                if (slot.evaluatedSourceIndex() >= 0) {
+                    rawIndexBySource[slot.evaluatedSourceIndex()] =
+                            slot.originalCallItemIndex();
+                }
+            }
+            for (int i = 1; i < rawIndexBySource.length; i++) {
+                if (rawIndexBySource[i] <= rawIndexBySource[i - 1]) {
+                    throw new IllegalArgumentException(
+                            "ABI preview reorders lexical source evaluations");
+                }
+            }
         }
         public int fullArity() { return abiSlots.size(); }
     }
