@@ -814,26 +814,83 @@ public final class TypeChecker {
                 klass, implementation.name(), implementation.arity(),
                 new LinkedHashSet<>());
         if (origin == null || origin == klass) return;
+
+        MethodOrigin resolvedOrigin = null;
+        Map<Ast.MethodArity, List<MethodOrigin>> inherited =
+                inheritedMethodOrigins(
+                        klass, nominalClassType(klass), false, new LinkedHashSet<>());
+        for (MethodOrigin candidate :
+                inherited.getOrDefault(implementation.overloadIdentity(), List.of())) {
+            if (candidate.owner() != origin) continue;
+            if (resolvedOrigin != null
+                    && !resolvedOrigin.ownerType().equals(candidate.ownerType())) {
+                throw new IllegalArgumentException(
+                        "ambiguous generic private abstract slot view for "
+                                + klass.name() + "." + implementation.name());
+            }
+            resolvedOrigin = candidate;
+        }
+        if (resolvedOrigin == null) {
+            throw new IllegalArgumentException(
+                    "private abstract slot provenance lost for " + klass.name());
+        }
+
         Ast.MethodDecl contract = null;
         for (Ast.MethodDecl candidate : origin.methods()) {
             if (candidate.isAbstract()
                     && candidate.visibility() == Ast.Visibility.PRIVATE
                     && !candidate.isStatic()
-                    && candidate.overloadIdentity().equals(implementation.overloadIdentity())) {
+                    && candidate.overloadIdentity().equals(
+                            implementation.overloadIdentity())) {
+                if (contract != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate private abstract slot at origin "
+                                    + origin.name() + "." + implementation.name());
+                }
                 contract = candidate;
-                break;
             }
         }
-        if (contract == null) throw new IllegalArgumentException(
-                "private abstract slot provenance lost for " + klass.name());
-        if (!klass.genericParameters().isEmpty() || !origin.genericParameters().isEmpty()
-                || !contract.genericParameters().isEmpty()
-                || !implementation.genericParameters().isEmpty()) {
+        if (contract == null) {
             throw new IllegalArgumentException(
-                    "generic private abstract override requires checked type substitution; "
-                            + "cannot admit " + klass.name() + "." + implementation.name());
+                    "private abstract slot provenance lost for " + klass.name());
         }
-        boolean equal = contract.returnType().equals(implementation.returnType())
+        if (contract.genericParameters().size()
+                != implementation.genericParameters().size()) {
+            throw new IllegalArgumentException(
+                    "incompatible generic arity for private abstract method slot '"
+                            + klass.name() + "." + implementation.name() + "'");
+        }
+
+        Map<String, Type> requiredBindings =
+                new HashMap<>(classGenericBindings(origin, resolvedOrigin.ownerType()));
+        Map<String, Type> actualBindings =
+                new HashMap<>(classGenericBindings(klass, nominalClassType(klass)));
+        for (int i = 0; i < contract.genericParameters().size(); i++) {
+            Type canonical = new Generic("$private_abstract_method_" + i);
+            requiredBindings.put(contract.genericParameters().get(i), canonical);
+            actualBindings.put(
+                    implementation.genericParameters().get(i), canonical);
+        }
+
+        Set<String> requiredGenerics = new LinkedHashSet<>(origin.genericParameters());
+        requiredGenerics.addAll(contract.genericParameters());
+        Set<String> actualGenerics = new LinkedHashSet<>(klass.genericParameters());
+        actualGenerics.addAll(implementation.genericParameters());
+
+        // Self is receiver-polymorphic. Compare both declarations against the
+        // same synthetic Self identity instead of accidentally comparing the
+        // nominal origin class to the concrete overriding class.
+        Type canonicalSelf =
+                new SelfType(new Generic("$private_abstract_self"));
+
+        Type requiredReturn = substituteGenerics(
+                resolve(contract.returnType(), requiredGenerics, canonicalSelf),
+                requiredBindings);
+        Type actualReturn = substituteGenerics(
+                resolve(implementation.returnType(), actualGenerics, canonicalSelf),
+                actualBindings);
+
+        boolean equal = requiredReturn.equals(actualReturn)
                 && contract.async() == implementation.async()
                 && contract.suspends() == implementation.suspends()
                 && contract.structural() == implementation.structural()
@@ -843,17 +900,27 @@ public final class TypeChecker {
                    == (implementation.explicitReceiverType() != null
                        && implementation.explicitReceiverType().isBorrow()
                        && implementation.explicitReceiverType().mutableBorrow());
+
         for (int i = 0; i < implementation.arity() && equal; i++) {
             Ast.Param required = contract.parameters().get(i);
             Ast.Param actual = implementation.parameters().get(i);
-            equal = required.type().equals(actual.type())
+            Type requiredType = substituteGenerics(
+                    resolve(required.type(), requiredGenerics, canonicalSelf),
+                    requiredBindings);
+            Type actualType = substituteGenerics(
+                    resolve(actual.type(), actualGenerics, canonicalSelf),
+                    actualBindings);
+            equal = requiredType.equals(actualType)
                     && required.mutable() == actual.mutable()
                     && required.structural() == actual.structural();
         }
-        if (!equal) throw new IllegalArgumentException(
-                "incompatible private abstract method override '" + klass.name()
-                        + "." + implementation.name()
-                        + "': original superclass signature or effects differ");
+
+        if (!equal) {
+            throw new IllegalArgumentException(
+                    "incompatible private abstract method override '"
+                            + klass.name() + "." + implementation.name()
+                            + "': original superclass signature or effects differ");
+        }
     }
 
     private Map<Ast.MethodArity, List<MethodOrigin>> inheritedMethodOrigins(
