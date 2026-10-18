@@ -33,8 +33,12 @@ finish() {
   if (( code == 0 )); then status=PASS; fi
   # A dirty checkout can contain an ignored target/ symlink before any
   # preflight. Never follow it when writing a failure receipt (or logs).
-  if [[ -L "$root/target" || -L "$EVIDENCE_DIR" ]]; then
+  if [[ -L "$root/target" || -L "$EVIDENCE_DIR" ||
+        -L "$EVIDENCE_DIR/receipt.txt" ]]; then
     printf 'ERROR: refusing to write qualification evidence through a symlink.\n' >&2
+    # A successful test command cannot become a successful qualification if
+    # its evidence location is unsafe. Preserve an earlier nonzero status.
+    if (( code == 0 )); then code=73; fi
     exit "$code"
   fi
   # Maven clean may remove target/; restore the receipt directory on failure.
@@ -66,8 +70,9 @@ if [[ "$actual_commit" != "$EXPECTED_COMMIT" || "$actual_tree" != "$EXPECTED_TRE
   printf 'ERROR: exact source commit/tree mismatch, refusing to run tests.\n' >&2
   exit 66
 fi
-if [[ -L "$root/target" || -L "$EVIDENCE_DIR" ]]; then
-  printf 'ERROR: target/ or receipt directory symlink is forbidden.\n' >&2
+if [[ -L "$root/target" || -L "$EVIDENCE_DIR" ||
+      -L "$EVIDENCE_DIR/receipt.txt" ]]; then
+  printf 'ERROR: target/, receipt directory or receipt file symlink is forbidden.\n' >&2
   exit 68
 fi
 if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
