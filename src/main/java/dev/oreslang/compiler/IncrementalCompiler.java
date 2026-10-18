@@ -205,8 +205,10 @@ public final class IncrementalCompiler {
         cache.clear();
     }
 
-    private static String abiDigest(Ast.Program program) {
-        StringBuilder abi = new StringBuilder("ores-abi-v2\n");
+    static String abiDigest(Ast.Program program) {
+        // Version bump invalidates older cache entries whose ABI omitted
+        // the authorization annotations on exported declarations.
+        StringBuilder abi = new StringBuilder("ores-abi-v3-role-contracts\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
         for (Ast.ModuleDecl module : program.modules()) {
@@ -233,7 +235,9 @@ public final class IncrementalCompiler {
             abi.append(fn.kind()).append(" pub ").append(fn.name());
             appendGenericSpecs(abi, fn.genericSpecs());
             appendParams(abi, fn.parameters());
-            abi.append("=>").append(typeRef(fn.returnType())).append('\n');
+            abi.append("=>").append(typeRef(fn.returnType()));
+            appendCallerRoleAbi(abi, fn.annotations());
+            abi.append('\n');
             return;
         }
         if (decl instanceof Ast.ClassDecl klass) {
@@ -324,8 +328,31 @@ public final class IncrementalCompiler {
                 .append("#arity").append(method.arity());
         appendGenerics(out, method.genericParameters());
         appendParams(out, method.parameters());
-        out.append("=>").append(typeRef(method.returnType())).append('\n');
+        out.append("=>").append(typeRef(method.returnType()));
+        appendCallerRoleAbi(out, method.annotations());
+        out.append('\n');
         return out.toString();
+    }
+
+    /**
+     * Callable annotations affect which clients are allowed to call/export
+     * a symbol and therefore participate in public incremental ABI hashes.
+     * Treat these values as ABI *fingerprints*, not validated import proof:
+     * the linked declaration and its roles still require trusted resolution.
+     */
+    private static void appendCallerRoleAbi(StringBuilder out, List<Ast.Annotation> annotations) {
+        for (String annotationName : List.of("CallableBy", "CallerRole")) {
+            for (Ast.Annotation annotation : annotations) {
+                if (!annotation.name().equals(annotationName)) continue;
+                List<String> roles = annotation.arguments().stream()
+                        .map(IncrementalCompiler::typeRef).sorted().toList();
+                out.append(" @").append(annotationName).append('(');
+                for (String role : roles) {
+                    out.append(role.length()).append(':').append(role).append(',');
+                }
+                out.append(')');
+            }
+        }
     }
 
     private static String interfaceFunctionAbi(Ast.InterfaceFunctionDecl fn) {
