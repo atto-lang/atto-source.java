@@ -241,6 +241,45 @@ final class EnumCaseSourceBindingsTest {
     }
 
     @Test
+    void unicodeAndPayloadEnumsRemainValidOfflineEvenWhenNativeAotIsIneligible() {
+        // The language frontend supports a wider nominal syntax than the
+        // temporary portable native nullary-tag AOT layout.
+        Ast.Program unicodeNullary = Parser.parse("""
+                define enum Café as Été, Hiver end
+                fnc use(Café.Été value): void {}
+                fnc use(Café.Hiver value): void {}
+                """);
+        var unicodeProof = EnumCaseSourceBindings.compileLocalProof(unicodeNullary);
+        Key key = new Key(MODULE, "local_unit.__root__", "use", 1);
+        assertEquals(2, unicodeProof.families().get(key).size());
+        assertEquals("Café.Été", unicodeProof.selectStagedTypeRefs(
+                key, List.of(Ast.TypeRef.simple("Café.Été")))
+                .function().parameters().getFirst().type().name());
+        assertFalse(unicodeProof.nullaryTagLayouts()
+                .containsKey("local_unit.__root__.Café"),
+                "Unicode enum remains parseable but cannot yet lower to native ASCII-only tag layout");
+
+        Ast.Program payloads = Parser.parse("""
+                define enum Café as Été: int, Hiver: int end
+                fnc use(Café.Été value): void {}
+                fnc use(Café.Hiver value): void {}
+                """);
+        var withPayload = EnumCaseSourceBindings.compileLocalProof(payloads);
+        assertEquals(2, withPayload.families().get(key).size());
+        assertFalse(withPayload.nullaryTagLayouts()
+                .containsKey("local_unit.__root__.Café"),
+                "payload-bearing enums cannot acquire a nullary AOT layout");
+
+        Ast.Program plainPayload = Parser.parse("""
+                define enum Foo as A: int, B: int end
+                fnc use(Foo.A value): void {}
+                fnc use(Foo.B value): void {}
+                """);
+        assertEquals(2, EnumCaseSourceBindings.compileLocalProof(plainPayload)
+                .families().get(key).size());
+    }
+
+    @Test
     void aotNullaryTagsNeverAuthorizeUnsafePayloadOrForgedValueDispatch() {
         Ast.Program payload = Parser.parse("""
                 define enum Foo as A, B: int end
