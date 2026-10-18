@@ -107,7 +107,8 @@ final class ActorProtocolDeclarationGateTest {
         for (String source : List.of(
                 "define actor X requires file.read as end",
                 "define actor X with io as end",
-                "define unary actor X as end")) {
+                "define unary actor X as end",
+                "define serial actor X as end")) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(source)), source);
             assertTrue(error.getMessage().contains("requires/with")
