@@ -30,6 +30,11 @@ for injected in JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS _JAVA_OPTIONS; do
 done
 java_details="$(java -XshowSettings:properties -version 2>&1)" || die 'Java version probe failed' 69
 java_major="$(printf '%s\n' "$java_details" | sed -n 's/^[[:space:]]*java.specification.version = //p' | head -n 1)"
+# Pin the actual JVM installation used by the PATH launcher. Maven may
+# instead invoke $JAVA_HOME/bin/java, so a matching vendor/version is not
+# enough to establish that both executions use the same runtime image.
+path_java_home="$(printf '%s\n' "$java_details" | sed -n 's/^[[:space:]]*java.home = //p' | head -n 1)"
+[[ -n "$path_java_home" ]] || die 'PATH Java home missing from JVM properties' 69
 [[ "$java_major" == '25' ]] || die 'GraalVM JDK 25 required' 69
 printf '%s\n' "$java_details" | grep -Eqi '^[[:space:]]*java\.(runtime\.name|vendor\.version)[[:space:]]*=[[:space:]]*.*graalvm' || die 'GraalVM JDK 25 runtime identity required' 69
 # Maven may ignore PATH's java and use JAVA_HOME instead. Never certify a
@@ -38,6 +43,9 @@ if [[ -n "${JAVA_HOME:-}" ]]; then
     [[ -x "$JAVA_HOME/bin/java" ]] || die 'JAVA_HOME does not contain executable java' 69
     home_details="$("$JAVA_HOME/bin/java" -XshowSettings:properties -version 2>&1)" || die 'JAVA_HOME version probe failed' 69
     home_major="$(printf '%s\n' "$home_details" | sed -n 's/^[[:space:]]*java.specification.version = //p' | head -n 1)"
+    home_java_home="$(printf '%s\n' "$home_details" | sed -n 's/^[[:space:]]*java.home = //p' | head -n 1)"
+    [[ -n "$home_java_home" && "$home_java_home" == "$path_java_home" ]] \
+      || die 'PATH and JAVA_HOME launch distinct Java installations' 69
     [[ "$home_major" == '25' ]] || die 'JAVA_HOME JVM must be JDK 25 for Maven' 69
     printf '%s\n' "$home_details" | grep -Eqi '^[[:space:]]*java\.(runtime\.name|vendor\.version)[[:space:]]*=[[:space:]]*.*graalvm' || die 'JAVA_HOME must use GraalVM JDK 25 runtime' 69
 fi

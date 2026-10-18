@@ -14,6 +14,7 @@ cat > "$work/bin/java" <<'MOCKJAVA'
 printf '    java.specification.version = %s\n' "${MOCK_JAVA_MAJOR:-25}" >&2
 printf '    java.runtime.name = %s\n' "${MOCK_JAVA_RUNTIME:-Oracle GraalVM}" >&2
 printf '    java.vendor.version = %s\n' "${MOCK_JAVA_VENDOR_VERSION:-Oracle Corporation}" >&2
+printf '    java.home = %s\n' "${MOCK_JAVA_HOME_PROP:-/opt/pinned-graalvm25}" >&2
 printf '    user.home = %s\n' "${MOCK_JAVA_USER_HOME:-/home/ci}" >&2
 MOCKJAVA
 cat > "$work/bin/mvn" <<'MOCKMVN'
@@ -104,6 +105,7 @@ cat > "$work/java-home-25/bin/java" <<'GOODHOMEJAVA'
 printf '    java.specification.version = 25\n' >&2
 printf '    java.runtime.name = %s\n' "${MOCK_HOME_JAVA_RUNTIME:-Oracle GraalVM}" >&2
 printf '    java.vendor.version = %s\n' "${MOCK_HOME_JAVA_VENDOR_VERSION:-Oracle Corporation}" >&2
+printf '    java.home = %s\n' "${MOCK_HOME_JAVA_HOME_PROP:-/opt/pinned-graalvm25}" >&2
 printf '    user.home = %s\n' "${MOCK_HOME_JAVA_USER_HOME:-/home/ci}" >&2
 GOODHOMEJAVA
 chmod +x "$work/java-home-21/bin/java" "$work/java-home-25/bin/java"
@@ -115,6 +117,13 @@ export JAVA_HOME="$work/java-home-25"
 attempt 0 "$expected" . targeted
 grep -q -- '-DfailIfNoTests=true test' "$MOCK_MAVEN_LOG"
 echo 'PASS matching JAVA_HOME GraalVM JDK25 invokes Maven'
+# Same GraalVM 25 vendor and major version do not prove the same JDK image.
+export MOCK_HOME_JAVA_HOME_PROP='/opt/unreviewed-second-graalvm25'
+attempt 69 "$expected" . targeted
+[[ ! -s "$MOCK_MAVEN_LOG" ]]
+unset MOCK_HOME_JAVA_HOME_PROP
+echo 'PASS distinct GraalVM JDK25 installations cannot be mixed'
+
 export MOCK_HOME_JAVA_RUNTIME='OpenJDK Runtime Environment'
 attempt 69 "$expected" . targeted
 [[ ! -s "$MOCK_MAVEN_LOG" ]]
