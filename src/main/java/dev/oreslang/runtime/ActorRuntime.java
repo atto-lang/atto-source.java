@@ -663,13 +663,15 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong normalTerminations = new AtomicLong();
     private final AtomicLong cancelledTerminations = new AtomicLong();
     private final AtomicLong failedTerminations = new AtomicLong();
-    // Bounded ordered MPSC terminal journal. Producers reserve monotonically
-    // increasing sequence slots; consumers cannot overtake an earlier claimed
-    // but not-yet-published slot.
-    private final AtomicLong supervisionEventHead = new AtomicLong();
-    private final AtomicLong supervisionEventTail = new AtomicLong();
-    private final AtomicReferenceArray<ActorTerminationPayload> supervisionEvents =
-            new AtomicReferenceArray<>(SUPERVISION_EVENT_CAPACITY);
+    // Bounded terminal journal. Capacity admission + payload publication are
+    // one ArrayBlockingQueue.offer operation, so a producer cannot reserve an
+    // ordering slot and die before publishing it. Sequence numbers are assigned
+    // only when the trusted supervisor actually drains a published payload.
+    // This deliberately prefers failure-time debuggability/predictability over
+    // a lock-free MPSC ring with a poisonable producer-publication gap.
+    private final ArrayBlockingQueue<ActorTerminationPayload> supervisionEvents =
+            new ArrayBlockingQueue<>(SUPERVISION_EVENT_CAPACITY);
+    private final AtomicLong supervisionEventSequence = new AtomicLong();
     private final AtomicLong supervisionEventsDropped = new AtomicLong();
     private final AtomicLong lifecyclePublicationFailures = new AtomicLong();
     /** Authoritative finalization bodies that may still submit observer work. */
@@ -890,41 +892,47 @@ public final class ActorRuntime implements AutoCloseable {
                 watchdogNoticesDropped.get());
     }
 
-    /** Host/supervisor nonblocking terminal-event drain. */
+    /** Host/supervisor nonblocking terminal-event drain.
+     *
+     * Sequence assignment happens after a complete immutable payload has been
+     * removed from the bounded queue. A killed producer therefore cannot leave
+     * a reserved-but-null head entry that hides every later failure record.
+     */
     public Optional<ActorTerminationEvent> pollTerminationEvent() {
         requireSupervisorContext("drain actor termination diagnostics");
         for (;;) {
-            long sequence = supervisionEventHead.get();
-            if (sequence >= supervisionEventTail.get()) return Optional.empty();
-            int slot = (int) (sequence % SUPERVISION_EVENT_CAPACITY);
-            ActorTerminationPayload payload = supervisionEvents.get(slot);
-            if (payload == null) {
-                // A producer has reserved this exact sequence but has not yet
-                // published its immutable payload. Never expose a later event
-                // out of order; the nonblocking supervisor can retry.
-                return Optional.empty();
-            }
+            ActorTerminationPayload payload = supervisionEvents.poll();
+            if (payload == null) return Optional.empty();
 
-            ActorTerminationEvent event = new ActorTerminationEvent(
-                    sequence,
-                    payload.actorId(),
-                    payload.generation(),
-                    payload.actorKind(),
-                    payload.parentId(),
-                    payload.terminationKind(),
-                    payload.acceptedUserMessages(),
-                    payload.processedUserMessages(),
-                    payload.abandonedUserMessages(),
-                    payload.abandonedContinuations(),
-                    payload.failureType(),
-                    payload.failureMessage());
-
-            if (!supervisionEvents.compareAndSet(slot, payload, null)) continue;
-            if (!supervisionEventHead.compareAndSet(sequence, sequence + 1L)) {
-                throw new IllegalStateException(
-                        "actor termination diagnostic head advanced without owning its slot");
+            long sequence;
+            for (;;) {
+                long current = supervisionEventSequence.get();
+                if (current == Long.MAX_VALUE) {
+                    // Never wrap diagnostic order into negative values. The
+                    // authoritative ActorRef terminal state still survives.
+                    supervisionEventsDropped.incrementAndGet();
+                    payload = null;
+                    break;
+                }
+                if (supervisionEventSequence.compareAndSet(current, current + 1L)) {
+                    sequence = current;
+                    return Optional.of(new ActorTerminationEvent(
+                            sequence,
+                            payload.actorId(),
+                            payload.generation(),
+                            payload.actorKind(),
+                            payload.parentId(),
+                            payload.terminationKind(),
+                            payload.acceptedUserMessages(),
+                            payload.processedUserMessages(),
+                            payload.abandonedUserMessages(),
+                            payload.abandonedContinuations(),
+                            payload.failureType(),
+                            payload.failureMessage()));
+                }
             }
-            return Optional.of(event);
+            // Sequence space exhausted: discard this already-published
+            // diagnostic and continue draining without blocking later teardown.
         }
     }
 
@@ -1064,28 +1072,9 @@ public final class ActorRuntime implements AutoCloseable {
                 terminal.failureType(),
                 "");
 
-        long sequence;
-        for (;;) {
-            long head = supervisionEventHead.get();
-            long tail = supervisionEventTail.get();
-            if (tail == Long.MAX_VALUE
-                    || tail - head >= SUPERVISION_EVENT_CAPACITY) {
-                supervisionEventsDropped.incrementAndGet();
-                return;
-            }
-            if (supervisionEventTail.compareAndSet(tail, tail + 1L)) {
-                sequence = tail;
-                break;
-            }
-        }
-
-        int slot = (int) (sequence % SUPERVISION_EVENT_CAPACITY);
-        // Capacity reservation guarantees this slot was consumed/cleared
-        // before reuse. A non-null value here is an internal journal invariant
-        // failure; drop rather than perturb actor finalization.
-        if (!supervisionEvents.compareAndSet(slot, null, payload)) {
+        if (supervisionEventSequence.get() == Long.MAX_VALUE
+                || !supervisionEvents.offer(payload)) {
             supervisionEventsDropped.incrementAndGet();
-            lifecyclePublicationFailures.incrementAndGet();
         }
     }
 
