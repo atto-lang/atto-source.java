@@ -30,6 +30,44 @@ await write;
 - Neither form is an actor or mailbox. `Task<T>` is an owned capability for a scheduled, single-completion computation; `Future<T>` remains an eventual-result abstraction.
 - The Task's body has its own return target. `return` in the block never returns from its enclosing function.
 
+## Argument-bearing Task continuations via an immediately invoked lambda
+
+Reuse the normal pipe lambda with an immediate call; **no special new `nb` parameter syntax** is needed.
+
+```oreslang
+let Task<int> task = (|int a, string b| -> nb {
+    let int result = await computeAsync(a, b);
+    return result;
+})(5, "xyz");
+
+// Do other work. This line does not await the task.
+let int result = await task;
+```
+
+Exactly equivalent explicit-return variant:
+
+```oreslang
+let Task<int> task = (|int a, string b| -> {
+    return nb {
+        return await computeAsync(a, b);
+    };
+})(5, "xyz");
+```
+
+The outer ordinary lambda executes *synchronously* just long enough to evaluate its `nb` expression; it returns the **single `Task<int>` handle**. Arguments are evaluated once in normal left-to-right call order and bound lexically. Task creation must transfer/copy/share the lambda parameters into a heap-owned Task capture environment before the lambda frame exits. No borrowed stack address may escape. A `return` inside `nb` returns from the Task; `return nb { ... };` returns a Task handle from the lambda.
+
+**Type contract:**
+
+- `nb { return value; }` has type `Task<T>` (once compiler lowering is enabled).
+- `(|T a| -> nb { return a; })(value)` returns `Task<T>` directly.
+- `await (|T a| -> nb { return a; })(value)` returns `T` and intentionally suspends the caller; it is **not** fire-and-continue.
+- `let Future<T> f = task.asFuture();` is the proposed explicit readout/observation conversion, with no extra task launch. Java host `OresTask<T>.asFuture()` is implemented in the separate runtime draft; source member/type support is still gated.
+- An actual future `async` lambda, if added, must preserve the usual `Future<T>` return contract. An async lambda that returns a `Task<T>` would produce `Future<Task<T>>`, **never automatically flatten** or change `await` semantics.
+- `async |...| -> nb { ... }` is **not supported** by the current Java source grammar. The parser now rejects it with a Task-specific diagnostic rather than silently accepting a misleading future type.
+- A lambda with a braced body needs an explicit `return nb { ... };`. It does not implicitly return its last expression.
+
+Do not permit Task type inference, expected-`Future<T>` coercion, mutable references to owner-local arguments, actor-private state access, or unmatched move-only ownership until the normal ownership/type passes prove them. Invocation arity and argument type checking continue to use ordinary callable rules; `nb` does not bypass them.
+
 ## Isolation and ownership prerequisites
 
 Task captures are explicit ownership transfers/copies/authorized shares (`rt take`, `rt copy`, `rt share`), not escaping stack borrows or implicit actor-state access. Actor handlers may create Tasks, but the Task cannot inherit an actor's state lock or mutate its private heap without an owned-message/capability boundary. Neither `do nb` nor `nb` may bypass tenant isolation, trusted/untrusted execution domains, code-version fences, or permission checks.
