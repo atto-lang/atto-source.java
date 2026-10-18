@@ -51,7 +51,7 @@ public final class SqliteWorkflowJournalV1
     private static final int SCHEMA_VERSION = 1;
 
     private final Path databasePath;
-    private final Connection connection;
+    private Connection connection;
     private final FaultInjector faultInjector;
 
     private WorkflowJournalV1 delegate;
@@ -90,6 +90,7 @@ public final class SqliteWorkflowJournalV1
             initializeSchema();
             this.delegate = loadVerifiedStore();
         } catch (SQLException | IOException failure) {
+            closeAfterFailedOpen();
             throw new IllegalStateException(
                     "failed to open workflow SQLite journal "
                             + this.databasePath,
@@ -280,6 +281,17 @@ public final class SqliteWorkflowJournalV1
             throw new IllegalStateException(
                     "workflow rollback succeeded but reload failed",
                     reloadFailure);
+        }
+    }
+
+    private void closeAfterFailedOpen() {
+        if (connection == null) return;
+        try {
+            connection.close();
+        } catch (SQLException ignored) {
+            // Preserve the constructor failure that made this handle unusable.
+        } finally {
+            connection = null;
         }
     }
 
