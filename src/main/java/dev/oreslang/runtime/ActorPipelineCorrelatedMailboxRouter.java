@@ -442,7 +442,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
         try {
             owner.sendWithPipelineFrame(targets.get(child.receiver()),
                     Objects.requireNonNull(value, "pipeline payload"), child, this);
-        } catch (RuntimeException | Error failed) {
+        } catch (RuntimeException failed) {
             if (ActorPipelineRouteSession.wasMailboxPublished(child)) {
                 // Accepted DATA is not a failed admission. Its envelope owns
                 // child cleanup; do not let a caught exception replay source.
@@ -452,6 +452,14 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
             }
             ActorPipelineRouteSession.retireDelivered(child);
             throw failed;
+        } catch (Error fatal) {
+            // Preserve fatal VM failure classification instead of wrapping
+            // it as recoverable. Keep any published child in its mailbox.
+            if (ActorPipelineRouteSession.wasMailboxPublished(child))
+                ActorPipelineRouteSession.retireDelivered(source);
+            else
+                ActorPipelineRouteSession.retireDelivered(child);
+            throw fatal;
         }
     }
 
