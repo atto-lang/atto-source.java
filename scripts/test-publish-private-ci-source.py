@@ -66,6 +66,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.dest_allow_force = False
         self.dest_allow_delete = False
         self.dest_bypass = {"users": [], "teams": [], "apps": []}
+        self.destination_codeowners = (
+            b"/.github/ @ORESoftware\n"
+            b"/.github/CODEOWNERS @ORESoftware\n")
+        self.destination_codeowners_exists = True
+        self.destination_codeowners_sha_override = None
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
@@ -142,6 +147,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 "allow_force_pushes": {"enabled": self.dest_allow_force},
                 "allow_deletions": {"enabled": self.dest_allow_delete},
             }
+        if route == "repos/trusted/ci/contents/.github/CODEOWNERS?ref=" + A:
+            if not self.destination_codeowners_exists:
+                raise pub.Denied("authenticated GitHub API request failed")
+            raw = self.destination_codeowners
+            digest = hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
+                                  + bytes([0]) + raw).hexdigest()
+            return {"type": "file", "encoding": "base64",
+                    "size": len(raw),
+                    "content": base64.b64encode(raw).decode("ascii"),
+                    "sha": self.destination_codeowners_sha_override or digest}
         if route == "repos/trusted/ci/git/ref/heads/main":
             return {"ref": "refs/heads/main", "object": {"sha": self.mock_destination_main_sha, "type": "commit"}}
         if route == "repos/trusted/ci/git/blobs":
@@ -990,6 +1005,60 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test",
                             self.root, pinned, 1286, A)
         writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+
+    def test_destination_missing_codeowners_fails_before_first_blob(self):
+        self.destination_codeowners_exists = False
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with self.assertRaises(pub.Denied):
+                self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_destination_codeowners_rules_must_cover_all_workflows(self):
+        invalid_rules = [
+            b"",
+            b"# no active owners\n",
+            b"/.github/CODEOWNERS @ORESoftware\n",
+            b"/.github/workflows/ @ORESoftware\n",
+            b"/.github/ @ORESoftware\n",
+            b"/.github/ @ORESoftware\n/.github/CODEOWNERS @bad-reviewer\n",
+            b"/.github/ @ORESoftware\n/.github/CODEOWNERS @ORESoftware\n"
+            b"/.github/workflows/ @untrusted\n",
+        ]
+        for rules in invalid_rules:
+            with self.subTest(rules=rules):
+                self.route_calls.clear()
+                self.destination_codeowners = rules
+                with patch.object(pub, "gh_api", side_effect=self.fake_api):
+                    with self.assertRaises(pub.Denied):
+                        self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_destination_codeowners_blob_digest_mismatch_fails_closed(self):
+        self.destination_codeowners_sha_override = "f" * 40
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with self.assertRaisesRegex(pub.Denied, "CODEOWNERS Git blob differs"):
+                self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_destination_codeowners_revoked_after_first_blob(self):
+        (self.source / "extra.ores").write_text("synthetic second source")
+        pinned = self.expected_source_tree()
+        self.mock_source_tree = pinned
+        original = self.fake_api
+
+        def revoke(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if method == "POST" and route == "repos/trusted/ci/git/blobs":
+                self.destination_codeowners_exists = False
+            return result
+
+        with patch.object(pub, "gh_api", side_effect=revoke):
+            with self.assertRaises(pub.Denied):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, pinned, 1286, A)
+        writes = [route for method, route, _ in self.route_calls
+                  if method == "POST"]
         self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
 
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
