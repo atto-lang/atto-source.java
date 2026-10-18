@@ -65,6 +65,46 @@ final class OwnershipMatchExpressionCaptureTest {
     }
 
     @Test
+    void recursiveFixpointNameIsNotChargedAsExternalOwnershipCapture() throws Exception {
+        Ast.LambdaExpr lambda = new Ast.LambdaExpr(List.of(),
+                new Ast.CallExpr(new Ast.NameExpr("fact"),
+                        List.of(new Ast.NameExpr("outer"))), null);
+
+        Class<?> cls = OwnershipChecker.class;
+        Constructor<?> make = cls.getDeclaredConstructor(Ast.Program.class);
+        make.setAccessible(true);
+        Object checker = make.newInstance(new Ast.Program(List.of()));
+        Class<?> scopeType = Class.forName("dev.oreslang.types.OwnershipChecker$Scope");
+        Class<?> stateType = Class.forName("dev.oreslang.types.OwnershipChecker$VarState");
+        Constructor<?> scopeCtor = scopeType.getDeclaredConstructor(scopeType, boolean.class);
+        scopeCtor.setAccessible(true);
+        Object scope = scopeCtor.newInstance(null, false);
+        Method stateFor = cls.getDeclaredMethod("stateForParam", Ast.Param.class);
+        Method define = scopeType.getDeclaredMethod("define", String.class, stateType);
+        stateFor.setAccessible(true);
+        define.setAccessible(true);
+        for (String name : List.of("fact", "outer")) {
+            define.invoke(scope, name, stateFor.invoke(checker,
+                    new Ast.Param(Ast.TypeRef.simple("int"), name)));
+        }
+
+        Method collect = cls.getDeclaredMethod(
+                "collectCaptures", Ast.LambdaExpr.class, scopeType, String.class);
+        collect.setAccessible(true);
+        Object captures = collect.invoke(checker, lambda, scope, "fact");
+        Field values = captures.getClass().getDeclaredField("values");
+        values.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<String, ?> captured = (Map<String, ?>) values.get(captures);
+
+        assertEquals(Set.of("outer"), captured.keySet(),
+                "recursive self is a runtime fixpoint cell, not an outer ownership capture");
+        assertEquals(Set.of("fact", "outer"),
+                dev.oreslang.nodes.LambdaCapturePlanner.captures(lambda),
+                "runtime still needs the recursive pre-reserved slot");
+    }
+
+    @Test
     void shortCircuitRefinementNameIsNotAnOuterCapture() throws Exception {
         Ast.Expr condition = new Ast.BinaryExpr("&&",
                 new Ast.TypeTestExpr(new Ast.NameExpr("subject"),
