@@ -34,6 +34,12 @@ jobs:
       APPROVED_SHA: ${{ vars.ORESLANG_COMPILER_APPROVED_SHA }}
       APPROVED_TREE: ${{ vars.ORESLANG_COMPILER_APPROVED_TREE }}
       APPROVED_RUNNER: ${{ vars.ORESLANG_COMPILER_PRIVATE_RUNNER }}
+      # Applied by Actions before Bash or Node actions start on the isolated runner.
+      BASH_ENV: ''
+      ENV: ''
+      NODE_OPTIONS: ''
+      NODE_PATH: ''
+      LD_PRELOAD: ''
     steps:
       - name: Verify protected source authorization before checkout
         shell: bash
@@ -55,6 +61,13 @@ jobs:
           for key in MAVEN_OPTS MAVEN_ARGS JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG_COUNT PYTHONPATH PYTHONHOME; do
             if [[ -v "$key" && -n "${!key}" ]]; then
               printf 'DENIED: ambient pre-checkout override %s\n' "$key" >&2
+              exit 1
+            fi
+          done
+          # Deny unlisted Git config/object-store/SSH overrides, not only common variables.
+          for key in "${!GIT_@}"; do
+            if [[ -n "${!key}" ]]; then
+              printf 'DENIED: unreviewed Git environment override %s\n' "$key" >&2
               exit 1
             fi
           done
@@ -86,6 +99,13 @@ jobs:
           for key in MAVEN_OPTS MAVEN_ARGS JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG_COUNT PYTHONPATH PYTHONHOME; do
             if [[ -v "$key" && -n "${!key}" ]]; then
               printf 'DENIED: unexpected runner environment override %s\n' "$key" >&2
+              exit 1
+            fi
+          done
+          # Deny unlisted Git config/object-store/SSH overrides, not only common variables.
+          for key in "${!GIT_@}"; do
+            if [[ -n "${!key}" ]]; then
+              printf 'DENIED: unreviewed Git environment override %s\n' "$key" >&2
               exit 1
             fi
           done
