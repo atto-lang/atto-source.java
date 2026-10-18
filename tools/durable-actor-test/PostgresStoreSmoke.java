@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.Statement;
@@ -27,6 +29,11 @@ public final class PostgresStoreSmoke {
             throw new IllegalStateException("test database environment required");
         var ds = new PGSimpleDataSource();
         ds.setURL(jdbc); ds.setUser(user); ds.setPassword(pass);
+        String schemaFile = System.getenv("AI_DEV_LOOP_SCHEMA_FILE");
+        if (schemaFile == null) throw new IllegalStateException("test schema path required");
+        try (Connection c = ds.getConnection(); Statement statement = c.createStatement()) {
+            statement.execute(Files.readString(Path.of(schemaFile)));
+        }
 
         var first = new PostgresDurableActorStore(ds);
         var key = new DurableActorStore.Address("tenant-a", "workflow", "run", "editor");
@@ -79,6 +86,18 @@ public final class PostgresStoreSmoke {
         check(rebooted.commitTurn(new DurableActorStore.Turn(key,d.epoch(),1,"msg-2",next,List.of()))==2,
             "replay after rollback");
         check(rebooted.activate(other).snapshot().stateVersion()==0, "tenant isolated");
+        // Host coordinator seam enforces a runtime-provided quiescence check.
+        var unsafe = new DurableActivationCoordinator(rebooted, address -> false);
+        rejects(() -> unsafe.restore(key), "unsafe activate");
+        rejects(() -> unsafe.freeze(key, d.epoch()), "unsafe freeze");
+        var coordinator = new DurableActivationCoordinator(rebooted, address -> true);
+        check(coordinator.deliver(key,
+            new DurableActorStore.Inbound("msg-3",bytes("wake"))), "dormant queue");
+        var restored = coordinator.restore(key);
+        check(restored.epoch()==5 && restored.inbox().size()==1,
+            "coordinator persisted identity and delivered mail");
+        coordinator.freeze(key,restored.epoch());
+        rejects(() -> coordinator.freeze(key,restored.epoch()), "double freeze fenced");
         System.out.println("POSTGRES_DURABLE_ACTOR_INTEGRATION_PASS");
     }
 }
