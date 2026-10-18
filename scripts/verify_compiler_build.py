@@ -83,7 +83,7 @@ def strict_json(payload):
                       parse_constant=lambda x: (_ for _ in ()).throw(ValueError('nonfinite JSON')))
 
 
-def capture(repo, bundle, expected_sha, expected_tree, mode):
+def capture(repo, bundle, expected_sha, expected_tree, mode, toolchain_report=None):
     deny(not Path(repo).is_symlink() and not Path(bundle).is_symlink(),
          'symlinked root forbidden')
     repo, bundle = Path(repo).resolve(strict=True), Path(bundle).resolve(strict=True)
@@ -161,9 +161,21 @@ def capture(repo, bundle, expected_sha, expected_tree, mode):
          git(repo, 'show', '-s', '--format=%T', 'HEAD') == expected_tree and
          not git(repo, 'status', '--porcelain', '--untracked-files=all'),
          'source mutated during CLI checks')
+    toolchain = None
+    if toolchain_report is not None:
+        report = Path(toolchain_report)
+        deny(report.is_file() and not report.is_symlink() and
+             bundle not in report.resolve().parents and report.resolve() != bundle,
+             'toolchain report missing or inside bundle')
+        data = report.read_bytes()
+        deny(0 < len(data) <= 8192 and b'\0' not in data,
+             'toolchain report empty, oversized, or invalid')
+        toolchain = {'sha256': hashlib.sha256(data).hexdigest(),
+                     'captured_versions': data.decode('utf-8', 'strict')}
     return {'schema_version': 'oreslang-java-compiler-local-evidence/v1',
             'source_commit': expected_sha, 'source_tree': expected_tree,
             'mode': mode, 'launcher_build_info': info, 'bundle_files': files,
+            'toolchain_report': toolchain,
             'positive_check': True, 'negative_check': True,
             'independent_provenance_attested': False,
             'guest_ml_executed': False}
@@ -177,10 +189,11 @@ def main():
     p.add_argument('--expected-tree', required=True)
     p.add_argument('--expected-mode', default='jvm')
     p.add_argument('--receipt', required=True)
+    p.add_argument('--toolchain-report')
     p.add_argument('--verify', action='store_true')
     args = p.parse_args()
     observed = capture(args.source_root, args.bundle, args.expected_source_sha,
-                       args.expected_tree, args.expected_mode)
+                       args.expected_tree, args.expected_mode, args.toolchain_report)
     if args.verify:
         expected = strict_json(Path(args.receipt).read_bytes())
         deny(expected == observed, 'receipt mismatch / dependency or compiler drift')
