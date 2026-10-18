@@ -9,7 +9,18 @@ if [[ -n "${PYTHON:-}" && "$PYTHON" != python3 ]]; then
   echo 'PRIVATE_CI_UNSAFE_PYTHON_OVERRIDE: offline evidence requires python3' >&2
   exit 2
 fi
-python_bin=python3
+# A caller-controlled PATH can substitute a fake python3/bash and print a
+# successful test receipt without running tests. Use the OS-owned interpreter
+# and standard utilities, not shell functions or an untrusted PATH directory.
+# On supported Linux/macOS hosts /usr/bin/python3 is required; fail closed
+# rather than accepting a user-writable interpreter location.
+export PATH=/usr/bin:/bin
+hash -r
+python_bin=/usr/bin/python3
+if [[ ! -x "$python_bin" || ! -x /bin/bash ]]; then
+  echo 'PRIVATE_CI_TRUSTED_INTERPRETER_MISSING' >&2
+  exit 2
+fi
 repeats="${PRIVATE_CI_TEST_REPEATS:-3}"
 if [[ ! "$repeats" =~ ^[1-9][0-9]?$ ]]; then
   echo 'PRIVATE_CI_INVALID_REPEATS: expected an integer from 1 to 99' >&2
