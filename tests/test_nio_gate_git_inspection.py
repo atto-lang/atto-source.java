@@ -102,6 +102,12 @@ exit 0
     def test_git_ignored_scan_failure_after_maven_fails_closed(self):
         self.run_fixture('ls-files --others', 'postflight')
 
+    def test_git_index_inspection_failure_before_maven_fails_closed(self):
+        self.run_fixture('ls-files -v', 'preflight')
+
+    def test_git_index_inspection_failure_after_maven_fails_closed(self):
+        self.run_fixture('ls-files -v', 'postflight')
+
     def test_source_free_clean_probe_still_passes(self):
         # Deliberately no matching Git operation: all scans complete normally.
         self.run_fixture('not-a-real-git-subcommand', expected=0)

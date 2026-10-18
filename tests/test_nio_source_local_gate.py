@@ -147,6 +147,17 @@ exit 0
         self.assertEqual(68, result.returncode, result.stderr)
         self.assertEqual("do-not-touch\n", marker.read_text())
 
+    def test_receipt_hardlink_never_overwrites_outside(self):
+        evidence = self.root / "target" / "nio-exact-tree-gate"
+        evidence.mkdir(parents=True)
+        marker = self.outside / "original.txt"
+        marker.write_text("do-not-touch\n")
+        os.link(marker, evidence / "receipt.txt")
+        result = self.gate(sha="0" * 40)
+        self.assertEqual(66, result.returncode, result.stderr)
+        self.assertEqual("do-not-touch\n", marker.read_text())
+        self.assertIn("result=FAIL", self.receipt())
+
     def test_successful_clean_that_leaves_stale_target_fails_closed(self):
         target = self.root / "target"
         target.mkdir()

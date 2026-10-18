@@ -43,6 +43,14 @@ finish() {
   fi
   # Maven clean may remove target/; restore the receipt directory on failure.
   mkdir -p "$EVIDENCE_DIR"
+  # Never truncate an existing receipt in place: it may be hard-linked
+  # to a file outside the checkout. Create a private replacement inode and
+  # atomically rename it over the old filename after writing the evidence.
+  local receipt_tmp
+  receipt_tmp="$(mktemp "$EVIDENCE_DIR/.receipt.XXXXXXXX")" || {
+    printf 'ERROR: could not create safe receipt temp file.\n' >&2
+    exit 73
+  }
   # This receipt is unsigned and does not replace runner/job-step provenance.
   {
     printf 'gate=nio-exact-tree-source-local\n'
@@ -59,7 +67,14 @@ finish() {
     printf 'javac_version=%s\n' "$javac_version"
     printf 'maven_version=%s\n' "$maven_version"
     printf 'native_aot_requested=%s\n' "$NATIVE_AOT"
-  } > "$EVIDENCE_DIR/receipt.txt"
+  } > "$receipt_tmp"
+  chmod 600 "$receipt_tmp" || { rm -f -- "$receipt_tmp"; exit 73; }
+  # -T prevents treating an unexpected receipt directory as a destination.
+  mv -fT -- "$receipt_tmp" "$EVIDENCE_DIR/receipt.txt" || {
+    rm -f -- "$receipt_tmp"
+    printf 'ERROR: could not atomically replace receipt.\n' >&2
+    exit 73
+  }
   exit "$code"
 }
 trap finish EXIT
@@ -80,7 +95,10 @@ fi
 # meaningless if such entries are allowed in the tested worktree.
 # -v prints "H " for ordinary tracked paths; reject every other tag, including
 # lower-case assume-unchanged and upper-case S sparse/skip-worktree.
-unsafe_index_entries="$(git ls-files -v | LC_ALL=C awk 'substr($0,1,2) != "H " {print}')"
+unsafe_index_entries="$(git ls-files -v | LC_ALL=C awk 'substr($0,1,2) != "H " {print}')" || {
+  printf 'ERROR: preflight Git index inspection failed.\n' >&2
+  exit 75
+}
 if [[ -n "$unsafe_index_entries" ]]; then
   printf 'ERROR: Git index contains hidden/sparse tracked entries; refusing exact-tree qualification.\n' >&2
   exit 72
@@ -190,7 +208,11 @@ fi
 stage=postflight-source-identity
 [[ "$(git rev-parse --verify 'HEAD^{commit}')" == "$EXPECTED_COMMIT" ]]
 [[ "$(git rev-parse --verify 'HEAD^{tree}')" == "$EXPECTED_TREE" ]]
-[[ -z "$(git ls-files -v | LC_ALL=C awk 'substr($0,1,2) != "H " {print}')" ]] || {
+unsafe_index_entries="$(git ls-files -v | LC_ALL=C awk 'substr($0,1,2) != "H " {print}')" || {
+  printf 'ERROR: postflight Git index inspection failed.\n' >&2
+  exit 75
+}
+[[ -z "$unsafe_index_entries" ]] || {
   printf 'ERROR: Git index flags changed during qualification.\n' >&2
   exit 72
 }

@@ -198,6 +198,24 @@ on Git inspection errors in preflight or postflight. The dedicated
 plus one clean synthetic control (5/5 in the local pre-commit check). These
 remain synthetic tests; they do not compile private Oreslang runtime source.
 
+### Additional source-local integrity fences (2026-10-18)
+
+A failure in `git ls-files -v` during postflight index inspection previously
+returned a blank command substitution, causing the gate to incorrectly pass
+an uninspected source tree. The gate now checks **Git index inspection exit
+statuses** during preflight and postflight and exits 75 on inspection errors,
+just as it does for porcelain status and ignored-file checks.
+
+The receipt writer now uses a temporary private inode followed by an atomic
+same-directory replacement; writing directly to an existing `receipt.txt`
+could previously overwrite an outside file through a **hardlink**, even with
+symlink checks enabled. Two new index-failure regressions and a hardlink
+regression reproduce those bypasses on the old gate and pass on the fix.
+The local source-free test suites now comprise 18 gate cases, 7 Git failure
+cases, 20 Surefire cases and 10 other verifier cases (55/55 passing),
+with all 13 standalone gate scenarios also executed in isolated repos.
+None of this constitutes JDK25/GraalVM/LLVM compiler execution.
+
 ## Evidence, trust boundary and interpretation
 
 - The script writes an **unsigned** `target/nio-exact-tree-gate/receipt.txt`
