@@ -3515,14 +3515,21 @@ public final class TypeChecker {
                 currentSelectReturnTypes = prior;
                 inDeferredValueSelectArm = priorDeferred;
             }
+            if (returns.isEmpty() && selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                // A deferred statement-only winner is still a tracked
+                // operation. Future<void> settles AFTER that arm's cleanup.
+                // There is no first-class bare void value for the caller.
+                return new Named("Future", List.of(Primitive.VOID));
+            }
             for (Ast.SelectArm arm : selected.arms()) {
                 if (!definitelySelectArmReturns(arm.body())) {
                     throw new IllegalArgumentException(
-                            "every reachable value-select arm path must explicitly 'return value'");
+                            "every reachable value-select arm path must explicitly 'return value'; "
+                                    + "mixed value and void arms cannot share one Future result");
                 }
             }
             if (returns.isEmpty()) {
-                throw new IllegalArgumentException("value select has no typed arm return");
+                throw new IllegalArgumentException("blocking value select has no typed arm return");
             }
             Type joined = widenCollectionElement(returns.getFirst());
             for (int i = 1; i < returns.size(); i++) {
