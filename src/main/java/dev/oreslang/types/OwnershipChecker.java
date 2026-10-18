@@ -1801,6 +1801,15 @@ public final class OwnershipChecker {
                 || member.member().equals("unwrap_all") || member.member().equals("flatten")
                 || member.member().equals("expect") || member.member().equals("unwrap_or");
         if (!query && !extracting) return null;
+        // A nested call has no reliably resolved result type in this checker
+        // until TypeChecker supplies its typed IR. Do not inspect it here and
+        // then again in generic method dispatch: that double-checks affine
+        // lambda captures, and can manufacture spurious use-after-move errors.
+        // TypeChecker still verifies the exact flatten receiver/result type.
+        if (member.member().equals("flatten")
+                && member.receiver() instanceof Ast.CallExpr) {
+            return null;
+        }
         // New nested-only names must not cause a non-Option member receiver
         // to be ownership-checked twice on the ordinary method-call path.
         if (member.member().equals("flatten") || member.member().equals("unwrap_all")) {
