@@ -211,6 +211,39 @@ final class NestedFutureSchedulerContractTest {
         }
     }
 
+    @Test
+    void trustedCancellationStepRetiresOnceAfterRunningTurnExits() throws Exception {
+        java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch retired = new java.util.concurrent.CountDownLatch(1);
+        AtomicInteger retirements = new AtomicInteger();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                entered.countDown();
+                assertTrue(release.await(5, TimeUnit.SECONDS));
+                return OresScheduler.cancelled();
+            }, () -> {
+                retirements.incrementAndGet();
+                retired.countDown();
+            });
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertFalse(result.isDone(),
+                        "cancelled step cannot publish before guest code exits");
+                assertEquals(0, retirements.get(),
+                        "resources remain owned while the guest turn is executing");
+            } finally {
+                release.countDown();
+            }
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> result.get(5, TimeUnit.SECONDS));
+            assertTrue(result.isCancelled());
+            assertTrue(retired.await(5, TimeUnit.SECONDS));
+            assertEquals(1, retirements.get(),
+                    "explicit trusted cancellation must retire task resources exactly once");
+        }
+    }
+
     private static OresFuture<Integer> twoStage(
             OresScheduler scheduler,
             OresFuture<OresFuture<Integer>> outer,
