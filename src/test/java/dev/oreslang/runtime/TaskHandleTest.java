@@ -99,6 +99,18 @@ public class TaskHandleTest {
         }
     }
 
+    @Test void terminalTaskStillRejectsMalformedCancellationReasons() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> h = scheduler.startTracked(r -> OresScheduler.done(11));
+            assertEquals(new TaskHandle.Success<>(11), done(h));
+            assertThrows(NullPointerException.class, () -> h.cancel(null));
+            assertThrows(IllegalArgumentException.class, () -> h.cancel(" "));
+            assertThrows(IllegalArgumentException.class, () -> h.cancel("x".repeat(257)));
+            assertFalse(h.cancel("late"));
+            assertEquals(new TaskHandle.Success<>(11), done(h));
+        }
+    }
+
     @Test void repeatCancellationPreservesFirstReason() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             CountDownLatch entered = new CountDownLatch(1);
