@@ -11,9 +11,11 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.function.Supplier;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.RejectedExecutionException;
@@ -47,6 +49,9 @@ public final class OresContext implements AutoCloseable {
     private final ExecutionProfile executionProfile;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
+    // Shared Truffle calltargets must NEVER retain mutable evaluator state.
+    // Identity keys are immutable code root nodes; values belong solely to this Context.
+    private final IdentityHashMap<Object, Object> codeExecutionState = new IdentityHashMap<>();
     // Exactly one immutable code image per linked source unit for all actor kinds.
     // Per-actor mutable heaps/closures are never published into this store.
     private final SharedCodeImageStore sharedCodeImages = new SharedCodeImageStore();
@@ -137,6 +142,18 @@ public final class OresContext implements AutoCloseable {
     public static OresContext get(Node node) {
         return REFERENCE.get(node);
     }
+
+    /** Get or allocate mutable evaluator/module state exclusively in this Context. */
+    @SuppressWarnings("unchecked")
+    public synchronized <T> T codeExecutionState(Object root, Supplier<? extends T> factory) {
+        Object existing = codeExecutionState.get(java.util.Objects.requireNonNull(root));
+        if (existing != null) return (T) existing;
+        T created = java.util.Objects.requireNonNull(factory.get(), "evaluator factory");
+        codeExecutionState.put(root, created);
+        return created;
+    }
+
+    public synchronized int codeExecutionStateCount() { return codeExecutionState.size(); }
 
     public OresLanguage language() { return language; }
     public TruffleLanguage.Env env() { return env; }
@@ -460,6 +477,7 @@ public final class OresContext implements AutoCloseable {
         } finally {
             synchronized (this) {
                 linkedCodeUnits.clear();
+                codeExecutionState.clear();
                 linkedImportResolutions.clear();
                 sharedCodeImages.close();
             }
