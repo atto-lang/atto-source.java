@@ -28,7 +28,7 @@ test("every actual invalid guest uses parser-positive then semantic rejection",(
   assert.match(body,/assertEquals\("", output\.toString/);
 });
 test("guest fixture SHA and separately pinned output prevent silent drift",()=>{
-  assert.match(java,/b1f1a0748b3fabbcb8dcd4a24c32a3fdb5b2146e/);
+  assert.match(java,/7b14a0ed95b6d957cce86814b62a733615a5675a/);
   assert.match(java,/029f88f5a174c1269a784ab4cc44b67e348156d1/);
   assert.match(java,/assertEquals\(expected, stdout\.toString/);
 });
@@ -51,7 +51,7 @@ test("guest CI source pins match actual fixture blobs and JUnit gate", () => {
   const workflow = readFileSync(new URL("../.github/workflows/ml-scalar-actor-guest.yml", import.meta.url), "utf8");
   const fixtureSha = gitBlobSha(readFileSync(new URL("./fixtures/ml-actor-state-scalar.ores", import.meta.url)));
   const goldenSha = gitBlobSha(readFileSync(new URL("./golden/ml-actor-state-scalar.stdout", import.meta.url)));
-  assert.equal(fixtureSha, "b1f1a0748b3fabbcb8dcd4a24c32a3fdb5b2146e");
+  assert.equal(fixtureSha, "7b14a0ed95b6d957cce86814b62a733615a5675a");
   assert.equal(goldenSha, "029f88f5a174c1269a784ab4cc44b67e348156d1");
   assert.match(java, new RegExp(fixtureSha));
   assert.match(java, new RegExp(goldenSha));
@@ -93,4 +93,10 @@ test("Java JUnit pins actor identity and rejects directly addressed compensation
 test("optimizer and compensation are internal; not externally addressed commands",()=>{
   assert.match(java,/high_commit/); // only in negative admission asserts
   assert.match(java,/final_gradient/);
+});
+
+test("Java compiled fixture requires internal lifecycle completion rather than external end mail",()=>{
+  assert.match(java,/demo_finish_ready/);
+  assert.match(java,/final_result\.is_err/);
+  assert.match(java,/mail\.value ==/); // the Java gate explicitly prohibits raw after command
 });
