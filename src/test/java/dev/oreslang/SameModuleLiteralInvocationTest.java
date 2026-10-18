@@ -353,6 +353,34 @@ final class SameModuleLiteralInvocationTest {
                         withCaller(module, deferred), deferred, target));
     }
 
+    @Test
+    void canonicalGenericSpecsCannotBypassLegacyNameListAdmission() {
+        Ast.Program original = program();
+        Ast.ModuleDecl module = original.modules().getFirst();
+        Ast.FunctionDecl source = caller(original);
+        Ast.StagedCallExpr originalCall = call(source);
+        // A directly assembled AST can retain defaulted generic specifications
+        // while its legacy string-only genericParameters list is empty.
+        // The lexical witness must not mistake it for a monomorphic caller.
+        for (Ast.TypeRef defaultType : List.of(
+                Ast.TypeRef.simple("int"), Ast.TypeRef.simple("string"))) {
+            Ast.FunctionDecl forged = new Ast.FunctionDecl(
+                    source.name(), source.kind(), source.visibility(), source.async(),
+                    source.suspends(), source.generator(), source.structural(),
+                    source.nonLexical(), source.trapped(), source.actorKind(),
+                    List.of(), source.parameters(), source.returnType(),
+                    source.annotations(), source.body(),
+                    List.of(new Ast.GenericParameter("T", defaultType)));
+            assertTrue(forged.genericParameters().isEmpty());
+            assertFalse(forged.genericSpecs().isEmpty());
+            Ast.Program altered = withCaller(module, forged);
+            assertThrows(IllegalArgumentException.class,
+                    () -> SameModuleLiteralInvocation.inspect(altered, forged, originalCall));
+        }
+        assertDoesNotThrow(() -> SameModuleLiteralInvocation.inspect(
+                original, source, originalCall));
+    }
+
     private static Ast.FunctionDecl withBody(Ast.FunctionDecl source, List<Ast.Stmt> body) {
         return new Ast.FunctionDecl(
                 source.name(), source.kind(), source.visibility(), source.async(),
