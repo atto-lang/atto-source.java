@@ -4977,7 +4977,7 @@ public final class ActorRuntime implements AutoCloseable {
      * not make untrusted code safe to dlopen. Native backends need a separate
      * pre-execution artifact-authentication boundary.</p>
      */
-    boolean upgradeSourceActorSameSchema(
+    public boolean upgradeSourceActorSameSchema(
             ActorRef<Object> ref,
             ActorCodeExecutor proposed) {
         requireSupervisorContext("hot-upgrade source actor");
