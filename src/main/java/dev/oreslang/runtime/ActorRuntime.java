@@ -701,12 +701,12 @@ public final class ActorRuntime implements AutoCloseable {
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final AtomicLong watchdogOverruns = new AtomicLong();
     private final AtomicLong watchdogNoticesDropped = new AtomicLong();
-    // Capacity admission and payload publication are one bounded queue offer.
-    // Do not split these into a separate reservation counter plus an unbounded
-    // queue: a host-fatal producer failure between those operations can leak
-    // diagnostic capacity permanently and make telemetry appear full forever.
-    private final ArrayBlockingQueue<WatchdogNotice> watchdogNotices =
-            new ArrayBlockingQueue<>(WATCHDOG_NOTICE_CAPACITY);
+    // Watchdog observation must not wait behind host diagnostic draining.
+    // Publication is failure-atomic under one explicit lock, but the watchdog
+    // scanner only tryLocks it: contention/full capacity are counted drops.
+    private final ArrayDeque<WatchdogNotice> watchdogNotices =
+            new ArrayDeque<>(WATCHDOG_NOTICE_CAPACITY);
+    private final ReentrantLock watchdogNoticeQueueLock = new ReentrantLock();
     private final AtomicLong userMessagesAccepted = new AtomicLong();
     private final AtomicLong userMessagesProcessed = new AtomicLong();
     private final AtomicLong mailboxFullRejections = new AtomicLong();
@@ -1024,7 +1024,21 @@ public final class ActorRuntime implements AutoCloseable {
     /** Host-only nonblocking drain: actor code cannot steal another actor's diagnostics. */
     public Optional<WatchdogNotice> pollWatchdogNotice() {
         requireSupervisorContext("drain actor watchdog notices");
-        return Optional.ofNullable(watchdogNotices.poll());
+        watchdogNoticeQueueLock.lock();
+        try {
+            return Optional.ofNullable(watchdogNotices.pollFirst());
+        } finally {
+            watchdogNoticeQueueLock.unlock();
+        }
+    }
+
+    private int watchdogNoticeBacklog() {
+        watchdogNoticeQueueLock.lock();
+        try {
+            return watchdogNotices.size();
+        } finally {
+            watchdogNoticeQueueLock.unlock();
+        }
     }
 
     /** Indicates a request, not a safe or completed suspension. */
@@ -1040,7 +1054,18 @@ public final class ActorRuntime implements AutoCloseable {
         WatchdogNotice notice = new WatchdogNotice(
                 cell.ref.id(), cell.kind,
                 lease.elapsedNanos(now), lease.sinceCheckpointNanos(now));
-        if (!watchdogNotices.offer(notice)) {
+        boolean published = false;
+        if (watchdogNoticeQueueLock.tryLock()) {
+            try {
+                if (watchdogNotices.size() < WATCHDOG_NOTICE_CAPACITY) {
+                    watchdogNotices.addLast(notice);
+                    published = true;
+                }
+            } finally {
+                watchdogNoticeQueueLock.unlock();
+            }
+        }
+        if (!published) {
             watchdogNoticesDropped.incrementAndGet();
         }
     }
@@ -1160,7 +1185,7 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleObserverDispatcher.getQueue().size(),
                 supervisionEventBacklog(),
                 SUPERVISION_EVENT_CAPACITY,
-                watchdogNotices.size(),
+                watchdogNoticeBacklog(),
                 WATCHDOG_NOTICE_CAPACITY,
                 actorCount.get(),
                 actorCapacityInUse.get());
