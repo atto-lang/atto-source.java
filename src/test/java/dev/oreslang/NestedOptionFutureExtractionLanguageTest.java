@@ -103,7 +103,7 @@ final class NestedOptionFutureExtractionLanguageTest {
         }
     }
 
-        @Test
+    @Test
     void rejectsErasedOptionUnwrapAllAndRetainsSingleLayerExtraction() {
         String rejected = """
                 fnc extract(Option<Any> value): Any {
@@ -131,11 +131,14 @@ final class NestedOptionFutureExtractionLanguageTest {
                   return value + 1;
                 }
                 pub fnc main(): void {
-                  val Future<Future<int>> outer = base().map(|int value| -> {
+                  val Future<Future<int>> first_outer = base().map(|int value| -> {
                     return leaf(value);
                   });
-                  val Future<int> one = await outer;
-                  val Future<int> flattened = outer.flatten();
+                  val Future<Future<int>> second_outer = base().map(|int value| -> {
+                    return leaf(value);
+                  });
+                  val Future<int> one = await first_outer;
+                  val Future<int> flattened = second_outer.flatten();
                   stdio.stdout.write(await one);
                   stdio.stdout.write(":");
                   stdio.stdout.write(await flattened);
