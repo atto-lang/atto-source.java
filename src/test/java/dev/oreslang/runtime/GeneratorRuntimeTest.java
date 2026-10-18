@@ -94,6 +94,22 @@ final class GeneratorRuntimeTest {
     }
 
     @Test
+    void asyncPullOnClosedSchedulerReturnsFailedOresFuture() throws Exception {
+        AsyncRuntime runtime = new AsyncRuntime();
+        var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(1));
+        runtime.close();
+        try (generator) {
+            OresFuture<GeneratorRuntime.Step<Integer>> pull = generator.nextStep();
+            assertEquals(OresFuture.class, pull.getClass());
+            java.util.concurrent.ExecutionException rejected = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> pull.get(2, TimeUnit.SECONDS));
+            assertInstanceOf(java.util.concurrent.RejectedExecutionException.class,
+                    rejected.getCause());
+        }
+    }
+
+    @Test
     void asyncPullsUseOresFutureIncludingTerminalPulls() throws Exception {
         try (AsyncRuntime runtime = new AsyncRuntime();
              var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(42))) {
