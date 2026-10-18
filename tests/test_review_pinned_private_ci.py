@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 import importlib.util
+import textwrap
+import stat
+import ast
 import io
 import json
 import os
@@ -713,6 +716,100 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         )
         with self.assertRaises(MOD.Denied):
             self.run_fixture(fx)
+
+class WorkflowSecureInputOpenTests(unittest.TestCase):
+    """Exercise the exact embedded workflow helper without requiring Actions.
+
+    The source-org Actions runner currently fails before step execution.
+    Extract the reviewed Python AST from the workflow itself, not a second
+    hand-maintained implementation that could drift from production.
+    """
+    @classmethod
+    def setUpClass(cls):
+        workflow = (Path(__file__).resolve().parents[1] /
+                    ".github/workflows/private-ci-policy.yml").read_text(
+                        encoding="utf-8")
+        marker = "          python3 -I - <<'PY'\n"
+        if workflow.count(marker) != 1:
+            raise AssertionError("private CI policy embedded Python missing")
+        embedded = workflow.split(marker, 1)[1].split("\n          PY", 1)[0]
+        tree = ast.parse(textwrap.dedent(embedded))
+        matches = [node for node in tree.body
+                   if isinstance(node, ast.FunctionDef) and node.name == "read_regular"]
+        if len(matches) != 1:
+            raise AssertionError("missing exactly one audited read_regular")
+        scope = {"os": os, "stat": stat, "Path": Path}
+        exec(compile(ast.Module(body=matches, type_ignores=[]),
+                     "<reviewed-workflow-read-regular>", "exec"), scope)
+        cls.read_regular = staticmethod(scope["read_regular"])
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved_cwd = os.getcwd()
+        os.chdir(self.tmp.name)
+
+    def tearDown(self):
+        os.chdir(self.saved_cwd)
+        self.tmp.cleanup()
+
+    def test_regular_nested_policy_file_allowed(self):
+        Path(".github").mkdir()
+        Path(".github/policy.json").write_text('{"enabled":false}')
+        self.assertEqual(self.read_regular(Path(".github/policy.json")),
+                         '{"enabled":false}')
+
+    def test_leaf_symlink_refused(self):
+        Path("actual").write_text("policy")
+        Path("alias").symlink_to("actual")
+        with self.assertRaises(SystemExit):
+            self.read_regular("alias")
+
+    def test_parent_directory_symlink_refused(self):
+        Path("real").mkdir()
+        Path("real/policy.txt").write_text("policy")
+        Path("alias").symlink_to("real", target_is_directory=True)
+        with self.assertRaises(SystemExit):
+            self.read_regular("alias/policy.txt")
+
+    def test_nested_parent_directory_symlink_refused(self):
+        Path(".github").mkdir()
+        Path(".github/real").mkdir()
+        Path(".github/real/policy.txt").write_text("policy")
+        Path(".github/alias").symlink_to("real", target_is_directory=True)
+        with self.assertRaises(SystemExit):
+            self.read_regular(".github/alias/policy.txt")
+
+    def test_directories_and_fifos_cannot_be_read_as_policy(self):
+        Path("dir").mkdir()
+        with self.assertRaises(SystemExit):
+            self.read_regular("dir")
+        if hasattr(os, "mkfifo"):
+            os.mkfifo("pipe")
+            with self.assertRaises(SystemExit):
+                self.read_regular("pipe")
+
+    def test_empty_oversized_or_invalid_encoding_rejected(self):
+        for name, data in (("empty", b""),
+                           ("huge", b"x" * 33),
+                           ("bom", b"\xef\xbb\xbf{}"),
+                           ("nul", b"a\x00b"),
+                           ("badutf8", b"\xff")):
+            Path(name).write_bytes(data)
+            with self.subTest(name=name), self.assertRaises(SystemExit):
+                self.read_regular(name, max_bytes=32)
+
+    def test_dot_dot_and_absolute_paths_refused(self):
+        Path("ok").write_text("policy")
+        for candidate in ("../ok", str(Path("ok").resolve()), "no/../../ok"):
+            with self.subTest(path=candidate), self.assertRaises(SystemExit):
+                self.read_regular(candidate)
+
+    def test_missing_file_and_dangling_symlink_refused(self):
+        Path("missing-link").symlink_to("does-not-exist")
+        for candidate in ("missing", "missing-link"):
+            with self.subTest(path=candidate), self.assertRaises(SystemExit):
+                self.read_regular(candidate)
+
 
 if __name__ == "__main__":
     unittest.main()
