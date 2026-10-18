@@ -133,4 +133,65 @@ final class SameModuleLiteralInvocationTest {
         assertThrows(IllegalArgumentException.class,
                 () -> SameModuleLiteralInvocation.inspect(nested, wrapped, original));
     }
+
+    @Test
+    void moduleQualifierShadowAndDestructureBindingCannotSupplyAuthority() {
+        Ast.Program namespaceShadow = Parser.parse("""
+                define module app as
+                    pub fnc target(int a): int { return a; }
+                    pub fnc caller(): void {
+                        const app = 7;
+                        const result = app.target(a: 5);
+                        return;
+                    }
+                end
+                """);
+        Ast.FunctionDecl calling = caller(namespaceShadow);
+        Ast.StagedCallExpr staged = (Ast.StagedCallExpr)
+                ((Ast.BindingStmt) calling.body().get(1)).initializer();
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(namespaceShadow, calling, staged));
+
+        Ast.Program original = program();
+        Ast.ModuleDecl module = original.modules().getFirst();
+        Ast.FunctionDecl originalCaller = caller(original);
+        Ast.StagedCallExpr call = call(originalCaller);
+        Ast.DestructureStmt destructure = new Ast.DestructureStmt(
+                List.of(new Ast.DestructureBinding(Ast.BindingKind.CONST, "target")),
+                new Ast.TupleExpr(List.of(new Ast.LiteralExpr(1L),
+                        new Ast.LiteralExpr(2L))));
+        Ast.FunctionDecl modified = new Ast.FunctionDecl(
+                originalCaller.name(), originalCaller.kind(), originalCaller.visibility(),
+                originalCaller.async(), originalCaller.generator(),
+                originalCaller.structural(), originalCaller.nonLexical(),
+                originalCaller.trapped(), originalCaller.actorKind(),
+                originalCaller.genericParameters(), originalCaller.parameters(),
+                originalCaller.returnType(), originalCaller.annotations(),
+                List.of(destructure, originalCaller.body().getFirst()));
+        Ast.ModuleDecl modifiedModule = new Ast.ModuleDecl(
+                module.name(), module.annotations(), module.contracts(),
+                List.of(module.declarations().getFirst(), modified));
+        Ast.Program modifiedProgram = new Ast.Program(List.of(modifiedModule));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(modifiedProgram, modified, call));
+    }
+
+    @Test
+    void specialEffectfulCallingContextCannotClaimOrdinaryLexicalWitness() {
+        Ast.Program original = program();
+        Ast.ModuleDecl module = original.modules().getFirst();
+        Ast.FunctionDecl f = caller(original);
+        Ast.StagedCallExpr call = call(f);
+        Ast.FunctionDecl unsafe = new Ast.FunctionDecl(
+                f.name(), f.kind(), f.visibility(), true, f.generator(),
+                f.structural(), f.nonLexical(), f.trapped(), f.actorKind(),
+                f.genericParameters(), f.parameters(), f.returnType(),
+                f.annotations(), f.body());
+        Ast.ModuleDecl modified = new Ast.ModuleDecl(module.name(),
+                module.annotations(), module.contracts(),
+                List.of(module.declarations().getFirst(), unsafe));
+        Ast.Program program = new Ast.Program(List.of(modified));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(program, unsafe, call));
+    }
 }
