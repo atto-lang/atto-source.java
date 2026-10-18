@@ -93,6 +93,8 @@ teardown_helper_path='src/main/java/dev/oreslang/runtime/OresContextTeardown.jav
 teardown_helper_reviewed='5ed0f9e4948901234a3f1c54f5a7fd47def2f4f4'
 teardown_test_path='src/test/java/dev/oreslang/runtime/OresContextTeardownTest.java'
 teardown_test_reviewed='d80cd94056dc7cf3141d4c336a974b424f569075'
+teardown_matrix_path='src/test/java/dev/oreslang/runtime/OresContextTeardownMatrixTest.java'
+teardown_matrix_reviewed='ccf7a9ffda1401c16adf3fc47294d9c2e734cd99'
 
 mapfile -t runtime_paths < <(git diff --name-only "$runtime_previous" "$runtime")
 if (("${#runtime_paths[@]}" != 7)); then
@@ -111,7 +113,7 @@ for path in "${runtime_paths[@]}"; do
     exit 1
   fi
 done
-for entry in "$context_path:$context_reviewed" "$frame_test_path:$frame_test_reviewed" "$teardown_helper_path:$teardown_helper_reviewed" "$teardown_test_path:$teardown_test_reviewed"; do
+for entry in "$context_path:$context_reviewed" "$frame_test_path:$frame_test_reviewed" "$teardown_helper_path:$teardown_helper_reviewed" "$teardown_test_path:$teardown_test_reviewed" "$teardown_matrix_path:$teardown_matrix_reviewed"; do
   path="${entry%%:*}"
   expected="${entry#*:}"
   actual="$(git rev-parse "HEAD:$path")"
@@ -133,6 +135,6 @@ mvn -version
 # Maven Surefire: fail if no selected JUnit tests match. Never confuse
 # a pre-step Actions startup failure with this test's executable result.
 mvn -B -ntp -DfailIfNoTests=true \
-  -Dtest=SuspendsCallbackIsolationTest,SuspendsTaskEffectContractTest,SuspendsContractLanguageTest,TaskOwnershipBoundaryTest,TaskBlockSyntaxTest,TaskLambdaIifeSyntaxTest,TaskReturnScopeAuditTest,TaskSpellingSyntaxTest,MutexLanguageTest,OresTaskTest,OresCancellationSourceTest,OresTaskScopeTest,OresTaskScopeFrameTest,OresTaskCooperativeSchedulerTest,OresContextTeardownTest \
+  -Dtest=SuspendsCallbackIsolationTest,SuspendsTaskEffectContractTest,SuspendsContractLanguageTest,TaskOwnershipBoundaryTest,TaskBlockSyntaxTest,TaskLambdaIifeSyntaxTest,TaskReturnScopeAuditTest,TaskSpellingSyntaxTest,MutexLanguageTest,OresTaskTest,OresCancellationSourceTest,OresTaskScopeTest,OresTaskScopeFrameTest,OresTaskCooperativeSchedulerTest,OresContextTeardownTest,OresContextTeardownMatrixTest \
   test
 printf 'TASK_INTEGRATION_JUNIT_OK sha=%s\n' "$(git rev-parse HEAD)"
