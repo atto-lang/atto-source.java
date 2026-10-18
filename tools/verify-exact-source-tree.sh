@@ -31,9 +31,13 @@ if [[ "${actual}" != "${expected}" ]]; then
   exit 66
 fi
 
+untracked="$(git ls-files --others -- "${status_path}")" || {
+  echo "SOURCE_TREE_INDEX_ERROR; cannot enumerate untracked files" >&2
+  exit 68
+}
 if ! git diff --quiet HEAD -- "${status_path}" \
     || ! git diff --cached --quiet HEAD -- "${status_path}" \
-    || [[ -n "$(git ls-files --others -- "${status_path}")" ]]; then
+    || [[ -n "$untracked" ]]; then
   echo "SOURCE_WORKTREE_DIRTY; do not certify a modified checkout" >&2
   exit 67
 fi
@@ -43,6 +47,19 @@ fi
 # Independently check raw bytes against the attested Git blobs. Reject
 # symlinks/gitlinks and unmerged stages instead of following external content.
 # NUL-delimited index records preserve filenames containing whitespace/newlines.
+# Process substitution silently loses the producer's exit status. A failed
+# git ls-files --stage would otherwise certify an uninspected source tree.
+# Capture a NUL-delimited index listing in a separate temporary file and
+# require successful enumeration before validating any tracked bytes.
+index_snapshot="$(mktemp /tmp/oreslang-source-index.XXXXXXXX)" || {
+  echo "SOURCE_TREE_INDEX_ERROR; cannot allocate index snapshot" >&2
+  exit 68
+}
+trap 'rm -f -- "$index_snapshot"' EXIT
+if ! git ls-files --stage -z -- "$status_path" > "$index_snapshot"; then
+  echo "SOURCE_TREE_INDEX_ERROR; index enumeration failed" >&2
+  exit 68
+fi
 tab="$(printf '\t')"
 while IFS= read -r -d '' entry; do
   metadata="${entry%%"$tab"*}"
@@ -66,6 +83,6 @@ while IFS= read -r -d '' entry; do
     echo "SOURCE_WORKTREE_DIRTY; tracked bytes differ from attested Git blob" >&2
     exit 67
   fi
-done < <(git ls-files --stage -z -- "$status_path")
+done < "$index_snapshot"
 
 echo "SOURCE_TREE_VERIFIED expected=${expected} actual=${actual} source_root=${source_root}"
