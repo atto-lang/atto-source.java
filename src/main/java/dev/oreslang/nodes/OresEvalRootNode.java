@@ -588,6 +588,144 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         @Override
+        public String actorCodeSha256(String actorTypeName) {
+            Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
+            // Structural runtime identity only. It is deliberately separate
+            // from signed/source-artifact provenance required by native loaders.
+            return SourceActorCheckpointCodecV1.digest(
+                    "ores-source-actor-code-v1\n"
+                            + codeUnitId + "\n"
+                            + klass.name() + "\n"
+                            + program.toString());
+        }
+
+        @Override
+        public String actorStateSchemaSha256(String actorTypeName) {
+            Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
+            return SourceActorCheckpointCodecV1.schemaSha256(
+                    actorTypeName, checkpointFields(klass));
+        }
+
+        @Override
+        public String actorMessageAbiSha256(String actorTypeName) {
+            Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
+            Ast.MethodDecl receive = findMethod(
+                    klass, CallableSelector.instance("receive", 1));
+            if (receive == null || receive.parameters().size() != 1) {
+                throw new IllegalStateException(
+                        "source actor '" + actorTypeName
+                                + "' requires exactly one receive parameter");
+            }
+            String canonical = "ores-source-actor-message-v1\n"
+                    + actorTypeName + "\n"
+                    + canonicalType(receive.parameters().getFirst().type()) + "\n"
+                    + canonicalType(receive.returnType()) + "\n";
+            return SourceActorCheckpointCodecV1.digest(canonical);
+        }
+
+        @Override
+        public byte[] snapshotActorState(
+                String actorTypeName,
+                ActorRuntime.ActorOwnedGuestState rawState,
+                ActorRuntime.ActorContext<Object> actorContext) {
+            Objects.requireNonNull(actorContext, "actorContext");
+            SourceActorState state = requireCheckpointState(
+                    actorTypeName, rawState, actorContext);
+            return SourceActorCheckpointCodecV1.encode(
+                    checkpointFields(state.object().klass),
+                    state.object().fields);
+        }
+
+        @Override
+        public ActorRuntime.ActorOwnedGuestState restoreActorState(
+                String actorTypeName,
+                byte[] snapshot,
+                ActorRuntime.ActorContext<Object> actorContext) {
+            Objects.requireNonNull(actorContext, "actorContext");
+            Objects.requireNonNull(snapshot, "snapshot");
+            SharedCodeImageStore.CodeImage image =
+                    actorContext.codeImage().orElseThrow(
+                            () -> new SecurityException(
+                                    "source actor restore requires a candidate code image"));
+            if (image != codeImage()) {
+                throw new SecurityException(
+                        "source actor restore candidate code image does not match evaluator");
+            }
+            Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
+            LinkedHashMap<String, Object> fields =
+                    SourceActorCheckpointCodecV1.decode(
+                            checkpointFields(klass), snapshot);
+            OresObject object = new OresObject(this, klass, fields);
+            return new SourceActorState(
+                    actorContext.self().id(),
+                    actorTypeName,
+                    object);
+        }
+
+        private SourceActorState requireCheckpointState(
+                String actorTypeName,
+                ActorRuntime.ActorOwnedGuestState rawState,
+                ActorRuntime.ActorContext<Object> actorContext) {
+            SourceActorState state =
+                    rawState instanceof SourceActorState source ? source : null;
+            if (state == null
+                    || state.object().owner != this
+                    || !state.ownerActorId().equals(actorContext.self().id())
+                    || !state.actorTypeName().equals(actorTypeName)) {
+                throw new SecurityException(
+                        "source actor checkpoint state/evaluator ownership mismatch");
+            }
+            SharedCodeImageStore.CodeImage image =
+                    actorContext.codeImage().orElseThrow(
+                            () -> new SecurityException(
+                                    "source actor checkpoint requires an active code image"));
+            if (image != codeImage()) {
+                throw new SecurityException(
+                        "source actor checkpoint active code image does not match evaluator");
+            }
+            return state;
+        }
+
+        private List<SourceActorCheckpointCodecV1.Field> checkpointFields(
+                Ast.ClassDecl klass) {
+            ArrayList<SourceActorCheckpointCodecV1.Field> fields =
+                    new ArrayList<>();
+            for (Ast.FieldDecl field :
+                    effectiveFields(klass, new LinkedHashSet<>())) {
+                String type = canonicalCheckpointScalarType(field.type());
+                fields.add(new SourceActorCheckpointCodecV1.Field(
+                        field.name(), type));
+            }
+            return List.copyOf(fields);
+        }
+
+        private static String canonicalCheckpointScalarType(Ast.TypeRef type) {
+            if (type == null || !type.arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "v1 hot-upgrade checkpoint supports only scalar actor fields");
+            }
+            return switch (type.name()) {
+                case "int" -> "int";
+                case "bool", "boolean" -> "bool";
+                case "string", "String" -> "string";
+                default -> throw new IllegalArgumentException(
+                        "v1 hot-upgrade checkpoint does not support actor field type "
+                                + type.name());
+            };
+        }
+
+        private static String canonicalType(Ast.TypeRef type) {
+            if (type == null) return "<none>";
+            if (type.arguments().isEmpty()) return type.name();
+            StringBuilder out = new StringBuilder(type.name()).append('<');
+            for (int i = 0; i < type.arguments().size(); i++) {
+                if (i != 0) out.append(',');
+                out.append(canonicalType(type.arguments().get(i)));
+            }
+            return out.append('>').toString();
+        }
+
+        @Override
         public void receiveActor(
                 String actorTypeName,
                 ActorRuntime.ActorOwnedGuestState rawState,
