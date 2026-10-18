@@ -954,6 +954,14 @@ public final class Ast {
             if (spread && (omitted || label != null)) {
                 throw new IllegalArgumentException("spread cannot be named or omitted");
             }
+            if (!spread && value instanceof SpreadExpr) {
+                throw new IllegalArgumentException(
+                        "spread expression cannot masquerade as an ordinary call-item value");
+            }
+            if (spread && value instanceof SpreadExpr) {
+                throw new IllegalArgumentException(
+                        "spread call-item value must be the underlying expression, not nested spread");
+            }
         }
         public static CallArgument value(Expr value) {
             return new CallArgument(null, java.util.Objects.requireNonNull(value), false, false);
