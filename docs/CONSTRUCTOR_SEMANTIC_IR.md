@@ -184,6 +184,15 @@ ordinary values and therefore may widen to `AnyCallable` or `Any`.
 Erasing to `AnyCallable` never erases capture, borrow, actor-isolation,
 serialization, sharing or construction-region restrictions.
 
+Recursive lexical callables have one additional semantic distinction. The runtime
+may retain a pre-reserved self slot so the closure can call itself after the
+binding is initialized. That slot is modeled as
+`CaptureOrigin.RECURSIVE_SELF`: it is a runtime fixpoint cell, not an external
+ownership capture. Ownership accounting therefore excludes it from outer
+move/borrow capture effects, while runtime lowering preserves the slot identity.
+It is never serializable, shareable authority, actor DATA, or supervisor
+CONTROL.
+
 A callable's capture metadata is descriptive of the values retained by its
 environment; it is **not transport authorization**. In particular,
 `CallableCapability.CAPTURES_SERIALIZABLE_DATA` means captured data satisfies an
