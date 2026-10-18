@@ -4,6 +4,7 @@ on:
     paths:
       - "src/main/**"
       - "src/test/java/dev/oreslang/MlActorStateScalarGuestTest.java"
+      - "tests/java-ml-guest-junit-guard.test.mjs"
       - "tests/fixtures/ml-actor-state-scalar.ores"
       - "tests/golden/ml-actor-state-scalar.stdout"
       - "stdlib/**"
@@ -37,6 +38,8 @@ jobs:
           test "$(git hash-object -- tests/fixtures/ml-actor-state-scalar.ores)" = "4ae673f093a16538da784d15819debbef439b0db"
           test "$(git hash-object -- tests/golden/ml-actor-state-scalar.stdout)" = "9921f755979832f6b20e20923cc94f6f3bf6e05b"
           echo "ML_SCALAR_FIXTURE_AND_GOLDEN=EXACT_REVIEWED_BLOBS"
+      - name: Host-only JUnit structural regression (not guest evidence)
+        run: node --test tests/java-ml-guest-junit-guard.test.mjs
       - name: Install pinned GraalVM/JDK 25
         uses: graalvm/setup-graalvm@v1
         with:
