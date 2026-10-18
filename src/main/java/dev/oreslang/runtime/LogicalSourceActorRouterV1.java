@@ -393,15 +393,18 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                         // the candidate generation rather than closing code
                         // beneath an unknown physical actor.
                         candidateLeaseTransferred = true;
+                        ActorRuntime.ActorRef<Object> quarantinedCandidate =
+                                replacement;
                         synchronized (routeLock) {
-                            if (replacement != null
+                            if (quarantinedCandidate != null
                                     && retiredRoutes.stream().noneMatch(
-                                            route -> route.physical == replacement)) {
+                                            route -> route.physical
+                                                    == quarantinedCandidate)) {
                                 retiredRoutes.add(new Route(
                                         candidateGeneration,
                                         candidateLease,
                                         candidate,
-                                        replacement,
+                                        quarantinedCandidate,
                                         prior == null ? 1L : prior.incarnation,
                                         prior == null ? 1L : prior.routeEpoch));
                             }
