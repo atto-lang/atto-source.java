@@ -269,6 +269,52 @@ the source org's Actions jobs have zero executed steps. The private exact-tree
 candidate requires protected-main approval (#1368, #1409); no source export
 has been performed.
 
+## Bounded body-supplier startup (October 18)
+
+In production, the per-listener `NativeHttp.Server` now instantiates a
+`HttpResponseBodyOpenGate` with `min(32, admissionCapacity)` permits.
+Only *streaming* response suppliers consume permits; buffered/text responses
+continue opening directly on the I/O worker and are not blocked by a hung
+stream-supplier pool.
+
+The trusted `HttpResponseDraft.writeClaimedTo` accepts an injected,
+checked-`IOException` body opener. For actor HTTP exchanges, the injected
+opener executes each stream supplier on a separate Java virtual thread and
+waits only for the **remaining request deadline**. The transport writer polls
+cancellation at no more than 10 ms intervals. If cancellation/deadline wins,
+it abandons the result and interrupts the opener thread. Should the supplier
+ignore interrupts and return later, the returned input stream is closed.
+The supplier's gate permit is **not returned until the supplier actually
+exits**: timing out the HTTP request never admits unlimited replacement
+host tasks. This is a bounded-exposure contract, not guaranteed forced
+termination of arbitrary uncooperative Java code.
+
+Verified exact Git blob identities (Java 21 source-only smoke tests):
+
+- `HttpResponseBodyOpenGate.java`: `c39d962e99d6d7735d65f58009d1fe5212d817ea`
+- `HttpResponseDraft.java`: `1a488b2e0f3d6260cf05672007dd61cd9cb9aba6`
+- `HttpResponseBodyOpenGateCheck.java`: `aac6dca701b62bdd9944b3b26aab6f63960c95a1`
+- `HttpResponseBodyOpenWireCheck.java`: `7d6674cffdbdcc241d14a480e4255decb71fff4e`
+- `scripts/test-http-response-hardening.sh`: `b7dbd3f13104f1aa3570c36bff54503ca1dd91e1`
+
+Three complete local executions passed all seven standalone test groups.
+The new tests covered 90 deliberately noncooperative timed-out suppliers,
+bounded overload, 300 close contention races, 75 HTTP response cancellation
+races, actual HTTP socket timeout and late close, ordinary buffered response
+availability, supplier failure, header preflight retry, and HTTP framing.
+The deadline/overload test is also invoked by JUnit
+`HttpResponseDraftTest.blockingHostSuppliersRespectBoundedOpenerLifetime`,
+but **full Maven/JDK25 has not yet run**.
+
+Open limits: an uncooperative supplier can occupy one of a *bounded* number
+of opener virtual threads indefinitely, and native resources acquired inside
+host code are outside what the guest compiler can guarantee. A separate
+production policy must restrict which trusted host suppliers are allowed.
+Do not call this proof of unary HTTP actors or LLVM parity. The source org's
+Actions jobs still fail before tests; the destination allowlist is empty,
+with protected-main security review issues #1368 and #1409 outstanding.
+No cross-organization source transfer was made.
+
 ## Next implementation gates
 
 1. Establish a private, authorized CI runner; the source repository's checked-in
