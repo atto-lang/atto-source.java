@@ -30,6 +30,8 @@ public final class ActorFailure {
      * runtime identity.
      */
     public static final class Thrown extends RuntimeException implements Signal {
+        private static final long serialVersionUID = 1L;
+
         public Thrown(String message) {
             super(message, null, true, false);
         }
@@ -42,6 +44,8 @@ public final class ActorFailure {
      * only the language's recovery boundary may do so once lowering exists.
      */
     public static final class Raised extends RuntimeException implements Signal {
+        private static final long serialVersionUID = 1L;
+
         public Raised(String message) {
             super(message, null, true, false);
         }
@@ -51,6 +55,8 @@ public final class ActorFailure {
 
     /** Actor-fatal source panic. */
     public static final class Panic extends RuntimeException implements Signal {
+        private static final long serialVersionUID = 1L;
+
         public Panic(String message) {
             super(message, null, true, false);
         }
