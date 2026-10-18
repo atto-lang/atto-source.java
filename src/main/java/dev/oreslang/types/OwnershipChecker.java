@@ -3372,6 +3372,11 @@ public final class OwnershipChecker {
                 throw error("nb select continuation cannot capture guard-bearing value '"
                         + capture.name + "'");
             }
+            if (containsCallableCaptureType(source.type)) {
+                throw error("detached actor continuation cannot capture callable value '"
+                        + capture.name
+                        + "'; construct the lambda inside the deferred body or capture its data explicitly");
+            }
 
             if (capture.write) {
                 if (!source.mutable && !source.rebindable) {
@@ -3643,6 +3648,25 @@ public final class OwnershipChecker {
 
     private static boolean isMutexGuardType(Ast.TypeRef type) {
         return type != null && !type.isBorrow() && type.name().equals("MutexGuard") && type.arguments().size() == 1;
+    }
+
+    private static boolean containsCallableCaptureType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return containsCallableCaptureType(type.borrowedTarget());
+        if (type.name().equals("Fnc")
+                || type.name().equals("Function")
+                || type.name().equals("AnyCallable")) {
+            return true;
+        }
+        if (type.isRecordType()) {
+            for (Ast.TypeRef member : type.recordMembers().values()) {
+                if (containsCallableCaptureType(member)) return true;
+            }
+        }
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsCallableCaptureType(argument)) return true;
+        }
+        return false;
     }
 
     private static boolean containsMutexGuardType(Ast.TypeRef type) {
