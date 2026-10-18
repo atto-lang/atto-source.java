@@ -503,6 +503,97 @@ final class ActorObservabilityTest {
     }
 
     @Test
+    void concurrentDiagnosticConsumersPreservePublishedFifoSequenceOrder()
+            throws Exception {
+        final int count = 512;
+        final int consumers = 32;
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8, count + 32))) {
+            var actors = new java.util.ArrayList<ActorRuntime.ActorRef<String>>(count);
+            for (int i = 0; i < count; ++i) {
+                var actor = runtime.<String>spawnShared(
+                        () -> (message, context) -> { });
+                actors.add(actor);
+                actor.stop();
+            }
+            for (var actor : actors)
+                assertTrue(actor.awaitTermination(8, TimeUnit.SECONDS));
+
+            Field eventsField =
+                    ActorRuntime.class.getDeclaredField("supervisionEvents");
+            eventsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            var events = (java.util.concurrent.ArrayBlockingQueue<Object>)
+                    eventsField.get(runtime);
+            assertEquals(count, events.size());
+
+            Object firstPayload = events.peek();
+            assertNotNull(firstPayload);
+            var actorIdAccessor = firstPayload.getClass().getDeclaredMethod("actorId");
+            actorIdAccessor.setAccessible(true);
+            var expected = new java.util.ArrayList<ActorRuntime.ActorId>(count);
+            for (Object payload : events) {
+                expected.add((ActorRuntime.ActorId) actorIdAccessor.invoke(payload));
+            }
+
+            var observed = new java.util.concurrent.ConcurrentHashMap<
+                    Long, ActorRuntime.ActorId>();
+            var remaining = new java.util.concurrent.atomic.AtomicInteger(count);
+            var start = new CountDownLatch(1);
+            var finished = new CountDownLatch(consumers);
+            var failures =
+                    new java.util.concurrent.ConcurrentLinkedQueue<Throwable>();
+            try (var drainers =
+                    java.util.concurrent.Executors.newFixedThreadPool(consumers)) {
+                for (int i = 0; i < consumers; ++i) {
+                    drainers.execute(() -> {
+                        try {
+                            start.await();
+                            while (remaining.get() > 0) {
+                                Optional<ActorRuntime.ActorTerminationEvent> next =
+                                        runtime.pollTerminationEvent();
+                                if (next.isEmpty()) {
+                                    Thread.yield();
+                                    continue;
+                                }
+                                var event = next.orElseThrow();
+                                if (observed.putIfAbsent(
+                                        event.sequence(), event.actorId()) != null) {
+                                    throw new AssertionError(
+                                            "duplicate terminal sequence "
+                                                    + event.sequence());
+                                }
+                                remaining.decrementAndGet();
+                            }
+                        } catch (Throwable failure) {
+                            failures.add(failure);
+                        } finally {
+                            finished.countDown();
+                        }
+                    });
+                }
+                start.countDown();
+                assertTrue(finished.await(10, TimeUnit.SECONDS));
+            }
+
+            assertTrue(failures.isEmpty(),
+                    () -> "concurrent journal drain failures: " + failures);
+            assertEquals(0, remaining.get());
+            assertEquals(count, observed.size());
+            for (long sequence = 0; sequence < count; ++sequence) {
+                assertEquals(
+                        expected.get((int) sequence),
+                        observed.get(sequence),
+                        "sequence order must match FIFO publication order even "
+                                + "with multiple supervisor consumers");
+            }
+            assertTrue(runtime.pollTerminationEvent().isEmpty());
+            assertEquals(0L, runtime.supervisionEventsDropped());
+        }
+    }
+
+    @Test
     void exhaustedDiagnosticSequenceFailsClosedWithoutWrappingOrBlockingTermination()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
