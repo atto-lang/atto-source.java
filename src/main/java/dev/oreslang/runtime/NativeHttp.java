@@ -528,36 +528,12 @@ public final class NativeHttp implements AutoCloseable {
             if (!draft.streaming() && draft.bufferedLength() > state.server.bodyLimit)
                 throw new IllegalArgumentException("buffered response exceeds configured limit");
             return operation(() -> {
-                draft.claim();
                 synchronized (state) {
                     if (state.committed) throw new IllegalStateException("response already started");
                     state.committed = true;
                     state.responseStatus = draft.status();
                 }
-                for (Map.Entry<String, String> header : draft.headers())
-                    state.raw.getResponseHeaders().add(header.getKey(), header.getValue());
-                boolean suppress = state.raw.getRequestMethod().equals("HEAD") || !draft.hasBody();
-                if (state.raw.getRequestMethod().equals("HEAD") && draft.hasBody() && !draft.streaming())
-                    state.raw.getResponseHeaders().set("Content-Length", Integer.toString(draft.bufferedLength()));
-                long length = suppress ? -1 : draft.streaming() ? 0
-                        : draft.bufferedLength() == 0 ? -1 : draft.bufferedLength();
-                state.raw.sendResponseHeaders(draft.status(), length);
-                if (!suppress) {
-                    try (InputStream body = draft.openBody()) {
-                        state.activeResponseInput = body;
-                        try {
-                            byte[] chunk = new byte[8192];
-                            int count;
-                            while ((count = body.read(chunk)) != -1) {
-                                if (state.terminal) throw new IOException("HTTP response cancelled");
-                                if (count == 0) throw new IOException("HTTP body stream made no progress");
-                                state.raw.getResponseBody().write(chunk, 0, count);
-                            }
-                        } finally {
-                            state.activeResponseInput = null;
-                        }
-                    }
-                }
+                draft.writeTo(state.raw, () -> state.terminal, input -> state.activeResponseInput = input);
                 state.finish();
                 return null;
             });
