@@ -286,10 +286,22 @@ public final class OresScheduler implements AutoCloseable {
      * scheduler does not move the waiter onto this scheduler.</p>
      */
     public <T> OresFuture<T> start(Task<T> task) {
+        return startWithPhysicalRetirement(task, () -> { });
+    }
+
+    /**
+     * Register a VM-owned cleanup that runs only after the last physical guest
+     * dispatch of this task has left the carrier. Public Future cancellation
+     * is not a quiescence barrier and must never release critical exclusions.
+     * Do not pass guest-executing callbacks; only runtime teardown is allowed.
+     */
+    public <T> OresFuture<T> startWithPhysicalRetirement(
+            Task<T> task, Runnable onPhysicallyRetired) {
         Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(onPhysicallyRetired, "onPhysicallyRetired");
         ensureOpen();
 
-        TaskRunner<T> runner = new TaskRunner<>(task);
+        TaskRunner<T> runner = new TaskRunner<>(task, onPhysicallyRetired);
         tasks.add(runner);
         try {
             runner.scheduleInitial();
@@ -421,6 +433,9 @@ public final class OresScheduler implements AutoCloseable {
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
+        private final AtomicInteger inFlightDispatches = new AtomicInteger();
+        private final AtomicBoolean physicalRetirementPublished = new AtomicBoolean();
+        private final Runnable onPhysicallyRetired;
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -429,8 +444,9 @@ public final class OresScheduler implements AutoCloseable {
                 activeAwaitRegistration = new AtomicReference<>();
         private final OresFuture<T> completion;
 
-        private TaskRunner(Task<T> task) {
+        private TaskRunner(Task<T> task, Runnable onPhysicallyRetired) {
             this.task = task;
+            this.onPhysicallyRetired = onPhysicallyRetired;
             this.completion = new OresFuture<>(this::cancelFromFuture);
         }
 
@@ -442,6 +458,10 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void enqueueTurn() {
+            // Reserve physical dispatch authority *before* handing the turn
+            // to the executor. Cancellation cannot retire critical state while
+            // an accepted turn may still enter the Truffle context.
+            inFlightDispatches.incrementAndGet();
             try {
                 executeTurn(() -> {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
@@ -450,6 +470,8 @@ public final class OresScheduler implements AutoCloseable {
                 }, this::afterCarrierTurn, this::failTerminal);
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
+                inFlightDispatches.decrementAndGet();
+                publishPhysicalRetirementIfReady();
                 throw rejected;
             }
         }
@@ -521,9 +543,23 @@ public final class OresScheduler implements AutoCloseable {
          * this carrier is still executing guest continuation code.
          */
         private void afterCarrierTurn() {
-            executing.set(false);
-            publishTerminalIfReady();
-            scheduleReadyResume();
+            try {
+                executing.set(false);
+                scheduleReadyResume();
+            } finally {
+                // This is past the complete guest/context dispatch boundary.
+                // Release critical capabilities BEFORE publishing normal
+                // task results, never in the public cancellation callback.
+                inFlightDispatches.decrementAndGet();
+                publishPhysicalRetirementIfReady();
+                publishTerminalIfReady();
+            }
+        }
+
+        private void publishPhysicalRetirementIfReady() {
+            if (phase.get() != TERMINAL || inFlightDispatches.get() != 0) return;
+            if (!physicalRetirementPublished.compareAndSet(false, true)) return;
+            onPhysicallyRetired.run();
         }
 
         private void armCooperate() {
@@ -655,6 +691,7 @@ public final class OresScheduler implements AutoCloseable {
 
             terminalOutcome.compareAndSet(null, new TerminalFailure<>(failure));
             tasks.remove(this);
+            publishPhysicalRetirementIfReady();
             if (!executing.get()) {
                 publishTerminalIfReady();
             }
@@ -685,6 +722,7 @@ public final class OresScheduler implements AutoCloseable {
             } while (!phase.compareAndSet(observed, TERMINAL));
             tasks.remove(this);
             pendingResume.set(null);
+            publishPhysicalRetirementIfReady();
         }
 
         private void cancelFromSchedulerClose() {
