@@ -22,6 +22,7 @@ import java.util.Set;
  */
 public final class CoreLibrarySources {
     private static final String IMPORT_PREFIX = "std/";
+    private static final String OTP_IMPORT_PREFIX = "otp/";
     private static final String UNIT_PREFIX = "@std/";
     private static final String RESOURCE_PREFIX = "dev/oreslang/std/";
     private static final int MAX_SOURCE_BYTES = 1024 * 1024;
@@ -34,7 +35,14 @@ public final class CoreLibrarySources {
     private CoreLibrarySources() { }
 
     public static boolean isCoreImport(String importPath) {
-        return importPath != null && importPath.startsWith(IMPORT_PREFIX);
+        return importPath != null && (importPath.startsWith(IMPORT_PREFIX)
+                || importPath.startsWith(OTP_IMPORT_PREFIX));
+    }
+
+    /** Both spellings address the same compiler-owned OTP source. */
+    public static boolean isOtpImport(String importPath) {
+        return importPath != null && (importPath.startsWith(OTP_IMPORT_PREFIX)
+                || importPath.startsWith(IMPORT_PREFIX + OTP_IMPORT_PREFIX));
     }
 
     public static Set<String> packagedSourcePaths() {
@@ -103,9 +111,9 @@ public final class CoreLibrarySources {
 
     private static String canonicalRelativePath(String importPath) {
         Objects.requireNonNull(importPath, "importPath");
-        if (!importPath.startsWith(IMPORT_PREFIX)) {
+        if (!isCoreImport(importPath)) {
             throw new IllegalArgumentException(
-                    "core-library imports must start with 'std/': " + importPath);
+                    "packaged imports must start with 'std/' or 'otp/': " + importPath);
         }
         if (importPath.length() > MAX_IMPORT_PATH_CHARS) {
             throw new IllegalArgumentException("Oreslang core-library import path is too long");
@@ -118,7 +126,11 @@ public final class CoreLibrarySources {
                     "invalid Oreslang core-library import path: " + importPath);
         }
 
-        String raw = importPath.substring(IMPORT_PREFIX.length());
+        // Alias the portable otp/* import to the SAME resource and linked unit ID
+        // as the legacy std/otp/* import. Do not create two loaded modules.
+        String raw = importPath.startsWith(OTP_IMPORT_PREFIX)
+                ? OTP_IMPORT_PREFIX + importPath.substring(OTP_IMPORT_PREFIX.length())
+                : importPath.substring(IMPORT_PREFIX.length());
         if (raw.endsWith(".ores")) raw = raw.substring(0, raw.length() - ".ores".length());
         if (raw.isBlank()) {
             throw new IllegalArgumentException("core-library import must name a module");

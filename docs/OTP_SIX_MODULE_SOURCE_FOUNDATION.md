@@ -128,3 +128,19 @@ not merely another string/int equality predicate.
 including cross-scope, cross-actor, stale incarnation, group restart charging,
 no-op budget, invalid windows and inconsistent counts. Keep the suite
 **unverified** until the exact source head executes real JUnit steps.
+
+## Canonical otp/* imports (compiler-owned staging)
+
+Both `otp/<one-of-six>` and legacy `std/otp/<name>` use the same
+packaged .ores source and **one** historical linked unit ID,
+`@std/otp/<name>.ores`. `otp/*` is the preferred portable public name;
+a separate ABI migration is needed before changing the internal symbol ID.
+No duplicate instantiation and no project/ambient filesystem fallback is
+allowed for either reserved prefix. Non-OTP packaged `std/*` cannot depend
+on optional OTP modules; OTP code can import only `std/core` and other OTP
+modules. These restrictions enforce *import* closure, not full compiler
+intrinsic/effect closure or proof of no libc on embedded targets.
+
+`NativeOtpCanonicalImportTest` covers shared source IDs, real dual-import
+guest-source execution, and project shadowing. Its JUnit execution remains
+**unverified** while GitHub Actions fail before runner steps.
