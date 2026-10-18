@@ -264,6 +264,23 @@ revision, and surfaces approval/ambiguous-effect attention states without
 granting mutation authority. WorkflowViewActorV1 publishes those immutable
 projections to UI clients.
 
+The Java bootstrap `WorkflowViewActorV1` is intentionally an
+**ephemeral SHARED runtime router**, not workflow authority. Its live
+`ActorRef` subscribers are runtime capabilities and are never persisted in the
+workflow journal or SQLite state. The durable reducer/journal remains the sole
+authority for the projection it forwards.
+
+This is also an explicit bootstrap limitation: the current runtime has no
+owner-checked dynamic capability table for a PRIVATE actor, and
+`ActorEventBus` currently rejects PRIVATE subscribers. Therefore the view
+actor is **not** being converted to PRIVATE by serializing actor handles,
+resolving forgeable actor ids back into capabilities, or weakening the event
+bus isolation rule. The follow-up runtime primitive should provide an
+owner-scoped, runtime-owned capability-routing table (or isolated event-bus
+delivery) while keeping `runId`, epoch, revision and latest projection in the
+single private state schema. Until then the view actor remains non-authoritative
+and must not acquire workflow mutation or external-effect authority.
+
 The workflow UI consumes immutable actor projections such as:
 
 ~~~text
@@ -352,8 +369,12 @@ implicit behavior in v1.
    typed graph primitives. V1 intentionally has one active control token.
 6. Add Java/LLVM differential trace fixtures for reducer, journal, webhook
    correlation and typed workflow execution.
-7. Add formal/model checks for terminal-state monotonicity, claim uniqueness,
-   every-cycle-bounded graph structure, cancellation authority, delivery
-   identity and causal effect retirement.
-8. Restore exact-tree GitHub Actions evidence when a private validation
+7. Extend the independent TLA+/TLC durable-workflow model with refinement
+   traces for concrete journal operations, multi-effect FIFO interactions and
+   process-crash recovery; the v1 claim/reconciliation model is already wired
+   into the pinned formal CI gate.
+8. Add an owner-scoped runtime capability-routing primitive (or isolated
+   ActorEventBus delivery) so the ephemeral UI router can become PRIVATE
+   without persisting or reconstructing live ActorRef capabilities.
+9. Restore exact-tree GitHub Actions evidence when a private validation
    destination is explicitly approved by the repository's protected CI policy.
