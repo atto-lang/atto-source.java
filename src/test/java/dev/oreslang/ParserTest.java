@@ -126,6 +126,45 @@ final class ParserTest {
     }
 
     @Test
+    void optionalFormalValueShapesAreValidatedAtParserAndAstBoundaries() {
+        for (String declared : List.of(
+                "Option<string>? value",
+                "Option<int>? value",
+                "string? mut value")) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    Parser.parse("pub fnc f(" + declared + "): void { return; }"),
+                    declared);
+        }
+
+        Ast.TypeRef string = Ast.TypeRef.simple("string");
+        Ast.TypeRef borrowed = Ast.TypeRef.borrowed(string, false);
+        Ast.TypeRef optionalString = Ast.TypeRef.omittableFormal(string);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.TypeRef.omittableFormal(borrowed));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.TypeRef.omittableFormal(Ast.TypeRef.borrowed(string, true)));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.TypeRef.omittableFormal(new Ast.TypeRef(
+                        "List", List.of(borrowed), false)));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.TypeRef.omittableFormal(new Ast.TypeRef(
+                        "Option", List.of(string), false)));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.TypeRef.omittableFormal(optionalString));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.TypeRef("$omittable_formal$", List.of(), false));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.TypeRef("$omittable_formal$", List.of(string), true));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.Param(optionalString, "value", false, true));
+
+        assertEquals(string, new Ast.Param(optionalString, "value").valueType());
+        assertFalse(new Ast.Param(new Ast.TypeRef(
+                "Option", List.of(string), false), "required").optional());
+    }
+
+    @Test
     void noneCallItemIsNotAnOmissionMarker() {
         assertDoesNotThrow(() -> Parser.parse(
                 "pub fnc test(): void { const v = f(3, None, true); return; }"));
