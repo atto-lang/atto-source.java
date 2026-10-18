@@ -222,6 +222,9 @@ final class EnumCaseSourceBindingsTest {
         assertFalse(layout.containsWireTag(-1));
         assertThrows(IllegalArgumentException.class, () -> layout.constantTag("Unknown"));
         assertEquals(64, layout.schemaFingerprint().length());
+        // Golden shared with LLVM's canonical length-prefixed wire schema.
+        assertEquals("d1348f4be12ad08ecddbd97fda273dcaf65b0c492958ef69f74e477f87112844",
+                layout.schemaFingerprint());
         assertDoesNotThrow(() -> layout.requireExactSchema(layout.schemaFingerprint()));
         assertThrows(IllegalArgumentException.class, () -> layout.requireExactSchema("0".repeat(64)));
 
@@ -247,6 +250,10 @@ final class EnumCaseSourceBindingsTest {
                 .nullaryTagLayouts().containsKey("local_unit.__root__.Foo"));
         Ast.Program ordinary = Parser.parse("fnc main(): int { return 42; }");
         assertTrue(EnumCaseSourceBindings.compileLocalProof(ordinary).nullaryTagLayouts().isEmpty());
+        assertThrows(IllegalArgumentException.class,
+                () -> new dev.oreslang.types.EnumTag32Plan(
+                        "unit." + "A".repeat(508), List.of(
+                                new dev.oreslang.types.EnumTag32Plan.CaseTag("A", 1))));
         assertThrows(IllegalArgumentException.class,
                 () -> new dev.oreslang.types.EnumTag32Plan(
                         "unqualified", List.of(
