@@ -9,6 +9,10 @@ import static dev.oreslang.parser.Token.Type.*;
 
 public final class Parser {
     public static final String ROOT_MODULE = "__root__";
+    // Keep declaration parsing bounded before type-checker and match lowering
+    // allocate per-case tables. Match/enum limits must share one upper bound.
+    private static final int MAX_STAGED_ENUM_CASES = 4096;
+    private static final int MAX_STAGED_PATTERN_ALTERNATIVES = 4096;
 
     public record SyntaxWarning(int line, int column, String message) { }
 
@@ -162,7 +166,30 @@ public final class Parser {
                     rootDeclarations.add(parseTypeAlias(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
+
+                if (match(ENUM)) {
+                    validateNoModifiers(modifiers, "enums");
+                    rejectCallableStructuralAnnotation(annotations, "enums");
+                    rejectDiscardedDeclarationAnnotations(annotations, "enums");
+                    rootDeclarations.add(parseTaggedEnum());
+                    continue;
+                }
+                if (match(MATCH)) {
+                    consume(PATTERN, "expected 'pattern' after 'define match'");
+                    validateNoModifiers(modifiers, "match patterns");
+                    rejectCallableStructuralAnnotation(annotations, "match patterns");
+                    rejectDiscardedDeclarationAnnotations(annotations, "match patterns");
+                    rootDeclarations.add(parseNamedPattern());
+                    continue;
+                }
+                if (match(PATTERN)) {
+                    validateNoModifiers(modifiers, "patterns");
+                    rejectCallableStructuralAnnotation(annotations, "patterns");
+                    rejectDiscardedDeclarationAnnotations(annotations, "patterns");
+                    rootDeclarations.add(parseNamedPattern());
+                    continue;
+                }
+                throw error(previous(), "expected module, class, interface, trait, type, enum, or match pattern after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -339,7 +366,27 @@ public final class Parser {
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return parseTypeAlias(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            if (match(ENUM)) {
+                validateNoModifiers(modifiers, "enums");
+                rejectCallableStructuralAnnotation(annotations, "enums");
+                rejectDiscardedDeclarationAnnotations(annotations, "enums");
+                return parseTaggedEnum();
+            }
+            if (match(MATCH)) {
+                consume(PATTERN, "expected 'pattern' after 'define match'");
+                validateNoModifiers(modifiers, "match patterns");
+                rejectCallableStructuralAnnotation(annotations, "match patterns");
+                rejectDiscardedDeclarationAnnotations(annotations, "match patterns");
+                return parseNamedPattern();
+            }
+            if (match(PATTERN)) {
+                validateNoModifiers(modifiers, "patterns");
+                rejectCallableStructuralAnnotation(annotations, "patterns");
+                rejectDiscardedDeclarationAnnotations(annotations, "patterns");
+                return parseNamedPattern();
+            }
+            throw error(previous(),
+                    "expected class, interface, trait, type, enum, or match pattern after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -495,6 +542,97 @@ public final class Parser {
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs);
+    }
+
+    /**
+     * Newlines are lexical layout separators only within enum and pattern
+     * declarations; the ordinary expression grammar remains whitespace neutral.
+     * A variant may carry a type and an explicit stable positive integer tag.
+     */
+    private Ast.EnumDecl parseTaggedEnum() {
+        String name = consume(IDENT, "expected enum name").lexeme();
+        consume(AS, "expected 'as' after enum name");
+        List<Ast.EnumCase> cases = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        java.util.Set<Integer> tags = new java.util.HashSet<>();
+        int nextTag = 1;
+        while (!check(END) && !check(EOF)) {
+            if (cases.size() >= MAX_STAGED_ENUM_CASES) {
+                throw error(peek(), "enum case declaration limit exceeded");
+            }
+            Token start = consume(IDENT, "expected enum case name");
+            if (!names.add(start.lexeme())) throw error(start, "duplicate enum case " + start.lexeme());
+            Ast.TypeRef payload = match(COLON) ? parseTypeRef() : null;
+            int tag;
+            if (match(EQUAL)) {
+                long raw = parseSignedI64(consume(INT, "expected positive enum wire tag"));
+                if (raw < 1 || raw > Integer.MAX_VALUE) {
+                    throw error(previous(), "enum wire tags must be positive 32-bit integers");
+                }
+                tag = (int) raw;
+            } else tag = nextTag;
+            if (tag < nextTag) {
+                throw error(start, "enum wire tags must increase monotonically; "
+                        + "retired tags cannot be reused");
+            }
+            if (!tags.add(tag)) throw error(start, "duplicate enum wire tag " + tag);
+            nextTag = tag == Integer.MAX_VALUE ? tag : tag + 1;
+            cases.add(new Ast.EnumCase(start.lexeme(), payload, tag));
+            boolean separator = match(COMMA, SEMICOLON);
+            // A trailing delimiter is legal after the final max-width tag.
+            // Reject only when another case follows, not merely because the
+            // next token is the separator itself.
+            if (tag == Integer.MAX_VALUE && !check(END)) {
+                throw error(start, "cannot implicitly increment enum tag after INT32_MAX");
+            }
+            if (!separator && !check(END) && peek().line() <= previous().line()) {
+                throw error(peek(), "enum cases require separate lines, commas or semicolons");
+            }
+        }
+        consume(END, "expected 'end' after enum " + name);
+        if (cases.isEmpty()) throw error(previous(), "enum must declare at least one case");
+        return new Ast.EnumDecl(name, cases);
+    }
+
+    private Ast.PatternDecl parseNamedPattern() {
+        String name = consume(IDENT, "expected pattern name").lexeme();
+        consume(AS, "expected 'as' after pattern name");
+        List<String> alternatives = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        while (!check(END) && !check(EOF)) {
+            if (alternatives.size() >= MAX_STAGED_PATTERN_ALTERNATIVES) {
+                throw error(peek(), "named pattern alternative limit exceeded");
+            }
+            Token start = peek();
+            String alternative;
+            if (match(ELLIPSIS)) {
+                // A compiler-time enum spread is not an expression spread.
+                // Resolution happens after all declarations are collected, so
+                // forward references and enum evolution use the same rules.
+                String owner = consume(IDENT, "expected enum name after '...'").lexeme();
+                alternative = "..." + owner;
+            } else {
+                Token owner = consume(IDENT, "pattern alternatives must be qualified enum cases");
+                consume(DOT, "expected '.' between enum and case");
+                String variant = consume(IDENT, "expected enum case name").lexeme();
+                alternative = owner.lexeme() + "." + variant;
+            }
+            if (!names.add(alternative)) {
+                throw error(start, "duplicate pattern alternative " + alternative);
+            }
+            alternatives.add(alternative);
+            // Unlike ordinary type union expressions, a pattern body is an
+            // implicit alternatives list. The pipe is intentionally forbidden.
+            if (check(PIPE)) throw error(peek(),
+                    "pattern alternatives are newline/comma separated; omit '|'");
+            boolean separator = match(COMMA, SEMICOLON);
+            if (!separator && !check(END) && peek().line() <= previous().line()) {
+                throw error(peek(), "pattern alternatives require separate lines, commas or semicolons");
+            }
+        }
+        consume(END, "expected 'end' after pattern " + name);
+        if (alternatives.isEmpty()) throw error(previous(), "pattern must declare alternatives");
+        return new Ast.PatternDecl(name, alternatives);
     }
 
     private Ast.ClassDecl parseClass(
@@ -673,7 +811,7 @@ public final class Parser {
     }
 
     private void validateNoModifiers(Modifiers modifiers, String context) {
-        if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.structural
+        if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
                 || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic || modifiers.isAbstract
                 || modifiers.shared || modifiers.untrusted) {
             throw error(previous(), context + " do not accept declaration modifiers");
