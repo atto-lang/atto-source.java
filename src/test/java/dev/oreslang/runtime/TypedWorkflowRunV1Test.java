@@ -105,6 +105,23 @@ final class TypedWorkflowRunV1Test {
     }
 
     @Test
+    void restoreRejectsCurrentNodeImpossibleForTraversalCounts() {
+        var graph = DevLoopWorkflowDefinitionV1.create(2);
+        var run = new TypedWorkflowRunV1(graph);
+        run.advance("accepted", "dev.goal.v1");
+
+        var snapshot = run.snapshot();
+        assertThrows(
+                IllegalStateException.class,
+                () -> TypedWorkflowRunV1.restore(
+                        graph,
+                        new TypedWorkflowRunV1.Snapshot(
+                                "completed",
+                                snapshot.revision(),
+                                snapshot.traversalCounts())));
+    }
+
+    @Test
     void tamperedSnapshotRevisionFailsClosed() {
         var graph = DevLoopWorkflowDefinitionV1.create(2);
         var run = new TypedWorkflowRunV1(graph);
