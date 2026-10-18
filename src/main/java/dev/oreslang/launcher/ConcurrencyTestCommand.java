@@ -97,23 +97,31 @@ final class ConcurrencyTestCommand {
             int detected;
             try (ConcurrencyTestProbe.Session session = ConcurrencyTestProbe.start(
                     runSeed, scheduleFuzz || fuzz, replay)) {
-                var executed = LinkedProgramRunner.runWithExitStatus(
-                        entryPath,
-                        policy,
-                        RuntimePermissions.fromCapabilities(policy.capabilities()),
-                        PermissionCheckMode.COMPILE,
-                        profile,
-                        Set.of(),
-                        environment,
-                        out,
-                        err);
-                result = executed.exitStatus();
-                session.verifyReplayComplete();
+                try {
+                    var executed = LinkedProgramRunner.runWithExitStatus(
+                            entryPath,
+                            policy,
+                            RuntimePermissions.fromCapabilities(policy.capabilities()),
+                            PermissionCheckMode.COMPILE,
+                            profile,
+                            Set.of(),
+                            environment,
+                            out,
+                            err);
+                    result = executed.exitStatus();
+                    if (result == 0) session.verifyReplayComplete();
+                } catch (Exception failure) {
+                    // Preserve the event prefix on compile, runtime and replay
+                    // failures instead of discarding it on exception unwind.
+                    result = 1;
+                    System.err.println("oreslang test: " + failure.getClass().getSimpleName()
+                            + ": " + failure.getMessage());
+                }
                 detected = session.detectedDeadlocks();
                 String text = out.toString(StandardCharsets.UTF_8);
                 System.out.print(text);
                 System.err.print(err.toString(StandardCharsets.UTF_8));
-                if (!text.contains("ORES_TEST|SUMMARY|")) {
+                if (result == 0 && !text.contains("ORES_TEST|SUMMARY|")) {
                     System.err.println("oreslang test: native test summary missing; this is not a passing test suite");
                     result = 1;
                 }
