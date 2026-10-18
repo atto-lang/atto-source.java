@@ -137,6 +137,36 @@ final class UntrustedSourceImageCacheTest {
     }
 
     @Test
+    void failedLeaseAccountingRemainsRetryableBeforeConfirmedRetirement() throws Exception {
+        var cache = new UntrustedSourceImageCache(1, 128);
+        var lease = cache.acquire("worker", "immutable-source");
+        var entryField = UntrustedSourceImageCache.Lease.class.getDeclaredField("entry");
+        entryField.setAccessible(true);
+        var entry = entryField.get(lease);
+        var countField = entry.getClass().getDeclaredField("leases");
+        countField.setAccessible(true);
+        try {
+            countField.setInt(entry, 0); // deterministic corrupted-accounting injection
+            assertThrows(IllegalStateException.class, lease::close);
+            assertNotNull(lease.source(),
+                    "a failed release cannot advertise that the source lease was retired");
+            assertEquals(1, cache.liveImages());
+            countField.setInt(entry, 1);
+            lease.close();
+            lease.close(); // idempotent only after confirmed cache decrement
+            assertThrows(IllegalStateException.class, lease::source);
+            assertEquals(0, cache.liveImages());
+            assertEquals(0L, cache.pinnedBytes());
+        } finally {
+            // Restore clean accounting for assertion/cleanup failures too.
+            if (cache.liveImages() != 0) {
+                countField.setInt(entry, 1);
+                lease.close();
+            }
+        }
+    }
+
+    @Test
     void concurrentReadersInternOnlyOneSource() throws Exception {
         var cache = new UntrustedSourceImageCache();
         CountDownLatch begin = new CountDownLatch(1);
