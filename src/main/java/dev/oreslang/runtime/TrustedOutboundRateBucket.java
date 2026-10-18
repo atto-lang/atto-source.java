@@ -36,9 +36,6 @@ final class TrustedOutboundRateBucket {
         }
         this.monotonicNanos = Objects.requireNonNull(monotonicNanos, "trusted clock");
         long sample = monotonicNanos.getAsLong();
-        if (sample < 0) {
-            throw new IllegalStateException("trusted clock returned negative time");
-        }
         this.rate = rate;
         this.burst = burst;
         this.available = burst;
@@ -85,14 +82,12 @@ final class TrustedOutboundRateBucket {
 
     private void refill() {
         long now = monotonicNanos.getAsLong();
-        if (now < 0) {
-            throw new IllegalStateException("trusted clock returned negative time");
-        }
-        if (now <= lastNanos) {
-            // A rolled-back sample cannot refill or reset lastNanos.
-            return;
-        }
+        // System.nanoTime() has an arbitrary signed origin and may validly
+        // start negative or cross MAX_VALUE -> MIN_VALUE. Signed subtraction
+        // preserves positive intervals under 2^63 ns (~292 years).
+        // Backwards or ambiguous elapsed samples must never mint tokens.
         long elapsed = now - lastNanos;
+        if (elapsed <= 0) return;
         lastNanos = now;
         if (available == burst) {
             remainder = 0;
