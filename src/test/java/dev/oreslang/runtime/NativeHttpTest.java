@@ -261,6 +261,61 @@ class NativeHttpTest {
         assertTrue(output.contains("504"), output);
     }
 
+    @Test void guestResponseDraftIsTypedAndTransferredToRealHttp11Exchange() throws Exception {
+        for (String kind : List.of("actor", "isoactor")) {
+            String output = run("""
+                define %s Hello as
+                  receive(ActorMail<String> mail): void {
+                    val request = http.claim(mail.value);
+                    val response = http.response(201, "text/plain; charset=utf-8", "hello from Oreslang");
+                    await request.respond_response(response);
+                    try {
+                      await request.respond_response(response);
+                      stdio.println("DUPLICATE RESPONSE ACCEPTED");
+                    } catch (failure) {
+                      stdio.println("duplicate-response-rejected");
+                    }
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+                  stdio.println(server.port);
+                  val request = await server.accept();
+                  val done = request.completion;
+                  http.handler("Hello").dispatch(rt borrow mut request);
+                  stdio.println(await done);
+                  await server.shutdown(0);
+                  return;
+                }
+                """.formatted(kind), port -> {
+                    var response = request(port, "GET", "/", "");
+                    assertEquals(201, response.statusCode());
+                    assertEquals("hello from Oreslang", response.body());
+                    assertEquals("text/plain; charset=utf-8",
+                            response.headers().firstValue("Content-Type").orElseThrow());
+                });
+            assertFalse(output.contains("DUPLICATE RESPONSE ACCEPTED"), output);
+            assertTrue(output.contains("201"), output);
+        }
+    }
+
+    @Test void guestResponseDraftRejectsInvalidStatusAndBodylessStatus() {
+        String valid = """
+            define actor A as
+              receive(ActorMail<String> mail): void {
+                val response = http.response(200, "text/plain", "ok");
+                return;
+              }
+            end
+            """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(valid));
+        String invalid = valid.replace("http.response(200, \"text/plain\", \"ok\")",
+                "http.response(\"200\", \"text/plain\", \"ok\")");
+        assertThrows(Exception.class, () -> OresCompiler.parseAndTypeCheck(invalid));
+    }
+
     @Test void sharedHandlerStreamsWithoutBlockingTheActorCarrier() throws Exception {
         run("""
             define actor Stream as
