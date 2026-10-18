@@ -60,7 +60,10 @@ case " $* " in
     if [ "${FAKE_SKIP_CLEAN:-0}" = 1 ]; then exit 0; fi
     rm -rf target; exit 0 ;;
   *" verify "*)
-    if [ "${FAKE_FAIL_VERIFY:-0}" = 1 ]; then exit 9; fi ;;
+    if [ "${FAKE_FAIL_VERIFY:-0}" = 1 ]; then exit 9; fi
+    if [ "${FAKE_CHANGE_INDEX:-0}" = 1 ]; then
+      git update-index --assume-unchanged .gitignore
+    fi ;;
 esac
 printf 'SIMULATED MAVEN %s\\n' "$*"
 exit 0
@@ -156,6 +159,14 @@ exit 0
 
     def test_skip_worktree_index_does_not_bypass_source_identity(self):
         self._assert_hidden_tracked_source_rejected("--skip-worktree")
+
+    def test_postflight_hidden_index_mutation_is_rejected(self):
+        environment = self.env.copy()
+        environment["FAKE_CHANGE_INDEX"] = "1"
+        completed = self.gate(env=environment)
+        self.assertEqual(72, completed.returncode, completed.stderr)
+        self.assertIn("result=FAIL", self.receipt())
+        self.assertIn("stage=postflight-source-identity", self.receipt())
 
     def test_nonzero_maven_exit_survives_tee_and_receipt(self):
         environment = self.env.copy()
