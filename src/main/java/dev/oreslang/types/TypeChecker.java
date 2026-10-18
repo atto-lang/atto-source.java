@@ -99,6 +99,8 @@ public final class TypeChecker {
     private String currentLexicalModule;
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
+    private CallerRoleContracts.Index callerRoleContracts;
+    private Set<String> activeCallerRoles = Set.of();
     private boolean currentMaySuspend;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
@@ -144,10 +146,12 @@ public final class TypeChecker {
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
         // Neither the normal nor import-aware checker may permit unlinked enum
         // declarations into annotation expansion or typecheck collections.
+        CallerRoleContracts.Index roleIndex = CallerRoleContracts.validate(program);
         rejectUnlinkedEnumAndPatternDeclarations(program);
         program = AnnotationExpander.expand(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
+        checker.callerRoleContracts = roleIndex;
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
@@ -165,12 +169,14 @@ public final class TypeChecker {
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
         // Linked class/type-alias resolution is never proof of an enum/pattern
         // type. Keep parity with checkTypesWithDiagnostics before any rewrite.
+        CallerRoleContracts.Index roleIndex = CallerRoleContracts.validate(program);
         rejectUnlinkedEnumAndPatternDeclarations(program);
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
+        checker.callerRoleContracts = roleIndex;
         checker.validateImports(program);
         checker.collect(program);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
@@ -688,9 +694,11 @@ public final class TypeChecker {
         Ast.ActorKind previousActorKind = currentActorKind;
         boolean previousGenerator = currentGenerator;
         boolean previousAsync = currentAsyncCallable;
+        Set<String> previousCallerRoles = activeCallerRoles;
         currentActorKind = fn.actorKind();
         currentGenerator = fn.generator();
         currentAsyncCallable = fn.async();
+        activeCallerRoles = callerRoleContracts.callerRoles(fn);
         boolean previousMaySuspend = currentMaySuspend;
         currentMaySuspend = fn.async() || fn.suspends();
         try {
@@ -699,6 +707,7 @@ public final class TypeChecker {
             currentActorKind = previousActorKind;
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
+            activeCallerRoles = previousCallerRoles;
             currentMaySuspend = previousMaySuspend;
         }
 
@@ -1482,6 +1491,8 @@ public final class TypeChecker {
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
+            Set<String> previousCallerRoles = activeCallerRoles;
+            activeCallerRoles = callerRoleContracts.callerRoles(method);
             currentMaySuspend = method.async() || method.suspends();
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
@@ -1489,6 +1500,7 @@ public final class TypeChecker {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
+                activeCallerRoles = previousCallerRoles;
                 currentMaySuspend = previousMaySuspend;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
@@ -2141,6 +2153,7 @@ public final class TypeChecker {
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findSingleFunction(name.name());
             if (fn != null) {
+                callerRoleContracts.rejectReification(fn, name.name());
                 rejectImplicitClassCallable(name.name());
                 if (fn.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException("actor callable '" + fn.name()
@@ -2458,6 +2471,7 @@ public final class TypeChecker {
                                         + "use mailbox-oriented actor composition");
                     }
                     String label = "function " + functionName.name();
+                    callerRoleContracts.requireDirectCall(target, activeCallerRoles, label);
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
                     Type result = checkGenericCallable(
                             target.genericParameters(),
@@ -2498,6 +2512,7 @@ public final class TypeChecker {
                                         + "use mailbox-oriented actor composition");
                     }
                     String label = "function " + namespace.name() + "." + qualifiedCall.member();
+                    callerRoleContracts.requireDirectCall(target, activeCallerRoles, label);
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
                     Type result = checkGenericCallable(
                             target.genericParameters(),
@@ -3027,6 +3042,7 @@ public final class TypeChecker {
                     if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + staticArity + " on " + klass.name());
                     Ast.ClassDecl fnOwner = findDeclaringClass(klass, fn, new LinkedHashSet<>());
                     requireClassMemberVisible(fn.visibility(), fnOwner, "static function", fn.name());
+                    callerRoleContracts.requireDirectCall(fn, activeCallerRoles, "static function " + fnOwner.name() + "." + fn.name());
                     validateCallTypeArgumentMarker(call, fn.genericParameters(), "static function " + fnOwner.name() + "." + fn.name());
                     List<String> callableGenerics = new ArrayList<>(fn.genericParameters());
                     String label = "static function " + klass.name() + "." + fn.name();
@@ -3134,6 +3150,7 @@ public final class TypeChecker {
                         Ast.ClassDecl owner = target.owner();
                         Named ownerType = target.ownerType();
                         requireClassMemberVisible(method.visibility(), owner, "method", method.name());
+                        callerRoleContracts.requireDirectCall(method, activeCallerRoles, "method " + owner.name() + "." + method.name());
                         validateCallTypeArgumentMarker(call, method.genericParameters(), "method " + owner.name() + "." + method.name());
                         List<String> callableGenerics = new ArrayList<>(owner.genericParameters());
                         callableGenerics.addAll(method.genericParameters());
@@ -3458,6 +3475,7 @@ public final class TypeChecker {
                     Ast.MethodDecl fn = functions.getFirst();
                     Ast.ClassDecl fnOwner = findDeclaringClass(klass, fn, new LinkedHashSet<>());
                     requireClassMemberVisible(fn.visibility(), fnOwner, "static function", fn.name());
+                    callerRoleContracts.rejectReification(fn, fnOwner.name() + "." + fn.name());
                     if (!fn.genericParameters().isEmpty()) {
                         throw new IllegalArgumentException(
                                 "generic static function '" + klass.name() + "." + fn.name()
@@ -3868,6 +3886,8 @@ public final class TypeChecker {
             defineImplicitArguments(lambdaEnv, parameters);
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+            Set<String> previousCallerRoles = activeCallerRoles;
+            activeCallerRoles = Set.of(); // Closure invocation has its own lexical caller.
             Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
             // A lambda checked within a constructor runs on invocation, not
@@ -3889,6 +3909,7 @@ public final class TypeChecker {
                 env.restoreInitialization(outerInitialization);
                 currentClassOwner = previousClassOwner;
                 currentConstructorOwner = previousConstructorOwner;
+                activeCallerRoles = previousCallerRoles;
             }
             return new Function(parameters, result);
         }
@@ -4209,6 +4230,7 @@ public final class TypeChecker {
                                 + "' must be specialized by a direct call; polymorphic function values are not supported yet");
             }
             requireClassMemberVisible(fn.visibility(), findDeclaringClass(klass, fn, new LinkedHashSet<>()), "static function", fn.name());
+            callerRoleContracts.rejectReification(fn, klass.name() + "." + fn.name());
             return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
         }
 
@@ -4589,6 +4611,8 @@ public final class TypeChecker {
         defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+        Set<String> previousCallerRoles = activeCallerRoles;
+        activeCallerRoles = Set.of(); // A callback does not inherit the enclosing caller's role.
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         try {
@@ -4606,6 +4630,7 @@ public final class TypeChecker {
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
+            activeCallerRoles = previousCallerRoles;
         }
         if (lambda.blockBody() != null
                 && expected.result() != Primitive.VOID
