@@ -183,12 +183,17 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     private List<ActorPipelineRoutePlan.Edge> selectedGroupEdges(
             String source, Set<String> requested) {
         var edges = graph.forwardAll(source);
+        // Legacy static fanout stays allocation-light; ActorGroup selection
+        // is completely optional, not an extra broker in the hot path.
+        if (routingGroup == null && requested == null) return edges;
+        if (requested != null && requested.isEmpty())
+            throw new IllegalArgumentException("selective fanout requires targets");
         var active = groupEligible(source);
         if (requested != null) {
-            if (requested.isEmpty())
-                throw new IllegalArgumentException("selective fanout requires targets");
+            var connected = new HashSet<String>();
+            for (var edge : edges) connected.add(edge.target());
             for (var name : requested) {
-                if (name == null || edges.stream().noneMatch(e -> e.target().equals(name)))
+                if (!connected.contains(name))
                     throw new SecurityException("selected target is not a connected graph edge");
                 if (!active.contains(name))
                     throw new IllegalStateException(
