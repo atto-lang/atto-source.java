@@ -181,6 +181,32 @@ fault independence between arbitrary untrusted tenants. Per-actor
 logical arenas, Contexts, and watchdogs do not imply a separate native
 collector or isolated system-call authority per actor.
 
+## Teardown fatal-error and sibling-completion audit (2026-10-18)
+
+On this stacked draft, the #1306 exhaustive-retirement rule is integrated
+with the context-owned code-image leases:
+
+- The group fences new code admissions independently from guest execution;
+  the code-image leases remain pinned until physical Context close returns.
+- Pool and supervisor attempt all sibling Context closures **and** Engine
+  closure after an earlier ordinary or VM-fatal error. A failed closure must
+  leave the process-wide native isolate admission slot reserved.
+- `VerifiedCloseFence` propagates genuine host-VM fatal errors
+  (`VirtualMachineError`, `ThreadDeath`, `LinkageError`) through the
+  `FutureTask` close fence and prefers a later VM-fatal Engine failure over
+  an earlier ordinary Context failure. Ordinary/guest exceptions stay
+  sanitized with no guest source, cause or suppressed object exposed.
+- The host-only `VerifiedCloseFenceTest` covers fatal identity, repeat
+  closers, sibling-error precedence and sanitization. The exact production
+  close fence also passes strict JDK 21 compilation with
+  `-Xlint:all -Werror` and 14,400 deterministic standalone assertions.
+  **This does not certify Graal Native Image execution or physical code-page
+  sharing.**
+
+Integration with standalone #1306 must be reviewed before merging this
+stack: avoid re-applying its older pool implementation without restoring
+the code-image lease admission and retirement invariants from this branch.
+
 ## Tests and remaining release gates
 
 `SharedUntrustedActorSupervisorTest` verifies configuration, fail-closed
