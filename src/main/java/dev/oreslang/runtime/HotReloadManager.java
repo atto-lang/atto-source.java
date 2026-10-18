@@ -408,13 +408,31 @@ public final class HotReloadManager implements AutoCloseable {
             }
         }
 
-        public synchronized ActorRouteLease pinActorRoute() {
-            if (closed.get())
-                throw new IllegalStateException("generation is closed");
-            if (actorRoutePins == Integer.MAX_VALUE)
-                throw new IllegalStateException("generation route-pin budget exhausted");
-            actorRoutePins++;
-            return new ActorRouteLease();
+        public ActorRouteLease pinActorRoute() {
+            HotReloadManager manager = owner.get();
+            if (manager == null)
+                throw new IllegalStateException(
+                        "generation owner is no longer available");
+            // Lock order is manager -> generation, identical to retire().
+            // Registry membership and pin acquisition therefore form one
+            // linearizable admission: retire cannot remove at pin-count zero
+            // and race a late pin before context close.
+            synchronized (manager) {
+                if (manager.closed
+                        || manager.generations.get(id) != this) {
+                    throw new IllegalStateException(
+                            "generation is no longer registered for actor routing");
+                }
+                synchronized (this) {
+                    if (closed.get())
+                        throw new IllegalStateException("generation is closed");
+                    if (actorRoutePins == Integer.MAX_VALUE)
+                        throw new IllegalStateException(
+                                "generation route-pin budget exhausted");
+                    actorRoutePins++;
+                    return new ActorRouteLease();
+                }
+            }
         }
 
         private synchronized int actorRoutePins() {
