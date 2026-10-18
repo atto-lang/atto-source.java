@@ -260,6 +260,36 @@ final class OptionalCallAbiPreviewTest {
     }
 
     @Test
+    void constructorReceiverSelfMustBeErasedBeforeBindingUserSlots() {
+        Ast.TypeRef cls = Ast.TypeRef.simple("Widget");
+        var attempted = new Ast.StagedNewExpr(cls,
+                List.of(Ast.CallArgument.named("id", new Ast.LiteralExpr(5L))), false);
+        var receiverIncluded = List.of(
+                new Ast.Param(cls, "self"),
+                new Ast.Param(INT, "id"));
+        var rejected = assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallAbiPreview.prepareStagedConstructionExact(
+                        attempted, receiverIncluded, List.of(INT)));
+        assertTrue(rejected.getMessage().contains("self must be erased"),
+                rejected::toString);
+
+        var correct = OptionalCallAbiPreview.prepareStagedConstructionExact(
+                attempted, List.of(new Ast.Param(INT, "id")), List.of(INT));
+        assertEquals(1, correct.arguments().fullArity());
+        assertEquals(0, correct.arguments().abiSlots().getFirst().formalIndex());
+        assertEquals("id", correct.arguments().abiSlots().getFirst().formalName());
+
+        var forgedSelfLabel = new Ast.StagedNewExpr(cls,
+                List.of(Ast.CallArgument.named("self", new Ast.LiteralExpr(5L))), false);
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallAbiPreview.prepareStagedConstructionExact(
+                        forgedSelfLabel, receiverIncluded, List.of(INT)));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallAbiPreview.prepareStagedConstructionExact(
+                        forgedSelfLabel, List.of(new Ast.Param(INT, "id")), List.of(INT)));
+    }
+
+    @Test
     void stagedConstructionAndActorSpawnHaveNoGuestCalleeButRetainSourceOrder() {
         Ast.Expr c = new Ast.NameExpr("third");
         Ast.Expr a = new Ast.NameExpr("first");
