@@ -117,6 +117,48 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void parsedPlanRejectsSwappedOmissionFormalBindings() {
+        List<Parameter> parameters = List.of(
+                Parameter.required("a"), Parameter.optional("b"),
+                Parameter.optional("c"), Parameter.required("d"));
+        List<Ast.CallArgument> items = List.of(
+                Ast.CallArgument.named("d", new Ast.LiteralExpr(9L)),
+                Ast.CallArgument.omit("c"),
+                Ast.CallArgument.omit("b"),
+                Ast.CallArgument.named("a", new Ast.LiteralExpr(1L)));
+        Plan correct = OptionalCallShapeBinder.bindParsed(parameters, items);
+        assertEquals(List.of(2, 1), correct.explicitlyOmittedParameterIndices());
+        assertEquals(List.of(1, 2), correct.omittedCallItemIndices());
+        assertEquals(List.of(0, 3), correct.callItemIndexByEvaluatedSource());
+        assertDoesNotThrow(() -> OptionalCallShapeBinder.verifyPlanAgainstSource(
+                parameters, items, correct));
+
+        // All dense-source checks succeed for this forged plan, but its
+        // claimed formal-to-source omission relationship has been exchanged.
+        Plan swapped = new Plan(correct.sourceIndexByParameter(),
+                correct.variadicParameterIndex(), correct.variadicSourceIndices(),
+                List.of(1, 2), correct.callItemIndexByEvaluatedSource());
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.verifyPlanAgainstSource(
+                        parameters, items, swapped));
+    }
+
+    @Test
+    void stagedAstCannotHideSpreadInsideOrdinaryArgumentValue() {
+        Ast.Expr raw = new Ast.NameExpr("values");
+        Ast.SpreadExpr hiddenSpread = new Ast.SpreadExpr(raw);
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.CallArgument.value(hiddenSpread));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.CallArgument.named("items", hiddenSpread));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.CallArgument.spread(hiddenSpread));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.CallArgument(null, hiddenSpread, false, false));
+        assertEquals(raw, Ast.CallArgument.spread(raw).value());
+    }
+
+    @Test
     void parsedCallItemsBindWithoutErasingRawOmissionPositions() {
         Ast.Program program = Parser.parse(
                 "pub fnc test(): void { const v = f(c: sideC(), b: _, a: sideA()); return; }");
