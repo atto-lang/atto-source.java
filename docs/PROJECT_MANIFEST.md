@@ -59,12 +59,18 @@ hosted-compile fallback; it is **not** a working freestanding backend.
 
 The next compiler milestone is trusted canonical `core/*`, `alloc/*`,
 `actor/*`, `otp/*` and `std/*` source resolution plus effect inference.
-The existing `std/core` is a hosted compatibility module, not a freestanding
-core import.
-Bare `core/*`, `alloc/*`, `actor/*`, and `otp/*` import roots are now
-reserved against filesystem and `ORESLANG_PATH` fallback. Until the canonical
-compiler-owned source registries are implemented, the Java loader rejects
-imports from these roots with an explicit error. This prevents a project file
+The legacy `std/core` remains a hosted compatibility module and is
+**not** an alias for `core/numeric`: neither identity nor capability
+inheritance is silently substituted. Both currently provide simple scalar
+helpers; the eventual migration must verify their semantics together.
+Bare `core/*`, `alloc/*`, `actor/*`, and `otp/*` import roots are
+reserved against filesystem and `ORESLANG_PATH` fallback. An initial canonical compiler-owned `core/numeric` source unit now ships
+from `src/main/resources/dev/oreslang/core/numeric.ores`, with identity
+`@core/numeric.ores` and the Oreslang functions `min_int`, `max_int`, and
+`clamp_int`. Unknown `core/*` entries and all `alloc/*`, `actor/*`,
+and `otp/*` entries still fail closed until their source registries are
+introduced. The module is linkable in **hosted mode only**; it must not be
+mistaken for no-libc or no-OS execution proof. This prevents a project file
 from impersonating an allocation-free `core` module or trusted actor runtime.
 Application-local relative paths such as `./core/utility` remain ordinary
 filesystem imports, and the legacy `std/core` compatibility module remains
