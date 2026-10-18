@@ -158,6 +158,44 @@ define actor VersionedScalarStage as
         });
     }
 
+    // A controlled recovery path for a step whose full gradient fan-in
+    // exists but whose optimizer candidate is outside the bounded domain.
+    // This is NOT a successful optimizer commit: committed weight is unchanged.
+    // Bumping both fences retires all pending/late messages for the failed step.
+    // Result keeps error and valid negative scalar outcomes disjoint.
+    private cancel_rejected(int expected_step, int expected_version): Result<int, String>
+        with state.read, state.write
+    {
+        return self.handle_state(critical write |s| -> {
+            if s.step != expected_step || s.version != expected_version; do
+                return Err("STALE_STEP");
+            fi
+            if s.pending_gradients != 2 || !s.seen_first || !s.seen_second
+                || !s.issued_first || !s.issued_second; do
+                return Err("INCOMPLETE_FANIN");
+            fi
+            if s.step >= 1000000 || s.version >= 1000000; do
+                return Err("COUNTER_EXHAUSTED");
+            fi
+            val int candidate = s.weight - s.accumulated_gradient;
+            // An otherwise valid candidate must use commit(), not discard.
+            if candidate >= -10000 && candidate <= 10000; do
+                return Err("VALID_CANDIDATE_MUST_COMMIT");
+            fi
+            s.accumulated_gradient = 0;
+            s.pending_gradients = 0;
+            s.issued_first = false;
+            s.issued_second = false;
+            s.input_first = 0;
+            s.input_second = 0;
+            s.seen_first = false;
+            s.seen_second = false;
+            s.step = s.step + 1;
+            s.version = s.version + 1;
+            return Ok(s.version);
+        });
+    }
+
     private weight_snapshot(): int with state.read {
         return using state.read(|s| -> s.weight);
     }
@@ -241,6 +279,23 @@ define actor VersionedScalarStage as
             stdio.println(self.version());
             return;
         fi
+        if mail.value == "cancel_failed"; do
+            val Result<int, String> outcome = self.cancel_rejected(2, 2);
+            if outcome.is_err(); do
+                stdio.println("CANCEL_REJECTED");
+                return;
+            fi
+            stdio.println(outcome.unwrap());
+            return;
+        fi
+        if mail.value == "stale_after_cancel"; do
+            stdio.println(self.accumulate(2, 2, 1, 1));
+            return;
+        fi
+        if mail.value == "new_forward"; do
+            stdio.println(self.eval_affine(3, 3, 1, 2));
+            return;
+        fi
         if mail.value == "after"; do
             stdio.println(self.weight_snapshot() * 2);
             self.end();
@@ -270,6 +325,9 @@ pub async routine main(): void {
     worker.send("high_grad1");
     worker.send("high_grad2");
     worker.send("high_commit");
+    worker.send("cancel_failed");
+    worker.send("stale_after_cancel");
+    worker.send("new_forward");
     worker.send("after");
     await worker.get_done();
     return;
