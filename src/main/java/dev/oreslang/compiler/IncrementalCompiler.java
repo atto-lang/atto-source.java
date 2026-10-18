@@ -208,7 +208,7 @@ public final class IncrementalCompiler {
     static String abiDigest(Ast.Program program) {
         // Version bump invalidates older cache entries whose ABI omitted
         // the authorization annotations on exported declarations.
-        StringBuilder abi = new StringBuilder("ores-abi-v3-role-contracts\n");
+        StringBuilder abi = new StringBuilder("ores-abi-v4-role-enum-dependencies\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
         for (Ast.ModuleDecl module : program.modules()) {
@@ -220,27 +220,37 @@ public final class IncrementalCompiler {
                     abi.append('\n');
                 }
             }
-            for (Ast.Decl decl : module.declarations()) appendAbi(abi, decl);
+            // When a public callable exposes a role policy, even a private
+            // local enum can define the meaning of an exported role. Bind its
+            // schema to the importer's invalidation key rather than letting a
+            // wire-tag/payload edit reuse stale dependent compilation results.
+            boolean hasPublicRolePolicy = module.declarations().stream().anyMatch(decl -> {
+                if (decl instanceof Ast.FunctionDecl fn) {
+                    return fn.visibility() == Ast.Visibility.PUBLIC
+                            && hasCallerRoleMetadata(fn.annotations());
+                }
+                if (decl instanceof Ast.ClassDecl klass
+                        && klass.visibility() == Ast.Visibility.PUBLIC) {
+                    return klass.methods().stream().anyMatch(method ->
+                            method.visibility() == Ast.Visibility.PUBLIC
+                                    && hasCallerRoleMetadata(method.annotations()));
+                }
+                return false;
+            });
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.EnumDecl e
+                        && e.visibility() != Ast.Visibility.PUBLIC
+                        && hasPublicRolePolicy) {
+                    appendEnumAbi(abi, e);
+                } else appendAbi(abi, decl);
+            }
         }
         return digest(abi.toString());
     }
 
     private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
         if (decl instanceof Ast.EnumDecl enumDecl) {
-            if (enumDecl.visibility() != Ast.Visibility.PUBLIC) return;
-            // Public enum case names, ordered tags and exact payload types
-            // are a nominal source ABI even while executable enum lowering
-            // remains gated. Changes must invalidate source importers.
-            abi.append("pub enum ").append(enumDecl.name()).append('\n');
-            for (Ast.EnumCase variant : enumDecl.cases()) {
-                String name = variant.name();
-                String payload = variant.payload() == null
-                        ? "<nullary>" : typeRef(variant.payload());
-                abi.append(" enum-case ").append(name.length()).append(':')
-                        .append(name).append('#').append(variant.tag())
-                        .append('(').append(payload.length()).append(':')
-                        .append(payload).append(")\n");
-            }
+            if (enumDecl.visibility() == Ast.Visibility.PUBLIC) appendEnumAbi(abi, enumDecl);
             return;
         }
         if (decl instanceof Ast.FunctionDecl fn) {
@@ -334,6 +344,27 @@ public final class IncrementalCompiler {
                     .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
                     .append(' ').append(field.name()).append('\n');
         }
+    }
+
+    private static void appendEnumAbi(StringBuilder abi, Ast.EnumDecl declaration) {
+        abi.append(declaration.visibility()).append(" enum ").append(declaration.name()).append('\n');
+        for (Ast.EnumCase variant : declaration.cases()) {
+            String name = variant.name();
+            String payload = variant.payload() == null
+                    ? "<nullary>" : typeRef(variant.payload());
+            abi.append(" enum-case ").append(name.length()).append(':')
+                    .append(name).append('#').append(variant.tag())
+                    .append('(').append(payload.length()).append(':')
+                    .append(payload).append(")\n");
+        }
+    }
+
+    private static boolean hasCallerRoleMetadata(List<Ast.Annotation> annotations) {
+        for (Ast.Annotation annotation : annotations) {
+            if (annotation.name().equals("CallerRole")
+                    || annotation.name().equals("CallableBy")) return true;
+        }
+        return false;
     }
 
     private static String classMethodAbi(Ast.MethodDecl method) {
