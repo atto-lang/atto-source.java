@@ -90,7 +90,16 @@ final class SourceActorCheckpointCodecV1 {
                 case "string" -> {
                     if (!(value instanceof String text))
                         throw new SecurityException("actor string field has invalid runtime value: " + field.name());
+                    if (text.length() > MAX_BYTES)
+                        throw new IllegalArgumentException(
+                                "actor string field exceeds checkpoint byte budget: "
+                                        + field.name());
                     byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+                    if (bytes.length > MAX_BYTES
+                            || out.size() + 5L + bytes.length > MAX_BYTES)
+                        throw new IllegalArgumentException(
+                                "actor string field exceeds checkpoint byte budget: "
+                                        + field.name());
                     out.write(3);
                     writeU32(out, bytes.length);
                     out.writeBytes(bytes);
@@ -123,7 +132,7 @@ final class SourceActorCheckpointCodecV1 {
                 throw new IllegalArgumentException("truncated actor field name");
             byte[] nameBytes = new byte[nameSize];
             in.get(nameBytes);
-            String name = new String(nameBytes, StandardCharsets.UTF_8);
+            String name = strictUtf8(nameBytes);
             if (!name.equals(field.name()))
                 throw new SecurityException("source actor checkpoint field order/name mismatch");
             if (!in.hasRemaining()) throw new IllegalArgumentException("missing actor field type tag");
