@@ -68,7 +68,13 @@ jobs:
           dest_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]* [1-9][0-9]{0,19}")
           snap_pattern = re.compile(r"[0-9a-f]{40} [0-9a-f]{40} [1-9][0-9]{0,19}")
           def load_lines(name, pattern):
-              data = (base / name).read_text(encoding="utf-8").splitlines()
+              raw = (base / name).read_bytes()
+              # Keep the protected workflow's parser byte-for-byte aligned
+              # with the external review-pinned admission verifier.
+              if len(raw) > 65536 or any((byte < 32 and byte != 10) or byte > 126
+                                          for byte in raw):
+                  raise SystemExit("noncanonical private CI ledger bytes: " + name)
+              data = raw.decode("ascii").split("\n")
               active = [line for line in data if line and not line.startswith("#")]
               if any(not pattern.fullmatch(line) for line in active):
                   raise SystemExit("unreviewable private CI approval format: " + name)
