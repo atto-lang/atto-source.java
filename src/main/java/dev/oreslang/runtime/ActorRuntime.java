@@ -4149,7 +4149,8 @@ public final class ActorRuntime implements AutoCloseable {
                 false,
                 image,
                 executor,
-                actorTypeName);
+                actorTypeName,
+                null);
     }
 
     private <M> ActorRef<M> spawnInternal(
@@ -4159,7 +4160,7 @@ public final class ActorRuntime implements AutoCloseable {
             boolean trustedFactory) {
         return spawnInternal(
                 kind, policy, behaviorFactory, trustedFactory,
-                null, null, null);
+                null, null, null, null);
     }
 
     private <M> ActorRef<M> spawnInternal(
@@ -4170,7 +4171,7 @@ public final class ActorRuntime implements AutoCloseable {
             SharedCodeImageStore.CodeImage codeImage) {
         return spawnInternal(
                 kind, policy, behaviorFactory, trustedFactory,
-                codeImage, null, null);
+                codeImage, null, null, null);
     }
 
     private <M> ActorRef<M> spawnInternal(
@@ -4180,7 +4181,8 @@ public final class ActorRuntime implements AutoCloseable {
             boolean trustedFactory,
             SharedCodeImageStore.CodeImage codeImage,
             ActorCodeExecutor codeExecutor,
-            String codeActorType) {
+            String codeActorType,
+            byte[] preloadedSourceSnapshot) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
@@ -4188,6 +4190,10 @@ public final class ActorRuntime implements AutoCloseable {
         if ((behaviorFactory == null) == (codeExecutor == null)) {
             throw new IllegalArgumentException(
                     "actor spawn requires exactly one behavior factory or source-code executor");
+        }
+        if (preloadedSourceSnapshot != null && codeExecutor == null) {
+            throw new IllegalArgumentException(
+                    "preloaded source state requires a source-code executor");
         }
         if (codeExecutor != null) {
             if (codeImage == null || codeExecutor.codeImage() != codeImage) {
@@ -4265,6 +4271,38 @@ public final class ActorRuntime implements AutoCloseable {
                         codeExecutor,
                         codeActorType,
                         parent);
+                if (preloadedSourceSnapshot != null) {
+                    @SuppressWarnings("unchecked")
+                    ActorContext<Object> restoreContext =
+                            ((ActorCell<Object>) (ActorCell<?>) cell)
+                                    .sourceUpgradeContext(codeImage);
+                    ActorOwnedGuestState restored = Objects.requireNonNull(
+                            codeExecutor.restoreActorState(
+                                    codeActorType,
+                                    preloadedSourceSnapshot.clone(),
+                                    restoreContext),
+                            "candidate source actor restore returned null state");
+                    if (!restored.ownerActorId().equals(ref.id())) {
+                        throw new SecurityException(
+                                "restored source actor state owner "
+                                        + restored.ownerActorId()
+                                        + " does not match candidate actor "
+                                        + ref.id());
+                    }
+                    byte[] verified = Objects.requireNonNull(
+                            codeExecutor.snapshotActorState(
+                                    codeActorType,
+                                    restored,
+                                    restoreContext),
+                            "candidate source actor snapshot returned null");
+                    if (!java.util.Arrays.equals(
+                            preloadedSourceSnapshot,
+                            verified)) {
+                        throw new SecurityException(
+                                "candidate source actor restore changed checkpoint bytes");
+                    }
+                    cell.codeActorState = restored;
+                }
 
                 if (parent != null) {
                     synchronized (parent.lifecycleLock) {
