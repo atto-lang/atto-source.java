@@ -134,7 +134,28 @@ public final class Parser {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, or trait after 'define'");
+                if (match(ENUM)) {
+                    validateNoModifiers(modifiers, "enums");
+                    rejectCallableStructuralAnnotation(annotations, "enums");
+                    rootDeclarations.add(parseTaggedEnum());
+                    continue;
+                }
+                if (match(MATCH)) {
+                    consume(PATTERN, "expected 'pattern' after 'define match'");
+                    validateNoModifiers(modifiers, "match patterns");
+                    rejectCallableStructuralAnnotation(annotations, "match patterns");
+                    rootDeclarations.add(parseNamedPattern());
+                    continue;
+                }
+                if (match(PATTERN)) {
+                    // Legacy spelling stays source-compatible; the canonical
+                    // declaration spelling is now 'define match pattern'.
+                    validateNoModifiers(modifiers, "patterns");
+                    rejectCallableStructuralAnnotation(annotations, "patterns");
+                    rootDeclarations.add(parseNamedPattern());
+                    continue;
+                }
+                throw error(previous(), "expected module, class, interface, enum or pattern after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -1063,6 +1084,86 @@ public final class Parser {
             return namespace + "." + symbol;
         }
         return consumeCallableName("expected method name (methods omit 'fnc')");
+    }
+
+    private Ast.EnumDecl parseTaggedEnum() {
+        String name = consume(IDENT, "expected enum name").lexeme();
+        consume(AS, "expected 'as' after enum name");
+        List<Ast.EnumCase> cases = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        java.util.Set<Integer> tags = new java.util.HashSet<>();
+        int nextTag = 1;
+        while (!check(END) && !check(EOF)) {
+            Token start = consume(IDENT, "expected enum case name");
+            if (!names.add(start.lexeme())) throw error(start, "duplicate enum case " + start.lexeme());
+            Ast.TypeRef payload = match(COLON) ? parseTypeRef() : null;
+            int tag;
+            if (match(EQUAL)) {
+                long raw = parseSignedI64(consume(INT, "expected positive enum wire tag"));
+                if (raw < 1 || raw > Integer.MAX_VALUE) {
+                    throw error(previous(), "enum wire tags must be positive 32-bit integers");
+                }
+                tag = (int) raw;
+            } else tag = nextTag;
+            if (tag < nextTag) {
+                throw error(start, "enum wire tags must increase monotonically; "
+                        + "retired tags cannot be reused");
+            }
+            if (!tags.add(tag)) throw error(start, "duplicate enum wire tag " + tag);
+            nextTag = tag == Integer.MAX_VALUE ? tag : tag + 1;
+            cases.add(new Ast.EnumCase(start.lexeme(), payload, tag));
+            boolean separator = match(COMMA, SEMICOLON);
+            // A trailing delimiter is legal after the final max-width tag.
+            // Reject only when another case follows, not merely because the
+            // next token is the separator itself.
+            if (tag == Integer.MAX_VALUE && !check(END)) {
+                throw error(start, "cannot implicitly increment enum tag after INT32_MAX");
+            }
+            if (!separator && !check(END) && peek().line() <= previous().line()) {
+                throw error(peek(), "enum cases require separate lines, commas or semicolons");
+            }
+        }
+        consume(END, "expected 'end' after enum " + name);
+        if (cases.isEmpty()) throw error(previous(), "enum must declare at least one case");
+        return new Ast.EnumDecl(name, cases);
+    }
+
+    private Ast.PatternDecl parseNamedPattern() {
+        String name = consume(IDENT, "expected pattern name").lexeme();
+        consume(AS, "expected 'as' after pattern name");
+        List<String> alternatives = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        while (!check(END) && !check(EOF)) {
+            Token start = peek();
+            String alternative;
+            if (match(ELLIPSIS)) {
+                // A compiler-time enum spread is not an expression spread.
+                // Resolution happens after all declarations are collected, so
+                // forward references and enum evolution use the same rules.
+                String owner = consume(IDENT, "expected enum name after '...'").lexeme();
+                alternative = "..." + owner;
+            } else {
+                Token owner = consume(IDENT, "pattern alternatives must be qualified enum cases");
+                consume(DOT, "expected '.' between enum and case");
+                String variant = consume(IDENT, "expected enum case name").lexeme();
+                alternative = owner.lexeme() + "." + variant;
+            }
+            if (!names.add(alternative)) {
+                throw error(start, "duplicate pattern alternative " + alternative);
+            }
+            alternatives.add(alternative);
+            // Unlike ordinary type union expressions, a pattern body is an
+            // implicit alternatives list. The pipe is intentionally forbidden.
+            if (check(PIPE)) throw error(peek(),
+                    "pattern alternatives are newline/comma separated; omit '|'");
+            boolean separator = match(COMMA, SEMICOLON);
+            if (!separator && !check(END) && peek().line() <= previous().line()) {
+                throw error(peek(), "pattern alternatives require separate lines, commas or semicolons");
+            }
+        }
+        consume(END, "expected 'end' after pattern " + name);
+        if (alternatives.isEmpty()) throw error(previous(), "pattern must declare alternatives");
+        return new Ast.PatternDecl(name, alternatives);
     }
 
     private Ast.TypeAliasDecl parseTypeAlias() {
@@ -3099,6 +3200,19 @@ public final class Parser {
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;
         };
+    }
+
+    private long parseSignedI64(Token token) {
+        String literal = token.lexeme();
+        // Do not silently turn malformed token separators into valid integers.
+        if (literal.endsWith("_") || literal.contains("__")) {
+            throw error(token, "malformed integer separator: " + literal);
+        }
+        try {
+            return Long.parseLong(literal.replace("_", ""));
+        } catch (NumberFormatException invalid) {
+            throw error(token, "integer literal overflows signed 64-bit: " + literal);
+        }
     }
 
     private Ast.Expr parsePrimary() {
