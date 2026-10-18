@@ -506,6 +506,22 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             fx["destination_repo"] = self.write("destination-wrong-id.json", d)
         self.assertDenied(mutate)
 
+    def test_carrier_lifecycle_metadata_fails_closed(self):
+        for key in ("archived", "disabled"):
+            for forged in (None, "false", 0, [], {}):
+                with self.subTest(key=key, forged=forged):
+                    destination = {
+                        "id": MOD.CARRIER_REPO_ID, "full_name": MOD.CARRIER_REPO,
+                        "private": True, "archived": False, "disabled": False
+                    }
+                    if forged is None:
+                        del destination[key]
+                    else:
+                        destination[key] = forged
+                    self.assertDenied(lambda fx: fx.__setitem__(
+                        "destination_repo",
+                        self.write("carrier-lifecycle-malformed.json", destination)))
+
     def test_public_destination_denied(self):
         def mutate(fx):
             d = {"id": MOD.CARRIER_REPO_ID, "full_name": MOD.CARRIER_REPO,
