@@ -1,6 +1,7 @@
 """Source-free Git fixture tests; no Java Oreslang compiler is built or exported."""
 from __future__ import annotations
 import json
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -170,6 +171,47 @@ class BundleTests(unittest.TestCase):
             z.writestr('../escape.class', b'bad')
         with self.assertRaisesRegex(ValueError, 'unsafe JAR member path'):
             self.create()
+
+    def test_archive_with_executable_prefix_denied(self):
+        self.jar.write_bytes(b'#!/bin/sh\nexit 0\n' + self.jar.read_bytes())
+        with self.assertRaisesRegex(ValueError, 'executable prefix'):
+            cb.jar_structure(self.jar, main=True)
+
+    def test_jar_member_crc_corruption_denied(self):
+        dep = self.deps / 'dep-a.jar'
+        with zipfile.ZipFile(dep, 'w', compression=zipfile.ZIP_STORED) as z:
+            z.writestr('payload.bin', b'original-payload')
+        dep.write_bytes(dep.read_bytes().replace(b'original-payload',
+                                                  b'tampered-payload'))
+        with self.assertRaisesRegex(ValueError, 'not a valid JAR'):
+            cb.jar_structure(dep)
+
+    def test_symlink_in_jar_metadata_denied(self):
+        dep = self.deps / 'dep-a.jar'
+        with zipfile.ZipFile(dep, 'w') as z:
+            info = zipfile.ZipInfo('link-to-external-file')
+            info.create_system = 3
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            z.writestr(info, '/etc/passwd')
+        with self.assertRaisesRegex(ValueError, 'non-regular JAR member'):
+            cb.jar_structure(dep)
+
+    def test_backslash_in_jar_member_denied(self):
+        dep = self.deps / 'dep-a.jar'
+        with zipfile.ZipFile(dep, 'w') as z:
+            z.writestr(r'evil\path.class', b'x')
+        with self.assertRaisesRegex(ValueError, 'unsafe JAR member path'):
+            cb.jar_structure(dep)
+
+    def test_individual_expanded_jar_member_limit_denied(self):
+        with patch.object(cb, 'MAX_JAR_MEMBER', 8):
+            with self.assertRaisesRegex(ValueError, 'oversized JAR member'):
+                cb.jar_structure(self.jar, main=True)
+
+    def test_total_expanded_jar_size_limit_denied(self):
+        with patch.object(cb, 'MAX_JAR_EXPANDED', 8):
+            with self.assertRaisesRegex(ValueError, 'expanded-content bound'):
+                cb.jar_structure(self.jar, main=True)
 
     def test_wrong_commit_denied(self):
         with self.assertRaisesRegex(ValueError, 'wrong source commit'):

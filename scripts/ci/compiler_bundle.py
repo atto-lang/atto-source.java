@@ -27,6 +27,8 @@ MODES = {'jvm': ('jit', 'runtime-selected')}
 MAX_JARS = 256
 MAX_FILE = 128 * 1024 * 1024
 MAX_JSON = 128 * 1024
+MAX_JAR_MEMBER = 64 * 1024 * 1024
+MAX_JAR_EXPANDED = 256 * 1024 * 1024
 LAUNCHER = '''#!/bin/sh
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
@@ -75,21 +77,57 @@ def regular(path, max_size=MAX_FILE):
 
 
 def jar_structure(path, *, main=False):
-    """Refuse mislabeled scripts or corrupt JAR archives before attestation."""
+    """Bounded, passive validation of complete archive contents and metadata."""
     regular(path)
     try:
+        # A ZIP reader can accept a prefixed shell/polyglot executable. Require
+        # JAR bytes to begin at offset zero, not after executable script text.
+        with path.open('rb') as stream:
+            check(stream.read(4) == b'PK\x03\x04', 'not a valid JAR: executable prefix or invalid header')
         with zipfile.ZipFile(path, 'r') as archive:
-            names = archive.namelist()
-            check(len(names) <= 32768 and len(names) == len(set(names)),
+            infos = archive.infolist()
+            names = [info.filename for info in infos]
+            check(0 < len(names) <= 32768 and len(names) == len(set(names)),
                   'invalid or duplicate JAR entries')
-            check(all(not name.startswith('/') and '\x00' not in name and
-                      all(part not in ('..', '.') for part in name.split('/'))
-                      for name in names), 'unsafe JAR member path')
+            expanded = 0
+            for info in infos:
+                name = info.filename
+                parts = name.split('/')
+                check(bool(name) and not name.startswith('/') and
+                      not name.startswith('\\') and '\\' not in name and
+                      ':' not in name and '\x00' not in name and
+                      all(part not in ('', '.', '..') for part in
+                          (parts[:-1] if info.is_dir() else parts)) and
+                      (not info.is_dir() or parts[-1] == ''),
+                      'unsafe JAR member path')
+                # ZIP extra attributes encode POSIX symlinks. No ZIP member
+                # needs to point outside the archive or carry a hidden payload.
+                filetype = (info.external_attr >> 16) & 0o170000
+                check(filetype not in (stat.S_IFLNK, stat.S_IFCHR, stat.S_IFBLK,
+                                       stat.S_IFIFO, stat.S_IFSOCK),
+                      'non-regular JAR member')
+                check(info.flag_bits & 1 == 0, 'encrypted JAR member')
+                check(info.compress_type in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED),
+                      'unsupported JAR compression')
+                check(0 <= info.file_size <= MAX_JAR_MEMBER and
+                      0 <= info.compress_size <= MAX_FILE,
+                      'oversized JAR member')
+                expanded += info.file_size
+                check(expanded <= MAX_JAR_EXPANDED, 'JAR expanded-content bound exceeded')
+                if info.is_dir():
+                    check(info.file_size == 0, 'directory with data in JAR')
+                else:
+                    # Reading to EOF validates CRC and catches truncated data.
+                    # Do not extract anything, even to a temporary directory.
+                    with archive.open(info, 'r') as reader:
+                        while reader.read(65536):
+                            pass
             if main:
                 check('module-info.class' in names and
                       'dev/oreslang/launcher/OresMain.class' in names,
                       'compiler JAR missing modular OresMain entry point')
-    except (zipfile.BadZipFile, zipfile.LargeZipFile):
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError,
+            NotImplementedError, EOFError):
         deny('not a valid JAR archive: ' + str(path))
 
 
