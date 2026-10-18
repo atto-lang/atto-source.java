@@ -127,12 +127,12 @@ Runtime counters distinguish at minimum:
 - lifecycle publication/cleanup anomalies.
 
 Diagnostic producers never wait for diagnostic consumers or diagnostic
-producers. Bounded diagnostic journals must couple capacity admission with
-payload publication in one failure-atomic critical section. Java uses a
-producer try-lock around a pre-sized bounded deque: lock contention and full
-capacity are explicit diagnostic drops, never actor-lifecycle backpressure.
-A producer must not be able to reserve diagnostic capacity and then die before
-publishing the record.
+producers. Bounded terminal journals and watchdog-notice queues must couple
+capacity admission with payload publication in one failure-atomic critical
+section. Java uses producer try-locks around pre-sized bounded deques: lock
+contention and full capacity are explicit diagnostic drops, never actor
+lifecycle or watchdog-scanner backpressure. A producer must not be able to
+reserve diagnostic capacity and then die before publishing the record.
 
 ## 8. Watchdog semantics
 
@@ -172,9 +172,10 @@ publishing the record.
 8. blocked/throwing lifecycle observers never hold actor lifecycle locks or
    prevent structured parent progress;
 9. cleanup/group/collector failure cannot strand registry removal;
-10. full diagnostic journals/watchdog queues drop with counters instead of
-    backpressuring actor execution, and producer failure cannot leak diagnostic
-    capacity through a reserve-before-publish gap;
+10. full or contended diagnostic journals/watchdog queues drop with counters
+    instead of backpressuring actor execution or the independent watchdog
+    scanner, and producer failure cannot leak diagnostic capacity through a
+    reserve-before-publish gap;
 11. concurrent actor death and concurrent trusted diagnostic drains yield no
     duplicate terminal record and preserve declared global FIFO-to-sequence ordering;
 12. per-ref terminal metadata survives global-journal drops;
