@@ -363,6 +363,39 @@ public final class IncrementalCompiler {
         }
     }
 
+    /** Private ancestor schemas reachable through public local subclasses. */
+    private static List<Ast.ClassDecl> inheritedPrivateClasses(Ast.ModuleDecl module) {
+        Map<String, Ast.ClassDecl> classes = new LinkedHashMap<>();
+        for (Ast.Decl declaration : module.declarations()) {
+            if (declaration instanceof Ast.ClassDecl klass) {
+                classes.putIfAbsent(klass.name(), klass);
+            }
+        }
+        java.util.ArrayDeque<String> pending = new java.util.ArrayDeque<>();
+        java.util.Set<String> visited = new java.util.HashSet<>();
+        for (Ast.ClassDecl klass : classes.values()) {
+            if (klass.visibility() == Ast.Visibility.PUBLIC) pending.add(klass.name());
+        }
+        List<Ast.ClassDecl> inherited = new ArrayList<>();
+        while (!pending.isEmpty()) {
+            String current = pending.removeFirst();
+            if (!visited.add(current)) continue;
+            Ast.ClassDecl klass = classes.get(current);
+            if (klass == null) continue;
+            if (klass.visibility() != Ast.Visibility.PUBLIC) inherited.add(klass);
+            for (Ast.TypeRef parent : klass.parents()) {
+                String name = parent.name();
+                if (name == null) continue;
+                String prefix = module.name() + ".";
+                if (name.startsWith(prefix)) name = name.substring(prefix.length());
+                else if (name.contains(".")) continue; // Not a local declaration.
+                if (classes.containsKey(name)) pending.addLast(name);
+            }
+        }
+        inherited.sort(java.util.Comparator.comparing(Ast.ClassDecl::name));
+        return List.copyOf(inherited);
+    }
+
     /** Exact local enum dependencies of exported caller-role annotations. */
     private static java.util.Set<String> publicRoleEnumDependencies(
             Ast.ModuleDecl module, List<Ast.ClassDecl> inheritedPrivateClasses) {
