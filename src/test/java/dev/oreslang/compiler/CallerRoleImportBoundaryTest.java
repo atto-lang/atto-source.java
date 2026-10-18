@@ -141,6 +141,20 @@ final class CallerRoleImportBoundaryTest {
     }
 
     @Test
+    void localDiamondWithoutGuardsDoesNotLookLikeAnInheritanceCycle() {
+        String source = """
+                define class Root as
+                    pub static fnc safe(): void {}
+                end
+                define class Left extends Root as end
+                define class Right extends Root as end
+                define pub class Child extends Left, Right as end
+                """;
+        assertDoesNotThrow(() -> link(
+                source, "import class Child from \"provider.ores\";"));
+    }
+
+    @Test
     void protectedPublicStaticMethodInImportedClassIsRejected() {
         String source = """
                 define enum Roles as
