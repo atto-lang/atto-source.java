@@ -409,6 +409,11 @@ public final class ConstructorSemanticIr {
             return new CapturePlan(List.copyOf(merged.values()));
         }
 
+        /** Executable environments are never network/persistence DATA. */
+        public boolean serializableExecutableValue() {
+            return false;
+        }
+
         /** Executable environments are never actor DATA, even when captures are serializable. */
         public boolean actorDataAdmissible() {
             return false;
