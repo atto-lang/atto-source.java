@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -409,6 +410,93 @@ public final class ActorRuntime implements AutoCloseable {
             releaseSharedRuntimeBytes(bytes);
             sharedValues.remove(this);
         }
+    }
+
+    /**
+     * An opaque, host-only proof that one actor has exited its physical
+     * TurnExecutor boundary and that new scheduler dispatch is inhibited.
+     * Closing the proof re-enables execution; after a successful durable
+     * hibernate, call stopAfterHibernate() instead of close().
+     */
+    public final class DurableQuiescence implements AutoCloseable {
+        private final ActorCell<?> cell;
+        private final AtomicBoolean released = new AtomicBoolean();
+
+        private DurableQuiescence(ActorCell<?> cell) {
+            this.cell = cell;
+        }
+
+        public ActorId actorId() { return cell.ref.id(); }
+
+        public boolean valid() {
+            synchronized (cell.lifecycleLock) {
+                return !released.get() && cell.durableQuiescence == this
+                        && cell.durableFreezeRequested
+                        && !cell.carrierActive && !cell.scheduled.get()
+                        && cell.activeTurns == 0 && !cell.stopped.get() && !cell.finalized;
+            }
+        }
+
+        @Override
+        public void close() {
+            requireSupervisorContext("resume durable actor execution");
+            if (!released.compareAndSet(false, true)) return;
+            boolean shouldSchedule = false;
+            synchronized (cell.lifecycleLock) {
+                if (cell.durableQuiescence == this) {
+                    cell.durableQuiescence = null;
+                    cell.durableFreezeRequested = false;
+                    shouldSchedule = !cell.stopped.get() && !cell.finalized
+                            && cell.hasQueuedWorkLocked();
+                }
+            }
+            if (shouldSchedule) cell.schedule();
+        }
+
+        /** Only call after the persistent hibernate transaction succeeds. */
+        public void stopAfterHibernate() {
+            requireSupervisorContext("complete durable actor hibernate");
+            if (!valid()) throw new IllegalStateException("durable execution proof was revoked");
+            // stop seals the mailbox before this proof releases scheduling.
+            cell.stop();
+            close();
+        }
+    }
+
+    /**
+     * Nonblocking request for an actor-wide scheduler freeze. The returned
+     * stage settles only after the TurnExecutor/Truffle leave boundary exits.
+     * Running turns finish; new dispatch and queued callbacks are held back.
+     * No caller waits on a carrier thread or a CONTROL worker.
+     *
+     * The proof is a local execution barrier, NOT a PostgreSQL lease or a
+     * snapshot codec. Supervisor code must persist and hibernate off-carrier.
+     */
+    public CompletableFuture<DurableQuiescence> requestDurableQuiescence(ActorRef<?> ref) {
+        requireSupervisorContext("request durable actor quiescence");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) throw new IllegalArgumentException("foreign ActorRef");
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) {
+            return CompletableFuture.failedFuture(new IllegalStateException("unknown actor"));
+        }
+        CompletableFuture<DurableQuiescence> future = new CompletableFuture<>() {
+            @Override public boolean cancel(boolean mayInterruptIfRunning) {
+                // Dropping a callback cannot silently unfreeze a durable actor.
+                return false;
+            }
+        };
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || cell.durableFreezeRequested
+                    || cell.sourceReceiveSuspended || cell.finalCleanupActive) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("actor cannot enter durable quiescence"));
+            }
+            cell.durableFreezeRequested = true;
+            cell.durableFreezePending = future;
+        }
+        cell.publishDurableQuiescence();
+        return future;
     }
 
     private final UUID runtimeInstanceId = UUID.randomUUID();
@@ -6667,6 +6755,10 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private int activeTurns;
+        /** Immutable after admission until the physical TurnExecutor exits. */
+        private boolean durableFreezeRequested;
+        private CompletableFuture<DurableQuiescence> durableFreezePending;
+        private DurableQuiescence durableQuiescence;
         private boolean carrierActive;
         /** Physical worker currently owning this actor lane, guarded by lifecycleLock.
          * Not an affinity requirement: a later turn may use a different worker. */
@@ -6896,7 +6988,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
-                if (stopped.get() || forceKillFenced || finalized) return false;
+                if (stopped.get() || forceKillFenced || finalized || durableFreezeRequested) return false;
                 // The full actor execution domain (including lifecycle and resumed
                 // continuations) must be entered on the single admitted carrier.
                 if (!carrierActive || carrierOwnerThread != Thread.currentThread()
@@ -7161,7 +7253,8 @@ public final class ActorRuntime implements AutoCloseable {
         private void schedule() {
             final Object dispatchTicket;
             synchronized (lifecycleLock) {
-                if (stopped.get() || forceKillFenced || closed.get() || scheduled.get()) return;
+                if (stopped.get() || forceKillFenced || closed.get() ||
+                        scheduled.get() || durableFreezeRequested) return;
                 // Atomically claim the actor lane and publish a fresh identity.
                 dispatchTicket = new Object();
                 scheduledDispatchToken = dispatchTicket;
@@ -7198,7 +7291,8 @@ public final class ActorRuntime implements AutoCloseable {
                     // Prevent obsolete queued runnables impersonating the
                     // next actor turn after scheduled was cleared and re-claimed.
                     if (scheduledDispatchToken != dispatchTicket || !scheduled.get()) return;
-                    if (stopped.get() || closed.get() || forceKillFenced) return;
+                    if (stopped.get() || closed.get() || forceKillFenced ||
+                            durableFreezeRequested) return;
                     if (carrierActive || carrierOwnerThread != null || activeTurns != 0) {
                         throw new IllegalStateException(
                                 "actor physical carrier already occupied for " + ref.id());
@@ -7288,6 +7382,7 @@ public final class ActorRuntime implements AutoCloseable {
                             scheduled.set(false);
                             if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                             reschedule = !stopped.get()
+                                    && !durableFreezeRequested
                                     && !forceKillFenced
                                     && !closed.get()
                                     && !finalized
@@ -7302,6 +7397,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 if (reschedule) schedule();
+                publishDurableQuiescence();
             }
         }
 
@@ -7393,7 +7489,7 @@ public final class ActorRuntime implements AutoCloseable {
                     MessageEnvelope envelope;
                     synchronized (lifecycleLock) {
                         // Stop closes the user mailbox under this same lock.
-                        if (stopped.get() || finalized) break;
+                        if (stopped.get() || finalized || durableFreezeRequested) break;
 
                         // Continuations always outrank user mail. While a
                         // source receive is suspended, user mail is not runnable.
@@ -7553,6 +7649,44 @@ public final class ActorRuntime implements AutoCloseable {
             terminateTree(cancellation, true);
         }
 
+        /**
+         * Publish the freeze only after the whole carrier, including the
+         * polyglot context's leave, has exited. Never run Future callbacks
+         * while holding lifecycleLock or on an actor carrier.
+         */
+        private void publishDurableQuiescence() {
+            CompletableFuture<DurableQuiescence> future;
+            DurableQuiescence grant = null;
+            Throwable failure = null;
+            boolean restart = false;
+            synchronized (lifecycleLock) {
+                if (!durableFreezeRequested || durableFreezePending == null ||
+                        carrierActive || scheduled.get() || activeTurns != 0) return;
+                future = durableFreezePending;
+                durableFreezePending = null;
+                if (stopped.get() || finalized || sourceReceiveSuspended
+                        || activeMail != null || !pendingOperations.isEmpty()
+                        || activeUntrustedSourceTaskCount != 0
+                        || activeUntrustedTimedAdmissions != 0) {
+                    failure = new IllegalStateException(
+                            "actor has terminated or has suspended/owned in-flight work");
+                    durableFreezeRequested = false;
+                    restart = !stopped.get() && !finalized && hasQueuedWorkLocked();
+                } else {
+                    grant = new DurableQuiescence(this);
+                    durableQuiescence = grant;
+                }
+            }
+            final DurableQuiescence proof = grant;
+            final Throwable rejected = failure;
+            // Host callbacks must not execute on the actor or CONTROL carrier.
+            ForkJoinPool.commonPool().execute(() -> {
+                if (rejected == null) future.complete(proof);
+                else future.completeExceptionally(rejected);
+            });
+            if (restart) schedule();
+        }
+
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
@@ -7596,6 +7730,7 @@ public final class ActorRuntime implements AutoCloseable {
                         child.ref.id(),
                         "parent actor " + ref.id() + " terminated"));
             }
+            publishDurableQuiescence();
         }
     }
 }
