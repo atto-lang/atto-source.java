@@ -142,6 +142,37 @@ final class TrustedUntrustedNetworkQuotaTest {
     }
 
     @Test
+    void failedPreDispatchMayRefundOnlyOnce() {
+        AtomicLong clock = new AtomicLong();
+        var quota = new TrustedUntrustedNetworkQuota(
+                TrustedUntrustedNetworkQuota.Policy.initialDefault(), clock::get);
+        var first = quota.tryStartHttp();
+        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, first.status());
+        assertTrue(first.lease().abortBeforeDispatch());
+        assertFalse(first.lease().abortBeforeDispatch());
+        assertFalse(first.lease().commitDispatch());
+        first.lease().close();
+        assertEquals(0, quota.httpInFlight());
+
+        // The single refunded token is usable, not two new tokens.
+        var second = quota.tryStartHttp();
+        var third = quota.tryStartHttp();
+        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, second.status());
+        assertEquals(TrustedUntrustedNetworkQuota.Status.ADMITTED, third.status());
+        assertEquals(TrustedUntrustedNetworkQuota.Status.RATE_LIMITED,
+                quota.tryStartHttp().status());
+        assertTrue(second.lease().commitDispatch());
+        assertFalse(second.lease().abortBeforeDispatch());
+        second.lease().close();
+        third.lease().close();
+
+        var tcp = quota.tryOpenTcp();
+        assertTrue(tcp.lease().abortBeforeDispatch());
+        assertFalse(tcp.lease().abortBeforeDispatch());
+        assertEquals(0, quota.tcpConnections());
+    }
+
+    @Test
     void malformedPolicyRejected() {
         assertThrows(IllegalArgumentException.class,
                 () -> new TrustedUntrustedNetworkQuota.Policy(0, 2, 10, 10));
