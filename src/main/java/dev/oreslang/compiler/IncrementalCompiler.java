@@ -224,13 +224,29 @@ public final class IncrementalCompiler {
             // callable explicitly references its cases in caller-role metadata.
             // Including every private enum causes needless invalidation and
             // exposes unrelated implementation-only schema changes.
-            java.util.Set<String> roleEnums = publicRoleEnumDependencies(module);
+            List<Ast.ClassDecl> inheritedPrivateClasses = inheritedPrivateClasses(module);
+            java.util.Set<String> roleEnums =
+                    publicRoleEnumDependencies(module, inheritedPrivateClasses);
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.EnumDecl e
                         && e.visibility() != Ast.Visibility.PUBLIC
                         && roleEnums.contains(e.name())) {
                     appendEnumAbi(abi, e);
                 } else appendAbi(abi, decl);
+            }
+            // Private parents can export public inherited methods through a
+            // public subclass. Their method signatures and caller-role policy
+            // are part of that subclass's effective external source ABI.
+            for (Ast.ClassDecl ancestor : inheritedPrivateClasses) {
+                abi.append("inherited-private-class ").append(ancestor.name()).append('\n');
+                for (Ast.TypeRef parent : ancestor.parents()) {
+                    abi.append(" parent ").append(typeRef(parent)).append('\n');
+                }
+                for (Ast.MethodDecl method : ancestor.methods()) {
+                    if (method.visibility() == Ast.Visibility.PUBLIC) {
+                        abi.append(classMethodAbi(method));
+                    }
+                }
             }
         }
         return digest(abi.toString());
@@ -348,7 +364,8 @@ public final class IncrementalCompiler {
     }
 
     /** Exact local enum dependencies of exported caller-role annotations. */
-    private static java.util.Set<String> publicRoleEnumDependencies(Ast.ModuleDecl module) {
+    private static java.util.Set<String> publicRoleEnumDependencies(
+            Ast.ModuleDecl module, List<Ast.ClassDecl> inheritedPrivateClasses) {
         java.util.Set<String> localEnumNames = new java.util.HashSet<>();
         for (Ast.Decl decl : module.declarations()) {
             if (decl instanceof Ast.EnumDecl e) localEnumNames.add(e.name());
@@ -364,6 +381,14 @@ public final class IncrementalCompiler {
                         addRoleEnumDependencies(
                                 referenced, method.annotations(), module.name(), localEnumNames);
                     }
+                }
+            }
+        }
+        for (Ast.ClassDecl ancestor : inheritedPrivateClasses) {
+            for (Ast.MethodDecl method : ancestor.methods()) {
+                if (method.visibility() == Ast.Visibility.PUBLIC) {
+                    addRoleEnumDependencies(
+                            referenced, method.annotations(), module.name(), localEnumNames);
                 }
             }
         }
