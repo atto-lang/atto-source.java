@@ -195,4 +195,34 @@ final class UntrustedSourceImageCacheTest {
         }
         assertEquals(0, cache.liveImages());
     }
+    @Test
+    void concurrentClosersCannotDoubleReleaseSameLease() throws Exception {
+        var cache = new UntrustedSourceImageCache(1, 128);
+        try (var workers = Executors.newFixedThreadPool(8)) {
+            for (int round = 0; round < 32; round++) {
+                var lease = cache.acquire("worker", "same-image");
+                try {
+                    CountDownLatch start = new CountDownLatch(1);
+                    List<java.util.concurrent.Future<?>> closes = new ArrayList<>();
+                    for (int i = 0; i < 8; i++) {
+                        closes.add(workers.submit(() -> {
+                            assertTrue(start.await(10, TimeUnit.SECONDS));
+                            lease.close();
+                            return null;
+                        }));
+                    }
+                    start.countDown();
+                    for (var close : closes) close.get(10, TimeUnit.SECONDS);
+                    assertEquals(0, cache.liveImages(),
+                            "a race among closers must retire exactly one image");
+                    assertEquals(0L, cache.pinnedBytes(),
+                            "the budget must be refunded once, never more");
+                    assertThrows(IllegalStateException.class, lease::source);
+                } finally {
+                    lease.close();
+                }
+            }
+        }
+    }
+
 }
