@@ -15,7 +15,8 @@ import java.util.function.LongSupplier;
  *
  * <p>HTTP request-start rate and HTTP in-flight count are independent.
  * A TCP lease reserves an open/connecting socket slot and a connection-start
- * rate token; failed connection attempts do not replenish that token.
+ * rate token. Guest-visible cancellation and failed dial attempts do not
+ * replenish that token, even if I/O was not dispatched.
  * Callers must hold
  * the lease through the real I/O operation and release on every terminal
  * path. Cancellation must actually terminate or close host I/O before
@@ -81,8 +82,24 @@ final class TrustedUntrustedNetworkQuota implements AutoCloseable {
             }
         }
 
-        /** Refund an admission that was never dispatched; cannot be replayed. */
+        /**
+         * Guest-visible reservation cancellation releases the concurrency
+         * slot but deliberately does NOT refund its start-rate token.
+         * Otherwise holding a reservation across a refill epoch, aborting,
+         * and starting new requests could exceed the configured burst.
+         */
         boolean abortBeforeDispatch() {
+            if (!lifecycle.compareAndSet(0, 2)) return false;
+            owner.release(http);
+            return true;
+        }
+
+        /**
+         * Trusted gate INTERNAL ONLY: revert a provisional reservation
+         * that was never published because another scope denied admission.
+         * Never expose this operation through a broker/guest API.
+         */
+        boolean rollbackUnpublished() {
             if (!lifecycle.compareAndSet(0, 2)) return false;
             owner.refundUnsent(http);
             return true;
