@@ -101,7 +101,10 @@ A runtime may also expose a bounded global terminal journal. That journal:
 - is diagnostic only and may drop under observer backpressure;
 - never blocks finalization;
 - exposes explicit drop counters;
-- preserves declared sequence ordering under concurrent actor death.
+- preserves declared sequence ordering under concurrent actor death;
+- preserves that same FIFO-to-sequence ordering when multiple trusted supervisor
+  consumers drain concurrently; dequeue and sequence assignment are one
+  serialized consumer-side operation, while producers remain nonblocking.
 
 Supervisor restart/escalation policy must not depend on a droppable journal.
 The future source on_panic/on_raise/on_throw path requires non-droppable typed
@@ -169,8 +172,8 @@ able to reserve diagnostic capacity and then die before publishing the record.
 10. full diagnostic journals/watchdog queues drop with counters instead of
     backpressuring actor execution, and producer failure cannot leak diagnostic
     capacity through a reserve-before-publish gap;
-11. concurrent actor death yields no duplicate terminal record and preserves
-    declared global ordering;
+11. concurrent actor death and concurrent trusted diagnostic drains yield no
+    duplicate terminal record and preserve declared global FIFO-to-sequence ordering;
 12. per-ref terminal metadata survives global-journal drops;
 13. cancellation cascades through the child tree but is not ordinary catchable
     failure;
