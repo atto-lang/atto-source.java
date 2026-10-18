@@ -76,6 +76,15 @@ final class OptionResultCompositionLanguageTest {
     }
 
     @Test
+    void adversarialNestedSumCompositionMustRespectBoundedTypeDepth() {
+        String nested = "int";
+        for (int i = 0; i < 70; i++) nested = "Option<" + nested + ">";
+        String program = "fnc f(" + nested + " value): void { "
+                + "value.map<int>(|" + nested + " x| -> { return 1; }); return; }";
+        reject(program, "scalar");
+    }
+
+    @Test
     void rejectsArityAndUnsafeCarrierOwnershipUntilProven() {
         reject("fnc f(Option<int> x): void { x.map<int>(); return; }",
                 "one callback");
