@@ -5,7 +5,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -409,6 +409,8 @@ public final class WorkflowActivityActorV1 {
                 }
                 throw new IllegalStateException(
                         "invalid activity private state", failure);
+            } finally {
+                Arrays.fill(payload, (byte) 0);
             }
         }
 
@@ -433,8 +435,13 @@ public final class WorkflowActivityActorV1 {
                         writeClaim(output, claim);
                     }
                 }
-                WorkflowPrivateActorStateV1.write(
-                        stateBlock, bytes.toByteArray());
+                byte[] encoded = bytes.toByteArray();
+                try {
+                    WorkflowPrivateActorStateV1.write(
+                            stateBlock, encoded);
+                } finally {
+                    Arrays.fill(encoded, (byte) 0);
+                }
             } catch (IOException failure) {
                 throw new IllegalStateException(
                         "failed to encode activity private state",
@@ -551,10 +558,14 @@ public final class WorkflowActivityActorV1 {
     private static void writeString(
             DataOutputStream output,
             String value) throws IOException {
-        byte[] bytes = requireText(value, "private-state string")
-                .getBytes(StandardCharsets.UTF_8);
-        output.writeInt(bytes.length);
-        output.write(bytes);
+        byte[] bytes = WorkflowPrivateActorStateV1.encodeUtf8(
+                requireText(value, "private-state string"));
+        try {
+            output.writeInt(bytes.length);
+            output.write(bytes);
+        } finally {
+            Arrays.fill(bytes, (byte) 0);
+        }
     }
 
     private static String readString(
@@ -569,7 +580,11 @@ public final class WorkflowActivityActorV1 {
             throw new IllegalStateException(
                     "truncated private-state string");
         }
-        return new String(bytes, StandardCharsets.UTF_8);
+        try {
+            return WorkflowPrivateActorStateV1.decodeUtf8(bytes);
+        } finally {
+            Arrays.fill(bytes, (byte) 0);
+        }
     }
 
     private static void writeNullableString(
