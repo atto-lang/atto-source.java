@@ -85,13 +85,18 @@ public final class SqliteTypedWorkflowRunV1 implements AutoCloseable {
             committed = true;
             return transition;
         } catch (RuntimeException | Error failure) {
-            if (!committed) rollbackQuietly();
+            if (!committed) {
+                rollbackOrInvalidate(failure);
+            }
             throw failure;
         } catch (SQLException failure) {
-            if (!committed) rollbackQuietly();
-            throw new IllegalStateException(
+            IllegalStateException wrapped = new IllegalStateException(
                     "typed workflow advance failed",
                     failure);
+            if (!committed) {
+                rollbackOrInvalidate(wrapped);
+            }
+            throw wrapped;
         }
     }
 
@@ -437,11 +442,24 @@ public final class SqliteTypedWorkflowRunV1 implements AutoCloseable {
         }
     }
 
-    private void rollbackQuietly() {
+    private void rollbackOrInvalidate(Throwable originalFailure) {
         try {
             execute("ROLLBACK");
+        } catch (SQLException rollbackFailure) {
+            originalFailure.addSuppressed(rollbackFailure);
+            invalidateConnection();
+        }
+    }
+
+    private void invalidateConnection() {
+        closed = true;
+        Connection doomed = connection;
+        connection = null;
+        if (doomed == null) return;
+        try {
+            doomed.close();
         } catch (SQLException ignored) {
-            // Preserve original failure.
+            // Preserve the original transaction/rollback failure.
         }
     }
 
