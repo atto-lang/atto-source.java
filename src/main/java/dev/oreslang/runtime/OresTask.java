@@ -80,8 +80,10 @@ public final class OresTask<T> implements Awaitable<T> {
                 "Task quiescence is unavailable until its scheduler supplies an exit fence");
         OresFuture<Void> observer = new OresFuture<>();
         OresFuture.RuntimeWaiterRegistration<?> registration =
-                quiescence.whenCompleteRuntimeCancellable(
-                        (ignored, failure) -> observer.completeFromRuntime(null));
+                quiescence.whenCompleteRuntimeCancellable((ignored, failure) -> {
+                    if (failure == null) observer.completeFromRuntime(null);
+                    else observer.failFromRuntime(failure);
+                });
         observer.whenCompleteRuntime((value, failure) -> registration.detach());
         return observer;
     }
