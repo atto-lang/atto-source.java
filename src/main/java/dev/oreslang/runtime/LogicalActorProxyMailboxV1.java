@@ -13,6 +13,11 @@ import java.util.TreeSet;
  * Dispatch does not refund capacity. Only logical completion refunds the
  * message/byte credit, matching the native bounded-port accounting contract.</p>
  *
+ * <p>Dispatch, completion and upgrade-freeze operations are intentionally
+ * package-private trusted-runtime operations, not guest ActorRef methods.
+ * Java package visibility is only defense in depth; production callers still
+ * need compiler/runtime capability checks and authenticated physical receipts.</p>
+ *
  * <p>An upgrade freeze pauses dispatch, not admission. New immutable messages
  * continue to enter the bounded queue. The freeze ticket records the highest
  * message sequence already dispatched to the old route. Commit is legal only
@@ -206,7 +211,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
      * Dispatch the next FIFO envelope to the currently authoritative route.
      * Returns null while frozen or when no message is queued.
      */
-    public Envelope pollDispatch() {
+    Envelope pollDispatch() {
         synchronized (lock) {
             requireOpenLocked();
             if (dispatchFrozen) return null;
@@ -287,7 +292,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
      * Logical mail completion. This is the point at which proxy capacity is
      * refunded. Completion order may differ from admission/dispatch order.
      */
-    public void complete(long messageSequence) {
+    void complete(long messageSequence) {
         synchronized (lock) {
             requireOpenLocked();
             Envelope envelope = outstanding.get(messageSequence);
@@ -360,7 +365,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
     /**
      * Freeze dispatch at an exact old-route watermark. Admission remains open.
      */
-    public FreezeTicket freezeDispatchForUpgrade() {
+    FreezeTicket freezeDispatchForUpgrade() {
         synchronized (lock) {
             requireOpenLocked();
             if (dispatchFrozen || activeFreeze != null) {
