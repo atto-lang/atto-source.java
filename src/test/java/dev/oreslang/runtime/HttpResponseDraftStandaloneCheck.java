@@ -83,6 +83,7 @@ public final class HttpResponseDraftStandaloneCheck {
         var responseCancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
         var cancelledCleanupDone = new java.util.concurrent.CountDownLatch(1);
         AtomicInteger aggregateRejects = new AtomicInteger();
+        AtomicInteger preflightRetries = new AtomicInteger();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 8);
         var workers = Executors.newCachedThreadPool();
         server.setExecutor(workers);
