@@ -117,6 +117,42 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void parsedSignatureFamilySelectionIsStaticAndArityOnly() {
+        Ast.TypeRef intType = Ast.TypeRef.simple("int");
+        Ast.TypeRef stringType = Ast.TypeRef.simple("string");
+        List<Ast.Param> shortForm = List.of(new Ast.Param(intType, "id"));
+        List<Ast.Param> longerForm = List.of(
+                new Ast.Param(intType, "id"),
+                new Ast.Param(intType, "count"),
+                new Ast.Param(Ast.TypeRef.omittableFormal(stringType), "label"));
+        List<Ast.CallArgument> source = List.of(
+                Ast.CallArgument.named("count", new Ast.LiteralExpr(2L)),
+                Ast.CallArgument.named("id", new Ast.LiteralExpr(1L)),
+                Ast.CallArgument.omit("label"));
+        OptionalCallShapeBinder.Selection chosen =
+                OptionalCallShapeBinder.selectParsed(List.of(shortForm, longerForm), source);
+        assertEquals(1, chosen.signatureIndex());
+        assertEquals(List.of(1, 0, -1), chosen.plan().sourceIndexByParameter());
+        assertEquals(List.of(0, 1), chosen.plan().callItemIndexByEvaluatedSource());
+        assertEquals(List.of(new OptionalCallShapeBinder.OmittedCallItem(2, 2)),
+                chosen.plan().omittedCallItemBindings());
+    }
+
+    @Test
+    void parsedSignatureOverlapsRejectBeforeLabelsCouldSelectOne() {
+        Ast.TypeRef intType = Ast.TypeRef.simple("int");
+        List<Ast.Param> one = List.of(new Ast.Param(intType, "id"));
+        List<Ast.Param> overlap = List.of(new Ast.Param(intType, "id"),
+                new Ast.Param(Ast.TypeRef.omittableFormal(intType), "count"));
+        List<Ast.CallArgument> source = List.of(
+                Ast.CallArgument.named("id", new Ast.LiteralExpr(1L)));
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.selectParsed(List.of(one, overlap), source));
+        assertTrue(rejected.getMessage().contains("overlapping"),
+                rejected::toString);
+    }
+
+    @Test
     void checkedSourceExpressionsAreLexicalAndDoNotEvaluateOmittedItems() {
         Ast.Expr last = new Ast.CallExpr(new Ast.NameExpr("lastEffect"), List.of());
         Ast.Expr first = new Ast.CallExpr(new Ast.NameExpr("firstEffect"), List.of());
