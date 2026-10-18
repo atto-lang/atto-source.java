@@ -353,6 +353,35 @@ final class SameModuleLiteralInvocationTest {
                         withCaller(module, deferred), deferred, target));
     }
 
+    @Test
+    void unreachableTopLevelCallAndUnreachableTailCannotClaimLexicalProof() {
+        Ast.Program original = program();
+        Ast.ModuleDecl module = original.modules().getFirst();
+        Ast.FunctionDecl source = caller(original);
+        Ast.StagedCallExpr staged = call(source);
+
+        // The exact original call AST is present but unreachable after an
+        // unconditional return. Shape-only inspection must not certify it.
+        Ast.FunctionDecl deadCall = withBody(source, List.of(
+                new Ast.ReturnStmt(null), source.body().getFirst()));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(
+                        withCaller(module, deadCall), deadCall, staged));
+
+        // Even a reachable call in a body with unproved dead instructions
+        // after return must be referred to the full CFG checker.
+        Ast.FunctionDecl deadTail = withBody(source, List.of(
+                source.body().getFirst(), new Ast.ReturnStmt(null),
+                new Ast.ExprStmt(new Ast.LiteralExpr(5L))));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameModuleLiteralInvocation.inspect(
+                        withCaller(module, deadTail), deadTail, staged));
+
+        // A normal direct call followed by its final return is still valid.
+        assertDoesNotThrow(() -> SameModuleLiteralInvocation.inspect(
+                original, source, staged));
+    }
+
     private static Ast.FunctionDecl withBody(Ast.FunctionDecl source, List<Ast.Stmt> body) {
         return new Ast.FunctionDecl(
                 source.name(), source.kind(), source.visibility(), source.async(),
