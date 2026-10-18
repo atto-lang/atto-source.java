@@ -278,6 +278,10 @@ ResolvedCaptureBinding {
   debug_name: String
   type: Type
   access: READ | WRITE
+  transfer: LEXICAL_SLOT_ALIAS
+          | DETACHED_VALUE_SNAPSHOT
+          | DETACHED_OWNERSHIP_MOVE
+          | ACTOR_SELF_REBORROW
   capabilities: CapabilitySet
 }
 ```
@@ -287,8 +291,11 @@ spelling have distinct `CaptureBindingId` values. Reusing one binding id with a
 different name or type is an invalid compiler state.
 
 Joining control-flow/deferred alternatives merges captures by binding id. WRITE
-dominates READ and capability sets are unioned. Ownership checking validates
-this resolved plan before lowering; runtimes/backends consume the same plan.
+dominates READ, detached ownership-move dominates detached value-snapshot, and
+capability sets are unioned. Lexical-slot aliasing and detached transfer modes
+are deliberately incompatible, as is actor-self reborrow with ordinary data
+capture. Ownership checking validates this resolved plan before lowering;
+runtimes/backends consume the same plan.
 A backend must not run an independent spelling-based free-variable walk and
 silently retain extra environment state.
 
