@@ -252,7 +252,7 @@ public final class SqliteWorkflowJournalV1
 
     private <T> T mutate(Function<WorkflowJournalV1, T> operation) {
         requireOpen();
-        boolean committed = false;
+        boolean transactionResolved = false;
         try {
             execute("BEGIN IMMEDIATE");
             faultInjector.hit(FaultPoint.AFTER_BEGIN);
@@ -267,7 +267,7 @@ public final class SqliteWorkflowJournalV1
 
                 faultInjector.hit(FaultPoint.BEFORE_COMMIT);
                 execute("COMMIT");
-                committed = true;
+                transactionResolved = true;
                 delegate = candidate;
 
                 faultInjector.hit(FaultPoint.AFTER_COMMIT);
@@ -281,33 +281,35 @@ public final class SqliteWorkflowJournalV1
                         persistState(after);
                         faultInjector.hit(FaultPoint.BEFORE_COMMIT);
                         execute("COMMIT");
-                        committed = true;
+                        transactionResolved = true;
                         delegate = candidate;
                         faultInjector.hit(FaultPoint.AFTER_COMMIT);
                     } catch (RuntimeException | Error
                             | SQLException persistenceFailure) {
-                        if (!committed) {
+                        if (!transactionResolved) {
                             rollbackAndReloadOrInvalidate(
                                     persistenceFailure);
+                            transactionResolved = true;
                         }
                         semanticFailure.addSuppressed(
                                 persistenceFailure);
                     }
-                } else if (!committed) {
+                } else if (!transactionResolved) {
                     rollbackAndReloadOrInvalidate(
                             semanticFailure);
+                    transactionResolved = true;
                 }
                 throw semanticFailure;
             }
         } catch (RuntimeException | Error failure) {
-            if (!committed && connection != null) {
+            if (!transactionResolved && connection != null) {
                 rollbackAndReloadOrInvalidate(failure);
             }
             throw failure;
         } catch (SQLException failure) {
             IllegalStateException wrapped = new IllegalStateException(
                     "workflow SQLite mutation failed", failure);
-            if (!committed && connection != null) {
+            if (!transactionResolved && connection != null) {
                 rollbackAndReloadOrInvalidate(wrapped);
             }
             throw wrapped;
