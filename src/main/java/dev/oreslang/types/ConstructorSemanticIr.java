@@ -151,24 +151,39 @@ public final class ConstructorSemanticIr {
             this(region, phase, fields, pendingCleanups, fields.snapshot().keySet());
         }
 
-        public ConstructionState withFixedFields(Set<String> fieldsRequiringExactlyOneWrite) {
-            return new ConstructionState(
-                    region, phase, fields, pendingCleanups, fieldsRequiringExactlyOneWrite);
-        }
+        // Field mutability is fixed by the declaring class when this region
+        // is created. It must not be relaxed after validation begins.
 
         public ConstructionState transitionTo(ConstructionPhase next) {
             if (!phase.canTransitionTo(next)) {
                 throw new IllegalArgumentException(
                         "construction phase cannot move backward from " + phase + " to " + next);
             }
+            if (next == ConstructionPhase.CONSTRUCTED
+                    && (!fields.completeWithFixedFields(fixedFields)
+                        || !pendingCleanups.isEmpty())) {
+                throw new IllegalArgumentException(
+                        "construction cannot complete with uninitialized fields or pending cleanup");
+            }
             return new ConstructionState(region, next, fields, pendingCleanups, fixedFields);
         }
 
         public ConstructionState withFields(ConstructorFlowState nextFields) {
+            Objects.requireNonNull(nextFields, "new constructor field state");
+            if (!fields.snapshot().keySet().equals(nextFields.snapshot().keySet())) {
+                throw new IllegalArgumentException(
+                        "construction field-set cannot change across state transitions");
+            }
+            if (phase == ConstructionPhase.CONSTRUCTED) {
+                throw new IllegalArgumentException("constructed state cannot mutate fields");
+            }
             return new ConstructionState(region, phase, nextFields, pendingCleanups, fixedFields);
         }
 
         public ConstructionState withCleanup(CleanupEdge cleanup) {
+            if (phase == ConstructionPhase.CONSTRUCTED) {
+                throw new IllegalArgumentException("constructed state cannot register cleanup");
+            }
             java.util.ArrayList<CleanupEdge> next = new java.util.ArrayList<>(pendingCleanups);
             next.add(Objects.requireNonNull(cleanup, "cleanup"));
             return new ConstructionState(region, phase, fields, next, fixedFields);
@@ -202,6 +217,7 @@ public final class ConstructorSemanticIr {
 
         public boolean publishable() {
             return phase == ConstructionPhase.CONSTRUCTED
+                    && pendingCleanups.isEmpty()
                     && fields.completeWithFixedFields(fixedFields);
         }
     }
