@@ -5116,7 +5116,7 @@ public final class ActorRuntime implements AutoCloseable {
         String canonical = capabilities
                 + "|" + policy.maxHeapBytes()
                 + "|" + policy.maxMailboxMessages()
-                + "|" + policy.maxWallTime().toNanos()
+                + "|" + policy.maxWallTime().toString()
                 + "|" + policy.adversarial();
         try {
             return HexFormat.of().formatHex(
