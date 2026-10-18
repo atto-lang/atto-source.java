@@ -309,6 +309,9 @@ class NativeHttpTest {
                 if request.target == "/empty"; then
                   val response = new HttpResponse();
                   await request.respond_response(response);
+                elif request.target == "/no-content"; then
+                  val response = http.response_empty(204);
+                  await request.respond_response(response);
                 else
                   val response = new HttpResponse("hello from Oreslang");
                   await request.respond_response(response);
@@ -320,7 +323,7 @@ class NativeHttpTest {
             pub async routine main(): void {
               val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
               stdio.println(server.port);
-              for (let int i = 0; i < 2; i = i + 1) {
+              for (let int i = 0; i < 3; i = i + 1) {
                 val request = await server.accept();
                 val completion = request.completion;
                 http.handler("Hello").dispatch(rt borrow mut request);
@@ -338,6 +341,9 @@ class NativeHttpTest {
                 var empty = request(port, "GET", "/empty", "");
                 assertEquals(200, empty.statusCode());
                 assertEquals("", empty.body());
+                var noContent = request(port, "GET", "/no-content", "");
+                assertEquals(204, noContent.statusCode());
+                assertEquals("", noContent.body());
             });
         assertFalse(output.contains("exception"), output);
     }
