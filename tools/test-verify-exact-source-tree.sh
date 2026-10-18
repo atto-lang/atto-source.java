@@ -42,6 +42,18 @@ git restore --staged --worktree -- source/main.ores
 printf 'untracked\n' > source/new.ores
 assert_status 67 'untracked source rejected' "$expected" source
 rm source/new.ores
+# Index intent-to-ignore flags can suppress ordinary git diff output while
+# Maven still reads changed source bytes. The proof must hash tracked bytes.
+git update-index --assume-unchanged source/main.ores
+printf 'hidden-changed-bytes\n' > source/main.ores
+assert_status 67 'assume-unchanged byte mismatch rejected' "$expected" source
+git update-index --no-assume-unchanged source/main.ores
+git restore -- source/main.ores
+git update-index --skip-worktree source/main.ores
+printf 'hidden-skip-worktree-change\n' > source/main.ores
+assert_status 67 'skip-worktree byte mismatch rejected' "$expected" source
+git update-index --no-skip-worktree source/main.ores
+git restore -- source/main.ores
 printf 'outside subtree\n' > other.txt
 assert_status 0 'other destination files excluded from subtree' "$expected" source
 assert_status 67 'root proof notices non-source modifications' "$(git rev-parse 'HEAD^{tree}')" .
