@@ -60,6 +60,39 @@ final class LambdaCapturePlannerTest {
         assertEquals(Set.of("subject"), LambdaCapturePlanner.captures(expression(matched)));
     }
 
+    @Test void deferredChannelCallbackCapturesOnlyItsBodyFreeVariables() {
+        List<Ast.Stmt> callback = List.of(
+                new Ast.BindingStmt(Ast.BindingKind.VAL,
+                        Ast.TypeRef.simple("int"), "local", name("payloadOwner")),
+                new Ast.ReturnStmt(name("local")));
+        assertEquals(Set.of("payloadOwner"),
+                LambdaCapturePlanner.capturesBlock(callback));
+    }
+
+    @Test void nonblockingSelectCapturesUnionOfArmBodiesButNotArmBindingsOrChannels() {
+        Ast.SelectArm read = new Ast.SelectArm(
+                Ast.ChannelOperation.READ,
+                name("readChannel"),
+                null,
+                Ast.BindingKind.VAL,
+                "item",
+                List.of(new Ast.ExprStmt(
+                        new Ast.BinaryExpr("+", name("item"), name("leftOwner")))));
+        Ast.SelectArm write = new Ast.SelectArm(
+                Ast.ChannelOperation.WRITE,
+                name("writeChannel"),
+                name("writeValue"),
+                null,
+                null,
+                List.of(new Ast.ExprStmt(name("rightOwner"))));
+        Ast.SelectStmt selected = new Ast.SelectStmt(
+                Ast.WaitMode.NONBLOCKING,
+                Ast.SelectPolicy.FAIR,
+                List.of(read, write));
+        assertEquals(Set.of("leftOwner", "rightOwner"),
+                LambdaCapturePlanner.capturesSelect(selected));
+    }
+
     @Test void conditionBindingsCannotStealOuterNames() {
         Ast.IfStmt branch = new Ast.IfStmt(List.of(
                 new Ast.IfBranch(
