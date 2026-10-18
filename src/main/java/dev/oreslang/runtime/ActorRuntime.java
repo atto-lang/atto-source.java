@@ -5237,14 +5237,25 @@ public final class ActorRuntime implements AutoCloseable {
      * Held source checkpoint for a cross-runtime/context v1 transfer.
      *
      * <p>While open, the old physical actor remains ingress-frozen and fully
-     * quiesced. Closing without retirement is rollback: old ingress reopens.
-     * Calling retireSourceAfterPublication() seals the old physical ref before
-     * releasing the freeze, so stale holders cannot race the new logical route.</p>
+     * quiesced. A transfer is a linear supervisor capability: exactly one
+     * compatible target restore may claim it. Closing before publication is
+     * rollback and cannot reopen old ingress until any staged candidate has
+     * physically terminated. Publication is irreversible and retires only the
+     * old physical route; logical actor incarnation is preserved.</p>
      */
     public final class SourceActorTransfer implements AutoCloseable {
+        private enum TransferState {
+            OPEN,
+            CLAIMED,
+            PUBLISHED,
+            ROLLBACK_PENDING,
+            CLOSED
+        }
+
         private final ActorRuntime sourceRuntime = ActorRuntime.this;
         private final ActorRef<Object> sourceRef;
         private final HotUpgradeIngressFreeze freeze;
+        private final UUID transferId = UUID.randomUUID();
         private final UUID logicalActorId;
         private final long logicalIncarnation;
         private final ActorKind kind;
@@ -5256,7 +5267,11 @@ public final class ActorRuntime implements AutoCloseable {
         private final String capabilitySha256;
         private final ActorCheckpointEnvelopeV1.Header header;
         private final byte[] checkpointFrame;
-        private final AtomicBoolean released = new AtomicBoolean();
+        private final Object transferLock = new Object();
+        private TransferState transferState = TransferState.OPEN;
+        private ActorRuntime claimedTargetRuntime;
+        private String claimedCandidateCodeSha256;
+        private ActorRef<Object> stagedCandidate;
 
         private SourceActorTransfer(
                 ActorRef<Object> sourceRef,
@@ -5287,6 +5302,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.checkpointFrame = checkpointFrame.clone();
         }
 
+        public UUID transferId() { return transferId; }
         public UUID logicalActorId() { return logicalActorId; }
         public long logicalIncarnation() { return logicalIncarnation; }
         public ActorKind kind() { return kind; }
@@ -5300,20 +5316,91 @@ public final class ActorRuntime implements AutoCloseable {
         public byte[] checkpointFrame() { return checkpointFrame.clone(); }
 
         private void requireOpen() {
-            if (released.get())
-                throw new IllegalStateException("source actor transfer is closed");
+            synchronized (transferLock) {
+                if (transferState != TransferState.OPEN) {
+                    throw new IllegalStateException(
+                            "source actor transfer is not open: " + transferState);
+                }
+            }
             if (!freeze.schedulerDrained())
                 throw new IllegalStateException(
                         "source actor transfer lost physical quiescence");
         }
 
+        private void claimRestoreLocked(
+                ActorRuntime targetRuntime,
+                String candidateCodeSha256) {
+            if (!Thread.holdsLock(transferLock))
+                throw new IllegalStateException("transfer claim requires transfer lock");
+            if (transferState != TransferState.OPEN) {
+                throw new IllegalStateException(
+                        "source actor transfer already consumed: " + transferState);
+            }
+            if (!freeze.schedulerDrained()) {
+                throw new IllegalStateException(
+                        "source actor transfer lost physical quiescence before restore claim");
+            }
+            claimedTargetRuntime = Objects.requireNonNull(targetRuntime);
+            claimedCandidateCodeSha256 = Objects.requireNonNull(candidateCodeSha256);
+            transferState = TransferState.CLAIMED;
+        }
+
+        private void bindStagedCandidateLocked(
+                ActorRuntime targetRuntime,
+                String candidateCodeSha256,
+                ActorRef<Object> candidate) {
+            if (!Thread.holdsLock(transferLock))
+                throw new IllegalStateException("candidate binding requires transfer lock");
+            requireClaimLocked(targetRuntime, candidateCodeSha256);
+            if (stagedCandidate != null)
+                throw new IllegalStateException("source actor transfer already has a staged candidate");
+            stagedCandidate = Objects.requireNonNull(candidate);
+        }
+
+        private void rollbackFailedRestoreLocked(
+                ActorRuntime targetRuntime,
+                String candidateCodeSha256) {
+            if (!Thread.holdsLock(transferLock))
+                throw new IllegalStateException("failed restore rollback requires transfer lock");
+            requireClaimLocked(targetRuntime, candidateCodeSha256);
+            if (stagedCandidate != null)
+                throw new IllegalStateException(
+                        "failed restore rollback cannot discard a live staged candidate");
+            transferState = TransferState.CLOSED;
+            claimedTargetRuntime = null;
+            claimedCandidateCodeSha256 = null;
+        }
+
+        private void requireClaimLocked(
+                ActorRuntime targetRuntime,
+                String candidateCodeSha256) {
+            if (transferState != TransferState.CLAIMED
+                    || claimedTargetRuntime != targetRuntime
+                    || !Objects.equals(
+                            claimedCandidateCodeSha256,
+                            candidateCodeSha256)) {
+                throw new IllegalStateException(
+                        "stale, foreign, or mismatched source actor transfer claim");
+            }
+        }
+
         /**
-         * Commit-side old-incarnation retirement. Publication of the new
-         * logical route must happen first.
+         * Commit-side physical-route retirement. Publication of the new
+         * logical route must happen first. This transition is irreversible:
+         * a published transfer can never reopen the old route.
          */
         public void retireSourceAfterPublication() {
             requireSupervisorContext("retire source actor after hot-upgrade publication");
-            if (!released.compareAndSet(false, true)) return;
+            synchronized (transferLock) {
+                if (transferState == TransferState.PUBLISHED) return;
+                if (transferState != TransferState.CLAIMED
+                        || stagedCandidate == null) {
+                    throw new IllegalStateException(
+                            "source actor transfer cannot publish from state "
+                                    + transferState);
+                }
+                transferState = TransferState.PUBLISHED;
+            }
             try {
                 sourceRef.stop();
             } finally {
@@ -5321,8 +5408,75 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Rollback never makes the old actor writable while a staged physical
+         * candidate may still execute. Candidate termination is therefore part
+         * of the rollback proof, not best-effort cleanup after ingress reopens.
+         */
         @Override public void close() {
-            if (released.compareAndSet(false, true)) freeze.close();
+            ActorRuntime target = null;
+            ActorRef<Object> candidate = null;
+            boolean reopenOld = false;
+
+            synchronized (transferLock) {
+                if (transferState == TransferState.PUBLISHED
+                        || transferState == TransferState.CLOSED) {
+                    return;
+                }
+                if (transferState == TransferState.OPEN) {
+                    transferState = TransferState.CLOSED;
+                    reopenOld = true;
+                } else if (transferState == TransferState.CLAIMED
+                        || transferState == TransferState.ROLLBACK_PENDING) {
+                    transferState = TransferState.ROLLBACK_PENDING;
+                    target = claimedTargetRuntime;
+                    candidate = stagedCandidate;
+                    if (target == null || candidate == null) {
+                        throw new IllegalStateException(
+                                "claimed source actor transfer has no staged candidate");
+                    }
+                } else {
+                    throw new IllegalStateException(
+                            "unsupported source actor transfer state " + transferState);
+                }
+            }
+
+            if (reopenOld) {
+                freeze.close();
+                return;
+            }
+
+            candidate.stop();
+            boolean finalized = target.physicallyFinalizedForHotUpgrade(candidate);
+            boolean interrupted = false;
+            if (!finalized) {
+                try {
+                    finalized = candidate.awaitTermination(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interruption) {
+                    interrupted = true;
+                }
+            }
+            if (!finalized) {
+                if (interrupted) Thread.currentThread().interrupt();
+                throw new IllegalStateException(
+                        "staged source actor candidate did not physically terminate; "
+                                + "old ingress remains frozen");
+            }
+
+            synchronized (transferLock) {
+                if (transferState != TransferState.ROLLBACK_PENDING
+                        || claimedTargetRuntime != target
+                        || stagedCandidate != candidate) {
+                    throw new IllegalStateException(
+                            "source actor transfer rollback ownership changed");
+                }
+                transferState = TransferState.CLOSED;
+                claimedTargetRuntime = null;
+                claimedCandidateCodeSha256 = null;
+                stagedCandidate = null;
+            }
+            freeze.close();
+            if (interrupted) Thread.currentThread().interrupt();
         }
     }
 
@@ -5516,15 +5670,34 @@ public final class ActorRuntime implements AutoCloseable {
         byte[] payload = ActorCheckpointEnvelopeV1.decode(
                 transfer.checkpointFrame,
                 transfer.header).stateBytes();
-        return spawnInternal(
-                transfer.kind,
-                transfer.policy,
-                null,
-                false,
-                Objects.requireNonNull(candidate.codeImage(), "candidate code image"),
-                candidate,
-                transfer.actorTypeName,
-                payload);
+        SharedCodeImageStore.CodeImage candidateImage =
+                Objects.requireNonNull(candidate.codeImage(), "candidate code image");
+
+        boolean rollbackFreeze = false;
+        try {
+            synchronized (transfer.transferLock) {
+                transfer.claimRestoreLocked(this, nextCode);
+                try {
+                    ActorRef<Object> restored = spawnInternal(
+                            transfer.kind,
+                            transfer.policy,
+                            null,
+                            false,
+                            candidateImage,
+                            candidate,
+                            transfer.actorTypeName,
+                            payload);
+                    transfer.bindStagedCandidateLocked(this, nextCode, restored);
+                    return restored;
+                } catch (RuntimeException | Error failure) {
+                    transfer.rollbackFailedRestoreLocked(this, nextCode);
+                    rollbackFreeze = true;
+                    throw failure;
+                }
+            }
+        } finally {
+            if (rollbackFreeze) transfer.freeze.close();
+        }
     }
 
     private static String canonicalSha256(String digest, String label) {
