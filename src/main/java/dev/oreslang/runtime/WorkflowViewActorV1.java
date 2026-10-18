@@ -226,12 +226,18 @@ public final class WorkflowViewActorV1 {
                         new SubscriberAdded(
                                 subscribe.subscriptionId(),
                                 subscribers.size()));
-                if (latest != null) {
-                    sendUpdate(
-                            subscribe.subscriptionId(),
-                            subscribe.subscriber(),
-                            latest,
-                            viewRevision);
+                if (latest != null
+                        && !sendUpdate(
+                                subscribe.subscriptionId(),
+                                subscribe.subscriber(),
+                                latest,
+                                viewRevision)) {
+                    subscribers.remove(subscribe.subscriptionId());
+                    emit(
+                            context,
+                            new SubscriberRemoved(
+                                    subscribe.subscriptionId(),
+                                    subscribers.size()));
                 }
                 return;
             }
@@ -255,12 +261,16 @@ public final class WorkflowViewActorV1 {
                         Math.addExact(viewRevision, 1L);
                 latest = publish.projection();
                 viewRevision = nextRevision;
-                for (var entry : subscribers.entrySet()) {
-                    sendUpdate(
+                var iterator = subscribers.entrySet().iterator();
+                while (iterator.hasNext()) {
+                    var entry = iterator.next();
+                    if (!sendUpdate(
                             entry.getKey(),
                             entry.getValue(),
                             latest,
-                            viewRevision);
+                            viewRevision)) {
+                        iterator.remove();
+                    }
                 }
                 emit(
                         context,
@@ -284,20 +294,28 @@ public final class WorkflowViewActorV1 {
                             + message.getClass().getName());
         }
 
-        private void sendUpdate(
+        private boolean sendUpdate(
                 String subscriptionId,
                 ActorRuntime.ActorRef<Object> subscriber,
                 WorkflowRunProjectionV1 projection,
                 long revision) {
-            subscriber.send(WorkflowActorWireV1.map(
-                    "type", "workflow_projection",
-                    "runId", runId,
-                    "subscriptionId", subscriptionId,
-                    "epoch", epoch,
-                    "viewRevision", revision,
-                    "projection",
-                            WorkflowActorWireV1.projection(
-                                    projection)));
+            try {
+                subscriber.send(WorkflowActorWireV1.map(
+                        "type", "workflow_projection",
+                        "runId", runId,
+                        "subscriptionId", subscriptionId,
+                        "epoch", epoch,
+                        "viewRevision", revision,
+                        "projection",
+                                WorkflowActorWireV1.projection(
+                                        projection)));
+                return true;
+            } catch (RuntimeException unavailable) {
+                // UI subscribers are ephemeral projections, never workflow
+                // authority. A stopped/sealed/full subscriber is removed
+                // instead of taking down fan-out for healthy subscribers.
+                return false;
+            }
         }
 
         private void requireConfigured() {
