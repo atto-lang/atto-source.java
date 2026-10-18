@@ -1095,9 +1095,83 @@ public final class TypeChecker {
         return false;
     }
 
+    private void checkForeignDeclarations(Ast.ClassDecl klass) {
+        if (klass.foreignDeclarations().isEmpty()) return;
+        if (klass.actorBoundary() != Ast.ActorBoundary.FFI) {
+            throw new IllegalArgumentException(
+                    "foreign declarations require an ffi actor boundary");
+        }
+
+        Set<String> sourceNames = new HashSet<>();
+        Set<String> symbols = new HashSet<>();
+        for (Ast.ForeignDecl foreign : klass.foreignDeclarations()) {
+            if (!foreign.suspends()) {
+                throw new IllegalArgumentException(
+                        "foreign declaration '" + foreign.name()
+                                + "' must be suspending in v1");
+            }
+            if (!sourceNames.add(foreign.name())) {
+                throw new IllegalArgumentException(
+                        "duplicate foreign declaration name '"
+                                + foreign.name() + "' in ffi actor " + klass.name());
+            }
+            if (!symbols.add(foreign.symbolIdentity())) {
+                throw new IllegalArgumentException(
+                        "duplicate foreign symbol identity '"
+                                + foreign.symbolIdentity() + "' in ffi actor "
+                                + klass.name());
+            }
+
+            for (Ast.Param parameter : foreign.parameters()) {
+                if (parameter.structural() || parameter.mutable()) {
+                    throw new IllegalArgumentException(
+                            "foreign parameter '" + parameter.name()
+                                    + "' cannot be structural or mutable");
+                }
+                requireFfiV1Scalar(
+                        parameter.type(),
+                        false,
+                        "foreign parameter '" + parameter.name()
+                                + "' of " + klass.name() + "." + foreign.name());
+            }
+            requireFfiV1Scalar(
+                    foreign.returnType(),
+                    true,
+                    "foreign return of " + klass.name() + "." + foreign.name());
+        }
+    }
+
+    private static void requireFfiV1Scalar(
+            Ast.TypeRef type,
+            boolean allowVoid,
+            String where) {
+        if (type == null
+                || type.isBorrow()
+                || type.inferArguments()
+                || !type.arguments().isEmpty()
+                || type.name().startsWith("$")) {
+            throw new IllegalArgumentException(
+                    where + " must use a non-generic exact FFI scalar type");
+        }
+        boolean exactScalar = switch (type.name()) {
+            case "i8", "i16", "i32", "i64",
+                    "u8", "u16", "u32", "u64",
+                    "f32", "f64", "bool" -> true;
+            case "void" -> allowVoid;
+            default -> false;
+        };
+        if (!exactScalar) {
+            throw new IllegalArgumentException(
+                    where + " uses unsupported FFI v1 type '" + type.name()
+                            + "'; use exact-width numeric scalars/bool"
+                            + (allowVoid ? " or void" : ""));
+        }
+    }
+
     private void checkClassBody(String module, Ast.ClassDecl klass) {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
+        checkForeignDeclarations(klass);
 
         Set<String> parentNames = new HashSet<>();
         for (Ast.TypeRef parent : klass.parents()) {
