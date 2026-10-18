@@ -138,7 +138,10 @@ public final class IncrementalCompiler {
             Map<String, TypeChecker.LinkedInterfaceMetadata> linkedContracts =
                     linkedImportedContracts(
                             id, parsed.get(id), parsed, normalizedImportResolutions);
-            if (linked.classes().isEmpty() && linkedContracts.isEmpty()) {
+            Map<String, Ast.ModuleDecl> linkedModules = linkedImportedModuleNamespaces(
+                    id, parsed.get(id), parsed, normalizedImportResolutions);
+            if (linked.classes().isEmpty() && linkedContracts.isEmpty()
+                    && linkedModules.isEmpty()) {
                 checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
             } else {
                 try {
