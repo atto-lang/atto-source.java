@@ -20,7 +20,7 @@ import java.util.Objects;
  */
 public final class SqliteTypedWorkflowRunV1 implements AutoCloseable {
 
-    private static final int SCHEMA_VERSION = 1;
+    private static final int SCHEMA_VERSION = 2;
 
     private final Path databasePath;
     private Connection connection;
@@ -76,11 +76,11 @@ public final class SqliteTypedWorkflowRunV1 implements AutoCloseable {
         try {
             execute("BEGIN IMMEDIATE");
             TypedWorkflowRunV1 run =
-                    TypedWorkflowRunV1.restore(
-                            graph, readSnapshot());
+                    loadVerifiedRun();
             TypedWorkflowRunV1.Transition transition =
                     run.advance(outcome, payloadType);
             writeSnapshot(run.snapshot());
+            insertHistory(transition);
             execute("COMMIT");
             committed = true;
             return transition;
@@ -98,10 +98,7 @@ public final class SqliteTypedWorkflowRunV1 implements AutoCloseable {
     public synchronized TypedWorkflowRunV1.Snapshot snapshot() {
         requireOpen();
         try {
-            TypedWorkflowRunV1.Snapshot snapshot = readSnapshot();
-            // Re-verify persisted traversal budgets before returning data.
-            TypedWorkflowRunV1.restore(graph, snapshot);
-            return snapshot;
+            return loadVerifiedRun().snapshot();
         } catch (SQLException failure) {
             throw new IllegalStateException(
                     "failed to read typed workflow run",
@@ -169,6 +166,23 @@ public final class SqliteTypedWorkflowRunV1 implements AutoCloseable {
                         ON DELETE CASCADE
                 )
                 """);
+        execute("""
+                CREATE TABLE IF NOT EXISTS typed_workflow_history (
+                    run_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    from_node TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    payload_type TEXT NOT NULL,
+                    to_node TEXT NOT NULL,
+                    traversal_count INTEGER NOT NULL,
+                    max_traversals INTEGER,
+                    terminal INTEGER NOT NULL CHECK(terminal IN (0, 1)),
+                    PRIMARY KEY (run_id, revision),
+                    FOREIGN KEY (run_id)
+                        REFERENCES typed_workflow_runs(run_id)
+                        ON DELETE CASCADE
+                )
+                """);
     }
 
     private void initializeOrVerify() throws SQLException {
@@ -214,7 +228,114 @@ public final class SqliteTypedWorkflowRunV1 implements AutoCloseable {
             }
         }
 
-        TypedWorkflowRunV1.restore(graph, readSnapshot());
+        loadVerifiedRun();
+    }
+
+    private TypedWorkflowRunV1 loadVerifiedRun()
+            throws SQLException {
+        TypedWorkflowRunV1 run = new TypedWorkflowRunV1(graph);
+
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT
+                    revision,
+                    from_node,
+                    outcome,
+                    payload_type,
+                    to_node,
+                    traversal_count,
+                    max_traversals,
+                    terminal
+                FROM typed_workflow_history
+                WHERE run_id = ?
+                ORDER BY revision
+                """)) {
+            statement.setString(1, runId);
+            try (ResultSet rows = statement.executeQuery()) {
+                long expectedRevision = 1L;
+                while (rows.next()) {
+                    long revision = rows.getLong("revision");
+                    if (revision != expectedRevision) {
+                        throw new IllegalStateException(
+                                "typed workflow history revision gap: expected "
+                                        + expectedRevision
+                                        + " but found "
+                                        + revision);
+                    }
+
+                    TypedWorkflowRunV1.Transition replayed =
+                            run.advance(
+                                    rows.getString("outcome"),
+                                    rows.getString("payload_type"));
+
+                    Number max = (Number) rows.getObject(
+                            "max_traversals");
+                    Integer maxTraversals =
+                            max == null ? null : max.intValue();
+                    TypedWorkflowRunV1.Transition persisted =
+                            new TypedWorkflowRunV1.Transition(
+                                    revision,
+                                    rows.getString("from_node"),
+                                    rows.getString("outcome"),
+                                    rows.getString("payload_type"),
+                                    rows.getString("to_node"),
+                                    rows.getInt("traversal_count"),
+                                    maxTraversals,
+                                    rows.getInt("terminal") != 0);
+                    if (!replayed.equals(persisted)) {
+                        throw new IllegalStateException(
+                                "typed workflow history failed deterministic "
+                                        + "replay at revision "
+                                        + revision);
+                    }
+                    expectedRevision =
+                            Math.addExact(expectedRevision, 1L);
+                }
+            }
+        }
+
+        TypedWorkflowRunV1.Snapshot persistedSnapshot =
+                readSnapshot();
+        if (!run.snapshot().equals(persistedSnapshot)) {
+            throw new IllegalStateException(
+                    "typed workflow snapshot disagrees with replayed history");
+        }
+        return run;
+    }
+
+    private void insertHistory(
+            TypedWorkflowRunV1.Transition transition)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO typed_workflow_history (
+                    run_id,
+                    revision,
+                    from_node,
+                    outcome,
+                    payload_type,
+                    to_node,
+                    traversal_count,
+                    max_traversals,
+                    terminal
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, runId);
+            statement.setLong(2, transition.revision());
+            statement.setString(3, transition.fromNode());
+            statement.setString(4, transition.outcome());
+            statement.setString(5, transition.payloadType());
+            statement.setString(6, transition.toNode());
+            statement.setInt(7, transition.traversalCount());
+            if (transition.maxTraversals() == null) {
+                statement.setNull(8, java.sql.Types.INTEGER);
+            } else {
+                statement.setInt(8, transition.maxTraversals());
+            }
+            statement.setInt(9, transition.terminal() ? 1 : 0);
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException(
+                        "typed workflow history insert failed");
+            }
+        }
     }
 
     private TypedWorkflowRunV1.Snapshot readSnapshot()
