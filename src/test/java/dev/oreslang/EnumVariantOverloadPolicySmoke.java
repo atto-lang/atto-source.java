@@ -48,6 +48,35 @@ public final class EnumVariantOverloadPolicySmoke {
         List<Signature> family = List.of(general, specializedA, specializedB, unrelated);
         EnumVariantOverloadPolicy.admit(family);
         var compiled = EnumVariantOverloadPolicy.prepare(family);
+        // Closed-world AOT link proof: *every* declaration maps to one stable
+        // symbol and one canonical body digest, never name+arity fallback.
+        java.util.Map<String, String> compiledBodies = new java.util.HashMap<>();
+        for (Signature declared : family) {
+            compiledBodies.put(EnumVariantOverloadPolicy.symbol(declared), "a".repeat(64));
+        }
+        var aot = EnumVariantOverloadPolicy.sealAotImage(compiled, compiledBodies);
+        eq(family.size(), aot.definitionCount());
+        var relocA = aot.relocate(compiled.bind(List.of(a, n)));
+        eq(EnumVariantOverloadPolicy.symbol(specializedA), relocA.targetSymbol());
+        eq("a".repeat(64), relocA.exactBodyDigest());
+        eq(compiled.schemaFingerprint(), relocA.schemaFingerprint());
+        aot.requireImage(relocA);
+        rejected(() -> aot.relocate(EnumVariantOverloadPolicy.prepare(family).bind(List.of(a, n))));
+        rejected(() -> EnumVariantOverloadPolicy.sealAotImage(
+                EnumVariantOverloadPolicy.prepare(family), compiledBodies).requireImage(relocA));
+        java.util.Map<String, String> missingBodies = new java.util.HashMap<>(compiledBodies);
+        missingBodies.remove(EnumVariantOverloadPolicy.symbol(specializedB));
+        rejected(() -> EnumVariantOverloadPolicy.sealAotImage(compiled, missingBodies));
+        java.util.Map<String, String> foreignBodies = new java.util.HashMap<>(compiledBodies);
+        foreignBodies.put("untrusted::fake", "b".repeat(64));
+        rejected(() -> EnumVariantOverloadPolicy.sealAotImage(compiled, foreignBodies));
+        java.util.Map<String, String> badBodies = new java.util.HashMap<>(compiledBodies);
+        badBodies.put(EnumVariantOverloadPolicy.symbol(specializedA), "ABC".repeat(21) + "A");
+        rejected(() -> EnumVariantOverloadPolicy.sealAotImage(compiled, badBodies));
+        compiledBodies.clear();
+        eq(family.size(), aot.definitionCount());
+        eq("a".repeat(64), aot.relocate(compiled.bind(List.of(a, n))).exactBodyDigest());
+
         List<Signature> mutableDeclarations = new ArrayList<>(family);
         var frozenPlan = EnumVariantOverloadPolicy.prepare(mutableDeclarations);
         mutableDeclarations.clear();
