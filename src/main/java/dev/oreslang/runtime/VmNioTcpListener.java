@@ -35,6 +35,7 @@ public final class VmNioTcpListener implements AutoCloseable {
     // A concurrent operation drain must not publish listenerClosed between them.
     private boolean serverDescriptorRetired; // guarded by gate
     private IOException serverCloseFailure; // guarded by gate
+    private IOException connectionCloseFailure; // first child descriptor failure, guarded by gate
 
     static VmNioTcpListener loopback(NioReadinessGroup readiness, int port,
                                      int backlog, int maxConnections,
@@ -75,6 +76,7 @@ public final class VmNioTcpListener implements AutoCloseable {
     public boolean isTerminated() {
         synchronized (gate) {
             return closed && serverDescriptorRetired && serverCloseFailure == null
+                    && connectionCloseFailure == null
                     && admittedOperations == 0
                     && pendingAccept == null && connections.isEmpty();
         }
@@ -98,7 +100,7 @@ public final class VmNioTcpListener implements AutoCloseable {
         synchronized (gate) {
             quiesced = closed && serverDescriptorRetired && admittedOperations == 0
                     && pendingAccept == null && connections.isEmpty();
-            closeFailure = serverCloseFailure;
+            closeFailure = serverCloseFailure != null ? serverCloseFailure : connectionCloseFailure;
         }
         // A failed physical descriptor close cannot be reported as successful
         // quiescence, even if every Future and connection credit has drained.
@@ -224,13 +226,16 @@ public final class VmNioTcpListener implements AutoCloseable {
         // Guarded by listener gate. terminal callbacks cannot publish
         // connectionClosed until physical socket close has returned.
         private boolean descriptorRetired;
+        private IOException socketCloseFailure; // guarded by listener gate
         private int activeOperations;
         private final OresFuture<Void> connectionClosed = new OresFuture<>();
         // Only terminal-exported operations are retained; each removes itself
         // on settlement. Guarded by the listener gate with 'terminated'.
         private final Set<OresFuture<?>> outstanding = new HashSet<>();
 
-        private Connection(SocketChannel channel) { this.channel = channel; }
+        // Package-private: controlled descriptor-failure injection in runtime tests.
+        // No guest/user-facing constructor or public capability is exposed.
+        Connection(SocketChannel channel) { this.channel = Objects.requireNonNull(channel); }
 
         private <T> OresFuture<T> track(OresFuture<T> future) {
             boolean shutdown;
@@ -264,15 +269,26 @@ public final class VmNioTcpListener implements AutoCloseable {
         }
 
         private void releaseSocketOperation() {
-            boolean quiesced;
             synchronized (gate) {
                 if (activeOperations <= 0)
                     throw new IllegalStateException("TCP socket operation reservation underflow");
                 --activeOperations;
-                quiesced = terminated && descriptorRetired && activeOperations == 0;
             }
             releaseOperation();
-            if (quiesced) connectionClosed.completeFromRuntime(null);
+            completeConnectionCloseIfQuiesced();
+        }
+
+        private void completeConnectionCloseIfQuiesced() {
+            final boolean quiesced;
+            final IOException closeFailure;
+            synchronized (gate) {
+                quiesced = terminated && descriptorRetired && activeOperations == 0;
+                closeFailure = socketCloseFailure;
+            }
+            if (quiesced) {
+                if (closeFailure == null) connectionClosed.completeFromRuntime(null);
+                else connectionClosed.failFromRuntime(closeFailure);
+            }
         }
 
         public OresFuture<List<Long>> readBytesAsync(int maximum) {
@@ -367,21 +383,23 @@ public final class VmNioTcpListener implements AutoCloseable {
             }
             // Retire the descriptor BEFORE allowing listener-wide quiescence
             // or terminal operation notifications to become visible.
-            try { channel.close(); } catch (IOException ignored) { }
-            final boolean quiesced;
+            IOException physicalCloseFailure = null;
+            try { channel.close(); }
+            catch (IOException problem) { physicalCloseFailure = problem; }
             synchronized (gate) {
+                socketCloseFailure = physicalCloseFailure;
+                // A child FD close failure must not be laundered into a clean
+                // listener-wide shutdown after its operation credits drain.
+                if (physicalCloseFailure != null && connectionCloseFailure == null)
+                    connectionCloseFailure = physicalCloseFailure;
                 descriptorRetired = true;
                 connections.remove(this);
-                // An I/O completion might have drained the last credit while
-                // channel.close() was in progress. Recompute after the fence:
-                // neither side may miss the zero-credit terminal transition.
-                quiesced = activeOperations == 0;
             }
             // Revoke only still-cancellable operations. An already committed
             // kernel write may instead fail after descriptor close, but must
             // never be reported as cleanly cancelled.
             for (OresFuture<?> pending : snapshot) pending.cancel(false);
-            if (quiesced) connectionClosed.completeFromRuntime(null);
+            completeConnectionCloseIfQuiesced();
             // A concurrent listener close may have found this connection
             // still registered while waiting for the descriptor-close fence.
             completeListenerCloseIfQuiesced();
