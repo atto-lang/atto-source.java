@@ -13,7 +13,7 @@ public final class SqliteWorkflowJournalCrashWorkerV1 {
     private SqliteWorkflowJournalCrashWorkerV1() { }
 
     public static void main(String[] args) {
-        if (args.length != 2) {
+        if (args.length != 2 && args.length != 4) {
             System.exit(64);
         }
 
@@ -28,12 +28,27 @@ public final class SqliteWorkflowJournalCrashWorkerV1 {
                         Runtime.getRuntime().halt(97);
                     }
                 })) {
-            DurableDevLoopV1 machine =
-                    store.replayDevLoop().machine();
-            store.append(machine.accept(
-                    "code",
-                    new DurableDevLoopV1.CodeChanged(
-                            1, "patch://child-process")));
+            if (args.length == 2) {
+                DurableDevLoopV1 machine =
+                        store.replayDevLoop().machine();
+                store.append(machine.accept(
+                        "code",
+                        new DurableDevLoopV1.CodeChanged(
+                                1, "patch://child-process")));
+            } else {
+                if (!"atomic-outcome".equals(args[2])) {
+                    System.exit(64);
+                }
+                String runId = store.snapshot().runId();
+                store.completeAndAppend(
+                        "devloop/" + runId + "/iteration/1/code",
+                        args[3],
+                        "receipt://child-process",
+                        150L,
+                        "code",
+                        new DurableDevLoopV1.CodeChanged(
+                                1, "patch://child-process"));
+            }
         }
 
         System.exit(0);
