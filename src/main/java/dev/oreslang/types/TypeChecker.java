@@ -541,8 +541,12 @@ public final class TypeChecker {
         for (Ast.TypeRef parentRef : iface.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
-            if (iface.moduleContract() != parent.moduleContract()) {
-                throw new IllegalArgumentException("interfaces and module contracts cannot extend each other");
+            if (iface.moduleContract() != parent.moduleContract()
+                    || (iface.moduleContract()
+                        && iface.staticContract() != parent.staticContract())) {
+                throw new IllegalArgumentException(
+                        "interfaces, module contracts, and static contracts "
+                                + "cannot extend across declaration categories");
             }
             if (iface.moduleContract()) resolveModuleContractRef(parentRef, parent, generics);
             else resolve(parentRef, generics, null);
