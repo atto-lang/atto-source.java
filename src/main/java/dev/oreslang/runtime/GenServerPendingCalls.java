@@ -235,7 +235,6 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
             throw new IllegalArgumentException("timeoutNanos must be nonnegative");
         }
 
-        final long deadline;
         synchronized (active) {
             requireClockForwardLocked(nowNanos);
             if (timeoutNanos == 0) {
@@ -243,6 +242,7 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
                         CallAdmissionException.Reason.DEADLINE_EXPIRED,
                         "GenServer call deadline is already expired");
             }
+            final long deadline;
             try {
                 deadline = Math.addExact(nowNanos, timeoutNanos);
             } catch (ArithmeticException overflow) {
@@ -250,8 +250,12 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
                         CallAdmissionException.Reason.DEADLINE_OVERFLOW,
                         "GenServer call deadline exceeds the supported monotonic interval");
             }
+
+            // Keep the sampled clock and deadline indexing in one registry
+            // critical section. Otherwise a concurrent expiry tick could move
+            // past this deadline between sampling and call publication.
+            return registerInternal(target, true, deadline);
         }
-        return registerInternal(target, true, deadline);
     }
 
     private PendingCall<R> registerInternal(
