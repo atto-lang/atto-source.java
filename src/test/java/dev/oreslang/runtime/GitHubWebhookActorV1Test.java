@@ -80,6 +80,148 @@ final class GitHubWebhookActorV1Test {
     }
 
     @Test
+    void matchedDeliveryReplayIsIdempotentAndPayloadConflictFailsClosed()
+            throws Exception {
+        byte[] secret =
+                "0123456789abcdef0123456789abcdef"
+                        .getBytes(StandardCharsets.UTF_8);
+        String commit = sha('a');
+        String tree = sha('b');
+        byte[] body = workflowRunBody(
+                "org/repo",
+                commit,
+                50L,
+                "ci",
+                "success",
+                "https://github.example/actions/runs/50");
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = GitHubWebhookActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new GitHubWebhookActorV1.Configure(secret));
+            next(outputs);
+            actor.send(new GitHubWebhookActorV1.RegisterRun(
+                    new GitHubCiCorrelationV1.Expectation(
+                            "run-replay",
+                            "org/repo",
+                            commit,
+                            tree,
+                            "ci")));
+            next(outputs);
+
+            var firstMessage = new GitHubWebhookActorV1.ReceiveCiWebhook(
+                    new GitHubWebhookSecurityV1.Headers(
+                            "sha256=" + hmac(secret, body),
+                            "delivery-replay",
+                            "workflow_run"),
+                    body,
+                    new GitHubWorkflowRunPayloadV1.GitTreeProof(
+                            commit,
+                            tree,
+                            "tree-proof://50"));
+            actor.send(firstMessage);
+            var first = assertInstanceOf(
+                    GitHubWebhookActorV1.Matched.class,
+                    next(outputs));
+
+            actor.send(firstMessage);
+            var replayed = assertInstanceOf(
+                    GitHubWebhookActorV1.Matched.class,
+                    next(outputs));
+            assertEquals(first, replayed);
+
+            byte[] changedBody = workflowRunBody(
+                    "org/repo",
+                    commit,
+                    51L,
+                    "ci",
+                    "success",
+                    "https://github.example/actions/runs/51");
+            actor.send(new GitHubWebhookActorV1.ReceiveCiWebhook(
+                    new GitHubWebhookSecurityV1.Headers(
+                            "sha256=" + hmac(secret, changedBody),
+                            "delivery-replay",
+                            "workflow_run"),
+                    changedBody,
+                    new GitHubWorkflowRunPayloadV1.GitTreeProof(
+                            commit,
+                            tree,
+                            "tree-proof://51")));
+
+            var conflict = assertInstanceOf(
+                    GitHubWebhookActorV1.Unmatched.class,
+                    next(outputs));
+            assertTrue(conflict.reason().contains("reused"));
+            assertEquals("delivery-replay", conflict.deliveryId());
+
+            actor.send(new GitHubWebhookActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void unmatchedDeliveryCanMatchAfterRunRegistration() throws Exception {
+        byte[] secret =
+                "0123456789abcdef0123456789abcdef"
+                        .getBytes(StandardCharsets.UTF_8);
+        String commit = sha('d');
+        String tree = sha('e');
+        byte[] body = workflowRunBody(
+                "org/repo",
+                commit,
+                52L,
+                "ci",
+                "success",
+                "https://github.example/actions/runs/52");
+        var message = new GitHubWebhookActorV1.ReceiveCiWebhook(
+                new GitHubWebhookSecurityV1.Headers(
+                        "sha256=" + hmac(secret, body),
+                        "delivery-early",
+                        "workflow_run"),
+                body,
+                new GitHubWorkflowRunPayloadV1.GitTreeProof(
+                        commit,
+                        tree,
+                        "tree-proof://52"));
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = GitHubWebhookActorV1.spawn(runtime);
+            actor.raw().getReady().get(5, TimeUnit.SECONDS);
+            var outputs = actor.outputs();
+
+            actor.send(new GitHubWebhookActorV1.Configure(secret));
+            next(outputs);
+
+            actor.send(message);
+            assertInstanceOf(
+                    GitHubWebhookActorV1.Unmatched.class,
+                    next(outputs));
+
+            actor.send(new GitHubWebhookActorV1.RegisterRun(
+                    new GitHubCiCorrelationV1.Expectation(
+                            "run-late-register",
+                            "org/repo",
+                            commit,
+                            tree,
+                            "ci")));
+            next(outputs);
+
+            actor.send(message);
+            var matched = assertInstanceOf(
+                    GitHubWebhookActorV1.Matched.class,
+                    next(outputs));
+            assertEquals("run-late-register", matched.runId());
+
+            actor.send(new GitHubWebhookActorV1.Shutdown());
+            next(outputs);
+            actor.raw().getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void wrongTreeIsAuthenticatedButNeverRoutedAsSuccess()
             throws Exception {
         byte[] secret =
