@@ -142,6 +142,58 @@ final class SharedUntrustedActorSupervisorTest {
 
     @Test
     @EnabledIfEnvironmentVariable(named="ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches="true")
+    void sameSourceIdentityIsPinnedOnceAcrossUntrustedActors() {
+        try (var pool = new SharedUntrustedIsolatePool(256L << 20, 3);
+             var supervisor = new SharedUntrustedActorSupervisor(pool, 2)) {
+            assertEquals(0, pool.liveCodeImagesForSupervisor());
+            var a = supervisor.spawn(WORKER, "same-worker", "IsolatedWorker");
+            var b = supervisor.spawn(WORKER, "same-worker", "IsolatedWorker");
+            try {
+                assertNotEquals(a.identity(), b.identity());
+                assertEquals(1, pool.liveCodeImagesForSupervisor(),
+                        "actor count must not grow the code-image count");
+                a.close();
+                assertEquals(1, pool.liveCodeImagesForSupervisor(),
+                        "second live actor pins the immutable image");
+            } finally {
+                b.close();
+                a.close();
+            }
+            assertEquals(0, pool.liveCodeImagesForSupervisor(),
+                    "last verified Context close releases the code image");
+        }
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named="ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches="true")
+    void hotReloadImagesAreContentVersionedAndRetiredAfterContextClose() {
+        try (var pool = new SharedUntrustedIsolatePool(256L << 20, 4);
+             var loader = HotReloadManager.forUntrustedActors(
+                     IsolatePolicy.developer(), ExecutionProfile.serverJit(), pool)) {
+            var oldVersion = loader.load("work.ores",
+                    "pub routine main(): void { return; }");
+            var duplicate = loader.load("work.ores",
+                    "pub routine main(): void { return; }");
+            assertSame(oldVersion.source(), duplicate.source(),
+                    "same source, same pooled untrusted Source image");
+            assertNotSame(oldVersion.context(), duplicate.context(),
+                    "mutable execution state is always Context-owned");
+            assertEquals(1, pool.liveCodeImagesForSupervisor());
+            var changed = loader.load("work.ores",
+                    "pub routine main(): void { let int v = 2; return; }");
+            assertNotSame(changed.source(), duplicate.source());
+            assertEquals(2, pool.liveCodeImagesForSupervisor());
+            loader.retire(oldVersion.id());
+            assertEquals(2, pool.liveCodeImagesForSupervisor());
+            loader.retire(duplicate.id());
+            assertEquals(1, pool.liveCodeImagesForSupervisor());
+            loader.retire(changed.id());
+            assertEquals(0, pool.liveCodeImagesForSupervisor());
+        }
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named="ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches="true")
     void externallyOwnedPoolSupportsTwoSupervisorsWithoutExtraIsolates() {
         try (var pool = new SharedUntrustedIsolatePool(256L << 20, 2);
              var one = new SharedUntrustedActorSupervisor(pool, 1);
