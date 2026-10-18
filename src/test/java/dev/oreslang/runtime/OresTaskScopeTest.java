@@ -303,4 +303,74 @@ final class OresTaskScopeTest {
         assertEquals(1, callbackCount.get());
     }
 
+
+    @Test
+    void interruptedConcurrentCloserCannotReturnBeforePhysicalCleanup() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch cleanupEntered = new CountDownLatch(1);
+            CountDownLatch releaseCleanup = new CountDownLatch(1);
+            CountDownLatch secondaryDone = new CountDownLatch(1);
+            AtomicReference<Throwable> primaryFailure = new AtomicReference<>();
+            AtomicReference<Throwable> secondaryFailure = new AtomicReference<>();
+            java.util.concurrent.atomic.AtomicBoolean interruptRestored =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+
+            OresTask<Void> worker = scope.submit(() -> {
+                try {
+                    started.countDown();
+                    Thread.sleep(30_000);
+                } finally {
+                    cleanupEntered.countDown();
+                    boolean interrupted = false;
+                    for (;;) {
+                        try {
+                            releaseCleanup.await();
+                            break;
+                        } catch (InterruptedException ignored) {
+                            interrupted = true;
+                        }
+                    }
+                    if (interrupted) Thread.currentThread().interrupt();
+                }
+                return null;
+            });
+
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            Thread first = Thread.ofVirtual().start(() -> {
+                try { scope.close(); }
+                catch (Throwable problem) { primaryFailure.set(problem); }
+            });
+
+            try {
+                assertTrue(cleanupEntered.await(2, TimeUnit.SECONDS));
+                Thread second = Thread.ofVirtual().start(() -> {
+                    Thread.currentThread().interrupt();
+                    try {
+                        scope.close();
+                        interruptRestored.set(Thread.currentThread().isInterrupted());
+                    } catch (Throwable problem) {
+                        secondaryFailure.set(problem);
+                    } finally {
+                        secondaryDone.countDown();
+                    }
+                });
+                assertFalse(secondaryDone.await(100, TimeUnit.MILLISECONDS),
+                        "interrupted concurrent close must not bypass physical cleanup");
+                releaseCleanup.countDown();
+                second.join();
+                assertNull(secondaryFailure.get());
+                assertTrue(interruptRestored.get(),
+                        "host thread interrupt must be restored after its join");
+            } finally {
+                releaseCleanup.countDown();
+                first.join();
+            }
+            assertNull(primaryFailure.get());
+            assertTrue(worker.isQuiescent());
+            assertTrue(secondaryDone.getCount() == 0L);
+        }
+    }
+
 }
