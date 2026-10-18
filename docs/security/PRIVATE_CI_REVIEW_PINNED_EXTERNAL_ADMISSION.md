@@ -2,13 +2,11 @@
 
 Status: **authorization-only candidate fallback; no export is implemented or authorized.**
 
-The read-only verifier is implemented and hardened. The source-writing
-dispatcher described below is **not yet implemented or wired to
-`scripts/publish-private-ci-source.py`**. That existing publisher enforces the
-older protected-main model and must not be treated as the review-pinned
-dispatcher. A valid review-pinned receipt therefore remains non-executable
-authorization evidence until a separately reviewed dispatcher integrates the
-receipt with the existing fail-closed Git-object writer.
+The read-only verifier and the separate source-writing review-pinned dispatcher
+are implemented and hardened on PR #1217. The dispatcher is intentionally
+separate from `scripts/publish-private-ci-source.py`, which preserves the older
+protected-main model. Neither path is authorized while the independent-review,
+incident, destination, snapshot, and exact-head gates remain closed.
 
 This mode exists because the current GitHub plan does not provide branch
 protection or repository rulesets for these private repositories. It does not
@@ -73,9 +71,11 @@ dispatcher proves all of the following from live GitHub API responses:
 10. the exact carrier validation workflow bytes are read from the independently
    approved carrier PR head and their Git blob SHA is recorded.
 
-The canonical authorization receipt uses schema v2 and records reviewer login,
-numeric GitHub ID, reviewer-policy blob SHA, and both live permission levels.
-A different username alone does not establish independent review.
+The canonical authorization receipt uses schema v3 and records reviewer login,
+numeric GitHub ID, reviewer-policy blob SHA, both live permission levels, and
+separate independently bound resume-comment IDs for incidents #22 and #77.
+Legacy schema-v2 receipts fail closed. A different username alone does not
+establish independent review.
 
 The source-side read-only checker
 `scripts/verify-review-pinned-private-ci.py` validates these inputs and emits
@@ -84,8 +84,9 @@ CI.
 
 ## Payload construction
 
-**Not yet implemented.** These are mandatory requirements for the future
-review-pinned dispatcher, not evidence that a writer currently exists.
+The review-pinned dispatcher is implemented, but implementation is not
+authorization. It revalidates live authorization before source admission and
+before every Git-object/ref write.
 
 The dispatcher must create a **new** branch only if
 `ci/oreslang-<source-tree-sha>` does not already exist. Reuse, force-update or
