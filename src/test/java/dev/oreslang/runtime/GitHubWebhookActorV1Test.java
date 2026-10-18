@@ -621,6 +621,10 @@ final class GitHubWebhookActorV1Test {
 
         try (var runtime = new ActorRuntime()) {
             var actor = GitHubWebhookActorV1.spawn(runtime);
+            assertEquals(
+                    ActorRuntime.ActorKind.PRIVATE,
+                    actor.raw().kind(),
+                    "authenticated ingress must use a private actor");
             actor.raw().getReady().get(5, TimeUnit.SECONDS);
             var outputs = actor.outputs();
 

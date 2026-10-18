@@ -678,6 +678,8 @@ public final class GitHubWebhookActorV1 {
                 return PrivateState.empty();
             }
 
+            byte[] decodedSecret = null;
+            boolean decoded = false;
             try (DataInputStream input =
                          new DataInputStream(
                                  new ByteArrayInputStream(payload))) {
@@ -688,7 +690,7 @@ public final class GitHubWebhookActorV1 {
                                     + version);
                 }
 
-                byte[] secret = readBytes(
+                decodedSecret = readBytes(
                         input, 16, MAX_SECRET_BYTES, "secret");
                 String databasePath =
                         readNullableString(input);
@@ -787,12 +789,14 @@ public final class GitHubWebhookActorV1 {
                             "trailing bytes in GitHub webhook private state");
                 }
 
-                return new PrivateState(
-                        secret,
+                PrivateState state = new PrivateState(
+                        decodedSecret,
                         databasePath,
                         expectations,
                         matchedDeliveries,
                         deliveryIdentities);
+                decoded = true;
+                return state;
             } catch (IOException | RuntimeException failure) {
                 if (failure instanceof IllegalStateException stateFailure) {
                     throw stateFailure;
@@ -802,6 +806,9 @@ public final class GitHubWebhookActorV1 {
                         failure);
             } finally {
                 Arrays.fill(payload, (byte) 0);
+                if (!decoded && decodedSecret != null) {
+                    Arrays.fill(decodedSecret, (byte) 0);
+                }
             }
         }
 
