@@ -85,7 +85,7 @@ public final class Parser {
                 continue;
             }
 
-            if (check(CONTRACT) && defineFollowsAfterVisibilityModifiers()) {
+            if ((check(CONTRACT) || check(SIGNATURE)) && defineFollowsAfterVisibilityModifiers()) {
                 advance();
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 consume(DEFINE, "compatibility contract declaration requires both 'contract' and 'define'");
@@ -127,7 +127,7 @@ public final class Parser {
                     modules.add(parseModule(annotations));
                     continue;
                 }
-                if (match(CONTRACT)) {
+                if (match(CONTRACT, SIGNATURE)) {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     validateContractModifiers(modifiers);
                     rejectCallableStructuralAnnotation(annotations, "contract declarations");
@@ -162,7 +162,7 @@ public final class Parser {
                     rootDeclarations.add(parseTypeAlias(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
+                throw error(previous(), "expected module, class, contract, signature, interface, trait, or type after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -197,12 +197,12 @@ public final class Parser {
             else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
             else if (match(FNC)) kind = Ast.ImportKind.FUNCTION;
             else if (match(INTERFACE)) kind = Ast.ImportKind.INTERFACE;
-            else if (match(CONTRACT)) kind = Ast.ImportKind.CONTRACT;
+            else if (match(CONTRACT, SIGNATURE)) kind = Ast.ImportKind.CONTRACT;
             else if (match(TRAIT)) kind = Ast.ImportKind.TRAIT;
             else if (match(STRUCT)) kind = Ast.ImportKind.STRUCT;
             else if (match(TYPE)) kind = Ast.ImportKind.TYPE;
             else if (match(TYPES)) kind = Ast.ImportKind.TYPES;
-            else throw error(peek(), "expected module, actor, class, fnc, interface, contract, trait, struct, type, types, or * after import");
+            else throw error(peek(), "expected module, actor, class, fnc, interface, contract, signature, trait, struct, type, types, or * after import");
 
             if (match(STAR)) {
                 wildcard = true;
@@ -280,7 +280,7 @@ public final class Parser {
             return parseClass(modifiers.visibility, modifiers.isAbstract, false);
         }
 
-        if (check(CONTRACT) && defineFollowsAfterVisibilityModifiers()) {
+        if ((check(CONTRACT) || check(SIGNATURE)) && defineFollowsAfterVisibilityModifiers()) {
             advance();
             modifiers = mergeModifiers(modifiers, parseModifiers());
             consume(DEFINE, "compatibility contract declaration requires both 'contract' and 'define'");
@@ -310,7 +310,7 @@ public final class Parser {
             if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
-            if (match(CONTRACT)) {
+            if (match(CONTRACT, SIGNATURE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 validateContractModifiers(modifiers);
                 rejectCallableStructuralAnnotation(annotations, "contract declarations");
@@ -339,7 +339,7 @@ public final class Parser {
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return parseTypeAlias(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            throw error(previous(), "expected class, contract, signature, interface, trait, or type after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -407,7 +407,7 @@ public final class Parser {
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         }
-        if (match(CONTRACT)) {
+        if (match(CONTRACT, SIGNATURE)) {
             validateContractModifiers(modifiers);
             rejectCallableStructuralAnnotation(annotations, "contract declarations");
             rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
