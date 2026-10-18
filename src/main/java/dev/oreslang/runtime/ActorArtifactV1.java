@@ -121,6 +121,15 @@ public final class ActorArtifactV1<T> {
         }
     }
 
+    public record TrustedReleaseKey(
+            String keyId,
+            PublicKey publicKey) {
+        public TrustedReleaseKey {
+            keyId = requireText(keyId, "keyId");
+            publicKey = Objects.requireNonNull(publicKey, "publicKey");
+        }
+    }
+
     public record SignedReceipt(
             UnsignedReceipt receipt,
             String keyId,
@@ -172,12 +181,16 @@ public final class ActorArtifactV1<T> {
     public static <T> ActorArtifactV1<T> admit(
             SignedReceipt signed,
             byte[] artifactBytes,
-            PublicKey trustedReleaseKey,
+            TrustedReleaseKey trustedReleaseKey,
             IsolatePolicy supervisorPolicy) {
         Objects.requireNonNull(signed, "signed");
         Objects.requireNonNull(artifactBytes, "artifactBytes");
         Objects.requireNonNull(trustedReleaseKey, "trustedReleaseKey");
         Objects.requireNonNull(supervisorPolicy, "supervisorPolicy");
+        if (!signed.keyId().equals(trustedReleaseKey.keyId())) {
+            throw new SecurityException(
+                    "actor artifact signing key identity mismatch");
+        }
 
         UnsignedReceipt receipt = signed.receipt();
         if (artifactBytes.length != receipt.artifactSizeBytes()) {
@@ -190,15 +203,15 @@ public final class ActorArtifactV1<T> {
         }
 
         verifySupervisorAuthority(receipt, supervisorPolicy);
+        byte[] signedMessage = signingBytes(receipt, signed.keyId());
         verifySignature(
-                trustedReleaseKey,
-                signingBytes(receipt),
+                trustedReleaseKey.publicKey(),
+                signedMessage,
                 signed.signatureEd25519());
 
         byte[] retained = artifactBytes.clone();
         byte[] signedDigest = sha256(concat(
-                signingBytes(receipt),
-                signed.keyId().getBytes(StandardCharsets.UTF_8),
+                signedMessage,
                 signed.signatureEd25519()));
         return new ActorArtifactV1<>(
                 receipt,
@@ -209,14 +222,20 @@ public final class ActorArtifactV1<T> {
 
     /**
      * Stable canonical bytes signed by an external trusted release key.
+     * The externally resolved key identity is itself signed to prevent
+     * key-id relabeling/substitution.
      * Length-prefixed UTF-8 strings prevent concatenation ambiguity.
      */
-    public static byte[] signingBytes(UnsignedReceipt receipt) {
+    public static byte[] signingBytes(
+            UnsignedReceipt receipt,
+            String keyId) {
         Objects.requireNonNull(receipt, "receipt");
+        keyId = requireText(keyId, "keyId");
         try {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             DataOutputStream out = new DataOutputStream(bytes);
             out.write(RECEIPT_MAGIC);
+            writeText(out, keyId);
             writeText(out, receipt.actorTypeName());
             out.writeInt(receipt.actorKind().ordinal());
             out.writeInt(receipt.actorBoundary().ordinal());
