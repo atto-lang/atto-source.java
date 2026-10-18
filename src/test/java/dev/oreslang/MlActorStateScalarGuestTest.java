@@ -77,7 +77,7 @@ final class MlActorStateScalarGuestTest {
             // must execute here. A missing feature fails the test.
             assertDoesNotThrow(() -> context.eval(executable));
         }
-        assertEquals("20\n30\n2\n-4\n-2\n5\n5\n2\n-1\n10\n",
+        assertEquals("-6\n20\n-7\n30\n2\n-4\n-2\n5\n5\n2\n-1\n10\n",
                 stdout.toString(StandardCharsets.UTF_8));
     }
 
