@@ -51,7 +51,13 @@ final class ActorPipelineGuestRoutingBridgeTest {
             });
             var source = runtime.<String>spawnShared(() -> (value, actor) -> {
                 if (!"begin".equals(value)) throw new AssertionError("unexpected source DATA");
+                assertThrows(IllegalArgumentException.class,
+                        () -> runtime.routeCurrentPipelineForwardAll(List.of("unsafe")),
+                        "aggregate fanout must be denied before publication");
                 reports.set(runtime.routeCurrentPipelineForwardAll("payload"));
+                assertThrows(SecurityException.class,
+                        () -> runtime.routeCurrentPipelineForwardAll("replay"),
+                        "consumed routed DATA must not authorize a second fanout");
             });
             var router = new ActorPipelineCorrelatedMailboxRouter<>(
                     runtime, fanout(),
@@ -110,6 +116,9 @@ final class ActorPipelineGuestRoutingBridgeTest {
             var source = runtime.<String>spawnShared(() -> (value, actor) -> {
                 if (!"begin".equals(value)) throw new AssertionError("wrong root DATA");
                 reports.set(runtime.routeCurrentPipelineForwardAll("payload"));
+                assertThrows(SecurityException.class,
+                        () -> runtime.routeCurrentPipelineForwardAll("duplicate"),
+                        "partial rejection still consumes the authenticated source frame");
             });
             var router = new ActorPipelineCorrelatedMailboxRouter<>(
                     runtime, fanout(),
