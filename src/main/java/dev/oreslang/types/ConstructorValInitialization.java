@@ -2,27 +2,26 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
 
-import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
 /**
- * Definite initialization of ordinary-class blank val fields.
+ * Definite initialization of ordinary-class instance fields.
  *
- * <p>The semantic state is an immutable per-field assignment-count interval
- * supplied by {@link ConstructorFlowState}. A direct write is admitted only
- * from [0,0]; successful constructor completion requires [1,1] for every
- * blank val field. Branch joins take min(min) and max(max), which is the
- * interval form of MUST-intersection/MAY-union.</p>
+ * <p>Tracks MUST and MAY initialized fields on normal constructor paths.
+ * A blank immutable val slot can be written only if it is not MAY-initialized;
+ * mutable let slots may be reassigned after their first initialization.
+ * Construction completes only when every declaration-uninitialized field is MUST-initialized. Each explicit
+ * constructor is checked independently. Conditions do not publish a partially
+ * constructed receiver, and constructor writes are direct self.field = value
+ * statements, not arbitrary expression side effects.</p>
  *
- * <p>if/else, switch and safely exhaustive match statements participate in
- * dataflow. Repeating loops, try/catch/finally, select and defer remain
- * fail-closed until their backedge/exception/cleanup effects are represented
- * explicitly. Suspension is independently prohibited while constructing:
- * await, blocking channel waits, blocking dynamic select and async iteration
- * cannot carry a partial object across a scheduler boundary.</p>
+ * <p>Loops, try/catch/finally, select, defer and match are conservatively
+ * allowed only once all declaration-uninitialized fields are initialized. This avoids
+ * claiming exactly-once proofs across exceptional, suspended or iterative
+ * edges that the current frontend does not model yet.</p>
  */
 public final class ConstructorValInitialization {
     private ConstructorValInitialization() { }
@@ -31,29 +30,46 @@ public final class ConstructorValInitialization {
         if (klass.actorKind() != Ast.ActorKind.NONE || klass.constructors().isEmpty()) return;
 
         LinkedHashSet<String> required = new LinkedHashSet<>();
+        LinkedHashSet<String> fixed = new LinkedHashSet<>();
         for (Ast.FieldDecl field : klass.fields()) {
-            if (field.bindingKind() == Ast.BindingKind.VAL && field.initializer() == null) {
+            if (field.initializer() == null) {
                 required.add(field.name());
+                if (field.bindingKind() != Ast.BindingKind.LET) fixed.add(field.name());
             }
         }
-
-        // Even classes without blank val fields are scanned so constructors
-        // cannot silently introduce suspension through await/select/channel
-        // forms while a construction receiver exists.
+        // Even classes with no blank val slots must not publish constructing
+        // self. Ownership checks must not be the only protection: run the
+        // constructor expression walker independently for every constructor.
         for (Ast.ConstructorDecl constructor : klass.constructors()) {
-            ConstructorFlowState entry = ConstructorFlowState.blank(required);
-            ConstructorFlowState normalExit = block(
-                    constructor.body(), entry, required, klass.name());
+            State normalExit = block(constructor.body(), new State(fixed), required, klass.name());
             if (normalExit != null) requireComplete(normalExit, required, klass.name());
         }
     }
 
+    private static final class State {
+        final LinkedHashSet<String> must;
+        final LinkedHashSet<String> may;
+        final Set<String> fixed;
+
+        State(Set<String> fixed) {
+            this.must = new LinkedHashSet<>();
+            this.may = new LinkedHashSet<>();
+            this.fixed = Set.copyOf(fixed);
+        }
+
+        State(Set<String> must, Set<String> may, Set<String> fixed) {
+            this.must = new LinkedHashSet<>(must);
+            this.may = new LinkedHashSet<>(may);
+            this.fixed = fixed;
+        }
+
+        State copy() {
+            return new State(must, may, fixed);
+        }
+    }
+
     /** A null state has no normal continuation (every path returned). */
-    private static ConstructorFlowState block(
-            List<Ast.Stmt> stmts,
-            ConstructorFlowState state,
-            Set<String> required,
-            String klass) {
+    private static State block(List<Ast.Stmt> stmts, State state, Set<String> required, String klass) {
         for (Ast.Stmt stmt : stmts) {
             if (state == null) return null;
             state = statement(stmt, state, required, klass);
@@ -61,24 +77,21 @@ public final class ConstructorValInitialization {
         return state;
     }
 
-    private static ConstructorFlowState statement(
-            Ast.Stmt stmt,
-            ConstructorFlowState state,
-            Set<String> required,
-            String klass) {
+    private static State statement(Ast.Stmt stmt, State state, Set<String> required, String klass) {
         if (stmt instanceof Ast.ExprStmt expression) {
             if (expression.expression() instanceof Ast.AssignExpr assignment
-                    && blankValTarget(assignment.target(), required) != null) {
-                String field = blankValTarget(assignment.target(), required);
-                // RHS executes before the slot is written: reject premature reads,
-                // hidden writes and suspension before committing this assignment.
+                    && uninitializedFieldTarget(assignment.target(), required) != null) {
+                String field = uninitializedFieldTarget(assignment.target(), required);
+                // RHS executes before the slot is written: reject reads of a missing slot.
                 scan(assignment.value(), state, required, klass);
-                if (state.maybeInitialized(field)) {
+                if (state.fixed.contains(field) && state.may.contains(field)) {
                     throw error(klass, field, "is immutable; may be initialized more than once");
                 }
-                return state.write(field);
+                state.may.add(field);
+                state.must.add(field);
+            } else {
+                scan(expression.expression(), state, required, klass);
             }
-            scan(expression.expression(), state, required, klass);
             return state;
         }
         if (stmt instanceof Ast.BindingStmt binding) {
@@ -98,94 +111,59 @@ public final class ConstructorValInitialization {
             return null;
         }
         if (stmt instanceof Ast.IfStmt conditional) {
-            List<ConstructorFlowState> normalExits = new ArrayList<>();
+            List<State> normalExits = new ArrayList<>();
             for (Ast.IfBranch branch : conditional.branches()) {
+                // Branch conditions may read initialized slots, but not write them.
                 scan(branch.condition(), state, required, klass);
-                ConstructorFlowState exit = block(branch.body(), state, required, klass);
+                State exit = block(branch.body(), state.copy(), required, klass);
                 if (exit != null) normalExits.add(exit);
             }
-            ConstructorFlowState otherwise = block(
-                    conditional.elseBody(), state, required, klass);
+            State otherwise = block(conditional.elseBody(), state.copy(), required, klass);
             if (otherwise != null) normalExits.add(otherwise);
-            return ConstructorFlowState.join(normalExits);
+            return merge(normalExits);
         }
         if (stmt instanceof Ast.SwitchStmt switched) {
             scan(switched.subject(), state, required, klass);
-            List<ConstructorFlowState> normalExits = new ArrayList<>();
+            List<State> normalExits = new ArrayList<>();
             for (Ast.SwitchCase arm : switched.cases()) {
-                for (Ast.Expr constant : arm.constants()) {
-                    scan(constant, state, required, klass);
-                }
-                ConstructorFlowState exit = block(arm.body(), state, required, klass);
+                for (Ast.Expr constant : arm.constants()) scan(constant, state, required, klass);
+                State exit = block(arm.body(), state.copy(), required, klass);
                 if (exit != null) normalExits.add(exit);
             }
-            // Empty default preserves the unmatched entry path.
-            ConstructorFlowState defaultExit = block(
-                    switched.defaultBody(), state, required, klass);
+            // An empty default may mean no case matches; include the entry path.
+            State defaultExit = block(switched.defaultBody(), state.copy(), required, klass);
             if (defaultExit != null) normalExits.add(defaultExit);
-            return ConstructorFlowState.join(normalExits);
-        }
-        if (stmt instanceof Ast.MatchStmt matched) {
-            scan(matched.subject(), state, required, klass);
-            List<ConstructorFlowState> normalExits = new ArrayList<>();
-            boolean catchAll = false;
-            for (Ast.MatchArm arm : matched.arms()) {
-                if (arm.guard() != null) scan(arm.guard(), state, required, klass);
-                ConstructorFlowState exit = block(arm.body(), state, required, klass);
-                if (exit != null) normalExits.add(exit);
-                if (arm.guard() == null && isCatchAll(arm.pattern())) catchAll = true;
-            }
-            // TypeChecker has richer finite-domain exhaustiveness analysis, but
-            // this standalone pass intentionally proves only an explicit catch-all.
-            if (!catchAll) normalExits.add(state);
-            return ConstructorFlowState.join(normalExits);
-        }
-        if (stmt instanceof Ast.ForOfStmt loop && loop.asyncIteration()) {
-            throw constructionSuspension(klass, "async iteration");
-        }
-        if (stmt instanceof Ast.ForOfDestructureStmt loop && loop.asyncIteration()) {
-            throw constructionSuspension(klass, "async iteration");
-        }
-        if (stmt instanceof Ast.SelectStmt select
-                && select.mode() == Ast.WaitMode.BLOCKING) {
-            throw constructionSuspension(klass, "blocking select");
-        }
-        if (stmt instanceof Ast.DeferStmt defer) {
-            // Defer executes before the constructor can complete, so its
-            // cleanup remains inside the construction region even when the
-            // deferred expression is represented by a lambda.
-            requireComplete(state, required, klass);
-            scanDeferred(defer.expression(), state, required, klass);
-            return state;
+            return merge(normalExits);
         }
 
         // Until the frontend has a sound CFG for loop backedges, exceptional
-        // completion, deferred cleanup and nonblocking detached arms, all
-        // required slots must already be complete before entering them.
+        // completion, deferred cleanup and detached arms, initialize before
+        // entering those constructs. Scan their entire AST for illicit writes.
         requireComplete(state, required, klass);
         scan(stmt, state, required, klass);
         return state;
     }
 
-    private static boolean isCatchAll(Ast.Pattern pattern) {
-        return pattern instanceof Ast.WildcardPattern
-                || pattern instanceof Ast.BindingPattern;
+    private static State merge(List<State> states) {
+        if (states.isEmpty()) return null;
+        State joined = states.getFirst().copy();
+        for (int i = 1; i < states.size(); i++) {
+            joined.must.retainAll(states.get(i).must);
+            joined.may.addAll(states.get(i).may);
+        }
+        return joined;
     }
 
-    private static void requireComplete(
-            ConstructorFlowState state,
-            Set<String> required,
-            String klass) {
+    private static void requireComplete(State state, Set<String> required, String klass) {
         for (String field : required) {
-            if (!state.count(field).exactlyOnce()) {
+            if (!state.must.contains(field)) {
                 throw new IllegalArgumentException("constructor for " + klass
-                        + " did not initialize field '" + field + "' exactly once on every normal path"
-                        + " (state " + state.count(field) + ")");
+                        + " did not initialize field '" + field + "' on every normal path");
             }
         }
     }
 
-    private static String blankValTarget(Ast.Expr expr, Set<String> required) {
+    private static String uninitializedFieldTarget(Ast.Expr expr, Set<String> required) {
         if (expr instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr receiver
                 && receiver.name().equals("self")
@@ -197,136 +175,241 @@ public final class ConstructorValInitialization {
 
     /**
      * Check reads and reject hidden writes through expression-valued control
-     * flow, nested statements, or callbacks. The `immediate` bit distinguishes
-     * code executing as part of this constructor activation from a callable
-     * body that is merely being created. Deferred callable bodies are still
-     * inspected for construction-sensitive field access, but an await inside
-     * such a body is not itself a suspension of the constructor.
+     * flow, nested statements, or callbacks. Explicit AST visiting is AOT-safe;
+     * newly introduced AST forms must be handled instead of silently skipped.
      */
-    private static void scan(
-            Object node,
-            ConstructorFlowState state,
-            Set<String> required,
-            String klass) {
-        scan(node, state, required, klass, true);
-    }
-
-    private static void scan(
-            Object node,
-            ConstructorFlowState state,
-            Set<String> required,
-            String klass,
-            boolean immediate) {
+    private static void scan(Object node, State state, Set<String> required, String klass) {
         if (node == null) return;
-
-        if (node instanceof Ast.LambdaExpr lambda) {
-            scanLambdaBody(lambda, state, required, klass, false);
-            return;
-        }
-        if (node instanceof Ast.AwaitExpr awaited) {
-            if (immediate) throw constructionSuspension(klass, "await");
-            scan(awaited.expression(), state, required, klass, false);
-            return;
-        }
-        if (node instanceof Ast.ChannelOpExpr channel) {
-            if (immediate && channel.mode() == Ast.WaitMode.BLOCKING) {
-                throw constructionSuspension(klass, "blocking channel operation");
-            }
-            scan(channel.channel(), state, required, klass, immediate);
-            scan(channel.value(), state, required, klass, immediate);
-            // Nonblocking write callbacks are registered for later execution;
-            // their bodies are not part of this constructor activation.
-            scan(channel.callbackBody(), state, required, klass, false);
-            return;
-        }
-        if (node instanceof Ast.DynamicSelectExpr select) {
-            if (immediate && select.mode() == Ast.WaitMode.BLOCKING) {
-                throw constructionSuspension(klass, "blocking dynamic select");
-            }
-            scan(select.cases(), state, required, klass, immediate);
-            return;
-        }
-        if (node instanceof Ast.ForOfStmt loop && immediate && loop.asyncIteration()) {
-            throw constructionSuspension(klass, "async iteration");
-        }
-        if (node instanceof Ast.ForOfDestructureStmt loop && immediate && loop.asyncIteration()) {
-            throw constructionSuspension(klass, "async iteration");
-        }
-        if (node instanceof Ast.SelectStmt select
-                && immediate
-                && select.mode() == Ast.WaitMode.BLOCKING) {
-            throw constructionSuspension(klass, "blocking select");
-        }
         if (node instanceof Ast.AssignExpr assignment) {
-            String field = blankValTarget(assignment.target(), required);
-            if (field != null) {
+            String field = uninitializedFieldTarget(assignment.target(), required);
+            if (field != null
+                    && (state.fixed.contains(field) || !state.must.contains(field))) {
                 throw error(klass, field,
                         "must be assigned directly in a constructor statement, not through a nested expression or callback");
             }
         }
         if (node instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr receiver
-                && receiver.name().equals("self")
-                && required.contains(member.member())
-                && !state.definitelyInitialized(member.member())) {
-            throw error(klass, member.member(), "is read before constructor initialization");
+                && receiver.name().equals("self")) {
+            // A direct field projection is not publication of the receiver itself.
+            if (required.contains(member.member()) && !state.must.contains(member.member())) {
+                throw error(klass, member.member(), "is read before constructor initialization");
+            }
+            return;
+        }
+        if (node instanceof Ast.NameExpr name && name.name().equals("self")) {
+            // Only direct self.field projections / writes may use construction self.
+            // In particular, self hidden inside a tuple, list or struct must not
+            // bypass the no-publication rule.
+            throw new IllegalArgumentException(
+                    "constructor for '" + klass + "': partially initialized self cannot escape");
         }
         if (node instanceof Iterable<?> values) {
-            for (Object value : values) scan(value, state, required, klass, immediate);
+            for (Object value : values) scan(value, state, required, klass);
             return;
         }
-        if (!(node instanceof Record record)) {
-            if (node instanceof Ast.Expr || node instanceof Ast.Stmt) {
-                throw new IllegalArgumentException("unsupported constructor AST node: "
-                        + node.getClass().getName());
-            }
+        if (node instanceof Ast.LiteralExpr || node instanceof Ast.NameExpr
+                || node instanceof Ast.BreakStmt || node instanceof Ast.ContinueStmt) return;
+        if (node instanceof Ast.BinaryExpr item) {
+            scan(item.left(), state, required, klass);
+            scan(item.right(), state, required, klass);
             return;
         }
-        if (node.getClass().getEnclosingClass() != Ast.class) return;
-        for (RecordComponent component : record.getClass().getRecordComponents()) {
-            try {
-                scan(component.getAccessor().invoke(record), state, required, klass, immediate);
-            } catch (ReflectiveOperationException e) {
-                throw new IllegalStateException(
-                        "unable to inspect constructor syntax "
-                                + record.getClass().getSimpleName(), e);
-            }
+        if (node instanceof Ast.UnaryExpr item) {
+            scan(item.operand(), state, required, klass);
+            return;
         }
-    }
+        if (node instanceof Ast.ConditionalExpr item) {
+            scan(item.condition(), state, required, klass);
+            scan(item.whenTrue(), state, required, klass);
+            scan(item.whenFalse(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.MatchExpr item) {
+            scan(item.subject(), state, required, klass);
+            scan(item.arms(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.MatchValueArm item) {
+            scan(item.guard(), state, required, klass);
+            scan(item.value(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.TypeTestExpr item) {
+            scan(item.value(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.PatternTestExpr item) {
+            scan(item.value(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.CastExpr item) {
+            scan(item.value(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.SpreadExpr item) {
+            scan(item.expression(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.CallExpr item) {
+            scan(item.callee(), state, required, klass);
+            scan(item.arguments(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.RuntimeCallExpr item) {
+            scan(item.arguments(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.IndexExpr item) {
+            scan(item.receiver(), state, required, klass);
+            scan(item.index(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.NewExpr item) {
+            scan(item.arguments(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.AwaitExpr item) {
+            scan(item.expression(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.TrapExpr item) {
+            scan(item.expression(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ChannelOpExpr item) {
+            scan(item.channel(), state, required, klass);
+            scan(item.value(), state, required, klass);
+            scan(item.callbackBody(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.DynamicSelectExpr item) {
+            scan(item.cases(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ListExpr item) {
+            scan(item.elements(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.TupleExpr item) {
+            scan(item.elements(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ObjectExpr item) {
+            scan(item.fields(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ObjectField item) {
+            scan(item.value(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.LambdaExpr item) {
+            scan(item.expressionBody(), state, required, klass);
+            scan(item.blockBody(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.BindingStmt item) {
+            scan(item.initializer(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.DestructureStmt item) {
+            scan(item.initializer(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ExprStmt item) {
+            scan(item.expression(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ReturnStmt item) {
+            scan(item.value(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.YieldStmt item) {
+            scan(item.value(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.DeferStmt item) {
+            scan(item.expression(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.BlockStmt item) {
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.IfStmt item) {
+            scan(item.branches(), state, required, klass);
+            scan(item.elseBody(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.IfBranch item) {
+            scan(item.condition(), state, required, klass);
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.MatchStmt item) {
+            scan(item.subject(), state, required, klass);
+            scan(item.arms(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.MatchArm item) {
+            scan(item.guard(), state, required, klass);
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.SwitchStmt item) {
+            scan(item.subject(), state, required, klass);
+            scan(item.cases(), state, required, klass);
+            scan(item.defaultBody(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.SwitchCase item) {
+            scan(item.constants(), state, required, klass);
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.TryStmt item) {
+            scan(item.body(), state, required, klass);
+            scan(item.catchBody(), state, required, klass);
+            scan(item.finallyBody(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ForOfStmt item) {
+            scan(item.iterable(), state, required, klass);
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ForOfDestructureStmt item) {
+            scan(item.iterable(), state, required, klass);
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ForStmt item) {
+            scan(item.initializer(), state, required, klass);
+            scan(item.condition(), state, required, klass);
+            scan(item.update(), state, required, klass);
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.LoopStmt item) {
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.SelectStmt item) {
+            scan(item.arms(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.SelectArm item) {
+            scan(item.channel(), state, required, klass);
+            scan(item.value(), state, required, klass);
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        throw new IllegalArgumentException("unhandled AST node in constructor val analysis: " + node.getClass().getName());
 
-    private static void scanLambdaBody(
-            Ast.LambdaExpr lambda,
-            ConstructorFlowState state,
-            Set<String> required,
-            String klass,
-            boolean immediate) {
-        if (lambda.expressionBody() != null) {
-            scan(lambda.expressionBody(), state, required, klass, immediate);
-        } else {
-            scan(lambda.blockBody(), state, required, klass, immediate);
-        }
-    }
-
-    private static void scanDeferred(
-            Ast.Expr expression,
-            ConstructorFlowState state,
-            Set<String> required,
-            String klass) {
-        if (expression instanceof Ast.LambdaExpr lambda) {
-            scanLambdaBody(lambda, state, required, klass, true);
-        } else {
-            scan(expression, state, required, klass, true);
-        }
     }
 
     private static IllegalArgumentException error(String klass, String field, String message) {
         return new IllegalArgumentException(
                 "constructor for '" + klass + "': val field '" + field + "' " + message);
-    }
-
-    private static IllegalArgumentException constructionSuspension(String klass, String operation) {
-        return new IllegalArgumentException(
-                "constructor for '" + klass + "' cannot suspend through " + operation
-                        + "; construction-scoped self must not cross a scheduler boundary");
     }
 }
