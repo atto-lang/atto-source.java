@@ -22,7 +22,7 @@ final class ActorMiddlewareValueSignatureTest {
                 end
                 define class Clean as
                     async next_val(MiddlewareContext req, MiddlewareResponseDraft res): MiddlewareDecision<int> {
-                        return null;
+                        return;
                     }
                 end
                 """, "continuation lowering");
@@ -37,7 +37,7 @@ final class ActorMiddlewareValueSignatureTest {
                 end
                 define class Clean as
                     async next(MiddlewareContext req, MiddlewareResponseDraft res, MiddlewareNext next): MiddlewareOutcome<void> {
-                        return null;
+                        return;
                     }
                 end
                 """, "continuation lowering");
@@ -52,7 +52,7 @@ final class ActorMiddlewareValueSignatureTest {
                 end
                 define class Clean as
                     async next(MiddlewareContext req, MiddlewareResponseDraft res, MiddlewareNext next): MiddlewareOutcome<String> {
-                        return null;
+                        return;
                     }
                 end
                 """, "MiddlewareOutcome<void>");
@@ -67,10 +67,10 @@ final class ActorMiddlewareValueSignatureTest {
                 end
                 define class Clean as
                     async next_val(MiddlewareContext req, MiddlewareResponseDraft res): MiddlewareDecision<int> {
-                        return null;
+                        return;
                     }
                     async next(MiddlewareContext req, MiddlewareResponseDraft res, MiddlewareNext next): MiddlewareOutcome<void> {
-                        return null;
+                        return;
                     }
                 end
                 """, "continuation lowering");
@@ -85,7 +85,7 @@ final class ActorMiddlewareValueSignatureTest {
                 end
                 define class Clean as
                     async next_val(MiddlewareContext req, MiddlewareResponseDraft res): !void {
-                        return null;
+                        return;
                     }
                 end
                 """, "MiddlewareDecision<T>");
@@ -96,7 +96,7 @@ final class ActorMiddlewareValueSignatureTest {
                 end
                 define class Clean as
                     async next_val(MiddlewareContext req, MiddlewareResponseDraft res): MiddlewareDecision {
-                        return null;
+                        return;
                     }
                 end
                 """, "MiddlewareDecision<T>");
@@ -111,7 +111,7 @@ final class ActorMiddlewareValueSignatureTest {
                 end
                 define class Clean as
                     async next_val(MiddlewareContext req, MiddlewareResponseDraft res): MiddlewareDecision<String> {
-                        return null;
+                        return;
                     }
                 end
                 """, "reply type must match unary actor");
@@ -126,7 +126,7 @@ final class ActorMiddlewareValueSignatureTest {
                 end
                 define class Clean as
                     async next_val(MiddlewareContext req, MiddlewareResponseDraft res): MiddlewareDecision<int> {
-                        return null;
+                        return;
                     }
                 end
                 """, "stream actors require the next hook");
@@ -141,7 +141,7 @@ final class ActorMiddlewareValueSignatureTest {
                 end
                 define class Clean as
                     static fnc next_val(MiddlewareContext req, MiddlewareResponseDraft res): MiddlewareDecision<int> {
-                        return null;
+                        return;
                     }
                 end
                 """, "instance-only");
