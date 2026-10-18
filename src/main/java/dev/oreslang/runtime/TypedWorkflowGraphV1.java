@@ -288,7 +288,16 @@ public final class TypedWorkflowGraphV1 {
     }
 
     private void validateCyclesAreBounded() {
-        Map<String, List<String>> adjacency = adjacency();
+        Map<String, List<String>> unboundedAdjacency =
+                new HashMap<>();
+        for (Edge edge : edges) {
+            if (edge.bounded()) continue;
+            unboundedAdjacency.computeIfAbsent(
+                    edge.fromNode(),
+                    ignored -> new ArrayList<>())
+                    .add(edge.toNode());
+        }
+
         Map<String, Integer> index = new HashMap<>();
         Map<String, Integer> low = new HashMap<>();
         ArrayDeque<String> stack = new ArrayDeque<>();
@@ -299,7 +308,7 @@ public final class TypedWorkflowGraphV1 {
             if (!index.containsKey(node)) {
                 tarjan(
                         node,
-                        adjacency,
+                        unboundedAdjacency,
                         index,
                         low,
                         stack,
@@ -356,21 +365,16 @@ public final class TypedWorkflowGraphV1 {
         } while (!member.equals(node));
 
         boolean selfCycle = component.size() == 1
-                && edges.stream().anyMatch(edge ->
-                        edge.fromNode().equals(node)
-                                && edge.toNode().equals(node));
+                && adjacency.getOrDefault(node, List.of())
+                        .contains(node);
         if (component.size() == 1 && !selfCycle) {
             return;
         }
 
-        boolean boundedInternalEdge = edges.stream().anyMatch(edge ->
-                component.contains(edge.fromNode())
-                        && component.contains(edge.toNode())
-                        && edge.bounded());
-        if (!boundedInternalEdge) {
-            throw new IllegalArgumentException(
-                    "workflow cycle is unbounded: " + component);
-        }
+        throw new IllegalArgumentException(
+                "workflow contains cycle composed entirely "
+                        + "of unbounded edges: "
+                        + component);
     }
 
     private static String requireText(String value, String name) {
