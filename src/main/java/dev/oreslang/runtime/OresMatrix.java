@@ -68,6 +68,10 @@ public final class OresMatrix implements ImmutableGuestValue {
                 if (columnCount == 0) {
                     throw new IllegalArgumentException("matrix rows cannot be empty");
                 }
+                // Reject oversized shapes before traversing a potentially huge
+                // or lazily generated guest row sequence. Recheck below once
+                // the actual real/complex storage domain has been established.
+                checkedElements(rowCount, columnCount, false, "matrix literal");
             } else if (row.size() != columnCount) {
                 throw new IllegalArgumentException(
                         "matrix literal must be rectangular; row " + r + " has "
@@ -193,7 +197,10 @@ public final class OresMatrix implements ImmutableGuestValue {
 
     public OresMatrix scale(Object scalar) {
         OresComplex factor = OresComplex.of(scalar);
-        boolean complex = isComplex() || factor.imaginary() != 0.0;
+        // Storage domain is determined by scalar type, not its current
+        // imaginary value. A complex scalar with +0i or -0i still yields
+        // Matrix<complex> and must return OresComplex from get()/trace().
+        boolean complex = isComplex() || scalar instanceof OresComplex;
         double[] outReal = new double[real.length];
         double[] outImaginary = complex ? new double[real.length] : null;
         for (int i = 0; i < real.length; i++) {
@@ -207,7 +214,7 @@ public final class OresMatrix implements ImmutableGuestValue {
     public OresMatrix divide(Object scalar) {
         OresComplex divisor = OresComplex.of(scalar);
         double[] outReal = new double[real.length];
-        boolean complex = isComplex() || divisor.imaginary() != 0.0;
+        boolean complex = isComplex() || scalar instanceof OresComplex;
         double[] outImaginary = complex ? new double[real.length] : null;
         for (int i = 0; i < real.length; i++) {
             OresComplex value = new OresComplex(real[i], imag(i)).div(divisor);
