@@ -1,19 +1,16 @@
 package dev.oreslang.runtime;
 
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.Objects;
 
 /**
- * Host-reference actor wrapper for one durable development workflow run.
+ * ActorRuntime-backed durable development-loop coordinator.
  *
- * <p>The actor holds only one mutable execution state object (this behavior)
- * and treats SQLite as the durable authority. Each delivered workflow event is
- * reduced from a freshly replayed journal; no in-memory reducer mutation is
- * trusted across a failed persistence operation.</p>
- *
- * <p>This is the Java/Graal reference shape for the future source-level
- * DevLoopActor. UI and activity workers interact by messages and immutable
- * actor outputs rather than direct method calls or shared mutable state.</p>
+ * <p>The public records are host-side convenience types only. Every mailbox
+ * message and actor output is encoded as maps/lists/scalars through
+ * {@link WorkflowActorWireV1}, preserving ActorRuntime's data-only transport
+ * boundary. SQLite remains the durable authority.</p>
  */
 public final class DurableDevLoopActorV1 {
 
@@ -181,37 +178,89 @@ public final class DurableDevLoopActorV1 {
         }
     }
 
-    private DurableDevLoopActorV1() { }
+    /** Host-side typed facade over the data-only ActorRuntime reference. */
+    public static final class Ref {
+        private final ActorRuntime.ActorRef<Object> raw;
 
-    /**
-     * Spawn a capture-free private actor. Persistent configuration arrives in
-     * the first OpenRun message and the SQLite handle is created on the actor's
-     * serialized execution lane.
-     */
-    public static ActorRuntime.ActorRef<Message> spawn(
-            ActorRuntime runtime) {
-        Objects.requireNonNull(runtime, "runtime");
-        return runtime.spawnPrivate(
-                DurableDevLoopActorV1::createBehavior);
+        private Ref(ActorRuntime.ActorRef<Object> raw) {
+            this.raw = Objects.requireNonNull(raw, "raw");
+        }
+
+        public ActorRuntime.ActorRef<Object> raw() {
+            return raw;
+        }
+
+        public void send(Message message) {
+            raw.send(encodeMessage(
+                    Objects.requireNonNull(message, "message")));
+        }
+
+        public ActorRuntime.ActorOutputStream<Object> outputs() {
+            return raw.outputs();
+        }
     }
 
-    private static ActorRuntime.Behavior<Message> createBehavior(
-            ActorRuntime.ActorContext<Message> ignored) {
+    private DurableDevLoopActorV1() { }
+
+    public static Ref spawn(ActorRuntime runtime) {
+        Objects.requireNonNull(runtime, "runtime");
+        ActorRuntime.ActorRef<Object> raw =
+                runtime.spawnPrivate(
+                        DurableDevLoopActorV1::createBehavior);
+        return new Ref(raw);
+    }
+
+    public static Output decodeOutput(Object wire) {
+        Map<String, Object> map =
+                WorkflowActorWireV1.objectMap(wire);
+        return switch (WorkflowActorWireV1.string(map, "type")) {
+            case "opened" -> new Opened(
+                    WorkflowActorWireV1.projection(
+                            map.get("projection")));
+            case "transitioned" -> new Transitioned(
+                    WorkflowActorWireV1.journalEntry(
+                            map.get("journalEntry")),
+                    WorkflowActorWireV1.projection(
+                            map.get("projection")));
+            case "effect_claimed" -> new EffectClaimed(
+                    WorkflowActorWireV1.claim(map.get("claim")),
+                    WorkflowActorWireV1.projection(
+                            map.get("projection")));
+            case "no_effect" -> new NoEffectAvailable(
+                    WorkflowActorWireV1.projection(
+                            map.get("projection")));
+            case "effect_updated" -> new EffectUpdated(
+                    WorkflowActorWireV1.string(map, "effectKey"),
+                    WorkflowActorWireV1.projection(
+                            map.get("projection")));
+            case "projection" -> new ProjectionPublished(
+                    WorkflowActorWireV1.projection(
+                            map.get("projection")));
+            case "stopping" -> new Stopping(
+                    WorkflowActorWireV1.string(map, "runId"),
+                    WorkflowActorWireV1.string(map, "reason"));
+            default -> throw new IllegalArgumentException(
+                    "unknown dev-loop actor output type "
+                            + WorkflowActorWireV1.string(map, "type"));
+        };
+    }
+
+    private static ActorRuntime.Behavior<Object> createBehavior(
+            ActorRuntime.ActorContext<Object> ignored) {
         return new Behavior();
     }
 
     private static final class Behavior
-            implements ActorRuntime.Behavior<Message> {
+            implements ActorRuntime.Behavior<Object> {
         private SqliteWorkflowJournalV1 store;
         private String runId;
         private int maxIterations;
 
         @Override
         public void onMessage(
-                Message message,
-                ActorRuntime.ActorContext<Message> context) {
-            Objects.requireNonNull(message, "message");
-            Objects.requireNonNull(context, "context");
+                Object wire,
+                ActorRuntime.ActorContext<Object> context) {
+            Message message = decodeMessage(wire);
 
             if (message instanceof OpenRun open) {
                 open(open, context);
@@ -241,17 +290,14 @@ public final class DurableDevLoopActorV1 {
                         claim.workerId(),
                         claim.nowMillis(),
                         claim.leaseMillis());
-                if (claimed.isPresent()) {
-                    emit(
-                            context,
-                            new EffectClaimed(
-                                    claimed.orElseThrow(),
-                                    projection()));
-                } else {
-                    emit(
-                            context,
-                            new NoEffectAvailable(projection()));
-                }
+                emit(
+                        context,
+                        claimed.<Output>map(value ->
+                                new EffectClaimed(
+                                        value, projection()))
+                                .orElseGet(() ->
+                                        new NoEffectAvailable(
+                                                projection())));
                 return;
             }
 
@@ -341,7 +387,7 @@ public final class DurableDevLoopActorV1 {
 
         private void open(
                 OpenRun open,
-                ActorRuntime.ActorContext<Message> context) {
+                ActorRuntime.ActorContext<Object> context) {
             if (store != null) {
                 throw new IllegalStateException(
                         "dev-loop actor is already open");
@@ -415,10 +461,187 @@ public final class DurableDevLoopActorV1 {
         }
 
         private static void emit(
-                ActorRuntime.ActorContext<Message> context,
+                ActorRuntime.ActorContext<Object> context,
                 Output output) {
-            context.runtime().emitCurrentActorOutput(output);
+            context.runtime().emitCurrentActorOutput(
+                    encodeOutput(output));
         }
+    }
+
+    private static Map<String, Object> encodeMessage(Message message) {
+        if (message instanceof OpenRun value) {
+            return WorkflowActorWireV1.map(
+                    "type", "open",
+                    "databasePath", value.databasePath(),
+                    "runId", value.runId(),
+                    "maxIterations", value.maxIterations(),
+                    "startEventId", value.startEventId(),
+                    "goal", value.goal());
+        }
+        if (message instanceof Deliver value) {
+            return WorkflowActorWireV1.map(
+                    "type", "deliver",
+                    "eventId", value.eventId(),
+                    "event", WorkflowActorWireV1.event(value.event()));
+        }
+        if (message instanceof ClaimEffect value) {
+            return WorkflowActorWireV1.map(
+                    "type", "claim",
+                    "workerId", value.workerId(),
+                    "nowMillis", value.nowMillis(),
+                    "leaseMillis", value.leaseMillis());
+        }
+        if (message instanceof CompleteEffect value) {
+            return WorkflowActorWireV1.map(
+                    "type", "complete",
+                    "effectKey", value.effectKey(),
+                    "claimToken", value.claimToken(),
+                    "receiptRef", value.receiptRef(),
+                    "nowMillis", value.nowMillis());
+        }
+        if (message instanceof ReleaseEffect value) {
+            return WorkflowActorWireV1.map(
+                    "type", "release",
+                    "effectKey", value.effectKey(),
+                    "claimToken", value.claimToken(),
+                    "reasonRef", value.reasonRef(),
+                    "nowMillis", value.nowMillis());
+        }
+        if (message instanceof ExpireClaims value) {
+            return WorkflowActorWireV1.map(
+                    "type", "expire",
+                    "nowMillis", value.nowMillis());
+        }
+        if (message instanceof ReconcileCompleted value) {
+            return WorkflowActorWireV1.map(
+                    "type", "reconcile_completed",
+                    "effectKey", value.effectKey(),
+                    "receiptRef", value.receiptRef(),
+                    "reconciliationRef", value.reconciliationRef());
+        }
+        if (message instanceof ReconcileRetry value) {
+            return WorkflowActorWireV1.map(
+                    "type", "reconcile_retry",
+                    "effectKey", value.effectKey(),
+                    "reconciliationRef", value.reconciliationRef());
+        }
+        if (message instanceof QueryProjection) {
+            return WorkflowActorWireV1.map("type", "query");
+        }
+        if (message instanceof Shutdown value) {
+            return WorkflowActorWireV1.map(
+                    "type", "shutdown",
+                    "reason", value.reason());
+        }
+        throw new IllegalArgumentException(
+                "unsupported dev-loop message "
+                        + message.getClass().getName());
+    }
+
+    private static Message decodeMessage(Object wire) {
+        Map<String, Object> map =
+                WorkflowActorWireV1.objectMap(wire);
+        return switch (WorkflowActorWireV1.string(map, "type")) {
+            case "open" -> new OpenRun(
+                    WorkflowActorWireV1.string(map, "databasePath"),
+                    WorkflowActorWireV1.string(map, "runId"),
+                    WorkflowActorWireV1.integer(map, "maxIterations"),
+                    WorkflowActorWireV1.string(map, "startEventId"),
+                    WorkflowActorWireV1.string(map, "goal"));
+            case "deliver" -> new Deliver(
+                    WorkflowActorWireV1.string(map, "eventId"),
+                    WorkflowActorWireV1.event(map.get("event")));
+            case "claim" -> new ClaimEffect(
+                    WorkflowActorWireV1.string(map, "workerId"),
+                    WorkflowActorWireV1.longValue(map, "nowMillis"),
+                    WorkflowActorWireV1.longValue(map, "leaseMillis"));
+            case "complete" -> new CompleteEffect(
+                    WorkflowActorWireV1.string(map, "effectKey"),
+                    WorkflowActorWireV1.string(map, "claimToken"),
+                    WorkflowActorWireV1.string(map, "receiptRef"),
+                    WorkflowActorWireV1.longValue(map, "nowMillis"));
+            case "release" -> new ReleaseEffect(
+                    WorkflowActorWireV1.string(map, "effectKey"),
+                    WorkflowActorWireV1.string(map, "claimToken"),
+                    WorkflowActorWireV1.string(map, "reasonRef"),
+                    WorkflowActorWireV1.longValue(map, "nowMillis"));
+            case "expire" -> new ExpireClaims(
+                    WorkflowActorWireV1.longValue(map, "nowMillis"));
+            case "reconcile_completed" -> new ReconcileCompleted(
+                    WorkflowActorWireV1.string(map, "effectKey"),
+                    WorkflowActorWireV1.string(map, "receiptRef"),
+                    WorkflowActorWireV1.string(
+                            map, "reconciliationRef"));
+            case "reconcile_retry" -> new ReconcileRetry(
+                    WorkflowActorWireV1.string(map, "effectKey"),
+                    WorkflowActorWireV1.string(
+                            map, "reconciliationRef"));
+            case "query" -> new QueryProjection();
+            case "shutdown" -> new Shutdown(
+                    WorkflowActorWireV1.string(map, "reason"));
+            default -> throw new IllegalArgumentException(
+                    "unknown dev-loop actor message type "
+                            + WorkflowActorWireV1.string(map, "type"));
+        };
+    }
+
+    private static Map<String, Object> encodeOutput(Output output) {
+        if (output instanceof Opened value) {
+            return WorkflowActorWireV1.map(
+                    "type", "opened",
+                    "projection",
+                            WorkflowActorWireV1.projection(
+                                    value.projection()));
+        }
+        if (output instanceof Transitioned value) {
+            return WorkflowActorWireV1.map(
+                    "type", "transitioned",
+                    "journalEntry",
+                            WorkflowActorWireV1.journalEntry(
+                                    value.journalEntry()),
+                    "projection",
+                            WorkflowActorWireV1.projection(
+                                    value.projection()));
+        }
+        if (output instanceof EffectClaimed value) {
+            return WorkflowActorWireV1.map(
+                    "type", "effect_claimed",
+                    "claim", WorkflowActorWireV1.claim(value.claim()),
+                    "projection",
+                            WorkflowActorWireV1.projection(
+                                    value.projection()));
+        }
+        if (output instanceof NoEffectAvailable value) {
+            return WorkflowActorWireV1.map(
+                    "type", "no_effect",
+                    "projection",
+                            WorkflowActorWireV1.projection(
+                                    value.projection()));
+        }
+        if (output instanceof EffectUpdated value) {
+            return WorkflowActorWireV1.map(
+                    "type", "effect_updated",
+                    "effectKey", value.effectKey(),
+                    "projection",
+                            WorkflowActorWireV1.projection(
+                                    value.projection()));
+        }
+        if (output instanceof ProjectionPublished value) {
+            return WorkflowActorWireV1.map(
+                    "type", "projection",
+                    "projection",
+                            WorkflowActorWireV1.projection(
+                                    value.projection()));
+        }
+        if (output instanceof Stopping value) {
+            return WorkflowActorWireV1.map(
+                    "type", "stopping",
+                    "runId", value.runId(),
+                    "reason", value.reason());
+        }
+        throw new IllegalArgumentException(
+                "unsupported dev-loop output "
+                        + output.getClass().getName());
     }
 
     private static String requireText(String value, String name) {
