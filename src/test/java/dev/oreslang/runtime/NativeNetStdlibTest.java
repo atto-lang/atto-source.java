@@ -96,6 +96,114 @@ final class NativeNetStdlibTest {
         }
     }
 
+    @Test void guestAwaitsTwoIndependentListenersWithoutCrossingSocketReplies()
+            throws Exception {
+        // Exercise actual compiled guest net_core/await operations, not only
+        // the host-only NioReadinessGroup API. The two pending accepts share a
+        // VM selector and cannot resume either guest turn on that selector.
+        Path entry = Files.createTempFile("ores-net-dual-guest-", ".ores");
+        ExecutorService runner = Executors.newFixedThreadPool(2);
+        CompletableFuture<int[]> publishedPorts = new CompletableFuture<>();
+        PipedInputStream stream = new PipedInputStream(8192);
+        PipedOutputStream output = new PipedOutputStream(stream);
+        try {
+            Files.writeString(entry, """
+                import module net_core from "std/net";
+                pub async routine main(): void {
+                  val NioTcpListener first = net_core.listen_loopback(0, 32, 2, 8);
+                  val NioTcpListener second = net_core.listen_loopback(0, 32, 2, 8);
+                  stdio.println(first.port);
+                  stdio.println(second.port);
+
+                  val Future<NioTcpConnection> first_accept = net_core.accept(rt borrow first);
+                  val Future<NioTcpConnection> second_accept = net_core.accept(rt borrow second);
+                  val NioTcpConnection first_peer = await first_accept;
+                  val NioTcpConnection second_peer = await second_accept;
+
+                  val Future<Array<int>> first_read = net_core.read(rt borrow first_peer, 1);
+                  val Future<Array<int>> second_read = net_core.read(rt borrow second_peer, 1);
+                  val Array<int> first_bytes = await first_read;
+                  val Array<int> second_bytes = await second_read;
+
+                  val Future<int> first_write = net_core.write(rt borrow first_peer, first_bytes);
+                  val Future<int> second_write = net_core.write(rt borrow second_peer, second_bytes);
+                  val int first_written = await first_write;
+                  val int second_written = await second_write;
+                  stdio.println(first_written + second_written);
+
+                  val Future<void> close_first = net_core.close_connection(first_peer);
+                  val Future<void> close_second = net_core.close_connection(second_peer);
+                  await close_first;
+                  await close_second;
+                  val Future<void> stop_first = net_core.close_listener(first);
+                  val Future<void> stop_second = net_core.close_listener(second);
+                  await stop_first;
+                  await stop_second;
+                  stdio.println(4242);
+                  return;
+                }
+                """);
+            Future<?> program = runner.submit(() -> {
+                try {
+                    LinkedProgramRunner.run(entry,
+                            IsolatePolicy.developer()
+                                    .withCapabilities(IsolatePolicy.Capability.NETWORK),
+                            ExecutionProfile.serverJit(), output, new ByteArrayOutputStream());
+                } catch (Exception failure) {
+                    throw new RuntimeException(failure);
+                } finally {
+                    try { output.close(); } catch (IOException ignored) { }
+                }
+            });
+            Future<String> outputReader = runner.submit(() -> {
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+                    String first = reader.readLine();
+                    String second = reader.readLine();
+                    if (first == null || second == null) {
+                        throw new EOFException("guest exited before publishing both ports");
+                    }
+                    publishedPorts.complete(new int[]{
+                            Integer.parseInt(first.trim()), Integer.parseInt(second.trim())});
+                    StringBuilder rest = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null)
+                        rest.append(line).append('\\n');
+                    return rest.toString();
+                } catch (Throwable failure) {
+                    publishedPorts.completeExceptionally(failure);
+                    throw failure;
+                }
+            });
+            int[] ports = publishedPorts.get(20, TimeUnit.SECONDS);
+            assertEquals(2, ports.length);
+            assertTrue(ports[0] > 0 && ports[1] > 0);
+            assertNotEquals(ports[0], ports[1], "independent listeners must own distinct ports");
+
+            try (Socket first = new Socket(InetAddress.getByName("127.0.0.1"), ports[0]);
+                 Socket second = new Socket(InetAddress.getByName("127.0.0.1"), ports[1])) {
+                first.setSoTimeout(5000);
+                second.setSoTimeout(5000);
+                first.getOutputStream().write('A');
+                second.getOutputStream().write('Z');
+                assertEquals('A', first.getInputStream().read(),
+                        "first guest Future resumed on the wrong connection");
+                assertEquals('Z', second.getInputStream().read(),
+                        "second guest Future resumed on the wrong connection");
+            }
+            program.get(20, TimeUnit.SECONDS);
+            String remainder = outputReader.get(5, TimeUnit.SECONDS);
+            assertTrue(remainder.contains("2"), "both guest writes must complete");
+            assertTrue(remainder.contains("4242"),
+                    "both source-level close Futures must finish before main returns");
+        } finally {
+            try { output.close(); } catch (IOException ignored) { }
+            try { stream.close(); } catch (IOException ignored) { }
+            runner.shutdownNow();
+            Files.deleteIfExists(entry);
+        }
+    }
+
     @Test void realGuestAcceptReadWriteThroughNonblockingKernel() throws Exception {
         Path entry = Files.createTempFile("ores-net-guest-", ".ores");
         ExecutorService runner = Executors.newFixedThreadPool(2);
