@@ -36,6 +36,11 @@ public final class TaskScope implements AutoCloseable {
             // Reservation linearizes against seal/cancel. Keep the monitor
             // free of scheduler dispatch: runtime-owned schedulers may run a
             // complete guest turn synchronously during TaskHandle.start().
+            // Never wrap the signed join-slot counter: a negative count
+            // could break the quiescence witness and scope accounting.
+            if (active == Integer.MAX_VALUE) {
+                throw new RejectedExecutionException("TaskScope child count exhausted");
+            }
             active++;
         }
         final TaskHandle<T> child;
