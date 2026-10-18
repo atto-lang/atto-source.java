@@ -629,3 +629,18 @@ is a prerequisite for any cross-organization private source mirroring.
 Alternate private destination's previously successful synthetic workflows
 are *not* evidence of compilation; recent checked destination jobs also
 failed with zero recorded steps. No source transfer was performed.
+
+
+## Value-match cleanup/return hardening
+
+`ReturnCleanupChecker` must traverse each value-producing `MatchExpr`
+subject, pattern-scoped arm guard, and selected arm value, including nested
+matches. An assignment hidden in a deferred match is still a deferred
+reassignment of the returned binding and must fail the same check as a direct
+assignment. Pattern-local shadowing must not be mistaken for reassignment of
+the outer binding. Unlowered staged named/omitted calls and unreviewed AST
+expression variants fail closed instead of silently skipping cleanup checks.
+
+The checker regression methods establish expected safety behavior in source.
+They do **not** prove actual Maven/JUnit, compiler or runtime execution until
+an executing CI runner validates the exact Git tree.
