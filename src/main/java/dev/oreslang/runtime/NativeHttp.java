@@ -1041,9 +1041,15 @@ public final class NativeHttp implements AutoCloseable {
         RuntimeException first = null;
         for (T state : accepted) {
             try { abort.accept(state); }
-            catch (RuntimeException failure) {
-                if (first == null) first = failure;
-                else if (first != failure) first.addSuppressed(failure);
+            catch (RuntimeException | Error failure) {
+                // A failed host callback must not strand later accepted HTTP
+                // states. Preserve non-runtime Errors as the cause of a
+                // terminal failure; never convert failed abort into success.
+                RuntimeException reported = failure instanceof RuntimeException runtime
+                        ? runtime
+                        : new IllegalStateException("HTTP accepted-state cleanup failed", failure);
+                if (first == null) first = reported;
+                else if (first != reported) first.addSuppressed(reported);
             }
         }
         return first;
