@@ -258,6 +258,15 @@ public final class CheckedScalarInvocationWitness {
     private static void requireDistinctFormals(List<Ast.Param> formals, String owner) {
         java.util.Set<String> names = new java.util.HashSet<>();
         for (Ast.Param formal : formals) {
+            // In Oreslang, constructor self is a special receiver binder,
+            // never an ordinary guest value slot. The public AST permits
+            // synthesizing a module-function formal named self without using
+            // the parser, so the narrow preview must fail closed rather than
+            // pretend that it has verified receiver erasure and ABI arity.
+            if ("self".equals(formal.name())) {
+                throw new IllegalArgumentException(
+                        owner + " cannot use constructor self as an ordinary scalar formal");
+            }
             if (!names.add(formal.name())) {
                 throw new IllegalArgumentException(
                         owner + " has duplicate formal '" + formal.name()
