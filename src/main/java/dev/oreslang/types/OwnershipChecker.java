@@ -3508,11 +3508,12 @@ public final class OwnershipChecker {
         }
         if (concrete.isTupleType()) {
             List<Ast.TypeRef> slots = concrete.arguments();
-            if (site.index() instanceof Ast.LiteralExpr literal
-                    && literal.value() instanceof Long index) {
-                return index < 0 || index >= slots.size()
-                        ? Ast.TypeRef.inferred() : slots.get(index.intValue());
+            Integer constant = Ast.CheckedIndexKeys.knownTupleSlot(site);
+            if (constant != null) {
+                return constant >= slots.size()
+                        ? Ast.TypeRef.inferred() : slots.get(constant);
             }
+            // Unproven integer expression may select *any* tuple field.
             return closedIndexedAlternatives(slots);
         }
         Ast.ClassDecl klass = findClass(concrete.name());
