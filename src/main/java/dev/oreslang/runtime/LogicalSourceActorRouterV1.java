@@ -794,11 +794,15 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
 
     private static void requireBlockingHostSurface(String operation) {
         if (ActorRuntime.inActorExecution()
-                || OresScheduler.current() != null) {
+                || OresScheduler.current() != null
+                || OresScheduler.isSchedulerCarrierThread()
+                || AsyncRuntime.isAsyncCarrierThread()) {
+            // Terminal/scheduler callbacks may have no active CURRENT task,
+            // but still run on a guest carrier that must never block here.
             throw new SecurityException(
                     operation
                             + " is a host/supervisor blocking operation; "
-                            + "actor/scheduler turns require nonblocking routing");
+                            + "actor/scheduler/async carriers require nonblocking routing");
         }
     }
 
