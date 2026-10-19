@@ -1662,14 +1662,16 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         synchronized (closeLock) {
             final ActorRuntime.SourceActorTransfer owned;
             synchronized (routeLock) {
-                owned = pendingRollbackTransfer;
-                // No rollback owner does NOT imply the separate
-                // postpublication retirement quarantine has cleared.
-                if (owned == null) return !retirementQuarantined;
+                // An absent failed-rollback owner must never turn a live
+                // supervisor publication into a false reconciliation success.
                 if (activeUpgradeTxn != null) {
                     throw new IllegalStateException(
                             "cannot reconcile rollback during an active publication");
                 }
+                owned = pendingRollbackTransfer;
+                // No rollback owner does NOT imply the separate
+                // postpublication retirement quarantine has cleared.
+                if (owned == null) return !retirementQuarantined;
             }
             // No route monitor during bounded candidate stop/join. Retained
             // retirementQuarantined still rejects physical sends and Tasks.
