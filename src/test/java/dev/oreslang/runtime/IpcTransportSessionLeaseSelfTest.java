@@ -43,6 +43,83 @@ public final class IpcTransportSessionLeaseSelfTest {
     }
 
     public static void main(String[] ignored) throws Exception {
+        // Defense in depth: package-local lease APIs themselves enforce the
+        // actor-carrier blocking boundary. This prevents future adapters from
+        // bypassing IpcAuthenticatedSocketTransport's outer guard.
+        {
+            var guardedBridge = new IpcReceiptCompletionBridge(1);
+            var guardedMessage = message(1, "guarded");
+            Object guardedOwner = new Object();
+            guardedBridge.claimPhysicalTransport(guardedOwner, guardedMessage, 80);
+            AtomicInteger guardedWrites = new AtomicInteger();
+            var guardedLease = new IpcTransportSessionLease(
+                    guardedMessage, 80, 1, guardedBridge, guardedOwner,
+                    (value, preparedFrame) -> guardedWrites.incrementAndGet(),
+                    () -> { },
+                    IpcTransportSessionLeaseSelfTest::offCallerCleanup);
+
+            RuntimeBlockingGuard.enterActorCarrier();
+            try {
+                deny(() -> {
+                    try {
+                        guardedLease.sendPreparedFrame(
+                                80, guardedMessage, new byte[] { 1 });
+                    } catch (IOException impossibleBeforeGuard) {
+                        throw new AssertionError(impossibleBeforeGuard);
+                    }
+                });
+                deny(() -> {
+                    try {
+                        guardedLease.awaitTerminal(1);
+                    } catch (InterruptedException impossibleBeforeGuard) {
+                        throw new AssertionError(impossibleBeforeGuard);
+                    }
+                });
+            } finally {
+                RuntimeBlockingGuard.exitActorCarrier();
+            }
+            check(guardedWrites.get() == 0);
+            check(guardedBridge.counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 0)));
+            check(guardedLease.snapshot().phase() == IpcTransportSessionLease.Phase.OPEN);
+            guardedLease.requestClose();
+            check(guardedLease.awaitTerminal(3000));
+            check(guardedBridge.invariant());
+        }
+
+        {
+            var guardedBridge = new IpcReceiptCompletionBridge(1);
+            var guardedMessage = message(1, "guardedLegacy");
+            var guardedOutcome = guardedBridge.admit(guardedMessage);
+            AtomicInteger guardedWrites = new AtomicInteger();
+            var guardedLease = new IpcTransportSessionLease(
+                    guardedMessage, 801, 1, guardedBridge,
+                    (value, preparedFrame) -> guardedWrites.incrementAndGet(),
+                    () -> { },
+                    IpcTransportSessionLeaseSelfTest::offCallerCleanup);
+
+            RuntimeBlockingGuard.enterActorCarrier();
+            try {
+                deny(() -> {
+                    try {
+                        guardedLease.writeFrame(
+                                801, guardedMessage, new byte[] { 1 });
+                    } catch (IOException impossibleBeforeGuard) {
+                        throw new AssertionError(impossibleBeforeGuard);
+                    }
+                });
+            } finally {
+                RuntimeBlockingGuard.exitActorCarrier();
+            }
+            check(guardedWrites.get() == 0);
+            guardedBridge.rejectBeforeRemote(guardedMessage);
+            check(guardedOutcome.toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
+            guardedLease.requestClose();
+            check(guardedLease.awaitTerminal(3000));
+            check(guardedBridge.invariant());
+        }
+
         var bridge = new IpcReceiptCompletionBridge(2);
         var frame = message(1, "session");
         var done = bridge.admit(frame);
