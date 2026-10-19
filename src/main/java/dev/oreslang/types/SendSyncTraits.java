@@ -140,8 +140,19 @@ public final class SendSyncTraits {
                     Traits inner = derive(args.getFirst(), substitutions, active);
                     return inner.send() && inner.sync() ? Traits.BOTH : Traits.NONE;
                 }
+                // A guest class with the same spelling cannot impersonate a
+                // runtime authority. None of these have a complete worker-
+                // transfer ABI or a compiler-verified actor/domain fence yet.
                 case "Rc", "MutexGuard", "RwLockGuard", "ActorState", "RawPointer",
-                        "ThreadLocal", "NativeHandle", "FfiHandle", "ExecutionPermit" -> {
+                        "Pointer", "OresPointer", "ThreadLocal", "ThreadBound",
+                        "NativeHandle", "FfiHandle", "ExecutionPermit",
+                        "ActorRef", "ActorMail", "ActorOutput", "ActorOutputStream",
+                        "ActorGroup", "Supervisor", "ActorContext",
+                        "Task", "Future", "Channel",
+                        "ReadLoan", "WriteLoan", "PartitionLoan", "BorrowGuard",
+                        "SelectCase", "SelectSet", "SelectResult",
+                        "Iterator", "AsyncIterator", "TcpConnection",
+                        "HttpExchange", "HttpServer", "HttpHandler" -> {
                     return Traits.NONE;
                 }
                 case "Cell", "RefCell" -> {
