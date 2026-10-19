@@ -6308,12 +6308,18 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                         behavior = created;
                     }
+                    // Select the startup outcome while holding lifecycleLock
+                    // but notify Future observers after releasing it. The
+                    // physical actor turn is still active, so finalization
+                    // cannot overtake this readiness publication.
+                    boolean startupFenced;
                     synchronized (lifecycleLock) {
-                        if (stopped.get() || forceKillFenced) {
-                            ref.readyFuture.failFromRuntime(terminated(ref));
-                        } else {
-                            ref.readyFuture.completeFromRuntime(null);
-                        }
+                        startupFenced = stopped.get() || forceKillFenced;
+                    }
+                    if (startupFenced) {
+                        ref.readyFuture.failFromRuntime(terminated(ref));
+                    } else {
+                        ref.readyFuture.completeFromRuntime(null);
                     }
                 }
 
