@@ -362,3 +362,39 @@ No private cross-organization source mirror was made: the protected source
 authorization and immutable numeric-destination approval mandated by
 security issue #962 remain unresolved and the source main destination allowlist
 is empty. Keep the hot-reload PR draft and production support disabled.
+
+## Supervisor source-image publication witness — October 19, 2026
+
+The live SHARED proxy/router now has a **single coherent host/supervisor
+observation of code and transport identity**. The package-private
+`LogicalSourceActorRouterV1.SupervisorPublication` snapshots the stable
+logical identity and route epoch, the actual physical ActorAddress, the
+immutable source Generation ID and SHA-256 digest, and the bounded mailbox
+snapshot **while holding routeLock -> mailbox lock**. It rejects unbound or
+foreign mailboxes and closed routers. The bridge's `publication()` obtains
+that one witness under its existing dispatchLock and exposes the code
+Generation ID/digest alongside the logical address/mailbox epoch.
+
+This prevents an observer of the bridge's publication record from combining
+the successor's route epoch with the predecessor's source-image digest. It
+does not depend on separately reading mutable `router.generation()` and
+`router.ref().address()`, which could span different upgrade instants.
+
+`LogicalSourceActorImagePublicationTest` adds a real source-compiled
+Counter V1/V2 upgrade with a simultaneous publication observer checking
+that epoch 1 always identifies the V1 Generation ID/digest and epoch 2 always
+identifies V2, while queued mail and actor state survive the change.
+A second test ensures a foreign mailbox cannot obtain the host's physical
+actor/code-image observation.
+
+**Safety boundary:** this is an *observation witness*, not a complete
+compiler-owned publication transaction, artifact-signature attestation, or
+proof that a bytecode/native code image is safe to unload. The compiler
+TaskScope, checkpoint schema receipts, native/FFI callbacks, and code-image
+retirement still require one CONTROL-owned commit/lease barrier. A new
+reader-facing source digest does not authorize PRIVATE/UNTRUSTED migration.
+
+No exact-head JDK25/Graal Maven tests were executed: source GitHub Actions
+continue to fail without recorded runner steps. The approved private CI
+destination list on source main remains empty and issue #962 is open. No
+cross-organization private source copy was performed. Keep #1367 DRAFT.
