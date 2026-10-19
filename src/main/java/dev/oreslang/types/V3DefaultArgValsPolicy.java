@@ -4,7 +4,7 @@ import dev.oreslang.ast.Ast;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
- import java.util.List;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -79,7 +79,9 @@ public final class V3DefaultArgValsPolicy {
                 }
                 defaults.put(param.name(), DefaultArgumentPolicy.stagedLiteralFromAst(param));
             }
-            Ast.TypeRef bodyType = param.type();
+            // Preview type only: a staged '?' marker must remain in the source
+            // AST and cannot masquerade as a nominally resolved Option<T>.
+            Ast.TypeRef bodyType = param.type().stagedV3PreviewType();
             boolean option = bodyType.name().equals("Option") && bodyType.arguments().size() == 1
                     && !bodyType.inferArguments();
             boolean declaredDefault = defaults.containsKey(param.name());
