@@ -24,6 +24,31 @@ final class ConcurrencyTestCommandTest {
     }
 
     @Test
+    void rejectsAllSkippedOrZeroPassingTests() {
+        assertFalse(ConcurrencyTestCommand.validNativeSuiteSummary(
+                "ORES_TEST|SKIP|suite/skipped|\\n"
+                + "ORES_TEST|SUMMARY|total=1|passed=0|failed=0|skipped=1|filtered=0\\n"));
+        assertFalse(ConcurrencyTestCommand.validNativeSuiteSummary(
+                "ORES_TEST|SUMMARY|total=0|passed=0|failed=0|skipped=0|filtered=0\\n"));
+        assertFalse(ConcurrencyTestCommand.validNativeSuiteSummary(
+                "ORES_TEST|PASS|suite/case|\\n"
+                + "ORES_TEST|SUMMARY|total=2|passed=2|failed=0|skipped=0|filtered=0\\n"));
+        assertTrue(ConcurrencyTestCommand.validNativeSuiteSummary(
+                "ORES_TEST|PASS|suite/case|\\n"
+                + "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=0\\n"));
+    }
+
+    @Test
+    void rejectsMultiIterationTraceOverwriteAndSourceClobber() throws Exception {
+        assertEquals(2, ConcurrencyTestCommand.run(new String[]{
+                "examples/native-testing.ores", "--iterations=3",
+                "--trace-output=" + tmp.resolve("overwritten.trace")}));
+        assertEquals(2, ConcurrencyTestCommand.run(new String[]{
+                "examples/native-testing.ores",
+                "--trace-output=examples/native-testing.ores"}));
+    }
+
+    @Test
     void nativeSuiteRunsThroughNewCliWithTraceReplay() throws Exception {
         Path trace = tmp.resolve("suite.trace");
         assertEquals(0, ConcurrencyTestCommand.run(new String[]{
