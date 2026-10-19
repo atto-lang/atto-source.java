@@ -71,6 +71,41 @@ final class LogicalActorProxyMailboxV1Test {
     }
 
     @Test
+    void failedQueueAllocationDoesNotConsumeSequenceOrCapacity() {
+        class FailOnceQueue extends java.util.ArrayDeque<
+                LogicalActorProxyMailboxV1.Envelope> {
+            private boolean failed;
+            @Override
+            public void addLast(LogicalActorProxyMailboxV1.Envelope envelope) {
+                if (!failed) {
+                    failed = true;
+                    throw new OutOfMemoryError("injected deque expansion failure");
+                }
+                super.addLast(envelope);
+            }
+        }
+        try (var mailbox = new LogicalActorProxyMailboxV1(
+                2, 16, 32, new FailOnceQueue())) {
+            var before = mailbox.snapshot();
+            assertThrows(OutOfMemoryError.class,
+                    () -> mailbox.admit(bytes("first")));
+            assertEquals(before, mailbox.snapshot(),
+                    "failed insertion may not consume an admission sequence or credit");
+
+            var first = mailbox.admit(bytes("first"));
+            assertEquals(1L, first.messageSequence());
+            var second = mailbox.admit(bytes("second"));
+            assertEquals(2L, second.messageSequence());
+            assertEquals(1L, mailbox.pollDispatch().messageSequence());
+            assertEquals(2L, mailbox.pollDispatch().messageSequence());
+            mailbox.complete(2L);
+            mailbox.complete(1L);
+            assertEquals(2L, mailbox.snapshot().completionWatermark());
+            assertEquals(0, mailbox.snapshot().retainedMessages());
+        }
+    }
+
+    @Test
     void transportRejectionRequeuesLatestUnsentWithoutRefundingCredits() {
         try (var mailbox = new LogicalActorProxyMailboxV1(2, 16, 32)) {
             var first = mailbox.admit(bytes("first"));
