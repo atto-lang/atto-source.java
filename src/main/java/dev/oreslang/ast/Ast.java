@@ -1160,6 +1160,23 @@ public final class Ast {
             if (kind != ObjectKind.EXPLICIT_STRUCT && !declaredFields.isEmpty()) {
                 throw new IllegalArgumentException("only explicit structs may carry a declared field shape");
             }
+            // Direct AST builders and post-parse transforms are equally trusted
+            // by codegen. Prevent ambiguous or overwritten field identities at
+            // construction, not merely during parser/type-checker traversal.
+            java.util.Set<String> fieldNames = new java.util.HashSet<>();
+            for (ObjectField field : fields) {
+                if (!fieldNames.add(field.name())) {
+                    throw new IllegalArgumentException("duplicate struct field '" + field.name() + "'");
+                }
+            }
+            java.util.Set<String> declaredNames = new java.util.HashSet<>();
+            for (StructFieldSpec field : declaredFields) {
+                if (!declaredNames.add(field.name())) {
+                    throw new IllegalArgumentException("duplicate struct field declaration '" + field.name() + "'");
+                }
+            }
+            // Repetition across the two sets is intentional: an explicit
+            // initializer supplies the value of a declared field.
         }
         public ObjectExpr(List<ObjectField> fields) {
             this(fields, ObjectKind.INFERRED_STRUCT, List.of());
