@@ -1619,7 +1619,7 @@ public final class Parser {
                 || type.inferArguments()) {
             throw error(previous(), "'T?' requires a concrete owned value type, not void/borrow/inference");
         }
-        return new Ast.TypeRef("Option", List.of(type), false);
+        return Ast.TypeRef.stagedV3Option(type);
     }
 
     private Ast.TypeRef parseTypeAtom() {
