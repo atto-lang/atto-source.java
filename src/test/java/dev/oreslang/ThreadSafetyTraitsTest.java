@@ -106,8 +106,8 @@ final class ThreadSafetyTraitsTest {
                 """)));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define actor Receiver as
-                  receive(ActorMail<Channel<int>> mail) {
-                    mail.done();
+                  receive(ActorMail<Channel<int>> mail): void {
+                    return;
                   }
                 end
                 """)));
