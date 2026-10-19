@@ -13,6 +13,26 @@ final class LogicalActorUpgradeCoordinatorV1Test {
         return value.getBytes(StandardCharsets.UTF_8);
     }
 
+    private static Object mailboxMonitor(LogicalActorProxyMailboxV1 mailbox)
+            throws Exception {
+        var field = LogicalActorProxyMailboxV1.class.getDeclaredField("lock");
+        field.setAccessible(true);
+        return field.get(mailbox);
+    }
+
+    private static void awaitBlocked(Thread thread, String message)
+            throws InterruptedException {
+        long deadline = System.nanoTime()
+                + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        while (thread.isAlive()
+                && thread.getState() != Thread.State.BLOCKED
+                && System.nanoTime() < deadline) {
+            Thread.sleep(1L);
+        }
+        assertTrue(thread.isAlive() && thread.getState() == Thread.State.BLOCKED,
+                message + " (state=" + thread.getState() + ")");
+    }
+
     @Test
     void cleanCloseRevokesCoordinatorWithoutClosingUnderlyingActorOrMailbox() {
         try (var gate = new ActorUpgradeEpochGate(35, image('a'));
@@ -192,6 +212,84 @@ final class LogicalActorUpgradeCoordinatorV1Test {
         gate.close();
     }
 
+
+    @Test
+    void codeGateRetiredBeforePrepareLeavesMailboxFrozenAndCoordinatorQuarantined() {
+        var gate = new ActorUpgradeEpochGate(211, image('a'));
+        var proxy = new LogicalActorProxyMailboxV1(4, 64, 256);
+        var coordinator = new LogicalActorUpgradeCoordinatorV1(gate, proxy);
+        gate.close();
+        proxy.admit(bytes("must-not-dispatch"));
+        assertThrows(IllegalStateException.class,
+                () -> coordinator.prepare(image('b')));
+        assertTrue(coordinator.quarantined());
+        assertTrue(proxy.snapshot().dispatchFrozen(),
+                "retired code authority must never be followed by old-route thaw");
+        assertEquals(1, proxy.snapshot().queuedMessages());
+        assertNull(proxy.pollDispatch(),
+                "quarantine preserves accepted bytes without dispatching retired code");
+        assertThrows(IllegalStateException.class, coordinator::close);
+        proxy.close();
+    }
+
+    @Test
+    void codeGateCloseCannotInterleaveWithPreparationEpochCheckAndFreeze()
+            throws Exception {
+        var gate = new ActorUpgradeEpochGate(212, image('a'));
+        var proxy = new LogicalActorProxyMailboxV1(4, 64, 256);
+        var coordinator = new LogicalActorUpgradeCoordinatorV1(gate, proxy);
+        var prepared =
+                new java.util.concurrent.atomic.AtomicReference<
+                        LogicalActorUpgradeCoordinatorV1.Transaction>();
+        var prepareFailure =
+                new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var closeFailure =
+                new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread preparer;
+        Thread closer;
+
+        // Hold the mailbox monitor so prepare reaches its cross-ledger
+        // observation while the code-gate monitor is still held. A concurrent
+        // close must block on that gate monitor, not retire code in between
+        // the epoch check and dispatch freeze.
+        synchronized (mailboxMonitor(proxy)) {
+            preparer = Thread.ofPlatform().start(() -> {
+                try {
+                    prepared.set(coordinator.prepare(image('b')));
+                } catch (Throwable failure) {
+                    prepareFailure.set(failure);
+                }
+            });
+            awaitBlocked(preparer,
+                    "prepare must block on the mailbox while owning code authority");
+
+            closer = Thread.ofPlatform().start(() -> {
+                try {
+                    gate.close();
+                } catch (Throwable failure) {
+                    closeFailure.set(failure);
+                }
+            });
+            awaitBlocked(closer,
+                    "code-gate close must serialize behind preparation");
+        }
+
+        preparer.join(5000);
+        closer.join(5000);
+        assertFalse(preparer.isAlive() || closer.isAlive());
+        assertNull(prepareFailure.get());
+        assertNull(closeFailure.get());
+        var transaction = prepared.get();
+        assertNotNull(transaction);
+        assertTrue(proxy.snapshot().dispatchFrozen());
+
+        // Close wins only after prepare has established the freeze/candidate.
+        // Resolving that now-retired candidate must quarantine, never thaw.
+        assertThrows(IllegalStateException.class, transaction::rollback);
+        assertTrue(coordinator.quarantined());
+        assertTrue(proxy.snapshot().dispatchFrozen());
+        proxy.close();
+    }
 
     @Test
     void closedCodeGateDuringPublicationQuarantinesInsteadOfThawingOldRoute() {
