@@ -8302,7 +8302,7 @@ public final class TypeChecker {
             }
             return ref.isStructType()
                     ? Record.struct(members)
-                    : new Record(members, ref.isReadonlyRecordType(), AggregateKind.RECORD);
+                    : new Record(members, true, AggregateKind.RECORD);
         }
         if (generics.contains(ref.name())) {
             if (!ref.arguments().isEmpty() || ref.inferArguments()) {
