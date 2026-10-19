@@ -28,9 +28,12 @@ final class ThreadSafetyTraitsTest {
         for (Trait trait : Trait.values()) {
             assertTrue(has(Types.Primitive.INT, trait));
             assertTrue(has(Types.Primitive.STRING, trait));
-            assertTrue(has(frozen, trait));
-            assertTrue(has(new Types.Named("Option", List.of(frozen)), trait));
-            assertTrue(has(new Types.Named("Result", List.of(frozen, Types.Primitive.STRING)), trait));
+            // The view's readOnly capability is not deep-freeze evidence.
+            boolean expected = trait == Trait.SEND;
+            assertEquals(expected, has(frozen, trait));
+            assertEquals(expected, has(new Types.Named("Option", List.of(frozen)), trait));
+            assertEquals(expected,
+                    has(new Types.Named("Result", List.of(frozen, Types.Primitive.STRING)), trait));
             assertTrue(has(new Types.Union(List.of(Types.Primitive.INT, Types.Primitive.STRING)), trait));
             assertFalse(has(Types.Primitive.VOID, trait));
         }
@@ -65,8 +68,31 @@ final class ThreadSafetyTraitsTest {
                 (type, trait) -> type.name().equals("SyncOnly") && trait == Trait.SYNC;
         assertFalse(ThreadSafetyTraits.has(new Types.ListType(syncOnly), Trait.SYNC, proof));
         assertFalse(ThreadSafetyTraits.has(new Types.Record(Map.of("x", syncOnly)), Trait.SYNC, proof));
-        assertTrue(ThreadSafetyTraits.has(
+        assertFalse(ThreadSafetyTraits.has(
                 new Types.Record(Map.of("x", syncOnly), true), Trait.SYNC, proof));
+    }
+
+    @Test
+    void readonlyViewIsNotADeepFreezeOrAliasExclusivityProof() {
+        Type mutableOwner = new Types.Record(Map.of("counter", Types.Primitive.INT));
+        // The checker can overlay readOnly onto a view without revoking the
+        // mutable owner's authority; sharing that view across threads is unsafe.
+        Type readonlyView = new Types.Record(Map.of("counter", Types.Primitive.INT), true);
+        assertTrue(has(mutableOwner, Trait.SEND));
+        assertTrue(has(readonlyView, Trait.SEND));
+        assertFalse(has(mutableOwner, Trait.SYNC));
+        assertFalse(has(readonlyView, Trait.SYNC));
+        assertFalse(has(new Types.Borrow(readonlyView, false), Trait.SEND));
+        assertFalse(has(new Types.Borrow(readonlyView, true), Trait.SYNC));
+        for (Type wrapper : List.of(
+                new Types.Named("Option", List.of(readonlyView)),
+                new Types.Named("Result", List.of(readonlyView, Types.Primitive.INT)),
+                new Types.Tuple(List.of(readonlyView)),
+                new Types.Union(List.of(readonlyView, Types.Primitive.STRING)))) {
+            assertTrue(has(wrapper, Trait.SEND));
+            assertFalse(has(wrapper, Trait.SYNC),
+                    "readonly alias illegally became transitively Sync: " + wrapper);
+        }
     }
 
     @Test
