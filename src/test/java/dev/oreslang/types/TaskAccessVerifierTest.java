@@ -295,6 +295,22 @@ final class TaskAccessVerifierTest {
         assertFalse(verifier.parentMayAccess(read(owner)));
     }
 
+    @Test void closingScopeRevokesAllParentAuthorityAndRetiresProvenance() {
+        var verifier = new TaskAccessVerifier();
+        var place = TaskAccessVerifier.Place.whole(WORLD);
+        var ticket = verifier.admit(List.of(read(place)));
+        verifier.quiescent(ticket);
+        assertTrue(verifier.parentMayAccess(write(place)));
+        verifier.finishScope();
+        assertFalse(verifier.parentMayAccess(read(place)));
+        assertFalse(verifier.parentMayAccess(write(place)));
+        assertEquals(0, verifier.activeChildren());
+        assertThrows(IllegalStateException.class,
+                () -> verifier.admit(List.of(read(place))));
+        assertThrows(IllegalStateException.class,
+                () -> verifier.structuralBarrier(WORLD, 2));
+    }
+
     @Test void admissionCapacityErrorsAreAtomic() {
         var verifier = new TaskAccessVerifier();
         var requested = java.util.Collections.nCopies(
