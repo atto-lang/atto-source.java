@@ -657,6 +657,49 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void schedulerTerminalCarrierCannotBlockOnProxyEpochOrAdmissionMonitors()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit());
+             OresScheduler scheduler = new OresScheduler(1)) {
+            var first = manager.stageActorGeneration("terminal-guard-v1.ores", V1);
+            try (var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
+                    first, "Counter", WAIT, 2, 8, 16)) {
+                var exited = new java.util.concurrent.CountDownLatch(1);
+                var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                var task = scheduler.start(
+                        resume -> OresScheduler.done(1),
+                        () -> {
+                            try {
+                                assertNull(OresScheduler.current(),
+                                        "the terminal hook is not a guest Task turn");
+                                assertTrue(OresScheduler.isSchedulerCarrierThread(),
+                                        "the callback still runs on a guest carrier");
+                                assertThrows(SecurityException.class, bridge::address);
+                                assertThrows(SecurityException.class, bridge::snapshot);
+                                assertThrows(SecurityException.class, bridge::publication);
+                                assertThrows(SecurityException.class,
+                                        bridge::routeEpochsAlignedForTesting);
+                                assertThrows(SecurityException.class,
+                                        () -> bridge.admitLong(1L));
+                            } catch (Throwable unexpected) {
+                                failure.set(unexpected);
+                            } finally {
+                                exited.countDown();
+                            }
+                        });
+                assertEquals(1, task.get(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertTrue(exited.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertNull(failure.get(), "terminal carrier must fail before any proxy locks");
+                assertFalse(bridge.failSealed());
+                assertEquals(1L, bridge.publication().address().routeEpoch(),
+                        "ordinary host observations remain usable");
+                assertEquals(0, bridge.snapshot().retainedMessages());
+            }
+        }
+    }
+
+    @Test
     void closingCannotSilentlyDropAcceptedQueuedActorMail() throws Exception {
         try (HotReloadManager manager =
                      new HotReloadManager(IsolatePolicy.developer(),
