@@ -1178,6 +1178,23 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             ValueInfo receiver = checkExpr(indexed.receiver(), scope, false);
             checkExpr(indexed.index(), scope, false);
+            Ast.TypeRef concreteReceiver = receiverType(indexed.receiver(), scope);
+            if (concreteReceiver == null) concreteReceiver = receiver.type;
+            Ast.TypeRef projected = closedIndexedFieldType(indexed, concreteReceiver);
+            if (projected != null) {
+                // A computed key can select any permitted field. Without
+                // projection-level move tracking, reading an affine field can
+                // duplicate the same owned value. In particular, a protected
+                // MutexGuard must not be used to extract owned state by index.
+                // Fail closed for non-Copy field projections until precise
+                // indexed move/loan tracking is implemented.
+                if (!isCopyType(projected)) {
+                    throw error("indexed struct/class/tuple field read requires "
+                            + "Copy-compatible fields; use an explicit checked "
+                            + "borrow or ownership transfer for move-only values");
+                }
+                return new ValueInfo(projected, ValueKind.COPY, null);
+            }
             Ast.TypeRef elementType = collectionElementType(receiver.type);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
             if (consuming && isRootedAtActorSelf(indexed.receiver(), scope) && elementKind != ValueKind.COPY) {
@@ -3457,6 +3474,73 @@ public final class OwnershipChecker {
                             Origin.CAPTURE));
         }
         return continuation;
+    }
+
+    /**
+     * Resolve the ownership effect of a closed indexed projection. The type
+     * checker separately proves key-domain, visibility and result typing;
+     * this checker must prove that no runtime-selected field can be moved out
+     * by a repeatable read. Return null only for regular array/list indexing.
+     */
+    private Ast.TypeRef closedIndexedFieldType(Ast.IndexExpr site, Ast.TypeRef receiverType) {
+        if (receiverType == null) return null;
+        Ast.TypeRef concrete = receiverType;
+        if (concrete.isBorrow()) concrete = concrete.borrowedTarget();
+        if (isMutexGuardType(concrete)) concrete = concrete.arguments().getFirst();
+        if (concrete.isRecordType()) {
+            Map<String, Ast.TypeRef> members = concrete.recordMembers();
+            if (site.index() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof String key) {
+                Ast.TypeRef selected = members.get(key);
+                return selected == null ? Ast.TypeRef.inferred() : selected;
+            }
+            return closedIndexedAlternatives(members.values());
+        }
+        if (concrete.isTupleType()) {
+            List<Ast.TypeRef> slots = concrete.arguments();
+            if (site.index() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof Long index) {
+                return index < 0 || index >= slots.size()
+                        ? Ast.TypeRef.inferred() : slots.get(index.intValue());
+            }
+            return closedIndexedAlternatives(slots);
+        }
+        Ast.ClassDecl klass = findClass(concrete.name());
+        if (klass != null) {
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                throw error("actor class state cannot be accessed by indexing");
+            }
+            List<ResolvedField> allFields =
+                    effectiveFieldTargets(klass, concrete, new LinkedHashSet<>());
+            if (site.index() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof String key) {
+                for (ResolvedField field : allFields) {
+                    if (!field.field().name().equals(key)) continue;
+                    return substituteType(ownershipFieldType(field.field()),
+                            genericBindings(field.owner().genericParameters(),
+                                    field.ownerType().arguments()));
+                }
+                return Ast.TypeRef.inferred();
+            }
+            List<Ast.TypeRef> alternatives = new ArrayList<>(allFields.size());
+            for (ResolvedField field : allFields) {
+                alternatives.add(substituteType(ownershipFieldType(field.field()),
+                        genericBindings(field.owner().genericParameters(),
+                                field.ownerType().arguments())));
+            }
+            return closedIndexedAlternatives(alternatives);
+        }
+        return null;
+    }
+
+    private Ast.TypeRef closedIndexedAlternatives(
+            java.util.Collection<Ast.TypeRef> alternatives) {
+        if (alternatives.isEmpty()) return Ast.TypeRef.inferred();
+        Ast.TypeRef first = alternatives.iterator().next();
+        if (first == null || alternatives.stream().anyMatch(type -> type == null
+                || type.name().equals("$infer$"))) return Ast.TypeRef.inferred();
+        if (alternatives.stream().allMatch(first::equals)) return first;
+        return Ast.TypeRef.union(List.copyOf(alternatives));
     }
 
     private Ast.TypeRef collectionElementType(Ast.TypeRef type) {
