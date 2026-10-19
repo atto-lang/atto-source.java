@@ -70,4 +70,45 @@ final class TaskRegionPhysicalExitBridgeTest {
                 assertEquals(i < 128 ? 11 : 22, data[i]);
         }
     }
+    @Test
+    void failedChildStillReleasesRegionOnlyAfterPhysicalExit() throws Exception {
+        var ledger = new TaskRegionTestLedger();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch allowExit = new CountDownLatch(1);
+        AtomicInteger retired = new AtomicInteger();
+
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(2);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            var failed = scope.startCompilerFrame(scheduler, resume -> {
+                entered.countDown();
+                assertTrue(allowExit.await(5, TimeUnit.SECONDS));
+                throw new IllegalStateException("intentional Task failure");
+            }, () -> {
+                ledger.physicalExitLeft();
+                retired.incrementAndGet();
+            });
+            var sibling = scope.startCompilerFrame(scheduler, resume ->
+                    new OresScheduler.Done<>(1), () -> {
+                ledger.physicalExitRight();
+                retired.incrementAndGet();
+            });
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertFalse(ledger.parentCanWrite());
+                ledger.verifyPrematureFinishRejected();
+            } finally {
+                allowExit.countDown();
+            }
+            assertThrows(IllegalStateException.class,
+                    () -> AsyncRuntime.await(failed.getAwaited()));
+            assertNull(AsyncRuntime.await(failed.getDone()));
+            assertNull(AsyncRuntime.await(sibling.getDone()));
+            assertEquals(2, retired.get());
+            assertEquals(0, ledger.activeChildren());
+            assertTrue(ledger.parentCanWrite());
+            ledger.finishScope();
+        }
+    }
+
 }
