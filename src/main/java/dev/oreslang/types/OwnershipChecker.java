@@ -39,9 +39,11 @@ public final class OwnershipChecker {
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    private final Set<String> ambiguousTypeAliases = new HashSet<>();
     /** Only bindings admitted as new short aliases by the type checker. */
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
     private int mutexCriticalSectionDepth;
@@ -114,6 +116,9 @@ public final class OwnershipChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
+                }
             }
         }
     }
@@ -3592,11 +3597,49 @@ public final class OwnershipChecker {
         return null;
     }
 
+    /**
+     * Resolve only declared aliases needed to classify an indexed projection.
+     * TypeChecker has already validated alias arity/cycles; this independent
+     * ownership pass still expands the same shape so copy-vs-move decisions
+     * cannot depend on whether a structural product was spelled inline or by
+     * a generic alias such as Entry<string,int>.
+     */
+    private Ast.TypeRef expandIndexedTypeAlias(Ast.TypeRef type, Set<Ast.TypeAliasDecl> seen) {
+        if (type == null) return Ast.TypeRef.inferred();
+        Ast.TypeAliasDecl alias = findOwnershipTypeAlias(type.name());
+        if (alias == null) return type;
+        if (!seen.add(alias)) {
+            throw error("type alias cycle involving '" + alias.name() + "' during indexed ownership analysis");
+        }
+        try {
+            if (alias.genericParameters().size() != type.arguments().size()) {
+                throw error("type alias '" + alias.name() + "' expects "
+                        + alias.genericParameters().size() + " type argument(s), got "
+                        + type.arguments().size());
+            }
+            Map<String, Ast.TypeRef> bindings = new HashMap<>();
+            for (int i = 0; i < alias.genericParameters().size(); i++) {
+                bindings.put(alias.genericParameters().get(i), type.arguments().get(i));
+            }
+            return expandIndexedTypeAlias(substituteType(alias.target(), bindings), seen);
+        } finally {
+            seen.remove(alias);
+        }
+    }
+
+    private Ast.TypeAliasDecl findOwnershipTypeAlias(String name) {
+        if (ambiguousTypeAliases.contains(name)) {
+            throw error("ambiguous type alias '" + name + "'; qualify it with its module");
+        }
+        return typeAliases.get(name);
+    }
+
     private Ast.TypeRef indexedElementType(
             Ast.IndexExpr indexed, Ast.TypeRef receiverType, Scope scope) {
         if (receiverType == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = receiverType.isBorrow()
                 ? receiverType.borrowedTarget() : receiverType;
+        concrete = expandIndexedTypeAlias(concrete, new HashSet<>());
 
         if (concrete.isClosedAggregateType()) {
             Map<String, Ast.TypeRef> members = concrete.aggregateMembers();
