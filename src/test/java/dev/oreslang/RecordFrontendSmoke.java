@@ -20,7 +20,7 @@ public final class RecordFrontendSmoke {
         accepted("""
                 fnc read(): string {
                     const Person first = infer record{name: "Ada", age: 37};
-                    const Person second = infer struct{age: 42, name: "Grace"};
+                    const Person second = infer record{age: 42, name: "Grace"};
                     return second.name;
                 }
                 """);
@@ -29,7 +29,7 @@ public final class RecordFrontendSmoke {
                     const Contact contact = infer<Contact> record{
                         "first name": "Linus", "work@email": "a@b"
                     };
-                    const Contact other = infer struct{
+                    const Contact other = infer record{
                         "work@email": "c@d", "first name": "Grace"
                     };
                     return other["first name"];
@@ -93,7 +93,7 @@ public final class RecordFrontendSmoke {
         Ast.Program consumerUnit = Parser.parse("""
                 import class ImportedOptions from './options';
                 fnc read(): string {
-                    const LocalRow first = infer record{name: "Ada"};
+                    const LocalRow first = infer struct{name: "Ada"};
                     const LocalRow second = infer struct{name: "Grace"};
                     return second.name;
                 }
