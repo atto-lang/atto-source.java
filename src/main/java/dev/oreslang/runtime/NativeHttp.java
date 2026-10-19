@@ -335,7 +335,9 @@ public final class NativeHttp implements AutoCloseable {
         long generation;
         long spawnNanos, readyNanos, movedNanos, claimedNanos;
         Object owner;
-        boolean busy, committed, bodyRead, streamingBody, suppressBody;
+        // committed reserves response ownership; wireStarted reserves one
+        // physical header attempt; headersSent confirms transport acceptance.
+        boolean busy, committed, wireStarted, headersSent, bodyRead, streamingBody, suppressBody;
         int bodyBytes;
         volatile boolean terminal;
         volatile InputStream activeResponseInput;
@@ -354,12 +356,30 @@ public final class NativeHttp implements AutoCloseable {
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
         }
+        // Linearize cancellation against success header emission. Never
+        // hold this monitor while performing blocking socket I/O.
+        boolean beginHeaders() {
+            synchronized (this) {
+                if (terminal || !committed || wireStarted) return false;
+                wireStarted = true;
+                return true;
+            }
+        }
+        void noteHeadersSent() {
+            synchronized (this) {
+                if (!wireStarted) throw new IllegalStateException("HTTP headers sent without reservation");
+                headersSent = true;
+            }
+        }
         void abort(int status) { abort(status, true); }
         void abort(int status, boolean cancelOwner) {
             boolean send, alreadyClosed;
             synchronized (this) {
                 alreadyClosed = terminal;
-                send = !terminal && !committed && !busy;
+                // A reserved response that never reached the wire may still
+                // fail precommit. Once an emission attempt starts, never
+                // synthesize a second HTTP status.
+                send = !terminal && !wireStarted && !busy;
                 if (!terminal) responseStatus = send ? status : 0;
                 terminal = true;
             }
@@ -572,7 +592,8 @@ public final class NativeHttp implements AutoCloseable {
                                 ? state.server.bodyOpenGate.open(draft, () -> state.terminal,
                                 TimeUnit.MILLISECONDS.toNanos(state.server.deadlineMillis)
                                         - (System.nanoTime() - state.admittedNanos))
-                                : draft.openBody());
+                                : draft.openBody(),
+                        state::beginHeaders, state::noteHeadersSent);
                 state.finish();
                 return null;
             });
@@ -596,7 +617,9 @@ public final class NativeHttp implements AutoCloseable {
                 boolean noBody = noBody(status);
                 if (state.raw.getRequestMethod().equals("HEAD") && status != 204 && status != 205)
                     state.raw.getResponseHeaders().set("Content-Length", Integer.toString(bytes.length));
+                if (!state.beginHeaders()) throw new IOException("HTTP request cancelled before response headers");
                 state.raw.sendResponseHeaders(status, noBody || bytes.length == 0 ? -1 : bytes.length);
+                state.noteHeadersSent();
                 if (!noBody && bytes.length != 0) state.raw.getResponseBody().write(bytes);
                 state.finish(); return null;
             });
@@ -610,7 +633,9 @@ public final class NativeHttp implements AutoCloseable {
                     state.responseStatus = status;
                 }
                 state.suppressBody = noBody(status);
+                if (!state.beginHeaders()) throw new IOException("HTTP request cancelled before response headers");
                 state.raw.sendResponseHeaders(status, state.suppressBody ? -1 : 0);
+                state.noteHeadersSent();
                 return null;
             });
         }
