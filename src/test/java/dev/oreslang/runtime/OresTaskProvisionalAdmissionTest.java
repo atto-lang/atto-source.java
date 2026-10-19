@@ -55,6 +55,7 @@ final class OresTaskProvisionalAdmissionTest {
         AtomicInteger enteredGuest = new AtomicInteger();
         CountDownLatch cancellationReturned = new CountDownLatch(1);
         CountDownLatch closeReturned = new CountDownLatch(1);
+        AtomicReference<Throwable> cancelFailure = new AtomicReference<>();
         var scheduler = OresScheduler.runtimeOwned(
                 "admission-race-contract", 1, turn -> {
                     dispatchEntered.countDown();
@@ -90,11 +91,13 @@ final class OresTaskProvisionalAdmissionTest {
 
             Thread cancelling = Thread.ofVirtual().start(() -> {
                 try { scope.cancel(); }
+                catch (Throwable failure) { cancelFailure.set(failure); }
                 finally { cancellationReturned.countDown(); }
             });
             try {
                 assertTrue(cancellationReturned.await(2, TimeUnit.SECONDS),
                         "parent cancellation must not wait for executor admission");
+                assertNull(cancelFailure.get(), String.valueOf(cancelFailure.get()));
                 Thread closer = Thread.ofVirtual().start(() -> {
                     try { scope.close(); }
                     catch (Throwable failure) { closingFailure.set(failure); }
