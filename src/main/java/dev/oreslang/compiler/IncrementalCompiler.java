@@ -249,6 +249,17 @@ public final class IncrementalCompiler {
             abi.append(" implements ");
             for (Ast.TypeRef iface : klass.interfaces()) abi.append(typeRef(iface)).append(',');
             abi.append('\n');
+            // Computed class indexing is checked against the complete instance-field
+            // domain, not only the public ABI surface. The first non-public field
+            // changes an external dynamic receiver[key] from safe to rejected, so
+            // that safety-domain transition must invalidate linked dependents.
+            if (klass.actorKind() == Ast.ActorKind.NONE) {
+                boolean hasNonPublicComputedIndexField = klass.fields().stream()
+                        .anyMatch(field -> field.visibility() != Ast.Visibility.PUBLIC);
+                abi.append(" computed-index-has-nonpublic-field=")
+                        .append(hasNonPublicComputedIndexField)
+                        .append('\n');
+            }
             if (klass.constructor() != null
                     && klass.constructor().visibility() == Ast.Visibility.PUBLIC) {
                 abi.append(" constructor");
