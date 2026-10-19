@@ -182,6 +182,16 @@ public final class SharedDomainArena {
 
         @Override
         public void close() {
+            if (released.get()) return;
+            // The lexical byte loan may be cleaned up by its actor in a
+            // later turn after exception unwinding, but a foreign/off-carrier
+            // callback cannot revoke an executing actor's critical region.
+            // Continuation/FFI/I/O owners must use LifetimePin instead.
+            var current = runtime.requireCurrentSharedDomainTurn();
+            if (!sameActor(current.actor(), admission.owner)) {
+                throw new SecurityException(
+                        "shared-domain critical access release belongs to another actor");
+            }
             if (released.compareAndSet(false, true)) {
                 admission.close();
             }
