@@ -172,7 +172,7 @@ def require_preflight(repository, root):
     Protected-source authority is checked independently by the caller.
     """
     checked_policy_fingerprint(root, repository)
-    checked_repo(repository)
+    return checked_repo(repository)
 
 def checked_policy_fingerprint(root, repository):
     """Read approval only through directory descriptors and O_NOFOLLOW.
@@ -809,7 +809,13 @@ def publish(repository, source, branch, trusted_root, expected_tree=None,
         else:
             require_source_pr_attestation(source_pr, source_commit, expected_tree)
     # Approval comes before reading potentially sensitive source files.
-    require_preflight(repository, trusted_root)
+    preflight_destination = require_preflight(repository, trusted_root)
+    if (not isinstance(preflight_destination, dict)
+            or not isinstance(preflight_destination.get("id"), int)
+            or isinstance(preflight_destination["id"], bool)
+            or preflight_destination["id"] <= 0):
+        raise Denied("initial destination preflight lacks immutable repository identity")
+    preflight_destination_id = preflight_destination["id"]
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
     require_protected_main_policy(repository, approved_policy)
     verify_source()
@@ -819,12 +825,17 @@ def publish(repository, source, branch, trusted_root, expected_tree=None,
         checked_source.relative_to(trusted)
     except (OSError, RuntimeError, ValueError) as exc:
         raise Denied("source directory escapes trusted checkout or is unavailable") from exc
+    # Revalidate immutable destination identity before any private source
+    # bytes are collected. Otherwise an owner/repo substitution between
+    # preflight and collection can silently become the publication target.
+    base = checked_repo(repository)
+    if base["id"] != preflight_destination_id:
+        raise Denied("destination repository ID changed after reviewed preflight")
+    destination_repo_id = base["id"]
     files = collect_source(source, trusted_root)
     actual_source_tree = git_tree_digest(files)
     if actual_source_tree != expected_tree:
         raise Denied("source snapshot does not match the independently attested Git tree")
-    base = checked_repo(repository)
-    destination_repo_id = base["id"]
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
         raise Denied("destination default branch is invalid")
