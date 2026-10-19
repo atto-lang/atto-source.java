@@ -77,10 +77,16 @@ public final class OwnershipChecker {
     /** Reuse only public, explicitly linked class layouts for cross-file loans. */
     public static Ast.Program checkWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses) {
+        return checkWithImportedClasses(program, linkedClasses, Map.of());
+    }
+
+    public static Ast.Program checkWithImportedClasses(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<Ast.BindingStmt, String> validatedShortAliases) {
         if (linkedClasses == null) {
             throw new IllegalArgumentException("linked public classes cannot be null");
         }
-        OwnershipChecker checker = new OwnershipChecker(program);
+        OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
