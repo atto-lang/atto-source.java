@@ -5,6 +5,8 @@ import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.Types;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
