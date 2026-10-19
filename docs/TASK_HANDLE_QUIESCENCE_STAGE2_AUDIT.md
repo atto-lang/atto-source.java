@@ -191,3 +191,35 @@ Actual source tests are still blocked by existing empty destination
 allowlist, source branch protection approval, CODEOWNER/security
 independence, and open CI source-exposure incident. Do not treat any
 source-free pass as Java/Graal runtime parity or merge evidence.
+
+
+## Stage-1 callback integrity and blocked-rejection join race
+
+This stacked branch carries the same fatal cancellation-dispatch fix
+as parent PR #1402. A crashing trusted revoker previously left later
+revokers undelivered and the cancellation observer barrier permanently
+pending. The corrected batch preserves error propagation *after*
+running other admitted hooks; its iterative dispatcher drains already
+queued nested cancellations. The parent must be reviewed first.
+
+Additional stage-2 JUnit case
+`rejectedDispatcherRacingScopeCancellationNeverPublishesPrematureJoin`
+targets the reserved child slot while scheduler dispatch blocks, then
+fails. Scope cancellation cannot publish `getDone()` until that slot
+is retired; any failed/Cancelled terminal outcome is acceptable, but
+an unexecuted guest may never be classified as successful.
+
+Exact Git blob `TaskScope.java` (`211b5812183e9e35f7a9d7358b1a6f2ccebd024b`)
+compiled on local Java 21 with independently authored test doubles and
+passed **3,500** targeted cases, including 350 cancellation-vs-rejected
+dispatch races. The original exact `TaskCancellation.java` reproduced
+the fatal barrier defect; patched local primitive tests passed **2,400**
+cases. **None of this executes actual production OresScheduler/OresFuture
+or GraalVM**, and no private source was copied to an alternate GitHub
+organization. Stage-1 suite now contains **17** committed JUnit methods;
+stage-2 has **40** (24 TaskHandle + 16 TaskScope); total **57**
+committed methods, not yet source-CI verified.
+
+The stage-2 Git branch is still based on the previous stage-1 head.
+Review and merge the newly hardened stage-1 changes first, then rebase
+stage 2 and resolve any duplicate-cherry-pick conflicts before release.
