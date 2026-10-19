@@ -40,6 +40,7 @@ public final class ConcurrencyRaceAnalyzer {
     private final Set<String> issuedMessageIds = new HashSet<>();
     private final Map<String, Map<String, Long>> locks = new HashMap<>();
     private final Map<String, String> lockOwners = new HashMap<>();
+    private final Map<String, Integer> lockDepths = new HashMap<>();
     private final List<Finding> findings = new ArrayList<>();
     private int events;
     private long conflictCount;
@@ -138,6 +139,10 @@ public final class ConcurrencyRaceAnalyzer {
         tick(participant);
     }
 
+    /**
+     * Reentrant ownership is by logical participant, never by carrier thread.
+     * Only the final release publishes a happens-before edge to another owner.
+     */
     public synchronized void release(String participant, String lockId) {
         String id = key(lockId);
         String actor = key(participant);
@@ -145,21 +150,38 @@ public final class ConcurrencyRaceAnalyzer {
             throw new IllegalStateException("release requires the current lock owner");
         }
         budget();
-        locks.put(id, tick(actor).clock());
-        lockOwners.remove(id);
+        int depth = lockDepths.get(id);
+        if (depth > 1) {
+            tick(actor);
+            lockDepths.put(id, depth - 1);
+        } else {
+            locks.put(id, tick(actor).clock());
+            lockOwners.remove(id);
+            lockDepths.remove(id);
+        }
     }
 
     public synchronized void acquire(String participant, String lockId) {
         String id = key(lockId);
         String actor = key(participant);
-        if (lockOwners.containsKey(id)) {
-            throw new IllegalStateException("lock is already acquired");
+        String owner = lockOwners.get(id);
+        if (owner != null && !owner.equals(actor)) {
+            throw new IllegalStateException("lock is already acquired by another participant");
+        }
+        if (owner != null && lockDepths.get(id) == Integer.MAX_VALUE) {
+            throw new IllegalStateException("reentrant lock depth exhausted");
         }
         budget();
-        Map<String, Long> published = locks.get(id);
-        if (published != null) merge(clock(actor), published);
-        tick(actor);
-        lockOwners.put(id, actor);
+        if (owner != null) {
+            tick(actor);
+            lockDepths.put(id, lockDepths.get(id) + 1);
+        } else {
+            Map<String, Long> published = locks.get(id);
+            if (published != null) merge(clock(actor), published);
+            tick(actor);
+            lockOwners.put(id, actor);
+            lockDepths.put(id, 1);
+        }
     }
 
     public synchronized List<Finding> findings() {
