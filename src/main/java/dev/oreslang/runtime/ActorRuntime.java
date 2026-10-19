@@ -2189,6 +2189,14 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        /**
+         * Conservative physical-retirement authority. Unlike the internal
+         * ActorCell.finalized transition this is published only AFTER all
+         * teardown observers, actor group bookkeeping, and unregisterActor.
+         * The ActorRef survives registry removal and cannot mistake an
+         * absent ActorCell for completed finalization.
+         */
+        private final AtomicBoolean physicallyFinalized = new AtomicBoolean();
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind, long generation) {
@@ -2273,9 +2281,9 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
             ActorCell<?> cell = actors.get(id);
-            if (cell == null) return true;
+            if (cell == null) return physicallyFinalized.get();
             cell.awaitFinalized(unit.toNanos(timeout));
-            return cell.finalized();
+            return physicallyFinalized.get();
         }
 
         public void send(M message) {
@@ -5058,8 +5066,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new ActorInvalidReferenceException(
                     "ActorRef belongs to a different ActorRuntime");
         }
-        ActorCell<?> cell = actors.get(ref.id());
-        return cell == null || cell.finalized();
+        // A missing registry entry is NOT itself a physical-completion
+        // witness. Teardown can be between unregisterActor and the final
+        // observer/ActorGroup accounting step, or may have aborted on OOME.
+        return ref.physicallyFinalized.get();
     }
 
 
@@ -8430,7 +8440,6 @@ public final class ActorRuntime implements AutoCloseable {
                 // Actor termination must still complete. Runtime cleanup hooks
                 // are best-effort and retryable by the process collector.
             }
-            unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
             Throwable terminal = ref.terminationCause.get();
             if (!ref.readyFuture.isDone()) {
@@ -8445,6 +8454,13 @@ public final class ActorRuntime implements AutoCloseable {
             if (terminal == null) ref.doneFuture.completeFromRuntime(null);
             else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
+            // Teardown can invoke synchronous observers and perform
+            // allocation-bearing actor-group registry cleanup. Keep the
+            // ActorRef's physical retirement marker false until all of that
+            // work is complete. If cleanup throws, fail closed and pin code
+            // instead of certifying retirement from an absent registry entry.
+            unregisterActor(this);
+            ref.physicallyFinalized.set(true);
             lifecycleLock.notifyAll();
         }
 
@@ -8458,14 +8474,14 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean finalized() {
             synchronized (lifecycleLock) {
-                return finalized;
+                return ref.physicallyFinalized.get();
             }
         }
 
         private void awaitFinalized(long remainingNanos) throws InterruptedException {
             long deadline = System.nanoTime() + Math.max(0L, remainingNanos);
             synchronized (lifecycleLock) {
-                while (!finalized) {
+                while (!ref.physicallyFinalized.get()) {
                     long remaining = deadline - System.nanoTime();
                     if (remaining <= 0) return;
                     long millis = Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remaining));
