@@ -1,5 +1,8 @@
 package dev.oreslang.runtime;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
@@ -93,7 +96,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             Thread peer = new Thread(() -> {
                 try (Socket accepted = server.accept()) {
                     accepted.setSoTimeout(3000);
-                    byte[] wire = IpcAuthenticatedSocketTransport.readWireFrame(
+                    byte[] wire = IpcAuthenticatedSocketTransport.readDataWireFrame(
                             accepted.getInputStream());
                     var decoded = IpcAuthenticatedSocketTransport.decodeDataFrame(wire, message, 11, key);
                     check(decoded.envelope().equals(message));
@@ -135,6 +138,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 transport.requestClose();
                 awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
                 check(transport.snapshot().activeWrites() == 0);
+                check(transport.keyMaterialDestroyed());
             } finally {
                 cleanup.shutdownNow();
                 cleanup.awaitTermination(2, TimeUnit.SECONDS);
@@ -165,6 +169,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 check(bridge.counters().equals(new IpcReceiptCorrelation.Counters(0, 0)));
                 transport.requestClose();
                 awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
+                check(transport.keyMaterialDestroyed());
             } finally {
                 cleanup.shutdownNow();
                 cleanup.awaitTermination(2, TimeUnit.SECONDS);
@@ -204,7 +209,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 try (Socket accepted = server.accept()) {
                     accepted.setSoTimeout(3000);
                     var data = IpcAuthenticatedSocketTransport.decodeDataFrame(
-                            IpcAuthenticatedSocketTransport.readWireFrame(accepted.getInputStream()),
+                            IpcAuthenticatedSocketTransport.readDataWireFrame(accepted.getInputStream()),
                             maliciousMessage, 73, key);
                     check(data.envelope().equals(maliciousMessage));
                     byte[] malicious = peerLocalVerdictWithValidMac(
@@ -258,7 +263,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress())) {
             Thread peer = new Thread(() -> {
                 try (Socket accepted = server.accept()) {
-                    IpcAuthenticatedSocketTransport.readWireFrame(accepted.getInputStream());
+                    IpcAuthenticatedSocketTransport.readDataWireFrame(accepted.getInputStream());
                     IpcAuthenticatedSocketTransport.writeWireFrame(
                             accepted.getOutputStream(),
                             IpcAuthenticatedSocketTransport.encodeReceiptFrame(
@@ -326,6 +331,21 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         check(Arrays.equals(verifiedData.payload(), replayDataPayload));
         check(verifiedData.physicalGeneration() == 82);
 
+        // Receipt framing has a small pre-authentication allocation cap.
+        // A hostile length prefix must be rejected before attempting to
+        // allocate/read the advertised body.
+        ByteArrayOutputStream oversizedPrefix = new ByteArrayOutputStream();
+        try (DataOutputStream oversized = new DataOutputStream(oversizedPrefix)) {
+            oversized.writeInt(4096);
+        }
+        try {
+            IpcAuthenticatedSocketTransport.readReceiptWireFrame(
+                    new ByteArrayInputStream(oversizedPrefix.toByteArray()));
+            throw new AssertionError("oversized unauthenticated receipt accepted");
+        } catch (IOException expected) {
+            check(expected.getMessage().contains("bounded IPC wire frame length"));
+        }
+
         // MAC tampering is rejected before receipt state mutation.
         byte[] tamperPayload = "tamper".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         var tamperMessage = envelope(1, "tamper", 3, 4, tamperPayload);
@@ -333,7 +353,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress())) {
             Thread peer = new Thread(() -> {
                 try (Socket accepted = server.accept()) {
-                    IpcAuthenticatedSocketTransport.readWireFrame(accepted.getInputStream());
+                    IpcAuthenticatedSocketTransport.readDataWireFrame(accepted.getInputStream());
                     byte[] receipt = IpcAuthenticatedSocketTransport.encodeReceiptFrame(
                             tamperMessage, 74,
                             IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, key);
@@ -395,14 +415,16 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             var submission = transport.send(quarantineMessage, quarantinePayload);
             check(!submission.writeAttemptFailed());
             var decoded = IpcAuthenticatedSocketTransport.decodeDataFrame(
-                    IpcAuthenticatedSocketTransport.readWireFrame(peer.getInputStream()),
+                    IpcAuthenticatedSocketTransport.readDataWireFrame(peer.getInputStream()),
                     quarantineMessage, 89, key);
             check(decoded.physicalGeneration() == 89);
             transport.requestClose();
             check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(!transport.keyMaterialDestroyed());
             check(!submission.outcome().toCompletableFuture().isDone());
             transport.retryQuarantinedClose();
             check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
+            check(transport.keyMaterialDestroyed());
             check(submission.outcome().toCompletableFuture().join()
                     == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
             check(schedules.get() == 2);
@@ -420,7 +442,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             Thread peer = new Thread(() -> {
                 try (Socket accepted = server.accept()) {
                     accepted.setSoTimeout(3000);
-                    IpcAuthenticatedSocketTransport.readWireFrame(accepted.getInputStream());
+                    IpcAuthenticatedSocketTransport.readDataWireFrame(accepted.getInputStream());
                     peerSawData.countDown();
                     while (accepted.getInputStream().read() != -1) { }
                 } catch (Throwable failure) {
