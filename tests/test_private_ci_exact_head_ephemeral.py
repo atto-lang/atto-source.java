@@ -127,10 +127,12 @@ class SourceLocalEphemeralWorkflowTests(unittest.TestCase):
             "git -c core.fileMode=true diff --no-ext-diff --cached --quiet --exit-code",
             self.job)
         self.assertIn('index_flags="$(git ls-files -v)"', self.job)
-        self.assertIn("grep -q -v '^H '", self.job)
+        self.assertIn("grep -v '^H ' >/dev/null", self.job)
         self.assertIn("Hidden or unexpected Git index flags", self.job)
         self.assertIn("git -c core.fileMode=true status --porcelain=v1 --untracked-files=all", self.job)
         self.assertNotIn("git diff --name-only", self.job)
+        # grep -q can SIGPIPE printf under pipefail, accidentally defeating the gate.
+        self.assertNotIn("grep -q -v", self.job)
 
     def test_approved_ref_is_required_before_checkout(self):
         self.assertIn(

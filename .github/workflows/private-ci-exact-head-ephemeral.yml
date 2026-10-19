@@ -65,11 +65,11 @@ jobs:
           git -c core.fileMode=true diff --no-ext-diff --cached --quiet --exit-code
           # Refuse hidden index flags (skip-worktree / assume-unchanged).
           index_flags="$(git ls-files -v)"
-          if printf '%s\n' "$index_flags" | grep -q -v '^H '; then
+          if printf '%s\n' "$index_flags" | grep -v '^H ' >/dev/null; then
             echo "Hidden or unexpected Git index flags" >&2
             exit 1
           fi
-          # Reject untracked/injected source, even if .gitignore hides build files.
+          # Reject visible untracked/injected source. Ignored files need separate scrutiny.
           test -z "$(git -c core.fileMode=true status --porcelain=v1 --untracked-files=all)"
 
       - name: Syntax-check every private CI authorization entrypoint
