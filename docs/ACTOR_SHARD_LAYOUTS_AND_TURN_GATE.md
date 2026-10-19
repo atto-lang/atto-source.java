@@ -31,6 +31,18 @@ allocates an unmetered detached array and is deprecated for host compatibility;
 it MUST NOT be exposed through guest lowering before quota-owned snapshot
 handles are implemented (P0 #1531).
 
+The host-only `snapshotColumnLeased(field)` provides that first accounting
+substrate: its immutable `ColumnSnapshot` reads are billed to the producing
+actor's heap policy and to ActorRuntime's aggregate shared budget until
+`close()` or the owner's physical finalization. Closing zeros the backing
+array, clears its reference for GC, and refunds once. Finalization revokes
+every outstanding handle. An out-of-actor trusted host may read/close, but a
+foreign actor turn cannot read, inspect or close the handle. The unmetered
+`snapshotColumn()` compatibility method remains deprecated and must never
+be lowered into guest code. Tests: `ActorShardSnapshotLeaseTest`
+(1000 retained snapshots, quota refunds, cross-actor denial and actor stop).
+No general source-language or cross-domain capability is provided.
+
 Tests: `ActorShardColumnsTest`. Manual microbenchmark:
 `ActorShardLayoutBench`, comparing 1K/10K/100K rows across all layouts.
 No speedup is claimed until hardware-specific measurement.
