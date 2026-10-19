@@ -99,6 +99,17 @@ final class LogicalSourceActorProxyBridgeV1Test {
                         "one accepted physical send cannot be submitted twice "
                                 + "before its drain acknowledgment");
                 assertEquals(1, proxy.snapshot().retainedMessages());
+                // The physical actor may already have accepted the message,
+                // even if its cumulative drain has not been consumed.
+                var attempted = proxy.snapshot();
+                assertThrows(IllegalStateException.class,
+                        () -> proxy.requeueProvenUnsent(dispatched.messageSequence()),
+                        "sequence-only requeue must never erase attempted physical delivery");
+                assertEquals(attempted, proxy.snapshot());
+                assertThrows(IllegalStateException.class,
+                        () -> router.sendAndDrainForProxy(
+                                proxy, dispatched, proxy.snapshot().routeEpoch()),
+                        "rejected requeue must not reopen physical send admission");
                 var forged = new LogicalActorProxyMailboxV1.Envelope(
                         dispatched.messageSequence(), dispatched.payload());
                 assertThrows(SecurityException.class,
