@@ -289,6 +289,24 @@ final class DynamicPropertyAccessBoundaryTest {
     }
 
     @Test
+    void computedClassWritesSupportInitializerInferredFieldTypes() {
+        accepted("""
+                define class InferredPoint as
+                    pub let x = 1;
+                    pub let y = 2;
+                end
+
+                fnc update(string key): int {
+                    val InferredPoint point = new InferredPoint();
+                    point["x"] = 3;
+                    point[key] = 4;
+                    point.x = 5;
+                    return point["x"];
+                }
+                """);
+    }
+
+    @Test
     void indexedExplicitStructAccessParticipatesInDefiniteInitialization() {
         accepted("""
                 fnc good(): bool {
