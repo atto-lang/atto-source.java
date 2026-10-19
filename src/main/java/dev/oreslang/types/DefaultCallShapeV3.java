@@ -77,6 +77,9 @@ public final class DefaultCallShapeV3 {
             boolean hasDefault = fill == Fill.DEFAULT_VALUE || fill == Fill.DEFAULT_SOME || fill == Fill.DEFAULT_NONE;
             if (hasDefault != (constant != null))
                 throw new IllegalArgumentException("default witness mismatch");
+            if (constant != null && ((fill == Fill.DEFAULT_NONE)
+                    != (constant.kind() == ConstantKind.NONE)))
+                throw new IllegalArgumentException("default fill kind mismatch");
         }
     }
 
@@ -85,6 +88,12 @@ public final class DefaultCallShapeV3 {
         public Plan {
             abiSlots = List.copyOf(abiSlots);
             evaluatedRawIndices = List.copyOf(evaluatedRawIndices);
+            int lastRaw = -1;
+            for (int raw : evaluatedRawIndices) {
+                if (raw <= lastRaw)
+                    throw new IllegalArgumentException("supplied expressions must preserve distinct lexical source indexes");
+                lastRaw = raw;
+            }
             boolean[] seen = new boolean[evaluatedRawIndices.size()];
             for (int i = 0; i < abiSlots.size(); i++) {
                 Bound slot = abiSlots.get(i);
