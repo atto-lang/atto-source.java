@@ -1,7 +1,5 @@
 package dev.oreslang.nodes;
 
-import dev.oreslang.runtime.CheckedI64OverflowException;
-
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.interop.InteropLibrary;
@@ -8757,22 +8755,10 @@ public final class OresEvalRootNode extends RootNode {
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
-                if (experimentalCheckedI64 && op == '%' && y == 0L) {
-                    // Never leak a JVM-specific "/ by zero" message into the
-                    // checked-i64 cross-backend diagnostic contract.
-                    throw dev.oreslang.runtime.CheckedI64DivisionByZeroException.forRemainder();
-                }
-                if (experimentalCheckedI64 && (op == '+' || op == '-' || op == '*')) {
-                    try {
-                        return switch (op) {
-                            case '+' -> Math.addExact(x, y);
-                            case '-' -> Math.subtractExact(x, y);
-                            case '*' -> Math.multiplyExact(x, y);
-                            default -> throw new IllegalStateException("invalid checked i64 operator");
-                        };
-                    } catch (ArithmeticException overflow) {
-                        throw CheckedI64OverflowException.forOperator(op);
-                    }
+                if (experimentalCheckedI64) {
+                    // Pure reference implementation: no legacy arithmetic path
+                    // is reachable for any checked signed-i64 operator.
+                    return dev.oreslang.runtime.CheckedI64Arithmetic.binary(op, x, y);
                 }
                 return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
             }
@@ -8806,10 +8792,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
                 long x = ((Number) value).longValue();
                 if (experimentalCheckedI64) {
-                    try { return Math.negateExact(x); }
-                    catch (ArithmeticException overflow) {
-                        throw CheckedI64OverflowException.forNegation();
-                    }
+                    return dev.oreslang.runtime.CheckedI64Arithmetic.negate(x);
                 }
                 return -x;
             }
