@@ -8131,19 +8131,25 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void markMessageProcessed(long sequence) {
-            List<OresFuture<Void>> completedDrains = new ArrayList<>();
+            final ArrayList<OresFuture<Void>> completedDrains;
             OresFuture<Void> exactReceipt;
             synchronized (lifecycleLock) {
                 if (sequence != lastProcessedUserMessageSequence + 1L) {
                     throw new IllegalStateException(
                             "nonsequential actor message completion for " + ref.id());
                 }
+                // Reserve all allocation-bearing resources before advancing
+                // completion or unlinking ANY of its physical witnesses.
+                // A noncached boxed Long or growing drain observer list must
+                // not strand a receipt after publishing its processed epoch.
+                Long sequenceKey = Long.valueOf(sequence);
+                completedDrains = new ArrayList<>(pendingDrains.size());
                 lastProcessedUserMessageSequence = sequence;
                 // Exact-message authority is intentionally independent from
                 // cumulative prefix drains. Today actor user-mail completion
                 // is sequential; keeping these ledgers separate prevents a
                 // future drain implementation change from weakening receipts.
-                exactReceipt = pendingPhysicalReceipts.remove(sequence);
+                exactReceipt = pendingPhysicalReceipts.remove(sequenceKey);
                 for (int i = pendingDrains.size() - 1; i >= 0; --i) {
                     DrainWaiter waiter = pendingDrains.get(i);
                     if (waiter.sequence() <= sequence) {
