@@ -1270,7 +1270,9 @@ public final class OresEvalRootNode extends RootNode {
             // instances and MUST NOT be used directly for cross-Task moves.
             Env captured = caller.taskProjection(task.captures());
             TaskScope scope = caller.taskScope;
-            TaskScope.Registration child = scope == null ? null : scope.reserve();
+            TaskScope.Registration child = scope == null
+                    ? null : scope.reserve(caller.taskScopeParent);
+            captured.taskScopeParent = child;
             try {
                 OresFuture<Object> future = startSourceBlockTask(
                         task.body(), captured,
@@ -2104,6 +2106,7 @@ public final class OresEvalRootNode extends RootNode {
                         TaskScope scope = new TaskScope();
                         Env scopedEnv = new Env(env);
                         scopedEnv.taskScope = scope;
+                        scopedEnv.taskScopeParent = null;
                         runBlock(task, block.body(), scopedEnv, (t, flow) -> {
                             // The barrier waits for both terminal notification
                             // AND physical scheduler quiescence of every child.
@@ -9046,6 +9049,7 @@ public final class OresEvalRootNode extends RootNode {
         private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
         private TaskScope taskScope;
+        private TaskScope.Registration taskScopeParent;
         private Env(Env parent) {
             this(
                     parent,
@@ -9098,6 +9102,7 @@ public final class OresEvalRootNode extends RootNode {
             this.lexicalModule = lexicalModule;
             this.constructingObject = constructingObject;
             this.taskScope = parent == null ? null : parent.taskScope;
+            this.taskScopeParent = parent == null ? null : parent.taskScopeParent;
         }
 
         private Env lexicalBoundaryOnly() {
@@ -9148,6 +9153,7 @@ public final class OresEvalRootNode extends RootNode {
             // Only scheduler join authority is inherited; lexical value slots
             // remain independently projected from compiler-proven captures.
             cp.taskScope = taskScope;
+            cp.taskScopeParent = taskScopeParent;
             for (String name : captureNames) {
                 Slot slot = findTaskCapture(name);
                 if (slot == null || slot.value == MISSING) {
@@ -9173,6 +9179,7 @@ public final class OresEvalRootNode extends RootNode {
                     lexicalModule);
             cp.slots.putAll(slots);
             cp.taskScope = taskScope;
+            cp.taskScopeParent = taskScopeParent;
             return cp;
         }
         private boolean hasLiveMutexGuards() {
