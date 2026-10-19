@@ -141,6 +141,14 @@ final class DefaultCallShapeV3Test {
                 for (int i = 0; i < items.size(); i++) if (!items.get(i).omission()) provided.add(i);
                 assertEquals(provided, plan.evaluatedRawIndices());
                 assertEquals(formals.size(), plan.abiSlots().size());
+                java.util.HashSet<Integer> allRaw = new java.util.HashSet<>();
+                for (Bound bound : plan.abiSlots()) {
+                    if (bound.rawItemIndex() >= 0) {
+                        assertTrue(allRaw.add(bound.rawItemIndex()), "raw source item aliased");
+                    }
+                }
+                assertEquals(items.size(), allRaw.size(),
+                        "every raw item (including omissions) must occur exactly once");
                 for (int i = 0; i < plan.abiSlots().size(); i++) {
                     Bound slot = plan.abiSlots().get(i);
                     assertEquals(i, slot.formalIndex());
