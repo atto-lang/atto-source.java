@@ -44,8 +44,10 @@ the private source repository and exact protected-`main` commit, fetches
 `scripts/publish-private-ci-source.py` from GitHub at that immutable revision,
 requires an independently supplied expected **publisher Git blob SHA**, verifies
 the returned bytes against that SHA, and only then executes those exact bytes
-under isolated Python with `__file__` bound to the source checkout. Local
-publisher bytes are never executed before this attestation.
+under isolated Python. The bootstrap injects the already verified source-root
+path directly into the trusted publisher execution context; repository-root
+selection does not depend on resolving the mutable checkout-local publisher
+pathname. Local publisher bytes are never executed before this attestation.
 
 The expected publisher blob SHA is approval data and must come from an
 independent security review / protected carrier trust boundary, never from the
