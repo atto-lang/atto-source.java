@@ -105,6 +105,7 @@ verify_running_blob() {
     || die "running export file differs from authoritative main: $path"
 }
 
+verify_running_blob "$POLICY_PATH" "$policy_blob"
 verify_running_blob "$PREFLIGHT_PATH" "$preflight_blob"
 verify_running_blob "$DEST_GUARD_PATH" "$guard_blob"
 verify_running_blob "$WRAPPER_PATH" "$wrapper_blob"
