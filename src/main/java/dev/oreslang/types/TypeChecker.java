@@ -3823,6 +3823,9 @@ public final class TypeChecker {
             requireAssignable(index, Primitive.INT, "array/list/tuple index");
             if (receiver instanceof ListType list) return list.element();
             if (receiver instanceof Tuple tuple) {
+                if (tuple.elements().isEmpty()) {
+                    throw new IllegalArgumentException("cannot index an empty finite tuple");
+                }
                 Long constant = constantTupleIndex(indexed.index(), env);
                 if (constant != null) {
                     if (constant < 0 || constant >= tuple.elements().size()) {
