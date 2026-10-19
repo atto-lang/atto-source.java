@@ -107,10 +107,20 @@ public final class IpcReceiptCorrelation {
         ++transportCredits;
     }
 
-    /** Only authenticated adapters may call this. THIS METHOD DOES NOT AUTHENTICATE. */
+    /**
+     * Only authenticated peer adapters may call this. THIS METHOD DOES NOT
+     * AUTHENTICATE. OUTCOME_UNKNOWN is exclusively a *local* trusted
+     * disconnect decision, never a remotely asserted ACK/terminal receipt.
+     * A remote peer cannot manufacture uncertainty to evade durable DONE
+     * verification or induce an early callback result.
+     */
     public synchronized void acceptVerified(Envelope message, Stage next) {
         Objects.requireNonNull(message, "message");
         Objects.requireNonNull(next, "next");
+        if (next == Stage.OUTCOME_UNKNOWN) {
+            throw new IllegalArgumentException(
+                    "OUTCOME_UNKNOWN requires local transport-loss authority");
+        }
         Entry entry = pending.get(message.messageSequence());
         if (entry == null || !entry.envelope.equals(message)) {
             throw new IllegalArgumentException("forged/stale/unmatched receipt");
@@ -121,14 +131,13 @@ public final class IpcReceiptCorrelation {
                 --transportCredits;
                 return;
             }
-            if (next == Stage.REJECTED_BEFORE_REMOTE || next == Stage.OUTCOME_UNKNOWN) {
+            if (next == Stage.REJECTED_BEFORE_REMOTE) {
                 pending.remove(message.messageSequence());
                 --transportCredits;
                 return;
             }
         } else if (entry.stage == Stage.REMOTE_ACCEPTED) {
-            if (next == Stage.HANDLER_COMMITTED || next == Stage.HANDLER_FAILED
-                    || next == Stage.OUTCOME_UNKNOWN) {
+            if (next == Stage.HANDLER_COMMITTED || next == Stage.HANDLER_FAILED) {
                 pending.remove(message.messageSequence());
                 return;
             }
