@@ -1,0 +1,88 @@
+package dev.oreslang.types;
+
+import dev.oreslang.ast.Ast;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+
+/**
+ * The checked call plan's value-assembly boundary.
+ *
+ * <p>Values are ALREADY evaluated in lexical order before this helper is
+ * called. It never evaluates an expression, performs ownership transfers,
+ * resolves a callable, invokes guest code, or enables the staged-call AST.
+ *
+ * <p>The compiler must independently prove concrete generic/Option identity,
+ * effect/loan safety, selected signature and cleanup before using these values
+ * in a backend. That integration is deliberately gated.
+ */
+public final class OptionalCallValueAssembly {
+    private OptionalCallValueAssembly() { }
+
+    /**
+     * Backend-provided creation of nominal Option values. A factory must not
+     * turn None into Java null or emit a null Some. The compiler must ensure
+     * it is the trusted Option implementation for its isolated allocation
+     * domain, never an arbitrary user-provided callable.
+     */
+    public interface TrustedOptionFactory {
+        Object some(Ast.TypeRef payloadType, Object value);
+        Object none(Ast.TypeRef payloadType);
+    }
+
+    /**
+     * Materializes ABI values in FULL FORMAL order from dense source-order
+     * temporaries. The returned list contains NO Java nulls.
+     *
+     * <p>Omitted slots do not consume a source value. A supplied Option.None
+     * remains the supplied runtime value (PASS_OPTION), distinct from a
+     * compiler-created None (INJECT_NONE) even though both may have the same
+     * callee-visible Option representation.
+     */
+    public static List<Object> assemble(
+            OptionalCallAbiPreview.Preview checkedPreview,
+            List<?> evaluatedSourceValues,
+            TrustedOptionFactory optionFactory) {
+        Objects.requireNonNull(checkedPreview, "checked preview");
+        Objects.requireNonNull(evaluatedSourceValues, "evaluated source values");
+        Objects.requireNonNull(optionFactory, "trusted Option factory");
+
+        if (checkedPreview.sourceExpressions().size() != evaluatedSourceValues.size()) {
+            throw new IllegalArgumentException(
+                    "source values do not match the verified evaluated-source count");
+        }
+
+        // Validate the entire source list before producing any new Option
+        // objects. Null is not an Oreslang value; a guest None is an Option
+        // object, not a Java null in the argument vector.
+        for (int source = 0; source < evaluatedSourceValues.size(); source++) {
+            if (evaluatedSourceValues.get(source) == null) {
+                throw new IllegalArgumentException(
+                        "a source temporary is null; use a nominal Option.None value");
+            }
+        }
+
+        List<Object> result = new ArrayList<>(checkedPreview.abiSlots().size());
+        for (OptionalCallAbiPreview.Slot slot : checkedPreview.abiSlots()) {
+            Object adapted;
+            if (slot.action() == OptionalCallAbiPreview.Action.INJECT_NONE) {
+                adapted = optionFactory.none(slot.calleeType().arguments().getFirst());
+            } else {
+                int source = slot.evaluatedSourceIndex();
+                if (source < 0 || source >= evaluatedSourceValues.size()) {
+                    throw new IllegalArgumentException("missing checked source temporary");
+                }
+                Object supplied = evaluatedSourceValues.get(source);
+                adapted = slot.action() == OptionalCallAbiPreview.Action.WRAP_SOME
+                        ? optionFactory.some(slot.calleeType().arguments().getFirst(), supplied)
+                        : supplied;
+            }
+            if (adapted == null) {
+                throw new IllegalArgumentException("trusted Option factory returned null");
+            }
+            result.add(adapted);
+        }
+        return List.copyOf(result);
+    }
+}
