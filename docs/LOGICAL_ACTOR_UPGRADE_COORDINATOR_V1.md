@@ -441,3 +441,45 @@ reviewed destination allowlist is EMPTY and issue #962 is unresolved.
 The latest inspected source Actions have failed without job steps, and issue
 #904's independent required-check/branch-protection gate also remains open.
 Keep the PR DRAFT and production hot reload disabled.
+
+## Coherent compiler-image/state/message publication checks — October 19, 2026
+
+The live SHARED proxy's immutable `publication()` record now includes the
+compiler-issued **linked code digest**, **persistent state-schema digest**,
+and **message ABI digest**, in addition to the source-generation digest,
+logical route/physical actor identity, and bounded mailbox epoch. All three
+compiler receipts are captured against the same authoritative physical
+route under `routeLock` and exposed while the bridge holds its
+`dispatchLock`. This prevents a host supervisor from constructing a
+purported consistent upgrade observation by reading old and new compiler
+identities across separate route lookups.
+
+For compiler-ABI-bound scalar bridges, `publication()` also fail-seals
+admission if the current linked message ABI disagrees with the original
+immutable proxy binding, even when physical-route and mailbox epochs match.
+The existing candidate-ABI preflight remains authoritative **before**
+checkpoint migration; this additional read-side guard prevents a false
+healthy publication certificate if a compiler/code-identity invariant is
+violated.
+
+Source-compiled regressions now verify that V1 and V2 linked code digests
+follow the route epoch, while state schema and message ABI stay unchanged
+across a compatible source upgrade. The ABI-bound queue test also checks
+the exact source-generation and linked-code identities on both sides of
+the transition. These are authored JUnit tests; **no full private Java
+source JDK25/Graal execution result is yet available**.
+
+This is a verified *design boundary*, not a claim of global atomic
+publication across code-loader executable pointers, scheduler TaskScope
+continuations, checkpoint bytes, native/FFI call leases and physical image
+retirement. The actual code migration still relies on
+`ActorRuntime.SourceActorTransfer` verification and old-generation
+physical-finalization fences. Extending that authority into one
+CONTROL-owned global commit remains a separate release gate.
+
+CI truth: source-owned `fast-ci` and `ci` fail with no recorded job
+steps, and job log retrieval fails; this does not demonstrate a Maven
+test failure or prove Actions minutes were exhausted. Draft source CI
+publisher PR #954 and private transfer issue #962 remain under independent
+security review. Source `main` has **zero approved destination entries**;
+no cross-organization private source transfer was performed.
