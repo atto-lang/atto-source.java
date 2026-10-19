@@ -432,6 +432,38 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void indexedProofDoesNotTransferAcrossDifferentReceivers() {
+        Ast.IndexExpr first = new Ast.IndexExpr(
+                new Ast.NameExpr("first"), new Ast.NameExpr("key"));
+        Ast.CheckedIndexKeys.record(first, Set.of("public"));
+        Ast.IndexExpr second = new Ast.IndexExpr(
+                new Ast.NameExpr("second"), new Ast.NameExpr("key"));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.propagate(first, second));
+        assertEquals(false, Ast.CheckedIndexKeys.hasProjectionProof(second));
+        Ast.IndexExpr clone = new Ast.IndexExpr(
+                new Ast.NameExpr("first"), new Ast.NameExpr("key"));
+        assertDoesNotThrow(() -> Ast.CheckedIndexKeys.propagate(first, clone));
+        assertEquals(Set.of("public"), Ast.CheckedIndexKeys.requirePlan(clone));
+    }
+
+    @Test
+    void tupleProofDoesNotTransferAcrossDifferentReceivers() {
+        Ast.IndexExpr first = new Ast.IndexExpr(
+                new Ast.NameExpr("first"), new Ast.NameExpr("index"));
+        Ast.CheckedIndexKeys.recordTupleSlot(first, 0);
+        Ast.IndexExpr second = new Ast.IndexExpr(
+                new Ast.NameExpr("second"), new Ast.NameExpr("index"));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.propagate(first, second));
+        assertEquals(null, Ast.CheckedIndexKeys.knownTupleSlot(second));
+        Ast.IndexExpr clone = new Ast.IndexExpr(
+                new Ast.NameExpr("first"), new Ast.NameExpr("index"));
+        assertDoesNotThrow(() -> Ast.CheckedIndexKeys.propagate(first, clone));
+        assertEquals(0, Ast.CheckedIndexKeys.knownTupleSlot(clone));
+    }
+
+    @Test
     void optimizerRejectsLiteralOutsideCertifiedFieldViewWithoutInstallingProof() {
         Ast.IndexExpr checked = new Ast.IndexExpr(
                 new Ast.NameExpr("record"), new Ast.NameExpr("key"));
