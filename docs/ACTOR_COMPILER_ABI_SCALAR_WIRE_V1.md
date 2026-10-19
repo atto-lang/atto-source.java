@@ -48,11 +48,22 @@ across compatible source upgrade; it is not an old-code pointer.
 
 ## Scope and security
 
-This phase binds a host scalar encoder to a **compiler-generated fingerprint**.
-The compiler does NOT yet generate the encode/decode implementation from
-actual source `ActorMail<T>` definitions. It does not statically prove that
-an arbitrary actor's declared receive type is signed i64; the opt-in host
-bridge is currently for explicitly known signed-i64 Counter fixtures.
+This phase binds a host scalar encoder to a **compiler-generated fingerprint**
+AND a separate, closed-world source-compiler receive-type proof. The linked
+`OresEvalRootNode.Evaluator.actorReceivesProxyLong(actorTypeName)` checks the
+resolved `receive` handler's exact `ActorMail<int>` type AST, rejecting
+`ActorMail<string>`, aliased/inferred/unrecognized types, and any
+`ActorCodeExecutor` that does not implement the proof (default DENY).
+
+This proof is checked both before binding the initial physical proxy mailbox
+and when preparing a replacement compiler generation, before the runtime
+attempts checkpoint/physical handoff. A self-consistent message ABI hash is
+NOT permission to treat a non-int receive contract as an i64.
+
+The compiler still does NOT generate arbitrary encode/decode implementations
+from source `ActorMail<T>` declarations; this opt-in path is a
+compiler-*verified* signed-i64-only host bridge, not general source-language
+message serialization.
 The ABI digest is an identity/compatibility check, NOT a signature or MAC.
 An adversarial peer with the digest could forge matching bytes; the endpoint
 still requires the trusted package-private physical router and owning mailbox.
@@ -77,6 +88,10 @@ exactly-once external side-effects are claimed.
 - `LogicalSourceActorProxyBridgeV1Test` exercises genuine source-compiled
   SHARED actor V1/V2 upgrades with queued ABI-bound mail and atomic route
   epochs, plus tampered ABI rejection before physical send.
+  It also stages a real `ActorMail<string>` actor and checks that the
+  compiler denies the signed-i64 proxy without consuming a generation pin;
+  a real `ActorMail<int>` actor remains admissible. The JUnit fixture is
+  committed but not an executed test pass while full source CI is blocked.
 - An exact copy of the **Git blob** `442260316ef1f4db313ca0b1001ea44e37b6e6db`
   for `SourceActorScalarWireV1.java` compiled locally using
   **OpenJDK 21**, `javac --release 21 -Xlint:all -Werror`.
@@ -84,7 +99,10 @@ exactly-once external side-effects are claimed.
   deterministic checks: 100,000 i64 round trips, 100,000 header
   corruptions, 100,000 foreign ABI rejections and 100,000 rejection
   checks for legacy eight-byte payloads in ABI-framed mode.
-  The current codec uses allocation-free, full-header digest comparison\n  instead of per-dispatch digest/UUID temporary objects. The **new exact\n  optimized blob** was recompiled and the same 400,000 checks rerun.\n  This is the real standalone codec class, not a full Oreslang runtime,
+  The current codec uses allocation-free, full-header digest comparison
+  instead of per-dispatch digest/UUID temporary objects. The **new exact
+  optimized blob** was recompiled and the same 400,000 checks rerun.
+  This is the real standalone codec class, not a full Oreslang runtime,
   compiler, JUnit or GraalVM run.
 - **Release gate:** execute the new JUnit tests and the full actor/runtime
   suite on exact-head JDK25/GraalVM, Native Image, and validated Linux
