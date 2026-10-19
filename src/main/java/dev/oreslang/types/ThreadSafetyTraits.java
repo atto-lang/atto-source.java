@@ -65,6 +65,15 @@ public final class ThreadSafetyTraits {
     @FunctionalInterface
     public interface NominalProof {
         boolean has(Named type, Trait trait);
+
+        /**
+         * Only the compiler's resolved intrinsic registry may grant this proof.
+         * A user-defined class or alias named Option/Result/Channel is not a
+         * built-in, regardless of its arguments or nominal Send/Sync result.
+         */
+        default boolean trustedIntrinsic(Named type) {
+            return false;
+        }
     }
 
     public static boolean has(Type type, Trait trait, NominalProof nominalProof) {
@@ -131,13 +140,15 @@ public final class ThreadSafetyTraits {
             }
             if (!(type instanceof Named named)) return false;
             String name = named.name();
-            if (name.equals("OptionUnwrapError")) return named.arguments().isEmpty();
+            if (name.equals("OptionUnwrapError")) {
+                return nominalProof.trustedIntrinsic(named) && named.arguments().isEmpty();
+            }
             if (name.equals("Option") || name.equals("IteratorResult")) {
-                return named.arguments().size() == 1
+                return nominalProof.trustedIntrinsic(named) && named.arguments().size() == 1
                         && has(named.arguments().getFirst(), trait, nominalProof, visiting, depth + 1);
             }
             if (name.equals("Result")) {
-                return named.arguments().size() == 2
+                return nominalProof.trustedIntrinsic(named) && named.arguments().size() == 2
                         && has(named.arguments().get(0), trait, nominalProof, visiting, depth + 1)
                         && has(named.arguments().get(1), trait, nominalProof, visiting, depth + 1);
             }
@@ -146,7 +157,8 @@ public final class ThreadSafetyTraits {
             // Sync for the handle until the underlying runtime sharing proof
             // and immutable-reference API have been audited separately.
             if (name.equals("Channel")) {
-                return trait == Trait.SEND && named.arguments().size() == 1
+                return trait == Trait.SEND && nominalProof.trustedIntrinsic(named)
+                        && named.arguments().size() == 1
                         && has(named.arguments().getFirst(), Trait.SEND, nominalProof, visiting, depth + 1);
             }
             if (UNPROVEN_CAPABILITIES.contains(name)) {
