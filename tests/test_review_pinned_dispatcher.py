@@ -468,6 +468,8 @@ class DispatcherTest(unittest.TestCase):
                         "parents":[{"sha":r["carrier_base_sha"]}]}
             if route.endswith("/git/trees/"+root_tree):
                 return {"sha":root_tree,"truncated":False,"tree":root_entries}
+            if route.endswith("/git/trees/"+"9"*40):
+                return {"sha":"9"*40,"truncated":False,"tree":[]}
             if "/git/ref/heads/" in route:
                 branch=route.split("/git/ref/heads/",1)[1]
                 name="refs/heads/"+branch
@@ -549,6 +551,8 @@ class DispatcherTest(unittest.TestCase):
                         "parents":[{"sha":r["carrier_base_sha"]}]}
             if route.endswith("/git/trees/"+root_tree):
                 return {"sha":root_tree,"truncated":False,"tree":root_entries}
+            if route.endswith("/git/trees/"+"9"*40):
+                return {"sha":"9"*40,"truncated":False,"tree":[]}
             if "/git/ref/heads/" in route:
                 branch=route.split("/git/ref/heads/",1)[1]
                 name="refs/heads/"+branch
