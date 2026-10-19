@@ -171,8 +171,8 @@ public final class Ast {
             java.util.ArrayList<java.util.Map.Entry<String, TypeRef>> entries = new java.util.ArrayList<>(members.entrySet());
             entries.sort(java.util.Map.Entry.comparingByKey());
             for (java.util.Map.Entry<String, TypeRef> entry : entries) {
-                if (entry.getKey() == null || entry.getKey().isBlank()) {
-                    throw new IllegalArgumentException("record type field name cannot be blank");
+                if (entry.getKey() == null || entry.getKey().indexOf((char) 0) >= 0) {
+                    throw new IllegalArgumentException("record type field name must be a valid static string");
                 }
                 fields.add(new TypeRef("$field$" + entry.getKey(), List.of(entry.getValue()), false));
             }
@@ -1097,8 +1097,8 @@ public final class Ast {
      */
     public record ObjectField(String name, Expr value) {
         public ObjectField {
-            if (name == null || name.isBlank()) {
-                throw new IllegalArgumentException("struct field name cannot be blank");
+            if (name == null || name.indexOf((char) 0) >= 0) {
+                throw new IllegalArgumentException("struct field name must be a valid static string");
             }
             java.util.Objects.requireNonNull(value, "value");
         }
@@ -1112,7 +1112,9 @@ public final class Ast {
     /** A field declaration in the closed shape of an explicit anonymous struct. */
     public record StructFieldSpec(String name, TypeRef type) {
         public StructFieldSpec {
-            if (name == null || name.isBlank()) throw new IllegalArgumentException("struct field name cannot be blank");
+            if (name == null || name.indexOf((char) 0) >= 0) {
+                throw new IllegalArgumentException("struct field name must be a valid static string");
+            }
             java.util.Objects.requireNonNull(type, "struct field type");
         }
     }
