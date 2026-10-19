@@ -275,6 +275,12 @@ public final class AsyncRuntime implements AutoCloseable {
 
     @Override
     public void close() {
+        if (isAsyncCarrierThread() || ActorRuntime.inActorExecution()
+                || OresScheduler.isSchedulerCarrierThread()
+                || OresScheduler.current() != null) {
+            throw new IllegalStateException(
+                    "AsyncRuntime.close cannot block an actor, Task, or scheduler turn");
+        }
         // The first caller owns shutdown initiation, but EVERY caller owns an
         // independent physical-quiescence join. Merely observing closed=true
         // must never permit VM teardown while carriers are still executing.
