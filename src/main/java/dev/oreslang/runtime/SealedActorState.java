@@ -159,18 +159,18 @@ public final class SealedActorState {
         }
 
         public long version() {
-            issuer.requireOwner();
+            issuer.requireActorAuthority();
             return version;
         }
 
         public long revision() {
-            issuer.requireOwner();
+            issuer.requireActorAuthority();
             return revision;
         }
 
         /** Immutable scalar copied under the originating state loan. */
         public Object scalar(String name) {
-            issuer.requireOwner();
+            issuer.requireActorAuthority();
             if (!scalars.containsKey(name))
                 throw new IllegalArgumentException("scalar was not captured in snapshot: " + name);
             return scalars.get(name);
@@ -247,13 +247,29 @@ public final class SealedActorState {
         return mutationRevision + 1;
     }
 
-    private void requireOwner() {
-        Thread active = stateCarrier.get();
-        if (retired || active == RETIRED_STATE_CARRIER)
+    /**
+     * Authority for detached immutable actor capabilities. Unlike requireOwner,
+     * this does not require the current physical carrier to own the live state
+     * gate: maxThreads>1 computations may safely read copied snapshots while a
+     * different carrier briefly holds a state loan.
+     */
+    private void requireActorAuthority() {
+        if (retired || stateCarrier.get() == RETIRED_STATE_CARRIER)
             throw new IllegalStateException("actor state retired");
         if (!owner.equals(ActorRuntime.currentActorId().orElse(null))) {
             throw new SecurityException("actor state requires the owning actor's admitted turn");
         }
+        // Close the small retirement race between the first fence read and
+        // actor-identity validation.
+        if (retired || stateCarrier.get() == RETIRED_STATE_CARRIER)
+            throw new IllegalStateException("actor state retired");
+    }
+
+    private void requireOwner() {
+        requireActorAuthority();
+        Thread active = stateCarrier.get();
+        if (active == RETIRED_STATE_CARRIER || retired)
+            throw new IllegalStateException("actor state retired");
         if (active != null && active != Thread.currentThread())
             throw new SecurityException("ML_STATE_LOAN_FOREIGN_CARRIER");
     }
