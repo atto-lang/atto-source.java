@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -106,44 +107,50 @@ final class GuestScalarTaskAwaitTest {
     }
 
     @Test
-    void lexicalRootScalarCaptureAcceptsBlocksButRejectsGlobalSymbols() {
+    void nonLocalNamesDoNotObtainRootScalarCaptureAuthority() {
         // A runtime facade or imported binding cannot be treated as an
         // independently copied scalar merely because its name resolves.
         rejects("let int answer = await task { return stdio; };");
         rejects("let int answer = await task { return print; };");
+        String unknown = """
+                pub fnc main(): void {
+                    let int answer = await task { return missingLocal; };
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(unknown));
         assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck("""
-                    pub fnc main(): void {
-                        let int answer = await task { return missingLocal; };
-                        return;
-                    }
-                    """));
+                () -> OresCompiler.parseAndTypeCheck(unknown));
     }
 
     @Test
     void nestedPlainLambdaMustNotInheritRootTaskAdmission() {
+        String source = """
+                pub fnc main(): void {
+                    let int x = 4;
+                    let lambda = || -> {
+                        let int result = await task { return x; };
+                        return result;
+                    };
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(source));
         assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck("""
-                    pub fnc main(): void {
-                        let int x = 4;
-                        let lambda = || -> {
-                            let int result = await task { return x; };
-                            return result;
-                        };
-                        return;
-                    }
-                    """));
+                () -> OresCompiler.parseAndTypeCheck(source));
     }
 
     @Test
     void asyncEntrypointCannotMintRootScopedScalarTask() {
+        String source = """
+                pub async fnc main(): void {
+                    let int value = await task { return 7; };
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(source));
         assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck("""
-                    pub async fnc main(): void {
-                        let int value = await task { return 7; };
-                        return;
-                    }
-                    """));
+                () -> OresCompiler.parseAndTypeCheck(source));
     }
 
     @Test
