@@ -8875,40 +8875,56 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void terminateTree(Throwable cause, boolean recordCause) {
+            /*
+             * Prepare every allocation-bearing teardown witness BEFORE the
+             * irreversible stopped/sealed transition. In particular an OOME
+             * while copying observer ledgers must not make the actor externally
+             * dead while leaving an accepted physical-message receipt pending.
+             *
+             * These collections are all lifecycleLock-owned, so the snapshots
+             * remain exact until the lock is released.
+             */
+            final Throwable drainFailure =
+                    cause == null ? terminated(ref) : cause;
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             List<DrainWaiter> failedDrainWaiters;
             List<OresFuture<Void>> failedPhysicalReceipts;
             synchronized (lifecycleLock) {
                 if (finalized) return;
+
+                // Fail before mutation if any snapshot allocation cannot be
+                // reserved. A later supervisor retry still sees a live actor
+                // and the original receipt/operation ownership intact.
+                failedDrainWaiters = List.copyOf(pendingDrains);
+                failedPhysicalReceipts =
+                        List.copyOf(pendingPhysicalReceipts.values());
+                descendants = List.copyOf(children);
+                pending = List.copyOf(pendingOperations);
+
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
                 }
                 stopped.set(true);
                 sealing = true;
                 upgradeIngressTicket = null;
-                // Detach pending observers under the actor monitor. Settling an
-                // OresFuture invokes runtime callbacks inline, so never settle
-                // one while holding lifecycleLock.
-                failedDrainWaiters = List.copyOf(pendingDrains);
+
+                // Snapshot ownership has transferred to local immutable lists.
+                // Settling any Future can invoke callbacks synchronously, so
+                // publication still happens only after lifecycleLock release.
                 pendingDrains.clear();
-                failedPhysicalReceipts =
-                        List.copyOf(pendingPhysicalReceipts.values());
                 pendingPhysicalReceipts.clear();
+                pendingOperations.clear();
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
                 drainMailboxReservations();
-                descendants = List.copyOf(children);
-                pending = List.copyOf(pendingOperations);
-                pendingOperations.clear();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish failure only after teardown has released lifecycleLock.
-            Throwable drainFailure = cause == null ? terminated(ref) : cause;
             for (OresFuture<Void> exact : failedPhysicalReceipts) {
                 exact.failFromRuntime(drainFailure);
             }
