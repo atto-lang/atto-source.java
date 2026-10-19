@@ -7,6 +7,7 @@ import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
+import dev.oreslang.types.Types.Dyn;
 import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.Generic;
 import dev.oreslang.types.Types.ListType;
@@ -4658,7 +4659,9 @@ public final class TypeChecker {
     }
 
     private Type deref(Type type) {
-        return type instanceof Borrow borrow ? borrow.target() : type;
+        Type target = type instanceof Borrow borrow ? borrow.target() : type;
+        // Unwrap only for receiver dispatch; retain the witness in stored types.
+        return target instanceof Dyn dyn ? dyn.interfaceType() : target;
     }
 
     /** Nominal/structural view used only to resolve members on a polymorphic receiver. */
@@ -4673,6 +4676,7 @@ public final class TypeChecker {
      */
     private Type bindReceiverSelf(Type type, Type receiver) {
         if (type instanceof SelfType) return receiver;
+        if (type instanceof Dyn dyn) return new Dyn((Named) bindReceiverSelf(dyn.interfaceType(), receiver));
         if (type instanceof Borrow borrow) return new Borrow(bindReceiverSelf(borrow.target(), receiver), borrow.mutable());
         if (type instanceof ListType list) return new ListType(bindReceiverSelf(list.element(), receiver));
         if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> bindReceiverSelf(t, receiver)).toList(), tuple.kind());
@@ -5065,7 +5069,7 @@ public final class TypeChecker {
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
-        if (type == Unknown.INSTANCE || type instanceof SelfType || type instanceof Borrow
+        if (type == Unknown.INSTANCE || type instanceof Dyn || type instanceof SelfType || type instanceof Borrow
                 || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
         if (type instanceof StringLiteral) return true;
@@ -7564,6 +7568,7 @@ public final class TypeChecker {
 
     private Type substituteGenerics(Type type, Map<String, Type> bindings) {
         if (type instanceof Generic generic) return bindings.getOrDefault(generic.name(), type);
+        if (type instanceof Dyn dyn) return new Dyn((Named) substituteGenerics(dyn.interfaceType(), bindings));
         if (type instanceof SelfType receiverSelf) return new SelfType(substituteGenerics(receiverSelf.bound(), bindings));
         if (type instanceof Borrow borrow) return new Borrow(substituteGenerics(borrow.target(), bindings), borrow.mutable());
         if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings));
@@ -7586,6 +7591,7 @@ public final class TypeChecker {
 
     private boolean containsUnknown(Type type) {
         if (type == Unknown.INSTANCE) return true;
+        if (type instanceof Dyn dyn) return containsUnknown(dyn.interfaceType());
         if (type instanceof SelfType receiverSelf) return containsUnknown(receiverSelf.bound());
         if (type instanceof Borrow borrow) return containsUnknown(borrow.target());
         if (type instanceof ListType list) return containsUnknown(list.element());
@@ -7602,6 +7608,7 @@ public final class TypeChecker {
     private boolean containsGenericNamed(Type type, Set<String> names) {
         if (names.isEmpty()) return false;
         if (type instanceof Generic generic) return names.contains(generic.name());
+        if (type instanceof Dyn dyn) return containsGenericNamed(dyn.interfaceType(), names);
         if (type instanceof SelfType receiverSelf) return containsGenericNamed(receiverSelf.bound(), names);
         if (type instanceof Borrow borrow) return containsGenericNamed(borrow.target(), names);
         if (type instanceof ListType list) return containsGenericNamed(list.element(), names);
@@ -8029,7 +8036,7 @@ public final class TypeChecker {
             // and performs runtime method selection. Erase only to the proven
             // nominal interface view; never erase to Any or a record shape.
             // LLVM trait-object codegen is a separate, fail-closed parity gate.
-            return named;
+            return new Dyn(named);
         }
         if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
         if (ref.isComplement()) return Types.notOf(resolve(ref.complementedType(), generics, self, allowNullMarker));
