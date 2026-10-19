@@ -187,6 +187,39 @@ final class ActorUpgradeAtomicPublicationV1Test {
     }
 
     @Test
+    void independentlyChangedGateEpochFailsClosedBeforeAnyDelivery() {
+        try (var gate = new ActorUpgradeEpochGate(24, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(2, 16, 32);
+             var authority = new ActorUpgradeAtomicPublicationV1(
+                     gate, mailbox, state((byte) 1), new Object())) {
+            authority.admit(new byte[] {1});
+            var rogue = gate.prepare(image('c'));
+            assertTrue(gate.publish(rogue)); // legacy unsafe independent operation
+            assertThrows(IllegalStateException.class, authority::pollDispatch);
+            assertThrows(IllegalStateException.class, authority::snapshot);
+            assertEquals(1L, mailbox.snapshot().routeEpoch(),
+                    "legacy code publication must not fake mailbox cutover");
+        }
+    }
+
+    @Test
+    void independentlyChangedMailboxEpochFailsClosedBeforeAnyDelivery() {
+        try (var gate = new ActorUpgradeEpochGate(25, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(2, 16, 32);
+             var authority = new ActorUpgradeAtomicPublicationV1(
+                     gate, mailbox, state((byte) 1), new Object())) {
+            authority.admit(new byte[] {1});
+            var rogue = mailbox.freezeDispatchForUpgrade();
+            assertTrue(rogue.drained());
+            rogue.commit(); // legacy unsafe independent operation
+            assertThrows(IllegalStateException.class, authority::pollDispatch);
+            assertThrows(IllegalStateException.class, authority::snapshot);
+            assertEquals(1L, gate.epoch(),
+                    "legacy mailbox publication must not fake code generation");
+        }
+    }
+
+    @Test
     void concurrentDispatchAttemptCannotReadPartialPublishedRecord()
             throws Exception {
         try (var gate = new ActorUpgradeEpochGate(23, image('a'));
