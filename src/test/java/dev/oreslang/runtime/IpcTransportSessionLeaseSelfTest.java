@@ -183,7 +183,7 @@ public final class IpcTransportSessionLeaseSelfTest {
         AtomicInteger actualCloses = new AtomicInteger();
         AtomicReference<Runnable> priorTask = new AtomicReference<>();
         AtomicReference<Runnable> resumedTask = new AtomicReference<>();
-        var staleGate = new IpcTransportSessionLease("staleCleanup", 60, 1,
+        var staleGate = new IpcTransportSessionLease(staleMessage, 60, 1,
                 staleBridge, actualCloses::incrementAndGet, cleanup -> {
                     if (cleanupSchedules.incrementAndGet() == 1) {
                         priorTask.set(cleanup);
