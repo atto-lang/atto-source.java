@@ -142,6 +142,28 @@ final class InlineSelfReceiverArityTest {
     }
 
     @Test
+    void explicitlyBorrowedSelfIsARealUserArgument() {
+        String program = """
+                define class Counter as
+                  pub use_other(self, borrow self other, int value): int {
+                    return value;
+                  }
+                  pub forward(self): int {
+                    return self.use_other(rt borrow self, 5);
+                  }
+                end
+                """;
+        Ast.ClassDecl owner = parseOwner(program);
+        assertEquals(2, owner.methods().get(0).arity());
+        Ast.MethodDecl forward = owner.methods().get(1);
+        Ast.ReturnStmt returned =
+                assertInstanceOf(Ast.ReturnStmt.class, forward.body().getFirst());
+        Ast.CallExpr call = assertInstanceOf(Ast.CallExpr.class, returned.value());
+        assertEquals(2, call.arguments().size());
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+    }
+
+    @Test
     void actorSelfCannotEscapeAsASecondExplicitCallArgument() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
