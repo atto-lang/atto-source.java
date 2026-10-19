@@ -170,7 +170,7 @@ final class DynamicPropertyAccessBoundaryTest {
     void computedProductBorrowsRemainFailClosedWithoutPathExclusiveLoans() {
         rejected("""
                 fnc bad(string key): void {
-                    val Point point = struct{x: int, y: int}{x: 1, y: 2};
+                    val point = struct{x: int, y: int}{x: 1, y: 2};
                     const field = rt borrow point[key];
                     return;
                 }
