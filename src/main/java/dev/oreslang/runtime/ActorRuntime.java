@@ -1225,20 +1225,28 @@ public final class ActorRuntime implements AutoCloseable {
             this.bytes = bytes;
         }
 
-        int length() { return values.length; }
+        private void checkCaller() {
+            ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+            if (current != null
+                    && (current.runtime() != ActorRuntime.this
+                            || !current.actorId().equals(cell.ref.id()))) {
+                throw new SecurityException("foreign actor cannot access shard snapshot");
+            }
+        }
+
+        int length() {
+            synchronized (cell.lifecycleLock) {
+                checkCaller();
+                if (revoked || cell.finalized) throw new IllegalStateException("shard snapshot revoked");
+                return values.length;
+            }
+        }
 
         double read(int index) {
             synchronized (cell.lifecycleLock) {
+                checkCaller();
                 if (revoked || cell.finalized) {
                     throw new IllegalStateException("shard snapshot revoked");
-                }
-                // Detached handles can be read by trusted host code, but
-                // must not become a backdoor to another guest actor.
-                ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
-                if (current != null &&
-                        (current.runtime() != ActorRuntime.this
-                                || !current.actorId().equals(cell.ref.id()))) {
-                    throw new SecurityException("foreign actor cannot read shard snapshot");
                 }
                 return values[index];
             }
@@ -1267,7 +1275,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        @Override public void close() { revoke(); }
+        @Override public void close() {
+            checkCaller();
+            revoke();
+        }
         private void revokeFromActorStop() { revoke(); }
     }
 
