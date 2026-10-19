@@ -127,7 +127,7 @@ public final class SoaSnapshot {
         for (var field : schema.entrySet()) {
             String name = Objects.requireNonNull(field.getKey(), "field name");
             // Spaces, punctuation, Unicode, and even empty quoted keys are data.
-            if (name.indexOf('\u0000') >= 0) {
+            if (name.indexOf((char) 0) >= 0) {
                 throw new IllegalArgumentException("NUL in field name");
             }
             Class<?> type = Objects.requireNonNull(field.getValue(), "field type");
