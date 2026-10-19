@@ -38,7 +38,7 @@ test("compile and negative guest precede fail-closed positive tests",()=>{
   const d=y.indexOf("Run positive nominal Result");
   const e=y.indexOf("Run complete Java and Graal");
   assert(a>0&&a<b&&b<c&&c<d&&d<e);
-  assert.match(y,/NominalActorBridgeFailClosedTest,NominalResultErrorAuditTest test/);
+  assert.match(y,/NominalActorBridgeFailClosedTest,NominalResultErrorAuditTest,NominalResultTraversalTest test/);
   assert.match(y,/TrainingErrorNominalResultGuestTest,MlActorStateScalarGuestTest test/);
 });
 test("no unpinned actions or third-party uploads",()=>{

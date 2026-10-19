@@ -11,6 +11,7 @@ on:
       - "tests/adt_ml_typechecker_admission_contract.test.mjs"
       - "tests/adt_ml_nominal_result_error_audit.test.mjs"
       - "src/test/java/dev/oreslang/NominalResultErrorAuditTest.java"
+      - "src/test/java/dev/oreslang/NominalResultTraversalTest.java"
       - "tests/adt_ml_gate_false_positive.test.mjs"
       - "tests/adt_ml_workflow_gate_contract.test.mjs"
       - "tests/adt_ml_ci_private_admission_contract.test.mjs"
@@ -98,7 +99,7 @@ jobs:
       - name: Compile all production and test Java sources before integration admission
         run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests test-compile
       - name: Execute parser-positive / runtime-negative admission JUnit
-        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=NominalActorBridgeFailClosedTest,NominalResultErrorAuditTest test
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=NominalActorBridgeFailClosedTest,NominalResultErrorAuditTest,NominalResultTraversalTest test
       - name: Fail closed on incomplete nominal runtime and TypeChecker integration
         run: node scripts/verify-adt-ml-integration.mjs
       - name: Execute positive nominal ADT GraalVM JUnit only after admitted integration

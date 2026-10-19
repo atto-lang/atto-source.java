@@ -68,7 +68,7 @@ jobs:
       - name: Compile production and test classes
         run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests test-compile
       - name: Prove negative admission and ordinary-program controls in actual JUnit
-        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=NominalActorBridgeFailClosedTest,NominalResultErrorAuditTest test
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=NominalActorBridgeFailClosedTest,NominalResultErrorAuditTest,NominalResultTraversalTest test
       - name: Require complete ADT and actor compiler integration before positive guest
         run: node scripts/verify-adt-ml-integration.mjs
       - name: Run positive nominal Result and actor ML guest tests

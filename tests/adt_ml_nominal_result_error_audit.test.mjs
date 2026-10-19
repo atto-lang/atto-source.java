@@ -44,3 +44,22 @@ test("payload-bearing nominal case is not certified from arity alone",()=>{
   assert.match(junit,/payloadBearingCaseRequiresRealTypeAndOwnershipChecking/);
   assert.match(junit,/PayloadError\.BAD_NUMBER\("not a number"\)/);
 });
+
+test("all relevant statement/control-flow forms have bounded nonrecursive traversal",()=>{
+  const s=read("src/main/java/dev/oreslang/types/NominalResultErrorAudit.java");
+  assert.match(s,/ArrayDeque<Pending>/);
+  assert.match(s,/MAX_AUDIT_STATEMENTS = 8192/);
+  assert.match(s,/statement work budget/);
+  for(const name of ["TryStmt","SwitchStmt","ForStmt","ForOfStmt",
+      "ForOfDestructureStmt","LoopStmt","SelectStmt","ClassDecl","FieldDecl"])
+    assert(s.includes("Ast."+name),name);
+  assert.match(s,/cls\.constructor\(\)/);
+});
+test("JUnit exercises catch/finally, constructor, and deep source",()=>{
+  const s=read("src/test/java/dev/oreslang/NominalResultTraversalTest.java");
+  for(const name of ["traversalFindsErrorsInTrySwitchAndAllLoopForms",
+      "constructorAndClassFieldCannotHideIncorrectNominalResult",
+      "deepAdversarialStatementTreeIsBoundedWithoutRecursion",
+      "deeplyNestedButBoundedNominalErrorRemainsTypeOnlyAccepted"])
+    assert(s.includes(name),name);
+});

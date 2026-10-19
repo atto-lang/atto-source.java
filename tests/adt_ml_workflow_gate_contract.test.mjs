@@ -20,7 +20,7 @@ test("exact-source checkout precedes all source and JUnit gates",()=>{
 test("source checks are not called Java/GraalVM certification",()=>{
   assert.match(yml,/Host-only ADT \+ actor source-admission regressions/);
   assert.match(yml,/TrainingErrorNominalResultGuestTest/);
-  assert.match(yml,/NominalActorBridgeFailClosedTest,NominalResultErrorAuditTest test/);
+  assert.match(yml,/NominalActorBridgeFailClosedTest,NominalResultErrorAuditTest,NominalResultTraversalTest test/);
   assert.match(yml,/DskipTests test-compile/);
   assert.match(yml,/node scripts\/verify-adt-ml-integration\.mjs/);
   assert.match(yml,/MlActorStateScalarGuestTest/);
