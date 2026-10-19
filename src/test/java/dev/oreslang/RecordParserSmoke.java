@@ -21,7 +21,7 @@ public final class RecordParserSmoke {
     public static void runAll() {
         Ast.FunctionDecl function = firstFunction("""
                 fnc get(): string {
-                    const Person ada = infer record{"first name": "Ada", age: 37};
+                    const Person ada = record{"first name": "Ada", age: 37};
                     const Person grace = infer struct{age: 42, "first name": "Grace"};
                     const Contact contact = infer<Contact> record{"emoji🚀": "ok"};
                     return grace["first name"];
@@ -40,6 +40,9 @@ public final class RecordParserSmoke {
                 "short struct AST identity");
         Ast.ObjectExpr c = (Ast.ObjectExpr) contact.initializer();
         check(c.inferredRecord() && c.readonlyInferredAggregate(), "named record readonly source kind");
+        check(((Ast.ObjectExpr) grace.initializer()).inferredStruct(), "struct origin must remain distinct");
+        check(!((Ast.ObjectExpr) grace.initializer()).readonlyInferredAggregate(),
+                "inferred struct must not inherit record readonly capability");
         check(c.fields().getFirst().name().equals("emoji🚀"), "Unicode quoted key");
 
         Ast.ObjectField first = new Ast.ObjectField("age", new Ast.LiteralExpr(1));
@@ -59,6 +62,9 @@ public final class RecordParserSmoke {
             check(Ast.TypeRef.readonlyRecordType(
                     Map.of(valid, Ast.TypeRef.simple("string")))
                     .recordMembers().containsKey(valid), "valid row key");
+            check(Ast.TypeRef.structType(
+                    Map.of(valid, Ast.TypeRef.simple("string")))
+                    .structMembers().containsKey(valid), "valid struct key");
         }
         for (String invalid : List.of("bad" + (char) 0, "bad" + (char) 0xD800,
                 "bad" + (char) 0xDC00, "x".repeat(1025))) {
@@ -67,6 +73,8 @@ public final class RecordParserSmoke {
                     "declared field key");
             denied(() -> Ast.TypeRef.recordType(
                     Map.of(invalid, Ast.TypeRef.simple("string"))), "typed record key");
+            denied(() -> Ast.TypeRef.structType(
+                    Map.of(invalid, Ast.TypeRef.simple("string"))), "typed struct key");
         }
 
         denied(() -> Parser.parse("""
