@@ -416,6 +416,44 @@ public class TaskCancellationTest {
         }
     }
 
+    @Test void childRetirementDuringParentCancellationPreservesObserver()
+            throws Exception {
+        for (int i = 0; i < 100; i++) {
+            TaskCancellation parent = new TaskCancellation();
+            TaskCancellation child = parent.child();
+            CountDownLatch revokerStarted = new CountDownLatch(1);
+            CountDownLatch finishRevocation = new CountDownLatch(1);
+            AtomicInteger observations = new AtomicInteger();
+            java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+
+            child.onRevoke(() -> {
+                revokerStarted.countDown();
+                await(finishRevocation);
+            });
+            child.onCancel(observations::incrementAndGet);
+            Thread cancelling = new Thread(() -> {
+                try { parent.cancel("shutdown"); }
+                catch (Throwable error) { failure.set(error); }
+            });
+            cancelling.start();
+            try {
+                assertTrue(revokerStarted.await(3, TimeUnit.SECONDS));
+                assertTrue(child.isCancelled());
+                child.retire();
+                assertEquals(0, observations.get());
+            } finally {
+                finishRevocation.countDown();
+            }
+            cancelling.join(3000);
+            assertFalse(cancelling.isAlive());
+            assertNull(failure.get());
+            assertEquals(1, observations.get(),
+                    "child retirement must not suppress parent cancellation");
+            assertEquals(0, parent.ownedChildCount());
+        }
+    }
+
     private static void await(CountDownLatch latch) {
         try { if (!latch.await(3, TimeUnit.SECONDS)) throw new AssertionError("timed out"); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
