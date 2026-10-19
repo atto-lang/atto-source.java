@@ -8335,6 +8335,24 @@ public final class TypeChecker {
             return target.options().stream().anyMatch(option -> assignable(actual, option));
         }
 
+        if (expected instanceof Dyn targetDyn) {
+            if (actual instanceof Dyn sourceDyn) {
+                return interfaceTypeExtends(
+                        sourceDyn.interfaceType(), targetDyn.interfaceType(), new LinkedHashSet<>());
+            }
+            if (actual instanceof Named concrete) {
+                Ast.ClassDecl klass = findClass(concrete.name());
+                return klass != null && klass.actorKind() == Ast.ActorKind.NONE
+                        && classTypeImplements(concrete, targetDyn.interfaceType(), new LinkedHashSet<>());
+            }
+            return false;
+        }
+        if (actual instanceof Dyn sourceDyn) {
+            return expected instanceof Named target
+                    && findInterface(target.name()) != null
+                    && interfaceTypeExtends(sourceDyn.interfaceType(), target, new LinkedHashSet<>());
+        }
+
         // Function compatibility is contravariant in parameters and covariant
         // in results. Leaf comparisons come back through this checker so
         // nominal inheritance/interface relations remain valid inside
