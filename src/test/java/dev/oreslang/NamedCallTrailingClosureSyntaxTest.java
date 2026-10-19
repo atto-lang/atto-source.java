@@ -313,6 +313,34 @@ final class NamedCallTrailingClosureSyntaxTest {
     }
 
     @Test
+    void instanceNamedCallProofSurvivesValidDynamicOverrideDispatch() throws Exception {
+        String output = run("""
+                define class Base as
+                  pub sub(int left, int right): int {
+                    return left - right;
+                  }
+                end
+
+                define class Child extends Base as
+                  pub sub(int left, int right): int {
+                    return left - right + 10;
+                  }
+                end
+
+                fnc invoke(Base value): int {
+                  return value.sub(right: 2, left: 7);
+                }
+
+                pub routine main(): void {
+                  val child = new Child();
+                  stdio.stdout.write(invoke(child));
+                  return;
+                }
+                """);
+        assertEquals("15", output);
+    }
+
+    @Test
     void genericAndDynamicNamedCallsRemainFailClosed() {
         IllegalArgumentException generic = assertThrows(
                 IllegalArgumentException.class,
