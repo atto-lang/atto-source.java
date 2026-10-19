@@ -356,6 +356,113 @@ final class ThreadSafetyTraitsTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(5)
+    void traitCacheCannotReuseShallowProofPastMaximumNestingDepth() {
+        // The same identity appears first at depth 1, then at depth 2.
+        // Shallow success must not mask an over-depth leaf on the second path.
+        Type shared = Types.Primitive.INT;
+        for (int i = 0; i < 255; i++) {
+            shared = new Types.ListType(shared);
+        }
+        Type shallower = shared;
+        Type twoPaths = new Types.Tuple(List.of(
+                shallower, new Types.ListType(shallower)));
+        assertTrue(ThreadSafetyTraits.has(
+                shallower, Trait.SEND, (type, trait) -> false));
+        assertFalse(ThreadSafetyTraits.has(
+                twoPaths, Trait.SEND, (type, trait) -> false),
+                "memoizing only node identity and trait bypasses depth admission");
+
+        // The healthy short path must remain valid in a fresh invocation.
+        assertTrue(ThreadSafetyTraits.has(
+                shallower, Trait.SEND, (type, trait) -> false));
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(5)
+    void sharedDagTypeGraphDoesNotTriggerExponentialProofWork() {
+        // Only 71 physical nodes, but a naive recursive proof would expand
+        // 2^70 visits. Identity memoization must keep this bounded.
+        java.util.concurrent.atomic.AtomicInteger nominalCalls =
+                new java.util.concurrent.atomic.AtomicInteger();
+        ThreadSafetyTraits.NominalProof safeLeaf = (type, trait) -> {
+            nominalCalls.incrementAndGet();
+            return type.name().equals("KnownSafe");
+        };
+        Type graph = new Types.Named("KnownSafe", List.of());
+        for (int i = 0; i < 70; i++) {
+            graph = new Types.Tuple(List.of(graph, graph));
+        }
+        assertTrue(ThreadSafetyTraits.has(graph, Trait.SEND, safeLeaf));
+        assertTrue(ThreadSafetyTraits.has(graph, Trait.SYNC, safeLeaf));
+        assertEquals(2, nominalCalls.get(),
+                "the trusted nominal callback must execute once per top-level trait proof");
+
+        Type bad = new Types.Named("Future", List.of(Types.Primitive.INT));
+        for (int i = 0; i < 70; i++) {
+            bad = new Types.Tuple(List.of(bad, bad));
+        }
+        assertFalse(ThreadSafetyTraits.has(bad, Trait.SEND, safeLeaf));
+        assertFalse(ThreadSafetyTraits.has(bad, Trait.SYNC, safeLeaf));
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(5)
+    void enormousFlatTypeProofFailsClosedWithinNodeBudget() {
+        Type wide = new Types.Tuple(java.util.Collections.nCopies(
+                100_001, Types.Primitive.INT));
+        assertFalse(has(wide, Trait.SEND),
+                "an oversized but shallow type must not cause unbounded proof work");
+        // Budgets and memoization are per-query, never stored in a global
+        // cache that could poison a subsequent independent derivation.
+        assertTrue(has(Types.Primitive.INT, Trait.SEND));
+        assertTrue(has(new Types.Tuple(List.of(Types.Primitive.INT)), Trait.SYNC));
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void actorTransportAndFrozenResultWalkersRespectProofWorkBudget() throws Exception {
+        var constructor = TypeChecker.class.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance();
+        var validate = TypeChecker.class.getDeclaredMethod(
+                "validateActorCallableBoundaryType", Types.Type.class,
+                dev.oreslang.ast.Ast.ActorKind.class, boolean.class, String.class);
+        validate.setAccessible(true);
+
+        // Only 36 distinct structural type nodes, but without a work budget
+        // the two child edges would require over 2^35 visits.
+        Type dag = Types.Primitive.INT;
+        for (int i = 0; i < 35; i++) {
+            dag = new Types.Tuple(List.of(dag, dag));
+        }
+        Type sharedDag = dag;
+        for (boolean completion : List.of(false, true)) {
+            var failure = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> validate.invoke(checker, sharedDag,
+                            dev.oreslang.ast.Ast.ActorKind.SHARED,
+                            completion, "actor type graph"));
+            assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains("nesting budget"),
+                    failure.getCause().getMessage());
+        }
+
+        Type wide = new Types.Tuple(java.util.Collections.nCopies(
+                100_001, Types.Primitive.INT));
+        var failure = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> validate.invoke(checker, wide,
+                        dev.oreslang.ast.Ast.ActorKind.SHARED,
+                        false, "actor flat payload"));
+        assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+        assertTrue(failure.getCause().getMessage().contains("nesting budget"));
+
+        // Exhausted budgets cannot poison a subsequent compiler query.
+        assertDoesNotThrow(() -> validate.invoke(checker,
+                Types.Primitive.INT, dev.oreslang.ast.Ast.ActorKind.SHARED,
+                false, "scalar"));
+    }
+
+    @Test
     void sharedMutexAcceptsSendOwnedDataButRejectsUnprovenPayloads() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc good(): void {

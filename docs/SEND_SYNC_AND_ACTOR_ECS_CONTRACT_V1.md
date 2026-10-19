@@ -202,6 +202,42 @@ are bitwise deterministic.
   It is not authorization to copy Oreslang's source. Source-mirror approval
   remains blocked by security issue #962 and an empty protected allowlist.
 
+## Send/Sync proof work and private CI admission (2026-10-19)
+
+* Depth limits alone are insufficient: a compact structural type DAG with two
+  identical child references per level would cause exponential verification
+  visits without per-query memoization. The trait checker now caches completed
+  results by **type object identity, trait and recursion depth**, separately
+  for each query, and checks active cycles *before* using cached results.
+  Recursion depth is part of the key because a positive shallow proof must
+  not bypass the 256-level bound on a second deeper path to the same node.
+  The cache's depth-key stride follows the trusted enum cardinality. This
+  does not invent a nominal Send/Sync witness for unresolved classes.
+* A separate 100,000-visit per-query limit makes extremely wide flat types and
+  adversarial graphs fail closed. Exceeding the bound is a denied proof, never
+  a successful thread-transfer authorization. Explicit size-limit diagnostics
+  and more precise proof budgets can be added when the full compiler integration
+  is executable.
+* Directed JUnit regressions use a 70-level shared-child DAG (roughly 2^70
+  visits without memoization), an unsafe capability-bearing DAG, and a
+  100,001-element flat aggregate, plus an unequal-depth DAG sharing a
+  255-element list chain on depth-1 and depth-2 paths. Tests are committed
+  but not execution verified until Maven/JUnit actually starts on the
+  exact source tree.
+* Actor mailbox validation and actor-callable frozen-result scanning share
+  a separate 100,000-visit fail-closed work budget, on top of their existing
+  depth limits. A compact cyclic/diamond-shaped type graph or enormously
+  wide aggregate must not make the compiler spend unbounded CPU on actor
+  admission. Unlike the thread-safety trait derivation, actor validation
+  deliberately rejects an over-budget shared DAG until an independently
+  reviewed context-sensitive memoization proof is available.
+* The alternate private Actions capacity probe succeeded, establishing
+  current runner execution in another organization. It **does not approve
+  private source mirroring**: source main and candidate carrier main were
+  observed unprotected, and the protected destination and source-snapshot
+  allowlists remain empty. The security and independent-review gates in
+  issues #904 and #962, plus draft PR #954, remain mandatory.
+
 ## Planned actor/ECS design
 
 Actor isolation should remain the outer fault and networking boundary.
