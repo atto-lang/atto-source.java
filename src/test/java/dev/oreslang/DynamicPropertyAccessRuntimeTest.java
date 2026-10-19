@@ -393,4 +393,43 @@ final class DynamicPropertyAccessRuntimeTest {
         String text = output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
         assertEquals("3\n8\n1\n9\n", text);
     }
+
+    @Test
+    void awaitedClassReceiverPreservesStaticComputedAccessView() {
+        String source = """
+                define class Parent as
+                    pub let int id = 7;
+                end
+
+                async fnc load(): Parent {
+                    return new Parent();
+                }
+
+                pub async fnc main(): void {
+                    const int value = (await load())["id"];
+                    stdio.println(value);
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(OresLanguage.ID, source, "dynamic-awaited-class-view.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        assertEquals(
+                "7\n",
+                output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
 }
