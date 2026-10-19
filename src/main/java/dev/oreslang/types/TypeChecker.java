@@ -2236,6 +2236,12 @@ public final class TypeChecker {
                 targetType = memberType(member, env, generics, self, true);
                 where = member.member();
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
+                if (indexed.receiver() instanceof Ast.NameExpr namespace
+                        && modules.containsKey(namespace.name())) {
+                    throw new IllegalArgumentException(
+                            "module namespace '" + namespace.name()
+                                    + "' does not support indexed assignment");
+                }
                 Type receiver = receiverDispatchType(deref(typeOf(indexed.receiver(), env, generics, self)));
                 Type index = typeOf(indexed.index(), env, generics, self);
                 if (receiver instanceof Record record) {
@@ -3736,6 +3742,12 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.IndexExpr indexed) {
+            if (indexed.receiver() instanceof Ast.NameExpr namespace
+                    && modules.containsKey(namespace.name())) {
+                throw new IllegalArgumentException(
+                        "module namespace '" + namespace.name()
+                                + "' does not support computed property access; use a declared member name");
+            }
             Type receiver = receiverDispatchType(deref(typeOf(indexed.receiver(), env, generics, self)));
             Type index = typeOf(indexed.index(), env, generics, self);
             Env.Binding indexedOwner = indexed.receiver() instanceof Ast.NameExpr ownerName
