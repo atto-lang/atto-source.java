@@ -172,6 +172,49 @@ class PrivateCiGitTreeTest(unittest.TestCase):
                         pub.Denied, "unsupported path"):
                     pub.collect_git_tree(root, SOURCE_COMMIT)
 
+    def test_nested_git_metadata_path_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = GitTreeFixture(root)
+            sha = blob_sha(b"x")
+            record = (
+                f"100644 blob {sha}\tsrc/.GiT/config".encode()
+                + bytes([0]))
+            def git(root_arg, *args, timeout=45):
+                if args == (
+                        "ls-tree", "-r", "-z",
+                        "--full-tree", SOURCE_COMMIT):
+                    return record
+                return fixture(root_arg, *args, timeout=timeout)
+            with mock.patch.object(
+                    pub, "git_bytes", side_effect=git):
+                with self.assertRaisesRegex(
+                        pub.Denied, "unsupported path"):
+                    pub.collect_git_tree(root, SOURCE_COMMIT)
+
+    def test_duplicate_git_path_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = b"x"
+            sha = blob_sha(data)
+            fixture = GitTreeFixture(
+                root, {"same.txt": ("100644", data)})
+            record = (
+                f"100644 blob {sha}\tsame.txt".encode()
+                + bytes([0]))
+            raw = record + record
+            def git(root_arg, *args, timeout=45):
+                if args == (
+                        "ls-tree", "-r", "-z",
+                        "--full-tree", SOURCE_COMMIT):
+                    return raw
+                return fixture(root_arg, *args, timeout=timeout)
+            with mock.patch.object(
+                    pub, "git_bytes", side_effect=git):
+                with self.assertRaisesRegex(
+                        pub.Denied, "duplicate path"):
+                    pub.collect_git_tree(root, SOURCE_COMMIT)
+
     def test_local_blob_bytes_must_match_git_object_id(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
