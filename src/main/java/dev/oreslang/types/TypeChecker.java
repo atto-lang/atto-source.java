@@ -1893,6 +1893,10 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.BinaryExpr binary) {
             Type left = typeOf(binary.left(), env, generics, self);
+            if (containsMlScalarCapability(left)) {
+                throw new IllegalArgumentException(
+                        "compiler-issued actor scalar capabilities cannot be used with binary operators");
+            }
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
                 Map<Env.Binding, Set<String>> afterLeft = env.initializationSnapshot();
@@ -1904,6 +1908,10 @@ public final class TypeChecker {
                 return Primitive.BOOL;
             }
             Type right = typeOf(binary.right(), env, generics, self);
+            if (containsMlScalarCapability(right)) {
+                throw new IllegalArgumentException(
+                        "compiler-issued actor scalar capabilities cannot be used with binary operators");
+            }
             return switch (binary.operator()) {
                 case "^^" -> {
                     requireAssignable(left, Primitive.BOOL, "logical operand");
