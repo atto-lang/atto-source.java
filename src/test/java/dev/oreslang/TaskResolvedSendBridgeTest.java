@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.Types;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -15,6 +16,33 @@ final class TaskResolvedSendBridgeTest {
         return assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void resolvedSharedSafetyRejectsReadonlyAliasCapabilities() throws Exception {
+        var ctor = TypeChecker.class.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        var checker = ctor.newInstance();
+        var sharedSafe = TypeChecker.class.getDeclaredMethod(
+                "isSharedSafe",
+                Types.Type.class,
+                java.util.Set.class,
+                java.util.Map.class);
+        sharedSafe.setAccessible(true);
+
+        Types.Type writable = new Types.Record(
+                Map.of("value", Types.Primitive.INT));
+        Types.Type readonly = new Types.Record(
+                Map.of("value", Types.Primitive.INT), true);
+        Types.Type nestedReadonly = new Types.Record(
+                Map.of("view", readonly));
+
+        assertEquals(Boolean.TRUE, sharedSafe.invoke(
+                checker, writable, new java.util.LinkedHashSet<>(), Map.of()));
+        assertEquals(Boolean.FALSE, sharedSafe.invoke(
+                checker, readonly, new java.util.LinkedHashSet<>(), Map.of()));
+        assertEquals(Boolean.FALSE, sharedSafe.invoke(
+                checker, nestedReadonly, new java.util.LinkedHashSet<>(), Map.of()));
     }
 
     @Test
