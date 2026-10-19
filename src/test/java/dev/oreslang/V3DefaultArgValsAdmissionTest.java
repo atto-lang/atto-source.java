@@ -635,8 +635,19 @@ final class V3DefaultArgValsAdmissionTest {
         var absentDefaultB = new V3CallLoweringPreview.Slot(1, "b", type,
                 V3CallLoweringPreview.SlotAction.DEFAULT_SCALAR,
                 DefaultArgumentPolicy.Literal.integer(20), -1, -1, false);
+        // Raw call indices 1 and 3 imply missing source items 0 and 2:
+        // reject the forged preview unless both have explicit omit origins.
+        assertThrows(IllegalArgumentException.class,
+                () -> new V3CallLoweringPreview.Preview(
+                        List.of(literal, other), List.of(suppliedA, suppliedB)));
+        var omitC = new V3CallLoweringPreview.Slot(2, "c", type,
+                V3CallLoweringPreview.SlotAction.DEFAULT_SCALAR,
+                DefaultArgumentPolicy.Literal.integer(30), -1, 0, false);
+        var omitD = new V3CallLoweringPreview.Slot(3, "d", type,
+                V3CallLoweringPreview.SlotAction.DEFAULT_SCALAR,
+                DefaultArgumentPolicy.Literal.integer(40), -1, 2, false);
         assertEquals(2, new V3CallLoweringPreview.Preview(
-                List.of(literal, other), List.of(suppliedA, suppliedB))
+                List.of(literal, other), List.of(suppliedA, suppliedB, omitC, omitD))
                 .unevaluatedExpressionsInSourceOrder().size());
         assertThrows(IllegalArgumentException.class,
                 () -> new V3CallLoweringPreview.Preview(
@@ -655,8 +666,15 @@ final class V3DefaultArgValsAdmissionTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new V3CallLoweringPreview.Preview(
                         List.of(), List.of(defaultA, defaultB)));
+        // Only one explicit omitted source item => raw index must start at 0.
+        assertThrows(IllegalArgumentException.class,
+                () -> new V3CallLoweringPreview.Preview(
+                        List.of(), List.of(defaultA, absentDefaultB)));
+        var actualOmitA = new V3CallLoweringPreview.Slot(0, "a", type,
+                V3CallLoweringPreview.SlotAction.DEFAULT_SCALAR,
+                DefaultArgumentPolicy.Literal.integer(10), -1, 0, false);
         assertEquals(2, new V3CallLoweringPreview.Preview(
-                List.of(), List.of(defaultA, absentDefaultB))
+                List.of(), List.of(actualOmitA, absentDefaultB))
                 .formalOrderSlots().size());
     }
 
