@@ -6,7 +6,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
-javac -encoding UTF-8 -d "$tmp_dir" \
+javac --release 21 -encoding UTF-8 -Xlint:all -Werror -d "$tmp_dir" \
   "$repo_root/src/main/java/dev/oreslang/dop/SoaSnapshot.java" \
   "$repo_root/src/test/java/dev/oreslang/dop/SoaSnapshotSmoke.java"
-java -ea -cp "$tmp_dir" dev.oreslang.dop.SoaSnapshotSmoke
+java -Xmx96m -ea -cp "$tmp_dir" dev.oreslang.dop.SoaSnapshotSmoke
