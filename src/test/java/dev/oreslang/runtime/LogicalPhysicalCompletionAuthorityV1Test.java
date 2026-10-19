@@ -11,6 +11,61 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class LogicalPhysicalCompletionAuthorityV1Test {
     @Test
+    void productionMailboxHasNoSequenceOnlyRollbackSurface() {
+        for (var method : LogicalActorProxyMailboxV1.class.getDeclaredMethods()) {
+            if (!method.getName().equals("requeueProvenUnsent")) continue;
+            assertFalse(
+                    method.getParameterCount() == 1
+                            && method.getParameterTypes()[0] == long.class,
+                    "production mailbox must not expose sequence-only rollback");
+        }
+    }
+
+    @Test
+    void unsentRollbackRequiresExactEnvelopeMailboxAndCurrentEpoch() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(2, 8, 16);
+             var foreign = new LogicalActorProxyMailboxV1(2, 8, 16)) {
+            var message = mailbox.admit(new byte[] {7});
+            var other = foreign.admit(new byte[] {7});
+            assertSame(message, mailbox.pollDispatch());
+            assertSame(other, foreign.pollDispatch());
+
+            var copied = new LogicalActorProxyMailboxV1.Envelope(
+                    message.messageSequence(), message.payload());
+            var before = mailbox.snapshot();
+            assertThrows(SecurityException.class,
+                    () -> mailbox.requeueProvenUnsent(copied, 1L));
+            assertThrows(SecurityException.class,
+                    () -> mailbox.requeueProvenUnsent(other, 1L));
+            assertThrows(SecurityException.class,
+                    () -> mailbox.requeueProvenUnsent(message, 2L));
+            assertEquals(before, mailbox.snapshot(),
+                    "foreign rollback attempts cannot mutate credits or FIFO");
+
+            mailbox.requeueProvenUnsent(message, 1L);
+            assertEquals(1, mailbox.snapshot().queuedMessages());
+            assertEquals(0, mailbox.snapshot().outstandingMessages());
+
+            assertSame(message, mailbox.pollDispatch());
+            mailbox.beginPhysicalSendAttempt(message, 1L);
+            var attempted = mailbox.snapshot();
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.requeueProvenUnsent(message, 1L),
+                    "a physical send attempt cannot be erased by rollback");
+            assertEquals(attempted, mailbox.snapshot());
+            mailbox.completeAfterPhysicalReceipt(message, 1L);
+            assertThrows(SecurityException.class,
+                    () -> mailbox.requeueProvenUnsent(message, 1L),
+                    "a completed envelope is no longer rollback authority");
+
+            // The foreign mailbox remains independent and still needs its own
+            // exact envelope plus current route epoch.
+            foreign.requeueProvenUnsent(other, 1L);
+            assertEquals(1, foreign.snapshot().queuedMessages());
+        }
+    }
+
+    @Test
     void productionMailboxHasNoSequenceOnlyCompletionSurface() {
         for (var method : LogicalActorProxyMailboxV1.class.getDeclaredMethods()) {
             if (!method.getName().equals("complete")) continue;
