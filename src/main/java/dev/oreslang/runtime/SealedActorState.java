@@ -328,6 +328,17 @@ public final class SealedActorState {
         requireOwner();
         if (current != null || stateCarrier.get() != null)
             throw new IllegalStateException("ML_PREPARE_WITH_LIVE_STATE_LOAN");
+        try {
+            Set.of(
+                    Objects.requireNonNull(tensorField, "tensor field"),
+                    Objects.requireNonNull(versionField, "version field"),
+                    Objects.requireNonNull(runField, "run field"),
+                    Objects.requireNonNull(graphField, "graph field"),
+                    Objects.requireNonNull(incarnationField, "incarnation field"));
+        } catch (IllegalArgumentException duplicate) {
+            throw new IllegalArgumentException(
+                    "ML_DUPLICATE_TENSOR_PUBLICATION_FIELD", duplicate);
+        }
         if (!"tensor:f64".equals(schema.get(tensorField))
                 || !"int".equals(schema.get(versionField))
                 || !"int".equals(schema.get(runField))
