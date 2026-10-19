@@ -118,15 +118,21 @@ public final class SendSyncTraits {
 
             Ast.ClassDecl klass = classes.get(type.name());
             if (klass == null || ambiguous.contains(type.name())
+                    || klass.isAbstract()
                     || klass.actorKind() != Ast.ActorKind.NONE
                     || klass.genericParameters().size() != args.size()
-                    || !klass.parents().isEmpty()) return Traits.NONE;
+                    || !klass.parents().isEmpty() || !klass.interfaces().isEmpty())
+                return Traits.NONE;
             Map<String, Ast.TypeRef> bindings = new HashMap<>();
             for (int i = 0; i < args.size(); i++) {
                 bindings.put(klass.genericParameters().get(i),
                         substitute(args.get(i), substitutions));
             }
-            boolean send = true, sync = true;
+            // A generic argument cannot smuggle unsupported capabilities through
+            // a class specialization, even when its fields are currently empty.
+            Traits parameters = args.isEmpty() ? Traits.BOTH
+                    : all(args, substitutions, active);
+            boolean send = parameters.send(), sync = parameters.sync();
             for (Ast.FieldDecl field : klass.fields()) {
                 Traits child = derive(field.type(), bindings, active);
                 send &= child.send();
