@@ -249,11 +249,27 @@ public final class Ast {
         }
     }
 
-    public record Param(TypeRef type, String name, boolean structural, boolean mutable) {
+    /**
+     * Formal-local annotations are distinct from declaration annotations.
+     * In the staged compiler, @Default carries a single constant AST witness
+     * but can never execute until type, ownership and ABI lowering are proven.
+     */
+    public record Param(TypeRef type, String name, boolean structural, boolean mutable,
+                        List<Annotation> annotations) {
         public Param {
             java.util.Objects.requireNonNull(type, "formal type");
             if (name == null || name.isBlank()) {
                 throw new IllegalArgumentException("formal parameter needs a name");
+            }
+            annotations = List.copyOf(annotations);
+            for (Annotation annotation : annotations) {
+                if (!annotation.name().equals("Default") || annotation.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "unknown or invalid formal-local annotation; expected @Default(value)");
+                }
+            }
+            if (annotations.size() > 1) {
+                throw new IllegalArgumentException("duplicate @Default on formal '" + name + "'");
             }
             if (structural && type.isOmittableFormal()) {
                 throw new IllegalArgumentException(
@@ -265,10 +281,15 @@ public final class Ast {
             }
         }
         public boolean optional() { return type.isOmittableFormal(); }
+        public boolean hasDefault() { return !annotations.isEmpty(); }
         public TypeRef valueType() { return optional() ? type.omittableValueType() : type; }
         /** Intended callee type; not executable until verified Option ABI lowering. */
         public TypeRef calleeType() {
             return optional() ? new TypeRef("Option", List.of(valueType()), false) : type;
+        }
+        /** Compatibility construction: existing ordinary signatures have no defaults. */
+        public Param(TypeRef type, String name, boolean structural, boolean mutable) {
+            this(type, name, structural, mutable, List.of());
         }
         public Param(TypeRef type, String name) { this(type, name, false, false); }
         public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
