@@ -11,6 +11,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.atomic.AtomicReferenceArray;
@@ -72,8 +73,14 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private final AtomicLong affinityPreferredHits = new AtomicLong();
     private final AtomicLong affinitySteals = new AtomicLong();
     private final AtomicLong affinityGlobalSpills = new AtomicLong();
+    private final AtomicLong affinityLocalitySpills = new AtomicLong();
+    private final AtomicLong affinitySameLlcSteals = new AtomicLong();
+    private final AtomicLong affinitySameNumaSteals = new AtomicLong();
+    private final AtomicLong affinityRemoteSteals = new AtomicLong();
     private final AtomicInteger affinityBindingFailures = new AtomicInteger();
     private final AtomicReferenceArray<Thread> carrierThreads;
+    private final AtomicIntegerArray carrierAffinityTargets;
+    private final CpuTopology topology;
     private final AtomicBoolean shutdown = new AtomicBoolean();
     /** Serializes Java->native pool calls against asynchronous native retirement. */
     private final Object nativeLifecycleLock = new Object();
@@ -98,6 +105,17 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
             int queueCapacity,
             String threadPrefix,
             long affinityBase) {
+        this(corePoolSize, maximumPoolSize, queueCapacity, threadPrefix,
+                affinityBase, CpuTopology.discoverHost());
+    }
+
+    NativeCarrierExecutor(
+            int corePoolSize,
+            int maximumPoolSize,
+            int queueCapacity,
+            String threadPrefix,
+            long affinityBase,
+            CpuTopology topology) {
         if (corePoolSize <= 0) throw new IllegalArgumentException("corePoolSize must be > 0");
         if (maximumPoolSize < corePoolSize) {
             throw new IllegalArgumentException("maximumPoolSize must be >= corePoolSize");
@@ -105,6 +123,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         if (queueCapacity <= 0) throw new IllegalArgumentException("queueCapacity must be > 0");
         if (affinityBase < 0) throw new IllegalArgumentException("affinityBase must be >= 0");
         Objects.requireNonNull(threadPrefix, "threadPrefix");
+        this.topology = Objects.requireNonNull(topology, "topology");
 
         ensureNativeLibraryLoaded();
 
@@ -120,6 +139,10 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         this.affinityBase = affinityBase;
         this.nativeStackBytes = configuredCarrierStackBytes();
         this.carrierThreads = new AtomicReferenceArray<>(maximumPoolSize);
+        this.carrierAffinityTargets = new AtomicIntegerArray(maximumPoolSize);
+        for (int slot = 0; slot < maximumPoolSize; slot++) {
+            carrierAffinityTargets.set(slot, CpuTopology.UNKNOWN);
+        }
         this.corePoolSize = new AtomicInteger(corePoolSize);
         this.largestPoolSize = new AtomicInteger(corePoolSize);
 
@@ -193,6 +216,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         long affinityOrdinal = affinityBase + slot;
         int affinityTarget = nativeBindCurrentThreadToAffinityOrdinal(affinityOrdinal);
         CURRENT_AFFINITY_TARGET.set(affinityTarget);
+        carrierAffinityTargets.set(slot, affinityTarget);
         if (affinityTarget < 0) affinityBindingFailures.incrementAndGet();
         CURRENT_NATIVE_THREAD_ID.set(nativeCurrentThreadId());
         carrierThreads.set(slot, Thread.currentThread());
@@ -261,6 +285,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
             }
         } finally {
             carrierThreads.set(slot, null);
+            carrierAffinityTargets.set(slot, CpuTopology.UNKNOWN);
             CURRENT_NATIVE_THREAD_ID.remove();
             CURRENT_AFFINITY_TARGET.remove();
             CURRENT_SLOT.remove();
@@ -300,27 +325,60 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
 
         int maxProbes = Math.min(enabled - 1, MAX_STEAL_PROBES);
         int start = Math.floorMod(nextStealVictim.getAndIncrement(), enabled);
-        int examined = 0;
+        int thiefCpu = carrierAffinityTargets.get(thiefSlot);
         int probes = 0;
-        while (examined < enabled && probes < maxProbes) {
-            int victimSlot = (start + examined++) % enabled;
-            if (victimSlot == thiefSlot) continue;
-            probes++;
 
-            ArrayBlockingQueue<Runnable> victim = affinityQueues.get(victimSlot);
-            if (victim.peek() == null) continue;
-            long oldestEnqueue = affinityLaneOldestEnqueueNanos.get(victimSlot);
-            if (oldestEnqueue == 0L
-                    || now - oldestEnqueue < AFFINITY_STEAL_GRACE_NANOS) continue;
+        // Preserve locality when possible: same logical CPU/cache domain, same
+        // NUMA node, then remote/unknown. This remains a preference only.
+        for (int rank = 0; rank <= 3 && probes < maxProbes; rank++) {
+            for (int examined = 0; examined < enabled && probes < maxProbes; examined++) {
+                int victimSlot = (start + examined) % enabled;
+                if (victimSlot == thiefSlot) continue;
+                int victimCpu = carrierAffinityTargets.get(victimSlot);
+                if (topology.localityRank(thiefCpu, victimCpu) != rank) continue;
+                probes++;
 
-            Runnable stolen = victim.poll();
-            if (stolen != null) {
-                affinitySteals.incrementAndGet();
-                clearLaneAgeIfEmpty(victimSlot, victim);
-                return stolen;
+                ArrayBlockingQueue<Runnable> victim = affinityQueues.get(victimSlot);
+                if (victim.peek() == null) continue;
+                long oldestEnqueue = affinityLaneOldestEnqueueNanos.get(victimSlot);
+                if (oldestEnqueue == 0L
+                        || now - oldestEnqueue < AFFINITY_STEAL_GRACE_NANOS) continue;
+
+                Runnable stolen = victim.poll();
+                if (stolen != null) {
+                    affinitySteals.incrementAndGet();
+                    if (rank <= 1) affinitySameLlcSteals.incrementAndGet();
+                    else if (rank == 2) affinitySameNumaSteals.incrementAndGet();
+                    else affinityRemoteSteals.incrementAndGet();
+                    clearLaneAgeIfEmpty(victimSlot, victim);
+                    return stolen;
+                }
             }
         }
         return null;
+    }
+
+    private int tryEnqueueLocalityPeer(Runnable task, int preferredSlot) {
+        int enabled = Math.max(1, corePoolSize.get());
+        if (enabled <= 1 || preferredSlot < 0 || preferredSlot >= enabled) return -1;
+        int preferredCpu = carrierAffinityTargets.get(preferredSlot);
+        if (!topology.hasKnownLocality(preferredCpu)) return -1;
+
+        int threshold = localBacklogEscapeThreshold();
+        for (int rank = 1; rank <= 2; rank++) {
+            for (int offset = 1; offset < enabled; offset++) {
+                int candidate = (preferredSlot + offset) % enabled;
+                int candidateCpu = carrierAffinityTargets.get(candidate);
+                if (topology.localityRank(preferredCpu, candidateCpu) != rank) continue;
+                ArrayBlockingQueue<Runnable> lane = affinityQueues.get(candidate);
+                if (lane.size() >= threshold || !lane.offer(task)) continue;
+                affinityLaneOldestEnqueueNanos.compareAndSet(
+                        candidate, 0L, System.nanoTime());
+                affinityLocalitySpills.incrementAndGet();
+                return candidate;
+            }
+        }
+        return -1;
     }
 
     private boolean reserveReadySlot() {
@@ -396,6 +454,14 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
                                 slot, 0L, System.nanoTime());
                     }
                 }
+                if (!offered) {
+                    int localitySlot = tryEnqueueLocalityPeer(task, slot);
+                    if (localitySlot >= 0) {
+                        slot = localitySlot;
+                        destination = affinityQueues.get(localitySlot);
+                        offered = true;
+                    }
+                }
             }
             if (!offered) {
                 slot = -1;
@@ -456,6 +522,27 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
      */
     public void executeAffinity(int affinityKey, Runnable task) {
         enqueue(task, affinityKey, true);
+    }
+
+    /**
+     * Schedule one actor turn, Task, callback or continuation using a common
+     * placement contract. CONTROL stays on its reserved dispatcher; a
+     * THREAD_BOUND request is rejected until a non-stealable same-pthread lane
+     * exists and can prove the native resource owner.
+     */
+    public void executePlacement(ExecutionPlacement.Hint hint, Runnable task) {
+        Objects.requireNonNull(hint, "placement hint");
+        Objects.requireNonNull(task, "task");
+        if (hint.kind() == ExecutionPlacement.Kind.CONTROL) {
+            throw new RejectedExecutionException(
+                    "CONTROL work requires the reserved runtime ControlDispatcher");
+        }
+        switch (hint.affinity()) {
+            case NONE -> execute(task);
+            case SOFT -> executeAffinity(hint.affinityKey(), task);
+            case THREAD_BOUND -> throw new RejectedExecutionException(
+                    "THREAD_BOUND work cannot use a stealable native carrier lane");
+        }
     }
 
     public boolean remove(Runnable task) {
@@ -580,6 +667,10 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     public long getAffinityPreferredHitCount() { return affinityPreferredHits.get(); }
     public long getAffinityStealCount() { return affinitySteals.get(); }
     public long getAffinityGlobalSpillCount() { return affinityGlobalSpills.get(); }
+    public long getAffinityLocalitySpillCount() { return affinityLocalitySpills.get(); }
+    public long getAffinitySameLlcStealCount() { return affinitySameLlcSteals.get(); }
+    public long getAffinitySameNumaStealCount() { return affinitySameNumaSteals.get(); }
+    public long getAffinityRemoteStealCount() { return affinityRemoteSteals.get(); }
     public int getAffinityBindingFailureCount() { return affinityBindingFailures.get(); }
     public int getLargestPoolSize() { return largestPoolSize.get(); }
     public int getMaximumPoolSize() { return maximumPoolSize; }
