@@ -9,6 +9,7 @@ Status: draft implementation on Java/Graal only. The compiler and runtime have *
 - A tuple or fixed positional product accepts an integer index. Literal indexes must be within arity; dynamic keys return a union of element types and require runtime bounds checks.
 - Arrays and lists retain their existing integer indexing semantics. No implicit conversion of strings to indexes, or indexes to strings, occurs.
 - The runtime evaluates the receiver and key once in left-to-right order, then dispatches. Missing, inaccessible and uninitialized fields fail explicitly.
+- For a partially initialized explicit struct, a compile-time-known literal key can read an already initialized field. An unknown key cannot be proven to avoid uninitialized fields and is rejected until the entire value is initialized; an explicitly uninitialized literal key is always rejected.
 
 ## Hidden-field security
 
