@@ -181,7 +181,12 @@ public final class ConcurrencyTestProbe {
                     + "|entry-sha256=" + entrySha256
                     + "|backend=" + backend + "|probe=1");
             lines.addAll(events);
-            Files.write(destination, lines, StandardCharsets.UTF_8);
+            // CREATE_NEW is atomic w.r.t. an existing file or symlink. Never
+            // destroy the original evidence when a seed/path is reused or
+            // when a file is swapped between CLI validation and this write.
+            Files.write(destination, lines, StandardCharsets.UTF_8,
+                    java.nio.file.StandardOpenOption.CREATE_NEW,
+                    java.nio.file.StandardOpenOption.WRITE);
         }
 
         @Override
