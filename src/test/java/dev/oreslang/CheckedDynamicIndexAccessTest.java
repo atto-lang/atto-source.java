@@ -286,6 +286,36 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void constructorCastReceiverDoesNotPermitIndexedSelfRead() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                define class Box as
+                  val int value;
+                  constructor(int next) {
+                    const int observed = (self as Box)["value"];
+                    self.value = next;
+                  }
+                end
+                """)));
+        assertTrue(failure.getMessage().contains("constructor self"));
+    }
+
+    @Test
+    void constructorNestedFieldReceiverDoesNotPermitIndexedSelfRead() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                define class Box as
+                  val Array<int> items;
+                  constructor() {
+                    const int first = self.items[0];
+                    self.items = new Array<int>();
+                  }
+                end
+                """)));
+        assertTrue(failure.getMessage().contains("constructor self"));
+    }
+
+    @Test
     void constructorSelfCannotUseComputedFieldReadBeforeInitializationProof() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse("""
                 define class Box as
