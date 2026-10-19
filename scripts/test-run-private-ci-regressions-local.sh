@@ -206,8 +206,8 @@ from pathlib import Path
 import sys
 file = Path(sys.argv[1])
 content = file.read_text()
-assert "range(106)" in content
-file.write_text(content.replace("range(106)", "range(1)"))
+assert "range(116)" in content
+file.write_text(content.replace("range(116)", "range(1)"))
 PY
 if PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
 grep -q PRIVATE_CI_TEST_INVENTORY_REJECTED "$root/out"
