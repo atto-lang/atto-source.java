@@ -4538,7 +4538,11 @@ public final class ActorRuntime implements AutoCloseable {
              * preferred carrier/core lane. Correctness never depends on the
              * chosen lane and NativeCarrierExecutor may spill under pressure.
              */
-            nativeDispatcher.executeAffinity(cell.ref.id().value().hashCode(), cell::runBatch);
+            nativeDispatcher.executePlacement(
+                    ExecutionPlacement.Hint.soft(
+                            ExecutionPlacement.Kind.ACTOR_TURN,
+                            cell.ref.id().value().hashCode()),
+                    cell::runBatch);
         } else {
             dispatcher.execute(cell::runBatch);
         }
