@@ -60,4 +60,33 @@ class TrustedSupervisorInboxTest {
         assertEquals(TrustedSupervisorInbox.Admission.REJECTED, first.offerTrustedPanic(bound, 2, 3));
         first.close(); other.close();
     }
+
+    @Test void concurrentIngressRevocationNeverLeaksCredits() throws Exception {
+        var inbox = new TrustedSupervisorInbox(2, 1000, 1000, 4);
+        var child = inbox.bindVerifiedChild(5, 1);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var error = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread producer = new Thread(() -> {
+            try {
+                start.await();
+                for (int i = 1; i <= 600; i++) {
+                    var result = inbox.offerUser(child, i, new byte[]{(byte)i});
+                    if (result == TrustedSupervisorInbox.Admission.ESCALATE_TO_PARENT)
+                        throw new AssertionError("user data entered CONTROL escalation");
+                }
+            } catch (Throwable e) { error.compareAndSet(null, e); }
+        });
+        Thread revoker = new Thread(() -> {
+            try { start.await(); inbox.revoke(child); }
+            catch (Throwable e) { error.compareAndSet(null, e); }
+        });
+        producer.start(); revoker.start(); start.countDown();
+        producer.join(); revoker.join();
+        if (error.get() != null) throw new AssertionError(error.get());
+        assertEquals(0, inbox.outstandingMessages());
+        assertEquals(0, inbox.outstandingBytes());
+        assertEquals(TrustedSupervisorInbox.Admission.REJECTED, inbox.offerUser(child, 601, new byte[]{3}));
+        inbox.close();
+    }
+
 }
