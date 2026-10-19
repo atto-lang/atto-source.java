@@ -152,6 +152,54 @@ public final class DeclaredEffectVerifier {
                 effects.addAll(callbackEffects);
                 return;
             }
+            if (call.callee() instanceof Ast.NameExpr intrinsic) {
+                String name = intrinsic.name();
+                if (name.equals("state_snapshot")) {
+                    if (stateAccess == null
+                            || call.arguments().size() < 3
+                            || !(call.arguments().getFirst() instanceof Ast.NameExpr loan)
+                            || !loan.name().equals(stateAccess)) {
+                        throw new IllegalArgumentException(
+                                "state_snapshot requires the active lexical actor state loan");
+                    }
+                    effects.add(FunctionEffects.Effect.STATE_READ);
+                    effects.add(FunctionEffects.Effect.ALLOC);
+                    for (int i = 1; i < call.arguments().size(); i++) {
+                        collect(call.arguments().get(i), effects, stateAccess, callableName, serial);
+                    }
+                    return;
+                }
+                if (name.equals("snapshot_int")
+                        || name.equals("snapshot_bool")
+                        || name.equals("snapshot_string")
+                        || name.equals("snapshot_version")
+                        || name.equals("snapshot_revision")) {
+                    collect(call.arguments(), effects, stateAccess, callableName, serial);
+                    return;
+                }
+                if (name.equals("prepare_scalar_publication")) {
+                    if (stateAccess != null) {
+                        throw new IllegalArgumentException(
+                                "prepare_scalar_publication must run after the actor state loan is released");
+                    }
+                    effects.add(FunctionEffects.Effect.ALLOC);
+                    collect(call.arguments(), effects, stateAccess, callableName, serial);
+                    return;
+                }
+                if (name.equals("publish_scalar_publication")) {
+                    if (stateAccess == null
+                            || call.arguments().size() != 2
+                            || !(call.arguments().getFirst() instanceof Ast.NameExpr loan)
+                            || !loan.name().equals(stateAccess)) {
+                        throw new IllegalArgumentException(
+                                "publish_scalar_publication requires the active lexical actor state loan");
+                    }
+                    effects.add(FunctionEffects.Effect.STATE_READ);
+                    effects.add(FunctionEffects.Effect.STATE_WRITE);
+                    collect(call.arguments().get(1), effects, stateAccess, callableName, serial);
+                    return;
+                }
+            }
             if (call.callee() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("stdio")
