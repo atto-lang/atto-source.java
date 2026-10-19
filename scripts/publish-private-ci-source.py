@@ -27,6 +27,8 @@ MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
 # The protected source repository is fixed in reviewed code, not a caller input.
 TRUSTED_SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
+# Immutable repo ID; a renamed/deleted/reused owner/name is not the same authority.
+TRUSTED_SOURCE_REPOSITORY_ID = 1400792274
 TRUSTED_SOURCE_REF = "main"
 TRUSTED_SOURCE_REVIEWER = "ORESoftware"
 MAX_PR_REVIEWS = 100
@@ -150,7 +152,9 @@ def gh_api(route, method="GET", payload=None):
 
 def checked_repo(repository):
     result = gh_api("repos/" + repository)
-    if (not isinstance(result.get("full_name"), str)
+    if (not isinstance(result.get("id"), int)
+            or isinstance(result["id"], bool) or result["id"] <= 0
+            or not isinstance(result.get("full_name"), str)
             or result["full_name"].casefold() != repository.casefold()
             or result.get("visibility") != "private"
             or result.get("private") is not True):
@@ -227,6 +231,13 @@ def require_trusted_branch_controls():
     administrator must actually enable branch protection; ruleset-only
     configurations need a separately reviewed attestation implementation.
     """
+    trusted = gh_api(f"repos/{TRUSTED_SOURCE_REPOSITORY}")
+    if (trusted.get("id") != TRUSTED_SOURCE_REPOSITORY_ID
+            or trusted.get("full_name") != TRUSTED_SOURCE_REPOSITORY
+            or trusted.get("private") is not True
+            or trusted.get("visibility") != "private"
+            or trusted.get("default_branch") != TRUSTED_SOURCE_REF):
+        raise Denied("trusted source repository immutable identity changed")
     prefix = f"repos/{TRUSTED_SOURCE_REPOSITORY}/branches/{TRUSTED_SOURCE_REF}"
     branch = gh_api(prefix)
     if branch.get("name") != TRUSTED_SOURCE_REF or branch.get("protected") is not True:
@@ -813,6 +824,7 @@ def publish(repository, source, branch, trusted_root, expected_tree=None,
     if actual_source_tree != expected_tree:
         raise Denied("source snapshot does not match the independently attested Git tree")
     base = checked_repo(repository)
+    destination_repo_id = base["id"]
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
         raise Denied("destination default branch is invalid")
@@ -848,6 +860,8 @@ def publish(repository, source, branch, trusted_root, expected_tree=None,
         # default HEAD (or a default-branch switch) must stop additional
         # source blob uploads before creating a stale CI branch.
         current_destination = checked_repo(repository)
+        if current_destination["id"] != destination_repo_id:
+            raise Denied("destination immutable repository identity changed during transfer")
         if current_destination.get("default_branch") != default:
             raise Denied("destination default branch changed during transfer")
         live_ref = gh_api(f"repos/{repository}/git/ref/heads/{default}")
