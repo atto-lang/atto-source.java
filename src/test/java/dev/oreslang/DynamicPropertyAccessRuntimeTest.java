@@ -432,4 +432,55 @@ final class DynamicPropertyAccessRuntimeTest {
                 "7\n",
                 output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
+
+    @Test
+    void checkedClassViewSurvivesCompositeReceiverExpressions() {
+        String source = """
+                define class Parent as
+                    pub let int id = 7;
+                end
+
+                define class Child extends Parent as
+                    pub let string label = "child";
+                end
+
+                pub fnc main(): void {
+                    const int fromMatch = (match<Parent> true over {
+                        on true { return new Child(); }
+                        on false { return new Parent(); }
+                    })["id"];
+                    stdio.println(fromMatch);
+
+                    let Parent assigned = new Parent();
+                    stdio.println((assigned = new Child())["id"]);
+
+                    val Parent borrowed = new Child();
+                    stdio.println((rt borrow borrowed)["id"]);
+
+                    const values = tuple(new Parent());
+                    stdio.println(values[0]["id"]);
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(OresLanguage.ID, source, "dynamic-checked-class-view-composite.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        assertEquals(
+                "7\n7\n7\n7\n",
+                output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
 }
