@@ -107,6 +107,27 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void structuralCallableContractIsNotADataField() {
+        String declarations = """
+                define interface Readable
+                  x: int;
+                  fnc render(int value) => int;
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(declarations + """
+                fnc read(structural Readable point, string key): int {
+                  return point[key];
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(declarations + """
+                fnc bad(structural Readable point): int {
+                  return point["instance$render$arity1$generics0"];
+                }
+                """)));
+    }
+
+    @Test
     void privateMoveOnlyFieldDoesNotPoisonPublicCopyableIndexView() throws Exception {
         String source = """
                 define class Candidate as
