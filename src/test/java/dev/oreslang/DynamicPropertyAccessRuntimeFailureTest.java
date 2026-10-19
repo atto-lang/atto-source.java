@@ -77,4 +77,38 @@ final class DynamicPropertyAccessRuntimeFailureTest {
                 }
                 """, "dynamic-class-missing-key.ores");
     }
+
+    @Test
+    void dynamicUnknownStructWriteFailsAtRuntime() {
+        runtimeRejected("""
+                fnc selector(): string { return "missing"; }
+
+                pub fnc main(): void {
+                    val Point point = infer struct{x: 1, y: 2};
+                    const string key = selector();
+                    point[key] = 9;
+                    return;
+                }
+                """, "dynamic-struct-write-missing-key.ores");
+    }
+
+    @Test
+    void dynamicUnknownClassWriteFailsAtRuntime() {
+        runtimeRejected("""
+                define class Point as
+                    pub let int x = 1;
+                    pub let int y = 2;
+                end
+
+                fnc selector(): string { return "missing"; }
+
+                pub fnc main(): void {
+                    val Point point = new Point();
+                    const string key = selector();
+                    point[key] = 9;
+                    return;
+                }
+                """, "dynamic-class-write-missing-key.ores");
+    }
+
 }
