@@ -446,4 +446,41 @@ final class NativeCarrierExecutorTest {
         }
     }
 
+
+    @Test
+    void genericPlacementSupportsMigratableWorkAndFailsClosedForControlAndThreadBound()
+            throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+
+        try (NativeCarrierExecutor executor =
+                     new NativeCarrierExecutor(1, 1, 32, "ores-native-placement-")) {
+            CountDownLatch done = new CountDownLatch(4);
+            executor.executePlacement(
+                    ExecutionPlacement.Hint.soft(ExecutionPlacement.Kind.ACTOR_TURN, 1),
+                    done::countDown);
+            executor.executePlacement(
+                    ExecutionPlacement.Hint.soft(ExecutionPlacement.Kind.TASK, 1),
+                    done::countDown);
+            executor.executePlacement(
+                    ExecutionPlacement.Hint.soft(ExecutionPlacement.Kind.CALLBACK, 1),
+                    done::countDown);
+            executor.executePlacement(
+                    ExecutionPlacement.Hint.soft(ExecutionPlacement.Kind.CONTINUATION, 1),
+                    done::countDown);
+
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> executor.executePlacement(
+                            ExecutionPlacement.Hint.soft(ExecutionPlacement.Kind.CONTROL, 1),
+                            () -> { }));
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> executor.executePlacement(
+                            ExecutionPlacement.Hint.threadBound(
+                                    ExecutionPlacement.Kind.CONTINUATION, 1),
+                            () -> { }));
+        }
+    }
+
 }
