@@ -27,13 +27,18 @@ final class TaskBorrowCompilerBridge {
     /**
      * Preflights independently resolved scalar accesses and reserves them
      * atomically on a compiler-local ledger. The lookup MUST come from the
-     * checked symbol/place table, not guest source annotations.
+     * checked symbol/place table, not guest source annotations. Allocation
+     * identities and uniqueness must be independently resolved from the
+     * compiler's trusted allocation table. A callback that simply echoes
+     * user claims does NOT establish MIR authority.
      */
     static TaskAccessVerifier.Ticket admitResolvedScalars(
             TaskAccessVerifier ledger,
             List<TaskAccessVerifier.Claim> accesses,
+            Function<TaskAccessVerifier.Place, TaskAccessVerifier.Root> resolvedAllocationRoots,
             Function<TaskAccessVerifier.Place, Ast.TypeRef> resolvedPlaceTypes) {
         Objects.requireNonNull(ledger, "ledger");
+        Objects.requireNonNull(resolvedAllocationRoots, "resolved allocation identities");
         Objects.requireNonNull(resolvedPlaceTypes, "resolved place types");
         List<TaskAccessVerifier.Claim> claims =
                 List.copyOf(Objects.requireNonNull(accesses, "accesses"));
@@ -42,6 +47,15 @@ final class TaskBorrowCompilerBridge {
         for (TaskAccessVerifier.Claim claim : claims) {
             TaskAccessVerifier.Place place = claim.place();
             TaskAccessVerifier.Root root = place.root();
+            // The caller's Root record is a requested place, not itself
+            // authority. Verify it independently against the checked
+            // compiler's canonical allocation table, including the
+            // uniqueness witness and generation, before resolving its type.
+            TaskAccessVerifier.Root actualRoot = resolvedAllocationRoots.apply(place);
+            if (actualRoot == null || !actualRoot.equals(root)) {
+                throw new IllegalArgumentException(
+                        "Task claim does not match compiler-resolved allocation provenance");
+            }
             // Until source MIR produces layout/projection proofs, claiming
             // field/column separation here would be an unverified assumption.
             if (!place.projections().isEmpty()) {
