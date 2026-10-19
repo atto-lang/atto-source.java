@@ -679,7 +679,11 @@ public final class TypeChecker {
                 && fn.name().equals("main")
                 && fn.actorKind() == Ast.ActorKind.NONE
                 && fn.parameters().isEmpty()
-                && !fn.async() && !fn.generator();
+                && fn.kind() == Ast.CallableKind.FNC
+                && fn.visibility() == Ast.Visibility.PUBLIC
+                && fn.genericParameters().isEmpty()
+                && !fn.async() && !fn.generator()
+                && !fn.trapped() && !fn.nonLexical();
         currentRootMainLocalEnv = currentRootMain ? env : null;
         // The module's root main runs inside a VM-owned root Task, and
         // remains an intentional compatibility boundary for existing source
