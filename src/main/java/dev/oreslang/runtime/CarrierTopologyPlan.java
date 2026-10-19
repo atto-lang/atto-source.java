@@ -59,11 +59,23 @@ final class CarrierTopologyPlan {
         for (int tier = 0; tier < 3; tier++) {
             int[] group = peers[thief][tier];
             if (rank < group.length) {
-                return group[Math.floorMod(rotation + rank, group.length)];
+                // Compute in 64 bits: int overflow would repeat/skip a
+                // victim when the steal cursor crosses Integer.MAX_VALUE.
+                return group[(int)Math.floorMod((long)rotation + rank, group.length)];
             }
             rank -= group.length;
         }
         throw new IllegalStateException("topology rank invariant");
+    }
+
+    /** Periodic global sweep prevents aged remote work from starving under
+     * sustained local backlog. The mapping is a full permutation of all
+     * other carrier slots, independent of topology and integer rollover. */
+    int globalVictimAt(int thief, int rank, int rotation) {
+        if (thief < 0 || thief >= peers.length || rank < 0 || rank >= peers.length - 1)
+            throw new IllegalArgumentException("invalid global steal rank");
+        int ordinal = (int)Math.floorMod((long)rotation + rank, peers.length - 1);
+        return ordinal >= thief ? ordinal + 1 : ordinal;
     }
 
     private static int readInt(Path path) {
