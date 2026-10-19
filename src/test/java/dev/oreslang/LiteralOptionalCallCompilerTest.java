@@ -39,6 +39,8 @@ final class LiteralOptionalCallCompilerTest {
     void suppliedNamedScalarBecomesCheckedOrdinarySomeCall() {
         var lowered = LiteralOptionalCallCompiler.lowerAndAnalyze(
                 source("greet(name: \"Alice\")"), "app", "caller");
+        assertEquals(LiteralOptionalCallCompiler.SourceOrigin.ORIGINAL_STAGED_CALL,
+                lowered.sourceOrigin());
         assertEquals(1, lowered.loweredCall().arguments().size());
         Ast.CallExpr some = assertInstanceOf(
                 Ast.CallExpr.class, lowered.loweredCall().arguments().getFirst());
@@ -193,6 +195,8 @@ final class LiteralOptionalCallCompilerTest {
     void optInImplicitEmptyCallUsesTheSameFullCheckedNoneAbi() {
         var checked = LiteralOptionalCallCompiler.lowerImplicitAndAnalyze(
                 source("greet()"), "app", "caller");
+        assertEquals(LiteralOptionalCallCompiler.SourceOrigin.VERIFIED_IMPLICIT_EMPTY_CALL,
+                checked.sourceOrigin());
         assertEquals(1, checked.loweredCall().arguments().size());
         Ast.NameExpr none = assertInstanceOf(
                 Ast.NameExpr.class, checked.loweredCall().arguments().getFirst());
@@ -223,6 +227,9 @@ final class LiteralOptionalCallCompilerTest {
         assertEquals(3, checked.loweredCall().arguments().size());
         assertTrue(checked.loweredCall().arguments().stream().allMatch(
                 value -> value instanceof Ast.NameExpr name && name.name().equals("None")));
+        assertNotSame(checked.loweredCall().arguments().get(0),
+                checked.loweredCall().arguments().get(1),
+                "each omitted formal receives its own independent typed None site");
         assertEquals(List.of("int", "string", "bool"),
                 checked.checkedTarget().parameters().stream()
                         .map(p -> p.type().arguments().getFirst().name()).toList());
