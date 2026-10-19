@@ -224,9 +224,10 @@ public final class Types {
         if (from instanceof Not) return to == Unknown.INSTANCE;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
         if (from.equals(to)) return true;
-        // Unknown or a generic must not forge a dyn witness even when it is
-        // nested inside List, Option, records, tuples, or callable types.
-        if ((from == Unknown.INSTANCE || from instanceof Generic) && containsDynWitness(to)) return false;
+        // A partially unresolved union, container, or callable must not
+        // manufacture dyn proof by selecting an unrelated non-dyn branch.
+        // Equality above preserves an already-typed unchanged value.
+        if (containsUncertainType(from) && containsDynWitness(to)) return false;
         // A new direct dyn witness requires nominal proof in TypeChecker.
         if (from instanceof Dyn || to instanceof Dyn) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
