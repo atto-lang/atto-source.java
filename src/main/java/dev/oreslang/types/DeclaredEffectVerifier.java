@@ -13,15 +13,33 @@ import java.util.Set;
  * replaced by interprocedural typed effect inference in the shared IR.
  */
 public final class DeclaredEffectVerifier {
+    private static final Set<String> ML_SCALAR_INTRINSICS = Set.of(
+            "state_snapshot",
+            "snapshot_int",
+            "snapshot_bool",
+            "snapshot_string",
+            "snapshot_version",
+            "snapshot_revision",
+            "prepare_scalar_publication",
+            "publish_scalar_publication");
+
     private DeclaredEffectVerifier() { }
 
     public static void verify(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl function) {
+                    rejectReservedMlBindings(
+                            function.parameters(), function.name());
+                    rejectReservedMlBindings(
+                            function.body(), function.name());
                     check(function.name(), function.annotations(), function.body(), false);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
                     for (Ast.MethodDecl method : klass.methods()) {
+                        rejectReservedMlBindings(
+                                method.parameters(), klass.name() + "." + method.name());
+                        rejectReservedMlBindings(
+                                method.body(), klass.name() + "." + method.name());
                         if (klass.actorKind() != Ast.ActorKind.NONE
                                 && method.isStatic() && containsStateLoan(method.body())) {
                             throw new IllegalArgumentException(
@@ -91,6 +109,47 @@ public final class DeclaredEffectVerifier {
             if (allowed != null && !allowed.contains(effect)) {
                 throw new IllegalArgumentException(name + " uses effect " + effect.sourceName()
                         + " not permitted by its with signature");
+            }
+        }
+    }
+
+    private static void rejectReservedMlBindings(
+            Object node,
+            String callableName) {
+        if (node == null) return;
+        String bound = null;
+        if (node instanceof Ast.Param parameter) {
+            bound = parameter.name();
+        } else if (node instanceof Ast.BindingStmt binding) {
+            bound = binding.name();
+        } else if (node instanceof Ast.DestructureBinding binding
+                && !binding.isDiscard()) {
+            bound = binding.name();
+        } else if (node instanceof Ast.ForOfStmt loop) {
+            bound = loop.bindingName();
+        }
+        if (bound != null && ML_SCALAR_INTRINSICS.contains(bound)) {
+            throw new IllegalArgumentException(
+                    callableName + " binds reserved sealed ML intrinsic name '"
+                            + bound + "'");
+        }
+        if (node instanceof Iterable<?> items) {
+            for (Object item : items) {
+                rejectReservedMlBindings(item, callableName);
+            }
+            return;
+        }
+        if (node instanceof java.lang.Record record
+                && node.getClass().getName().startsWith("dev.oreslang.ast.")) {
+            for (RecordComponent component : record.getClass().getRecordComponents()) {
+                try {
+                    rejectReservedMlBindings(
+                            component.getAccessor().invoke(record),
+                            callableName);
+                } catch (ReflectiveOperationException e) {
+                    throw new IllegalStateException(
+                            "cannot inspect sealed ML intrinsic bindings", e);
+                }
             }
         }
     }
