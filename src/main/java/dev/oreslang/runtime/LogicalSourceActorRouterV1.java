@@ -342,10 +342,13 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 if (owner.closed || owner.upgrading || owner.active != routed
                         || owner.boundProxyMailbox != mailbox)
                     throw new SecurityException("physical actor route changed before receipt claim");
+                // Consume before any allocation-bearing mailbox observation.
+                // An OOME or invariant violation during validation must NOT
+                // re-arm an already physically accepted message receipt.
+                consumed = true;
                 if (mailbox.snapshot().routeEpoch() != routed.routeEpoch())
                     throw new SecurityException("physical and proxy route epochs differ");
                 mailbox.requireOutstandingEnvelope(envelope, routed.routeEpoch());
-                consumed = true;
             }
             // Completion may run guest turns: NEVER wait while holding the
             // route monitor. After any failed wait, supervisor reconciliation
