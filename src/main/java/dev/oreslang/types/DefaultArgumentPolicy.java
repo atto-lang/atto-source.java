@@ -139,12 +139,27 @@ public final class DefaultArgumentPolicy {
     public record Decision(Lowering lowering, Literal compileTimeDefault) {
         public Decision {
             Objects.requireNonNull(lowering, "lowering");
-            boolean isDefault = switch (lowering) {
-                case DEFAULT_SCALAR, DEFAULT_SOME, DEFAULT_NONE -> true;
-                default -> false;
-            };
-            if (isDefault != (compileTimeDefault != null)) {
-                throw new IllegalArgumentException("invalid default-lowering witness");
+            switch (lowering) {
+                case DEFAULT_SCALAR, DEFAULT_SOME -> {
+                    if (compileTimeDefault == null
+                            || compileTimeDefault.kind() == LiteralKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "defaulted value/Some witness needs non-None literal");
+                    }
+                }
+                case DEFAULT_NONE -> {
+                    if (compileTimeDefault == null
+                            || compileTimeDefault.kind() != LiteralKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "typed default None witness must carry explicit None");
+                    }
+                }
+                default -> {
+                    if (compileTimeDefault != null) {
+                        throw new IllegalArgumentException(
+                                "supplied/implicit Option plan cannot carry default literal");
+                    }
+                }
             }
         }
     }
