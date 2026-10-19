@@ -888,6 +888,46 @@ been confirmed by an executed JDK25/Maven/Graal workflow. Do not claim
 exactly-once effect semantics, live proxy integration, or fully
 migratable private/untrusted worker processes from this mailbox proof.
 
+### Java real source-actor proxy bridge v1 (host-only, scalar)
+
+A narrow proof adapter, `LogicalSourceActorProxyBridgeV1`, now integrates
+`LogicalActorProxyMailboxV1` with `LogicalSourceActorRouterV1` and actual
+`ActorRuntime.ActorRef.send()` plus `drain()` under the logical route monitor.
+It is deliberately **serialized**: one host thread reserves, sends, awaits
+the physical drain observer, and only then records `complete(sequence)`.
+A failed or ambiguous physical send/drain leaves the message retained and
+seals the proxy. There is **no automatic replay** after ambiguous delivery.
+
+The first canonical wire form is precisely eight big-endian bytes encoding
+a signed 64-bit actor message; only `admitLong(long)` can enqueue messages.
+The bridge exposes output observation and an immutable logical address but
+**does not expose the underlying ActorRef**, preventing bypass of the proxy's
+bounded admission. Distinct admission and dispatch locks allow bounded new
+bytes while an upgrade freezes dispatch. A physical successful code migration
+commits the proxy's matching route epoch; exception paths stay fail-sealed.
+Ordinary close refuses queued or outstanding mail instead of falsely marking
+it completed. The bridge currently only starts `SHARED` actors, using the
+existing same-JVM source-actor path.
+
+Committed real-runtime JUnit fixtures exercise a Counter v1/v2 Oreslang
+actor across separate checked Graal contexts: 42 -> 43 -> 45, route epoch
+1 -> 2 with stable logical id/incarnation, bounded proxy credits,
+physical completion-barrier accounting, cross-upgrade queued mail,
+racing admission, and fail-sealed incompatible source upgrades.
+**None of these newly authored JVM tests has an executed exact-head
+Maven/JDK25 receipt yet.**
+
+This is *not* a general source-level actor proxy. In particular, the
+host-only scalar codec is NOT a compiler-generated typed message ABI, a
+`drain()` barrier is NOT a cryptographically authenticated remote
+`mail.done()` receipt, and the v1 adapter does not support parallel
+dispatch, direct guest-side mailboxes, durable retries, complete
+multi-actor supervision migration or cross-process PRIVATE/UNTRUSTED
+physical isolation. The production route must replace scalar encoding
+with compiler-owned immutable frames, add authenticated per-message
+accept/done proof tied to physical incarnation, preserve independent
+CONTROL flow and introduce a dedicated worker/isolate backend.
+
 ### Remaining production gates
 
 This remains v1 and intentionally excludes:
