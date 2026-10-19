@@ -112,6 +112,34 @@ public final class SameModuleLiteralInvocation {
             throw new IllegalArgumentException("only same-module direct/static call targets are inspectable");
         }
 
+        // An unqualified target name needs a real cross-module resolver.
+        // Even with no imports, a second module may define the same callable
+        // or type spelling. This tiny lexical witness cannot prove which
+        // declaration the ordinary linker would select in such a program.
+        if (call.callee() instanceof Ast.NameExpr) {
+            for (Ast.ModuleDecl other : program.modules()) {
+                if (other == declaringModule) continue;
+                for (Ast.Decl declaration : other.declarations()) {
+                    String competingName = null;
+                    if (declaration instanceof Ast.FunctionDecl fn) {
+                        competingName = fn.name();
+                    } else if (declaration instanceof Ast.FieldDecl field) {
+                        competingName = field.name();
+                    } else if (declaration instanceof Ast.ClassDecl klass) {
+                        competingName = klass.name();
+                    } else if (declaration instanceof Ast.InterfaceDecl iface) {
+                        competingName = iface.name();
+                    } else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                        competingName = alias.name();
+                    }
+                    if (targetName.equals(competingName)) {
+                        throw new IllegalArgumentException(
+                                "cross-module unqualified target needs lexical resolution proof");
+                    }
+                }
+            }
+        }
+
         // This preview has no lexical-scope builder. A synthesized AST can
         // reuse a formal/local name inside this one linear function body.
         // The full semantic checker decides richer shadowing semantics;
