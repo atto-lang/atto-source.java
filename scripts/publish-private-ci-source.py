@@ -27,6 +27,9 @@ MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
 MIRROR_DESTINATION = "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
+DEST_DEFAULT_BRANCH = "main"
+DEST_BASE_COMMIT = "0d6524706ce8abade8b888b0a16fac04560e395c"
+DEST_BASE_TREE = "a495561fe9bbe49090754c9e7fa349a0feeddb70"
 
 
 class Denied(RuntimeError):
@@ -78,7 +81,7 @@ def checked_repo(repository, expected_id):
     return result
 
 
-def require_preflight(repository, root, source_pr, source_commit, source_tree,
+def require_preflight(repository, branch, root, source_pr, source_commit, source_tree,
                       maintainer_comment=None, security_comment=None):
     """Run the authoritative export preflight before any source-byte read.
 
@@ -89,6 +92,8 @@ def require_preflight(repository, root, source_pr, source_commit, source_tree,
     """
     if repository != MIRROR_DESTINATION:
         raise Denied("publisher is bound to the reviewed private mirror destination")
+    if not isinstance(branch, str) or not BRANCH.fullmatch(branch):
+        raise Denied("publisher requires one isolated reviewed CI branch")
     if (not isinstance(source_pr, int) or source_pr <= 0
             or not isinstance(source_commit, str) or not SHA.fullmatch(source_commit)
             or not isinstance(source_tree, str) or not SHA.fullmatch(source_tree)):
@@ -105,7 +110,7 @@ def require_preflight(repository, root, source_pr, source_commit, source_tree,
         if program.is_symlink() or not program.is_file():
             raise Denied("trusted private CI authorization program missing")
 
-    argv = ["bash", str(preflight), str(source_pr), source_commit, source_tree]
+    argv = ["bash", str(preflight), str(source_pr), source_commit, source_tree, branch]
     if maintainer_comment is not None:
         argv.extend([str(maintainer_comment), str(security_comment)])
     try:
@@ -307,7 +312,7 @@ def publish(repository, source, branch, trusted_root, source_pr=None,
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
-    require_preflight(repository, trusted_root, source_pr, source_commit,
+    require_preflight(repository, branch, trusted_root, source_pr, source_commit,
                       source_tree, maintainer_comment, security_comment)
     approved_policy, expected_id = checked_policy_fingerprint(
         trusted_root, repository)
@@ -320,16 +325,20 @@ def publish(repository, source, branch, trusted_root, source_pr=None,
     files = collect_source(source, trusted_root)
     # Approval can be revoked while a bounded source tree is being read.
     # Revalidate before the first private byte is uploaded.
-    require_preflight(repository, trusted_root, source_pr, source_commit,
+    require_preflight(repository, branch, trusted_root, source_pr, source_commit,
                       source_tree, maintainer_comment, security_comment)
     base = checked_repo(repository, expected_id)
     default = base.get("default_branch")
-    if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
-        raise Denied("destination default branch is invalid")
+    if default != DEST_DEFAULT_BRANCH:
+        raise Denied("destination default branch is not the reviewed carrier branch")
     base_ref = gh_api(f"repos/{repository}/git/ref/heads/{default}")
     base_sha = valid_sha(base_ref.get("object", {}).get("sha"))
+    if base_sha != DEST_BASE_COMMIT:
+        raise Denied("destination carrier base commit changed after review")
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
+    if base_tree != DEST_BASE_TREE:
+        raise Denied("destination carrier base tree changed after review")
     def authorize_write():
         current_policy, current_id = checked_policy_fingerprint(
             trusted_root, repository)
@@ -382,7 +391,7 @@ def publish(repository, source, branch, trusted_root, source_pr=None,
     authorize_write()
     # A deleted/edited attestation or changed PR head must prevent publication
     # even if private unreferenced blobs/trees were already uploaded.
-    require_preflight(repository, trusted_root, source_pr, source_commit,
+    require_preflight(repository, branch, trusted_root, source_pr, source_commit,
                       source_tree, maintainer_comment, security_comment)
     authorize_write()
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
