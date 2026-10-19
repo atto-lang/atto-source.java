@@ -1128,13 +1128,10 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                         if (!txn.proxyTicket.drained()) {
                             txn.proxyTicket.rollback();
                             txn.proxyTicket = null;
-                            if (!retiredCandidates.remove(candidateRetirement)) {
-                                throw new IllegalStateException(
-                                        "undrained upgrade lost candidate owner");
-                            }
-                            finishUpgradeLocked(txn, UpgradePhase.ABANDONED);
-                            candidateLease.close();
-                            txn.candidateLeaseTransferred = true;
+                            // Keep the pre-reserved candidate owner until the
+                            // finalizer closes the generation lease. Removing
+                            // ownership before a fallible lease debit would
+                            // turn a failed debit into an ownerless pin.
                             return false;
                         }
                     }
@@ -1149,7 +1146,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                                 setupFailure.addSuppressed(rollbackFailure);
                         }
                     }
-                    retiredCandidates.remove(candidateRetirement);
+                    // Candidate owner remains registered until the
+                    // unified finalizer proves its lease debit succeeded.
                     finishUpgradeLocked(txn, UpgradePhase.ABANDONED);
                     throw setupFailure;
                 }
@@ -1322,7 +1320,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     }
                 } else {
                     synchronized (routeLock) {
-                        retiredCandidates.remove(txn.candidateRetirement);
+                        if (!retiredCandidates.contains(
+                                txn.candidateRetirement)) {
+                            throw new IllegalStateException(
+                                    "unspawned candidate lost its supervisor owner");
+                        }
+                        txn.candidateRetirement.retirementEligible = true;
                     }
                 }
 
@@ -1366,20 +1369,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             }
 
             if (txn == null || !txn.candidateLeaseTransferred) {
-                boolean ledgerOwned;
-                synchronized (routeLock) {
-                    ledgerOwned = txn != null
-                            && retiredCandidates.contains(
-                                    txn.candidateRetirement);
-                }
-                if (ledgerOwned) {
-                    IllegalStateException ownershipFailure =
-                            new IllegalStateException(
-                                    "candidate lease still owned by supervisor "
-                                            + "retirement transaction");
-                    if (cleanupFailure == null) cleanupFailure = ownershipFailure;
-                    else cleanupFailure.addSuppressed(ownershipFailure);
-                } else {
+                if (txn == null) {
                     try {
                         candidateLease.close();
                     } catch (RuntimeException | Error leaseFailure) {
@@ -1387,6 +1377,52 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                             cleanupFailure = leaseFailure;
                         } else if (leaseFailure != cleanupFailure) {
                             cleanupFailure.addSuppressed(leaseFailure);
+                        }
+                    }
+                } else {
+                    synchronized (routeLock) {
+                        boolean ledgerOwned = retiredCandidates.contains(
+                                txn.candidateRetirement);
+                        if (!ledgerOwned) {
+                            try {
+                                candidateLease.close();
+                            } catch (RuntimeException | Error leaseFailure) {
+                                if (cleanupFailure == null) {
+                                    cleanupFailure = leaseFailure;
+                                } else if (leaseFailure != cleanupFailure) {
+                                    cleanupFailure.addSuppressed(leaseFailure);
+                                }
+                            }
+                        } else if (txn.candidateRetirement.physical == null) {
+                            // No physical actor can reference this code, but
+                            // lease debit is still fallible. Close BEFORE
+                            // forgetting the owner. On failure, publish the
+                            // owner to the retryable retirement ledger.
+                            try {
+                                candidateLease.close();
+                                retiredCandidates.remove(
+                                        txn.candidateRetirement);
+                            } catch (RuntimeException | Error leaseFailure) {
+                                txn.candidateRetirement.retirementEligible = true;
+                                txn.candidateLeaseTransferred = true;
+                                if (cleanupFailure == null) {
+                                    cleanupFailure = leaseFailure;
+                                } else if (leaseFailure != cleanupFailure) {
+                                    cleanupFailure.addSuppressed(leaseFailure);
+                                }
+                            }
+                        } else {
+                            // An executable candidate is owned by the ledger;
+                            // cleanup above must explicitly transfer the pin.
+                            IllegalStateException ownershipFailure =
+                                    new IllegalStateException(
+                                            "physical candidate lease remained "
+                                                    + "owned without transfer");
+                            if (cleanupFailure == null) {
+                                cleanupFailure = ownershipFailure;
+                            } else {
+                                cleanupFailure.addSuppressed(ownershipFailure);
+                            }
                         }
                     }
                 }
@@ -1434,9 +1470,11 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             CandidateRetirement old = retiredCandidates.get(i);
             ActorRuntime.ActorRef<Object> physical = old.physical;
             if (old.retirementEligible
-                    && physical != null
-                    && old.view.runtime().physicallyFinalizedForHotUpgrade(
-                            physical)) {
+                    && (physical == null
+                    || old.view.runtime().physicallyFinalizedForHotUpgrade(
+                            physical))) {
+                // Close before forgetting ownership. This also retries a
+                // pre-spawn candidate lease debit that previously failed.
                 old.generationLease.close();
                 retiredCandidates.remove(i);
                 released++;
