@@ -103,6 +103,25 @@ final class InferredRecordBoundaryTest {
     }
 
     @Test
+    void emptyAndWhitespaceStaticFieldNamesAreLegal() {
+        accepted("""
+                fnc get(): string {
+                    const T record = infer<T> record{
+                        "": "empty",
+                        "   ": "spaces",
+                        "emoji🚀": "rocket"
+                    };
+                    return record[""];
+                }
+                """);
+        accepted("""
+                fnc get({ "": string, " ": int } value): string {
+                    return value[""];
+                }
+                """);
+    }
+
+    @Test
     void namedRecordCarriesLexicalStructuralAliasAndQuotedKeys() {
         String source = """
                 fnc label(): string {
