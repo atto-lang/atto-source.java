@@ -885,6 +885,10 @@ public final class Ast {
         public CompoundAssignExpr {
             java.util.Objects.requireNonNull(target, "compound assignment target");
             java.util.Objects.requireNonNull(value, "compound assignment value");
+            if (!(target instanceof NameExpr) && !(target instanceof MemberExpr)
+                    && !(target instanceof IndexExpr)) {
+                throw new IllegalArgumentException("compound assignment requires an assignable place");
+            }
             if (!"+".equals(operator)) {
                 throw new IllegalArgumentException("unsupported compound assignment operator");
             }
@@ -942,6 +946,9 @@ public final class Ast {
                 throw new IllegalArgumentException("invalid named call argument label");
             }
             java.util.Objects.requireNonNull(value, "named argument value");
+            if (value instanceof SpreadExpr || value instanceof NamedArgumentExpr) {
+                throw new IllegalArgumentException("named call argument cannot wrap spread/named item");
+            }
         }
     }
 
@@ -953,10 +960,17 @@ public final class Ast {
     public record TypeSpecializationExpr(Expr typeName, List<TypeRef> arguments) implements Expr {
         public TypeSpecializationExpr {
             java.util.Objects.requireNonNull(typeName, "type specialization receiver");
+            if (!isNominalTypePath(typeName)) {
+                throw new IllegalArgumentException("type-member specialization requires a nominal type path");
+            }
             arguments = List.copyOf(arguments);
             if (arguments.isEmpty()) {
                 throw new IllegalArgumentException("type member specialization requires a type argument");
             }
+        }
+        private static boolean isNominalTypePath(Expr expression) {
+            if (expression instanceof NameExpr) return true;
+            return expression instanceof MemberExpr member && isNominalTypePath(member.receiver());
         }
     }
 
@@ -971,12 +985,36 @@ public final class Ast {
             if (!typeArgumentsPresent && !typeArguments.isEmpty()) {
                 throw new IllegalArgumentException("call type arguments require an explicit <...> marker");
             }
+            validateCallArguments(arguments);
         }
         public CallExpr(Expr callee, List<Expr> arguments) {
             this(callee, List.of(), false, arguments);
         }
         public CallExpr(Expr callee, List<TypeRef> typeArguments, List<Expr> arguments) {
             this(callee, typeArguments, true, arguments);
+        }
+    }
+
+    /**
+     * Programmatic AST builders receive the same duplicate-label/source-order
+     * admission as source parsing. Never trust parser-only checks at a later
+     * lowering boundary.
+     */
+    private static void validateCallArguments(List<Expr> arguments) {
+        boolean namedSeen = false;
+        boolean spreadSeen = false;
+        java.util.Set<String> labels = new java.util.HashSet<>();
+        for (Expr arg : arguments) {
+            if (arg instanceof NamedArgumentExpr named) {
+                if (spreadSeen || !labels.add(named.label())) {
+                    throw new IllegalArgumentException(
+                            spreadSeen ? "named call cannot mix with spread" : "duplicate named call label");
+                }
+                namedSeen = true;
+            } else {
+                if (namedSeen) throw new IllegalArgumentException("positional argument after named argument");
+                if (arg instanceof SpreadExpr) spreadSeen = true;
+            }
         }
     }
 
