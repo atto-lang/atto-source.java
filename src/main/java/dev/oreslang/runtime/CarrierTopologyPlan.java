@@ -44,6 +44,15 @@ final class CarrierTopologyPlan {
     }
 
     int workerCount() { return locations.length; }
+
+    /** Bound expensive immutable O(workers²) topology re-planning during
+     * native worker bootstrap: at most O(log(workers)) new snapshots, plus
+     * the initial all-unknown plan. Final snapshot is always published. */
+    static boolean publishAfterWorker(int observed, int maximum) {
+        if (maximum < 1 || observed < 1 || observed > maximum)
+            throw new IllegalArgumentException("invalid topology discovery progress");
+        return observed == maximum || (observed & (observed - 1)) == 0;
+    }
     int tier(int thief, int victim) {
         Location a = locations[thief], b = locations[victim];
         if (a.llcId() >= 0 && a.packageId() >= 0
