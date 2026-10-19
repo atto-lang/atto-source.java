@@ -164,4 +164,35 @@ final class OresTaskScopeRetirementBookkeepingTest {
             }
         }
     }
+
+    @Test
+    void hostRetirementRefusingRemovalFailsClosed() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime()) {
+            OresTaskScope scope = new OresTaskScope(runtime);
+            Field slots = ownerSlots();
+            Object original = slots.get(scope);
+            AtomicInteger attempts = new AtomicInteger();
+            Set<Object> broken = new HashSet<>() {
+                @Override public boolean remove(Object entry) {
+                    attempts.incrementAndGet();
+                    return false; // Silent corruption must not look like success.
+                }
+            };
+            slots.set(scope, broken);
+            try {
+                OresTask<Integer> task = scope.submit(() -> 29);
+                assertEquals(29, AsyncRuntime.await(task.getAwaited()));
+                var fault = assertThrows(IllegalStateException.class,
+                        () -> AsyncRuntime.await(task.getDone()));
+                assertTrue(fault.getMessage().contains("owner slot missing"));
+                assertEquals(1, attempts.get());
+                assertFalse(scope.physicallyQuiescent());
+                assertThrows(IllegalStateException.class, scope::close);
+                assertEquals(1, attempts.get(), "retirement is one-shot");
+            } finally {
+                slots.set(scope, original);
+                try { scope.close(); } catch (IllegalStateException expected) { }
+            }
+        }
+    }
 }
