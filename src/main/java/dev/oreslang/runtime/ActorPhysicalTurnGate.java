@@ -58,22 +58,37 @@ final class ActorPhysicalTurnGate {
         launch(item);
     }
 
-    private void launch(Pending item) {
-        try {
-            item.submit.accept(() -> {
-                try {
-                    item.task.run();
-                } finally {
-                    release();
-                }
-            });
-        } catch (RuntimeException | Error failure) {
-            // Admission to the underlying executor failed; do not strand its
-            // physical permit, the dispatch identity or later queued actors.
+    private void launch(Pending first) {
+        // Executor admission callbacks must ENQUEUE, never run a guest turn
+        // synchronously. Iterative failure draining prevents recursive
+        // stack growth if thousands of queued dispatches encounter shutdown.
+        Pending item = first;
+        for (;;) {
             try {
-                item.reject.accept(failure);
-            } finally {
-                release();
+                Pending accepted = item;
+                item.submit.accept(() -> {
+                    try {
+                        accepted.task.run();
+                    } finally {
+                        release();
+                    }
+                });
+                return;
+            } catch (RuntimeException | Error failure) {
+                try {
+                    item.reject.accept(failure);
+                } catch (RuntimeException observerFailure) {
+                    failure.addSuppressed(observerFailure);
+                }
+                synchronized (this) {
+                    if (closed || pending.isEmpty()) {
+                        admitted--;
+                        return;
+                    }
+                    // Failed admission transfers the permit to the next
+                    // bounded FIFO successor, without carrier parking.
+                    item = pending.removeFirst();
+                }
             }
         }
     }
@@ -103,7 +118,12 @@ final class ActorPhysicalTurnGate {
             pending.clear();
         }
         for (Pending item : rejected) {
-            item.reject.accept(new RejectedExecutionException("actor turn gate closed"));
+            try {
+                item.reject.accept(new RejectedExecutionException("actor turn gate closed"));
+            } catch (RuntimeException ignored) {
+                // One broken dispatch failure observer cannot retain or
+                // prevent revocation of subsequent queued actor admissions.
+            }
         }
     }
 }
