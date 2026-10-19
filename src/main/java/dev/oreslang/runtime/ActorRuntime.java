@@ -1215,7 +1215,9 @@ public final class ActorRuntime implements AutoCloseable {
      */
     final class ActorShardSnapshotLease implements AutoCloseable {
         private final ActorCell<?> cell;
-        private final double[] values;
+        // Cleared and detached under lifecycleLock on revocation so a
+        // retained lease handle does not pin the JVM array after refund.
+        private double[] values;
         private final long bytes;
         private boolean revoked; // guarded by cell.lifecycleLock
 
@@ -1265,7 +1267,9 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 if (revoked) return;
                 revoked = true;
-                java.util.Arrays.fill(values, 0.0);
+                double[] old = values;
+                java.util.Arrays.fill(old, 0.0);
+                values = null; // no reachable mutable buffer retained by this lease
                 cell.shardSnapshotLeases.remove(this);
                 if (cell.shardReservedBytes < bytes) {
                     throw new IllegalStateException("snapshot accounting underflow");
