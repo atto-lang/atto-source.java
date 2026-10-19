@@ -336,6 +336,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
         private final Set<WorkCredit> responses = new HashSet<>();
         private long lastCorrelationId;
         private long requestPayloadBytes;
+        private long responsePayloadBytes;
         private volatile boolean ended;
 
         Session(Socket socket, ConnectionCredit connection, PeerIdentity peer,
@@ -377,7 +378,8 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
 
                 if (pending.size() >= limits.maxRequestsPerConnection()
                         || head.payloadBytes()
-                                > limits.maxPayloadBytesPerConnection() - requestPayloadBytes) {
+                                > limits.maxPayloadBytesPerConnection()
+                                        - requestPayloadBytes - responsePayloadBytes) {
                     admitted = null;
                 } else {
                     WorkCredit globalCredit = global.tryWork(head.payloadBytes());
@@ -524,6 +526,12 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                 handle = admitted.handle;
                 credit = admitted.credit;
 
+                if (body.length
+                        > limits.maxPayloadBytesPerConnection()
+                                - requestPayloadBytes - responsePayloadBytes) {
+                    reply = Reply.error();
+                    body = reply.payload();
+                }
                 if (!credit.convertToResponse(body.length)) {
                     reply = Reply.error();
                     body = reply.payload();
@@ -531,6 +539,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                         throw new IllegalStateException("cannot shrink unary TCP request credit to empty error");
                 }
                 responses.add(credit);
+                responsePayloadBytes += credit.bytes;
             }
 
             if (cancelDispatch && handle != null) handle.cancel();
@@ -549,12 +558,26 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                     } catch (IOException failure) {
                         close();
                     } finally {
-                        synchronized (lock) { responses.remove(credit); }
+                        synchronized (lock) {
+                            if (responses.remove(credit)) {
+                                responsePayloadBytes -= credit.bytes;
+                                if (responsePayloadBytes < 0)
+                                    throw new IllegalStateException(
+                                            "unary TCP response byte accounting underflow");
+                            }
+                        }
                         credit.close();
                     }
                 });
             } catch (RejectedExecutionException unavailable) {
-                synchronized (lock) { responses.remove(credit); }
+                synchronized (lock) {
+                    if (responses.remove(credit)) {
+                        responsePayloadBytes -= credit.bytes;
+                        if (responsePayloadBytes < 0)
+                            throw new IllegalStateException(
+                                    "unary TCP response byte accounting underflow");
+                    }
+                }
                 credit.close();
                 close();
             }
@@ -599,6 +622,10 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             synchronized (lock) { return requestPayloadBytes; }
         }
 
+        long activeResponsePayloadBytes() {
+            synchronized (lock) { return responsePayloadBytes; }
+        }
+
         private void requireOpen() {
             if (ended) throw new IllegalStateException("unary TCP session closed");
         }
@@ -612,6 +639,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                 toCancel = List.copyOf(pending.values());
                 pending.clear();
                 requestPayloadBytes = 0;
+                responsePayloadBytes = 0;
                 toRelease = List.copyOf(responses);
                 responses.clear();
                 for (Pending admitted : toCancel) {
