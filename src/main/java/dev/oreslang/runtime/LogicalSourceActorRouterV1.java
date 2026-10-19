@@ -252,6 +252,10 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         final HotReloadManager.ActorGenerationView view;
         final HotReloadManager.Generation.ActorRouteLease lease;
         ActorRuntime.ActorRef<Object> physical;
+        // Pre-registered but still starting actors are NOT failed spawns.
+        // Their admission authority belongs to the original spawn caller.
+        // Only the final failed-startup cleanup hands this owner to reaping.
+        volatile boolean retryableFailure;
 
         FailedInitialSpawn(
                 HotReloadManager.ActorGenerationView view,
@@ -282,7 +286,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         Throwable cancellationFailure = null;
         for (FailedInitialSpawn pending : candidates) {
             try {
-                if (pending.physical != null
+                if (pending.retryableFailure && pending.physical != null
                         && !pending.view.runtime().physicallyFinalizedForHotUpgrade(
                                 pending.physical)) {
                     // Retry revocation after a previously failed stop; a
@@ -301,9 +305,10 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         synchronized (failedSpawnLock) {
             for (int i = failedInitialSpawns.size() - 1; i >= 0; --i) {
                 FailedInitialSpawn pending = failedInitialSpawns.get(i);
-                if (pending.physical == null
+                if (pending.retryableFailure
+                        && (pending.physical == null
                         || pending.view.runtime().physicallyFinalizedForHotUpgrade(
-                                pending.physical)) {
+                                pending.physical))) {
                     // A failed generation pin debit leaves this exact record
                     // in place for retry rather than certifying false unload.
                     pending.lease.close();
@@ -465,6 +470,14 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     if (cleanupFailure == null) cleanupFailure = failure;
                     else if (cleanupFailure != failure)
                         cleanupFailure.addSuppressed(failure);
+                }
+                if (registered && ownership != null) {
+                    // Publish failed-startup ownership only AFTER this caller
+                    // finishes its stop/finalization cleanup attempt. An
+                    // ordinary in-progress startup reservation must never be
+                    // mistaken for a physically retired actor by a concurrent
+                    // global reaper.
+                    ownership.retryableFailure = true;
                 }
                 if (cleanupFailure != null) {
                     if (primaryFailure != null) {
