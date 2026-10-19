@@ -30,6 +30,7 @@ public final class IpcReceiptCompletionBridge {
         Objects.requireNonNull(envelope, "envelope");
         // Prepare all callback bookkeeping before admitting the DATA receipt.
         CompletableFuture<IpcReceiptCorrelation.Stage> future = new CompletableFuture<>();
+        CompletionStage<IpcReceiptCorrelation.Stage> publicView = future.minimalCompletionStage();
         synchronized (gate) {
             if (completions.containsKey(envelope.messageSequence())) {
                 throw new IllegalArgumentException("duplicate host correlation");
@@ -42,7 +43,7 @@ public final class IpcReceiptCompletionBridge {
                 throw e;
             }
         }
-        return future.minimalCompletionStage();
+        return publicView;
     }
 
     /** Caller MUST verify the remote peer/frame/capability before this call. */
@@ -62,13 +63,13 @@ public final class IpcReceiptCompletionBridge {
     }
 
     public int transportLost(String trustedSession) {
-        List<CompletableFuture<IpcReceiptCorrelation.Stage>> done = new ArrayList<>();
+        ArrayList<CompletableFuture<IpcReceiptCorrelation.Stage>> done = new ArrayList<>();
         synchronized (gate) {
-            // Snapshot notification slots BEFORE any correlation is retired.
-            // A missing completion indicates a broken host lifecycle protocol.
-            for (var entry : completions.entrySet()) {
-                // Only returned LossCorrelation entries are allowed to settle.
-                Objects.requireNonNull(entry.getValue());
+            // Reserve all notification capacity BEFORE the native-equivalent
+            // receipt table starts its no-throw retirement phase.
+            done.ensureCapacity(completions.size());
+            if (completions.size() != correlations.counters().pending()) {
+                throw new IllegalStateException("host correlation parity violated");
             }
             var losses = correlations.retireTransportLost(trustedSession);
             for (var loss : losses) {
