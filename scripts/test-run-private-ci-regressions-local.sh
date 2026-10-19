@@ -219,6 +219,29 @@ grep -q PRIVATE_CI_TEST_REQUIRED_CASES_MISSING "$root/out"
 if grep -q PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED "$root/out"; then exit 1; fi
 echo 'PASS: equal-sized suite missing a mandatory adversarial case is rejected'
 make_fixture
+cat >> "$fixture/test-publish-private-ci-source.py" <<'PY'
+DestinationBoundPublisherTests.test_stored_root_tree_tampering_denied_before_commit_or_ref = unittest.skip(
+    "attacker removed critical assertion")(
+    DestinationBoundPublisherTests.test_stored_root_tree_tampering_denied_before_commit_or_ref)
+PY
+if PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
+grep -q PRIVATE_CI_FULL_PYTHON_TEST_FAILURE "$root/out"
+grep -q 'skipped=1' "$root/out"
+if grep -q PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED "$root/out"; then exit 1; fi
+echo 'PASS: discovered mandatory test marked skipped cannot yield success'
+make_fixture
+cat >> "$fixture/test-publish-private-ci-source.py" <<'PY'
+def attack_expected_failure(self):
+    self.fail("attacker masked critical failure")
+DestinationBoundPublisherTests.test_stored_root_tree_tampering_denied_before_commit_or_ref = unittest.expectedFailure(
+    attack_expected_failure)
+PY
+if PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
+grep -q PRIVATE_CI_FULL_PYTHON_TEST_FAILURE "$root/out"
+grep -q 'expectedFailures=1' "$root/out"
+if grep -q PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED "$root/out"; then exit 1; fi
+echo 'PASS: discovered mandatory test marked expectedFailure cannot yield success'
+make_fixture
 mkdir -p "$root/poisoned-PATH"
 for executable in python3 dirname; do
   cat > "$root/poisoned-PATH/$executable" <<'FAKE_EXEC'
@@ -236,4 +259,4 @@ fi
 test ! -e "$root/path-injection-marker"
 grep -q '^PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1$' "$root/out"
 echo 'PASS: caller PATH cannot replace trusted Python or dirname'
-echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=20'
+echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=22'
