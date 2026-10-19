@@ -141,6 +141,13 @@ final class OptionalCallScalarAbiFrameTest {
     }
 
     @Test
+    void referenceFrameCannotBeConstructedOutsideTheCheckedIssuer() {
+        assertEquals(1, OptionalCallScalarAbiFrame.Frame.class.getDeclaredConstructors().length);
+        assertTrue(java.lang.reflect.Modifier.isPrivate(
+                OptionalCallScalarAbiFrame.Frame.class.getDeclaredConstructors()[0].getModifiers()));
+    }
+
+    @Test
     void nonliteralSideEffectsNeverReceiveScalarFrameAuthority() {
         Ast.Program source = parse("""
                 define module app as
