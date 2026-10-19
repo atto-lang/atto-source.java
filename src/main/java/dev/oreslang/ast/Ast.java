@@ -980,6 +980,7 @@ public final class Ast {
             boolean typeArgumentsPresent,
             List<Expr> arguments) implements Expr {
         public CallExpr {
+            java.util.Objects.requireNonNull(callee, "call target");
             typeArguments = List.copyOf(typeArguments);
             arguments = List.copyOf(arguments);
             if (!typeArgumentsPresent && !typeArguments.isEmpty()) {
