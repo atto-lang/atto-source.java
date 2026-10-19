@@ -121,7 +121,7 @@ final class CheckedDynamicIndexAccessTest {
                 """;
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(typeOnly)));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
-                typeOnly + "fnc bad(): string { return (new Candidate())[\\"secret\\"]; }")));
+                typeOnly + "fnc bad(): string { return (new Candidate())[\"secret\"]; }")));
         String runtime = typeOnly + """
                 pub routine main(): void {
                   stdio.stdout.write(get("secret"));
