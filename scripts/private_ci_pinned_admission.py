@@ -96,10 +96,17 @@ def verify(repository, trusted_root, fetch, *, env=None, git=git_value):
         policy = json.loads(raw, object_pairs_hook=_unique_json_object)
     except (ValueError, binascii.Error, UnicodeError, TypeError):
         raise AdmissionDenied('reviewed numeric-ID policy is invalid') from None
-    if (not isinstance(policy,dict) or set(policy) != {'version','repositories'}
+    if (not isinstance(policy,dict) or set(policy) != {'version','repositories','source_commits'}
         or type(policy['version']) is not int or policy['version'] != 1
-        or not isinstance(policy['repositories'],list) or len(policy['repositories']) > 64):
+        or not isinstance(policy['repositories'],list) or len(policy['repositories']) > 64
+        or not isinstance(policy['source_commits'],list) or len(policy['source_commits']) > 64):
         raise AdmissionDenied('invalid numeric-ID policy schema')
+    source_commits = policy['source_commits']
+    if (any(not isinstance(c, str) or not SHA.fullmatch(c) for c in source_commits)
+        or len(source_commits) != len(set(source_commits))):
+        raise AdmissionDenied('invalid reviewed source-commit approval')
+    if expected_source not in source_commits:
+        raise AdmissionDenied('source commit absent from protected reviewed approval')
     approved = {}
     for entry in policy['repositories']:
         if (not isinstance(entry,dict) or set(entry) != {'name','id'}
