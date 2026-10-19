@@ -604,3 +604,45 @@ reported failures with `steps:null`. Private cross-org transfer remains
 unauthorized while source `main`'s approved destination list is empty,
 security #962 is open and required branch protection #904 lacks verification.
 Keep PR DRAFT and production hot reload disabled.
+
+## Active-router close retirement pre-reservation — October 19, 2026
+
+A follow-up audit found a last-owner retirement gap in
+`LogicalSourceActorRouterV1.close()`: the router could seal logical
+admission and call `ActorRef.stop()` before recording the active physical
+actor's generation lease in the retryable retired-route registry. If
+`stop()` threw after partial physical shutdown, the later
+`retiredRoutes.add(active)` could itself fail (including injected OOME),
+leaving an already-closed router without a durable retirement owner.
+
+The close path now pre-reserves the active immutable Route in
+`retiredRoutes` under `routeLock`, **before** setting `closed=true`
+or attempting physical stop. An allocation failure at that point leaves
+the logical route open and the physical actor running, allowing recovery
+and later retry. A stop or lease-debit failure after the seal retains the
+existing record with no postfailure allocation requirement.
+The final active code-generation lease debit now separately requires
+`physicallyFinalizedForHotUpgrade(physical)`, matching the upgrade
+and reaper paths; a mere `awaitTermination()` success cannot authorize
+unloading the actor's linked code image.
+
+`LogicalSourceActorRetiredLeaseRecoveryTest` adds two **real source-compiled
+JUnit regressions**: injected retirement-list OOME must leave the actor
+unsealed with its original generation pin and still-processing mail; a
+trusted generation-pin counter failure during close must leave the route
+sealed but retain a retryable owner, then permit exactly one successful
+pin release on the next supervisor close after repairing the counter.
+These tests are committed but **not executed on full Maven/JDK25/Graal**.
+
+A separate source-free Java 21 retirement protocol oracle was compiled
+with `javac --release 21 -Xlint:all -Werror` and passed **178,000**
+checks over 10,000 pre-reservation OOME/partial stop failure/failed debit/
+retry cycles and 2,000 four-closer races. This is a conceptual concurrency
+model, not the production Oreslang runtime or a validated JUnit result.
+Exact-head source Actions continue to fail without recorded job steps.
+
+The private CI destination allowlist on the protected source branch still
+authorizes no repositories, while issue #962 and independent branch
+protection issue #904 remain open. No Oreslang private source tree was
+copied across organizations in this audit. Continue holding PR #1367
+DRAFT and production hot reload disabled.
