@@ -411,6 +411,44 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void optimizerRejectsLiteralOutsideCertifiedFieldViewWithoutInstallingProof() {
+        Ast.IndexExpr checked = new Ast.IndexExpr(
+                new Ast.NameExpr("record"), new Ast.NameExpr("key"));
+        Ast.CheckedIndexKeys.record(checked, Set.of("public"));
+        Ast.IndexExpr forbidden = new Ast.IndexExpr(
+                new Ast.NameExpr("record"), new Ast.LiteralExpr("private"));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.propagate(checked, forbidden));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.requirePlan(forbidden));
+
+        Ast.IndexExpr allowed = new Ast.IndexExpr(
+                new Ast.NameExpr("record"), new Ast.LiteralExpr("public"));
+        assertEquals(allowed, Ast.CheckedIndexKeys.propagate(checked, allowed));
+        assertDoesNotThrow(() -> Ast.CheckedIndexKeys.require(allowed, "public"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.CheckedIndexKeys.require(allowed, "private"));
+    }
+
+    @Test
+    void optimizerRejectsChangedCertifiedTupleSlotWithoutInstallingProof() {
+        Ast.IndexExpr checked = new Ast.IndexExpr(
+                new Ast.NameExpr("tuple"), new Ast.NameExpr("offset"));
+        Ast.CheckedIndexKeys.recordTupleSlot(checked, 0);
+        Ast.IndexExpr bad = new Ast.IndexExpr(
+                new Ast.NameExpr("tuple"), new Ast.LiteralExpr(1L));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.propagate(checked, bad));
+        assertEquals(null, Ast.CheckedIndexKeys.knownTupleSlot(bad));
+
+        Ast.IndexExpr good = new Ast.IndexExpr(
+                new Ast.NameExpr("tuple"), new Ast.LiteralExpr(0L));
+        assertEquals(good, Ast.CheckedIndexKeys.propagate(checked, good));
+        assertEquals(0, Ast.CheckedIndexKeys.knownTupleSlot(good));
+        assertDoesNotThrow(() -> Ast.CheckedIndexKeys.requireTupleSlot(good, 0));
+    }
+
+    @Test
     void positionalProofIsBoundToExactAstIdentityAndPreservedOnClone() {
         Ast.IndexExpr first = new Ast.IndexExpr(
                 new Ast.NameExpr("tuple"), new Ast.NameExpr("index"));
