@@ -26,7 +26,9 @@ final class TaskScopeTest {
         TaskScope scope = new TaskScope();
         TaskScope.Registration parent = scope.reserve();
         OresFuture<Void> joined = scope.close();
-        TaskScope.Registration grandchild = scope.reserve();
+        assertThrows(IllegalStateException.class, scope::reserve,
+                "an unrelated caller cannot reopen a closing scope");
+        TaskScope.Registration grandchild = scope.reserve(parent);
 
         parent.attach(OresFuture.completed(null));
         parent.quiesced();
