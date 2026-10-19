@@ -487,16 +487,12 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         if (admission == null || !admission.getAsBoolean()) return null;
         Cancelled terminal = new Cancelled(
                 new CancellationException("OresFuture was cancelled"));
-        if (!state.compareAndSet(PENDING, terminal)) return null;
-        cancelAdmission = null;
-        // Revoke this producer now, but keep *subscriber* admission closed
-        // until the owning scope has revoked every sibling. Otherwise a
-        // listener registered between those two phases runs synchronously
-        // as soon as cancelRevocationComplete flips, bypassing the scope's
-        // revoke-all-before-notify guarantee.
-        invokeCancelHook();
+        // Allocate the notification guard AND closure before cancellation
+        // commits. A failed allocation after the PENDING -> Cancelled CAS
+        // would strand subscribers behind cancelRevocationComplete forever.
+        // The losing CAS may waste one closure, but has no observable effect.
         AtomicBoolean delivered = new AtomicBoolean();
-        return () -> {
+        Runnable notification = () -> {
             if (!delivered.compareAndSet(false, true)) return;
             try {
                 // Late registrations published during the deferred interval
@@ -512,6 +508,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 if (drained != null) drained.run();
             }
         };
+        if (!state.compareAndSet(PENDING, terminal)) return null;
+        cancelAdmission = null;
+        // Revoke this producer now, but keep *subscriber* admission closed
+        // until the owning scope has revoked every sibling. Otherwise a
+        // listener registered between those two phases runs synchronously
+        // as soon as cancelRevocationComplete flips, bypassing the scope's
+        // revoke-all-before-notify guarantee.
+        invokeCancelHook();
+        return notification;
     }
 
     @Override
