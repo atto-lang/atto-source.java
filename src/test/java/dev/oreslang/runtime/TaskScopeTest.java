@@ -66,6 +66,8 @@ public class TaskScopeTest {
             });
             assertInstanceOf(TaskHandle.Cancelled.class,
                     child.getDone().get(3, TimeUnit.SECONDS));
+            assertTrue(child.result().isCancelled(),
+                    "inline scheduler may finish before TaskHandle Future binding");
             assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
             assertTrue(cancelledInsideTurn.get());
             assertTrue(cleanupRan.get());
