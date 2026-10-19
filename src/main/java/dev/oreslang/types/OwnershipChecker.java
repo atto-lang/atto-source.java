@@ -2517,7 +2517,14 @@ public final class OwnershipChecker {
      * checks, nor does it mint runtime execution/actor sharing permissions.
      */
     private void validateScheduledCaptures(Ast.LambdaExpr lambda, Scope outer) {
-        if (lambda.nonLexical() || outer.descendantsNonLexical()) return;
+        // A nonlexical scope does not expose a reliable transitive capture
+        // ledger. Skipping that ledger would silently bypass Send admission
+        // and allow actor/private/foreign authority to reach a worker.
+        // Until MIR effect/capture proofs exist, deny instead of assuming
+        // the scheduled activation has no captured data.
+        if (lambda.nonLexical() || outer.descendantsNonLexical()) {
+            throw error("scheduled Task in a nonlexical scope requires a proven capture/effect ledger");
+        }
         CaptureSet captures = collectCaptures(lambda, outer, null);
         for (Capture capture : captures.values.values()) {
             Ast.TypeRef type = capture.source.type;
