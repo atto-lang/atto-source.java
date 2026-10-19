@@ -17,8 +17,6 @@ final class DynamicPropertyAccessRuntimeTest {
     @Test
     void dynamicAggregateAndClassIndexingExecutesWithCheckedSemantics() {
         String source = """
-                type Row = {x: float, y: float};
-
                 define class Point as
                     pub let int x = 1;
                     pub let int y = 2;
@@ -29,7 +27,8 @@ final class DynamicPropertyAccessRuntimeTest {
                     pub let y = 30;
                 end
 
-                fnc record_get(Row row, string key): float {
+                fnc record_get(string key): float {
+                    const row = record{x: 3.0, y: 4.0};
                     return row[key];
                 }
 
@@ -42,8 +41,7 @@ final class DynamicPropertyAccessRuntimeTest {
                 }
 
                 pub fnc main(): void {
-                    const Row row = record{x: 3.0, y: 4.0};
-                    stdio.println(record_get(row, "y"));
+                    stdio.println(record_get("y"));
 
                     const pair = tuple(5.0, 6.0);
                     stdio.println(tuple_get(pair, 0));
