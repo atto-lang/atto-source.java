@@ -19,6 +19,9 @@ public final class Parser {
     }
 
     private final List<Token> tokens;
+    // Explicit tooling-only parser mode; normal Parser.parse retains legacy semantics.
+    // Both language modes reject execution of unlowered optional/default formals.
+    private final boolean stagedV3ParameterSyntax;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
@@ -27,7 +30,21 @@ public final class Parser {
     private int matchGuardStartToken = -1;
 
     public Parser(List<Token> tokens) {
+        this(tokens, false);
+    }
+
+    private Parser(List<Token> tokens, boolean stagedV3ParameterSyntax) {
         this.tokens = List.copyOf(tokens);
+        this.stagedV3ParameterSyntax = stagedV3ParameterSyntax;
+    }
+
+    /**
+     * Parse v3 syntax into a staged, non-executable AST for contract tests.
+     * There is deliberately no compiler or interpreter entry point that enables
+     * this mode; existing module source and imported ABIs remain legacy.
+     */
+    public static Ast.Program parseStagedV3(String source) {
+        return new Parser(new Lexer(source).scan(), true).parseProgram();
     }
 
     public static Ast.Program parse(String source) {
@@ -478,6 +495,7 @@ public final class Parser {
             consume(PIPE, "lambda-style callable declarations use '= |Type name, ...| -> [ReturnType] { ... }'");
             List<Ast.Param> params = parseDeclaredPipeParameters();
             consume(PIPE, "expected closing '|' in lambda-style callable declaration");
+            validateStagedV3Defaults(annotations, params);
             consume(ARROW, "lambda-style callable declarations use the slim arrow '->'");
             Ast.TypeRef returnType = check(LBRACE)
                     ? Ast.TypeRef.simple("void")
@@ -491,6 +509,7 @@ public final class Parser {
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
+        validateStagedV3Defaults(annotations, params);
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
@@ -622,6 +641,7 @@ public final class Parser {
         consume(LPAREN, "expected '(' after constructor");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after constructor parameters");
+        validateStagedV3Defaults(annotations, params);
         if (check(COLON) || check(ARROW) || check(FAT_ARROW)) {
             throw error(peek(), "constructors do not declare a return type");
         }
@@ -1057,6 +1077,7 @@ public final class Parser {
             consume(RPAREN, "expected ')' after method parameters");
         }
 
+        validateStagedV3Defaults(annotations, params);
         Ast.TypeRef returnType = parseReturnType(annotations);
         // An abstract class may declare required slots as `name(args): Type;`.
         // Such signatures are abstract, but remain private unless explicitly pub.
@@ -1101,6 +1122,40 @@ public final class Parser {
         List<Ast.Annotation> result = new ArrayList<>();
         while (match(AT)) {
             String name = consume(IDENT, "expected annotation name").lexeme();
+            if (name.equals("DefaultArgVals")) {
+                if (!stagedV3ParameterSyntax) {
+                    throw error(previous(),
+                            "@DefaultArgVals requires versioned v3 source mode; legacy meaning is unchanged");
+                }
+                consume(LPAREN, "@DefaultArgVals requires named constants in parentheses");
+                List<Ast.NamedDefault> values = new ArrayList<>();
+                java.util.Set<String> names = new java.util.HashSet<>();
+                if (check(RPAREN)) {
+                    throw error(peek(), "@DefaultArgVals requires at least one named default");
+                }
+                do {
+                    String formal = consume(IDENT, "expected defaulted formal name").lexeme();
+                    if (!names.add(formal)) {
+                        throw error(previous(), "duplicate @DefaultArgVals key '" + formal + "'");
+                    }
+                    consume(COLON, "@DefaultArgVals entries use name: literal, never name=literal");
+                    Ast.TypeRef constant;
+                    if (match(MINUS)) {
+                        String magnitude = consume(INT, "negative default must be an integer literal").lexeme();
+                        constant = Ast.TypeRef.intLiteral("-" + magnitude);
+                    } else {
+                        constant = parseMetaValue();
+                    }
+                    try {
+                        values.add(new Ast.NamedDefault(formal, constant));
+                    } catch (IllegalArgumentException invalid) {
+                        throw error(previous(), invalid.getMessage());
+                    }
+                } while (match(COMMA));
+                consume(RPAREN, "expected ')' after @DefaultArgVals entries");
+                result.add(new Ast.Annotation("DefaultArgVals", List.of(), values));
+                continue;
+            }
             // These names claim code generation, target selection or ABI effects.
             // Until a typed annotation registry and AOT lowering exist, retaining
             // them as inert metadata would silently change program semantics.
@@ -1402,11 +1457,22 @@ public final class Parser {
      */
     private Ast.TypeRef parseFormalTypeRef() {
         Ast.TypeRef valueType = parseTypeRef();
+        if (stagedV3ParameterSyntax) return valueType;
         return match(QUESTION) ? Ast.TypeRef.omittableFormal(valueType) : valueType;
+    }
+
+    /** Only v3 permits 'Type formal?' in parameter-name position. */
+    private boolean parseV3FormalNameSuffix() {
+        return stagedV3ParameterSyntax && match(QUESTION);
     }
 
     private List<Ast.Param> parseParametersUntil(Token.Type terminator) {
         return parseParametersUntil(terminator, java.util.Set.of());
+    }
+
+    private void validateStagedV3Defaults(List<Ast.Annotation> annotations, List<Ast.Param> params) {
+        if (!stagedV3ParameterSyntax) return;
+        dev.oreslang.types.V3DefaultArgValsPolicy.validateDeclaration(params, annotations);
     }
 
     private List<Ast.Param> parseParametersUntil(Token.Type terminator, java.util.Set<String> annotationStructuralNames) {
@@ -1475,10 +1541,12 @@ public final class Parser {
             Ast.TypeRef type = parseFormalTypeRef();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "expected parameter name after type").lexeme();
+            boolean argumentOmittable = parseV3FormalNameSuffix();
             if (structural && mutable) {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
-            params.add(new Ast.Param(type, name, structural, mutable, formalAnnotations));
+            params.add(new Ast.Param(type, name, structural, mutable,
+                    formalAnnotations, argumentOmittable));
         } while (match(COMMA));
         return params;
     }
@@ -1508,7 +1576,8 @@ public final class Parser {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
             if (allowed.contains(param.name())) found.add(param.name());
-            result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable(), param.annotations()));
+            result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable(),
+                    param.annotations(), param.argumentOmittable()));
         }
         if (!found.equals(allowed)) {
             java.util.Set<String> missing = new java.util.HashSet<>(allowed);
@@ -1520,12 +1589,29 @@ public final class Parser {
 
     private Ast.TypeRef parseTypeRef() {
         Ast.TypeRef first = parseTypeAtom();
+        if (stagedV3ParameterSyntax && match(QUESTION)) {
+            first = checkedV3OptionSugar(first);
+        }
         if (!match(PIPE)) return first;
 
         List<Ast.TypeRef> options = new ArrayList<>();
         options.add(first);
-        do options.add(parseTypeAtom()); while (match(PIPE));
+        do {
+            Ast.TypeRef element = parseTypeAtom();
+            if (stagedV3ParameterSyntax && match(QUESTION)) {
+                element = checkedV3OptionSugar(element);
+            }
+            options.add(element);
+        } while (match(PIPE));
         return Ast.TypeRef.union(options);
+    }
+
+    private Ast.TypeRef checkedV3OptionSugar(Ast.TypeRef type) {
+        if (type.name().equals("void") || type.isBorrow() || type.isOmittableFormal()
+                || type.inferArguments()) {
+            throw error(previous(), "'T?' requires a concrete owned value type, not void/borrow/inference");
+        }
+        return new Ast.TypeRef("Option", List.of(type), false);
     }
 
     private Ast.TypeRef parseTypeAtom() {
