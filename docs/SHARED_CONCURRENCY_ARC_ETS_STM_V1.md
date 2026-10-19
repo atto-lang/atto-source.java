@@ -13,7 +13,7 @@
 
 ## 2. Rust-style ownership and synchronization
 
-`core` contracts: `Sendable` (move or share across execution domains), `Sync` (read-only shared access is safe), atomic ordering, borrow lifetimes and zero-allocation polling types.
+`core` contracts: `Send` (safe owned-value movement between Task/thread execution contexts), `Sync` (safe sharing of immutable references across contexts: `&T: Send` iff `T: Sync`) and separate `Sendable` (actor transport admissibility subject to owner/domain/capability rules); atomic ordering, borrow lifetimes and zero-allocation polling types. Neither `Send` nor `Sync` permits unguarded simultaneous mutable aliases, and actor transport is not automatically permitted by either trait.
 
 `alloc` facilities, with explicit allocator:
 
@@ -91,3 +91,53 @@ P1 ETS: private/protected/public, typed `TableId`, registry, heir/owner STOP tra
 P2 STM: `Ref` and `TRef` with conflict-retry formal model, multi-key invariants, suspend/resume and rollback proofs across both backends. P3: partitioned ECS/inverted columns and adaptive table sharding.
 
 Never mark the new feature fully shipped until exact source identity and full guest compiler/scheduler tests pass across supported targets.
+
+## 7. Send/Sync auto traits and execution-permit scoped concurrency (P0 proposed)
+
+**Status:** proposed compiler/language contract only. Not yet executable in guest source.
+
+### Auto trait rules
+
+- `Send` is a compiler-proven marker for safely moving an *owned value* to a different M:N Task / native thread execution context. The source loses its ownership after `rt take`. Two mutable aliases are never created by a move.
+- `Sync` is a compiler-proven marker that sharing an immutable borrow of `T` across contexts is safe (`&T: Send` iff `T: Sync`). It does not imply concurrent mutation is legal.
+- `Sendable` remains separate: actor mailbox transport is subject to frozen/copy/ownership and trust-domain authorization, and is not synonymous with `Send`, `Sync` or `Serializable`.
+- Derive `Send` and `Sync` transitively for aggregates and generic instantiations if the full field/capability graph is eligible. Compiler-negative for Rc-style nonatomic reference counting, mutable unsynchronized cells (`!Sync`), thread-affine host resources (`!Send`), arbitrary raw pointers and private actor-state aliases.
+- `Arc<T>: Send + Sync` requires `T: Send + Sync`; `Mutex<T>: Send + Sync` requires `T: Send`; `RwLock<T>: Send + Sync` requires `T: Send + Sync`. Treat guard transferability independently and prohibit held guards crossing Task suspensions in v1.
+- Do not permit untrusted user code to assert unsafe `Send`/`Sync` implementations by inheriting an empty trait; internal overrides require a trusted audited compiler/backend proof.
+
+### Task capture and scoped borrowing
+
+- Detached `do nb { ... }` captures own moved `Send` values or authorized `Sync` shared allocations; they cannot capture nonstatic stack loans. Validate closure captures transitively, including dynamic methods, FFI, trait objects, resource owners and refcounts.
+- Proposed `nb scope { ... }` permits child Tasks to borrow disjoint mutable views or shared immutable views, but the scope cannot finish until *physical* child quiescence, even after cancellation/STOP/panic. Non-overlapping loans are forbidden to escape in returned Task/Future/closures.
+- M:N Task continuations can migrate worker threads. Use authenticated logical Task identity and incarnation/region generation; native thread-affine handles remain non-Send.
+
+### ExecutionPermit is an authority, not an independent ownership proof
+
+- `ExecutionPermit<Region, AccessSet>` is a runtime-minted, opaque, noncopyable, nonserializable capability. It must be bound to the concrete region and active borrow graph. Taking `rt borrow mut` of an arbitrary token proves only exclusivity of that token, not of unrelated data.
+- Access sets carry read/write effects and field/column/row-range constraints. A split consumes/borrows its parent and yields disjoint child capabilities; reunite only after both child Tasks quiesce and the owner generation still matches.
+- Static disjointness enables zero-lock parallel execution; runtime-selected partitions require dynamic disjointness checks and structural mutation fences. Do not mistake `Sync` for lock-free mutable access.
+- ECS systems declare typed `reads<Component>` / `writes<Component>` access. The scheduler can run nonconflicting systems concurrently, but overlapping writers must serialize or be rejected. Dynamic aliases, filters, FFI, reallocation and structural changes require explicit handling.
+
+### Illustrative Oreslang (non-executable grammar proposal)
+
+```ores
+let Player player = Player(hp: 100);
+let Task<void> worker = nb {
+  let Player mine = rt take player;
+  mine.hp -= 10;
+};
+// Using moved player here is a compile error.
+
+nb scope {
+  let (left, right) = positions.split_mut(midpoint);
+  let Task<void> a = nb { integrate(rt take left); };
+  let Task<void> b = nb { integrate(rt take right); };
+  await a;
+  await b;
+}
+// Parent reclaims access only after both Tasks have physically quiesced.
+```
+
+### Required tests
+
+Static positive/negative Send/Sync cases; 5/10/100 Task moves; mutable capture escape; detached vs scoped lifetime checks; cancellation while running; await/select/FFI alias rejection; Task migration; actor heap and isolate denial; disjoint columns and conflicting ECS systems; retired generation invalidation. Demand real Java and LLVM guest-source execution and sanitizer/race tests before enabling.
