@@ -148,6 +148,35 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void closingCannotSilentlyDropAcceptedQueuedActorMail() throws Exception {
+        try (HotReloadManager manager =
+                     new HotReloadManager(IsolatePolicy.developer(),
+                             ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("queued-close.ores", V1);
+            var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
+                    first, "Counter", WAIT, 2, 8, 16);
+            try {
+                bridge.admitLong(41L);
+                var before = bridge.snapshot();
+                assertThrows(IllegalStateException.class, bridge::close,
+                        "proxy admission is not permission to discard accepted mail");
+                assertEquals(before, bridge.snapshot());
+                assertTrue(bridge.dispatchOne(WAIT));
+                assertEquals(42L, next(bridge));
+                assertDoesNotThrow(bridge::close);
+                assertThrows(IllegalStateException.class,
+                        () -> bridge.admitLong(1L));
+            } finally {
+                // If a test assertion fails with queued credits, retain the
+                // live generation rather than silently treating mail as done.
+                if (bridge.snapshot().retainedMessages() == 0) {
+                    bridge.close();
+                }
+            }
+        }
+    }
+
+    @Test
     void closedBridgeForbidsLateMailboxAdmission()
             throws Exception {
         try (HotReloadManager manager =
