@@ -77,7 +77,15 @@ public final class NominalResultErrorAudit {
             throw new IllegalArgumentException(
                     "enum case " + variant.qualifiedName() + " requires "
                             + expectedArity + " payload arguments");
-        // Payload expression types, borrow capabilities and effects are
-        // outside this *direct-case* audit and remain unapproved at runtime.
+        // Arity alone cannot prove the payload type or ownership. In
+        // particular, a single string passed to a case expecting int
+        // must NOT receive a positive type-only audit. Restrict positive
+        // proofs to zero-payload cases until the real TypeChecker validates
+        // the full expression, lifetime and ownership.
+        if (expectedArity != 0)
+            throw new IllegalArgumentException(
+                    "unverified nominal case payload type or ownership for "
+                            + variant.qualifiedName());
+
     }
 }

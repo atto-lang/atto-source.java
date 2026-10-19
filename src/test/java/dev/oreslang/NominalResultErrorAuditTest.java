@@ -74,6 +74,17 @@ final class NominalResultErrorAuditTest {
             """));
     }
 
+    @Test void payloadBearingCaseRequiresRealTypeAndOwnershipChecking() {
+        assertThrows(IllegalArgumentException.class, () -> audit("""
+            define enum PayloadError as
+                BAD_NUMBER struct{value: int} 10
+            end
+            fnc failure(): Result<int, PayloadError> {
+                return Err(PayloadError.BAD_NUMBER("not a number"));
+            }
+            """));
+    }
+
     @Test void typeOnlyAcceptanceDoesNotUnlockRuntime() {
         Ast.Program ast = Parser.parse(ERRORS + """
             fnc failure(): Result<int, TrainingError> {

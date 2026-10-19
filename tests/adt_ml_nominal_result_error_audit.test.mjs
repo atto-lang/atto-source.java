@@ -37,3 +37,10 @@ test("JUnit has explicit positive and negative nominal cases",()=>{
     "checksTypedResultBindingsAndBranches"
   ])assert(junit.includes(name),name);
 });
+
+test("payload-bearing nominal case is not certified from arity alone",()=>{
+  assert.match(helper,/if \(expectedArity != 0\)/);
+  assert.match(helper,/unverified nominal case payload type or ownership/);
+  assert.match(junit,/payloadBearingCaseRequiresRealTypeAndOwnershipChecking/);
+  assert.match(junit,/PayloadError\.BAD_NUMBER\("not a number"\)/);
+});
