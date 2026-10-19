@@ -44,6 +44,50 @@ remains available for explicitly typed receivers. An inline receiver must be
 first, may not appear twice, cannot end in a dangling comma, and is forbidden
 on `static fnc` declarations.
 
+### Calling a method with an explicit `self` value
+
+A receiver marker is recognized **only in method declarations**, never in the
+argument list of a method invocation. The left side of `.` supplies the
+receiver once; every expression in parentheses is an ordinary user argument,
+including an expression spelled `self`. For example:
+
+```ores
+define class Foo as
+  foo(int x): int { return x; }             // instance foo/1
+  foo(self other, int x): int { return x; }  // instance foo/2
+  example(): int {
+    self.foo(5);        // foo/1; bound receiver is self
+    self.foo(self, 5);  // foo/2; first value argument is self
+    return 0;
+  }
+end
+```
+
+In `foo(self other, int x)`, `self` is the **type of the named value
+parameter** `other`, not a standalone receiver marker; the declaration has
+two caller-visible arguments. In contrast, `foo(self, int x)` is receiver
+syntax and has one caller-visible argument. They may coexist, but
+`foo(int x)` conflicts with `foo(self, int x)` in either declaration
+order. If only `foo/1` exists, `self.foo(self, 5)` fails with **missing
+foo/2**. If `foo/2` exists with an incompatible first parameter type,
+the call fails **type checking of argument 1**, not overload fallback to
+foo/1.
+
+The receiver's authorization and lifetime derive from the left operand and
+the selected method's receiver effect (`mut self` or read-only), **not**
+from any user-provided `self` expression. The compiler must not silently
+discard, inject, substitute, or rebind a receiver from ordinary arguments.
+For actors, a value passed as an argument is additionally subject to normal
+actor-isolation, Sendable and mailbox checks: writing `self` never grants
+permission to transfer an actor's private instance/state or bypass a mailbox.
+
+Normal parameter typing, named/spread arguments, omission/default expansion,
+borrow checks and dispatch must all agree on the same caller-visible argument
+vector. Receiver normalization happens at declaration parsing, before method
+slot admission; it must never happen when resolving a call. Future default
+arguments/varargs must reserve every reachable call-arity slot and reject
+collisions rather than using runtime type/receiver guesses.
+
 Receiver spelling has no bearing on nested lambda scopes. Use `nlex` when
 a callback must not capture enclosing locals or receiver authority. In
 particular, any use of `self` inside an `nlex` lambda is a name-resolution
