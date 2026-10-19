@@ -2,10 +2,14 @@ package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -76,6 +80,58 @@ final class NativeCarrierExecutorTest {
         assertTrue(cpu >= 0);
         assertThrows(IllegalArgumentException.class,
                 () -> new NativeCarrierExecutor(1, 2, 16, "ores-native-invalid-pin-", cpu));
+    }
+
+
+    @Test
+    void cachedHardAffinityRepairsRealCarrierDrift() throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux"));
+        int[] cpus = allowedLinuxCpus();
+        assumeTrue(cpus.length >= 2);
+        int home = cpus[0];
+        int foreign = cpus[1];
+
+        try (NativeCarrierExecutor executor =
+                     new NativeCarrierExecutor(1, 1, 16, "ores-native-drift-test-", home)) {
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            executor.execute(() -> {
+                try {
+                    assertEquals(home, NativeCarrierExecutor.currentCpu());
+                    // Simulate native/FFI code changing this pthread's mask without
+                    // updating Oreslang's carrier-local affinity cache.
+                    NativeCarrierExecutor.bindCurrentThreadToCpu(foreign);
+                    assertEquals(foreign, NativeCarrierExecutor.currentCpu());
+                    NativeCarrierExecutor.ensureCurrentCarrierCpu(home);
+                    assertEquals(home, NativeCarrierExecutor.currentCpu(),
+                            "observed CPU drift must invalidate the cached binding");
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                } finally {
+                    done.countDown();
+                }
+            });
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            if (failure.get() != null) throw new AssertionError(failure.get());
+        }
+    }
+
+    private static int[] allowedLinuxCpus() throws Exception {
+        String status = Files.readString(Path.of("/proc/self/status"));
+        String line = status.lines()
+                .filter(value -> value.startsWith("Cpus_allowed_list:"))
+                .findFirst()
+                .orElseThrow();
+        String spec = line.substring(line.indexOf(':') + 1).trim();
+        ArrayList<Integer> cpus = new ArrayList<>();
+        for (String part : spec.split(",")) {
+            String[] range = part.split("-");
+            int first = Integer.parseInt(range[0]);
+            int last = range.length == 1 ? first : Integer.parseInt(range[1]);
+            for (int cpu = first; cpu <= last; cpu++) cpus.add(cpu);
+        }
+        return cpus.stream().mapToInt(Integer::intValue).toArray();
     }
 
 }
