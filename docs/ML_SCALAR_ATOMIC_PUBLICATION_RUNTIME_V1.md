@@ -10,9 +10,15 @@ training, and not a substitute for authenticated gradient transport.
 - Exactly one guest-owned `state { ... }` schema remains the source of persistent
   guest fields. `SealedActorState.values` is its runtime storage, not a second
   guest field. Publication replaces the complete runtime scalar field map.
-- `prepareScalarPublication(versionField, expected, immutableReplacements)`
-  requires owning actor context **outside** a state loan. It validates every
-  replacement's schema and requires `expected+1` for the long version field.
+- `prepareScalarPublication(versionField, expectedVersion,
+  expectedSnapshotRevision, immutableReplacements)` requires owning actor
+  context **outside** a state loan. The caller must carry the revision observed
+  via `Access.revision()` **in the same read loan as the input weights**.
+  A later scalar mutation cannot be laundered into an old optimizer candidate
+  by staging that candidate after the mutation (TOCTOU). The compiler must
+  eventually make this input-snapshot evidence mandatory rather than relying
+  on trusted Java caller discipline. Every replacement is schema-validated,
+  and the long version field must advance by exactly one.
   The `ScalarPublication` capability is issuer-bound, non-serializable and
   single-use.
 - `critical(true, access -> access.publishScalars(prepared))` requires a
