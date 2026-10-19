@@ -635,6 +635,24 @@ public final class OptionalCallShapeBinder {
                 }
                 priorCallItemIndex = callItemIndex;
             }
+            // The rest tail is a sequence, never a permutation. A public
+            // Plan can be reconstructed without going through bind(); validate
+            // lexical order here as well as in the source-AST rebind.
+            // All fixed positional slots must precede the rest tail. Named
+            // arguments cannot precede positional rest elements.
+            int latestFixedSource = -1;
+            for (int i = 0; i < sourceIndexByParameter.size(); i++) {
+                if (i == variadicParameterIndex) continue;
+                latestFixedSource = Math.max(latestFixedSource, sourceIndexByParameter.get(i));
+            }
+            int previousRestSource = latestFixedSource;
+            for (int restSource : variadicSourceIndices) {
+                if (restSource <= previousRestSource) {
+                    throw new IllegalArgumentException(
+                            "variadic call-plan sources must follow fixed values in lexical order");
+                }
+                previousRestSource = restSource;
+            }
             boolean[] seen = new boolean[supplied];
             for (int i = 0; i < sourceIndexByParameter.size(); i++) {
                 int source = sourceIndexByParameter.get(i);
