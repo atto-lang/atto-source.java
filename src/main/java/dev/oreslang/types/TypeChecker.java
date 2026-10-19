@@ -5093,6 +5093,12 @@ public final class TypeChecker {
                 validateDetachedTaskType(
                         binding.type(),
                         where + " '" + use.name() + "'");
+            } else if (importedValues.contains(use.name())) {
+                throw new IllegalArgumentException(
+                        where + " '" + use.name()
+                                + "' is an opaque imported runtime value; "
+                                + "detached Task admission requires linked "
+                                + "semantic type and ownership metadata");
             }
         }
     }
@@ -5112,6 +5118,12 @@ public final class TypeChecker {
                     validateDetachedTaskType(
                             binding.type(),
                             where + " capture '" + use.name() + "'");
+                } else if (importedValues.contains(use.name())) {
+                    throw new IllegalArgumentException(
+                            where + " capture '" + use.name()
+                                    + "' is an opaque imported runtime value; "
+                                    + "detached Task admission requires linked "
+                                    + "semantic type and ownership metadata");
                 }
             }
         }
