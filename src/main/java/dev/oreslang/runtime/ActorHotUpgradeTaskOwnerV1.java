@@ -31,6 +31,7 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
     private static final long CLOSE_TIMEOUT_NANOS =
             TimeUnit.SECONDS.toNanos(5);
     private final LogicalSourceActorRouterV1 router;
+    private final ActorHotUpgradeTaskOwnerV1 parent;
     // 0 denotes the privileged logical-supervisor root owner. Descendant
     // scopes bind to the exact physical code epoch at scope creation.
     private final long boundRouteEpoch;
@@ -46,12 +47,14 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
     private boolean closed;
 
     ActorHotUpgradeTaskOwnerV1(LogicalSourceActorRouterV1 router) {
-        this(router, 0L);
+        this(router, 0L, null);
     }
 
     private ActorHotUpgradeTaskOwnerV1(
-            LogicalSourceActorRouterV1 router, long boundRouteEpoch) {
+            LogicalSourceActorRouterV1 router, long boundRouteEpoch,
+            ActorHotUpgradeTaskOwnerV1 parent) {
         this.router = Objects.requireNonNull(router, "router");
+        this.parent = parent;
         if (boundRouteEpoch < 0L)
             throw new IllegalArgumentException("invalid Task owner route epoch");
         this.boundRouteEpoch = boundRouteEpoch;
@@ -67,7 +70,7 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
             long epoch = boundRouteEpoch == 0L
                     ? router.ref().routeEpoch() : boundRouteEpoch;
             ActorHotUpgradeTaskOwnerV1 child =
-                    new ActorHotUpgradeTaskOwnerV1(router, epoch);
+                    new ActorHotUpgradeTaskOwnerV1(router, epoch, this);
             children.add(child);
             return child;
         }
@@ -134,6 +137,13 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
             }
         }
         return true;
+    }
+
+    // Package-only structural regression hook; not an upgrade authority.
+    int retainedChildScopesForTesting() {
+        synchronized (gate) {
+            return children.size();
+        }
     }
 
     private void ensureOpen() {
@@ -249,6 +259,23 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
                 // slot.task against the physical-exit witness identities.
                 scope.active.removeIf(slot ->
                         slot.task != null && exited.contains(slot.task));
+            }
+        }
+        // Post-order pruning: a successful physical join releases the
+        // parent's strong ownership of every fully closed leaf. Without this,
+        // a long-lived logical actor retained all prior TaskScope trees after
+        // hundreds of otherwise successful code-generation upgrades.
+        // A failed retirement remains active and its ancestors stay owned.
+        for (int i = visited.size() - 1; i >= 0; --i) {
+            ActorHotUpgradeTaskOwnerV1 scope = visited.get(i);
+            if (scope.parent == null) continue;
+            synchronized (scope.parent.gate) {
+                synchronized (scope.gate) {
+                    if (scope.closed && scope.active.isEmpty()
+                            && scope.children.isEmpty()) {
+                        scope.parent.children.remove(scope);
+                    }
+                }
             }
         }
         if (interrupted) Thread.currentThread().interrupt();
