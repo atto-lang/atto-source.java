@@ -48,6 +48,8 @@ real exact-head Maven/GraalVM execution and independent review.
 mvn -B -ntp -Dores.runtime.carriers=java \
   -Dsurefire.failIfNoSpecifiedTests=true \
   -Dtest=OresTaskProvisionalAdmissionTest,OresTaskRuntimeAdmissionTest,\
+OresTaskOrdinaryRetirementTest,OresTaskScopeRetirementBookkeepingTest,\
+OresTaskScopePreAdmissionOwnershipTest,OresTaskScopeCoherentQuiescenceTest,\
 TaskResolvedSafetyProofTest,OresTaskScopeFrameTest,TaskRegionPhysicalExitBridgeTest,\
 GuestScalarTaskAwaitTest,ScopedTaskTypeBridgeTest,TaskTraitAdmissionHardeningTest test
 ```
@@ -101,3 +103,36 @@ produce real steps/logs. Zero-step Actions failures are not test runs.
 - Security issue #962's destination allowlist remains empty. Do not mirror
   this PR's private tree into another GitHub organization until approved
   identity, tree pin and independent security review are proven.
+
+## Ordinary-Task physical-exit retirement hardening (October 19)
+
+- Runtime `TaskExit.markExited` now invokes the pre-registered trusted retirement
+  hook *before* success on `quiesced`; thrown retirement errors fail that
+  fence. The previous generic Future waiter was not authoritative because
+  runtime callbacks intentionally swallow exceptions.
+- `OresTaskScope.submit` installs a field-sensitive owner-slot retirement
+  hook before executable submission and removes the old Future callback.
+  Missing slots, throwing removals and pre-dispatch rejection now have a
+  fail-closed physical fence rather than a false successful `getDone()`.
+- `AsyncRuntime.abandonPreparedTask` retires and seals the provisional
+  physical fence when scope reservation fails, including when a collection
+  inserts an owner slot and then throws. No guest carrier was submitted.
+- `OresTaskOrdinaryRetirementTest` adds five JUnit scenarios for failing
+  and silently refused removals, rejection, release faults, and
+  insert-then-throw registration. The actual private-source suite is
+  still **not executed** on this exact commit.
+
+### Authenticated evidence limits
+
+- Alternate source-free GitHub Actions run
+  https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/actions/runs/39342763759
+  **PASSED** JDK21 strict compilation and 10,000 model
+  cancellation/entry races, rejection, injected faults and delayed retirement.
+  This is a newly authored stand-alone lifecycle oracle, **not any private
+  Oreslang source**. No source repo Git objects were transferred for this run.
+- Exact-head source-org `fast-ci` run 39343165476 and
+  `concurrency-contract` run 39343165548 still failed with
+  `jobs[].steps = null`. Treat both as unexecuted.
+- The cross-org transfer allowlist remains empty in protected `main`;
+  source-export security issue #962 remains open. Spare runner capacity
+  does not override independent security approval.
