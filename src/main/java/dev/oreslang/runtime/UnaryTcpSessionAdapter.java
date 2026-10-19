@@ -44,7 +44,8 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             long maxGlobalPayloadBytes,
             int maxPayloadBytes,
             int readDeadlineMillis,
-            int requestDeadlineMillis) {
+            int requestDeadlineMillis,
+            int writeDeadlineMillis) {
         Limits {
             if (maxConnections < 1 || maxConnections > 65536
                     || maxRequestsPerConnection < 1 || maxRequestsPerConnection > 65536
@@ -55,7 +56,8 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                             > (long) maxRequestsPerConnection * maxPayloadBytes
                     || maxGlobalPayloadBytes < 0
                     || maxGlobalPayloadBytes > (long) maxGlobalWorkItems * maxPayloadBytes
-                    || readDeadlineMillis < 1 || requestDeadlineMillis < 1) {
+                    || readDeadlineMillis < 1 || requestDeadlineMillis < 1
+                    || writeDeadlineMillis < 1) {
                 throw new IllegalArgumentException("invalid unary TCP adapter limits");
             }
         }
@@ -186,7 +188,6 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                 return false;
             payloadBytes = withoutCurrent + replacementBytes;
             credit.bytes = replacementBytes;
-            credit.response = true;
             return true;
         }
 
@@ -223,7 +224,6 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
     private static final class WorkCredit implements AutoCloseable {
         private final GlobalBudget owner;
         private int bytes;
-        private boolean response;
         private boolean closed;
 
         WorkCredit(GlobalBudget owner, int bytes) {
@@ -555,10 +555,18 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
         }
 
         private void writeNow(UnaryTransportFrame.Envelope terminal) throws IOException {
-            synchronized (writeLock) {
-                if (ended || socket.isClosed()) return;
-                UnaryTransportFrame.writeTcp(socket.getOutputStream(), terminal);
-                socket.getOutputStream().flush();
+            ScheduledFuture<?> deliveryDeadline = timers.schedule(
+                    this::close,
+                    limits.writeDeadlineMillis(),
+                    TimeUnit.MILLISECONDS);
+            try {
+                synchronized (writeLock) {
+                    if (ended || socket.isClosed()) return;
+                    UnaryTransportFrame.writeTcp(socket.getOutputStream(), terminal);
+                    socket.getOutputStream().flush();
+                }
+            } finally {
+                deliveryDeadline.cancel(false);
             }
         }
 
