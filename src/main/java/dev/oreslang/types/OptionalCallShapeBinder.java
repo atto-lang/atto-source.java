@@ -95,6 +95,77 @@ public final class OptionalCallShapeBinder {
     }
 
     /**
+     * Minimal executable admission: only pure primitive LITERAL named calls
+     * to direct local function/routine names. The compiler must still resolve
+     * that name to its unique normal callable declaration in each pass.
+     * Other staged AST forms remain explicitly disabled.
+     */
+    public static boolean isDirectScalarLiteralNamedCall(Ast.StagedCallExpr call) {
+        if (call == null || call.typeArgumentsPresent()
+                || !(call.callee() instanceof Ast.NameExpr)
+                || call.arguments().isEmpty()) return false;
+        boolean hasNamed = false;
+        for (Ast.CallArgument item : call.arguments()) {
+            if (item.omitted() || item.spread()
+                    || !(item.value() instanceof Ast.LiteralExpr literal)) return false;
+            Object value = literal.value();
+            if (!(value instanceof Long || value instanceof Double
+                    || value instanceof Boolean || value instanceof String)) return false;
+            if (item.label() != null) hasNamed = true;
+        }
+        return hasNamed;
+    }
+
+    /**
+     * The primitive-literal-only first integration step. Never reorder
+     * effectful guest expressions: they require a source-order temporary
+     * schedule, typed Option adaptation, and ownership checks.
+     *
+     * This method doesn't resolve the target; the caller must independently
+     * prove its local declaration identity, visibility and shadowing.
+     */
+    public static Ast.CallExpr lowerDirectScalarLiteralNamedCall(
+            Ast.StagedCallExpr call, Ast.FunctionDecl resolvedTarget) {
+        if (!isDirectScalarLiteralNamedCall(call)
+                || resolvedTarget == null
+                || !(call.callee() instanceof Ast.NameExpr targetName)
+                || !targetName.name().equals(resolvedTarget.name())
+                || resolvedTarget.async() || resolvedTarget.suspends()
+                || resolvedTarget.generator() || resolvedTarget.trapped()
+                || resolvedTarget.structural() || resolvedTarget.nonLexical()
+                || resolvedTarget.actorKind() != Ast.ActorKind.NONE
+                || !resolvedTarget.genericParameters().isEmpty()
+                || !resolvedTarget.annotations().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "named scalar-literal calls require a unique, ordinary, local non-generic function/routine");
+        }
+        for (Ast.Param param : resolvedTarget.parameters()) {
+            if (param.optional() || param.hasDefault() || param.structural()
+                    || param.mutable() || param.type().isBorrow()
+                    || param.type().inferArguments()) {
+                throw new IllegalArgumentException(
+                        "optional/default/borrow/mutable named call ABI is not yet enabled");
+            }
+        }
+        List<Parameter> shapes = formalParameterShapes(resolvedTarget.parameters());
+        Plan plan = bindParsed(shapes, call.arguments());
+        if (plan.variadicParameterIndex() != -1
+                || plan.suppliedArgumentCount() != resolvedTarget.parameters().size()
+                || !plan.explicitlyOmittedParameterIndices().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "named scalar-literal call requires all formal slots supplied");
+        }
+        List<Ast.Expr> source = evaluatedExpressionsInSourceOrder(shapes, call.arguments(), plan);
+        List<Ast.Expr> ordered = new ArrayList<>(resolvedTarget.parameters().size());
+        for (int formal = 0; formal < resolvedTarget.parameters().size(); formal++) {
+            int index = plan.sourceIndex(formal);
+            if (index < 0) throw new IllegalArgumentException("missing required named argument");
+            ordered.add(source.get(index));
+        }
+        return new Ast.CallExpr(call.callee(), List.copyOf(ordered));
+    }
+
+    /**
      * An untrusted/reconstructed Plan can swap the claimed formal for two
      * omissions while preserving all dense source-index invariants.
      * Rebinding against the actual source items detects such an exchange.
