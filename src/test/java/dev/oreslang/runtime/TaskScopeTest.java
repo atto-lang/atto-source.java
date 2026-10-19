@@ -74,6 +74,53 @@ public class TaskScopeTest {
         }
     }
 
+    @Test void loanRetirementHookWaitsForPhysicalTaskDone() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicInteger retired = new AtomicInteger();
+
+            TaskHandle<Integer> child = scope.startTask(resume -> {
+                entered.countDown();
+                awaitUninterruptibly(release);
+                return OresScheduler.done(7);
+            }, retired::incrementAndGet);
+
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertTrue(child.cancel("stop"));
+            assertEquals(0, retired.get(),
+                    "cancellation request must not retire scoped loans");
+            assertFalse(child.getDone().isDone(),
+                    "physical completion witness must stay pending while guest turn runs");
+
+            release.countDown();
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    child.getDone().get(3, TimeUnit.SECONDS));
+            assertEquals(1, retired.get(),
+                    "loan retirement hook must fire exactly once from getDone");
+
+            scope.seal();
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+            assertEquals(1, retired.get());
+        }
+    }
+
+    @Test void failedLoanRetirementHookKeepsScopeJoinPending() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            TaskHandle<Integer> child = scope.startTask(
+                    resume -> OresScheduler.done(3),
+                    () -> { throw new IllegalStateException("loan retirement failed"); });
+
+            assertEquals(new TaskHandle.Success<>(3),
+                    child.getDone().get(3, TimeUnit.SECONDS));
+            scope.seal();
+            assertFalse(scope.getDone().isDone(),
+                    "scope must fail closed if trusted retirement cannot complete");
+        }
+    }
+
     @Test void scopeCancelCannotPretendRunningChildExited() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(2)) {
             TaskScope scope = scheduler.newTaskScope();
