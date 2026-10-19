@@ -67,6 +67,35 @@ For an Option<T> formal with omission enabled (`name?` or a default), supplied T
 
 Changing any public omission or default metadata changes its **call-contract fingerprint**, even when the physical full ABI arity stays the same. Defaults must be serialized with imported signatures (not rederived from local declaration text). Use a feature/version gate and negative tests for old v1/v2 imports; do not globally flip v1/v2 meanings.
 
+## Receiver and actor-method interaction
+
+For every class/actor instance method, the hidden receiver is NOT a defaultable
+formal, regardless of declaration spelling. `foo(int x)` and
+`foo(self, int x)` select the same caller-visible arity 1 slot and conflict.
+The two-list receiver spelling `foo(self Foo)(int x)` also selects that
+same slot. The explicit receiver's type/mutability is separately checked.
+
+Defaults bind only formal VALUE slots, after receiver erasure. For example:
+
+~~~oreslang
+define class Foo as
+    @DefaultArgVals(x: 5)
+    pub foo(self, int x?): int { return x; }
+
+    pub bar(): int {
+        return self.foo();            // optional x defaults to 5
+        // self.foo(self, 5) is a two-user-argument call, NOT a receiver spelling
+    }
+end
+~~~
+
+A provided `self` inside the argument list always counts as one supplied
+value for overload admission and must satisfy the formal's type/ownership
+checks. No default, named label, omission marker or receiver alias may consume
+this expression or smuggle it into the hidden receiver slot. Actor-owned self
+must not cross a mailbox or unsafe actor capability boundary. See the separate
+parser implementation PR #1513 and `contracts/v3/SELF_RECEIVER_ARITY_V1.md`.
+
 ## Overload and constructor safety
 
 Overload identity remains caller-visible value arity (constructor's leading `self` is excluded). For the first implementation, reject entire overload families with intersecting conservative effective supplied-count intervals. A default or `name?` lowers the minimum required count; labels, return types, erased generic types and declaration order NEVER select an ambiguous overload. Preserve any separate nominal enum exception only after an explicit proof that omission cannot introduce collisions.
