@@ -90,16 +90,28 @@ final class ConcurrencyTestCommand {
             System.err.println("oreslang test: not a file: " + entryPath);
             return 2;
         }
-        if (traceArg != null && entryPath.toAbsolutePath().normalize()
-                .equals(Path.of(traceArg).toAbsolutePath().normalize())) {
-            System.err.println("oreslang test: trace output cannot overwrite the test entrypoint");
-            return 2;
-        }
-        if (traceArg != null && replayArg != null
-                && Path.of(traceArg).toAbsolutePath().normalize()
-                .equals(Path.of(replayArg).toAbsolutePath().normalize())) {
-            System.err.println("oreslang test: trace output cannot overwrite the replay input");
-            return 2;
+        if (traceArg != null) {
+            Path traceOutput = Path.of(traceArg);
+            if (Files.isSymbolicLink(traceOutput)) {
+                System.err.println("oreslang test: trace output cannot be a symbolic link");
+                return 2;
+            }
+            if (entryPath.toAbsolutePath().normalize()
+                    .equals(traceOutput.toAbsolutePath().normalize())
+                    || (Files.exists(traceOutput) && Files.isSameFile(entryPath, traceOutput))) {
+                System.err.println("oreslang test: trace output cannot overwrite the test entrypoint");
+                return 2;
+            }
+            if (replayArg != null) {
+                Path replayInput = Path.of(replayArg);
+                if (traceOutput.toAbsolutePath().normalize()
+                        .equals(replayInput.toAbsolutePath().normalize())
+                        || (Files.exists(traceOutput) && Files.exists(replayInput)
+                                && Files.isSameFile(traceOutput, replayInput))) {
+                    System.err.println("oreslang test: trace output cannot overwrite the replay input");
+                    return 2;
+                }
+            }
         }
         // This is the entry file digest, not a full linked-import closure hash.
         // Replaying a program with changed entry bytes is always refused.
