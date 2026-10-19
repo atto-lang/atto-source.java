@@ -17,6 +17,7 @@ final class LogicalActorUpgradeCoordinatorV1 implements AutoCloseable {
     private final LogicalActorProxyMailboxV1 mailbox;
     private boolean preparing;
     private boolean poisoned;
+    private boolean closed;
     // Guarded by the coordinator monitor, never by a transaction-local lock.
     private Transaction active;
 
@@ -29,6 +30,8 @@ final class LogicalActorUpgradeCoordinatorV1 implements AutoCloseable {
     }
 
     synchronized Transaction prepare(ActorUpgradeEpochGate.Image image) {
+        if (closed)
+            throw new IllegalStateException("actor upgrade coordinator is closed");
         if (poisoned || preparing)
             throw new IllegalStateException("actor upgrade is already active or quarantined");
         if (code.epoch() != mailbox.snapshot().routeEpoch())
@@ -170,5 +173,8 @@ final class LogicalActorUpgradeCoordinatorV1 implements AutoCloseable {
         if (preparing || poisoned)
             throw new IllegalStateException("upgrade must be explicitly resolved "
                     + "or quarantined by trusted supervisor");
+        // A clean close revokes this coordinator's ability to begin any new
+        // freeze/publish transaction. It does not close the actor or mailbox.
+        closed = true;
     }
 }
