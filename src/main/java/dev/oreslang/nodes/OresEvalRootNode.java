@@ -6322,8 +6322,8 @@ public final class OresEvalRootNode extends RootNode {
                         object.fields.put(target.member(), value);
                         return value;
                     }
-                    // Explicit anonymous structs use this mutable map path.
-                    // infer struct values use ReadonlyRecordValue instead.
+                    // Concrete inferred/explicit structs use this mutable owned-map path.
+                    // Structural records use ReadonlyRecordValue and never reach it.
                     if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
                         @SuppressWarnings("unchecked")
                         LinkedHashMap<String, Object> record =
@@ -6336,7 +6336,7 @@ public final class OresEvalRootNode extends RootNode {
                         return value;
                     }
                     throw new IllegalArgumentException(
-                            "member assignment requires a mutable class or explicit struct");
+                            "member assignment requires a mutable class or concrete struct");
                 }
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
