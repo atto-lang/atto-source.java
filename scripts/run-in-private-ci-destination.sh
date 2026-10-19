@@ -5,5 +5,9 @@ if [[ $# -ne 7 || "${2:-}" != --source-dir || "${4:-}" != --branch || "${6:-}" !
   printf 'PRIVATE_CI_DESTINATION_REJECTED: usage: run-in-private-ci-destination.sh owner/repo --source-dir DIRECTORY --branch ci/oreslang-NAME --source-commit EXACT_COMMIT_SHA\n' >&2
   exit 1
 fi
+if [[ ! "${7:-}" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'PRIVATE_CI_DESTINATION_REJECTED: source commit must be an exact lowercase 40-hex Git commit SHA\n' >&2
+  exit 1
+fi
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 exec python3 "$script_dir/publish-private-ci-source.py" "$@"
