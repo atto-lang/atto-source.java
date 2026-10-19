@@ -123,6 +123,14 @@ final class ScopedTaskTypeBridgeTest {
     }
 
     @Test
+    void emptyFootprintsCannotPretendUnknownEffectsArePure() {
+        var ledger = new TaskAccessVerifier();
+        assertThrows(IllegalArgumentException.class, () ->
+                ledger.admitCoherentTyped(List.of(), SOURCE, NO_GUEST_UNSAFE));
+        assertEquals(0, ledger.activeChildren());
+    }
+
+    @Test
     void deeplyNestedTypeBombIsRejectedWithinBoundedProofDepth() {
         Ast.TypeRef deep = src("int");
         Types.Type lowered = Types.Primitive.INT;
