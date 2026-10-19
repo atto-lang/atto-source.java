@@ -519,9 +519,15 @@ final class V3DefaultArgValsAdmissionTest {
         Ast.TypeRef inner = Ast.TypeRef.stagedV3Option(Ast.TypeRef.simple("int"));
         assertThrows(IllegalArgumentException.class,
                 () -> Ast.TypeRef.stagedV3Option(inner));
-        assertThrows(IllegalArgumentException.class,
-                () -> Ast.TypeRef.stagedV3Option(
-                        new Ast.TypeRef("List", List.of(inner), false)));
+        // Nested type sugar is legal in other type positions: List<int?>?
+        // means Option<List<Option<int>>>. Only adjacent T?? is reserved.
+        Ast.TypeRef nested = Ast.TypeRef.stagedV3Option(
+                new Ast.TypeRef("List", List.of(inner), false));
+        assertTrue(nested.isStagedV3Option());
+        assertEquals("Option", nested.stagedV3PreviewType().name());
+        assertEquals("List", nested.stagedV3PreviewType().arguments().getFirst().name());
+        assertEquals("Option", nested.stagedV3PreviewType().arguments().getFirst()
+                .arguments().getFirst().name());
 
         // Explicit, nominally unresolved Option<int> remains a legal
         // *preview* payload; the type checker must still establish identity.
