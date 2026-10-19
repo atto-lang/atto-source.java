@@ -51,12 +51,18 @@ Do not turn the repository public to gain protection features.
 
 The publisher's POSIX transfer wrapper starts Python in isolated mode and
 drops inherited Bash startup, Python import-path and dynamic-loader variables.
-The publisher also removes shell/Git startup and configuration overrides
-from child-process environments, and resolves `bash`, `git`, and `gh` from
-system executable directories. These checks mitigate ambient environment
-injection; the invoking runner/host and its system executable directories
-must themselves be trusted. Do not execute the transfer from an untrusted
-PR-controlled environment.
+The publisher also removes shell/Git startup and configuration overrides,
+caller-chosen GitHub CLI configuration roots, inherited HTTP(S)/SOCKS proxy
+variables, and custom TLS trust-bundle variables from child-process
+environments. In particular, an attacker-supplied `HTTPS_PROXY`,
+`GH_CONFIG_DIR`, or `SSL_CERT_FILE` cannot redirect authenticated repository
+metadata checks or private Git blob requests. The publisher resolves child
+executables from system directories. These checks mitigate ambient environment
+injection; the invoking runner/host, system trust store and system executable
+directories must themselves be trusted. Networks requiring an explicit proxy
+must establish a separately reviewed, trusted egress design rather than
+passing unreviewed environment overrides. Do not execute the transfer from
+an untrusted PR-controlled environment.
 
 The publisher itself must run from an **unmodified Git checkout of the same
 protected source-main commit** reported by GitHub. It checks the actual Git
