@@ -106,16 +106,23 @@ public class TaskScopeTest {
         }
     }
 
-    @Test void failedLoanRetirementHookKeepsScopeJoinPending() throws Exception {
+    @Test void failedLoanRetirementHookPoisonsScopeAndKeepsJoinPending()
+            throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskScope scope = scheduler.newTaskScope();
+            IllegalStateException retirementFailure =
+                    new IllegalStateException("loan retirement failed");
             TaskHandle<Integer> child = scope.startTask(
                     resume -> OresScheduler.done(3),
-                    () -> { throw new IllegalStateException("loan retirement failed"); });
+                    () -> { throw retirementFailure; });
 
             assertEquals(new TaskHandle.Success<>(3),
                     child.getDone().get(3, TimeUnit.SECONDS));
-            scope.seal();
+            assertSame(retirementFailure, scope.retirementFailure());
+            assertTrue(scope.isCancellationRequested(),
+                    "poisoned scope must revoke sibling admission/execution authority");
+            assertThrows(RejectedExecutionException.class,
+                    () -> scope.startTask(resume -> OresScheduler.done(4)));
             assertFalse(scope.getDone().isDone(),
                     "scope must fail closed if trusted retirement cannot complete");
         }
