@@ -137,6 +137,41 @@ public final class IpcReceiptCompletionBridge {
         return publicView;
     }
 
+    CompletionStage<IpcReceiptCorrelation.Stage> admitAndCommit(
+            Object owner,
+            IpcReceiptCorrelation.Envelope envelope,
+            long generation) {
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(envelope, "envelope");
+        CompletableFuture<IpcReceiptCorrelation.Stage> future = new CompletableFuture<>();
+        CompletionStage<IpcReceiptCorrelation.Stage> publicView =
+                future.minimalCompletionStage();
+        synchronized (gate) {
+            requirePhysicalTransport(owner, envelope, generation);
+            if (completions.containsKey(envelope.messageSequence())) {
+                throw new IllegalArgumentException("duplicate host correlation");
+            }
+            completions.put(envelope.messageSequence(), future);
+            boolean admitted = false;
+            try {
+                correlations.admit(envelope);
+                admitted = true;
+                correlations.commitDispatch(envelope);
+            } catch (RuntimeException | Error failure) {
+                completions.remove(envelope.messageSequence());
+                if (admitted) {
+                    try {
+                        correlations.rejectBeforeRemote(envelope);
+                    } catch (RuntimeException | Error rollbackFailure) {
+                        failure.addSuppressed(rollbackFailure);
+                    }
+                }
+                throw failure;
+            }
+        }
+        return publicView;
+    }
+
     /**
      * Trusted transport publication fence. Caller MUST validate the same
      * physical transport session and hold its generation/close ownership
