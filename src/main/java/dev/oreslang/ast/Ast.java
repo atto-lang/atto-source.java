@@ -207,7 +207,9 @@ public final class Ast {
             return aggregateType(members, readOnly ? "$readonly_record$" : "$record$", "record");
         }
         public static TypeRef recordType(java.util.Map<String, TypeRef> members) {
-            return recordType(members, false);
+            // Record values are structurally readonly; mutable fixed products
+            // are represented by structType, never by a writable record shape.
+            return recordType(members, true);
         }
         public static TypeRef readonlyRecordType(java.util.Map<String, TypeRef> members) {
             return recordType(members, true);
