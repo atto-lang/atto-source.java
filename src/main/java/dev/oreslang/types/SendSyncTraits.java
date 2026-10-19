@@ -140,8 +140,18 @@ public final class SendSyncTraits {
                     Traits inner = derive(args.getFirst(), substitutions, active);
                     return inner.send() && inner.sync() ? Traits.BOTH : Traits.NONE;
                 }
+                // Do not derive Task Send/Sync from an unverified runtime
+                // authority, including a user class spoofing its type name.
                 case "Rc", "MutexGuard", "RwLockGuard", "ActorState", "RawPointer",
-                        "ThreadLocal", "NativeHandle", "FfiHandle", "ExecutionPermit" -> {
+                        "Pointer", "OresPointer", "ThreadLocal", "ThreadBound",
+                        "NativeHandle", "FfiHandle", "ExecutionPermit",
+                        "ActorRef", "ActorMail", "ActorOutput", "ActorOutputStream",
+                        "ActorGroup", "Supervisor", "ActorContext",
+                        "Task", "Future", "Channel",
+                        "ReadLoan", "WriteLoan", "PartitionLoan", "BorrowGuard",
+                        "SelectCase", "SelectSet", "SelectResult",
+                        "Iterator", "AsyncIterator", "TcpConnection",
+                        "HttpExchange", "HttpServer", "HttpHandler" -> {
                     return Traits.NONE;
                 }
                 case "Cell", "RefCell" -> {
