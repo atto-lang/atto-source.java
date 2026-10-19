@@ -29,6 +29,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.route_calls = []
         self.visibility = ["private"] * 100
         self.repo_ids = [12345] * 100
+        self.destination = patch.object(pub, "MIRROR_DESTINATION", "trusted/ci")
+        self.destination.start()
+        self.addCleanup(self.destination.stop)
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
@@ -59,6 +62,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root)
+
+    def test_real_preflight_rejects_missing_exact_source_authorization(self):
+        self.preflight.stop()
+        self.addCleanup(self.preflight.start)
+        with self.assertRaisesRegex(pub.Denied, "exact source PR"):
+            pub.require_preflight("trusted/ci", self.root, None, None, None)
 
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
