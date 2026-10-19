@@ -454,6 +454,80 @@ public class TaskCancellationTest {
         }
     }
 
+
+    @Test void retiredTargetClosesUpstreamCancellationSubscription()
+            throws Exception {
+        for (int i = 0; i < 100; i++) {
+            TaskCancellation source = new TaskCancellation();
+            TaskCancellation target = new TaskCancellation();
+            TaskCancellation.Subscription link = target.linkCancellationFrom(source);
+            java.lang.reflect.Field active = link.getClass().getDeclaredField("active");
+            active.setAccessible(true);
+            assertTrue(((java.util.concurrent.atomic.AtomicBoolean)
+                    active.get(link)).get());
+            target.retire();
+            assertFalse(((java.util.concurrent.atomic.AtomicBoolean)
+                    active.get(link)).get(),
+                    "retirement must unregister listener from long-lived source");
+            assertTrue(source.cancel("upstream stopped"));
+            assertFalse(target.isCancelled(),
+                    "completed target must not be reactivated from a source link");
+            link.close();
+        }
+    }
+
+    @Test void linkingAfterRetirementCannotPinCompletedTarget()
+            throws Exception {
+        for (int i = 0; i < 100; i++) {
+            TaskCancellation source = new TaskCancellation();
+            TaskCancellation target = new TaskCancellation();
+            target.retire();
+            TaskCancellation.Subscription link = target.linkCancellationFrom(source);
+            java.lang.reflect.Field active = link.getClass().getDeclaredField("active");
+            active.setAccessible(true);
+            assertFalse(((java.util.concurrent.atomic.AtomicBoolean)
+                    active.get(link)).get(),
+                    "late link must be immediately closed");
+            assertTrue(source.cancel("upstream stopped"));
+            assertFalse(target.isCancelled());
+        }
+    }
+
+    @Test void concurrentLinkAdmissionAndRetirementAlwaysClosesLink()
+            throws Exception {
+        for (int i = 0; i < 150; i++) {
+            TaskCancellation source = new TaskCancellation();
+            TaskCancellation target = new TaskCancellation();
+            CountDownLatch go = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<TaskCancellation.Subscription> link =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            Thread linker = new Thread(() -> {
+                await(go);
+                link.set(target.linkCancellationFrom(source));
+            });
+            Thread retiree = new Thread(() -> {
+                await(go);
+                target.retire();
+            });
+            linker.start();
+            retiree.start();
+            go.countDown();
+            linker.join(3000);
+            retiree.join(3000);
+            assertFalse(linker.isAlive());
+            assertFalse(retiree.isAlive());
+            assertNotNull(link.get());
+            java.lang.reflect.Field active =
+                    link.get().getClass().getDeclaredField("active");
+            active.setAccessible(true);
+            assertFalse(((java.util.concurrent.atomic.AtomicBoolean)
+                    active.get(link.get())).get(),
+                    "race must not retain completed cancellation target");
+            source.cancel("upstream stopped");
+            assertFalse(target.isCancelled());
+        }
+    }
+
     private static void await(CountDownLatch latch) {
         try { if (!latch.await(3, TimeUnit.SECONDS)) throw new AssertionError("timed out"); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
