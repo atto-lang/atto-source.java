@@ -3118,8 +3118,13 @@ public final class OresEvalRootNode extends RootNode {
                                 || !Parser.ROOT_MODULE.equals(
                                         declarationModules.get(task.function))
                                 || !task.function.parameters().isEmpty()
+                                || task.function.kind() != Ast.CallableKind.FNC
+                                || task.function.visibility() != Ast.Visibility.PUBLIC
+                                || !task.function.genericParameters().isEmpty()
                                 || task.function.async()
                                 || task.function.generator()
+                                || task.function.trapped()
+                                || task.function.nonLexical()
                                 || task.function.actorKind() != Ast.ActorKind.NONE) {
                             throw new SecurityException(
                                     "guest scalar task must execute in VM root main");
