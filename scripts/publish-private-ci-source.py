@@ -333,9 +333,57 @@ def collect_source(root, trusted_root):
     return sorted(entries, key=lambda item: item[0])
 
 
-def publish(repository, source, branch, trusted_root):
+def verified_exact_source_tree(files, source_commit):
+    """Match every local upload blob/mode/path to a pinned origin commit tree.
+
+    Source-dir scanning alone is not a Git-tree snapshot: dirty/untracked
+    bytes could be exported under a valid destination approval. Require a
+    full (non-truncated) authoritative tree at an exact 40-hex commit SHA
+    before uploading anything. Git tree entries also reject submodules and
+    symlinks even if a caller's local snapshot omits them.
+    """
+    source_commit = valid_sha(source_commit)
+    commit = gh_api(f"repos/{SOURCE_REPO}/git/commits/{source_commit}")
+    if commit.get("sha") != source_commit:
+        raise Denied("source commit SHA is not attested by origin")
+    tree_sha = valid_sha(commit.get("tree", {}).get("sha"))
+    source_tree = gh_api(
+        f"repos/{SOURCE_REPO}/git/trees/{tree_sha}?recursive=1")
+    if source_tree.get("sha") != tree_sha or source_tree.get("truncated") is not False:
+        raise Denied("source Git tree is incomplete or its SHA changed")
+    raw_entries = source_tree.get("tree")
+    if not isinstance(raw_entries, list) or len(raw_entries) > 4096:
+        raise Denied("source Git tree entries missing or over safety limit")
+    tracked = {}
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            raise Denied("malformed source Git tree entry")
+        kind = entry.get("type")
+        if kind == "tree":
+            continue
+        if kind != "blob" or entry.get("mode") not in ("100644", "100755"):
+            raise Denied("source Git tree contains symlink or unsupported file mode")
+        path = entry.get("path")
+        if not isinstance(path, str) or not path or path in tracked:
+            raise Denied("malformed/duplicate path in source Git tree")
+        tracked[path] = (entry["mode"], valid_sha(entry.get("sha")))
+    local = {}
+    for path, data, mode in files:
+        expected_blob = hashlib.sha1(
+            b"blob " + str(len(data)).encode("ascii") + bytes([0]) + data
+        ).hexdigest()
+        if path in local:
+            raise Denied("duplicate local source path")
+        local[path] = (mode, expected_blob)
+    if not local or local != tracked:
+        raise Denied("source directory differs from pinned Git tree")
+    return tree_sha
+
+
+def publish(repository, source, branch, trusted_root, source_commit):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
+    source_commit = valid_sha(source_commit)
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
@@ -348,6 +396,7 @@ def publish(repository, source, branch, trusted_root):
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
+    expected_source_tree = verified_exact_source_tree(files, source_commit)
     base = checked_repo(repository)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
@@ -381,6 +430,8 @@ def publish(repository, source, branch, trusted_root):
     isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
                       payload={"tree": elements})
     isolated_sha = valid_sha(isolated.get("sha"))
+    if isolated_sha != expected_source_tree:
+        raise Denied("uploaded source tree differs from pinned Git commit")
     # Replace the entire PREFIX subtree atomically in the new root tree.
     # Preserve unrelated destination files and CI workflows from base_tree.
     authorize_write()
@@ -413,11 +464,14 @@ def main(argv=None):
     p.add_argument("repository", help="approved private owner/repo")
     p.add_argument("--source-dir", required=True, type=Path)
     p.add_argument("--branch", required=True)
+    p.add_argument("--source-commit", required=True,
+                   help="exact source-origin 40-hex Git commit to prove")
     args = p.parse_args(argv)
     # Policy and code are taken from the same trusted checkout as this script.
     root = Path(__file__).resolve().parent.parent
     try:
-        commit, count = publish(args.repository, args.source_dir, args.branch, root)
+        commit, count = publish(
+            args.repository, args.source_dir, args.branch, root, args.source_commit)
     except Denied as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
         return 1
