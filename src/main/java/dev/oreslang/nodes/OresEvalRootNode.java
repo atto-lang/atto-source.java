@@ -3879,6 +3879,30 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (call.callee() instanceof Ast.NameExpr name
+                    && isMlScalarIntrinsicName(name.name())
+                    && env.lookup(name.name()) == Env.MISSING
+                    && !hasFunctionFamily(name.name())) {
+                evalSuspendableArguments(
+                        task,
+                        call.arguments(),
+                        env,
+                        (t, values, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                continuation.accept(
+                                        t,
+                                        applyMlScalarIntrinsic(name.name(), values),
+                                        null);
+                            } catch (RuntimeException | Error intrinsicFailure) {
+                                continuation.accept(t, null, intrinsicFailure);
+                            }
+                        });
+                return;
+            }
+            if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
                 if (direct != null) {
@@ -5401,6 +5425,15 @@ public final class OresEvalRootNode extends RootNode {
                 return criticalStateInvocation(call, stateCall, env);
             }
             if (call.callee() instanceof Ast.NameExpr directName
+                    && isMlScalarIntrinsicName(directName.name())
+                    && env.lookup(directName.name()) == Env.MISSING
+                    && !hasFunctionFamily(directName.name())) {
+                List<Object> args = evaluateArguments(call.arguments(), env);
+                return invokableInvocation(
+                        ignored -> applyMlScalarIntrinsic(directName.name(), args),
+                        List.of());
+            }
+            if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
                 if (direct != null) {
@@ -5578,6 +5611,136 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             return List.copyOf(values);
+        }
+
+        private static boolean isMlScalarIntrinsicName(String name) {
+            return name.equals("state_snapshot")
+                    || name.equals("snapshot_int")
+                    || name.equals("snapshot_bool")
+                    || name.equals("snapshot_string")
+                    || name.equals("snapshot_version")
+                    || name.equals("snapshot_revision")
+                    || name.equals("prepare_scalar_publication")
+                    || name.equals("publish_scalar_publication");
+        }
+
+        private Object applyMlScalarIntrinsic(
+                String name,
+                List<Object> args) {
+            return switch (name) {
+                case "state_snapshot" -> {
+                    if (args.size() < 3
+                            || !(args.getFirst()
+                                    instanceof dev.oreslang.runtime.SealedActorState.Access access)
+                            || !(args.get(1) instanceof String versionField)) {
+                        throw new IllegalArgumentException(
+                                "state_snapshot expects active state loan, version field, and scalar fields");
+                    }
+                    String[] fields = new String[args.size() - 2];
+                    for (int i = 2; i < args.size(); i++) {
+                        if (!(args.get(i) instanceof String field)) {
+                            throw new IllegalArgumentException(
+                                    "state_snapshot field names must be strings");
+                        }
+                        fields[i - 2] = field;
+                    }
+                    yield access.snapshotScalars(versionField, fields);
+                }
+                case "snapshot_int" -> {
+                    requireTwo(args, "snapshot_int");
+                    var snapshot = requireScalarSnapshot(args.getFirst(), "snapshot_int");
+                    String field = requireString(args.get(1), "snapshot_int field");
+                    Object value = snapshot.scalar(field);
+                    if (!(value instanceof Byte
+                            || value instanceof Short
+                            || value instanceof Integer
+                            || value instanceof Long)) {
+                        throw new IllegalArgumentException(
+                                "snapshot_int field '" + field + "' is not int");
+                    }
+                    yield ((Number) value).longValue();
+                }
+                case "snapshot_bool" -> {
+                    requireTwo(args, "snapshot_bool");
+                    var snapshot = requireScalarSnapshot(args.getFirst(), "snapshot_bool");
+                    String field = requireString(args.get(1), "snapshot_bool field");
+                    Object value = snapshot.scalar(field);
+                    if (!(value instanceof Boolean)) {
+                        throw new IllegalArgumentException(
+                                "snapshot_bool field '" + field + "' is not bool");
+                    }
+                    yield value;
+                }
+                case "snapshot_string" -> {
+                    requireTwo(args, "snapshot_string");
+                    var snapshot = requireScalarSnapshot(args.getFirst(), "snapshot_string");
+                    String field = requireString(args.get(1), "snapshot_string field");
+                    Object value = snapshot.scalar(field);
+                    if (!(value instanceof String)) {
+                        throw new IllegalArgumentException(
+                                "snapshot_string field '" + field + "' is not string");
+                    }
+                    yield value;
+                }
+                case "snapshot_version" -> {
+                    requireOne(args, "snapshot_version");
+                    yield requireScalarSnapshot(args.getFirst(), "snapshot_version").version();
+                }
+                case "snapshot_revision" -> {
+                    requireOne(args, "snapshot_revision");
+                    yield requireScalarSnapshot(args.getFirst(), "snapshot_revision").revision();
+                }
+                case "prepare_scalar_publication" -> {
+                    if (args.size() < 3 || (args.size() - 1) % 2 != 0) {
+                        throw new IllegalArgumentException(
+                                "prepare_scalar_publication expects snapshot followed by field/value pairs");
+                    }
+                    var snapshot =
+                            requireScalarSnapshot(
+                                    args.getFirst(),
+                                    "prepare_scalar_publication");
+                    LinkedHashMap<String, Object> replacements =
+                            new LinkedHashMap<>();
+                    for (int i = 1; i < args.size(); i += 2) {
+                        String field =
+                                requireString(
+                                        args.get(i),
+                                        "prepare_scalar_publication field");
+                        if (replacements.putIfAbsent(
+                                field, args.get(i + 1)) != null) {
+                            throw new IllegalArgumentException(
+                                    "duplicate scalar publication field '" + field + "'");
+                        }
+                    }
+                    yield snapshot.preparePublication(replacements);
+                }
+                case "publish_scalar_publication" -> {
+                    requireTwo(args, "publish_scalar_publication");
+                    if (!(args.getFirst()
+                            instanceof dev.oreslang.runtime.SealedActorState.Access access)) {
+                        throw new IllegalArgumentException(
+                                "publish_scalar_publication requires active state loan");
+                    }
+                    if (!(args.get(1)
+                            instanceof dev.oreslang.runtime.SealedActorState.ScalarPublication publication)) {
+                        throw new IllegalArgumentException(
+                                "publish_scalar_publication requires compiler-issued publication");
+                    }
+                    yield access.publishScalars(publication);
+                }
+                default -> throw new IllegalArgumentException(
+                        "unknown sealed ML scalar intrinsic " + name);
+            };
+        }
+
+        private static dev.oreslang.runtime.SealedActorState.ScalarSnapshot
+                requireScalarSnapshot(Object value, String where) {
+            if (!(value
+                    instanceof dev.oreslang.runtime.SealedActorState.ScalarSnapshot snapshot)) {
+                throw new IllegalArgumentException(
+                        where + " requires compiler-issued scalar snapshot");
+            }
+            return snapshot;
         }
 
         private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Env env) {
