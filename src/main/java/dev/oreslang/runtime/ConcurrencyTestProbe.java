@@ -154,18 +154,34 @@ public final class ConcurrencyTestProbe {
         }
     }
 
-    public static List<String> readTrace(Path trace) throws IOException {
+    /** Parsed trace receipt; the seed is part of replay identity. */
+    public record TraceData(long seed, List<String> events) { }
+
+    public static TraceData readTraceData(Path trace) throws IOException {
         Objects.requireNonNull(trace, "trace");
         if (Files.size(trace) > 8L * 1024 * 1024) {
             throw new IllegalArgumentException("concurrency replay trace exceeds 8 MiB admission limit");
         }
         List<String> lines = Files.readAllLines(trace, StandardCharsets.UTF_8);
-        if (lines.isEmpty() || !lines.get(0).matches("ORES_CONCURRENCY_TRACE_V1\\|seed=-?[0-9]+")) {
+        String prefix = "ORES_CONCURRENCY_TRACE_V1|seed=";
+        if (lines.isEmpty() || !lines.get(0).startsWith(prefix)) {
             throw new IllegalArgumentException("not an Oreslang concurrency trace");
         }
         if (lines.size() > MAX_EVENTS + 1) {
             throw new IllegalArgumentException("concurrency trace event budget exceeded");
         }
-        return List.copyOf(lines.subList(1, lines.size()));
+        long seed;
+        try {
+            String raw = lines.get(0).substring(prefix.length());
+            if (!raw.matches("-?[0-9]+")) throw new NumberFormatException(raw);
+            seed = Long.parseLong(raw);
+        } catch (NumberFormatException invalid) {
+            throw new IllegalArgumentException("invalid concurrency trace seed", invalid);
+        }
+        return new TraceData(seed, List.copyOf(lines.subList(1, lines.size())));
+    }
+
+    public static List<String> readTrace(Path trace) throws IOException {
+        return readTraceData(trace).events();
     }
 }
