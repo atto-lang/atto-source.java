@@ -14,12 +14,20 @@ parity, GPU buffer leasing, or a distributed optimizer protocol.
 - public array access is copy-out only; scalar reads are read-only;
 - every snapshot is bound to the issuing `SealedActorState`, actor identity,
   run, graph, actor incarnation, and parameter version;
-- snapshot methods require the issuing actor's currently admitted turn, so a
-  Java/guest alias handed to another actor cannot become a memory capability;
+- snapshot methods require the issuing actor's currently admitted turn, but
+  do not require ownership of the mutable state-loan carrier gate; detached
+  immutable reads therefore remain valid if another permitted carrier briefly
+  owns state, while aliases handed to another actor still fail authority;
 - an immutable snapshot may leave a synchronous state READ/WRITE callback and
   remain readable after the state loan closes;
 - ordinary `Access.write` and generic scalar publication cannot write
   `tensor:f64`; the only admitted mutation is a prepared tensor publication;
+- preparation accepts an issuer-bound `ScalarSnapshot` rather than raw
+  caller-supplied transaction counters; version/revision and the captured
+  run/graph/incarnation values are derived from that one authenticated
+  snapshot, closing stale-computation rebasing;
+- preparation is forbidden while the current carrier owns a state loan and
+  rechecks actor retirement after allocation/copy before capability escape;
 - publication revalidates mutation revision, run, graph, incarnation, and
   version under the critical WRITE loan before one reader-visible state-map
   swap;
@@ -63,7 +71,9 @@ The compiler promotion path is:
 - copy-out mutation cannot change backing data;
 - immutable snapshot escape from a closed state loan;
 - ordinary tensor write and scalar-publication bypass rejection;
-- stale run and stale mutation-revision failure atomicity;
+- incomplete/foreign snapshot-authority rejection and same-carrier live-loan
+  preparation rejection;
+- stale mutation-revision failure atomicity;
 - cross-actor read denial;
 - retirement revocation;
 - reflection guard that array backing fields remain private/final and only

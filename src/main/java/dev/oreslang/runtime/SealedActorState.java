@@ -170,18 +170,18 @@ public final class SealedActorState {
         }
 
         public long version() {
-            issuer.requireOwner();
+            issuer.requireActorAuthority();
             return version;
         }
 
         public long revision() {
-            issuer.requireOwner();
+            issuer.requireActorAuthority();
             return revision;
         }
 
         /** Immutable scalar copied under the originating state loan. */
         public Object scalar(String name) {
-            issuer.requireOwner();
+            issuer.requireActorAuthority();
             if (!scalars.containsKey(name))
                 throw new IllegalArgumentException("scalar was not captured in snapshot: " + name);
             return scalars.get(name);
@@ -279,7 +279,7 @@ public final class SealedActorState {
         }
 
         private void check() {
-            issuer.requireOwner();
+            issuer.requireActorAuthority();
             if (erased)
                 throw new IllegalStateException("ML_TENSOR_SNAPSHOT_REVOKED");
         }
@@ -368,14 +368,21 @@ public final class SealedActorState {
     }
 
     public TensorPublication prepareTensorPublication(
-            String tensorField, String versionField,
+            ScalarSnapshot authority,
+            String tensorField,
             String runField, String graphField, String incarnationField,
-            long expectedVersion, long expectedRevision,
-            long expectedRun, long expectedGraph, long expectedIncarnation,
             int[] shape, double[] values) {
-        requireOwner();
-        if (current != null || stateCarrier.get() != null)
+        requireActorAuthority();
+        // Detached preparation cannot run while THIS carrier owns a state loan.
+        // A future maxThreads>1 sibling carrier may briefly hold state; the
+        // authenticated snapshot remains immutable and publication revalidates
+        // all fences under the exclusive WRITE loan.
+        if (stateCarrier.get() == Thread.currentThread())
             throw new IllegalStateException("ML_PREPARE_WITH_LIVE_STATE_LOAN");
+        if (authority == null || authority.issuer != this)
+            throw new SecurityException("ML_INVALID_SNAPSHOT_CAPABILITY");
+
+        String versionField = authority.versionField;
         try {
             Set.of(
                     Objects.requireNonNull(tensorField, "tensor field"),
@@ -393,9 +400,15 @@ public final class SealedActorState {
                 || !"int".equals(schema.get(graphField))
                 || !"int".equals(schema.get(incarnationField)))
             throw new IllegalArgumentException("ML_INVALID_TENSOR_PUBLICATION_SCHEMA");
+
+        long expectedVersion = authority.version;
+        long expectedRevision = authority.revision;
+        long expectedRun = snapshotIntegral(authority, runField);
+        long expectedGraph = snapshotIntegral(authority, graphField);
+        long expectedIncarnation = snapshotIntegral(authority, incarnationField);
         if (expectedVersion < 0 || expectedVersion == Long.MAX_VALUE
-                || expectedRevision < 0 || expectedRun < 0
-                || expectedGraph < 0 || expectedIncarnation < 1)
+                || expectedRevision < 0 || expectedRevision == Long.MAX_VALUE
+                || expectedRun < 0 || expectedGraph < 0 || expectedIncarnation < 1)
             throw new IllegalArgumentException("ML_INVALID_TENSOR_PUBLICATION_IDENTITY");
 
         TensorSnapshotF64 snapshot = new TensorSnapshotF64(
@@ -413,10 +426,32 @@ public final class SealedActorState {
             }
             tensorSnapshots.add(snapshot);
         }
-        return new TensorPublication(this, tensorField, versionField,
+
+        TensorPublication publication = new TensorPublication(
+                this, tensorField, versionField,
                 runField, graphField, incarnationField,
                 expectedVersion, expectedRevision,
                 expectedRun, expectedGraph, expectedIncarnation, snapshot);
+        try {
+            // If retirement won during detached allocation/copy, do not let a
+            // prepared capability escape after the actor generation is dead.
+            requireActorAuthority();
+            return publication;
+        } catch (RuntimeException failure) {
+            synchronized (tensorSnapshotGate) {
+                tensorSnapshots.remove(snapshot);
+                snapshot.erase();
+            }
+            throw failure;
+        }
+    }
+
+    private long snapshotIntegral(ScalarSnapshot snapshot, String field) {
+        Object value = snapshot.scalars.get(field);
+        if (!(value instanceof Byte || value instanceof Short
+                || value instanceof Integer || value instanceof Long))
+            throw new IllegalArgumentException("ML_TENSOR_IDENTITY_NOT_CAPTURED");
+        return ((Number) value).longValue();
     }
 
     /**
@@ -427,13 +462,17 @@ public final class SealedActorState {
      */
     public ScalarPublication prepareScalarPublication(ScalarSnapshot snapshot,
                                                        Map<String, Object> replacements) {
-        requireOwner();
-        if (current != null || stateCarrier.get() != null)
+        requireActorAuthority();
+        // Detached preparation must not execute from inside this carrier's
+        // live loan, but another maxThreads carrier may hold state while this
+        // carrier computes/stages from an immutable snapshot. Publication will
+        // still compare the snapshot revision/version under exclusive WRITE.
+        if (stateCarrier.get() == Thread.currentThread())
             throw new IllegalStateException("ML_PREPARE_WITH_LIVE_STATE_LOAN");
         if (snapshot == null || snapshot.issuer != this)
             throw new SecurityException("ML_INVALID_SNAPSHOT_CAPABILITY");
         if (snapshot.version < 0 || snapshot.version == Long.MAX_VALUE
-                || snapshot.revision < 0)
+                || snapshot.revision < 0 || snapshot.revision == Long.MAX_VALUE)
             throw new IllegalArgumentException("ML_INVALID_VERSION");
         Objects.requireNonNull(replacements, "scalar replacements");
         if (replacements.isEmpty() || replacements.size() > schema.size())
@@ -444,6 +483,12 @@ public final class SealedActorState {
             if ("tensor:f64".equals(schema.get(name)))
                 throw new IllegalArgumentException("ML_TENSOR_REQUIRES_TENSOR_PUBLICATION");
             validateValue(name, entry.getValue());
+            // A candidate may only replace a scalar whose previous value was
+            // captured in the same authenticated snapshot. The version field
+            // is already captured separately by the snapshot capability.
+            if (!name.equals(snapshot.versionField)
+                    && !snapshot.scalars.containsKey(name))
+                throw new IllegalArgumentException("ML_REPLACEMENT_NOT_SNAPSHOTTED");
             // Owned regions have no general alias-safe scalar publication path.
             staged.put(name, entry.getValue());
         }
@@ -451,8 +496,13 @@ public final class SealedActorState {
         if (!(proposed instanceof Long next)
                 || next.longValue() != snapshot.version + 1)
             throw new IllegalArgumentException("ML_VERSION_ADVANCE_REQUIRED");
-        return new ScalarPublication(this, snapshot.versionField, snapshot.version,
+        ScalarPublication publication = new ScalarPublication(
+                this, snapshot.versionField, snapshot.version,
                 snapshot.revision, staged);
+        // If retirement won while preparation was allocating/validating,
+        // revoke the result before it escapes.
+        requireActorAuthority();
+        return publication;
     }
 
     private long nextMutationRevision() {
@@ -461,13 +511,29 @@ public final class SealedActorState {
         return mutationRevision + 1;
     }
 
-    private void requireOwner() {
-        Thread active = stateCarrier.get();
-        if (retired || active == RETIRED_STATE_CARRIER)
+    /**
+     * Authority for detached immutable actor capabilities. Unlike requireOwner,
+     * this does not require the current physical carrier to own the live state
+     * gate: maxThreads>1 computations may safely read copied snapshots while a
+     * different carrier briefly holds a state loan.
+     */
+    private void requireActorAuthority() {
+        if (retired || stateCarrier.get() == RETIRED_STATE_CARRIER)
             throw new IllegalStateException("actor state retired");
         if (!owner.equals(ActorRuntime.currentActorId().orElse(null))) {
             throw new SecurityException("actor state requires the owning actor's admitted turn");
         }
+        // Close the small retirement race between the first fence read and
+        // actor-identity validation.
+        if (retired || stateCarrier.get() == RETIRED_STATE_CARRIER)
+            throw new IllegalStateException("actor state retired");
+    }
+
+    private void requireOwner() {
+        requireActorAuthority();
+        Thread active = stateCarrier.get();
+        if (active == RETIRED_STATE_CARRIER || retired)
+            throw new IllegalStateException("actor state retired");
         if (active != null && active != Thread.currentThread())
             throw new SecurityException("ML_STATE_LOAN_FOREIGN_CARRIER");
     }

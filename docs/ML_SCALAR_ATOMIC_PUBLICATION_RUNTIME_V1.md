@@ -13,13 +13,24 @@ training, and not a substitute for authenticated gradient transport.
 - `Access.snapshotScalars(versionField, ...names)` is the only authority for
   scalar optimizer snapshot provenance. It copies immutable scalar inputs and
   binds their exact version plus mutation revision while the originating state
-  loan is live. `prepareScalarPublication(snapshot, immutableReplacements)`
-  runs **outside** a state loan and accepts only a snapshot capability issued by
-  that exact `SealedActorState`; callers can no longer synthesize or pass raw
+  loan is live. Snapshot access remains bound to the owning actor identity but
+  is deliberately independent of which physical carrier currently owns the
+  live state gate, so maxThreads>1 computation can use copied values while
+  another carrier briefly reads/writes state. `prepareScalarPublication(snapshot,
+  immutableReplacements)` likewise runs **outside the calling carrier's** state
+  loan; it may stage beside another carrier because publication revalidates the
+  exact revision/version under exclusive WRITE. It accepts only a snapshot
+  capability issued by that exact `SealedActorState`; callers can no longer
+  synthesize or pass raw
   version/revision integers. A later scalar mutation therefore cannot be
   laundered into an old optimizer candidate by staging after the mutation
-  (TOCTOU). Every replacement is schema-validated and the long version field
-  must advance by exactly one. The `ScalarSnapshot` and
+  (TOCTOU). Every non-version replacement must also name a scalar whose prior
+  value was captured in that same snapshot, preventing blind optimizer/weight
+  overwrites. Every replacement is schema-validated and the long version field
+  must advance by exactly one. Snapshot accessors re-check owning-actor
+  authority even after the loan is released, and the only structured value
+  permitted to escape `critical()` by this milestone is an issuer-authenticated
+  immutable `ScalarSnapshot`. The `ScalarSnapshot` and
   `ScalarPublication` capabilities are issuer-bound and non-serializable;
   publications are single-use.
 - `critical(true, access -> access.publishScalars(prepared))` requires a
@@ -39,7 +50,8 @@ training, and not a substitute for authenticated gradient transport.
   `current`, `values` or a state loan. Retirement uses the same atomic gate:
   it installs a permanent retirement sentinel **before** zeroizing/clearing
   state, so a concurrent future carrier either owns the loan or observes a
-  closed state; there is no check-then-clear window. This protects
+  closed state; there is no check-then-clear window. The retirement entrypoint
+  is package-internal runtime authority rather than a public host API. This protects
   maxThreads=3 safety but is **not** a fair 3-thread state RW scheduler: a
   future source-level scheduler must enqueue/retry denied state loans after
   physical quiescence.

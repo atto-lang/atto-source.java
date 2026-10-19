@@ -42,47 +42,45 @@ final class SealedActorTensorSnapshotTest {
                                        "incarnation", 1L));
                         stateRef.set(state);
 
-                        long revision = state.critical(false, read -> read.revision());
-                        assertEquals(0L, revision);
+                        var authority = state.critical(false,
+                                read -> read.snapshotScalars(
+                                        "version", "run_id", "graph_id", "incarnation"));
+                        assertEquals(0L, authority.version());
+                        assertEquals(0L, authority.revision());
 
                         assertThrows(IllegalArgumentException.class,
                                 () -> state.prepareTensorPublication(
-                                        "weights", "version",
+                                        authority, "weights",
                                         "run_id", "graph_id", "incarnation",
-                                        0, revision, 7, 9, 1,
                                         new int[] {2, 2},
                                         new double[] {1, 2, 3}));
                         IllegalArgumentException duplicateField = assertThrows(
                                 IllegalArgumentException.class,
                                 () -> state.prepareTensorPublication(
-                                        "weights", "version",
+                                        authority, "weights",
                                         "version", "graph_id", "incarnation",
-                                        0, revision, 7, 9, 1,
                                         new int[] {1},
                                         new double[] {1}));
                         assertEquals("ML_DUPLICATE_TENSOR_PUBLICATION_FIELD",
                                 duplicateField.getMessage());
                         assertThrows(IllegalArgumentException.class,
                                 () -> state.prepareTensorPublication(
-                                        "weights", "version",
+                                        authority, "weights",
                                         "run_id", "graph_id", "incarnation",
-                                        0, revision, 7, 9, 1,
                                         new int[] {1},
                                         new double[] {Double.NaN}));
                         assertThrows(IllegalArgumentException.class,
                                 () -> state.prepareTensorPublication(
-                                        "weights", "version",
+                                        authority, "weights",
                                         "run_id", "graph_id", "incarnation",
-                                        0, revision, 7, 9, 1,
                                         new int[] {1_048_577, 0},
                                         new double[0]));
 
                         int[] shape = {2, 2};
                         double[] values = {1.0, 2.0, 3.0, 4.0};
                         var prepared = state.prepareTensorPublication(
-                                "weights", "version",
-                                "run_id", "graph_id", "incarnation",
-                                0, revision, 7, 9, 1, shape, values);
+                                authority, "weights",
+                                "run_id", "graph_id", "incarnation", shape, values);
 
                         // Mutating caller-owned inputs after preparation cannot
                         // mutate the prepared/published immutable backing.
@@ -134,30 +132,61 @@ final class SealedActorTensorSnapshotTest {
                                         Map.of("version", 2L,
                                                "weights", snapshot)));
 
-                        // Full transaction identity is checked again at publish,
-                        // not trusted merely because preparation succeeded.
-                        var wrongRun = state.prepareTensorPublication(
-                                "weights", "version",
-                                "run_id", "graph_id", "incarnation",
-                                1, 1, 8, 9, 1,
-                                new int[] {2, 2},
-                                new double[] {5, 6, 7, 8});
-                        IllegalStateException staleRun = assertThrows(
-                                IllegalStateException.class,
-                                () -> state.critical(true,
-                                        write -> write.publishTensorSnapshot(wrongRun)));
-                        assertEquals("ML_STALE_RUN", staleRun.getMessage());
-                        assertSame(snapshot, state.critical(false,
-                                read -> read.read("weights")));
-                        assertEquals(1L, state.critical(false,
-                                read -> ((Number) read.read("version")).longValue()));
+                        // Raw transaction tuples are no longer caller-supplied.
+                        // Every identity value comes from one issuer-bound snapshot.
+                        var incompleteAuthority = state.critical(false,
+                                read -> read.snapshotScalars(
+                                        "version", "run_id", "graph_id"));
+                        IllegalArgumentException incomplete = assertThrows(
+                                IllegalArgumentException.class,
+                                () -> state.prepareTensorPublication(
+                                        incompleteAuthority, "weights",
+                                        "run_id", "graph_id", "incarnation",
+                                        new int[] {2, 2},
+                                        new double[] {5, 6, 7, 8}));
+                        assertEquals("ML_TENSOR_IDENTITY_NOT_CAPTURED",
+                                incomplete.getMessage());
+
+                        var other = new SealedActorState(
+                                context.self().id(),
+                                Map.of("weights", "tensor:f64",
+                                       "version", "int",
+                                       "run_id", "int",
+                                       "graph_id", "int",
+                                       "incarnation", "int"),
+                                Map.of("version", 1L,
+                                       "run_id", 7L,
+                                       "graph_id", 9L,
+                                       "incarnation", 1L));
+                        var foreignAuthority = other.critical(false,
+                                read -> read.snapshotScalars(
+                                        "version", "run_id", "graph_id", "incarnation"));
+                        assertThrows(SecurityException.class,
+                                () -> state.prepareTensorPublication(
+                                        foreignAuthority, "weights",
+                                        "run_id", "graph_id", "incarnation",
+                                        new int[] {2, 2},
+                                        new double[] {5, 6, 7, 8}));
+                        other.retireFromRuntime(context.self().id());
+
+                        assertThrows(IllegalStateException.class,
+                                () -> state.critical(false, read -> {
+                                    state.prepareTensorPublication(
+                                            authority, "weights",
+                                            "run_id", "graph_id", "incarnation",
+                                            new int[] {2, 2},
+                                            new double[] {5, 6, 7, 8});
+                                    return null;
+                                }));
 
                         // Candidate staged from a real snapshot becomes stale if
                         // any actor state mutation occurs before publication.
+                        var afterFirstAuthority = state.critical(false,
+                                read -> read.snapshotScalars(
+                                        "version", "run_id", "graph_id", "incarnation"));
                         var staleRevision = state.prepareTensorPublication(
-                                "weights", "version",
+                                afterFirstAuthority, "weights",
                                 "run_id", "graph_id", "incarnation",
-                                1, 1, 7, 9, 1,
                                 new int[] {2, 2},
                                 new double[] {5, 6, 7, 8});
                         state.critical(true, write -> {
@@ -214,6 +243,18 @@ final class SealedActorTensorSnapshotTest {
                     "tensor snapshot state did not retire");
             if (failure.get() != null) fail(failure.get());
         }
+    }
+
+    @Test void tensorPreparationRequiresIssuerSnapshotAuthority() {
+        var methods = Arrays.stream(SealedActorState.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals("prepareTensorPublication"))
+                .toList();
+        assertEquals(1, methods.size());
+        assertEquals(SealedActorState.ScalarSnapshot.class,
+                methods.getFirst().getParameterTypes()[0]);
+        assertFalse(Arrays.stream(methods.getFirst().getParameterTypes())
+                .anyMatch(type -> type == long.class),
+                "raw transaction identity counters must not be caller parameters");
     }
 
     @Test void snapshotClassDoesNotExposeMutableBackingFields() {
