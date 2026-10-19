@@ -67,4 +67,41 @@ class SupervisorDenseTableTest {
         }
         a.close(); b.close();
     }
+
+    @Test void concurrentUpdatesDuringLayoutTransitions() throws Exception {
+        var table = new SupervisorDenseTable(SupervisorDenseTable.Layout.SOA, 0, 32);
+        var handles = new ArrayList<SupervisorDenseTable.Handle>();
+        for (int i = 0; i < 2_000; i++) handles.add(table.add(i, 0, 0, 1, 0));
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var error = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var threads = new ArrayList<Thread>();
+        for (int worker = 0; worker < 4; worker++) {
+            final int first = worker * 500;
+            Thread t = new Thread(() -> {
+                try {
+                    start.await();
+                    for (int round = 0; round < 10; round++) {
+                        for (int i = first; i < first + 500; i++) {
+                            table.set(handles.get(i), SupervisorDenseTable.Field.RESTARTS, round + 1);
+                        }
+                    }
+                } catch (Throwable e) { error.compareAndSet(null, e); }
+            });
+            threads.add(t); t.start();
+        }
+        Thread conversion = new Thread(() -> {
+            try {
+                start.await();
+                for (int i = 0; i < 120; i++)
+                    table.setLayout(SupervisorDenseTable.Layout.values()[i % 3]);
+            } catch (Throwable e) { error.compareAndSet(null, e); }
+        });
+        conversion.start(); start.countDown();
+        for (var thread : threads) thread.join();
+        conversion.join();
+        if (error.get() != null) throw new AssertionError(error.get());
+        for (var handle : handles) assertEquals(10, table.get(handle, SupervisorDenseTable.Field.RESTARTS));
+        table.close();
+    }
+
 }
