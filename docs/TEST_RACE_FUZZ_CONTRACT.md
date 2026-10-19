@@ -192,3 +192,25 @@ Private CI transfer is blocked by the unmerged allowlist proposal
 [PR #1472](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1472).
 Even a private destination with a successfully executed Actions workflow is
 not eligible for source mirroring until approved through protected main.
+
+
+## October 19 supplementary audit
+
+A host task dispatched to a synchronous/inlined executor can exit its guest
+turn and subsequently propagate a fatal Error back to the submitter. The
+`afterTurn` path and submission `catch` must share one single-shot
+reservation retirement flag; otherwise `inFlightDispatches` can go negative.
+Added `SchedulerInlineRetirementTest` for fatal guest turns and submission
+rejections, inspecting the exact in-flight counter.
+
+Actor mailbox Channel.tryRead is now invoked outside actor lifecycleLock.
+Channel selection can publish Future results and invoke completion listeners.
+The existing second pre-dispatch stop check prevents delivery after shutdown
+wins.
+
+A local Java 21 standalone design model completed 100,000 fatal inline,
+100,000 rejected submission, and 5,000 concurrent retirement scenarios,
+all passing. This is model-only evidence, not Oreslang Maven/JUnit execution.
+Latest exact-source GitHub Actions jobs still had no executed steps. Private
+cross-organization source mirroring remains pending the reviewed allowlist
+proposal in PR #1472.
