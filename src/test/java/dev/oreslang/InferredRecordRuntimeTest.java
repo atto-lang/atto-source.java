@@ -62,4 +62,39 @@ final class InferredRecordRuntimeTest {
                 """;
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(source));
     }
+
+    @Test
+    void computedRecordTupleAndEntryFieldsExecuteThroughTheSameIndexPath() {
+        String source = """
+                pub fnc main(): void {
+                    const Entry e = infer record{key: "id", value: "payload"};
+                    const name = "value";
+                    stdio.println(e[name]);
+                    const Pair t = tuple(3, 4);
+                    const offset = 0;
+                    stdio.println(t[offset]);
+                    const T s = infer<T> struct{x: 3.0, y: 4.0};
+                    const field = "x";
+                    stdio.println(s[field]);
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(OresLanguage.ID, source, "computed-aggregate-index.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context ctx = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(out)
+                    .build()) {
+                ctx.eval(program);
+            }
+        });
+        assertEquals("payload\n3\n3.0\n",
+                out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
+
 }
