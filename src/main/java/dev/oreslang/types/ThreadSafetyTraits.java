@@ -189,7 +189,9 @@ public final class ThreadSafetyTraits {
                 || type instanceof SelfType || type instanceof ClassNamespace
                 || type instanceof Function || type instanceof Types.Not) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
-        if (type instanceof StringLiteral || type instanceof BoolLiteral) return true;
+        // Malformed embedding/compiler-created literal types must not gain traits.
+        if (type instanceof StringLiteral literal) return literal.value() != null;
+        if (type instanceof BoolLiteral) return true;
 
         if (type instanceof Borrow borrow) {
             // &T: Send iff T: Sync; &mut T: Send iff T: Send.
@@ -217,6 +219,11 @@ public final class ThreadSafetyTraits {
         if (type instanceof Record record) {
             // readOnly is a capability/view, not a frozen-backing witness.
             if (trait == Trait.SYNC) return false;
+            // Public Type records may be constructed by embedding callers;
+            // a blank member name is not a valid source field identity.
+            for (String memberName : record.members().keySet()) {
+                if (memberName.isBlank()) return false;
+            }
             for (Type member : record.members().values()) {
                 if (!has(member, trait, nominalProof,
                         visiting, proven, steps, depth + 1)) return false;
@@ -232,6 +239,9 @@ public final class ThreadSafetyTraits {
         }
         if (!(type instanceof Named named)) return false;
         String name = named.name();
+        // Do not crash or delegate malformed nominal identity to a permissive
+        // callback: an unrecognized spelling must never become a trait proof.
+        if (name == null || name.isBlank()) return false;
         if (name.equals("OptionUnwrapError")) {
             return nominalProof.trustedIntrinsic(named) && named.arguments().isEmpty();
         }
