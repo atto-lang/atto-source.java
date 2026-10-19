@@ -158,6 +158,19 @@ public final class AsyncRuntime implements AutoCloseable {
         return new TaskAdmission<>();
     }
 
+    /**
+     * Failed scope reservation may have inserted an ownership slot before a
+     * hostile collection threw. Retire the unstarted owner exactly once so
+     * close() never waits forever on a provisional physical-exit fence.
+     */
+    void abandonPreparedTask(TaskAdmission<?> admission) {
+        Objects.requireNonNull(admission, "admission");
+        if (!admission.started.compareAndSet(false, true))
+            throw new IllegalStateException("Task admission already attempted");
+        if (admission.exit.state.compareAndSet(0, 2))
+            admission.exit.markExited();
+    }
+
     <T> void submitPreparedTask(TaskAdmission<T> admission, Task<T> task) {
         Objects.requireNonNull(admission, "admission");
         Objects.requireNonNull(task, "task");

@@ -76,6 +76,36 @@ final class OresTaskOrdinaryRetirementTest {
     }
 
     @Test
+    void insertThenThrowReservationDoesNotStrandAnUnboundOwner() throws Exception {
+        var runtime = new AsyncRuntime();
+        var scope = new OresTaskScope(runtime);
+        Field ownerField = OresTaskScope.class.getDeclaredField("tasks");
+        ownerField.setAccessible(true);
+        Object original = ownerField.get(scope);
+        Set<Object> hostile = new HashSet<>() {
+            @Override public boolean add(Object value) {
+                super.add(value);
+                throw new IllegalStateException("injected post-insert failure");
+            }
+        };
+        ownerField.set(scope, hostile);
+        var executed = new AtomicInteger();
+        try {
+            var failure = assertThrows(IllegalStateException.class,
+                    () -> scope.submit(() -> executed.incrementAndGet()));
+            assertTrue(failure.getMessage().contains("post-insert failure"));
+            assertEquals(0, executed.get(), "no guest Task can escape reservation");
+            assertTrue(scope.physicallyQuiescent(),
+                    "aborted owner must be physically retired before returning");
+            scope.close();
+        } finally {
+            ownerField.set(scope, original);
+            scope.close();
+            runtime.close();
+        }
+    }
+
+    @Test
     void preDispatchRejectionRetiresPreparedExitExactlyOnce() {
         var runtime = new AsyncRuntime();
         var admission = runtime.<Integer>prepareTaskAdmission();
