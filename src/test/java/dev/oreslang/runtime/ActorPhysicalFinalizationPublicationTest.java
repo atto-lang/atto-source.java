@@ -248,6 +248,69 @@ final class ActorPhysicalFinalizationPublicationTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void failedReceiptNotificationResumesExactBatchWithoutDoubleRefund()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            var actors = (java.util.Map<Object, Object>) actorsField.get(runtime);
+            Object cell = actors.get(actor.id());
+            assertNotNull(cell);
+            var ledgerField = cell.getClass().getDeclaredField(
+                    "pendingPhysicalReceipts");
+            ledgerField.setAccessible(true);
+            var receipts = (java.util.Map<Long, ActorRuntime.PhysicalMailReceipt>)
+                    ledgerField.get(cell);
+            var ctor = ActorRuntime.PhysicalMailReceipt.class.getDeclaredConstructor(
+                    ActorRuntime.ActorRef.class, long.class, OresFuture.class);
+            ctor.setAccessible(true);
+            var firstNotifications = new java.util.concurrent.atomic.AtomicInteger();
+            var secondAttempts = new java.util.concurrent.atomic.AtomicInteger();
+
+            var first = new OresFuture<Void>(
+                    () -> false, () -> {}, firstNotifications::incrementAndGet);
+            var second = new OresFuture<Void>(
+                    () -> false, () -> {}, () -> {
+                        if (secondAttempts.getAndIncrement() == 0)
+                            throw new IllegalStateException(
+                                    "injected one-time terminal notification release failure");
+                    });
+            var firstReceipt = ctor.newInstance(actor, 81L, first);
+            var secondReceipt = ctor.newInstance(actor, 82L, second);
+            receipts.put(81L, firstReceipt);
+            receipts.put(82L, secondReceipt);
+
+            // A post-terminal notification owner can fail after the Future
+            // CAS. A retry must NOT issue a second receipt transition, drop
+            // the exact batch, or mark physical code retirement complete.
+            var firstStop = assertThrows(
+                    IllegalStateException.class, actor::stop);
+            assertTrue(firstStop.getMessage().contains(
+                    "injected one-time terminal notification release failure"));
+            assertFalse(runtime.physicallyFinalizedForHotUpgrade(actor));
+            assertFalse(actor.awaitTermination(0, TimeUnit.NANOSECONDS));
+            assertEquals(ActorRuntime.PhysicalMailDisposition.STOPPED,
+                    firstReceipt.terminalDisposition());
+            assertEquals(ActorRuntime.PhysicalMailDisposition.STOPPED,
+                    secondReceipt.terminalDisposition());
+
+            // Each batch member is rechecked for terminal notification
+            // drainage. Completed releases must not run again; the failed
+            // release is retried using the same pending batch.
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(runtime.physicallyFinalizedForHotUpgrade(actor));
+            assertEquals(1, firstNotifications.get());
+            assertEquals(2, secondAttempts.get());
+        }
+    }
+
+    @Test
     void recordedPhysicalFinalizerCannotSynchronouslyWaitForItself()
             throws Exception {
         try (var runtime = new ActorRuntime()) {
