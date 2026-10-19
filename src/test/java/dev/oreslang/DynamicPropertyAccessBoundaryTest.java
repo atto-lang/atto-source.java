@@ -381,6 +381,20 @@ final class DynamicPropertyAccessBoundaryTest {
                 fnc dynamic(Child<int> value, string key): int {
                     return value[key];
                 }
+
+                define class MutableParent<T> as
+                    pub let T inherited;
+                end
+
+                define class MutableChild<U> extends MutableParent<U> as
+                    pub let U own;
+                end
+
+                fnc update(string key): int {
+                    val MutableChild<int> value = new MutableChild<int>(1, 2);
+                    value[key] = 3;
+                    return value["inherited"];
+                }
                 """);
 
         rejected("""
