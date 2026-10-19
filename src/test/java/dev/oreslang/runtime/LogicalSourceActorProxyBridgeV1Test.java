@@ -72,24 +72,35 @@ final class LogicalSourceActorProxyBridgeV1Test {
                 // remain assigned to this outstanding logical delivery.
                 assertThrows(SecurityException.class,
                         () -> router.sendAndDrainForProxy(
-                                dispatched, proxy.snapshot().routeEpoch() + 1));
+                                proxy, dispatched, proxy.snapshot().routeEpoch() + 1));
                 assertEquals(1, proxy.snapshot().outstandingMessages());
 
+                try (var foreignMailbox = new LogicalActorProxyMailboxV1(2, 8, 16)) {
+                    byte[] copy = dispatched.payload();
+                    foreignMailbox.admit(copy);
+                    foreignMailbox.pollDispatch();
+                    assertThrows(SecurityException.class,
+                            () -> router.sendAndDrainForProxy(
+                                    foreignMailbox, dispatched,
+                                    foreignMailbox.snapshot().routeEpoch()),
+                            "same sequence and epoch cannot borrow another mailbox's envelope");
+                }
+
                 var receipt = router.sendAndDrainForProxy(
-                        dispatched, proxy.snapshot().routeEpoch());
+                        proxy, dispatched, proxy.snapshot().routeEpoch());
                 var forged = new LogicalActorProxyMailboxV1.Envelope(
                         dispatched.messageSequence(), dispatched.payload());
                 assertThrows(SecurityException.class,
-                        () -> receipt.awaitAndComplete(proxy, forged, WAIT),
+                        () -> receipt.awaitAndComplete(forged, WAIT),
                         "equal bytes and sequence are not a physical receipt");
                 assertEquals(1, proxy.snapshot().retainedMessages());
                 assertEquals(0L, proxy.snapshot().completionWatermark());
 
-                receipt.awaitAndComplete(proxy, dispatched, WAIT);
+                receipt.awaitAndComplete(dispatched, WAIT);
                 assertEquals(0, proxy.snapshot().retainedMessages());
                 assertEquals(1L, proxy.snapshot().completionWatermark());
                 assertThrows(IllegalStateException.class,
-                        () -> receipt.awaitAndComplete(proxy, dispatched, WAIT),
+                        () -> receipt.awaitAndComplete(dispatched, WAIT),
                         "a cumulative physical drain cannot refund twice");
                 assertEquals(0, proxy.snapshot().retainedMessages());
                 var output = router.ref().nextOutput(WAIT);
