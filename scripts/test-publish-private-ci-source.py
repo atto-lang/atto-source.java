@@ -32,9 +32,6 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.destination = patch.object(pub, "MIRROR_DESTINATION", "trusted/ci")
         self.destination.start()
         self.addCleanup(self.destination.stop)
-        self.default_branch = patch.object(pub, "DEST_DEFAULT_BRANCH", "main")
-        self.default_branch.start()
-        self.addCleanup(self.default_branch.stop)
         self.base_commit = patch.object(pub, "DEST_BASE_COMMIT", A)
         self.base_commit.start()
         self.addCleanup(self.base_commit.stop)
@@ -50,7 +47,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == "repos/trusted/ci":
             return dict(id=self.repo_ids.pop(0), full_name="trusted/ci",
                         visibility=self.visibility.pop(0),
-                        private=True, default_branch="main")
+                        private=True, default_branch="anything-can-move")
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
@@ -59,8 +56,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             # A fresh file tree and its parent root tree must be distinct.
             return {"sha": E if "base_tree" in payload else D}
         mapping = {
-            "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
-            "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
+            "repos/trusted/ci/git/commits/"+A: {"sha": A, "tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": A},
             "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
         }
@@ -132,28 +128,33 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}])
         self.assertEqual(tree_writes[1]["base_tree"], B)
 
-    def test_destination_base_commit_drift_aborts_before_source_upload(self):
+    def test_mutable_destination_default_branch_is_not_an_authorization_input(self):
+        self.publish()
+        self.assertFalse(any("/git/ref/heads/" in route
+                             for _, route, _ in self.route_calls))
+
+    def test_reviewed_carrier_commit_identity_mismatch_aborts_before_source_upload(self):
         original = self.fake_api
         def drift(route, method="GET", payload=None):
-            if route == "repos/trusted/ci/git/ref/heads/main":
-                return {"object": {"sha": C}}
+            if route == "repos/trusted/ci/git/commits/" + A:
+                return {"sha": C, "tree": {"sha": B}}
             return original(route, method, payload)
         with patch.object(pub, "gh_api", side_effect=drift):
-            with self.assertRaisesRegex(pub.Denied, "base commit changed"):
+            with self.assertRaisesRegex(pub.Denied, "carrier commit/tree mismatch"):
                 pub.publish(
                     "trusted/ci", self.source, "ci/oreslang-test", self.root,
                     source_pr=1425, source_commit=C, source_tree=D)
         self.assertFalse(any(r.endswith("/git/commits") or r.endswith("/git/refs")
                              for m, r, _ in self.route_calls if m == "POST"))
 
-    def test_destination_base_tree_drift_aborts_before_source_upload(self):
+    def test_reviewed_carrier_tree_mismatch_aborts_before_source_upload(self):
         original = self.fake_api
         def drift(route, method="GET", payload=None):
             if route == "repos/trusted/ci/git/commits/" + A:
-                return {"tree": {"sha": C}}
+                return {"sha": A, "tree": {"sha": C}}
             return original(route, method, payload)
         with patch.object(pub, "gh_api", side_effect=drift):
-            with self.assertRaisesRegex(pub.Denied, "base tree changed"):
+            with self.assertRaisesRegex(pub.Denied, "carrier commit/tree mismatch"):
                 pub.publish(
                     "trusted/ci", self.source, "ci/oreslang-test", self.root,
                     source_pr=1425, source_commit=C, source_tree=D)
