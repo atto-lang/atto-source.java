@@ -1052,10 +1052,11 @@ and then invoke the same receipt again after late physical completion.
 That crossed the quarantine boundary without a supervisor reconciliation.
 
 The receipt now obtains an exclusive one-shot claim under the physical
-`routeLock`, verifying active route identity, bound proxy mailbox, exact
-outstanding `Envelope`, and route epoch **before waiting**. That claim is
-never reset, including on timeout, interruption, terminal exception,
-route change, or mailbox completion rejection. The terminal wait stays
+`routeLock`, checking active route and bound proxy identity and marking
+its one-shot capability consumed **before** allocation-bearing mailbox
+epoch/envelope validation or waiting. That claim is never reset, including
+on validation fault, timeout, interruption, terminal exception, route
+change, or mailbox completion rejection. The terminal wait stays
 outside the route lock; a successful wait revalidates publication and uses
 `completeAfterPhysicalReceipt` to refund credits once. A second caller
 fails immediately without waiting; no timeout/retry loop is permitted.
@@ -1067,7 +1068,18 @@ and verifies: the original physical message was submitted, the timeout
 retains logical credits, reusing the same receipt is rejected even after
 the synthetic terminal settles, and replaying the physical send is rejected.
 The test is committed but **not confirmed executed by an exact-head
-JDK25/GraalVM Maven job**.
+JDK25/GraalVM Maven job**. An independent Java 21 source-free one-shot
+receipt concurrency oracle compiled with `javac --release 21 -Xlint:all
+-Werror` and executed **31,000 assertions PASS** (10,000 timeout/retry
+cases and 500 eight-contender claim races). This is a proof-model probe,
+not a compilation or execution of the Oreslang source branch. The
+exact-head source-org fast-ci run 39308727188 completed FAILURE with a
+test job reporting **steps: null** (not a JVM/JUnit assertion failure).
+
+Private source export remains blocked by the EMPTY
+`.github/private-ci-approved-repositories.txt` allowlist and open
+security bootstrap issue #962. Do not copy a private Git tree into a
+foreign Actions repo merely because its budget has capacity.
 
 This is a local in-process receipt safety property, not a remote
 authenticated `mail.done`, durable deduplication, or exactly-once effects.
