@@ -43,13 +43,13 @@ final class DynamicPropertyAccessRuntimeTest {
                     const pair = tuple(5.0, 6.0);
                     stdio.println(tuple_get(pair, 0));
 
-                    const Point seed = infer<Point> struct{x: 7.0, y: 8.0};
-                    val Point current = infer struct{x: 9.0, y: 10.0};
+                    const Vec2 seed = infer<Vec2> struct{x: 7.0, y: 8.0};
+                    val Vec2 current = infer struct{x: 9.0, y: 10.0};
                     const field = "x";
                     current[field] = 11.0;
                     stdio.println(current[field]);
 
-                    val PointObject point = new Point();
+                    val Point point = new Point();
                     stdio.println(class_set(point, "y", 12));
                     return;
                 }
