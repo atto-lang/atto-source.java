@@ -151,8 +151,8 @@ final class ConcurrencyTestCommand {
     /** One independently consistent native test-suite receipt per invocation. */
     private static boolean validNativeSuiteSummary(String output) {
         java.util.regex.Pattern summary = java.util.regex.Pattern.compile(
-                "ORES_TEST\\\\|SUMMARY\\\\|total=(\\\\d+)\\\\|passed=(\\\\d+)"
-                + "\\\\|failed=(\\\\d+)\\\\|skipped=(\\\\d+)\\\\|filtered=(\\\\d+)");
+                "ORES_TEST\\|SUMMARY\\|total=(\\d+)\\|passed=(\\d+)"
+                + "\\|failed=(\\d+)\\|skipped=(\\d+)\\|filtered=(\\d+)");
         long[] counted = new long[3];
         int seen = 0;
         long total = -1, passed = -1, failed = -1, skipped = -1;
