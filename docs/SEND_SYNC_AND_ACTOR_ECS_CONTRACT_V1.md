@@ -155,6 +155,33 @@ are bitwise deterministic.
   Neither failure proves tests passed or failed; source and candidate
   runner admission require separate investigation.
 
+## Actor transport and CI P0 verification update
+
+* The actor mailbox transport capability contract is distinct from automatic
+  `Send`/`Sync` derivation. A concrete `ActorRef<ActorType>` may be admitted
+  as a generation-bound, same-runtime routing capability in mailbox paths
+  without becoming a general thread-safe, shareable or serializable value.
+  Its runtime ownership/epoch validation remains mandatory.
+* Actor callable **completions** use the data-only frozen-result path and
+  reject `ActorRef` and `SharedMutex`, including nested Option/List/record
+  occurrences. Compiler parity tests must cover both the permitted mailbox
+  case and rejected frozen-result case, plus unknown actor targets.
+* Actor boundary structural recursion is depth-bounded (256 levels) before
+  accepting a nested payload. Exceeding the type-complexity limit is a
+  compile-time error, not a permission to transport the value.
+* For this PR, run the source-level `ActorTransportSendSyncParityTest`,
+  `ActorMailTypeContractTest`, `ActorCallableKeywordTest`,
+  `ActorTransportHardeningTest`, `ChannelCallableTransportTest`,
+  `ThreadSafetyTraitsTest`, and `AsyncChannelBoundaryTest` as part of
+  the Java/Maven concurrency contract suite.
+* A **zero-step** GitHub Actions failure does not establish a Java test
+  failure. Runner capacity/billing/administrative job-admission reasons
+  require separate verification. The cross-org private-source CI fallback
+  remains disabled until the independently reviewed source provenance,
+  pinned private destination repository ID, and end-to-end publishing
+  gate tracked by issue #962 are approved and enforced. No public mirror
+  or unaudited CI destination may receive source blobs.
+
 ## Planned actor/ECS design
 
 Actor isolation should remain the outer fault and networking boundary.
