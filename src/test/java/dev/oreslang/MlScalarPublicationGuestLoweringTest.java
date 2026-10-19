@@ -170,6 +170,16 @@ final class MlScalarPublicationGuestLoweringTest {
                 return state_snapshot;
             }
             """);
+        assertRejected("""
+            define actor Bad as
+                state { version: int = 1; weight: int = 5; }
+                private bad(): int with state.read, alloc {
+                    return self.handle_state(critical read |state_snapshot| -> {
+                        return 1;
+                    });
+                }
+            end
+            """);
     }
 
     private static void assertRejected(String source) {
