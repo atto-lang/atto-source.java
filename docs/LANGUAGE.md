@@ -660,7 +660,8 @@ Bracket access is also the computed-property form for fixed products. It does
   values are named products with fields `key` and `value`, so their computed
   access follows record rules rather than tuple rules.
 - A statically singleton string key such as `const key = "x"` keeps the exact
-  selected field type. A literal tuple index keeps the exact selected slot type.
+  selected field type. A literal integer or simple compile-time integer constant
+  such as `const index = 0` keeps the exact selected tuple slot type.
 - A genuinely dynamic key/index has the union of every field/slot type it can
   select. It cannot be assigned to a narrower type without an explicit,
   type-checked narrowing operation.
