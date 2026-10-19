@@ -72,8 +72,8 @@ if ! git ls-tree -r -z HEAD -- "$status_path" > "$tree_snapshot"; then
   echo "SOURCE_TREE_INDEX_ERROR; cannot enumerate committed source tree" >&2
   exit 68
 fi
-if ! python3 -I - "$index_snapshot" "$tree_snapshot" "$status_path" <<'PYVERIFY'
-import os, pathlib, sys
+if ! python3 -I - "$index_snapshot" "$tree_snapshot" "$status_path" "$expected" <<'PYVERIFY'
+import hashlib, os, pathlib, sys
 
 def records(filename, tree):
     data = pathlib.Path(filename).read_bytes()
@@ -107,6 +107,52 @@ try:
     committed = records(sys.argv[2], True)
     if index != committed:
         raise ValueError("index differs from committed tree")
+
+    # A Git executable can return TWO successful but identically truncated
+    # listings. Equality alone then attests a partial checkout. Rebuild the
+    # canonical recursive Git tree from the listing and compare its digest
+    # with the independently supplied immutable subtree SHA.
+    source_path = os.fsencode(sys.argv[3])
+    prefix = b"" if source_path == b"." else source_path + b"/"
+    nested = {}
+    for path, mode, oid in committed:
+        if prefix:
+            if not path.startswith(prefix):
+                raise ValueError("Git entry outside requested source subtree")
+            relative = path[len(prefix):]
+        else:
+            relative = path
+        parts = relative.split(b"/")
+        if any(p in (b"", b".", b"..", b".git") for p in parts):
+            raise ValueError("unsafe Git tree entry path")
+        parent = nested
+        for component in parts[:-1]:
+            child = parent.setdefault(component, {})
+            if not isinstance(child, dict):
+                raise ValueError("file/directory Git tree collision")
+            parent = child
+        if parts[-1] in parent:
+            raise ValueError("duplicate/colliding Git tree entry")
+        parent[parts[-1]] = (mode, oid)
+
+    def hash_tree(node):
+        encoded = bytearray()
+        for name, value in sorted(
+                node.items(), key=lambda pair: pair[0] +
+                (b"/" if isinstance(pair[1], dict) else b"")):
+            if isinstance(value, dict):
+                kind = b"40000"
+                child_digest = hash_tree(value)
+            else:
+                kind, blob_sha = value
+                child_digest = bytes.fromhex(blob_sha.decode("ascii"))
+            encoded.extend(kind + b" " + name + b"\0" + child_digest)
+        return hashlib.sha1(
+            b"tree " + str(len(encoded)).encode("ascii") +
+            b"\0" + encoded).digest()
+
+    if hash_tree(nested).hex() != sys.argv[4]:
+        raise ValueError("manifest does not reconstruct attested Git subtree SHA")
 
     # Check the actual filesystem independently of Git's untracked listing:
     # a successful-but-incomplete `git ls-files --others` must not conceal
