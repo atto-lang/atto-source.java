@@ -46,6 +46,10 @@ REVIEWED_SNAPSHOTS_ROUTE = (
 SOURCE_SNAPSHOT_ENTRY = re.compile(
     r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19}) ([a-f0-9]{40}) ([a-f0-9]{40})$"
 )
+CARRIER_APPROVAL_PATH = ".github/private-oreslang-approved-source-snapshots.txt"
+CARRIER_SOURCE_ENTRY = re.compile(
+    r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19})$"
+)
 PROTECTED_REVIEWS_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection/required_pull_request_reviews"
 CODEOWNERS_ROUTE = SOURCE_METADATA_ROUTE + "/contents/.github/CODEOWNERS?ref=main"
 CODEOWNERS_ERRORS_ROUTE = SOURCE_METADATA_ROUTE + "/codeowners/errors?ref=main"
@@ -416,9 +420,10 @@ def require_protected_carrier_codeowners(repository):
         raise Denied("private carrier CODEOWNERS blob integrity failed")
     effective = [line.strip() for line in decoded.splitlines()
                  if line.strip() and not line.strip().startswith("#")]
-    # The last matching rule wins. Require these final two rules in order:
-    # no later wildcard or exception can remove security ownership.
-    expected = ["/.github/CODEOWNERS " + REQUIRED_CODEOWNER,
+    # The last matching rule wins. The independent carrier source ledger,
+    # CODEOWNERS itself, and all workflows must remain terminally owned.
+    expected = ["/" + CARRIER_APPROVAL_PATH + " " + REQUIRED_CODEOWNER,
+                "/.github/CODEOWNERS " + REQUIRED_CODEOWNER,
                 "/.github/workflows/ " + REQUIRED_CODEOWNER]
     if effective[-len(expected):] != expected:
         raise Denied("private carrier workflows lack terminal security CODEOWNER coverage")
@@ -432,6 +437,49 @@ def require_protected_carrier_codeowners(repository):
             or owner.get("type") != "User"
             or access.get("permission") not in ("write", "admin")):
         raise Denied("private carrier security CODEOWNER lacks write permission")
+
+
+def require_carrier_source_approval(repository, expected_commit, expected_tree,
+                                    reviewed_blob_sha=None):
+    """Require an independently reviewed exact source tuple on carrier main."""
+    valid_sha(expected_commit)
+    valid_sha(expected_tree)
+    route = f"repos/{repository}/contents/{CARRIER_APPROVAL_PATH}?ref=main"
+    metadata = gh_api(route)
+    if (metadata.get("type") != "file" or metadata.get("encoding") != "base64"
+            or not isinstance(metadata.get("content"), str)
+            or len(metadata["content"]) > 24 * 1024
+            or type(metadata.get("size")) is not int
+            or not 0 <= metadata["size"] <= 16 * 1024):
+        raise Denied("private carrier source-approval ledger is unavailable")
+    try:
+        raw = base64.b64decode("".join(metadata["content"].splitlines()), validate=True)
+        lines = raw.decode("utf-8").splitlines()
+    except (ValueError, UnicodeError) as exc:
+        raise Denied("private carrier source-approval ledger is invalid") from exc
+    digest = hashlib.sha1(
+        b"blob " + str(len(raw)).encode("ascii") + bytes([0]) + raw
+    ).hexdigest()
+    if (len(raw) != metadata["size"] or bytes([0]) in raw
+            or valid_sha(metadata.get("sha")) != digest):
+        raise Denied("private carrier source-approval ledger integrity failed")
+    if reviewed_blob_sha is not None and digest != reviewed_blob_sha:
+        raise Denied("private carrier source approval changed during transfer")
+
+    approved = set()
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        match = CARRIER_SOURCE_ENTRY.fullmatch(line)
+        if match is None:
+            raise Denied("invalid private carrier source-approval entry")
+        entry = (match.group(1), match.group(2), int(match.group(3)))
+        if entry in approved:
+            raise Denied("duplicate private carrier source approval")
+        approved.add(entry)
+    if (expected_commit, expected_tree, SOURCE_REPOSITORY_ID) not in approved:
+        raise Denied("private carrier has not independently approved this source snapshot")
+    return digest
 
 
 def require_protected_main_policy(approved_policy):
@@ -928,6 +976,9 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         raise Denied("invalid destination or isolated CI branch name")
     valid_sha(expected_source_tree)
     valid_sha(expected_source_commit)
+    expected_branch = "ci/oreslang-" + expected_source_commit
+    if branch != expected_branch:
+        raise Denied("isolated CI branch must encode the full approved source commit SHA")
     # This function previously ran the checkout-local Bash preflight BEFORE
     # authenticating the checkout. A modified PR checkout could execute an
     # attacker-controlled guard even though source export would later deny.
@@ -1010,6 +1061,11 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         return current_sha
     base_sha = require_pinned_carrier_main(
         approved_carrier_main_sha, approved_carrier_tree)
+    carrier_approval_sha = require_carrier_source_approval(
+        repository, expected_source_commit, expected_source_tree)
+    # The ledger read itself must come from the same carrier main revision
+    # that the source-side approval pinned.
+    require_pinned_carrier_main(base_sha, approved_carrier_tree)
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = nested_sha(base_commit, "tree")
     if base_commit.get("sha") != base_sha:
@@ -1040,6 +1096,9 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         current = checked_repo(repository, expected_id=approved_destination_id)
         if current.get("default_branch") != "main":
             raise Denied("private carrier default branch changed during transfer")
+        require_carrier_source_approval(
+            repository, expected_source_commit, expected_source_tree,
+            carrier_approval_sha)
         require_pinned_carrier_main(base_sha, approved_carrier_tree)
 
     isolated_sha = None
