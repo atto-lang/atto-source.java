@@ -540,9 +540,11 @@ const position = record{x: 3.0, y: 4.0};
 Records are closed, field-name-based **structural** values rather than dynamic
 maps. Their field set is statically known, field order does not define type
 identity, and record assignment may use structural row compatibility under the
-normal readonly-capability rules. `infer record{...}` remains accepted as a
-compatibility spelling; `infer<T> record{...}` may capture a lexical structural
-alias, but it does not create nominal identity or a runtime type object.
+normal readonly-capability rules. Plain `record{...}` carries **no type-capture
+intent**: `const Row r = record{...}` requires `Row` to already exist.
+`infer record{...}` remains accepted as a compatibility spelling;
+`infer<T> record{...}` may capture a lexical structural alias, but it does not
+create nominal identity or a runtime type object.
 
 An inferred struct is deliberately different. `infer struct{...}` synthesizes a
 **concrete closed struct shape** from the initializer. Struct compatibility is
@@ -562,7 +564,9 @@ const Point p = infer struct{x: 3.0, y: 4.0};
 
 The alias is lexical and compile-time only. Existing types, imported names,
 builtins, generics, reserved forward declarations and conflicting definitions
-cannot be silently shadowed.
+cannot be silently shadowed. The declaration that *creates* a captured alias is
+a `const` declaration so the type introduction itself is stable; this does not
+make every later value of that captured type immutable.
 
 `infer` determines where the struct type comes from; it is **not** a freeze
 operator. Binding/referent mutability remains independent. A `const` binding
@@ -642,6 +646,67 @@ val sameShape: [int, string] = (1, "one");
 A tuple is a product value, not a growable array. Its `size` metadata is
 redundant by design but useful as an ABI/layout assertion; a mismatch with the
 declared positional arity is a compile-time error.
+
+### Computed access on fixed products
+
+Bracket access is also the computed-property form for fixed products. It does
+**not** turn a class, record, struct or tuple into a dynamic map.
+
+- Records and structs use a `string` field key: `value[key]`.
+- Class instances use a `string` key for **instance data fields only**.
+  Methods are never discoverable or callable through `[]`.
+- Tuples use an `int` positional index.
+- A two-slot positional pair is therefore a tuple. Key/value `Entry<K,V>`
+  values are named products with fields `key` and `value`, so their computed
+  access follows record rules rather than tuple rules.
+- A statically singleton string key such as `const key = "x"` keeps the exact
+  selected field type. A literal integer or simple compile-time integer constant
+  such as `const index = 0` keeps the exact selected tuple slot type.
+- A genuinely dynamic key/index has the union of every field/slot type it can
+  select. It cannot be assigned to a narrower type without an explicit,
+  type-checked narrowing operation.
+- Unknown runtime keys and out-of-range tuple indexes fail at runtime; `[]`
+  does not implicitly return `Option`.
+- Dynamic class access never bypasses visibility. If an arbitrary runtime key
+  could select an inaccessible field, the access is rejected rather than
+  creating a private-field side channel.
+- Structural records are readonly, and tuples are immutable product values.
+  Indexed writes are therefore rejected for both.
+- Concrete structs may be written through `[]` only through a mutable
+  binding/exclusive authority. For a genuinely dynamic key, the assigned value
+  must be valid for **every** possible destination field.
+- Dynamic class writes likewise require every field selectable by the key to be
+  visible, mutable, and compatible with the assigned value.
+- Computed access participates in definite initialization. An exact indexed
+  write can initialize that declared explicit-struct field; a dynamic read is
+  rejected while any field in the closed shape remains uninitialized.
+- Projected borrows through computed aggregate/class/tuple indexes remain
+  fail-closed until path-exclusive loan tracking can prove the selected place.
+  Reading a value does not imply that a borrow of that computed place is safe.
+
+For example:
+
+```ores
+const Point seed = infer<Point> struct{x: 3.0, y: 4.0};
+const key = "x";
+const float x = seed[key];       // exact field type: float
+
+const row = record{x: 3.0, y: "boo"};
+const yKey = "y";
+const string y = row[yKey];      // exact field type: string
+
+fnc lookup({x: float, y: string} row, string key): float | string {
+    return row[key];             // dynamic key => float | string
+}
+
+const pair = tuple(3.0, 4.0);
+const int i = 0;
+const float first = pair[i];     // homogeneous tuple => float
+```
+
+The compiler does not reinterpret the value selected by the key. In particular,
+`row["y"]` above is `"boo"`; it is not `3.0`, and it cannot be assigned
+to `int`.
 
 ## Structural typing and interfaces
 

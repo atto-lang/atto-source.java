@@ -114,6 +114,17 @@ final class ComputedAggregateIndexBoundaryTest {
     }
 
     @Test
+    void constantTupleIndexVariablePreservesHeterogeneousSlotType() {
+        accepted("""
+                fnc get(): string {
+                    const Pair p = tuple(3.0, "second");
+                    const index = 1;
+                    return p[index];
+                }
+                """);
+    }
+
+    @Test
     void emptyClosedAggregateCannotBecomeUncheckedUnknownValue() {
         denied("""
                 fnc bad(string key): int {
@@ -130,18 +141,35 @@ final class ComputedAggregateIndexBoundaryTest {
     }
 
     @Test
-    void classesDoNotPermitUncheckedComputedPrivateOrPublicFieldAccess() {
-        deniedWithMessage("""
-                define class Sample as
-                    pub val int x = 3;
-                    val string secret = "hidden";
+    void classesAdmitOnlyVisibleDataFieldsNotPrivateFieldsOrMethods() {
+        accepted("""
+                define class Point as
+                    pub val float x = 3.0;
+                    pub val float y = 4.0;
                 end
-                fnc bad(Sample sample, string field): int {
-                    return sample[field];
+                fnc read(Point point, string key): float {
+                    return point[key];
                 }
-                """, "indexing requires");
+                """);
+        denied("""
+                define class Secret as
+                    private val int hidden = 1;
+                    pub val int shown = 2;
+                end
+                fnc bad(Secret secret, string key): int {
+                    return secret[key];
+                }
+                """);
+        denied("""
+                define class Point as
+                    pub val float x = 3.0;
+                    pub fnc move(): float { return self.x; }
+                end
+                fnc bad(Point point): float {
+                    return point["move"];
+                }
+                """);
     }
-
 
     @Test
     void finiteTuplesRejectIndexedWritesEvenThroughMutableBindings() {
@@ -151,14 +179,14 @@ final class ComputedAggregateIndexBoundaryTest {
                     pair[0] = 8;
                     return;
                 }
-                """, "tuple indexed assignment");
+                """, "indexed assignment is not allowed");
         deniedWithMessage("""
                 fnc bad(int index): void {
                     val pair = tuple(3, 4);
                     pair[index] = 8;
                     return;
                 }
-                """, "tuple indexed assignment");
+                """, "indexed assignment is not allowed");
     }
 
     @Test

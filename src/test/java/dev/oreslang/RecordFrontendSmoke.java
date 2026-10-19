@@ -143,6 +143,40 @@ public final class RecordFrontendSmoke {
                 }
                 """)), "concrete struct shapes require exact fields");
 
+        // Dynamic fixed-product access: exact singleton keys keep the selected
+        // field/slot type; truly dynamic keys use a safe union.
+        accepted("""
+                fnc read_record(): string {
+                    const row = record{x: 3.0, y: "boo"};
+                    const key = "y";
+                    return row[key];
+                }
+                fnc read_tuple(int index): float {
+                    const pair = tuple(3.0, 4.0);
+                    return pair[index];
+                }
+                fnc update_struct(string key): float {
+                    const Point seed = infer<Point> struct{x: 1.0, y: 2.0};
+                    val Point point = infer struct{x: 3.0, y: 4.0};
+                    point[key] = 9.0;
+                    return point[key];
+                }
+                """);
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(string key): void {
+                    const row = record{x: 3.0, y: "boo"};
+                    const float value = row[key];
+                    return;
+                }
+                """)), "heterogeneous dynamic record lookup must retain its union");
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                    val pair = tuple(1, 2);
+                    pair[0] = 3;
+                    return;
+                }
+                """)), "tuple values remain immutable positional products");
+
         // Failure gates must reach ownership analysis as well as type checking.
         denied(() -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
@@ -189,62 +223,34 @@ public final class RecordFrontendSmoke {
                     .anyMatch(stmt -> stmt == proof.getKey());
             check(found, "proof must refer to an actual checked AST binding");
         }
-        // Short tuple aliases must have the same AST-identity-bound ownership
-        // proof as short record/struct aliases; computed indexing itself must
-        // not turn a heterogeneous finite tuple into an unchecked int.
-        String computedTuple = """
-                fnc get(): float {
-                    const T t = tuple(3.0, 4.0);
-                    const index = 0;
-                    return t[index];
+        // Short tuple syntax must produce the same AST-identity-bound proof
+        // as record/struct aliases; ownership must consume that exact proof.
+        String shortTuple = """
+                fnc get(): string {
+                    const Pair p = tuple(3.0, "second");
+                    const index = 1;
+                    return p[index];
                 }
                 """;
-        TypeChecker.TypeCheckResult tupleChecked =
-                TypeChecker.checkTypesWithDiagnostics(Parser.parse(computedTuple));
-        check(tupleChecked.shortInferredAliases().size() == 1,
+        TypeChecker.TypeCheckResult checkedTuple =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse(shortTuple));
+        check(checkedTuple.shortInferredAliases().size() == 1,
                 "short tuple alias needs a typechecker-validated proof");
-        OwnershipChecker.check(tupleChecked.program(), tupleChecked.shortInferredAliases());
-
-        accepted("""
-                fnc get(): string {
-                    const T r = record{x: 3.0, y: "boo"};
-                    const key = "y";
-                    return r[key];
-                }
-                """);
-        accepted("""
-                fnc get(string key): float {
-                    const T d = infer<T> struct{x: 3.0, y: 4.0};
-                    return d[key];
-                }
-                """);
+        OwnershipChecker.check(checkedTuple.program(), checkedTuple.shortInferredAliases());
+        accepted(shortTuple);
         denied(() -> TypeChecker.check(Parser.parse("""
-                fnc bad(string key): int {
-                    const T r = record{x: 3.0, y: "boo"};
-                    return r[key];
+                fnc bad(int index): int {
+                    const Pair p = tuple(3.0, "second");
+                    return p[index];
                 }
-                """)), "heterogeneous dynamic field access cannot become int");
-        denied(() -> TypeChecker.check(Parser.parse("""
-                fnc bad(string key): int {
-                    const T empty = record{};
-                    return empty[key];
-                }
-                """)), "empty closed record must not return unknown type");
-
-        denied(() -> TypeChecker.check(Parser.parse("""
-                fnc bad(): void {
-                    val pair = tuple(3, 4);
-                    pair[0] = 8;
-                    return;
-                }
-                """)), "ordinary tuple literal slots are immutable");
+                """)), "heterogeneous dynamic tuple must retain its union");
         denied(() -> TypeChecker.check(Parser.parse("""
                 fnc bad(int index): void {
-                    val pair = tuple(3, 4);
-                    pair[index] = 8;
+                    val pair = tuple(1, 2);
+                    pair[index] = 3;
                     return;
                 }
-                """)), "ordinary tuple dynamic slots are immutable");
+                """)), "dynamic ordinary tuple writes are forbidden");
 
         System.out.println("RECORD_FRONTEND_SMOKE_PASS");
     }

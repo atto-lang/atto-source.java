@@ -1146,7 +1146,7 @@ public final class Ast {
         }
     }
 
-    public enum ObjectKind { INFERRED_STRUCT, INFERRED_RECORD, EXPLICIT_STRUCT }
+    public enum ObjectKind { RECORD, INFERRED_STRUCT, INFERRED_RECORD, EXPLICIT_STRUCT }
 
     /** A field declaration in the closed shape of an explicit anonymous struct. */
     public record StructFieldSpec(String name, TypeRef type) {
@@ -1157,10 +1157,13 @@ public final class Ast {
     }
 
     /**
-     * Anonymous struct expression.
+     * Anonymous closed aggregate expression.
      *
-     * <p>INFERRED_RECORD is a closed structural readonly value shape.
-     * INFERRED_STRUCT is a concrete closed struct shape whose field types are
+     * <p>RECORD is the canonical structural record value and carries no
+     * type-capture intent. INFERRED_RECORD is the compatibility infer-record
+     * spelling and may participate in an explicit/short inferred alias.
+     * Both are closed structural readonly value shapes. INFERRED_STRUCT is a
+     * concrete closed struct shape whose field types are
      * inferred from the initializer; mutation authority remains a property of
      * the binding/borrow, not of the {@code infer} keyword. The distinct tags
      * therefore survive semantic lowering instead of collapsing to one record type.
@@ -1211,13 +1214,18 @@ public final class Ast {
             }
             return ObjectKind.INFERRED_STRUCT;
         }
+        /** True only when the source explicitly used infer and may introduce a captured type alias. */
         public boolean inferredAggregate() {
             return kind == ObjectKind.INFERRED_STRUCT || kind == ObjectKind.INFERRED_RECORD;
         }
         public boolean inferredStruct() { return kind == ObjectKind.INFERRED_STRUCT; }
         public boolean inferredRecord() { return kind == ObjectKind.INFERRED_RECORD; }
-        /** Only inferred records carry the readonly structural capability by construction. */
-        public boolean readonlyInferredAggregate() { return inferredRecord(); }
+        public boolean plainRecord() { return kind == ObjectKind.RECORD; }
+        public boolean structuralRecord() { return plainRecord() || inferredRecord(); }
+        /** All non-explicit aggregate literals infer their field types from initializer values. */
+        public boolean inferredFieldTypes() { return kind != ObjectKind.EXPLICIT_STRUCT; }
+        /** Compatibility helper: structural records carry the readonly record capability. */
+        public boolean readonlyInferredAggregate() { return structuralRecord(); }
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
     }
 

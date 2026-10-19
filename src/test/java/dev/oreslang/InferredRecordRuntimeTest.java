@@ -87,9 +87,10 @@ final class InferredRecordRuntimeTest {
     @Test
     void missingRuntimeKeyAndOutOfRangeTupleIndexFailRatherThanReifyUnknown() {
         String missingKey = """
+                fnc dynamicMissingKey(): string { return "missing"; }
                 pub fnc main(): void {
                     const T r = record{x: 3.0};
-                    const string key = "missing";
+                    const string key = dynamicMissingKey();
                     stdio.println(r[key]);
                     return;
                 }
@@ -104,9 +105,10 @@ final class InferredRecordRuntimeTest {
         });
 
         String badTupleIndex = """
+                fnc dynamicOutsideIndex(): int { return 3; }
                 pub fnc main(): void {
                     const T t = tuple(3.0, 4.0);
-                    const int index = 3;
+                    const int index = dynamicOutsideIndex();
                     stdio.println(t[index]);
                     return;
                 }

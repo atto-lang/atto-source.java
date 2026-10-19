@@ -62,7 +62,7 @@ bash scripts/check-soa-snapshot.sh
 
 # Contains GraalVM guest execution, not only AST and host-only smoke tests.
 mvn -B -ntp \
-  -Dtest=InferredRecordBoundaryTest,InferredStructBoundaryTest,InferredRecordRuntimeTest,ComputedAggregateIndexBoundaryTest,NamedInferredTypeTest,SoaSnapshotTest \
+  -Dtest=InferredRecordBoundaryTest,InferredStructBoundaryTest,DynamicPropertyAccessBoundaryTest,DynamicPropertyAccessRuntimeTest,InferredRecordRuntimeTest,ComputedAggregateIndexBoundaryTest,NamedInferredTypeTest,SoaSnapshotTest \
   test
 mvn -B -ntp -Dores.runtime.carriers=native verify
 
