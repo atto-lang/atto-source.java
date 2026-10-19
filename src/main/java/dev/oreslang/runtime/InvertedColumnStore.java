@@ -27,12 +27,12 @@ public final class InvertedColumnStore implements AutoCloseable {
      * reference to another row. No public constructor or mutator is exposed.
      */
     public static final class Handle {
-        private final InvertedColumnStore authority;
+        private final Object authority;
         private final long owner;
         private final int slot;
         private final long generation;
 
-        private Handle(InvertedColumnStore authority, long owner, int slot, long generation) {
+        private Handle(Object authority, long owner, int slot, long generation) {
             this.authority = authority;
             this.owner = owner;
             this.slot = slot;
@@ -56,6 +56,9 @@ public final class InvertedColumnStore implements AutoCloseable {
     }
 
     private final long owner = nextOwner();
+    // Opaque issue-only capability shared with row handles, without keeping
+    // the entire owning store strongly reachable from every stale handle.
+    private final Object capability = new Object();
     private final Kind[] kinds;
     private byte[][] columns;
     private ByteBuffer[] buffers;
@@ -163,7 +166,7 @@ public final class InvertedColumnStore implements AutoCloseable {
 
     private int resolve(Handle handle) {
         open();
-        if (handle == null || handle.authority != this
+        if (handle == null || handle.authority != capability
                 || handle.owner() != owner || handle.slot() < 0
                 || handle.slot() >= slotCount) {
             throw new IllegalArgumentException("foreign or invalid inverted row handle");
@@ -223,7 +226,7 @@ public final class InvertedColumnStore implements AutoCloseable {
         slotRows[slot] = row;
         live[slot] = true;
         length++;
-        return new Handle(this, owner, slot, generations[slot]);
+        return new Handle(capability, owner, slot, generations[slot]);
     }
 
     /** Unordered O(column-count) erase, preserving surviving logical handles. */
