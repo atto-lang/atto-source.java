@@ -64,6 +64,13 @@ a nominal reference view, not an implicit heap-boxing operation.
    restriction pending proof-carrying generic erasure.
 8. Buffered channels reject direct and nested erased interface views, including
    ones found through concrete class fields and generic substitutions.
+9. Actor-boundary type checking rejects dyn views explicitly; dynamic interface
+   values do not become mailbox/cross-isolate capabilities by widening.
+10. Neither `Unknown` nor an unresolved generic can establish a dyn witness
+    nested inside lists, named type arguments, tuples, records, borrows, or
+    callable signatures. A dynamic runtime cast cannot manufacture one.
+11. Structural-only interface methods and structural callable parameters are
+    not admitted to nominal dynamic dispatch until a verified ABI exists.
 
 ## Planned native and ownership contract (not implemented here)
 
@@ -90,9 +97,10 @@ verified migration before unloading.
 ## Further required tests
 
 * Java/Truffle: nominal success and non-conformance; inherited contracts,
-  generic interface specialization, field/generic-method/self rejection;
-  uncertainty and generic spoofing rejection; nested channel ownership;
-  AOT-host execution; typed method dispatch.
+  concrete generic interface specialization and invariance; field/generic-method,
+  structural-method and self rejection; direct and nested uncertainty/generic
+  spoofing rejection; rt copy/share of move-only dyn; actor and channel
+  ownership; AOT-host execution; typed method dispatch.
 * LLVM: fail-closed unsupported constructs first, then verified native
   AOT interface-object lowering, deterministic drops, and sanitizer
   tests. Never imply implementation parity from shared syntax.
