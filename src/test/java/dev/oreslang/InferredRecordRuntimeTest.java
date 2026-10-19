@@ -54,7 +54,7 @@ final class InferredRecordRuntimeTest {
     void computedRecordTupleAndEntryFieldsExecuteThroughTheSameIndexPath() {
         String source = """
                 pub fnc main(): void {
-                    const Entry e = record{key: "id", value: "payload"};
+                    const Entry e = infer record{key: "id", value: "payload"};
                     const name = "value";
                     stdio.println(e[name]);
                     const Pair t = tuple(3, 4);
@@ -89,7 +89,7 @@ final class InferredRecordRuntimeTest {
         String missingKey = """
                 fnc dynamicMissingKey(): string { return "missing"; }
                 pub fnc main(): void {
-                    const T r = record{x: 3.0};
+                    const r = record{x: 3.0};
                     const string key = dynamicMissingKey();
                     stdio.println(r[key]);
                     return;
