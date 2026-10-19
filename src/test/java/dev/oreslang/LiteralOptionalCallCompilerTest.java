@@ -267,4 +267,47 @@ final class LiteralOptionalCallCompilerTest {
         }
     }
 
+
+    @Test
+    void implicitOmissionCannotCaptureAShadowedOptionConstructor() {
+        String customNone = """
+                define module app as
+                    pub fnc None(): string { return "fake"; }
+                    pub fnc greet(string? name): string { return "ok"; }
+                    pub fnc caller(): string { return greet(); }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> LiteralOptionalCallCompiler.lowerImplicitAndAnalyze(
+                        customNone, "app", "caller"));
+        String localNone = """
+                define module app as
+                    pub fnc greet(string? name): string { return "ok"; }
+                    pub fnc caller(): string {
+                        const None = "fake";
+                        return greet();
+                    }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> LiteralOptionalCallCompiler.lowerImplicitAndAnalyze(
+                        localNone, "app", "caller"));
+    }
+
+    @Test
+    void implicitOmissionCannotGuessBetweenMultipleImmediateCalls() {
+        String ambiguous = """
+                define module app as
+                    pub fnc greet(string? name): string { return "ok"; }
+                    pub fnc caller(): string {
+                        greet();
+                        return greet();
+                    }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> LiteralOptionalCallCompiler.lowerImplicitAndAnalyze(
+                        ambiguous, "app", "caller"));
+    }
+
 }
