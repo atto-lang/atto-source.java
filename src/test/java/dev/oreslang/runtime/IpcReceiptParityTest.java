@@ -36,4 +36,9 @@ class IpcReceiptParityTest {
     void authenticatedLoopbackSocketFramesAndReceipts() throws Exception {
         IpcAuthenticatedSocketTransportSelfTest.main(new String[0]);
     }
+
+    @Test
+    void actorCarriersCannotEnterBlockingIpcHostOperations() throws Exception {
+        IpcBlockingGuardSelfTest.main(new String[0]);
+    }
 }
