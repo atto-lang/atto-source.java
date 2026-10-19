@@ -523,6 +523,61 @@ final class TaskAccessVerifierTest {
         assertNotNull(admit(ledger, List.of(read(uncertain))));
     }
 
+    @Test void rangeLayoutFlagsCannotLaunderPlaceTypeEvidence() {
+        var ledger = new TaskAccessVerifier();
+        var root = TaskAccessVerifier.Place.whole(WORLD);
+        var certified = root.range(0, 64, true);
+        var uncertified = root.range(0, 64, false);
+        var ticket = ledger.admitTyped(List.of(
+                new TaskAccessVerifier.TypedClaim(read(certified), Types.Primitive.INT)),
+                (name, trait) -> false, place -> Types.Primitive.INT);
+        assertThrows(IllegalStateException.class, () -> ledger.admitTyped(List.of(
+                new TaskAccessVerifier.TypedClaim(read(uncertified), Types.Primitive.BOOL)),
+                (name, trait) -> false, place -> Types.Primitive.BOOL));
+        ledger.quiescent(ticket);
+        assertEquals(0, ledger.activeClaims());
+        assertThrows(IllegalStateException.class, () -> ledger.admitTyped(List.of(
+                new TaskAccessVerifier.TypedClaim(read(uncertified), Types.Primitive.BOOL)),
+                (name, trait) -> false, place -> Types.Primitive.BOOL));
+    }
+
+    @Test void typedOversizePreflightAvoidsExecutingUntrustedResolvers() {
+        var ledger = new TaskAccessVerifier();
+        var place = TaskAccessVerifier.Place.whole(WORLD);
+        var oversized = java.util.Collections.nCopies(1025,
+                new TaskAccessVerifier.TypedClaim(read(place), Types.Primitive.INT));
+        var resolvers = new java.util.concurrent.atomic.AtomicInteger();
+        var traitCallbacks = new java.util.concurrent.atomic.AtomicInteger();
+        assertThrows(IllegalStateException.class, () ->
+                ledger.admitTyped(oversized, (type, trait) -> {
+                    traitCallbacks.incrementAndGet();
+                    return true;
+                }, p -> {
+                    resolvers.incrementAndGet();
+                    return Types.Primitive.INT;
+                }));
+        assertEquals(0, resolvers.get());
+        assertEquals(0, traitCallbacks.get());
+        assertEquals(0, ledger.activeChildren());
+    }
+
+    @Test void closedScopeCannotRunPlaceResolverCallbacks() {
+        var ledger = new TaskAccessVerifier();
+        var place = TaskAccessVerifier.Place.whole(WORLD);
+        ledger.finishScope();
+        var resolvers = new java.util.concurrent.atomic.AtomicInteger();
+        assertThrows(IllegalStateException.class, () ->
+                ledger.admitTyped(List.of(
+                        new TaskAccessVerifier.TypedClaim(read(place), Types.Primitive.INT)),
+                        (type, trait) -> false,
+                        p -> {
+                            resolvers.incrementAndGet();
+                            return Types.Primitive.INT;
+                        }));
+        assertEquals(0, resolvers.get());
+        assertEquals(0, ledger.activeClaims());
+    }
+
     @Test void racingWritersNeverAcquireTwoLiveLoans() throws Exception {
         var verifier = new TaskAccessVerifier();
         var place = TaskAccessVerifier.Place.whole(WORLD);
