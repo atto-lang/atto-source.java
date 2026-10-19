@@ -17,10 +17,15 @@ if [[ "$actual_sha" != "$expected_sha" ]]; then
   echo "refusing to run tests on wrong source: expected $expected_sha, got $actual_sha" >&2
   exit 3
 fi
-if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "refusing to test modified tracked files; use an exact clean Git tree" >&2
+# A new untracked source/test file could alter Maven's inputs even when
+# git diff against the tracked tree is clean. Fail closed on all untracked,
+# non-ignored files as well as modified/index-staged files.
+if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  echo "refusing to test a dirty or source-injected worktree; require a clean exact Git tree" >&2
   exit 4
 fi
+tree_sha="$(git rev-parse --verify HEAD^{tree})"
+echo "Verified Git source identity: commit $actual_sha, tree $tree_sha"
 for program in javac java mvn git; do
   if ! command -v "$program" >/dev/null 2>&1; then
     echo "missing required test executable: $program" >&2
