@@ -4942,6 +4942,13 @@ public final class TypeChecker {
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
     }
 
+    /** A Send proof is necessary but not sufficient for an async/task boundary. */
+    private boolean isThreadSend(Type type) {
+        return ThreadSafetyTraits.has(type, ThreadSafetyTraits.Trait.SEND,
+                (nominal, trait) -> trait == ThreadSafetyTraits.Trait.SEND
+                        && isSharedSafe(nominal, new LinkedHashSet<>(), Map.of()));
+    }
+
     private void validateAsyncBoundaryType(
             Type type,
             boolean returnPosition,
@@ -4953,13 +4960,16 @@ public final class TypeChecker {
         // their stricter rule and continue to reject Channel<T> entirely.
         if (type instanceof Named named && named.name().equals("Channel")
                 && named.arguments().size() == 1
-                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())
+                && isThreadSend(named.arguments().getFirst())
+                && isThreadSend(type)) {
             return;
         }
         if (type == Primitive.VOID
-                || !isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
+                || !isSharedSafe(type, new LinkedHashSet<>(), Map.of())
+                || !isThreadSend(type)) {
             throw new IllegalArgumentException(
-                    where + " must be concrete owned task-safe data; borrows, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
+                    where + " must be concrete owned Send task-safe data; borrows, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
         }
     }
 
