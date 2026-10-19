@@ -109,6 +109,28 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                 IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
         check(localDenial.transportLost(deniedEnvelope) == 0);
 
+        // Same textual transport session is not sufficient authority:
+        // delayed EOF for the old route must leave the new epoch's pending
+        // future and one transport credit untouched.
+        var reusedBridge = new IpcReceiptCompletionBridge(2);
+        var previousEpoch = env(1, "reused");
+        var latestEpoch = new IpcReceiptCorrelation.Envelope(
+                "tenant", "sender", "worker", "reused", "a".repeat(64),
+                1, 2, 4, 5, 2, 2);
+        var previousFuture = reusedBridge.admit(previousEpoch);
+        var latestFuture = reusedBridge.admit(latestEpoch);
+        reusedBridge.commitDispatch(previousEpoch);
+        reusedBridge.commitDispatch(latestEpoch);
+        check(reusedBridge.transportLost(previousEpoch) == 1);
+        check(result(previousFuture) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+        check(!latestFuture.toCompletableFuture().isDone());
+        check(reusedBridge.counters().equals(new IpcReceiptCorrelation.Counters(1, 1)));
+        check(reusedBridge.transportLost(previousEpoch) == 0);
+        reusedBridge.acceptVerified(latestEpoch, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+        reusedBridge.acceptVerified(latestEpoch, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+        check(result(latestFuture) == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+        check(reusedBridge.invariant());
+
         var onTerminal = new IpcReceiptCompletionBridge(1);
         var three = env(1, "session");
         var completion = onTerminal.admit(three);
