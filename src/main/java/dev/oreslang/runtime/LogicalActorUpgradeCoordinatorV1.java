@@ -17,6 +17,8 @@ final class LogicalActorUpgradeCoordinatorV1 implements AutoCloseable {
     private final LogicalActorProxyMailboxV1 mailbox;
     private boolean preparing;
     private boolean poisoned;
+    // Guarded by the coordinator monitor, never by a transaction-local lock.
+    private Transaction active;
 
     LogicalActorUpgradeCoordinatorV1(
             ActorUpgradeEpochGate code, LogicalActorProxyMailboxV1 mailbox) {
@@ -31,20 +33,36 @@ final class LogicalActorUpgradeCoordinatorV1 implements AutoCloseable {
             throw new IllegalStateException("actor upgrade is already active or quarantined");
         if (code.epoch() != mailbox.snapshot().routeEpoch())
             throw new IllegalStateException("code and mailbox route epochs diverged");
-        // Reserve mailbox freeze first, so new DATA dispatch cannot pass this
-        // point. Existing dispatched messages retain their old route ownership.
+
+        // Freeze dispatch before staging code. Admission remains bounded/open.
         LogicalActorProxyMailboxV1.FreezeTicket frozen =
                 mailbox.freezeDispatchForUpgrade();
+        ActorUpgradeEpochGate.Candidate candidate = null;
         try {
-            ActorUpgradeEpochGate.Candidate candidate = code.prepare(image);
+            candidate = code.prepare(image);
+            // Allocate the transaction before publishing it as active.
+            Transaction transaction = new Transaction(frozen, candidate);
+            active = transaction;
             preparing = true;
-            return new Transaction(frozen, candidate);
+            return transaction;
         } catch (RuntimeException | Error failure) {
+            // Allocation can fail AFTER code.prepare succeeded. Do not leave
+            // the code candidate frozen when rolling back the mailbox ticket.
+            if (candidate != null) {
+                try {
+                    code.abort(candidate);
+                } catch (RuntimeException | Error abortFailure) {
+                    poisoned = true;
+                    if (abortFailure != failure) failure.addSuppressed(abortFailure);
+                    // Never resume old dispatch without a proven code abort.
+                    throw failure;
+                }
+            }
             try {
                 frozen.rollback();
-            } catch (RuntimeException | Error rollback) {
+            } catch (RuntimeException | Error rollbackFailure) {
                 poisoned = true;
-                failure.addSuppressed(rollback);
+                if (rollbackFailure != failure) failure.addSuppressed(rollbackFailure);
             }
             throw failure;
         }
@@ -53,6 +71,7 @@ final class LogicalActorUpgradeCoordinatorV1 implements AutoCloseable {
     final class Transaction {
         private final LogicalActorProxyMailboxV1.FreezeTicket ticket;
         private final ActorUpgradeEpochGate.Candidate candidate;
+        // All state here is guarded by LogicalActorUpgradeCoordinatorV1.this.
         private boolean done;
 
         private Transaction(LogicalActorProxyMailboxV1.FreezeTicket ticket,
@@ -62,17 +81,13 @@ final class LogicalActorUpgradeCoordinatorV1 implements AutoCloseable {
         }
 
         boolean drained() {
-            // All coordinator state transitions must use ONE monitor. The
-            // Transaction monitor is not the coordinator monitor: mixing the
-            // two permits data races between prepare, commit, rollback and
-            // quarantine observations by independent supervisor threads.
             synchronized (LogicalActorUpgradeCoordinatorV1.this) {
                 requireActive();
                 try {
                     return ticket.drained() && code.livePins() == 0;
-                } catch (RuntimeException | Error uncertain) {
-                    poisoned = true;
-                    throw uncertain;
+                } catch (RuntimeException | Error failure) {
+                    quarantine();
+                    throw failure;
                 }
             }
         }
@@ -80,32 +95,31 @@ final class LogicalActorUpgradeCoordinatorV1 implements AutoCloseable {
         boolean commit() {
             synchronized (LogicalActorUpgradeCoordinatorV1.this) {
                 requireActive();
-                if (!drained()) return false;
+                try {
+                    if (!ticket.drained() || code.livePins() != 0) return false;
+                    if (!code.publish(candidate)) return false;
+                } catch (RuntimeException | Error failure) {
+                    // A foreign close/retirement or an ambiguous publication
+                    // must not allow this incarnation to dispatch again.
+                    quarantine();
+                    throw new IllegalStateException(
+                            "upgrade code publication unverified: dispatch quarantined", failure);
+                }
 
-                // There is no safe rollback after publication begins: even a
-                // thrown publish() call is not proof that the old image is
-                // authoritative. Quarantine first; only clear it after BOTH
-                // code and proxy epochs are certified to have advanced.
+                // Code is now authoritative. Mailbox commit is the final
+                // operation; failures can NEVER resume the old dispatch.
                 poisoned = true;
                 try {
-                    if (!code.publish(candidate)) {
-                        throw new IllegalStateException(
-                                "code gate refused publication after verified drainage");
-                    }
                     ticket.commit();
-                    if (code.epoch() != mailbox.snapshot().routeEpoch()) {
-                        throw new IllegalStateException(
-                                "actor code and proxy route epochs diverged after publication");
-                    }
                     done = true;
+                    active = null;
                     preparing = false;
                     poisoned = false;
                     return true;
                 } catch (RuntimeException | Error failure) {
-                    done = true;
-                    preparing = false;
+                    quarantine();
                     throw new IllegalStateException(
-                            "actor upgrade publication not fully certified: "
+                            "code generation published but mailbox did not: "
                                     + "dispatch remains quarantined", failure);
                 }
             }
@@ -114,27 +128,36 @@ final class LogicalActorUpgradeCoordinatorV1 implements AutoCloseable {
         void rollback() {
             synchronized (LogicalActorUpgradeCoordinatorV1.this) {
                 requireActive();
+                // Abort first; only a proven abort permits old-route dispatch.
                 try {
-                    // Only a proven candidate abort permits old-route DATA
-                    // dispatch to reopen. A failed abort leaves the mailbox
-                    // frozen even if it appears that publication did not run.
                     code.abort(candidate);
+                } catch (RuntimeException | Error failure) {
+                    quarantine();
+                    throw new IllegalStateException(
+                            "code candidate abort unverified: dispatch quarantined", failure);
+                }
+                try {
                     ticket.rollback();
                     done = true;
+                    active = null;
                     preparing = false;
                 } catch (RuntimeException | Error failure) {
-                    poisoned = true;
-                    done = true;
-                    preparing = false;
+                    quarantine();
                     throw new IllegalStateException(
-                            "actor upgrade rollback not fully certified: "
-                                    + "dispatch remains quarantined", failure);
+                            "mailbox rollback unverified: dispatch quarantined", failure);
                 }
             }
         }
 
+        private void quarantine() {
+            poisoned = true;
+            done = true;
+            preparing = false;
+            active = null;
+        }
+
         private void requireActive() {
-            if (done || !preparing || poisoned)
+            if (done || active != this || !preparing || poisoned)
                 throw new IllegalStateException("stale or quarantined actor upgrade");
         }
     }
