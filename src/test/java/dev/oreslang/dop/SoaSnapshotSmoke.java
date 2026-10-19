@@ -65,6 +65,35 @@ public final class SoaSnapshotSmoke {
         expect(SoaSnapshot.fromRows(Map.of("", String.class),
                 List.of(Map.of("", "value"))).column("").equals(List.of("value")),
                 "empty quoted key");
+        randomizedRoundTrips();
+    }
+
+    private static void randomizedRoundTrips() {
+        java.util.Random random = new java.util.Random(0x50A2026L);
+        Map<String, Class<?>> schema = new LinkedHashMap<>();
+        schema.put("first name", String.class);
+        schema.put("Σ", Double.class);
+        schema.put("is active?", Boolean.class);
+        for (int trial = 0; trial < 300; trial++) {
+            int count = random.nextInt(20);
+            List<Map<String, ?>> rows = new ArrayList<>();
+            for (int row = 0; row < count; row++) {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("is active?", random.nextBoolean());
+                item.put("Σ", random.nextDouble());
+                item.put("first name", "person-" + trial + "-" + row);
+                rows.add(item);
+            }
+            SoaSnapshot columnar = SoaSnapshot.fromRows(schema, rows);
+            expect(columnar.rowCount() == count, "random row count " + trial);
+            expect(columnar.toRows().equals(rows), "random AoS roundtrip " + trial);
+            Map<String, List<Object>> reordered = new LinkedHashMap<>();
+            reordered.put("is active?", columnar.column("is active?"));
+            reordered.put("first name", columnar.column("first name"));
+            reordered.put("Σ", columnar.column("Σ"));
+            expect(SoaSnapshot.fromColumns(schema, reordered).toRows().equals(rows),
+                    "column order independent " + trial);
+        }
     }
 
     private static void expect(boolean pass, String name) {
