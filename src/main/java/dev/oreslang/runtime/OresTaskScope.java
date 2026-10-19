@@ -166,8 +166,10 @@ public final class OresTaskScope implements AutoCloseable {
      *
      * The caller must acquire its pin BEFORE admission and must preserve it
      * on all preparation, cancellation and close paths. The callback must
-     * be nonblocking, host-only and not execute guest code. The code-image
-     * owner must independently check its active pin counts before unload.
+     * be nonblocking, host-only and not execute guest code. Compiler lowering
+     * may compose a one-shot scoped-loan PhysicalCompletion callback here:
+     * cancellation/result settlement must never invoke that callback early.
+     * The code-image owner must independently check its active pin counts before unload.
      */
     <T> OresTask<T> startCompilerFrame(
             OresScheduler scheduler, OresScheduler.Task<T> frame,
