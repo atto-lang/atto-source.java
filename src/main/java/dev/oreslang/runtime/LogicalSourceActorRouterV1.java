@@ -246,6 +246,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     static final class ProxyDrainReceipt {
         private final LogicalSourceActorRouterV1 owner;
         private final Route routed;
+        private final LogicalActorProxyMailboxV1 mailbox;
         private final LogicalActorProxyMailboxV1.Envelope envelope;
         private final OresFuture<Void> drained;
         private boolean consumed;
@@ -253,20 +254,20 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         private ProxyDrainReceipt(
                 LogicalSourceActorRouterV1 owner,
                 Route routed,
+                LogicalActorProxyMailboxV1 mailbox,
                 LogicalActorProxyMailboxV1.Envelope envelope,
                 OresFuture<Void> drained) {
             this.owner = owner;
             this.routed = routed;
+            this.mailbox = mailbox;
             this.envelope = envelope;
             this.drained = drained;
         }
 
         void awaitAndComplete(
-                LogicalActorProxyMailboxV1 mailbox,
                 LogicalActorProxyMailboxV1.Envelope exactEnvelope,
                 Duration timeout)
                 throws InterruptedException, ExecutionException, TimeoutException {
-            Objects.requireNonNull(mailbox, "mailbox");
             Objects.requireNonNull(timeout, "timeout");
             if (timeout.isZero() || timeout.isNegative())
                 throw new IllegalArgumentException("drain deadline must be positive");
@@ -284,6 +285,10 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     throw new SecurityException("physical actor route changed before completion");
                 if (mailbox.snapshot().routeEpoch() != routed.routeEpoch())
                     throw new SecurityException("physical and proxy route epochs differ");
+                // Revalidate ownership of the SAME outstanding envelope in
+                // the ORIGINAL mailbox before credit accounting. Otherwise
+                // a forged mailbox with a matching sequence could be repaid.
+                mailbox.requireOutstandingEnvelope(envelope, routed.routeEpoch());
                 // Consume BEFORE touching mailbox accounting. If completion
                 // rejects or faults, no caller may replay the receipt; its
                 // logical delivery must be reconciled by the supervisor.
@@ -299,8 +304,10 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
      * arbitrary producer callback, before physical mailbox admission.
      */
     ProxyDrainReceipt sendAndDrainForProxy(
+            LogicalActorProxyMailboxV1 mailbox,
             LogicalActorProxyMailboxV1.Envelope envelope, long expectedRouteEpoch) {
         requireBlockingHostSurface("proxy-send a logical source actor");
+        Objects.requireNonNull(mailbox, "mailbox");
         Objects.requireNonNull(envelope, "envelope");
         byte[] wire = envelope.payload();
         if (wire.length != Long.BYTES)
@@ -314,11 +321,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             Route current = active;
             if (expectedRouteEpoch != current.routeEpoch)
                 throw new SecurityException("stale proxy dispatch route epoch");
+            mailbox.requireOutstandingEnvelope(envelope, expectedRouteEpoch);
             current.physical.send(value);
             // The bridge dispatches only ONE outstanding message at a time;
             // its cumulative drain therefore acknowledges this exact prefix.
             OresFuture<Void> drained = current.physical.drain();
-            return new ProxyDrainReceipt(this, current, envelope, drained);
+            return new ProxyDrainReceipt(this, current, mailbox, envelope, drained);
         }
     }
 
