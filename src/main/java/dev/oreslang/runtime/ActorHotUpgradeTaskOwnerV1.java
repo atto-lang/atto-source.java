@@ -127,17 +127,31 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
             }
         }
         Throwable failure = null;
+        List<Runnable> notifications = new ArrayList<>();
         for (var record : records) {
             try {
-                record.result().cancel(true);
+                // Revoke EVERY owned scheduler producer before any subscriber
+                // can stall cancellation of its siblings. This is the same
+                // two-phase protocol used by the canonical TaskScope branch.
+                Runnable notify = record.result().cancelDeferredNotification();
+                if (notify != null) notifications.add(notify);
             } catch (RuntimeException | Error cancellationFailure) {
                 if (failure == null) failure = cancellationFailure;
                 else if (failure != cancellationFailure)
                     failure.addSuppressed(cancellationFailure);
             }
         }
+        for (Runnable notify : notifications) {
+            try {
+                notify.run();
+            } catch (RuntimeException | Error notificationFailure) {
+                if (failure == null) failure = notificationFailure;
+                else if (failure != notificationFailure)
+                    failure.addSuppressed(notificationFailure);
+            }
+        }
 
-        // Do not treat result.cancel() as a physical-exit receipt.
+        // Do not treat result cancellation as a physical-exit receipt.
         long deadline = System.nanoTime() + CLOSE_TIMEOUT_NANOS;
         boolean interrupted = false;
         for (var record : records) {
