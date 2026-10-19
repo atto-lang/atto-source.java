@@ -848,7 +848,7 @@ public final class UnaryTcpSessionAdapterCheck {
                 awaitTrue(() -> dispatches.get() == 2, 1000, "two pending requests");
             }
             served.get(3, TimeUnit.SECONDS);
-            check(cancellations.get() == 2,
+            awaitTrue(() -> cancellations.get() == 2, 1000,
                     "session close must attempt cancellation of every pending request");
             check(adapter.activeConnections() == 0
                             && adapter.activeGlobalWorkItems() == 0
@@ -895,6 +895,90 @@ public final class UnaryTcpSessionAdapterCheck {
         }
     }
 
+    private static void blockingCancellationCannotStallDeadlines() throws Exception {
+        CountDownLatch cancellationEntered = new CountDownLatch(1);
+        CountDownLatch releaseCancellation = new CountDownLatch(1);
+        AtomicInteger dispatches = new AtomicInteger();
+        AtomicInteger timeoutCancellations = new AtomicInteger();
+        UnaryTcpSessionAdapter.Dispatcher dispatcher = request -> {
+            int ordinal = dispatches.incrementAndGet();
+            if (ordinal == 1) {
+                return new UnaryTcpSessionAdapter.DispatchHandle() {
+                    @Override public void whenComplete(
+                            BiConsumer<? super UnaryTcpSessionAdapter.Reply,
+                                       ? super Throwable> completion) { }
+                    @Override public boolean cancel() {
+                        cancellationEntered.countDown();
+                        try {
+                            releaseCancellation.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                        return true;
+                    }
+                };
+            }
+            if (ordinal == 2) {
+                return new UnaryTcpSessionAdapter.DispatchHandle() {
+                    @Override public void whenComplete(
+                            BiConsumer<? super UnaryTcpSessionAdapter.Reply,
+                                       ? super Throwable> completion) { }
+                    @Override public boolean cancel() {
+                        timeoutCancellations.incrementAndGet();
+                        return true;
+                    }
+                };
+            }
+            TestHandle immediate = new TestHandle();
+            immediate.reply((byte) 11);
+            return immediate;
+        };
+        try (var adapter = new UnaryTcpSessionAdapter(
+                        limits(3, 16, 3, 32, 200),
+                        new BindingAuthenticator(), dispatcher);
+             var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> served = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+            try (Socket client = new Socket(
+                    InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                client.setSoTimeout(2000);
+                Binding binding = binding(client);
+                send(client, request(binding, 1, new byte[] {1}));
+                awaitTrue(() -> dispatches.get() == 1, 1000,
+                        "request whose cancellation blocks");
+                send(client, cancel(binding, 1));
+                check(cancellationEntered.await(1, TimeUnit.SECONDS),
+                        "first cancellation callback entered its blocked state");
+                send(client, request(binding, 2, new byte[] {2}));
+                UnaryTransportFrame.Envelope deadline = read(client);
+                check(deadline.kind() == UnaryTransportFrame.Kind.ERROR
+                                && deadline.correlationId() == 2,
+                        "second request deadline must fire despite blocked cancellation");
+                awaitTrue(() -> timeoutCancellations.get() == 1, 1000,
+                        "timer cancellation callback scheduled on independent worker");
+                send(client, request(binding, 3, new byte[] {3}));
+                UnaryTransportFrame.Envelope recovered = read(client);
+                check(recovered.kind() == UnaryTransportFrame.Kind.REPLY
+                                && recovered.correlationId() == 3
+                                && Arrays.equals(recovered.payload(), new byte[] {11}),
+                        "other requests still execute while cancellation callback is blocked");
+                awaitTrue(() -> adapter.activeGlobalWorkItems() == 0
+                                && adapter.activeGlobalPayloadBytes() == 0,
+                        1000, "blocked cancel callback cannot retain global admission credits");
+            } finally {
+                releaseCancellation.countDown();
+            }
+            served.get(3, TimeUnit.SECONDS);
+            check(adapter.activeConnections() == 0,
+                    "blocked cancellation must not strand connection credit");
+            check(adapter.rejectedCancellationTasks() == 0,
+                    "healthy bounded cancellation worker pool must not drop these tasks");
+        }
+    }
+
     public static void main(String[] unused) throws Exception {
         echoAndReplayFence();
         wrongBindingRejectedBeforePayloadRead();
@@ -909,6 +993,7 @@ public final class UnaryTcpSessionAdapterCheck {
         sessionCloseCancelsPending();
         adapterCloseUnblocksAuthentication();
         throwingCancellationCannotStrandCredits();
+        blockingCancellationCannotStallDeadlines();
         absoluteReadDeadlinesRejectStalledPeers();
         System.out.println("PASS: authenticated unary TCP sessions, request/response budgets, deadlines and 250 completion/cancel races");
     }
