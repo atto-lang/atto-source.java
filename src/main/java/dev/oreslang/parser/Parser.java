@@ -928,6 +928,9 @@ public final class Parser {
     }
 
     private Ast.FieldDecl parseField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        // Generic binding-kind fields bypass the type-first/colon field parsers.
+        // V3 declaration-level defaults must never silently attach to storage.
+        rejectDefaultArgValsNonCallable(annotations, "field");
         rejectCallableStructuralAnnotation(annotations, "fields");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
