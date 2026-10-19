@@ -15,9 +15,11 @@ public final class TaskAdmissionProofSmoke {
     }
 
     public static void main(String[] args) {
+        Ast.Program program = new Ast.Program(List.of());
         Ast.TaskBlockStmt boundary = new Ast.TaskBlockStmt(List.of());
 
-        TaskTransferProvenance ownership = new TaskTransferProvenance();
+        TaskTransferProvenance ownership =
+                new TaskTransferProvenance(program);
         ownership.record(
                 boundary,
                 List.of(new TaskTransferProvenance.Transfer(
@@ -26,7 +28,8 @@ public final class TaskAdmissionProofSmoke {
                         TaskTransferProvenance.TransferKind.COPY)));
         ownership.seal();
 
-        TaskSemanticAdmission semantic = new TaskSemanticAdmission();
+        TaskSemanticAdmission semantic =
+                new TaskSemanticAdmission(program);
         semantic.record(
                 boundary,
                 List.of(new TaskSemanticAdmission.Entry(
@@ -48,7 +51,8 @@ public final class TaskAdmissionProofSmoke {
                 new Ast.TaskBlockStmt(List.of())).isEmpty(),
                 "lookalike boundary has no proof");
 
-        TaskSemanticAdmission wrong = new TaskSemanticAdmission();
+        TaskSemanticAdmission wrong =
+                new TaskSemanticAdmission(program);
         wrong.record(
                 boundary,
                 List.of(new TaskSemanticAdmission.Entry(
@@ -61,6 +65,21 @@ public final class TaskAdmissionProofSmoke {
             mismatch = true;
         }
         expect(mismatch, "semantic/ownership name mismatch rejected");
+
+        TaskSemanticAdmission otherProgram =
+                new TaskSemanticAdmission(new Ast.Program(List.of()));
+        otherProgram.record(
+                boundary,
+                List.of(new TaskSemanticAdmission.Entry(
+                        "value", Types.Primitive.INT)));
+        otherProgram.seal();
+        boolean crossProgram = false;
+        try {
+            TaskAdmissionProof.combine(ownership, otherProgram);
+        } catch (IllegalArgumentException expected) {
+            crossProgram = true;
+        }
+        expect(crossProgram, "cross-program proof mixing rejected");
 
         System.out.println(
                 "TaskAdmissionProofSmoke PASS assertions=" + checked);
