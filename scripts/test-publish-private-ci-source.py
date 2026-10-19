@@ -43,7 +43,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {
                 "type": "file",
                 "encoding": "base64",
-                "sha": A,
+                "sha": pub.EXPECTED_POLICY_BLOB_SHA,
                 "content": base64.b64encode(
                     self.protected_policy).decode("ascii"),
             }
@@ -125,6 +125,27 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(pub.Denied, "invalid entry"):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_unreviewed_main_policy_blob_is_rejected_before_source_read(self):
+        original = self.fake_api
+        def changed_policy(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == (
+                    f"repos/{pub.POLICY_REPOSITORY}/contents/"
+                    f"{pub.POLICY_PATH}?ref={pub.POLICY_REF}"):
+                result = dict(result)
+                result["sha"] = "f" * 40
+            return result
+        with patch.object(pub, "gh_api", side_effect=changed_policy):
+            with patch.object(pub, "collect_source") as collect:
+                with self.assertRaisesRegex(
+                        pub.Denied, "reviewed policy blob"):
+                    pub.publish(
+                        "trusted/ci",
+                        self.source,
+                        "ci/oreslang-test",
+                        self.root)
+                collect.assert_not_called()
 
     def test_protected_policy_id_drift_aborts_before_source_read(self):
         self.protected_policy = b"trusted/ci 1412142816\n"
