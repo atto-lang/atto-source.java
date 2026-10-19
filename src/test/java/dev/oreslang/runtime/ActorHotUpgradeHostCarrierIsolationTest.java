@@ -58,9 +58,9 @@ final class ActorHotUpgradeHostCarrierIsolationTest {
         proxyHost.setAccessible(true);
         routerHost.setAccessible(true);
 
-        assertDoesNotThrow(() -> proxyHost.invoke(null),
+        assertDoesNotThrow(() -> { proxyHost.invoke(null); },
                 "ordinary host entry must remain available");
-        assertDoesNotThrow(() -> routerHost.invoke(null, "host test"),
+        assertDoesNotThrow(() -> { routerHost.invoke(null, "host test"); },
                 "ordinary host route control must remain available");
 
         // Test *carrier-only* markers; no active scheduler turn is necessary.
