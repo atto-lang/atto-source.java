@@ -31,24 +31,11 @@ final class IpcTransportSessionLease {
         PreDispatchRejectedException(String message, Throwable cause) { super(message, cause); }
     }
 
-    static final class AdmittedWrite {
-        private final IpcTransportSessionLease owner;
-        private final IpcReceiptCorrelation.Envelope message;
-        private CompletionStage<IpcReceiptCorrelation.Stage> outcome;
-        private boolean started;
-        private boolean released;
-
-        private AdmittedWrite(IpcTransportSessionLease owner,
-                              IpcReceiptCorrelation.Envelope message) {
-            this.owner = owner;
-            this.message = message;
-        }
-
-        CompletionStage<IpcReceiptCorrelation.Stage> outcome() {
-            if (outcome == null) {
-                throw new IllegalStateException("IPC write admission incomplete");
-            }
-            return outcome;
+    record WriteAttempt(
+            CompletionStage<IpcReceiptCorrelation.Stage> outcome,
+            Throwable error) {
+        WriteAttempt {
+            Objects.requireNonNull(outcome, "outcome");
         }
     }
 
@@ -126,16 +113,17 @@ final class IpcTransportSessionLease {
     }
 
     /**
-     * Owner-bound adapter path: phase check, correlation admission and dispatch
-     * commitment are one session-monitor transaction. A closing connection
-     * therefore cannot retire a correlation that was admitted only after close
-     * intent. The returned write remains physically pinned until writeAdmittedFrame.
+     * Owner-bound adapter path. OPEN/generation/epoch validation, correlation
+     * admission, dispatch commitment and physical write pinning are one
+     * lifecycle. No intermediate token can be abandoned after commitment.
      */
-    AdmittedWrite admitAndCommitFrame(
+    WriteAttempt sendPreparedFrame(
             long expectedGeneration,
-            IpcReceiptCorrelation.Envelope message) {
+            IpcReceiptCorrelation.Envelope message,
+            byte[] preparedFrame) throws IOException {
         Objects.requireNonNull(message, "message");
-        AdmittedWrite admitted = new AdmittedWrite(this, message);
+        Objects.requireNonNull(preparedFrame, "preparedFrame");
+        final CompletionStage<IpcReceiptCorrelation.Stage> outcome;
         synchronized (this) {
             if (phase != Phase.OPEN || expectedGeneration != generation
                     || !sameTrustedEpoch(message) || activeWrites >= limit) {
@@ -146,50 +134,24 @@ final class IpcTransportSessionLease {
                 throw new IllegalStateException(
                         "atomic IPC admission requires bound physical owner");
             }
-            CompletionStage<IpcReceiptCorrelation.Stage> outcome =
-                    receipts.admitAndCommit(
-                            physicalOwner, message, generation);
+            outcome = receipts.admitAndCommit(
+                    physicalOwner, message, generation);
             ++activeWrites;
-            admitted.outcome = outcome;
-            return admitted;
         }
-    }
 
-    void writeAdmittedFrame(AdmittedWrite admitted, byte[] preparedFrame)
-            throws IOException {
-        Objects.requireNonNull(admitted, "admitted");
-        Objects.requireNonNull(preparedFrame, "preparedFrame");
-        synchronized (this) {
-            if (admitted.owner != this || admitted.started || admitted.released
-                    || admitted.outcome == null || activeWrites <= 0) {
-                throw new IllegalArgumentException(
-                        "foreign/stale IPC admitted write");
-            }
-            admitted.started = true;
-        }
+        Throwable error = null;
         try {
-            writer.write(admitted.message, preparedFrame);
-        } catch (IOException | RuntimeException | Error failure) {
+            writer.write(message, preparedFrame);
+        } catch (IOException | RuntimeException failure) {
+            error = failure;
+            requestClose();
+        } catch (Error failure) {
             requestClose();
             throw failure;
         } finally {
-            releaseAdmittedWrite(admitted);
+            releaseWrite();
         }
-    }
-
-    private void releaseAdmittedWrite(AdmittedWrite admitted) {
-        boolean finalize;
-        synchronized (this) {
-            if (admitted.owner != this || admitted.released || !admitted.started
-                    || activeWrites <= 0) {
-                throw new IllegalStateException(
-                        "IPC admitted write pin underflow/stale release");
-            }
-            admitted.released = true;
-            --activeWrites;
-            finalize = beginFinalization();
-        }
-        if (finalize) scheduleFinalization();
+        return new WriteAttempt(outcome, error);
     }
 
     /**
