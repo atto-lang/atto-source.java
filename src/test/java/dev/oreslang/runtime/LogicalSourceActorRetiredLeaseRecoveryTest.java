@@ -404,4 +404,58 @@ final class LogicalSourceActorRetiredLeaseRecoveryTest {
         }
     }
 
+
+    @Test
+    void candidateBookkeepingRemovalFaultCannotUndoPublishedRoute()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration(
+                    "candidate-commit-removal-v1.ores", SOURCE);
+            var second = manager.stageActorGeneration(
+                    "candidate-commit-removal-v2.ores",
+                    SOURCE.replace(
+                            "self.count = self.count + mail.value;",
+                            "self.count = self.count + mail.value + 1;"));
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                    first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT)) {
+                var field = LogicalSourceActorRouterV1.class
+                        .getDeclaredField("retiredCandidates");
+                field.setAccessible(true);
+                @SuppressWarnings("unchecked")
+                var original = (java.util.ArrayList<Object>) field.get(router);
+                var removalAttempts = new java.util.concurrent.atomic.AtomicInteger();
+                var throwingRemoval = new java.util.ArrayList<Object>() {
+                    @Override public boolean remove(Object item) {
+                        removalAttempts.incrementAndGet();
+                        throw new OutOfMemoryError(
+                                "injected candidate bookkeeping removal after commit");
+                    }
+                };
+                field.set(router, throwingRemoval);
+                try {
+                    assertTrue(router.upgradeTo(second, WAIT),
+                            "staging bookkeeping removal is not part of publication");
+                    assertEquals(0, removalAttempts.get(),
+                            "committing a new route must never call throwing remove(Object)");
+                    assertEquals(1, throwingRemoval.size(),
+                            "the published staging entry remains as a nonowning receipt");
+                    assertEquals(2L, router.ref().routeEpoch());
+                    // Reap discards the receipt using remove(index), without
+                    // making another debit against the active generation.
+                    assertEquals(0, router.reapRetired());
+                    assertTrue(throwingRemoval.isEmpty());
+                    var pins = HotReloadManager.Generation.class
+                            .getDeclaredField("actorRoutePins");
+                    pins.setAccessible(true);
+                    assertEquals(1, pins.getInt(second),
+                            "staging receipt cleanup cannot release active code pin");
+                    assertEquals(0, pins.getInt(first));
+                } finally {
+                    original.addAll(throwingRemoval);
+                    field.set(router, original);
+                }
+            }
+        }
+    }
 }
