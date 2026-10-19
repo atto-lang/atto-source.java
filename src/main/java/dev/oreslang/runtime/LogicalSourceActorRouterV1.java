@@ -1020,6 +1020,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
 
     private static void requireBlockingHostSurface(String operation) {
         if (ActorRuntime.inActorExecution()
+                || ActorRuntime.inActorGroupMailmanExecution()
                 || ActorRuntime.isActorCarrierThread()
                 || OresScheduler.current() != null
                 || OresScheduler.isSchedulerCarrierThread()
