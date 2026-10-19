@@ -3489,12 +3489,22 @@ public final class OwnershipChecker {
         if (isMutexGuardType(concrete)) concrete = concrete.arguments().getFirst();
         if (concrete.isRecordType()) {
             Map<String, Ast.TypeRef> members = concrete.recordMembers();
+            // The type checker has already certified the static-view key set.
+            // Ownership must use precisely the *same* set, rather than any
+            // extra fields present in the structural backing object.
+            Set<String> permitted = Ast.CheckedIndexKeys.requirePlan(site);
             if (site.index() instanceof Ast.LiteralExpr literal
                     && literal.value() instanceof String key) {
-                Ast.TypeRef selected = members.get(key);
-                return selected == null ? Ast.TypeRef.inferred() : selected;
+                return permitted.contains(key) && members.containsKey(key)
+                        ? members.get(key) : Ast.TypeRef.inferred();
             }
-            return closedIndexedAlternatives(members.values());
+            List<Ast.TypeRef> candidates = new ArrayList<>(permitted.size());
+            for (String key : permitted) {
+                Ast.TypeRef type = members.get(key);
+                if (type == null) return Ast.TypeRef.inferred();
+                candidates.add(type);
+            }
+            return closedIndexedAlternatives(candidates);
         }
         if (concrete.isTupleType()) {
             List<Ast.TypeRef> slots = concrete.arguments();
@@ -3510,25 +3520,30 @@ public final class OwnershipChecker {
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw error("actor class state cannot be accessed by indexing");
             }
+            // Exact visibility comes from the type checker's checked plan.
+            // Never include a private field or a direct-call-only method in
+            // the ownership union merely because the runtime object has it.
+            Set<String> permitted = Ast.CheckedIndexKeys.requirePlan(site);
             List<ResolvedField> allFields =
                     effectiveFieldTargets(klass, concrete, new LinkedHashSet<>());
-            if (site.index() instanceof Ast.LiteralExpr literal
-                    && literal.value() instanceof String key) {
-                for (ResolvedField field : allFields) {
-                    if (!field.field().name().equals(key)) continue;
-                    return substituteType(ownershipFieldType(field.field()),
-                            genericBindings(field.owner().genericParameters(),
-                                    field.ownerType().arguments()));
-                }
-                return Ast.TypeRef.inferred();
-            }
-            List<Ast.TypeRef> alternatives = new ArrayList<>(allFields.size());
+            Map<String, Ast.TypeRef> fields = new java.util.LinkedHashMap<>();
             for (ResolvedField field : allFields) {
-                alternatives.add(substituteType(ownershipFieldType(field.field()),
+                if (!permitted.contains(field.field().name())) continue;
+                fields.put(field.field().name(), substituteType(
+                        ownershipFieldType(field.field()),
                         genericBindings(field.owner().genericParameters(),
                                 field.ownerType().arguments())));
             }
-            return closedIndexedAlternatives(alternatives);
+            if (site.index() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof String key) {
+                return permitted.contains(key) && fields.containsKey(key)
+                        ? fields.get(key) : Ast.TypeRef.inferred();
+            }
+            if (!fields.keySet().containsAll(permitted)) {
+                // An unresolved imported field is not evidence of Copy.
+                return Ast.TypeRef.inferred();
+            }
+            return closedIndexedAlternatives(fields.values());
         }
         return null;
     }
