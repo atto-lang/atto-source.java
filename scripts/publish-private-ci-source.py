@@ -96,7 +96,15 @@ def verified_child_env():
     for name in tuple(env):
         if (name in ("BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS",
                      "CDPATH", "GLOBIGNORE", "PROMPT_COMMAND",
-                     "PYTHONPATH", "PYTHONHOME")
+                     "PYTHONPATH", "PYTHONHOME",
+                     # Unreviewed proxy and root-CA overrides can redirect
+                     # authenticated GitHub metadata and private blob uploads.
+                     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                     "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+                     "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE",
+                     "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
+                     # gh must not load a caller-selected config directory.
+                     "GH_CONFIG_DIR", "XDG_CONFIG_HOME")
                 or name.startswith(("BASH_FUNC_", "GIT_", "LD_", "DYLD_"))):
             env.pop(name, None)
     env["PATH"] = SAFE_EXEC_PATH
