@@ -3553,8 +3553,25 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.IndexExpr indexed) {
-            Type receiver = receiverDispatchType(deref(typeOf(indexed.receiver(), env, generics, self)));
+            // A partially initialized explicit struct admits reads of a
+            // *proven initialized* literal field, just like dot access.
+            // A dynamic key could select any uninitialized field and must
+            // therefore fail closed until the whole aggregate is ready.
+            Env.Binding partial = indexed.receiver() instanceof Ast.NameExpr name
+                    ? env.lookup(name.name()) : null;
+            Type receiverType = partial == null
+                    ? typeOf(indexed.receiver(), env, generics, self)
+                    : partial.type();
             Type index = typeOf(indexed.index(), env, generics, self);
+            if (partial != null && partial.hasUninitializedFields()) {
+                if (!(index instanceof StringLiteral literal)
+                        || partial.isUninitialized(literal.value())) {
+                    throw new IllegalArgumentException(
+                            "cannot dynamically index a partially initialized struct; "
+                                    + "uninitialized fields: " + partial.uninitializedFields());
+                }
+            }
+            Type receiver = receiverDispatchType(deref(receiverType));
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "struct/record key");
                 if (record.members().isEmpty()) {
