@@ -157,7 +157,7 @@ public final class ThreadSafetyTraits {
 
     private static boolean has(
             Type type, Trait trait, NominalProof nominalProof, Set<Type> visiting,
-            IdentityHashMap<Type, Boolean[]> proven, int[] steps, int depth) {
+            IdentityHashMap<Type, Map<Integer, Boolean>> proven, int[] steps, int depth) {
         if (type == null || depth > MAX_TYPE_DEPTH || --steps[0] < 0) return false;
         // Active-cycle detection must precede memoization; a cached proof may
         // never turn a recursive cycle into a positive result.
@@ -183,7 +183,7 @@ public final class ThreadSafetyTraits {
 
     private static boolean derive(
             Type type, Trait trait, NominalProof nominalProof, Set<Type> visiting,
-            IdentityHashMap<Type, Boolean[]> proven, int[] steps, int depth) {
+            IdentityHashMap<Type, Map<Integer, Boolean>> proven, int[] steps, int depth) {
         if (type == Unknown.INSTANCE || type instanceof Generic
                 || type instanceof Types.Dyn
                 || type instanceof SelfType || type instanceof ClassNamespace
