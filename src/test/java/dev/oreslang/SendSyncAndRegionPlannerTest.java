@@ -32,7 +32,7 @@ final class SendSyncAndRegionPlannerTest {
         return new SendSyncTraits(new Ast.Program(
                 List.of(new Ast.ModuleDecl("send_sync", List.of(classes)))),
                 java.util.Set.of("Arc", "Weak", "Shared", "Mutex", "RwLock",
-                        "Array", "List", "InvertedArray"));
+                        "Array", "List", "InvertedArray", "Option", "Result"));
     }
 
     @Test
@@ -85,7 +85,7 @@ final class SendSyncAndRegionPlannerTest {
 
     @Test
     void errorsNameTheRequiredTraitAndDoNotGrantActorPermission() {
-        SendSyncTraits checker = traits();
+        SendSyncTraits checker = trusted();
         assertTrue(checker.isSend(t("Result", t("int"), t("String"))));
         assertFalse(checker.isSync(t("Result", t("int"), t("Cell", t("int")))));
         assertThrows(IllegalArgumentException.class, () -> checker.requireSend(t("Rc", t("int"))));
@@ -191,15 +191,20 @@ final class SendSyncAndRegionPlannerTest {
     void unloweredIntrinsicsAndUserDefinedNameSpoofingFailClosed() {
         SendSyncTraits defaultChecker = traits();
         for (String intrinsic : List.of("Arc", "Weak", "Shared", "Mutex",
-                "RwLock", "Array", "List", "InvertedArray")) {
+                "RwLock", "Array", "List", "InvertedArray", "Option")) {
             assertFalse(defaultChecker.isSend(t(intrinsic, t("int"))),
                     "unlowered " + intrinsic + " cannot claim Send");
         }
+        assertFalse(defaultChecker.isSend(t("Result", t("int"), t("int"))));
         SendSyncTraits spoofed = trusted(
                 klass("Arc", List.of("T"), field("hostPtr", t("NativeHandle"), false)),
-                klass("Mutex", List.of("T"), field("hostPtr", t("NativeHandle"), false)));
+                klass("Mutex", List.of("T"), field("hostPtr", t("NativeHandle"), false)),
+                klass("Option", List.of("T"), field("hostPtr", t("NativeHandle"), false)),
+                klass("Result", List.of("T", "E"), field("hostPtr", t("NativeHandle"), false)));
         assertFalse(spoofed.isSend(t("Arc", t("int"))));
         assertFalse(spoofed.isSync(t("Mutex", t("int"))));
+        assertFalse(spoofed.isSend(t("Option", t("int"))));
+        assertFalse(spoofed.isSend(t("Result", t("int"), t("int"))));
         assertThrows(IllegalArgumentException.class, () ->
                 new SendSyncTraits(new Ast.Program(List.of()),
                         java.util.Set.of("ForgedCompilerIntrinsic")));
