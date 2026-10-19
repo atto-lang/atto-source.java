@@ -54,11 +54,15 @@ produce real steps/logs. Zero-step Actions failures are not test runs.
 
 - `OresTaskScope.submit(AsyncRuntime.Task)` still uses its older
   lock-held runtime dispatch and needs the analogous reserved owner/seam.
-- A scheduled scalar Task may begin running before an in-flight parent
-  cancellation has been replayed at Future binding. The currently admitted
-  scalar guest path owns no borrowed region or actor state; **do not expand
-  guest Task shapes** until pre-entry cancellation checks, compiler-minted
-  scope/region tickets and safe-point cleanup are fully integrated.
+- Compiler-frame execution now checks parent-scope cancellation at each
+  resume entry. A Task cancelled while already running may continue until
+  its next legal cooperation/suspension point; no physical carrier is killed.
+  When cancellation wins before Future binding but the worker check fails
+  first, the result can be classified as a failure rather than a canonical
+  Cancelled outcome. Unifying that outcome requires scheduler-authenticated
+  cancellation markers; do not silently relabel arbitrary guest exceptions.
+  **Do not expand guest Task shapes** until compiler-minted scope/region
+  tickets, scoped cleanup and authenticated cancellation are integrated.
 - New Task scopes do not yet inherit actor/root cancellation and untrusted
   wall/fuel/tenant quotas. `task {}` for nested, detached, mutable,
   actor-owned, untrusted, or GPU execution must remain gated.
