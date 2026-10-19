@@ -1909,6 +1909,12 @@ public final class Parser {
         }
 
         consume(SELECT, "expected 'select'");
+        return parseStaticSelectBody(mode, explicitDo);
+    }
+
+    /** Share arm grammar across legacy procedural and tracked expression forms. */
+    private Ast.SelectStmt parseStaticSelectBody(
+            Ast.WaitMode mode, boolean explicitDo) {
         Ast.SelectPolicy policy = parseSelectPolicy();
         consume(LBRACE, "static select requires '{ ... }'; use 'select from cases' for dynamic select");
 
@@ -3250,7 +3256,12 @@ public final class Parser {
             boolean mutable = match(MUT);
             return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
         }
-        if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
+        if (match(AWAIT)) {
+            if (check(DO) && (checkNext(SELECT) || checkNext(NB))) {
+                throw error(peek(), "'await do select' is invalid: procedural do select is not an expression");
+            }
+            return new Ast.AwaitExpr(parseUnary());
+        }
         // Expression-level trap is a typed Option boundary; the declaration
         // modifier "trap fnc" remains a distinct grammar production.
         if (match(TRAP)) return new Ast.TrapExpr(parseUnary());
@@ -3277,7 +3288,13 @@ public final class Parser {
             }
             if (match(READCH)) return parseChannelOperation(Ast.ChannelOperation.READ, Ast.WaitMode.NONBLOCKING);
             if (match(WRITECH)) return parseChannelOperation(Ast.ChannelOperation.WRITE, Ast.WaitMode.NONBLOCKING);
-            if (match(SELECT)) return parseDynamicSelect(Ast.WaitMode.NONBLOCKING);
+            if (match(SELECT)) {
+                if (staticSelectCasesAhead()) {
+                    return new Ast.StaticSelectExpr(
+                            parseStaticSelectBody(Ast.WaitMode.NONBLOCKING, false));
+                }
+                return parseDynamicSelect(Ast.WaitMode.NONBLOCKING);
+            }
             throw error(previous(), "'nb' must prefix readch, writech, select, or cb writech");
         }
 
@@ -3369,6 +3386,22 @@ public final class Parser {
             value = parseExpression();
         }
         return new Ast.ChannelOpExpr(operation, mode, channel, value);
+    }
+
+    /** Non-consuming lookahead after the SELECT token, including policy. */
+    private boolean staticSelectCasesAhead() {
+        int index = current;
+        if (index < tokens.size()) {
+            Token token = tokens.get(index);
+            if (token.type() == FIRST
+                    || (token.type() == IDENT
+                            && (token.lexeme().equals("first")
+                                    || token.lexeme().equals("fair")
+                                    || token.lexeme().equals("random")))) {
+                index++;
+            }
+        }
+        return index < tokens.size() && tokens.get(index).type() == LBRACE;
     }
 
     private Ast.DynamicSelectExpr parseDynamicSelect(Ast.WaitMode mode) {
