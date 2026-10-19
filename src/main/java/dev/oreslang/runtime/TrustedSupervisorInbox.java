@@ -23,7 +23,8 @@ final class TrustedSupervisorInbox implements AutoCloseable {
         private final long incarnation;
         private boolean revoked;
         private boolean terminalReported;
-        private long lastSequence;
+        private long lastUserSequence;
+        private long lastControlSequence;
         private ChildBinding(TrustedSupervisorInbox origin, long childId, long incarnation) {
             this.origin = origin;
             this.childId = childId;
@@ -97,7 +98,7 @@ final class TrustedSupervisorInbox implements AutoCloseable {
         checkOpen();
         Objects.requireNonNull(payload, "immutable serialized payload");
         if (!valid(binding) || binding.terminalReported || overflowEscalation
-                || sequence <= binding.lastSequence || sequence <= 0
+                || sequence <= binding.lastUserSequence || sequence <= 0
                 || payload.length > maxEnvelopeBytes || unsettled.size() >= outstandingLimit
                 || outstandingBytes > outstandingBytesLimit - payload.length) {
             return Admission.REJECTED;
@@ -107,7 +108,7 @@ final class TrustedSupervisorInbox implements AutoCloseable {
         unsettled.put(delivery, Boolean.TRUE);
         user.addLast(delivery);
         outstandingBytes += copy.length;
-        binding.lastSequence = sequence;
+        binding.lastUserSequence = sequence;
         return Admission.ACCEPTED;
     }
 
@@ -115,7 +116,7 @@ final class TrustedSupervisorInbox implements AutoCloseable {
     synchronized Admission offerTrustedPanic(ChildBinding binding, long sequence, long faultCode) {
         checkOpen();
         if (!valid(binding) || binding.terminalReported || sequence <= 0
-                || sequence <= binding.lastSequence) return Admission.REJECTED;
+                || sequence <= binding.lastControlSequence) return Admission.REJECTED;
         if (control.size() >= controlLimit) {
             // Never claim acceptance for a lost fatal event. The runtime MUST
             // synchronously forward an authenticated overflow to the parent.
@@ -126,7 +127,7 @@ final class TrustedSupervisorInbox implements AutoCloseable {
         }
         control.addLast(new FailureNotice(binding.childId, binding.incarnation, sequence, faultCode));
         binding.terminalReported = true;
-        binding.lastSequence = sequence;
+        binding.lastControlSequence = sequence;
         return Admission.ACCEPTED;
     }
 
