@@ -398,3 +398,46 @@ No exact-head JDK25/Graal Maven tests were executed: source GitHub Actions
 continue to fail without recorded runner steps. The approved private CI
 destination list on source main remains empty and issue #962 is open. No
 cross-organization private source copy was performed. Keep #1367 DRAFT.
+
+## Compiler-ABI upgrade compatibility gate — October 19, 2026
+
+The compiler-ABI scalar SHARED proxy binds accepted immutable byte frames
+to a compiler-issued `actorMessageAbiSha256` digest for the actor's original
+receive contract. The existing route-upgrade path preserved queued frames
+but did NOT compare the new candidate actor's compiled message ABI to that
+binding. It could therefore publish a logically incompatible successor
+that receives previously admitted bytes under a different type contract.
+
+The router now checks `candidate.executor().actorMessageAbiSha256(actorTypeName)`
+against the immutable `scalarWireBinding.messageAbiSha256()` immediately
+after candidate linking and **before acquiring the candidate's code-generation
+route lease, freezing any physical actor ingress, or transferring state**.
+Mismatch fails closed. This does not run user code or allow a speculative
+candidate actor to execute on mismatched mail. The existing compatibility
+path for a behavior change with an identical message type remains allowed.
+
+The new real source-compiled `SourceActorUpgradeMessageAbiGateTest` stages
+an `ActorMail<int>` Counter and a well-formed `ActorMail<string>` Counter,
+verifies the compiler-issued ABI digests differ, then attempts the invalid
+upgrade under a genuine proxy freeze ticket with old mail queued.
+It checks the request is rejected without changing logical identity, epoch,
+ticket ownership, or mailbox credits. After the legitimate freeze is rolled
+back, the queued old-frame message still executes on the original actor and
+produces the expected result, and the rejected candidate can retire without
+a leaked route pin. The integration regression is committed but NOT verified
+by Maven/JDK25/Graal due to runner-admission failures.
+
+Local limited execution: the exact unchanged production
+`SourceActorScalarWireV1.java` Git blob `31f99f4be4531c8c16f3a5a69ead3f7ee37e6832`
+was copied into a local ephemeral Java 21 test workspace and independently
+checked with `git hash-object`. `javac --release 21 -Xlint:all -Werror`
+compiled it, and an isolated executable codec harness passed **240,001**
+round-trip, canonical-byte-length and incompatible-ABI rejection assertions.
+This verifies the **real wire codec only**; it does not compile or execute the
+actor compiler, hot-upgrade router, or JUnit integration test.
+
+Private cross-org Git-tree mirroring remains prohibited: source main's
+reviewed destination allowlist is EMPTY and issue #962 is unresolved.
+The latest inspected source Actions have failed without job steps, and issue
+#904's independent required-check/branch-protection gate also remains open.
+Keep the PR DRAFT and production hot reload disabled.
