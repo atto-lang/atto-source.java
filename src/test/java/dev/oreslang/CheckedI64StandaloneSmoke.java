@@ -16,6 +16,8 @@ import java.util.Random;
 public final class CheckedI64StandaloneSmoke {
     private static final BigInteger MIN = BigInteger.valueOf(Long.MIN_VALUE);
     private static final BigInteger MAX = BigInteger.valueOf(Long.MAX_VALUE);
+    // Pin coverage so silently removed loops cannot report a false green.
+    private static final int EXPECTED_CHECKS = 37_555;
     private static int checks;
 
     private CheckedI64StandaloneSmoke() {}
@@ -102,6 +104,16 @@ public final class CheckedI64StandaloneSmoke {
             long right = i % 97 == 0 ? 0L : pairs.nextLong();
             for (char operator : operators) pair(operator, left, right);
         }
+        // Uniform 64-bit products mostly overflow; a second independent
+        // bounded distribution exercises successful multiplies and remainder
+        // across positive, negative and zero operands.
+        Random bounded = new Random(0x5a4c13dbL);
+        for (int i = 0; i < 4096; i++) {
+            long left = bounded.nextInt(1_000_001) - 500_000L;
+            long right = i % 47 == 0 ? 0L
+                    : bounded.nextInt(1_000_001) - 500_000L;
+            for (char operator : operators) pair(operator, left, right);
+        }
         Random unary = new Random(0x459a113L);
         for (int i = 0; i < 4096; i++) negate(unary.nextLong());
         require(CheckedI64Arithmetic.binary('%', Long.MIN_VALUE, -1L) == 0L,
@@ -115,6 +127,9 @@ public final class CheckedI64StandaloneSmoke {
                     "unsupported operator mislabeled as overflow");
             checks++;
         }
+        require(checks == EXPECTED_CHECKS,
+                "standalone test vector coverage changed: " + checks
+                        + " expected " + EXPECTED_CHECKS);
         System.out.println("CHECKED_I64_STANDALONE|checks=" + checks + "|passed=" + checks
                 + "|failed=0|scope=pure-jvm");
     }
