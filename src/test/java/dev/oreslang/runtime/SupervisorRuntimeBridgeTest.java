@@ -90,4 +90,16 @@ final class SupervisorRuntimeBridgeTest {
             assertTrue(inbox.needsParentEscalation());
         }
     }
+    @Test
+    void foreignRuntimeActorRefIsRejectedBeforeSupervisorAuthorityIsMinted() {
+        try (var runtime = new ActorRuntime();
+             var foreign = new ActorRuntime();
+             var inbox = new TrustedSupervisorInbox(4, 8, 4096, 1024);
+             var bridge = new SupervisorRuntimeBridge(runtime, inbox, notice -> true)) {
+            var child = foreign.<String>spawnShared(() -> (message, context) -> {});
+            assertThrows(IllegalArgumentException.class, () -> bridge.register(child));
+            child.stop();
+        }
+    }
+
 }
