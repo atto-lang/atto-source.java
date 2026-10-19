@@ -108,6 +108,40 @@ public final class IpcReceiptCorrelationSelfTest {
         check(evolving.retireTransportLost(upgraded).size() == 1);
         check(evolving.invariant());
 
+        // A stale socket-close notification must not retire a new route or
+        // capability generation which reused exactly the same session text.
+        var epochs = new IpcReceiptCorrelation(3);
+        var previous = env(1, "reused");
+        var current = new IpcReceiptCorrelation.Envelope(
+                "tenant", "sender", "worker", "reused", "a".repeat(64),
+                1, 2, 4, 5, 2, 2);
+        epochs.admit(previous);
+        epochs.commitDispatch(previous);
+        epochs.admit(current);
+        epochs.commitDispatch(current);
+        var previousLoss = epochs.retireTransportLost(previous);
+        check(previousLoss.size() == 1);
+        check(previousLoss.get(0).envelope().equals(previous));
+        check(epochs.counters().equals(new IpcReceiptCorrelation.Counters(1, 1)));
+        check(epochs.retireTransportLost(previous).isEmpty());
+        epochs.acceptVerified(current, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+        epochs.acceptVerified(current, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+        check(epochs.counters().equals(new IpcReceiptCorrelation.Counters(0, 0)));
+        check(epochs.invariant());
+
+        // Incarnation fencing must also hold when a textual session label is
+        // reused in a fresh correlation ledger after an actor restart.
+        var newActor = new IpcReceiptCorrelation(1);
+        var restarted = new IpcReceiptCorrelation.Envelope(
+                "tenant", "sender", "worker", "reused", "a".repeat(64),
+                2, 3, 1, 1, 1, 1);
+        newActor.admit(restarted);
+        newActor.commitDispatch(restarted);
+        check(newActor.retireTransportLost(previous).isEmpty());
+        check(newActor.counters().equals(new IpcReceiptCorrelation.Counters(1, 1)));
+        check(newActor.retireTransportLost(restarted).size() == 1);
+        check(newActor.invariant());
+
         var racing = new IpcReceiptCorrelation(1);
         var raceMessage = env(1, "session");
         racing.admit(raceMessage);
