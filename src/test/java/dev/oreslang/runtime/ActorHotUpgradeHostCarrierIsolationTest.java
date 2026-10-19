@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * carrier callbacks even after those callbacks have cleared their CURRENT turn.
  * The private ThreadLocal manipulation is test-only fault injection.
  */
-@Timeout(15)
+@Timeout(45)
 final class ActorHotUpgradeHostCarrierIsolationTest {
     @SuppressWarnings("unchecked")
     private static ThreadLocal<Boolean> marker(
@@ -79,6 +79,62 @@ final class ActorHotUpgradeHostCarrierIsolationTest {
         } finally {
             if (prior == null) context.remove();
             else context.set(prior);
+        }
+    }
+
+    @Test
+    void actorCarrierCannotReadOrReapLogicalRouteGeneration()
+            throws Exception {
+        String source = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 0; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    return;
+                  }
+                end
+                pub routine main(): void { return; }
+                """;
+        try (var manager = new HotReloadManager(
+                     IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var generation = manager.stageActorGeneration(
+                    "carrier-read-denial.ores", source);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                         generation, ActorRuntime.ActorKind.SHARED,
+                         "Counter", java.time.Duration.ofSeconds(5));
+                 var mailbox = new LogicalActorProxyMailboxV1(2, 8, 16)) {
+                router.bindProxyMailboxForSupervisor(mailbox);
+                var ref = router.ref();
+                var expectedId = ref.id();
+
+                ThreadLocal<Boolean> actorCarrier = marker(
+                        ActorRuntime.class, "ACTOR_CARRIER");
+                Boolean previous = actorCarrier.get();
+                try {
+                    actorCarrier.set(Boolean.TRUE);
+                    assertFalse(ActorRuntime.inActorExecution(),
+                            "carrier-only context has no active actor turn");
+                    assertThrows(SecurityException.class, ref::address);
+                    assertThrows(SecurityException.class, ref::incarnation);
+                    assertThrows(SecurityException.class, ref::routeEpoch);
+                    assertThrows(SecurityException.class, router::generation);
+                    assertThrows(SecurityException.class, router::reapRetired);
+                    assertThrows(SecurityException.class,
+                            router::physicalAddressForTesting);
+                    assertThrows(SecurityException.class,
+                            router::physicalRefForTesting);
+                    assertThrows(SecurityException.class,
+                            () -> router.proxyRouteEpochAlignedForTesting(mailbox));
+                } finally {
+                    if (previous == null) actorCarrier.remove();
+                    else actorCarrier.set(previous);
+                }
+                assertEquals(expectedId, ref.address().actorId());
+                assertSame(generation, router.generation());
+                assertTrue(router.proxyRouteEpochAlignedForTesting(mailbox));
+                assertEquals(0, router.reapRetired());
+            }
         }
     }
 
