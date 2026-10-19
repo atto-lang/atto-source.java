@@ -45,7 +45,7 @@ public final class TypeChecker {
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Mutex",
-            "SharedMutex", "Channel", "Future", "Fnc", "Function");
+            "SharedMutex", "Channel", "Future", "Task", "Fnc", "Function");
 
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
@@ -187,7 +187,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future", "Task",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -3693,7 +3693,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.AwaitExpr awaited) {
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named
-                    && named.name().equals("Future")
+                    && (named.name().equals("Future") || named.name().equals("Task"))
                     && named.arguments().size() == 1) {
                 return named.arguments().getFirst();
             }
@@ -3898,6 +3898,14 @@ public final class TypeChecker {
                 }
             }
             return new Record(members, object.inferredStruct());
+        }
+        if (expr instanceof Ast.TaskExpr task) {
+            // A child Task executes in its own logical continuation. The
+            // ownership pass enforces captured Send values and move semantics;
+            // the body is type-checked as a separate void-returning callable.
+            Env child = new Env(env);
+            checkCallableBlock(task.body(), child, generics, Primitive.VOID, self);
+            return new Named("Task", List.of(Primitive.VOID));
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -5101,7 +5109,7 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("Iterator")
+                || named.name().equals("Future") || named.name().equals("Task") || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
@@ -8143,12 +8151,14 @@ public final class TypeChecker {
                 validateChannelPayloadType(element, "Channel<T>");
                 yield new Named("Channel", List.of(element));
             }
-            case "Future" -> {
-                if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
+            case "Future", "Task" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(ref.name() + " requires exactly one explicit type argument");
+                }
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
-                // Future<void> is the canonical completion type for nb writech.
-                // OresFuture supports a null terminal payload, so void is valid here.
-                yield new Named("Future", List.of(element));
+                // Task<void> is the Phase-1 completion type for nb { ... }.
+                // Both Task/Future currently lower to an OresFuture handle.
+                yield new Named(ref.name(), List.of(element));
             }
             case "Generator", "AsyncGenerator", "Iterator", "AsyncIterator", "IteratorResult" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
