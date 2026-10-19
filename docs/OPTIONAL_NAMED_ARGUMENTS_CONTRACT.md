@@ -998,3 +998,26 @@ An ordinary `CallExpr` is already executable via the existing interpreter;
 a new GraalVM regression uses identical source for full admission and
 normal guest runtime execution, expecting output `42`. All seven source JUnit
 methods remain unverified until the exact-head suite runs on a real runner.
+
+
+### Direct-call proof excludes generic applications and spreads
+
+The compiler-issued `VerifiedDirectModuleCall` baseline is intentionally
+limited to a monomorphic, fixed-slot, positional `Ast.CallExpr`. Even after
+the real TypeChecker and OwnershipChecker succeed, an explicit generic
+application (`typeArgumentsPresent`, including an explicit empty marker)
+and an argument `Ast.SpreadExpr` require *separate* source-to-formal
+instantiation, pack-expansion, and ownership evidence.
+
+`requirePlainPositionalCallShape` therefore rejects those AST shapes
+before issuing the ordinary-call identity. A package-local JUnit source
+suite covers normal positional arguments, explicit type applications and
+spread/mixed argument items. This is a conservative limitation of this
+proof, not a language-wide ban on generic calls or spreads. The staged
+named/optional path remains non-executable.
+
+A local **source-free** Java 21 stand-in smoke reproduced the guard and
+passed 50,000 seeded generated shapes (6,206 admitted and 43,794 rejected).
+It is not compiled JDK25 project source, Maven/JUnit, or a compiler runtime
+conformance result. The exact-tree suite remains pending a working,
+independently authorized private Actions destination.
