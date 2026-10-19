@@ -54,6 +54,68 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void realCompiledSharedActorUpgradeWaitsForSuspendedPinnedTask()
+            throws Exception {
+        try (HotReloadManager manager =
+                     new HotReloadManager(IsolatePolicy.developer(),
+                             ExecutionProfile.serverJit());
+             OresScheduler scheduler = new OresScheduler(1)) {
+            var first = manager.stageActorGeneration("task-pinned-v1.ores", V1);
+            var candidate = manager.stageActorGeneration("task-pinned-v2.ores", V2);
+            try (var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
+                    first, "Counter", WAIT, 4, 8, 32)) {
+                var identity = bridge.address();
+                bridge.admitLong(41L);
+                assertTrue(bridge.dispatchOne(WAIT));
+                assertEquals(42L, next(bridge));
+
+                var release = new OresFuture<Integer>();
+                var suspended = new java.util.concurrent.CountDownLatch(1);
+                var turns = new java.util.concurrent.atomic.AtomicInteger();
+                var task = bridge.startHostPinnedTaskForUpgrade(
+                        scheduler, resume -> {
+                            turns.incrementAndGet();
+                            if (resume.initial()) {
+                                suspended.countDown();
+                                return OresScheduler.await(release);
+                            }
+                            assertNull(resume.failure());
+                            return OresScheduler.done((Integer) resume.value());
+                        });
+                assertTrue(suspended.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+                // The real actor is idle, but the old compiled source context
+                // still has a generation-pinned suspended Task. A checkpoint
+                // must NOT confuse idle mailbox with physical quiescence.
+                assertFalse(bridge.upgradeTo(candidate, WAIT));
+                assertEquals(identity, bridge.address());
+                assertFalse(bridge.failSealed(),
+                        "busy old generation is a retryable refusal, not corruption");
+
+                // Old source actor remains authoritative after rollback.
+                bridge.admitLong(1L);
+                assertTrue(bridge.dispatchOne(WAIT));
+                assertEquals(43L, next(bridge));
+
+                release.completeFromRuntime(7);
+                assertEquals(7, task.get(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertEquals(2, turns.get(),
+                        "resume must retain original Task pin, not admit a new one");
+
+                // Now physical Task exit allows one verified source-code route
+                // transaction. Logical identity/state survive the migration.
+                assertTrue(bridge.upgradeTo(candidate, WAIT));
+                assertEquals(identity.actorId(), bridge.address().actorId());
+                assertEquals(identity.incarnation(), bridge.address().incarnation());
+                assertEquals(identity.routeEpoch() + 1, bridge.address().routeEpoch());
+                bridge.admitLong(-2L);
+                assertTrue(bridge.dispatchOne(WAIT));
+                assertEquals(45L, next(bridge));
+            }
+        }
+    }
+
+    @Test
     void realSourceActorDrainsProxyDeliveryBeforeRefundingCredits()
             throws Exception {
         try (HotReloadManager manager =
