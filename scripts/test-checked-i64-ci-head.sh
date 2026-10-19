@@ -24,4 +24,13 @@ if (cd "$repo" && EXPECTED_SOURCE_SHA="$head" bash "$script" >/dev/null 2>&1); t
 git -C "$repo" checkout -- source.txt
 printf 'untracked source\n' > "$repo/untracked.ores"
 if (cd "$repo" && EXPECTED_SOURCE_SHA="$head" bash "$script" >/dev/null 2>&1); then echo 'FAIL: untracked checkout admitted' >&2; exit 1; fi
-printf '5/5 checked-i64 exact-checkout source-free cases passed\n'
+rm -f "$repo/untracked.ores"
+printf 'target/\n' > "$repo/.gitignore"
+git -C "$repo" add .gitignore
+git -C "$repo" commit -qm 'ignore build outputs'
+head="$(git -C "$repo" rev-parse HEAD)"
+(cd "$repo" && EXPECTED_SOURCE_SHA="$head" bash "$script" >/dev/null)
+mkdir -p "$repo/target/classes"
+printf 'injected bytecode\n' > "$repo/target/classes/Injected.class"
+if (cd "$repo" && EXPECTED_SOURCE_SHA="$head" bash "$script" >/dev/null 2>&1); then echo 'FAIL: ignored build artifact admitted' >&2; exit 1; fi
+printf '7/7 checked-i64 exact-checkout source-free cases passed\n'
