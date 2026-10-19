@@ -290,3 +290,54 @@ cross-organization mirror, security issue #962 remains open, and
 source-owned workflows have failed without job execution steps.
 No private source was transferred or copied to another organization.
 Production hot reload and PR merge remain blocked.
+
+## Pre-return physical actor registration ownership — unresolved integration gate
+
+A source-runtime admission audit found that if an ActorCell registry
+insertion succeeds but throws, and the subsequent rollback removal throws
+**before** deleting that exact entry, a logical supervisor previously had
+no returned ActorRef. It could treat the candidate as never physically
+admitted and prematurely close the code-generation route lease.
+
+`ActorRuntime.spawnInternal` now distinguishes *verified absence* from
+an unresolved registration. A remaining exact ActorCell retains its actor
+slot and physical-finalization marker remains false; only absence and
+successful unregistered-cell teardown permit a pre-return finalization
+marker. Trusted source-actor callers can use a new package-level
+`onAllocated` callback to receive the physical ActorRef before
+restoration/registry admission, and the source transfer API exposes a
+matching package-level handoff parameter.
+
+Commit `4f6e880edc7027c974a224dbac0d0f6815a3db56` makes the
+runtime-side change. New real-source JUnit
+`ActorRuntimePreReturnAdmissionQuarantineTest`, commit
+`a139e68da3114ae4bb447ee476d6903f2f9e2f11`, exercises a
+source-compiled actor whose registry inserts then throws, while removal
+throws before changing the collection. It expects the exact preallocated
+ActorRef to remain observable, the original slot to remain counted,
+no premature physical finalization, and eventual exact stop/reap.
+
+**Important incomplete integration:** Attempts to modify
+`LogicalSourceActorRouterV1` to pass the new pre-registration callback
+for both initial spawn and staged upgrade were blocked by the connected
+GitHub operation. Therefore that router still invokes the legacy
+four-argument source spawn and two-argument transfer spawn. The test
+exercises the **runtime overload directly**, not the production
+`LogicalSourceActorRouterV1.spawn()` or
+`SupervisorUpgradeTxn` caller. A source router may still lose a
+generation pin if the runtime leaves an unreturned registered actor,
+so this is a **release blocker, not a certified fix**.
+
+A source-free Java 21 ownership model at
+`/mnt/data/oreslang_admission_pre_return/AdmissionProtocolOracle.java`
+compiled with `javac --release 21 -Xlint:all -Werror` and passed
+323,000 assertions including 1,000 four-worker retirement races. This
+model is separate from the private production runtime. The real JUnit
+has not run. Source-owned GitHub workflows continue to report zero
+executed job steps; the protected source private-CI destination list
+contains no approved destinations and security issue #962 is still open.
+
+Until the router handoff is completed, verified, and authorized
+exact-head JDK25/Maven/Graal CI executes, keep PR #1367 draft and
+production hot reload disabled. Do not substitute the source-free
+model for a production execution receipt.
