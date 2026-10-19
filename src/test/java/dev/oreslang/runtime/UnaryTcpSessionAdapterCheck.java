@@ -37,16 +37,30 @@ public final class UnaryTcpSessionAdapterCheck {
     private static final class BlockingDuplexSocket extends Socket {
         private final Object monitor = new Object();
         private final byte[] inbound;
+        private final int perByteDelayMillis;
         private int inboundIndex;
         private boolean closed;
 
         BlockingDuplexSocket(byte[] inbound) {
+            this(inbound, 0);
+        }
+
+        BlockingDuplexSocket(byte[] inbound, int perByteDelayMillis) {
             this.inbound = inbound.clone();
+            this.perByteDelayMillis = perByteDelayMillis;
         }
 
         private final InputStream input = new InputStream() {
             @Override public int read() throws IOException {
                 synchronized (monitor) {
+                    if (inboundIndex < inbound.length && perByteDelayMillis > 0) {
+                        try { monitor.wait(perByteDelayMillis); }
+                        catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IOException("fake socket drip interrupted", interrupted);
+                        }
+                    }
+                    if (closed) return -1;
                     if (inboundIndex < inbound.length)
                         return Byte.toUnsignedInt(inbound[inboundIndex++]);
                     while (!closed) {
@@ -795,6 +809,44 @@ public final class UnaryTcpSessionAdapterCheck {
         }
     }
 
+    private static void absoluteReadDeadlinesRejectStalledPeers() throws Exception {
+        for (int mode = 0; mode < 3; mode++) {
+            boolean stalledAuthentication = mode == 0;
+            byte[] inbound = mode == 0 ? new byte[0]
+                    : mode == 1 ? new byte[] {0, 0, 0, 26, 1}
+                    : UnaryTransportFrame.encodeTcp(new UnaryTransportFrame.Envelope(
+                            UnaryTransportFrame.Kind.REQUEST, 1, 1, 1, new byte[0]));
+            // Mode 2 continuously trickles bytes, rather than ever blocking for
+            // the configured per-read SO_TIMEOUT duration.
+            BlockingDuplexSocket socket = new BlockingDuplexSocket(
+                    inbound, mode == 2 ? 45 : 0);
+            AtomicInteger dispatches = new AtomicInteger();
+            UnaryTcpSessionAdapter.Authenticator auth = (connection, id, generation) -> {
+                if (stalledAuthentication) connection.getInputStream().read();
+                return new UnaryTcpSessionAdapter.PeerIdentity("peer:absolute-deadline");
+            };
+            UnaryTcpSessionAdapter.Dispatcher dispatcher = request -> {
+                dispatches.incrementAndGet();
+                return new TestHandle();
+            };
+            var limits = new UnaryTcpSessionAdapter.Limits(
+                    1, 1, 8, 1, 8, 1024, 120, 1000, 1000);
+            try (var adapter = new UnaryTcpSessionAdapter(limits, auth, dispatcher);
+                 var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                Future<?> served = pool.submit(() -> adapter.serve(socket));
+                served.get(2, TimeUnit.SECONDS);
+                check(socket.isClosed(),
+                        "absolute deadline must close stalled or trickling socket: " + mode);
+                check(dispatches.get() == 0,
+                        "timeout must not dispatch an incomplete authenticated request: " + mode);
+                check(adapter.activeConnections() == 0
+                                && adapter.activeGlobalWorkItems() == 0
+                                && adapter.activeGlobalPayloadBytes() == 0,
+                        "absolute deadline must release connection budgets: " + mode);
+            }
+        }
+    }
+
     public static void main(String[] unused) throws Exception {
         echoAndReplayFence();
         wrongBindingRejectedBeforePayloadRead();
@@ -808,6 +860,7 @@ public final class UnaryTcpSessionAdapterCheck {
         sessionCloseCancelsPending();
         adapterCloseUnblocksAuthentication();
         throwingCancellationCannotStrandCredits();
+        absoluteReadDeadlinesRejectStalledPeers();
         System.out.println("PASS: authenticated unary TCP sessions, request/response budgets, deadlines and 250 completion/cancel races");
     }
 }
