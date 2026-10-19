@@ -107,6 +107,42 @@ final class TaskBorrowCompilerBridgeTest {
         assertEquals(0, ledger.activeClaims());
     }
 
+    @Test void typeCannotChangeWithoutStructuralGenerationBarrier() {
+        var ledger = new TaskAccessVerifier();
+        var initial = TaskBorrowCompilerBridge.admitResolvedScalars(
+                ledger, List.of(read(place())), p -> Ast.TypeRef.simple("int"));
+        assertThrows(IllegalStateException.class, () ->
+                TaskBorrowCompilerBridge.admitResolvedScalars(
+                        ledger, List.of(read(place())), p -> Ast.TypeRef.simple("bool")));
+        ledger.quiescent(initial);
+        // Even after a child leaves, the allocation is still generation 1.
+        assertThrows(IllegalStateException.class, () ->
+                TaskBorrowCompilerBridge.admitResolvedScalars(
+                        ledger, List.of(read(place())), p -> Ast.TypeRef.simple("bool")));
+        ledger.structuralBarrier(ROOT, 2);
+        var updated = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("PROCESS", 101, 2, true));
+        var ticket = TaskBorrowCompilerBridge.admitResolvedScalars(
+                ledger, List.of(read(updated)), p -> Ast.TypeRef.simple("bool"));
+        ledger.quiescent(ticket);
+        ledger.finishScope();
+    }
+
+    @Test void conflictingTypesInOneSubmissionDoNotReserveClaims() {
+        var ledger = new TaskAccessVerifier();
+        var counter = new AtomicInteger();
+        var identicalClaims = List.of(read(place()), read(place()));
+        assertThrows(IllegalStateException.class, () ->
+                ledger.admitTyped(List.of(
+                        new TaskAccessVerifier.TypedClaim(identicalClaims.get(0), Types.Primitive.INT),
+                        new TaskAccessVerifier.TypedClaim(identicalClaims.get(1), Types.Primitive.BOOL)),
+                        (type, trait) -> false,
+                        p -> counter.getAndIncrement() == 0
+                                ? Types.Primitive.INT : Types.Primitive.BOOL));
+        assertEquals(0, ledger.activeChildren());
+        assertEquals(0, ledger.activeClaims());
+    }
+
     @Test void failedLaterTypeLookupDoesNotCommitAnyEarlierClaim() {
         var ledger = new TaskAccessVerifier();
         var second = TaskAccessVerifier.Place.whole(
