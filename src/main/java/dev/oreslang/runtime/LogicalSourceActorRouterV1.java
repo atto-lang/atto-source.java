@@ -314,6 +314,10 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 LogicalActorProxyMailboxV1.Envelope exactEnvelope,
                 Duration timeout)
                 throws InterruptedException, ExecutionException, TimeoutException {
+            // The physical terminal Future may suspend indefinitely. An
+            // opaque receipt must never become a backdoor blocking API for a
+            // guest actor, scheduler terminal callback or async carrier.
+            requireBlockingHostSurface("await physical proxy mail completion");
             Objects.requireNonNull(timeout, "timeout");
             if (timeout.isZero() || timeout.isNegative())
                 throw new IllegalArgumentException("drain deadline must be positive");
