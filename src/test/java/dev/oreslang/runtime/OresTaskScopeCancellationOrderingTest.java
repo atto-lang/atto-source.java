@@ -17,10 +17,20 @@ final class OresTaskScopeCancellationOrderingTest {
     private static void ownSyntheticTask(
             OresTaskScope scope, OresFuture<Integer> completion)
             throws Exception {
+        // Canonical scope owns a pre-reserved slot, not the Task reference.
+        // A synthetic fixture must obey the same ownership representation.
+        Class<?> slotType = Class.forName(
+                "dev.oreslang.runtime.OresTaskScope$OwnershipSlot");
+        var constructor = slotType.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        Object slot = constructor.newInstance();
+        Field task = slotType.getDeclaredField("task");
+        task.setAccessible(true);
+        task.set(slot, new OresTask<>(
+                completion, OresFuture.completed(null)));
         Field tasks = OresTaskScope.class.getDeclaredField("tasks");
         tasks.setAccessible(true);
-        ((Set<OresTask<?>>) tasks.get(scope)).add(
-                new OresTask<>(completion, OresFuture.completed(null)));
+        ((Set<Object>) tasks.get(scope)).add(slot);
     }
 
     @Test
