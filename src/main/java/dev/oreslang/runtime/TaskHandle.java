@@ -216,11 +216,15 @@ public final class TaskHandle<T> {
             synchronized (resumeBoundaryLock) {
                 inResume = false;
             }
-            // Completing one resume, including its synchronous finally
-            // clauses, is an explicit cancellation checkpoint. The scheduler
-            // will observe the terminal phase and never admit another turn.
+            // A completed guest resume is a cancellation checkpoint. Throw
+            // the authenticated runtime marker instead of reaching into the
+            // source Future: inline runtime schedulers may complete a guest
+            // turn before TaskHandle.start() has even bound that Future.
+            // The scheduler will make the Future genuinely cancelled before
+            // any next resume is admitted, and after Java finally cleanup.
             if (returnedNormally && cancellation.isCancelled()) {
-                cancelResultIfBound();
+                throw new CancelledAtResume(
+                        cancellation, OresScheduler.currentTaskDomain());
             }
         }
     }
