@@ -258,6 +258,30 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         }
     }
 
+    /**
+     * Host-only acceptance seam: launch a physically pinned scheduler frame
+     * against the currently authoritative source actor under routeLock.
+     * Route observation and ActorRuntime Task-pin admission linearize before
+     * an upgrade may freeze or replace this physical actor. A resumed await
+     * retains this pin until the scheduler's physical quiescence callback.
+     *
+     * This is NOT source task {} lowering or scheduler/code-domain attestation;
+     * compiler-owned TaskScope and actor-affinity gates are still required.
+     */
+    <T> OresFuture<T> startHostPinnedTaskForUpgrade(
+            OresScheduler scheduler, OresScheduler.Task<T> frame) {
+        requireBlockingHostSurface("start pinned source actor Task proof");
+        Objects.requireNonNull(scheduler, "scheduler");
+        Objects.requireNonNull(frame, "frame");
+        synchronized (routeLock) {
+            awaitUpgradeLocked();
+            requireOpenLocked();
+            reapRetiredLocked();
+            return ActorHotUpgradeTaskBridgeV1.startPinned(
+                    active.view.runtime(), active.physical, scheduler, frame);
+        }
+    }
+
     public HotReloadManager.Generation generation() {
         synchronized (routeLock) {
             requireOpenLocked();
