@@ -1746,6 +1746,10 @@ public final class TypeChecker {
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
+            if (binding.kind() == Ast.BindingKind.CONST) {
+                Object constant = constantIndexKey(binding.initializer(), env);
+                if (constant != null) env.rememberIndexKey(binding.name(), constant);
+            }
             return;
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
@@ -3563,9 +3567,11 @@ public final class TypeChecker {
                     ? typeOf(indexed.receiver(), env, generics, self)
                     : partial.type();
             Type index = typeOf(indexed.index(), env, generics, self);
+            String knownStringKey = index instanceof StringLiteral literal
+                    ? literal.value() : constantStringIndexKey(indexed.index(), env);
             if (partial != null && partial.hasUninitializedFields()) {
-                if (!(index instanceof StringLiteral literal)
-                        || partial.isUninitialized(literal.value())) {
+                if (knownStringKey == null
+                        || partial.isUninitialized(knownStringKey)) {
                     throw new IllegalArgumentException(
                             "cannot dynamically index a partially initialized struct; "
                                     + "uninitialized fields: " + partial.uninitializedFields());
@@ -3587,11 +3593,14 @@ public final class TypeChecker {
                 if (fields.isEmpty()) {
                     throw new IllegalArgumentException("record exposes no indexable data fields");
                 }
-                if (index instanceof StringLiteral key && !fields.containsKey(key.value())) {
-                    throw new IllegalArgumentException("unknown structural field '" + key.value() + "'");
+                if (knownStringKey != null && !fields.containsKey(knownStringKey)) {
+                    throw new IllegalArgumentException("unknown structural field '" + knownStringKey + "'");
                 }
-                Ast.CheckedIndexKeys.record(indexed, fields.keySet());
-                if (index instanceof StringLiteral key) return fields.get(key.value());
+                // A proven immutable key narrows the static result and runtime
+                // visibility proof to exactly one selected field.
+                Ast.CheckedIndexKeys.record(indexed, knownStringKey == null
+                        ? fields.keySet() : Set.of(knownStringKey));
+                if (knownStringKey != null) return fields.get(knownStringKey);
                 return indexedElementUnion(fields.values());
             }
             if (receiver instanceof Named named) {
@@ -3617,19 +3626,20 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 "class '" + klass.name() + "' exposes no indexable fields");
                     }
-                    if (index instanceof StringLiteral key && !visible.containsKey(key.value())) {
+                    if (knownStringKey != null && !visible.containsKey(knownStringKey)) {
                         throw new IllegalArgumentException(
-                                "unknown or inaccessible class field '" + key.value() + "'");
+                                "unknown or inaccessible class field '" + knownStringKey + "'");
                     }
-                    Ast.CheckedIndexKeys.record(indexed, visible.keySet());
-                    if (index instanceof StringLiteral key) return visible.get(key.value());
+                    Ast.CheckedIndexKeys.record(indexed, knownStringKey == null
+                            ? visible.keySet() : Set.of(knownStringKey));
+                    if (knownStringKey != null) return visible.get(knownStringKey);
                     return indexedElementUnion(visible.values());
                 }
             }
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
             if (receiver instanceof Tuple tuple) {
-                Long constant = constantTupleIndex(indexed.index());
+                Long constant = constantTupleIndex(indexed.index(), env);
                 if (constant != null) {
                     if (constant < 0 || constant >= tuple.elements().size()) {
                         throw new IllegalArgumentException(
@@ -6307,16 +6317,32 @@ public final class TypeChecker {
                 .reduce(Types::unionOf).orElse(Unknown.INSTANCE);
     }
 
-    /** Folds trivial signed integer literals without performing guest arithmetic. */
-    private Long constantTupleIndex(Ast.Expr expression) {
-        if (expression instanceof Ast.LiteralExpr literal
-                && literal.value() instanceof Long index) return index;
-        if (expression instanceof Ast.UnaryExpr unary
-                && unary.operator().equals("-")
-                && unary.operand() instanceof Ast.LiteralExpr literal
-                && literal.value() instanceof Long index) {
-            if (index == Long.MIN_VALUE) return null;
-            return -index;
+    /**
+     * Only immutable bindings initialized from scalar literals (or another
+     * proven immutable alias) are folded. Never speculate on a runtime
+     * parameter, mutable binding, function call, or host-derived value.
+     */
+    private static Object constantIndexKey(Ast.Expr expr, Env env) {
+        if (expr instanceof Ast.LiteralExpr literal
+                && (literal.value() instanceof String || literal.value() instanceof Long)) {
+            return literal.value();
+        }
+        if (expr instanceof Ast.NameExpr name) return env.constantIndexKey(name.name());
+        return null;
+    }
+
+    private static String constantStringIndexKey(Ast.Expr expr, Env env) {
+        Object value = constantIndexKey(expr, env);
+        return value instanceof String key ? key : null;
+    }
+
+    /** Folds proven integer literals and immutable aliases without guest arithmetic. */
+    private Long constantTupleIndex(Ast.Expr expression, Env env) {
+        Object value = constantIndexKey(expression, env);
+        if (value instanceof Long index) return index;
+        if (expression instanceof Ast.UnaryExpr unary && unary.operator().equals("-")) {
+            Object operand = constantIndexKey(unary.operand(), env);
+            if (operand instanceof Long index && index != Long.MIN_VALUE) return -index;
         }
         return null;
     }
@@ -8602,6 +8628,7 @@ public final class TypeChecker {
         private final boolean descendantsNonLexical;
         private final boolean deferredCaptureBoundary;
         private final Map<String, Binding> bindings = new HashMap<>();
+        private final Map<String, Object> constantIndexKeys = new HashMap<>();
         private final Map<String, Type> inferredTypes = new HashMap<>();
         private final Set<String> reservedInferredNames = new HashSet<>();
         private void reserveInferredType(String name) {
@@ -8656,6 +8683,19 @@ public final class TypeChecker {
             if (bindings.putIfAbsent(name, new Binding(type, kind, uninitializedFields)) != null) {
                 throw new IllegalArgumentException("duplicate binding '" + name + "'");
             }
+        }
+        private void rememberIndexKey(String name, Object value) {
+            Binding binding = bindings.get(name);
+            if (binding == null || binding.kind() != Ast.BindingKind.CONST
+                    || !(value instanceof String || value instanceof Long)) {
+                throw new IllegalStateException("only immutable literal keys may be remembered");
+            }
+            constantIndexKeys.put(name, value);
+        }
+        private Object constantIndexKey(String name) {
+            // A local non-constant shadows an outer immutable key.
+            if (bindings.containsKey(name)) return constantIndexKeys.get(name);
+            return parent == null ? null : parent.constantIndexKey(name);
         }
         private Binding lookup(String name) {
             Binding binding = bindings.get(name);
