@@ -51,6 +51,7 @@ final class ConcurrencyRaceAnalyzerTest {
     @Test
     void lockReleaseAcquireEstablishesHappensBefore() {
         var checker = new ConcurrencyRaceAnalyzer();
+        checker.acquire("actor-a", "mutex-1");
         checker.write("actor-a", "counter");
         checker.release("actor-a", "mutex-1");
         checker.acquire("actor-b", "mutex-1");
@@ -70,6 +71,26 @@ final class ConcurrencyRaceAnalyzerTest {
         assertEquals(2, checker.conflictCount());
         assertEquals("a", checker.findings().get(1).priorParticipant());
         assertEquals("c", checker.findings().get(1).currentParticipant());
+    }
+
+    @Test
+    void cannotForgeReleaseOrAcquireAnOwnedMutex() {
+        var checker = new ConcurrencyRaceAnalyzer();
+        assertThrows(IllegalStateException.class, () -> checker.release("a", "mutex"));
+        checker.acquire("a", "mutex");
+        assertThrows(IllegalStateException.class, () -> checker.acquire("b", "mutex"));
+        assertThrows(IllegalStateException.class, () -> checker.release("b", "mutex"));
+        checker.release("a", "mutex");
+        checker.acquire("b", "mutex");
+        assertEquals(0, checker.conflictCount());
+    }
+
+    @Test
+    void consumedMessageTokenCannotBeReusedToForgeOrdering() {
+        var checker = new ConcurrencyRaceAnalyzer();
+        checker.send("a", "message-1");
+        checker.receive("b", "message-1");
+        assertThrows(IllegalStateException.class, () -> checker.send("b", "message-1"));
     }
 
     @Test
