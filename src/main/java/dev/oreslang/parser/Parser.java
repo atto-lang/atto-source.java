@@ -3410,7 +3410,11 @@ public final class Parser {
             } else if (match(LPAREN)) {
                 List<Ast.CallArgument> args = parseCheckedCallArgumentsUntil(RPAREN, true, true);
                 consume(RPAREN, "expected ')' after arguments");
-                expr = hasStagedCallItems(args)
+                boolean typeQualifiedConstructor =
+                        expr instanceof Ast.MemberExpr member
+                                && member.receiver() instanceof Ast.TypeExpr
+                                && member.member().equals("new");
+                expr = hasStagedCallItems(args) || typeQualifiedConstructor
                         ? new Ast.StagedCallExpr(expr, List.of(), false, args)
                         : new Ast.CallExpr(expr, legacyCallArguments(args));
             } else if (match(DOT, DOUBLE_COLON)) {
