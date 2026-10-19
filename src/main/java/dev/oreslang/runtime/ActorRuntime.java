@@ -1150,7 +1150,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
         private void release(boolean ownerTurn) {
             if (!revoked.compareAndSet(false, true)) return;
-            cell.shardLeases.remove(this);
+            synchronized (cell.lifecycleLock) {
+                cell.shardLeases.remove(this);
+                if (cell.shardReservedBytes < (privateBlock != null
+                        ? privateBlock.capacity() : sharedBytes)) {
+                    throw new IllegalStateException("actor shard reservation underflow");
+                }
+                cell.shardReservedBytes -= privateBlock != null
+                        ? privateBlock.capacity() : sharedBytes;
+            }
             if (privateBlock != null) {
                 // On actor termination, ActorMemorySlice.close() revokes and
                 // zeroes every block without needing a live actor carrier.
@@ -1176,6 +1184,15 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.stopped.get() || cell.finalized || closed.get()) {
                 throw terminated(cell.ref);
             }
+            long total;
+            try {
+                total = Math.addExact(cell.shardReservedBytes, bytes);
+            } catch (ArithmeticException overflow) {
+                throw new IllegalStateException("actor shard reservation overflow", overflow);
+            }
+            if (total > cell.policy.maxHeapBytes()) {
+                throw new IllegalStateException("per-actor shard heap limit exceeded");
+            }
             PrivateMemoryBlock block = null;
             if (cell.memorySlice != null) {
                 block = cell.memorySlice.allocatePrivateBytes(bytes);
@@ -1183,6 +1200,7 @@ public final class ActorRuntime implements AutoCloseable {
                 reserveSharedRuntimeBytes(bytes, "shared actor shard");
             }
             ActorShardLease lease = new ActorShardLease(cell, block, bytes);
+            cell.shardReservedBytes = total;
             cell.shardLeases.add(lease);
             return lease;
         }
@@ -6857,6 +6875,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;
         private final Set<ActorShardLease> shardLeases = ConcurrentHashMap.newKeySet();
+        /** Guarded by lifecycleLock; private and shared shard bytes both counted. */
+        private long shardReservedBytes;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         /** Per-dispatch identity, guarded by lifecycleLock. A stale queued
          * runnable can never consume a newer scheduled=false->true claim. */
