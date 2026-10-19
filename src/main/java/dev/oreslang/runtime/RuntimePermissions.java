@@ -242,26 +242,81 @@ public final class RuntimePermissions {
         };
     }
 
+    private record NetworkScope(String host, String port) { }
+
+    static String networkEndpoint(String host, int port) {
+        if (host == null || host.isBlank() || port < 0 || port > 65535)
+            throw new IllegalArgumentException("invalid network endpoint");
+        String normalizedHost = host.trim().toLowerCase(Locale.ROOT);
+        if (normalizedHost.startsWith("[") && normalizedHost.endsWith("]")) {
+            normalizedHost = normalizedHost.substring(1, normalizedHost.length() - 1);
+        }
+        if (normalizedHost.isBlank()
+                || normalizedHost.indexOf('[') >= 0
+                || normalizedHost.indexOf(']') >= 0) {
+            throw new IllegalArgumentException("invalid network endpoint host");
+        }
+        return normalizedHost.indexOf(':') >= 0
+                ? "[" + normalizedHost + "]:" + port
+                : normalizedHost + ":" + port;
+    }
+
+    private static NetworkScope parseNetworkScope(String raw) {
+        if (raw == null) return null;
+        String value = raw.trim().toLowerCase(Locale.ROOT);
+        if (value.isEmpty()) return null;
+
+        if (value.startsWith("[")) {
+            int close = value.indexOf(']');
+            if (close <= 1 || value.indexOf('[', 1) >= 0
+                    || value.indexOf(']', close + 1) >= 0) return null;
+            String host = value.substring(1, close);
+            if (close == value.length() - 1) return new NetworkScope(host, null);
+            if (value.charAt(close + 1) != ':' || close + 2 >= value.length()) return null;
+            String port = value.substring(close + 2);
+            return validNetworkPort(port) ? new NetworkScope(host, port) : null;
+        }
+
+        int firstColon = value.indexOf(':');
+        if (firstColon < 0) return new NetworkScope(value, null);
+        int lastColon = value.lastIndexOf(':');
+        if (firstColon != lastColon) {
+            // Unbracketed multi-colon values are IPv6 host-only scopes.
+            return new NetworkScope(value, null);
+        }
+        if (firstColon == 0 || firstColon == value.length() - 1) return null;
+        String host = value.substring(0, firstColon);
+        String port = value.substring(firstColon + 1);
+        return validNetworkPort(port) ? new NetworkScope(host, port) : null;
+    }
+
+    private static boolean validNetworkPort(String value) {
+        try {
+            int port = Integer.parseInt(value);
+            return port >= 0 && port <= 65535
+                    && value.equals(Integer.toString(port));
+        } catch (NumberFormatException invalid) {
+            return false;
+        }
+    }
+
     private static boolean networkMatches(String resource, String scope) {
-        String target = resource.toLowerCase(Locale.ROOT);
-        String rule = scope.toLowerCase(Locale.ROOT);
-        if (target.equals(rule)) return true;
+        NetworkScope target = parseNetworkScope(resource);
+        NetworkScope rule = parseNetworkScope(scope);
+        if (target == null || rule == null) return false;
 
-        // A host-only rule permits every port on that host.
-        if (!rule.contains(":")) {
-            int targetColon = target.lastIndexOf(':');
-            String targetHost = targetColon > 0 ? target.substring(0, targetColon) : target;
-            if (targetHost.equals(rule)) return true;
+        boolean hostMatches;
+        if (rule.host().startsWith("*.")) {
+            String suffix = rule.host().substring(1);
+            hostMatches = target.host().endsWith(suffix)
+                    && target.host().length() > suffix.length();
+        } else {
+            hostMatches = target.host().equals(rule.host());
         }
+        if (!hostMatches) return false;
 
-        // "*.example.com" includes subdomains but not the bare parent.
-        if (rule.startsWith("*.")) {
-            String suffix = rule.substring(1);
-            int targetColon = target.lastIndexOf(':');
-            String targetHost = targetColon > 0 ? target.substring(0, targetColon) : target;
-            return targetHost.endsWith(suffix) && targetHost.length() > suffix.length();
-        }
-        return false;
+        // Host-only grants apply to every port on exactly that host.
+        return rule.port() == null || rule.port().equals(target.port());
     }
 
     private static boolean tokenMatches(String resource, String scope) {
