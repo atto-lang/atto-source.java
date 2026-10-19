@@ -43,7 +43,8 @@ public final class TaskRegionTestLedger {
         return ledger.admitScopedTyped(
                 List.of(new TaskAccessVerifier.TypedClaim(
                         claim, Types.Primitive.INT)),
-                CORE);
+                CORE,
+                place -> Types.Primitive.INT);
     }
 
     public int activeChildren() {
