@@ -542,6 +542,8 @@ final class ThreadSafetyTraitsTest {
             };
         }
         Type tooDeep = nested;
+        assertFalse(Types.isStructurallyWellFormed(tooDeep),
+                "structural validation must reject over-depth type graphs");
         for (var actorKind : List.of(
                 dev.oreslang.ast.Ast.ActorKind.SHARED,
                 dev.oreslang.ast.Ast.ActorKind.PRIVATE,
@@ -595,6 +597,8 @@ final class ThreadSafetyTraitsTest {
         for (int i = 0; i < 70; i++) {
             graph = new Types.Tuple(List.of(graph, graph));
         }
+        assertTrue(Types.isStructurallyWellFormed(graph),
+                "structural validation must memoize shared DAG identities");
         assertTrue(ThreadSafetyTraits.has(graph, Trait.SEND, safeLeaf));
         assertTrue(ThreadSafetyTraits.has(graph, Trait.SYNC, safeLeaf));
         assertEquals(2, nominalCalls.get(),
