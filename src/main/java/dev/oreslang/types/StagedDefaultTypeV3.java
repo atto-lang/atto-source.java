@@ -52,6 +52,12 @@ public final class StagedDefaultTypeV3 {
         if (literal == null) throw new IllegalArgumentException("default literal missing");
         Known k = known(declared);
         if (k == null) return null;
+        if (declared.name().equals("Option") && declared.arguments().size() == 1
+                && declared.arguments().getFirst().name().equals("Option")
+                && (literal.isIntLiteral() || literal.isBoolLiteral() || literal.isStringLiteral())) {
+            throw new IllegalArgumentException(
+                    "nested Option scalar default needs explicit checked Some chain");
+        }
         if (literal.name().equals("None") && literal.arguments().isEmpty()
                 && !literal.inferArguments()) {
             if (!k.option()) throw new IllegalArgumentException("None default requires Option<T>");
