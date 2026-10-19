@@ -24,6 +24,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     private final Object admissionLock = new Object();
     private final LogicalSourceActorRouterV1 router;
     private final LogicalActorProxyMailboxV1 mailbox;
+    private final ActorHotUpgradeTaskOwnerV1 taskOwner;
     private volatile boolean poisoned;
     private volatile boolean closed;
     // Under dispatchLock. Sealing admission does not prove that physical
@@ -35,6 +36,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             LogicalActorProxyMailboxV1 mailbox) {
         this.router = Objects.requireNonNull(router);
         this.mailbox = Objects.requireNonNull(mailbox);
+        this.taskOwner = new ActorHotUpgradeTaskOwnerV1(router);
         if (router.ref().routeEpoch() != mailbox.snapshot().routeEpoch()) {
             throw new IllegalStateException("proxy and physical route epochs differ");
         }
@@ -70,7 +72,34 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
      * The bridge must not leak a bypass around its bounded proxy credits.
      */
     public LogicalSourceActorRouterV1.LogicalAddress address() {
-        return router.ref().address();
+        // Do not expose the router's new epoch while upgradeTo() still holds
+        // an uncommitted proxy mailbox freeze ticket.
+        synchronized (dispatchLock) {
+            return router.ref().address();
+        }
+    }
+
+    /**
+     * The only coherent bridge-level publication observation: physical
+     * route and proxy mailbox epoch are captured under the same monitor
+     * as the upgrade transaction. Separate address()/snapshot() calls
+     * cannot promise one cross-call point-in-time observation.
+     */
+    public record Publication(
+            LogicalSourceActorRouterV1.LogicalAddress address,
+            LogicalActorProxyMailboxV1.Snapshot mailbox) { }
+
+    public Publication publication() {
+        synchronized (dispatchLock) {
+            var address = router.ref().address();
+            var snapshot = mailbox.snapshot();
+            if (!poisoned && address.routeEpoch() != snapshot.routeEpoch()) {
+                poisoned = true;
+                throw new IllegalStateException(
+                        "inconsistent code-image and proxy route publication");
+            }
+            return new Publication(address, snapshot);
+        }
     }
 
     public GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>> nextOutput(
@@ -91,11 +120,23 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
         requireHost();
         synchronized (dispatchLock) {
             requireUsable();
-            return router.startHostPinnedTaskForUpgrade(scheduler, frame);
+            return taskOwner.start(scheduler, frame);
         }
     }
 
-    public LogicalActorProxyMailboxV1.Snapshot snapshot() { return mailbox.snapshot(); }
+    ActorHotUpgradeTaskOwnerV1 childHostTaskScopeForUpgrade() {
+        requireHost();
+        synchronized (dispatchLock) {
+            requireUsable();
+            return taskOwner.childScope();
+        }
+    }
+
+    public LogicalActorProxyMailboxV1.Snapshot snapshot() {
+        synchronized (dispatchLock) {
+            return mailbox.snapshot();
+        }
+    }
 
     public boolean failSealed() { return poisoned; }
 
@@ -230,6 +271,10 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             // ActorRuntime.stop() has a bounded wait. If it throws, leave
             // physicallyRetired=false so a later close retries the router's
             // pinned-generation cleanup without admitting new messages.
+            // A cancelled result is not a physical Task exit. The owning
+            // scope cancels all descendants and joins every generation pin
+            // before the router is allowed to retire actor code/context.
+            taskOwner.close();
             router.close();
             mailbox.close();
             physicallyRetired = true;
