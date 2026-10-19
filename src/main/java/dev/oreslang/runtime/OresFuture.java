@@ -485,13 +485,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         if (admission == null || !admission.getAsBoolean()) return null;
         Cancelled terminal = new Cancelled(
                 new CancellationException("OresFuture was cancelled"));
-        if (!state.compareAndSet(PENDING, terminal)) return null;
-        cancelAdmission = null;
-        // Do not allow a newly registered listener to bypass the owning
-        // scope's revoke-all-before-notify barrier.
-        invokeCancelHook();
+        // Prepare the single-use delivery witness BEFORE claiming terminal
+        // state: an OOME between CAS and closure allocation must not leave a
+        // cancelled Future whose required subscriber drain is unrecoverable.
         AtomicBoolean delivered = new AtomicBoolean();
-        return () -> {
+        Runnable deliver = () -> {
             if (!delivered.compareAndSet(false, true)) return;
             try {
                 cancelRevocationComplete.set(true);
@@ -505,6 +503,12 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 if (drained != null) drained.run();
             }
         };
+        if (!state.compareAndSet(PENDING, terminal)) return null;
+        cancelAdmission = null;
+        // Do not allow a newly registered listener to bypass the owning
+        // scope's revoke-all-before-notify barrier.
+        invokeCancelHook();
+        return deliver;
     }
 
     @Override
