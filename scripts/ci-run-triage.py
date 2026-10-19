@@ -89,7 +89,9 @@ def _classify_job(job, run, run_id=None):
         raise TriageError("invalid job conclusion")
     result = {"job_id": job.get("id") if _positive_int(job.get("id")) else None,
               "classification": None, "steps_observed": None,
-              "completed_failing_steps": 0, "completed_build_test_failures": 0}
+              "completed_failing_steps": 0, "completed_build_test_failures": 0,
+              "reported_failures_without_timing": 0,
+              "purpose_confidence": "HEURISTIC_ONLY"}
     if status in PENDING_STATES:
         result["classification"] = "pending"
         return result
@@ -114,16 +116,31 @@ def _classify_job(job, run, run_id=None):
                                     else "success_without_step_evidence")
         return result
     failed, substantive_success = [], False
+    uncertain_failed_steps = 0
     for step in steps:
         if not isinstance(step, dict):
             raise TriageError("invalid step metadata")
+        status, conclusion = step.get("status"), step.get("conclusion")
+        if status is not None and status not in ("completed", "queued", "in_progress", "pending", "waiting", "requested"):
+            raise TriageError("invalid step status")
+        if conclusion is not None and not isinstance(conclusion, str):
+            raise TriageError("invalid step conclusion")
+        # Completed step status and conclusion alone do not prove execution;
+        # require an observable start and completion timestamp as well.
+        timed_execution = (status == "completed" and
+                           isinstance(step.get("started_at"), str) and bool(step["started_at"].strip()) and
+                           isinstance(step.get("completed_at"), str) and bool(step["completed_at"].strip()))
         purpose = _purpose(step.get("name"))
-        if step.get("status") == "completed" and step.get("conclusion") in ("failure", "timed_out"):
-            failed.append(purpose)
-        if step.get("status") == "completed" and step.get("conclusion") == "success" and purpose != "housekeeping":
+        if status == "completed" and conclusion in ("failure", "timed_out"):
+            if timed_execution:
+                failed.append(purpose)
+            else:
+                uncertain_failed_steps += 1
+        if timed_execution and conclusion == "success" and purpose != "housekeeping":
             substantive_success = True
     result["completed_failing_steps"] = len(failed)
     result["completed_build_test_failures"] = failed.count("build_test")
+    result["reported_failures_without_timing"] = uncertain_failed_steps
     if conclusion == "failure":
         if "build_test" in failed:
             category = "executed_build_test_failure"
@@ -133,6 +150,8 @@ def _classify_job(job, run, run_id=None):
             category = "failed_step_purpose_unknown"
         elif failed:
             category = "setup_only_failure"
+        elif uncertain_failed_steps:
+            category = "reported_failure_execution_unobserved"
         else:
             category = "failure_without_completed_failing_step"
     elif substantive_success:
@@ -174,6 +193,8 @@ def assess(run, jobs, expected_head_sha, run_id=None):
         category = "setup_only_failure"
     elif "observed_no_step_failure" in kinds:
         category = "observed_no_step_failure"
+    elif "reported_failure_execution_unobserved" in kinds:
+        category = "reported_failure_execution_unobserved"
     elif "pending" in kinds:
         category = "pending"
     elif run["conclusion"] == "failure":
@@ -222,8 +243,16 @@ def inspect(repo, run_id, expected_sha, fetch=get_json):
         raise TriageError("invalid repository or run ID")
     if not _valid_sha(expected_sha):
         raise TriageError("expected exact-head SHA required")
-    run = fetch(f"repos/{repo}/actions/runs/{run_id}")
+    run_path = f"repos/{repo}/actions/runs/{run_id}"
+    run = fetch(run_path)
+    if not isinstance(run, dict) or run.get("id") != run_id or run.get("head_sha") != expected_sha:
+        raise TriageError("initial run identity/head SHA mismatched")
     jobs = _fetch_jobs_pages(repo, run_id, fetch)
+    final_run = fetch(run_path)
+    # The latest attempt can change while we page through jobs.
+    identity_fields = ("id", "head_sha", "run_attempt", "status", "conclusion")
+    if not isinstance(final_run, dict) or any(run.get(field) != final_run.get(field) for field in identity_fields):
+        raise TriageError("run changed during job inspection")
     outcome = assess(run, jobs, expected_sha, run_id=run_id)
     return {"repository": repo, "run_id": run_id, "head_sha": expected_sha,
             "conclusion": run.get("conclusion"), **outcome}
