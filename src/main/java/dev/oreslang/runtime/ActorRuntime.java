@@ -1159,25 +1159,30 @@ public final class ActorRuntime implements AutoCloseable {
             privateBlock.writeDouble(Math.multiplyExact(element, Double.BYTES), value);
         }
         private void release(boolean ownerTurn) {
-            if (!revoked.compareAndSet(false, true)) return;
             synchronized (cell.lifecycleLock) {
+                // Close/stop, backing detachment, and byte refund must have
+                // one lifecycle linearization point. In particular, finalizer
+                // and close must not both believe they own the same quota.
+                if (!revoked.compareAndSet(false, true)) return;
                 ActorShardColumns shard = attachedShard;
                 attachedShard = null;
                 if (shard != null) shard.revokeBackingFromLease();
                 cell.shardLeases.remove(this);
-                if (cell.shardReservedBytes < (privateBlock != null
-                        ? privateBlock.capacity() : sharedBytes)) {
+                final long charged = privateBlock != null
+                        ? privateBlock.capacity() : sharedBytes;
+                if (cell.shardReservedBytes < charged) {
                     throw new IllegalStateException("actor shard reservation underflow");
                 }
-                cell.shardReservedBytes -= privateBlock != null
-                        ? privateBlock.capacity() : sharedBytes;
-            }
-            if (privateBlock != null) {
-                // On actor termination, ActorMemorySlice.close() revokes and
-                // zeroes every block without needing a live actor carrier.
-                if (ownerTurn) privateBlock.close();
-            } else {
-                releaseSharedRuntimeBytes(sharedBytes);
+                if (privateBlock != null) {
+                    // On finalization, ActorMemorySlice.close() revokes all
+                    // remaining blocks while still holding lifecycleLock.
+                    if (ownerTurn) privateBlock.close();
+                } else {
+                    // Only release the shared quota after its backing array
+                    // has been scrubbed and detached from the shard.
+                    releaseSharedRuntimeBytes(sharedBytes);
+                }
+                cell.shardReservedBytes -= charged;
             }
         }
         @Override public void close() {
