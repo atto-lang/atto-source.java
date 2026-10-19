@@ -2,7 +2,7 @@ name: task-resolved-send-kernel
 
 on:
   push:
-    branches: ["feat/task-resolved-send-bridge-*"]
+    branches: ["feat/task-resolved-send-bridge-*", "feat/task-resolved-send-canonical-*"]
   pull_request:
     paths:
       - "src/main/java/dev/oreslang/types/Types.java"
