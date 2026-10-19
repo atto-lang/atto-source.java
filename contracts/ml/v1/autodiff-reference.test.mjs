@@ -327,3 +327,54 @@ test('forward activations cannot mutate parameter snapshots after owner admissio
   back(g);
   assert.equal(g.gradients().dense.weights[0][0],6.5);
 });
+
+
+test('gradient aggregation has canonical microbatch-id order, not arrival-order rounding',()=>{
+  const config=[
+    {id:'dense',type:'dense',inputs:['$input'],weights:[[0]],bias:[0]},
+    {id:'loss',type:'mse',inputs:['dense']}
+  ];
+  function compute(order){
+    const g=graph(config);
+    begin(g,3);
+    const targets=[-1e16,-1,1e16];
+    for(const i of order){
+      fwd(g,i,[0],[targets[i]]);
+      back(g,i);
+    }
+    const grads=g.gradients();
+    const version=commit(g).committedVersion;
+    return {biasGradient:grads.dense.bias[0],weightGradient:grads.dense.weights[0][0],version,parameters:g.parameters()};
+  }
+  assert.deepEqual(compute([0,1,2]),compute([0,2,1]));
+  assert.deepEqual(compute([1,2,0]),compute([2,0,1]));
+});
+
+test('reference trace and replay memory budgets reject oversized step declarations',()=>{
+  const nodes=[];
+  let from='$input';
+  for(let i=0;i<80;i++){const id='h'+i;nodes.push({id,type:'relu',inputs:[from]});from=id;}
+  nodes.push({id:'loss',type:'mse',inputs:[from]});
+  const g=graph(nodes);
+  assert.throws(()=>begin(g,205),/TRACE_BUDGET_EXCEEDED/); // 205 * 81 * 2 > 32768
+  assert.doesNotThrow(()=>begin(g,200)); // 200 * 81 * 2 <= 32768
+  assert.throws(()=>g.beginStep({runId:'runB',stepId:3,expectedMicrobatches:1}),/training step already active/);
+});
+
+test('an accumulated overflow rejects optimizer commit without partially updating parameters',()=>{
+  const g=graph([
+    {id:'dense',type:'dense',inputs:['$input'],weights:[[0]],bias:[0]},
+    {id:'loss',type:'mse',inputs:['dense']}
+  ]);
+  const before=g.parameters();begin(g,2);
+  for(let i=0;i<2;i++){
+    fwd(g,i,[0],[-1e308]);
+    back(g,i);
+  }
+  assert.throws(()=>g.gradients(),/overflow/);
+  assert.throws(()=>commit(g),/overflow/);
+  assert.deepEqual(g.parameters(),before);
+  assert.equal(g.version,0);
+  g.cancel({runId:'runA',stepId:3});
+  assert.equal(g.version,0);
+});
