@@ -8,8 +8,9 @@
 # technically unavailable, each individual export must have two distinct,
 # unedited GitHub issue comments (maintainer + @ORESoftware) whose identical
 # canonical payload binds the exact source PR/head/tree, destination repo/ID,
-# and the exact policy + preflight script blob IDs currently on main.
-# Any source-head, destination, policy, or preflight change invalidates approval.
+# and the exact policy, preflight, destination guard, wrapper, and publisher
+# blob IDs currently on main. Any source-head, destination, policy, or
+# security-critical export-path change invalidates approval.
 # The fallback itself is inert until independently reviewed and merged.
 #
 # Format: exact owner/repo@numeric-github-repository-id, ASCII LF only.
