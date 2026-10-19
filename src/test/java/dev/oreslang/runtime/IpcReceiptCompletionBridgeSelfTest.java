@@ -66,6 +66,68 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         check(gate.invariant());
         denied(() -> gate.acceptVerified(one, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED));
 
+        // A production-bound bridge is irreversibly scoped to one opaque
+        // physical owner + full logical epoch + physical generation. Legacy
+        // unbound entrypoints and foreign/stale authorities fail closed.
+        var boundBridge = new IpcReceiptCompletionBridge(2);
+        var boundEpoch = env(1, "bound");
+        Object boundOwner = new Object();
+        Object foreignOwner = new Object();
+        boundBridge.claimPhysicalTransport(boundOwner, boundEpoch, 33);
+        denied(() -> boundBridge.claimPhysicalTransport(
+                foreignOwner, boundEpoch, 34));
+        denied(() -> boundBridge.admit(boundEpoch));
+        denied(() -> boundBridge.admit(foreignOwner, boundEpoch, 33));
+        denied(() -> boundBridge.admit(boundOwner, boundEpoch, 32));
+        var wrongBoundEpoch = new IpcReceiptCorrelation.Envelope(
+                "tenant", "sender", "worker", "bound", "a".repeat(64),
+                1, 2, 4, 5, 1, 1);
+        denied(() -> boundBridge.admit(boundOwner, wrongBoundEpoch, 33));
+        var boundFuture = boundBridge.admit(boundOwner, boundEpoch, 33);
+        denied(() -> boundBridge.commitDispatch(boundEpoch));
+        denied(() -> boundBridge.commitDispatch(foreignOwner, boundEpoch, 33));
+        denied(() -> boundBridge.commitDispatch(boundOwner, boundEpoch, 34));
+        boundBridge.commitDispatch(boundOwner, boundEpoch, 33);
+        denied(() -> boundBridge.acceptVerified(
+                boundEpoch, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
+        denied(() -> boundBridge.acceptVerified(
+                foreignOwner, boundEpoch, 33,
+                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
+        boundBridge.acceptVerified(
+                boundOwner, boundEpoch, 33,
+                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+        boundBridge.acceptVerified(
+                boundOwner, boundEpoch, 33,
+                IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+        check(result(boundFuture) == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+        check(boundBridge.invariant());
+
+        var boundLost = new IpcReceiptCompletionBridge(1);
+        var lostEpoch = env(1, "bound-loss");
+        Object lostOwner = new Object();
+        boundLost.claimPhysicalTransport(lostOwner, lostEpoch, 44);
+        var lostFuture = boundLost.admit(lostOwner, lostEpoch, 44);
+        boundLost.commitDispatch(lostOwner, lostEpoch, 44);
+        denied(() -> boundLost.transportLost(lostEpoch));
+        denied(() -> boundLost.transportLost(new Object(), lostEpoch, 44));
+        denied(() -> boundLost.transportLost(lostOwner, lostEpoch, 45));
+        check(boundLost.transportLost(lostOwner, lostEpoch, 44) == 1);
+        check(result(lostFuture) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+        check(boundLost.invariant());
+
+        var boundReject = new IpcReceiptCompletionBridge(1);
+        var rejectEpoch = env(1, "bound-reject");
+        Object rejectOwner = new Object();
+        boundReject.claimPhysicalTransport(rejectOwner, rejectEpoch, 55);
+        var rejectFuture = boundReject.admit(rejectOwner, rejectEpoch, 55);
+        denied(() -> boundReject.rejectBeforeRemote(rejectEpoch));
+        denied(() -> boundReject.rejectBeforeRemote(
+                new Object(), rejectEpoch, 55));
+        boundReject.rejectBeforeRemote(rejectOwner, rejectEpoch, 55);
+        check(result(rejectFuture)
+                == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
+        check(boundReject.invariant());
+
         // Trusted pre-remote rejection is terminal exactly once and all
         // dependent callbacks run outside the internal host correlation gate.
         var localDenial = new IpcReceiptCompletionBridge(1);
