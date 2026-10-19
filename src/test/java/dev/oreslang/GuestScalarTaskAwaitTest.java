@@ -184,6 +184,22 @@ final class GuestScalarTaskAwaitTest {
     }
 
     @Test
+    void deferredCleanupCannotInheritRootTaskAdmission() {
+        String source = """
+                pub fnc main(): void {
+                    defer await task { return 7; };
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(source));
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(denied.getMessage().contains("root main")
+                        || denied.getMessage().contains("await requires"),
+                denied::getMessage);
+    }
+
+    @Test
     void asyncEntrypointCannotMintRootScopedScalarTask() {
         String source = """
                 pub async fnc main(): void {
