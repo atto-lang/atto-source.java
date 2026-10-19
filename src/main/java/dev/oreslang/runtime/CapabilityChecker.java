@@ -360,11 +360,14 @@ public final class CapabilityChecker {
 
     private void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
         if (expr instanceof Ast.StagedCallExpr staged) {
-            Ast.CheckedNamedCallPlan.require(staged);
             checkExpr(staged.callee(), policy);
             for (Ast.CallArgument argument : staged.arguments()) {
                 checkExpr(argument.value(), policy);
             }
+            // Capability discovery must not skip staged children even before
+            // type checking, but execution authority still requires the exact
+            // identity-bound source-to-formal proof.
+            Ast.CheckedNamedCallPlan.require(staged);
             return;
         }
         if (expr instanceof Ast.StagedNewExpr) {
