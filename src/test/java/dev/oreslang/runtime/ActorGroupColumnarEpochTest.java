@@ -24,7 +24,7 @@ final class ActorGroupColumnarEpochTest {
             List<ActorRuntime.ActorRef<Tick>> actors = new ArrayList<>();
             for (int i = 0; i < 32; i++) {
                 final int index = i;
-                var actor = runtime.spawnShared(() -> (tick, context) ->
+                ActorRuntime.ActorRef<Tick> actor = runtime.spawnShared(() -> (tick, context) ->
                         group.publishDoubleEpoch(tick.epoch(), index * tick.multiplier(), index));
                 group.join(actor, join);
                 actors.add(actor);
@@ -61,7 +61,7 @@ final class ActorGroupColumnarEpochTest {
     void privateActorCanPublishScalarCopyWithoutZeroCopySubscription() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            var actor = runtime.spawnPrivateTrusted(
+            ActorRuntime.ActorRef<Tick> actor = runtime.spawnPrivateTrusted(
                     context -> (tick, turn) -> group.publishDoubleEpoch(tick.epoch(), 7.5));
             group.join(actor, group.joinCapability());
             var epoch = group.requestDoubleEpoch(
@@ -74,7 +74,7 @@ final class ActorGroupColumnarEpochTest {
     void leaveAbortsCollectionAndPreviouslyAdmittedActorCannotPublish() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            var member = runtime.spawnShared(() -> (tick, context) -> group.leaveCurrent());
+            ActorRuntime.ActorRef<Tick> member = runtime.spawnShared(() -> (tick, context) -> group.leaveCurrent());
             group.join(member, group.joinCapability());
 
             var epoch = group.requestDoubleEpoch(
@@ -89,7 +89,7 @@ final class ActorGroupColumnarEpochTest {
     void closeAndActorTerminationAbortPendingCollection() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            var actor = runtime.spawnShared(() -> (tick, context) -> { });
+            ActorRuntime.ActorRef<Tick> actor = runtime.spawnShared(() -> (tick, context) -> { });
             group.join(actor, group.joinCapability());
             var epoch = group.beginDoubleEpoch(List.of("score"));
             assertFalse(epoch.completion().isDone());
@@ -102,7 +102,7 @@ final class ActorGroupColumnarEpochTest {
 
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            var actor = runtime.spawnShared(() -> (tick, context) -> { });
+            ActorRuntime.ActorRef<Tick> actor = runtime.spawnShared(() -> (tick, context) -> { });
             group.join(actor, group.joinCapability());
             var epoch = group.beginDoubleEpoch(List.of("score"));
             actor.stop();
@@ -117,7 +117,7 @@ final class ActorGroupColumnarEpochTest {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
             AtomicReference<Throwable> duplicate = new AtomicReference<>();
             CountDownLatch published = new CountDownLatch(1);
-            var actor = runtime.spawnShared(() -> (tick, context) -> {
+            ActorRuntime.ActorRef<Tick> actor = runtime.spawnShared(() -> (tick, context) -> {
                 try {
                     group.publishDoubleEpoch(tick.epoch(), 1);
                     try {
@@ -154,7 +154,7 @@ final class ActorGroupColumnarEpochTest {
     void hostCommandFactoryFailureFencesEpochAndDoesNotBlockNextRequest() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            var actor = runtime.spawnShared(() -> (tick, context) -> { });
+            ActorRuntime.ActorRef<Tick> actor = runtime.spawnShared(() -> (tick, context) -> { });
             group.join(actor, group.joinCapability());
             assertThrows(IllegalArgumentException.class, () -> group.requestDoubleEpoch(
                     List.of(actor), id -> {
