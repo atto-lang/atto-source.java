@@ -126,6 +126,7 @@ required_publisher = {
     "test_source_pr_move_stops_next_private_blob_upload",
     "test_protected_main_revocation_stops_next_blob_upload",
     "test_destination_codeowners_revoked_after_first_blob",
+    "test_destination_codeowners_hidden_sensitive_override_denied",
     "test_github_api_absolute_cli_and_sanitized_environment",
     "test_github_api_rejects_missing_or_ambiguous_explicit_auth",
     "test_github_api_supports_single_actions_token_without_config",
