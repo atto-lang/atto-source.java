@@ -27,6 +27,9 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     private final Object admissionLock = new Object();
     private final LogicalSourceActorRouterV1 router;
     private final LogicalActorProxyMailboxV1 mailbox;
+    private final HotReloadManager ownerManager;
+    private final String actorTypeName;
+    private final String messageAbiSha256;
     // Non-null only for the explicit compiler-ABI-bound scalar transport.
     // Legacy SHARED host-scalar behavior remains a separate compatibility path.
     private final SourceActorScalarWireV1.Binding scalarWireBinding;
@@ -42,10 +45,14 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     private LogicalSourceActorProxyBridgeV1(
             LogicalSourceActorRouterV1 router,
             LogicalActorProxyMailboxV1 mailbox,
+            HotReloadManager ownerManager,
+            String actorTypeName,
             boolean compilerAbiScalar, boolean typedPrimitive,
             int maxMessageBytes) {
         this.router = Objects.requireNonNull(router);
         this.mailbox = Objects.requireNonNull(mailbox);
+        this.ownerManager = Objects.requireNonNull(ownerManager);
+        this.actorTypeName = Objects.requireNonNull(actorTypeName);
         this.maxMessageBytes = maxMessageBytes;
         this.taskOwner = new ActorHotUpgradeTaskOwnerV1(router);
         router.bindProxyMailboxForSupervisor(mailbox, compilerAbiScalar, typedPrimitive);
@@ -53,6 +60,8 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                 ? router.scalarWireBindingForProxy(mailbox) : null;
         this.typedWireBinding = typedPrimitive
                 ? router.typedWireBindingForProxy(mailbox) : null;
+        this.messageAbiSha256 =
+                router.supervisorPublication(mailbox).messageAbiSha256();
     }
 
     public static LogicalSourceActorProxyBridgeV1 spawnShared(
@@ -126,7 +135,9 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                 first, ActorRuntime.ActorKind.SHARED, actorTypeName, readyTimeout);
         try {
             return new LogicalSourceActorProxyBridgeV1(
-                    router, mailbox, compilerAbiScalar, typedPrimitive, maxMessageBytes);
+                    router, mailbox, first.ownerForActorRouting(),
+                    actorTypeName, compilerAbiScalar, typedPrimitive,
+                    maxMessageBytes);
         } catch (RuntimeException | Error failure) {
             try {
                 router.close();
