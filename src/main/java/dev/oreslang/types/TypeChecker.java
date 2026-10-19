@@ -729,6 +729,20 @@ public final class TypeChecker {
                             throw new IllegalArgumentException("incompatible generic arity for method slot '"
                                     + klass.name() + "." + local.name() + "' with arity " + local.arity());
                         }
+                        for (int parameter = 0; parameter < local.parameters().size(); parameter++) {
+                            String inheritedName = parentMethod.parameters().get(parameter).name();
+                            String localName = local.parameters().get(parameter).name();
+                            if (!inheritedName.equals(localName)) {
+                                String kind = staticNamespace ? "static function" : "method";
+                                throw new IllegalArgumentException(
+                                        "overriding " + kind + " '" + klass.name() + "."
+                                                + local.name() + "' must preserve parameter label '"
+                                                + inheritedName + "' at position " + (parameter + 1)
+                                                + " from " + methodOriginLabel(origin)
+                                                + "; got '" + localName
+                                                + "'; named-call labels are part of the source contract, not overload identity");
+                            }
+                        }
                         // Dispatch selects the child's declaration, but inherited public
                         // contracts still advertise this slot to callers (including through
                         // a base-typed receiver). A private override would typecheck as
@@ -4385,7 +4399,7 @@ public final class TypeChecker {
                             callableGenerics,
                             bindings,
                             "method",
-                            owner.name() + "." + target.name(),
+                            target.name(),
                             "method " + owner.name() + "." + target.name());
                     requireSuspendableCall(target.suspends(), "method '" + target.name() + "'");
                     return callableResult(target.async(), false, result);
