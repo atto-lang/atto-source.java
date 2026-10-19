@@ -32,6 +32,12 @@ public final class ConcurrencyTestProbe {
     /** Bound CLI evidence to its entry source bytes and backend configuration. */
     public static Session start(long seed, boolean perturb, List<String> replay,
             String entrySha256, String backend) {
+        return start(seed, perturb, replay, entrySha256, backend, null);
+    }
+
+    /** Workspace source snapshot is an overapproximation, NOT a compiler import closure. */
+    public static Session start(long seed, boolean perturb, List<String> replay,
+            String entrySha256, String backend, String workspaceSha256) {
         if ((entrySha256 == null) != (backend == null)) {
             throw new IllegalArgumentException("trace provenance must be complete");
         }
@@ -39,7 +45,12 @@ public final class ConcurrencyTestProbe {
                 || !backend.matches("[A-Za-z0-9_.-]{1,80}"))) {
             throw new IllegalArgumentException("invalid trace provenance identity");
         }
-        Session session = new Session(seed, perturb, replay, entrySha256, backend);
+        if (workspaceSha256 != null && (entrySha256 == null
+                || !workspaceSha256.matches("[0-9a-f]{64}"))) {
+            throw new IllegalArgumentException("invalid workspace replay provenance");
+        }
+        Session session = new Session(seed, perturb, replay,
+                entrySha256, backend, workspaceSha256);
         if (!ACTIVE.compareAndSet(null, session)) {
             throw new IllegalStateException("a concurrency test session is already active");
         }
@@ -65,14 +76,16 @@ public final class ConcurrencyTestProbe {
         private final SplittableRandom random;
         private final String entrySha256;
         private final String backend;
+        private final String workspaceSha256;
         private final List<String> events = new ArrayList<>();
         private int deadlocks;
         private boolean closed;
 
         private Session(long seed, boolean perturb, List<String> replay,
-                String entrySha256, String backend) {
+                String entrySha256, String backend, String workspaceSha256) {
             this.entrySha256 = entrySha256;
             this.backend = backend;
+            this.workspaceSha256 = workspaceSha256;
             this.seed = seed;
             this.perturb = perturb;
             this.replay = replay == null ? null : List.copyOf(replay);
@@ -157,7 +170,12 @@ public final class ConcurrencyTestProbe {
         public synchronized void writeTrace(Path destination) throws IOException {
             Objects.requireNonNull(destination, "destination");
             List<String> lines = new ArrayList<>(events.size() + 1);
-            lines.add(entrySha256 == null
+            lines.add(workspaceSha256 != null
+                    ? "ORES_CONCURRENCY_TRACE_V3|seed=" + seed
+                    + "|entry-sha256=" + entrySha256
+                    + "|workspace-sha256=" + workspaceSha256
+                    + "|backend=" + backend + "|probe=3"
+                    : entrySha256 == null
                     ? "ORES_CONCURRENCY_TRACE_V1|seed=" + seed
                     : "ORES_CONCURRENCY_TRACE_V2|seed=" + seed
                     + "|entry-sha256=" + entrySha256
@@ -178,7 +196,7 @@ public final class ConcurrencyTestProbe {
 
     /** Parsed trace receipt; the seed is part of replay identity. */
     public record TraceData(long seed, List<String> events,
-            String entrySha256, String backend) { }
+            String entrySha256, String backend, String workspaceSha256) { }
 
     public static TraceData readTraceData(Path trace) throws IOException {
         Objects.requireNonNull(trace, "trace");
@@ -192,10 +210,36 @@ public final class ConcurrencyTestProbe {
         String header = lines.get(0);
         String v1 = "ORES_CONCURRENCY_TRACE_V1|seed=";
         String v2 = "ORES_CONCURRENCY_TRACE_V2|seed=";
+        String v3 = "ORES_CONCURRENCY_TRACE_V3|seed=";
         String raw;
         String entrySha256 = null;
         String backend = null;
-        if (header.startsWith(v2)) {
+        String workspaceSha256 = null;
+        if (header.startsWith(v3)) {
+            String entryTag = "|entry-sha256=";
+            String workspaceTag = "|workspace-sha256=";
+            String backendTag = "|backend=";
+            String probeTag = "|probe=3";
+            int entryAt = header.indexOf(entryTag, v3.length());
+            int workspaceAt = entryAt < 0 ? -1
+                    : header.indexOf(workspaceTag, entryAt + entryTag.length());
+            int backendAt = workspaceAt < 0 ? -1
+                    : header.indexOf(backendTag, workspaceAt + workspaceTag.length());
+            if (entryAt < 0 || workspaceAt < 0 || backendAt < 0
+                    || !header.endsWith(probeTag)) {
+                throw new IllegalArgumentException("invalid V3 trace provenance");
+            }
+            raw = header.substring(v3.length(), entryAt);
+            entrySha256 = header.substring(entryAt + entryTag.length(), workspaceAt);
+            workspaceSha256 = header.substring(workspaceAt + workspaceTag.length(), backendAt);
+            backend = header.substring(backendAt + backendTag.length(),
+                    header.length() - probeTag.length());
+            if (!entrySha256.matches("[0-9a-f]{64}")
+                    || !workspaceSha256.matches("[0-9a-f]{64}")
+                    || !backend.matches("[A-Za-z0-9_.-]{1,80}")) {
+                throw new IllegalArgumentException("invalid V3 trace provenance");
+            }
+        } else if (header.startsWith(v2)) {
             int entryAt = header.indexOf("|entry-sha256=", v2.length());
             int backendAt = header.indexOf("|backend=", entryAt + 14);
             if (entryAt < 0 || backendAt < 0 || !header.endsWith("|probe=1")) {
@@ -227,7 +271,7 @@ public final class ConcurrencyTestProbe {
             }
         }
         return new TraceData(seed, List.copyOf(lines.subList(1, lines.size())),
-                entrySha256, backend);
+                entrySha256, backend, workspaceSha256);
     }
 
     public static List<String> readTrace(Path trace) throws IOException {
