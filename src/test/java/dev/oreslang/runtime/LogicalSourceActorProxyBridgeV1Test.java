@@ -197,6 +197,57 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void nestedTaskOwnershipKeepsUpgradeFrozenUntilLastPhysicalChildExits()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit());
+             OresScheduler scheduler = new OresScheduler(2)) {
+            var first = manager.stageActorGeneration("scope-nested-v1.ores", V1);
+            var second = manager.stageActorGeneration("scope-nested-v2.ores", V2);
+            try (var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
+                    first, "Counter", WAIT, 4, 8, 32)) {
+                var nested = bridge.childHostTaskScopeForUpgrade().childScope();
+                var one = new OresFuture<Integer>();
+                var two = new OresFuture<Integer>();
+                var started = new java.util.concurrent.CountDownLatch(2);
+                var top = bridge.startHostPinnedTaskForUpgrade(
+                        scheduler, resume -> {
+                            if (resume.initial()) {
+                                started.countDown();
+                                return OresScheduler.await(one);
+                            }
+                            return OresScheduler.done((Integer) resume.value());
+                        });
+                var child = nested.start(scheduler, resume -> {
+                    if (resume.initial()) {
+                        started.countDown();
+                        return OresScheduler.await(two);
+                    }
+                    return OresScheduler.done((Integer) resume.value());
+                });
+                assertTrue(started.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertFalse(bridge.upgradeTo(second, WAIT),
+                        "both child scopes hold physical old-generation pins");
+                one.completeFromRuntime(1);
+                assertEquals(1, top.get(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertFalse(bridge.upgradeTo(second, WAIT),
+                        "one settled result cannot retire another suspended child");
+                two.completeFromRuntime(2);
+                assertEquals(2, child.get(5, java.util.concurrent.TimeUnit.SECONDS));
+                boolean committed = false;
+                long until = System.nanoTime()
+                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                while (!committed && System.nanoTime() < until) {
+                    committed = bridge.upgradeTo(second, WAIT);
+                    if (!committed) Thread.sleep(2);
+                }
+                assertTrue(committed);
+                assertEquals(2L, bridge.publication().address().routeEpoch());
+            }
+        }
+    }
+
+    @Test
     void physicalTaskOwnerCloseWaitsForExecutingCancelledCarrier()
             throws Exception {
         try (HotReloadManager manager = new HotReloadManager(
