@@ -71,12 +71,22 @@ public final class SelectedCallSnapshotV3 {
                 throw new IllegalArgumentException(
                         "call plan not bound to this exact checked AST occurrence");
             }
-            verify(expected, formals, items);
+            verifySnapshot(expected, formals, items);
         }
 
-        /** Shape-only verification: not sufficient for executable lowering. */
+        /** Shape-only verification cannot downgrade an AST-bound receipt. */
         public void verify(Target expected, List<DefaultCallShapeV3.Formal> formals,
                            List<DefaultCallShapeV3.Item> items) {
+            if (callSite != null) {
+                throw new IllegalArgumentException(
+                        "call-site-bound receipt requires verifyForCallSite");
+            }
+            verifySnapshot(expected, formals, items);
+        }
+
+        private void verifySnapshot(Target expected,
+                List<DefaultCallShapeV3.Formal> formals,
+                List<DefaultCallShapeV3.Item> items) {
             Objects.requireNonNull(expected, "selected target");
             if (!target.equals(expected)) {
                 throw new IllegalArgumentException("call plan belongs to a different declaration or ABI");
