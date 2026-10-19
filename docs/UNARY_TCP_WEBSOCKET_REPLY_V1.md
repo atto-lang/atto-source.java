@@ -61,14 +61,19 @@ remain unique within each active session generation.
 
 - TCP: exactly 4 bytes of big-endian length (counting **only** the inner
   envelope, not the prefix), followed by the specified envelope. The parser
-  checks the size before allocating: 26 through 1,048,602 bytes. A short
-  prefix/payload, oversized or malformed frame is a protocol error/EOF, not
-  an empty request. A connection reader must impose read deadlines and
-  per-session capacity limits; this primitive does **not** do either.
+  supports a caller-supplied 0..1 MiB peer/session payload budget and rejects
+  an over-budget length immediately after the 4-byte prefix, before allocating
+  or reading the payload. A short prefix/payload, oversized or malformed frame
+  is a protocol error/EOF, not an empty request. A connection reader must still
+  impose read deadlines and connection/global capacity limits.
 - WebSocket: the **26-byte envelope + payload** is the content of one
-  *complete binary message*. There is no extra length prefix. The future
-  adapter must negotiate a protocol such as `ores-unary.v1`, authenticate
-  the peer, validate RFC 6455 masking, fragmentation, UTF-8 for any text
+  *complete binary message*. There is no extra length prefix. The envelope
+  decoder enforces the same caller-supplied 0..1 MiB peer/session payload
+  budget, but it receives an already assembled message. Therefore the future
+  RFC 6455 parser must enforce that limit incrementally while accumulating
+  fragments; post-reassembly validation alone is not a network-memory bound.
+  The adapter must also negotiate a protocol such as `ores-unary.v1`,
+  authenticate the peer, validate masking, fragmentation, UTF-8 for any text
   control messages, ping/pong/close ordering, and enforce byte/item credits.
   Text WebSocket messages are **not** silently treated as unary envelopes.
 - ERROR and REPLY are terminal for a request; CANCEL races them and only
@@ -93,8 +98,17 @@ remain unique within each active session generation.
 separate from the per-request `UnaryReplySlot`. It permits at most the configured
 1–65,536 active request IDs per authenticated transport/session/generation.
 The registry mints monotonically increasing positive IDs (never reuses an ID in
-the same session), rejects admission at capacity, and denies new work after
-session closure. ID exhaustion requires a fresh session rather than rollover.
+the same session), requires the trusted caller to supply the admitted request
+payload size, rejects admission at either request-count or outstanding-payload
+byte capacity, and denies new work after session closure. Byte credits are
+released exactly once on reply/error, cancellation or close. ID exhaustion
+requires a fresh session rather than rollover.
+
+This registry is for **supervisor-minted local request IDs**. It is not an
+inbound untrusted-peer request-ID ledger. A server-side TCP/WebSocket actor
+adapter that accepts peer-chosen correlation IDs needs a distinct authenticated
+inbound admission table with duplicate/replay policy; it must not mint a local
+ID and then silently substitute or trust a different peer ID.
 
 Each successful REPLY/ERROR or cancellation consumes precisely one pending
 entry; duplicate/late replies are ignored, while forged future IDs, wrong
@@ -127,11 +141,13 @@ conversion is allowed without an explicit typed transport codec.
 The feature branch adds `UnaryTransportFrame`, `UnaryReplySlot`,
 `UnaryRequestRegistry`, their dedicated standalone test checks, one
 repeatable script and Maven JUnit wrappers.
-Three consecutive local Java 21 runs passed real loopback TCP split/coalesced
-writes, WebSocket binary envelope roundtrips, malicious size/version/type/
-generation probes, defensive copying, wrong-session replay rejection,
-3,000 frame-level cancellation/reply races, and 3,000 additional registry
-completion/cancellation races with exact credit reclamation.
+Five consecutive exact-blob Java 21 runs passed with `-Xlint:all -Werror`:
+real loopback TCP split/coalesced writes, TCP prefix rejection before payload
+reads for peer-budget violations, WebSocket binary envelope budget checks,
+malicious size/version/type/generation probes, defensive copying,
+wrong-session replay rejection, 5,000 frame-level cancellation/reply races,
+5,000 registry completion/cancellation races, and 5,000 three-way
+close/reply/cancel races with exact count and byte-credit reclamation.
 
 **Not implemented or validated:** a TCP listener/session actor adapter;
 RFC 6455 upgrade and WebSocket network I/O; transport authentication; global listener/connection admission; guest AST/typechecker
