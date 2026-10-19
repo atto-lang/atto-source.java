@@ -189,6 +189,20 @@ final class DynSendSyncConvergenceTest {
     }
 
     @Test
+    void compilerInternalOptionUnwrapErrorCannotBeNamedBySource() {
+        String program = """
+                async fnc fake(OptionUnwrapError value): int {
+                    return 1;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(failure.getMessage().contains("compiler-internal"),
+                failure::getMessage);
+    }
+
+    @Test
     void sourceLevelChannelImpersonationCannotGrantAsyncSend() {
         String program = """
                 define class Channel<T> as end
