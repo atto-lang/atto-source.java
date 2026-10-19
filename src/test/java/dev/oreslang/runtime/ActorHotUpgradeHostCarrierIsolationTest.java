@@ -9,8 +9,8 @@ import java.lang.reflect.Method;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Host/supervisor blocking methods must reject scheduler/async carrier
- * callbacks even after those callbacks have cleared their CURRENT turn.
+ * Host/supervisor blocking methods must reject actor, scheduler and async
+ * carrier callbacks even after those callbacks have cleared their CURRENT turn.
  * The private ThreadLocal manipulation is test-only fault injection.
  */
 @Timeout(15)
@@ -63,7 +63,11 @@ final class ActorHotUpgradeHostCarrierIsolationTest {
         assertDoesNotThrow(() -> { routerHost.invoke(null, "host test"); },
                 "ordinary host route control must remain available");
 
-        // Test *carrier-only* markers; no active scheduler turn is necessary.
+        // Test *carrier-only* markers; no CURRENT actor/task is necessary.
+        // An actor carrier may still execute a lifecycle/terminal callback
+        // after CURRENT_ACTOR_EXECUTION has been cleared.
+        checkCarrier(marker(ActorRuntime.class, "ACTOR_CARRIER"),
+                proxyHost, routerHost);
         checkCarrier(marker(OresScheduler.class, "SCHEDULER_CARRIER"),
                 proxyHost, routerHost);
         checkCarrier(marker(AsyncRuntime.class, "ASYNC_CARRIER"),
