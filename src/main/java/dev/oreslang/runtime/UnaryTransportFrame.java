@@ -109,24 +109,91 @@ final class UnaryTransportFrame {
         output.write(encodeTcp(envelope));
     }
 
+    /**
+     * Parsed TCP envelope metadata. Reading this object consumes only the
+     * 4-byte frame length and fixed 26-byte envelope header, never the payload.
+     * Callers can therefore reserve count/byte credits before payload allocation.
+     */
+    record TcpHead(Kind kind, long sessionId, long generation,
+                   long correlationId, int payloadBytes) {
+        TcpHead {
+            Objects.requireNonNull(kind, "kind");
+            if (sessionId <= 0 || generation <= 0 || correlationId <= 0 || payloadBytes < 0)
+                throw new IllegalArgumentException("invalid unary TCP header");
+            if (kind == Kind.CANCEL && payloadBytes != 0)
+                throw new IllegalArgumentException("cancel envelopes cannot carry payload bytes");
+        }
+    }
+
     static Envelope readTcp(InputStream input) throws IOException {
         return readTcp(input, MAX_PAYLOAD_BYTES);
     }
 
     /**
      * Reads one TCP unary frame with a peer/session payload budget.
-     * The length is rejected before payload allocation or payload reads.
+     * The length and fixed header are checked before payload allocation.
      */
     static Envelope readTcp(InputStream input, int maxPayloadBytes) throws IOException {
+        TcpHead head = readTcpHead(input, maxPayloadBytes);
+        return readTcpPayload(input, head);
+    }
+
+    /**
+     * Read only the prefix + fixed unary header. This is the admission boundary
+     * used by session adapters before allocating or reading request payloads.
+     */
+    static TcpHead readTcpHead(InputStream input, int maxPayloadBytes) throws IOException {
         Objects.requireNonNull(input, "input");
         checkBudget(maxPayloadBytes);
         DataInputStream reader = new DataInputStream(input);
         int length = reader.readInt(); // EOF is a transport terminal, not an empty request.
         if (length < ENVELOPE_BYTES || length > ENVELOPE_BYTES + maxPayloadBytes)
             throw new IOException("TCP unary frame exceeds request byte limit");
-        byte[] payload = new byte[length]; // Peer budget checked BEFORE allocation.
-        try { reader.readFully(payload); }
-        catch (EOFException incomplete) { throw new EOFException("truncated TCP unary frame"); }
-        return parse(payload);
+
+        byte[] header = new byte[ENVELOPE_BYTES];
+        try { reader.readFully(header); }
+        catch (EOFException incomplete) { throw new EOFException("truncated TCP unary frame header"); }
+
+        ByteBuffer in = ByteBuffer.wrap(header).order(ByteOrder.BIG_ENDIAN);
+        if (Byte.toUnsignedInt(in.get()) != VERSION)
+            throw new IOException("unsupported unary envelope version");
+        Kind kind = Kind.fromWire(Byte.toUnsignedInt(in.get()));
+        long sessionId = in.getLong(), generation = in.getLong(), correlationId = in.getLong();
+        if (sessionId <= 0 || generation <= 0 || correlationId <= 0)
+            throw new IOException("invalid unary session, generation or correlation ID");
+
+        int payloadBytes = length - ENVELOPE_BYTES;
+        if (kind == Kind.CANCEL && payloadBytes != 0)
+            throw new IOException("cancel envelope contains payload");
+        return new TcpHead(kind, sessionId, generation, correlationId, payloadBytes);
+    }
+
+    /** Read the payload for a previously validated/admitted TCP header. */
+    static Envelope readTcpPayload(InputStream input, TcpHead head) throws IOException {
+        Objects.requireNonNull(input, "input");
+        Objects.requireNonNull(head, "head");
+        byte[] payload = new byte[head.payloadBytes()];
+        try { new DataInputStream(input).readFully(payload); }
+        catch (EOFException incomplete) { throw new EOFException("truncated TCP unary frame payload"); }
+        return new Envelope(head.kind(), head.sessionId(), head.generation(),
+                head.correlationId(), payload);
+    }
+
+    /**
+     * Drain a rejected but syntactically valid payload without allocating it.
+     * This preserves framing after a bounded-admission rejection.
+     */
+    static void discardTcpPayload(InputStream input, TcpHead head) throws IOException {
+        Objects.requireNonNull(input, "input");
+        Objects.requireNonNull(head, "head");
+        DataInputStream reader = new DataInputStream(input);
+        int remaining = head.payloadBytes();
+        byte[] scratch = new byte[Math.min(8192, Math.max(1, remaining))];
+        while (remaining > 0) {
+            int read = reader.read(scratch, 0, Math.min(scratch.length, remaining));
+            if (read < 0) throw new EOFException("truncated rejected TCP unary frame payload");
+            if (read == 0) continue;
+            remaining -= read;
+        }
     }
 }
