@@ -64,7 +64,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root)
 
-    def verified_origin_api(self, protected=True, policy=b"trusted/ci\n"):
+    def verified_origin_api(self, protected=True, policy=b"trusted/ci\n",
+                            codeowners=True, stale=True, admins=True):
         routes = []
         def fake(route, method="GET", payload=None):
             routes.append(route)
@@ -73,6 +74,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
                 return {"name": "main", "protected": protected,
                         "commit": {"sha": A}}
+            if route == "repos/"+pub.SOURCE_REPO+"/branches/main/protection":
+                return {"required_pull_request_reviews": {
+                            "require_code_owner_reviews": codeowners,
+                            "dismiss_stale_reviews": stale},
+                        "enforce_admins": {"enabled": admins}}
             if route == ("repos/"+pub.SOURCE_REPO+"/contents/"
                          +pub.POLICY_PATH+"?ref="+A):
                 return {"path": pub.POLICY_PATH, "type": "file",
@@ -94,6 +100,39 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
         self.assertNotIn("repos/"+pub.SOURCE_REPO+"/contents/"
                          +pub.POLICY_PATH+"?ref="+A, routes)
+
+    def test_origin_main_requires_real_codeowner_and_admin_enforcement(self):
+        for rule in ("codeowners", "stale", "admins"):
+            with self.subTest(rule=rule):
+                options = {rule: False}
+                api, routes = self.verified_origin_api(**options)
+                with patch.object(pub, "verify_protected_origin",
+                                  side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
+                    with patch.object(pub, "gh_api", side_effect=api):
+                        with patch.object(pub, "collect_source") as collect:
+                            with self.assertRaisesRegex(pub.Denied, "CODEOWNER"):
+                                pub.publish("trusted/ci", self.source,
+                                            "ci/oreslang-test", self.root)
+                            collect.assert_not_called()
+                self.assertNotIn("repos/"+pub.SOURCE_REPO+"/contents/"
+                                 +pub.POLICY_PATH+"?ref="+A, routes)
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_origin_protection_api_permission_denial_rejects_export(self):
+        api, _ = self.verified_origin_api()
+        def denied(route, method="GET", payload=None):
+            if route.endswith("/branches/main/protection"):
+                raise pub.Denied("GitHub protection settings API unavailable")
+            return api(route, method, payload)
+        with patch.object(pub, "verify_protected_origin",
+                          side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
+            with patch.object(pub, "gh_api", side_effect=denied):
+                with patch.object(pub, "collect_source") as collect:
+                    with self.assertRaisesRegex(pub.Denied, "unavailable"):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root)
+                    collect.assert_not_called()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_origin_main_must_match_local_approved_policy(self):
         api, _ = self.verified_origin_api(
