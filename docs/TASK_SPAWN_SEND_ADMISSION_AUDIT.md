@@ -82,9 +82,11 @@ Cross references:
 
 ## Cross-branch exact implementation checkpoint
 
-The hardened `SendSyncTraits.java` file was updated on both #1447 and this
-Task-compiler integration branch with **byte-identical source blob**
-`a4a34c620f437bc917ee1c2c317966ea915cb4bb`. #1447 now includes an
+The Task branch was resynchronized with #1447's updated bounded-depth
+`SendSyncTraits.java` at a **point-in-time Git blob**
+`cc03647b1e80ee7e9b44c0cd1fee9bc59ecb66bf`.
+The canonical PR may advance independently; recheck its latest head before
+merging, rather than assuming permanent branch parity. #1447 now includes an
 additional test showing that source classes named `ActorRef`, `Task`,
 `Channel`, or `ThreadBound` cannot manufacture a Send or Sync proof.
 This is code alignment, not proof that the two PRs can yet be merged without
