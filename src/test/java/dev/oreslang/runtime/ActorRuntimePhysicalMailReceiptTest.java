@@ -45,6 +45,38 @@ final class ActorRuntimePhysicalMailReceiptTest {
     }
 
     @Test
+    void admittedButStillExecutingMessageCannotBeAcknowledgedEarly()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> {
+                        entered.countDown();
+                        if (!release.await(5, TimeUnit.SECONDS))
+                            throw new AssertionError("blocked actor not released");
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            try {
+                var receipt = runtime.sendWithPhysicalReceipt(actor, 99);
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertFalse(receipt.terminal().isDone(),
+                        "mailbox acceptance is not physical processing completion");
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> receipt.terminal().get(10, TimeUnit.MILLISECONDS));
+                assertFalse(receipt.terminal().cancel(false),
+                        "a timeout must not cancel or forge physical completion");
+                release.countDown();
+                receipt.terminal().get(5, TimeUnit.SECONDS);
+            } finally {
+                release.countDown();
+                actor.stop();
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
     void failedActorReceiveCannotForgeSuccessfulPhysicalCompletion()
             throws Exception {
         try (var runtime = new ActorRuntime()) {
