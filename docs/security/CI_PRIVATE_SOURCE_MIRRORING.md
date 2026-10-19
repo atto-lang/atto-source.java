@@ -66,24 +66,27 @@ snapshots while preserving unrelated destination workflows and files.
 Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated.
 
-**Committed tree binding (proposed, not yet merged):** Before any source blob
-upload, the publisher requires an explicit Git-tracked subdirectory of its
-trusted checkout and runs the exact HEAD subtree verifier. It then independently
-hashes the descriptor-read source bytes as a canonical Git tree and requires
-that digest to equal the committed source tree. After uploading to an approved
-private destination, it also requires the server-returned isolated subtree
-Git SHA to match *before* creating a destination root tree, commit or ref.
-Untracked/ignored/modified source and a copy outside the trusted checkout
-fail closed. In this current draft, the source must also be a **tracked
-subdirectory of the same trusted checkout's HEAD tree**. Therefore an arbitrary
-separately checked-out actor PR or an untracked `verified-source-tree/` copy
-cannot pass the new source-admission gate. This is intentional fail-closed
-behavior, **not** a working replacement for the full actor-branch transfer
-workflow. A separate reviewed integration must establish immutable identity of
-the source PR commit and its tree while keeping source checkout bytes and
-protected-main authorization policy distinct. Never work around this boundary
-by staging private compiler source into a different GitHub organization or
-loosening the gate.
+**Committed tree binding (proposed, not yet merged):** The mandatory
+`--source-commit` CLI mode gets the immutable source commit's root tree
+identity from the fixed private source GitHub repository. The source snapshot
+must be inside the independently checked trusted policy checkout; its contents
+are collected with bounded, descriptor-relative no-follow reads. The canonical
+Git tree SHA reconstructed from those bytes must equal the source commit's
+tree **before any source blob is uploaded**. The destination's returned
+isolated subtree SHA must also match before root-tree, commit or ref creation.
+
+An internal legacy function path without `--source-commit` still expects an
+explicit tracked subdirectory and verifies the local HEAD subtree. It is **not
+the supported publishing CLI**, and its weaker behavior must not become a
+second transfer entrypoint. Neither branch is authority to export private
+source without the reviewed protected-main destination allowlist.
+
+**Additional release dependency:** [security publisher PR #1361](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1361)
+has broader source/destination CODEOWNER and workflow review controls. Its
+effective review-coverage and branch-bypass checks need to be integrated,
+reconciled and tested with this draft before either is used for real private
+source transfers. `protected: true` alone is not sufficient proof of enforced
+independent CODEOWNER approval.
 
 Destination identity is also pinned to the **same immutable GitHub repository
 ID** first obtained at preflight. If a repository is deleted/recreated or
