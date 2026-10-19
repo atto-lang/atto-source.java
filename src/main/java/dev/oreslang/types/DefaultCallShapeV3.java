@@ -110,6 +110,30 @@ public final class DefaultCallShapeV3 {
             for (boolean present : seen) {
                 if (!present) throw new IllegalArgumentException("lost supplied expression");
             }
+            // A plan also accounts for *every raw call item*, including
+            // explicit omission markers that do not have expressions.
+            // Without this total-coverage proof a forged plan can silently
+            // discard a supplied expression or reuse an omission token.
+            int explicitOmissions = 0;
+            for (Bound slot : abiSlots) {
+                if (slot.origin() == Origin.EXPLICIT_OMISSION) explicitOmissions++;
+            }
+            int rawCount = evaluatedRawIndices.size() + explicitOmissions;
+            if (rawCount > abiSlots.size()) {
+                throw new IllegalArgumentException("more raw call items than ABI slots");
+            }
+            boolean[] rawPresent = new boolean[rawCount];
+            for (Bound slot : abiSlots) {
+                int raw = slot.rawItemIndex();
+                if (raw < 0) continue;
+                if (raw >= rawCount || rawPresent[raw]) {
+                    throw new IllegalArgumentException("duplicate, missing or out-of-range raw call item");
+                }
+                rawPresent[raw] = true;
+            }
+            for (boolean present : rawPresent) {
+                if (!present) throw new IllegalArgumentException("missing raw call-item origin");
+            }
         }
     }
 
