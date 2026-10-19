@@ -6,6 +6,25 @@ import java.util.HashSet;
 public final class Ast {
     private Ast() { }
 
+    /** Shared guest AST admission rule for closed structural field keys. */
+    private static String requireStaticFieldName(String name) {
+        if (name == null || name.length() > 1024) {
+            throw new IllegalArgumentException("static field name is null or too long");
+        }
+        for (int i = 0; i < name.length(); i++) {
+            char code = name.charAt(i);
+            if (code == 0 || Character.isLowSurrogate(code)) {
+                throw new IllegalArgumentException("static field name contains invalid Unicode");
+            }
+            if (Character.isHighSurrogate(code)) {
+                if (++i >= name.length() || !Character.isLowSurrogate(name.charAt(i))) {
+                    throw new IllegalArgumentException("static field name contains invalid Unicode");
+                }
+            }
+        }
+        return name;
+    }
+
     public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
         public Program {
             imports = List.copyOf(imports);
@@ -169,11 +188,14 @@ public final class Ast {
         private static TypeRef recordType(java.util.Map<String, TypeRef> members, boolean readOnly) {
             java.util.ArrayList<TypeRef> fields = new java.util.ArrayList<>(members.size());
             java.util.ArrayList<java.util.Map.Entry<String, TypeRef>> entries = new java.util.ArrayList<>(members.entrySet());
+            // Reject invalid keys before sorting; even a malicious null key
+            // must not trigger an uncontrolled comparison or enter a type ID.
+            for (java.util.Map.Entry<String, TypeRef> entry : entries) {
+                requireStaticFieldName(entry.getKey());
+                java.util.Objects.requireNonNull(entry.getValue(), "record type field");
+            }
             entries.sort(java.util.Map.Entry.comparingByKey());
             for (java.util.Map.Entry<String, TypeRef> entry : entries) {
-                if (entry.getKey() == null || entry.getKey().indexOf((char) 0) >= 0) {
-                    throw new IllegalArgumentException("record type field name must be a valid static string");
-                }
                 fields.add(new TypeRef("$field$" + entry.getKey(), List.of(entry.getValue()), false));
             }
             return new TypeRef(readOnly ? "$readonly_record$" : "$record$", List.copyOf(fields), false);
@@ -1097,9 +1119,7 @@ public final class Ast {
      */
     public record ObjectField(String name, Expr value) {
         public ObjectField {
-            if (name == null || name.indexOf((char) 0) >= 0) {
-                throw new IllegalArgumentException("struct field name must be a valid static string");
-            }
+            requireStaticFieldName(name);
             java.util.Objects.requireNonNull(value, "value");
         }
         public static ObjectField named(String name, Expr value) {
@@ -1112,9 +1132,7 @@ public final class Ast {
     /** A field declaration in the closed shape of an explicit anonymous struct. */
     public record StructFieldSpec(String name, TypeRef type) {
         public StructFieldSpec {
-            if (name == null || name.indexOf((char) 0) >= 0) {
-                throw new IllegalArgumentException("struct field name must be a valid static string");
-            }
+            requireStaticFieldName(name);
             java.util.Objects.requireNonNull(type, "struct field type");
         }
     }
