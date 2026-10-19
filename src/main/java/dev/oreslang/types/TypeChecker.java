@@ -5442,7 +5442,13 @@ public final class TypeChecker {
             Ast.TypeRef sourceTarget,
             Type resolvedTarget,
             Set<String> generics) {
-        if (resolvedTarget instanceof Record record) return record;
+        if (resolvedTarget instanceof Record record) {
+            if (record.kind() != AggregateKind.RECORD) {
+                throw new IllegalArgumentException(
+                        "structural pattern target must be a structural record, interface, or trait; concrete struct shapes require exact type matching");
+            }
+            return record;
+        }
         if (!(resolvedTarget instanceof Named named)) {
             throw new IllegalArgumentException(
                     "structural pattern target must be an inline record shape or named interface/trait, got "
@@ -5842,6 +5848,9 @@ public final class TypeChecker {
 
     private boolean runtimeRecordShapeCovered(Record source, Record target, int depth) {
         if (depth >= 32) return false;
+        if (source.kind() != target.kind()) return false;
+        if (source.kind() == AggregateKind.STRUCT
+                && source.members().size() != target.members().size()) return false;
         for (Map.Entry<String, Type> required : target.members().entrySet()) {
             Type actual = source.members().get(required.getKey());
             if (actual == null || !runtimeValueTypeCovered(actual, required.getValue(), depth + 1)) {
@@ -5948,7 +5957,7 @@ public final class TypeChecker {
             }
             return true;
         }
-        if (a instanceof Record && b instanceof Record) return true;
+        if (a instanceof Record ar && b instanceof Record br) return ar.kind() == br.kind();
         return a.equals(b);
     }
 
@@ -6363,7 +6372,7 @@ public final class TypeChecker {
             // Keep the left-hand shape while overlaying any stronger readonly
             // capability carried by the equivalent right-hand value. This is
             // recursive, so List<Record>, Tuple<Record>, Option<Record>, etc.
-            // cannot erase nested inferred-struct readonly state during joins.
+            // cannot erase nested readonly-record capability during joins.
             return overlayReadonlyCapabilities(b, a);
         }
         return null;
