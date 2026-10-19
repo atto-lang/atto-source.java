@@ -113,6 +113,65 @@ final class LogicalActorProxyMailboxV1Test {
     }
 
     @Test
+    void sendReservationRacingRequeueCanNeverAdmitDuplicatePhysicalWork()
+            throws Exception {
+        for (int round = 0; round < 128; round++) {
+            try (var mailbox = new LogicalActorProxyMailboxV1(2, 8, 16)) {
+                var envelope = mailbox.admit(new byte[] {1});
+                assertSame(envelope, mailbox.pollDispatch());
+
+                var go = new CountDownLatch(1);
+                var reserved = new java.util.concurrent.atomic.AtomicBoolean();
+                var requeued = new java.util.concurrent.atomic.AtomicBoolean();
+                var unexpected = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                Thread sender = Thread.ofPlatform().start(() -> {
+                    try {
+                        go.await();
+                        mailbox.beginPhysicalSendAttempt(envelope, 1L);
+                        reserved.set(true);
+                    } catch (SecurityException | IllegalStateException lostRace) {
+                        // Requeue won before the physical send reservation.
+                    } catch (Throwable bad) {
+                        unexpected.compareAndSet(null, bad);
+                    }
+                });
+                Thread retry = Thread.ofPlatform().start(() -> {
+                    try {
+                        go.await();
+                        mailbox.requeueProvenUnsent(envelope.messageSequence());
+                        requeued.set(true);
+                    } catch (IllegalStateException lostRace) {
+                        // Physical attempt won and may already be accepted.
+                    } catch (Throwable bad) {
+                        unexpected.compareAndSet(null, bad);
+                    }
+                });
+                go.countDown();
+                sender.join(5000);
+                retry.join(5000);
+                assertFalse(sender.isAlive() || retry.isAlive());
+                assertNull(unexpected.get());
+                assertNotEquals(reserved.get(), requeued.get(),
+                        "exactly one of physical reservation and requeue must win");
+                if (reserved.get()) {
+                    assertEquals(1, mailbox.snapshot().outstandingMessages());
+                    assertEquals(0, mailbox.snapshot().queuedMessages());
+                    assertThrows(IllegalStateException.class,
+                            () -> mailbox.requeueProvenUnsent(
+                                    envelope.messageSequence()));
+                } else {
+                    assertEquals(0, mailbox.snapshot().outstandingMessages());
+                    assertEquals(1, mailbox.snapshot().queuedMessages());
+                    assertSame(envelope, mailbox.pollDispatch());
+                }
+                mailbox.complete(envelope.messageSequence());
+                assertEquals(0, mailbox.snapshot().retainedMessages());
+                assertEquals(1L, mailbox.snapshot().completionWatermark());
+            }
+        }
+    }
+
+    @Test
     void concurrentPhysicalSendReservationsAdmitExactlyOneSender()
             throws Exception {
         try (var mailbox = new LogicalActorProxyMailboxV1(2, 16, 32)) {
