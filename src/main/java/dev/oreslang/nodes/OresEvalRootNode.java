@@ -4567,6 +4567,22 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
+            if (receiver instanceof ReadonlyRecordValue record) {
+                if (!(index instanceof String key)) {
+                    throw new IllegalArgumentException(
+                            "record field index must be a String");
+                }
+                if (!record.containsKey(key)) {
+                    throw new IllegalArgumentException(
+                            "unknown record field key " + key);
+                }
+                Object value = record.get(key);
+                if (value == UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            "record field '" + key + "' is read before initialization");
+                }
+                return value;
+            }
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
                     throw new IllegalArgumentException(
