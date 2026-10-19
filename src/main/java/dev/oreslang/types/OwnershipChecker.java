@@ -2356,24 +2356,173 @@ public final class OwnershipChecker {
         throw error("mutation target must be rooted in a mutable local/parameter or exclusive borrow");
     }
 
+    /** Exact projection identity used by lexical/call loans. */
+    private interface ProjectionStep { }
+    private record FieldProjection(String name) implements ProjectionStep { }
+    private record IndexProjection(long index) implements ProjectionStep { }
+    private enum WildcardProjection implements ProjectionStep { INSTANCE }
+
+    private record ProjectionLoan(
+            VarState root,
+            List<ProjectionStep> steps,
+            boolean mutable) { }
+
     /**
-     * Resolve an immutable projection to its named storage owner and precise type.
-     * The owner (not a synthetic projected alias) holds the borrow lease, so
-     * moving/mutating the containing value is forbidden until the lease ends.
-     *
-     * Only stable field/index places are admitted: no temporary owners, method
-     * invocations, side-effecting indexes, or unresolved/dynamic field types.
-     * Mutable projections stay fail-closed until path-exclusive loans land.
+     * A stable storage place rooted in one owned/borrow-capability binding.
+     * Empty steps denote the complete root. Fixed-product computed borrows
+     * require an exact compile-time selector; Array/List can conservatively
+     * use a wildcard path for a stable but runtime index.
      */
-    private record BorrowPlace(VarState owner, Ast.TypeRef type) { }
+    private record BorrowPlace(
+            VarState owner,
+            Ast.TypeRef type,
+            List<ProjectionStep> steps) {
+        private BorrowPlace {
+            steps = List.copyOf(steps);
+        }
+    }
+
+    private static boolean projectionPathsOverlap(
+            List<ProjectionStep> left,
+            List<ProjectionStep> right) {
+        int width = Math.min(left.size(), right.size());
+        for (int i = 0; i < width; i++) {
+            ProjectionStep a = left.get(i);
+            ProjectionStep b = right.get(i);
+            if (a instanceof WildcardProjection || b instanceof WildcardProjection) {
+                return true;
+            }
+            if (!a.equals(b)) return false;
+        }
+        // Equal paths and ancestor/descendant paths overlap.
+        return true;
+    }
+
+    private void validatePlaceUse(BorrowPlace place, boolean write) {
+        VarState root = ownershipRoot(place.owner());
+        if (root.moved) {
+            throw error("use of moved value '" + place.owner().debugName + "'");
+        }
+
+        if (write) {
+            if (root.mutableBorrowed || root.immutableBorrows > 0) {
+                throw error("cannot mutate borrowed place rooted in '"
+                        + place.owner().debugName + "'");
+            }
+        } else if (root.mutableBorrowed) {
+            throw error("cannot read place rooted in '" + place.owner().debugName
+                    + "' while the complete owner is mutably borrowed");
+        }
+
+        for (ProjectionLoan loan : root.projectionLoans) {
+            if (!projectionPathsOverlap(place.steps(), loan.steps())) continue;
+            if (write || loan.mutable()) {
+                throw error((write ? "cannot mutate" : "cannot read")
+                        + " overlapping projected place rooted in '"
+                        + place.owner().debugName + "' while it is borrowed");
+            }
+        }
+    }
+
+    private void validateBorrow(BorrowPlace place, boolean mutable) {
+        VarState owner = place.owner();
+        VarState root = ownershipRoot(owner);
+        validatePlaceUse(place, mutable);
+
+        if (mutable) {
+            if (owner.type.isReadonlyRecordType()) {
+                throw error("cannot mutably borrow readonly structural record '"
+                        + owner.debugName + "'");
+            }
+            if (owner.kind == ValueKind.IMM_BORROW) {
+                throw error("cannot mutably reborrow a shared borrow '"
+                        + owner.debugName + "'");
+            }
+            if (!owner.mutable && !(owner.origin == Origin.PARAM
+                    && owner.kind == ValueKind.MUT_BORROW)) {
+                throw error("cannot mutably borrow immutable owner '"
+                        + owner.debugName + "'");
+            }
+        }
+
+        // Root-wide loans overlap every projection. Projected loans conflict
+        // only when paths may designate the same storage.
+        if (place.steps().isEmpty()) {
+            if (mutable && (!root.projectionLoans.isEmpty()
+                    || root.immutableBorrows > 0 || root.mutableBorrowed)) {
+                throw error("cannot mutably borrow '" + owner.debugName
+                        + "' while another borrow is active");
+            }
+            if (!mutable && (root.mutableBorrowed
+                    || root.projectionLoans.stream().anyMatch(ProjectionLoan::mutable))) {
+                throw error("cannot immutably borrow '" + owner.debugName
+                        + "' while an exclusive borrow is active");
+            }
+        }
+    }
+
+    /**
+     * Begin a lexical/call loan. A null return means the existing whole-root
+     * counters carry the lease; a non-null token is stored by identity on the
+     * root and must be removed when the lexical/call lifetime ends.
+     */
+    private ProjectionLoan beginPersistentBorrow(BorrowPlace place, boolean mutable) {
+        validateBorrow(place, mutable);
+        VarState root = ownershipRoot(place.owner());
+        if (place.steps().isEmpty()) {
+            if (mutable) root.mutableBorrowed = true;
+            else root.immutableBorrows++;
+            return null;
+        }
+        ProjectionLoan loan =
+                new ProjectionLoan(root, place.steps(), mutable);
+        root.projectionLoans.add(loan);
+        return loan;
+    }
+
+    private void releasePersistentBorrow(
+            VarState root,
+            boolean mutable,
+            ProjectionLoan projectionLoan) {
+        if (projectionLoan != null) {
+            if (projectionLoan.root() != root
+                    || !root.projectionLoans.remove(projectionLoan)) {
+                throw new IllegalStateException(
+                        "missing projected borrow lease on " + root.debugName);
+            }
+            return;
+        }
+        if (mutable) {
+            if (!root.mutableBorrowed) {
+                throw new IllegalStateException(
+                        "missing mutable borrow lease on " + root.debugName);
+            }
+            root.mutableBorrowed = false;
+        } else {
+            if (root.immutableBorrows <= 0) {
+                throw new IllegalStateException(
+                        "missing immutable borrow lease on " + root.debugName);
+            }
+            root.immutableBorrows--;
+        }
+    }
 
     private BorrowPlace borrowPlace(Ast.Expr operand, Scope scope) {
+        BorrowPlace place = resolveBorrowPlace(operand, scope);
+        validatePlaceUse(place, false);
+        return place;
+    }
+
+    private BorrowPlace resolveBorrowPlace(Ast.Expr operand, Scope scope) {
         if (operand instanceof Ast.NameExpr name) {
-            VarState owner = borrowOwner(operand, scope);
-            return new BorrowPlace(owner, owner.type);
+            VarState owner = requireState(scope, name.name());
+            if (ownershipRoot(owner).moved) {
+                throw error("use of moved value '" + name.name() + "'");
+            }
+            return new BorrowPlace(owner, owner.type, List.of());
         }
         if (operand instanceof Ast.MemberExpr member) {
-            BorrowPlace receiver = borrowPlace(member.receiver(), scope);
+            BorrowPlace receiver = resolveBorrowPlace(member.receiver(), scope);
             Ast.TypeRef type = receiver.type();
             if (type.isBorrow()) type = type.borrowedTarget();
             Ast.TypeRef fieldType = null;
@@ -2385,38 +2534,60 @@ public final class OwnershipChecker {
                     ResolvedField target = findFieldTarget(
                             klass, type, member.member(), new LinkedHashSet<>());
                     if (target != null) {
-                        fieldType = substituteType(ownershipFieldType(target.field()),
-                                genericBindings(target.owner().genericParameters(),
+                        fieldType = substituteType(
+                                ownershipFieldType(target.field()),
+                                genericBindings(
+                                        target.owner().genericParameters(),
                                         target.ownerType().arguments()));
                     }
                 }
             }
-            if (fieldType == null || fieldType.name().equals("$infer$") || fieldType.isBorrow()) {
+            if (fieldType == null || fieldType.name().equals("$infer$")
+                    || fieldType.isBorrow()) {
                 throw error("projected borrow requires a known owned field type for '"
                         + member.member() + "'");
             }
-            return new BorrowPlace(receiver.owner(), fieldType);
+            ArrayList<ProjectionStep> steps =
+                    new ArrayList<>(receiver.steps());
+            steps.add(new FieldProjection(member.member()));
+            return new BorrowPlace(receiver.owner(), fieldType, steps);
         }
         if (operand instanceof Ast.IndexExpr indexed) {
-            BorrowPlace receiver = borrowPlace(indexed.receiver(), scope);
-            // A computed index may call a mutation/side-effect before a loan is
-            // issued. Only lexical integer bindings/literals are admissible.
+            BorrowPlace receiver = resolveBorrowPlace(indexed.receiver(), scope);
             if (!(indexed.index() instanceof Ast.NameExpr)
-                    && !(indexed.index() instanceof Ast.LiteralExpr)) {
+                    && !(indexed.index() instanceof Ast.LiteralExpr)
+                    && !(indexed.index() instanceof Ast.UnaryExpr)) {
                 throw error("projected borrow index must be a stable name or literal");
             }
             checkExpr(indexed.index(), scope, false);
-            Ast.TypeRef type = receiver.type();
-            if (type.isBorrow()) type = type.borrowedTarget();
-            if (!((type.name().equals("Array") || type.name().equals("List"))
-                    && type.arguments().size() == 1)) {
-                throw error("projected borrow index requires a statically typed Array/List");
-            }
-            Ast.TypeRef element = type.arguments().getFirst();
-            if (element.name().equals("$infer$") || element.isBorrow()) {
+
+            Ast.TypeRef receiverType = receiver.type();
+            if (receiverType.isBorrow()) receiverType = receiverType.borrowedTarget();
+            Object constant = computedIndexConstant(indexed.index(), scope);
+            Ast.TypeRef element = indexedElementType(indexed, receiverType, scope);
+            if (element == null || element.name().equals("$infer$") || element.isBorrow()) {
                 throw error("projected borrow index requires a known owned element type");
             }
-            return new BorrowPlace(receiver.owner(), element);
+
+            ProjectionStep step;
+            if ((receiverType.name().equals("Array")
+                    || receiverType.name().equals("List"))
+                    && receiverType.arguments().size() == 1) {
+                step = constant instanceof Long value
+                        ? new IndexProjection(value)
+                        : WildcardProjection.INSTANCE;
+            } else if (constant instanceof String field) {
+                step = new FieldProjection(field);
+            } else if (constant instanceof Long index) {
+                step = new IndexProjection(index);
+            } else {
+                throw error("computed fixed-product borrow requires an exact compile-time key/index");
+            }
+
+            ArrayList<ProjectionStep> steps =
+                    new ArrayList<>(receiver.steps());
+            steps.add(step);
+            return new BorrowPlace(receiver.owner(), element, steps);
         }
         throw error("borrow requires a named owner or stable field/index projection of one");
     }
@@ -2432,33 +2603,11 @@ public final class OwnershipChecker {
     }
 
     private void validateBorrow(VarState owner, boolean mutable) {
-        VarState root = ownershipRoot(owner);
-        if (root.moved) throw error("cannot borrow moved value '" + owner.debugName + "'");
-        if (mutable) {
-            if (owner.type.isReadonlyRecordType()) {
-                throw error("cannot mutably borrow readonly structural record '" + owner.debugName + "'");
-            }
-            if (owner.kind == ValueKind.IMM_BORROW)
-                throw error("cannot mutably reborrow a shared borrow '" + owner.debugName + "'");
-            // An incoming exclusive loan may be reborrowed for a call, even
-            // though its parameter binding itself cannot be reassigned.
-            // This does not grant mutability to an owned immutable binding
-            // or to any shared loan, and all live-loan conflict checks below
-            // still apply.
-            if (!owner.mutable && !(owner.origin == Origin.PARAM
-                    && owner.kind == ValueKind.MUT_BORROW))
-                throw error("cannot mutably borrow immutable owner '" + owner.debugName + "'");
-            if (root.mutableBorrowed || root.immutableBorrows > 0) throw error("cannot mutably borrow '" + owner.debugName + "' while another borrow is active");
-        } else if (root.mutableBorrowed) {
-            throw error("cannot immutably borrow '" + owner.debugName + "' while a mutable borrow is active");
-        }
+        validateBorrow(new BorrowPlace(owner, owner.type, List.of()), mutable);
     }
 
     private void beginPersistentBorrow(VarState owner, boolean mutable) {
-        validateBorrow(owner, mutable);
-        VarState root = ownershipRoot(owner);
-        if (mutable) root.mutableBorrowed = true;
-        else root.immutableBorrows++;
+        beginPersistentBorrow(new BorrowPlace(owner, owner.type, List.of()), mutable);
     }
 
     private boolean isBorrowValue(ValueInfo value) {
