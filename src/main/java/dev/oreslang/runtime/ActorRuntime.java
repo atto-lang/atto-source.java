@@ -1208,6 +1208,99 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Opaque, detached snapshot backed by a JVM array whose full byte length
+     * remains charged to its originating actor AND this runtime until closed
+     * or the actor's physical finalization. Access never exposes the array.
+     */
+    final class ActorShardSnapshotLease implements AutoCloseable {
+        private final ActorCell<?> cell;
+        private final double[] values;
+        private final long bytes;
+        private boolean revoked; // guarded by cell.lifecycleLock
+
+        private ActorShardSnapshotLease(ActorCell<?> cell, double[] values, long bytes) {
+            this.cell = cell;
+            this.values = values;
+            this.bytes = bytes;
+        }
+
+        int length() { return values.length; }
+
+        double read(int index) {
+            synchronized (cell.lifecycleLock) {
+                if (revoked || cell.finalized) {
+                    throw new IllegalStateException("shard snapshot revoked");
+                }
+                // Detached handles can be read by trusted host code, but
+                // must not become a backdoor to another guest actor.
+                ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+                if (current != null &&
+                        (current.runtime() != ActorRuntime.this
+                                || !current.actorId().equals(cell.ref.id()))) {
+                    throw new SecurityException("foreign actor cannot read shard snapshot");
+                }
+                return values[index];
+            }
+        }
+
+        void writeFromOwner(int index, double value) {
+            synchronized (cell.lifecycleLock) {
+                if (currentActor.get() != cell || revoked || cell.finalized) {
+                    throw new SecurityException("snapshot initialization requires owner turn");
+                }
+                values[index] = value;
+            }
+        }
+
+        private void revoke() {
+            synchronized (cell.lifecycleLock) {
+                if (revoked) return;
+                revoked = true;
+                java.util.Arrays.fill(values, 0.0);
+                cell.shardSnapshotLeases.remove(this);
+                if (cell.shardReservedBytes < bytes) {
+                    throw new IllegalStateException("snapshot accounting underflow");
+                }
+                cell.shardReservedBytes -= bytes;
+                releaseSharedRuntimeBytes(bytes);
+            }
+        }
+
+        @Override public void close() { revoke(); }
+        private void revokeFromActorStop() { revoke(); }
+    }
+
+    ActorShardSnapshotLease reserveActorShardSnapshot(int rows) {
+        if (rows <= 0) throw new IllegalArgumentException("snapshot must be nonempty");
+        final long bytes = Math.multiplyExact((long) rows, Double.BYTES);
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || cell.kind == ActorKind.UNTRUSTED) {
+            throw new SecurityException("snapshot creation requires trusted owning actor");
+        }
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || closed.get()) {
+                throw terminated(cell.ref);
+            }
+            final long total = Math.addExact(cell.shardReservedBytes, bytes);
+            if (total > cell.policy.maxHeapBytes()) {
+                throw new IllegalStateException("actor snapshot quota exceeded");
+            }
+            reserveSharedRuntimeBytes(bytes, "actor column snapshot");
+            final double[] contents;
+            try {
+                contents = new double[rows];
+            } catch (RuntimeException | Error failure) {
+                releaseSharedRuntimeBytes(bytes);
+                throw failure;
+            }
+            ActorShardSnapshotLease lease = new ActorShardSnapshotLease(cell, contents, bytes);
+            cell.shardReservedBytes = total;
+            cell.shardSnapshotLeases.add(lease);
+            return lease;
+        }
+    }
+
     private record MessageEnvelope(
             Object value,
             Runnable release,
@@ -6877,6 +6970,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;
         private final Set<ActorShardLease> shardLeases = ConcurrentHashMap.newKeySet();
+        private final Set<ActorShardSnapshotLease> shardSnapshotLeases = ConcurrentHashMap.newKeySet();
         /** Guarded by lifecycleLock; private and shared shard bytes both counted. */
         private long shardReservedBytes;
         private final AtomicBoolean scheduled = new AtomicBoolean();
@@ -7244,6 +7338,10 @@ public final class ActorRuntime implements AutoCloseable {
                 lease.revokeFromActorStop();
             }
             shardLeases.clear();
+            for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
+                snapshot.revokeFromActorStop();
+            }
+            shardSnapshotLeases.clear();
             if (memorySlice != null) memorySlice.close();
             try {
                 actorExitHook.accept(executionDomain);
