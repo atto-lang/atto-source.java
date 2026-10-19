@@ -171,17 +171,22 @@ changes to the workflows it contains were independently reviewed.
 Because a branch-protection toggle cannot prove that any workflow is actually
 owned, the publisher also reads `.github/CODEOWNERS` from the **pinned
 destination commit SHA**, verifies its declared length and Git blob digest,
-and requires the final two effective non-comment rules to be, in order:
+and requires the **entire effective non-comment policy** to contain
+exactly these three rules, in order:
 
 ```text
+* @ORESoftware
 /.github/ @ORESoftware
 /.github/CODEOWNERS @ORESoftware
 ```
 
-The final-rule requirement is deliberately conservative: if a later rule
-overrides workflow ownership, or if CODEOWNERS cannot be read or validated,
-export is denied. These rules must be installed through an independently
-reviewed destination PR; an unreviewed local policy change is not authority.
+Checking only the terminal workflow rules is insufficient: an intervening
+`/scripts/ @untrusted` rule can override the global owner for provenance
+scripts without changing the final two lines. Extra active rules, owner
+substitutions, missing entries, or unreadable/forged CODEOWNERS bytes all
+deny export **before the first private blob is uploaded**. The destination
+must install this exact policy through independent security review; an
+unreviewed draft branch is not authority.
 
 The destination's default branch is pinned to one exact
 `refs/heads/BRANCH` reference with explicit Git object type `commit`.
