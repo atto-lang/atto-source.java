@@ -9,6 +9,9 @@ public final class Types {
 
     public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
 
+    /** Distinguishes structural records from concrete closed struct shapes. */
+    public enum AggregateKind { RECORD, STRUCT }
+
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
     }
@@ -41,9 +44,22 @@ public final class Types {
      * structural compatibility dimension: it prevents mutation from being
      * regained through aliases while preserving ordinary shape matching.
      */
-    public record Record(Map<String, Type> members, boolean readOnly) implements Type {
-        public Record { members = Map.copyOf(members); }
-        public Record(Map<String, Type> members) { this(members, false); }
+    public record Record(Map<String, Type> members, boolean readOnly, AggregateKind kind) implements Type {
+        public Record {
+            members = Map.copyOf(members);
+            kind = Objects.requireNonNull(kind, "aggregate kind");
+            if (kind == AggregateKind.STRUCT && readOnly) {
+                throw new IllegalArgumentException(
+                        "struct mutability is a binding/borrow capability, not a readonly structural type bit");
+            }
+        }
+        public Record(Map<String, Type> members) { this(members, false, AggregateKind.RECORD); }
+        public Record(Map<String, Type> members, boolean readOnly) {
+            this(members, readOnly, AggregateKind.RECORD);
+        }
+        public static Record struct(Map<String, Type> members) {
+            return new Record(members, false, AggregateKind.STRUCT);
+        }
     }
 
     public record Function(
@@ -151,6 +167,7 @@ public final class Types {
             return a != b && !(isNumeric(a) && isNumeric(b));
         }
         if (first instanceof Record a && second instanceof Record b) {
+            if (a.kind() != b.kind()) return true;
             // Only conflicting *known* fields prove disjointness. Missing keys do not.
             for (var entry : a.members().entrySet()) {
                 Type candidate = b.members().get(entry.getKey());
@@ -231,6 +248,12 @@ public final class Types {
         }
 
         if (from instanceof Record source && to instanceof Record target) {
+            if (source.kind() != target.kind()) return false;
+            // Structs are closed concrete shapes: unlike records, they do not
+            // participate in row-width subtyping. A lexical infer<T> alias can
+            // therefore name the exact generated struct shape.
+            if (source.kind() == AggregateKind.STRUCT
+                    && source.members().size() != target.members().size()) return false;
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
                 Type actual = source.members().get(required.getKey());
                 if (actual == null || !isAssignable(actual, required.getValue())) return false;
