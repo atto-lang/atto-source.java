@@ -859,12 +859,14 @@ public final class OwnershipChecker {
                         || binding.mutableReferent()
                         || binding.declaredType() == null
                         || !binding.declaredType().name().equals(shortAlias)
-                        || !(binding.initializer() instanceof Ast.ObjectExpr object
-                             && object.inferredAggregate()))) {
+                        || !((binding.initializer() instanceof Ast.ObjectExpr object
+                             && object.inferredAggregate())
+                             || binding.initializer() instanceof Ast.TupleExpr))) {
                 throw error("invalid validated short inferred type alias");
             }
             if (value.type.name().equals("$infer$")
-                    || shortAlias != null && !value.type.isClosedAggregateType()) {
+                    || shortAlias != null && !(value.type.isClosedAggregateType()
+                            || value.type.isTupleType())) {
                 throw error("cannot bind inferred alias '" + inferredAlias
                         + "' to an unknown or non-aggregate ownership type");
             }
