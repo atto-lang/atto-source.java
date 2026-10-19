@@ -103,4 +103,47 @@ final class ActorMemoryReservationFailureAtomicityTest {
             }
         }
     }
+
+    @Test
+    void duplicateCloseRefundsReservationOnce() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var slice = isolatedSlice(runtime);
+            var reservation = isolatedReservation(runtime, slice, 16);
+            AtomicLong local = counter(slice, "usedBytes");
+            AtomicLong global = counter(runtime, "privateMemoryBytes");
+            local.set(16);
+            global.set(16);
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Thread[] workers = new Thread[8];
+            try {
+                for (int i = 0; i < workers.length; i++) {
+                    workers[i] = new Thread(() -> {
+                        try {
+                            start.await();
+                            reservation.close();
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        }
+                    }, "memory-reservation-close-" + i);
+                    workers[i].start();
+                }
+                start.countDown();
+                for (Thread worker : workers) {
+                    worker.join(5000);
+                    assertFalse(worker.isAlive(), "reservation close worker stalled");
+                }
+                assertNull(failure.get(), "competing closes must never double refund");
+                assertEquals(0, local.get());
+                assertEquals(0, global.get());
+            } finally {
+                start.countDown();
+                for (Thread worker : workers) {
+                    if (worker != null) worker.join(5000);
+                }
+                global.set(local.get());
+                slice.close();
+            }
+        }
+    }
 }
