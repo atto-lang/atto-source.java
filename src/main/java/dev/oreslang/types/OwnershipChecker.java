@@ -1219,8 +1219,11 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = indexedElementType(indexed, receiver.type, scope);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
-            if (consuming && isRootedAtActorSelf(indexed.receiver(), scope) && elementKind != ValueKind.COPY) {
-                throw error("cannot move actor-owned indexed state out of its mailbox turn");
+            if (consuming && elementKind != ValueKind.COPY) {
+                if (isRootedAtActorSelf(indexed.receiver(), scope)) {
+                    throw error("cannot move actor-owned indexed state out of its mailbox turn");
+                }
+                throw error("cannot consume a move-only indexed projection until projection-level move tracking is available; access it through a borrow or move the containing owner");
             }
             return new ValueInfo(elementType, elementKind, null);
         }
