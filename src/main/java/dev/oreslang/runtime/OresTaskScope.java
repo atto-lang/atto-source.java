@@ -94,7 +94,7 @@ public final class OresTaskScope implements AutoCloseable {
                 child = runtime.submitTask(work);
                 slot.task = child; // allocation-free publication into owner
             } catch (RuntimeException | Error admissionFailure) {
-                tasks.remove(slot);
+                discardUnadmittedSlot(slot, admissionFailure);
                 throw admissionFailure;
             }
 
@@ -196,7 +196,7 @@ public final class OresTaskScope implements AutoCloseable {
                     }
                 });
             } catch (RuntimeException | Error preparationFailure) {
-                if (slot != null) tasks.remove(slot);
+                discardUnadmittedSlot(slot, preparationFailure);
                 try {
                     onPhysicalExit.run();
                 } catch (RuntimeException | Error releaseFailure) {
@@ -222,7 +222,7 @@ public final class OresTaskScope implements AutoCloseable {
                     }
                 });
             } catch (RuntimeException | Error rejectedBeforeAdmission) {
-                tasks.remove(admittedSlot);
+                discardUnadmittedSlot(admittedSlot, rejectedBeforeAdmission);
                 try {
                     onPhysicalExit.run();
                 } catch (RuntimeException | Error releaseFailure) {
@@ -236,6 +236,23 @@ public final class OresTaskScope implements AutoCloseable {
             ownedChild.attachCompletion(completion);
             return ownedChild;
         }
+        }
+    }
+
+    /**
+     * Best-effort cleanup for a Task that was provably never admitted.
+     * A fault-injected or corrupted owner Set may itself throw during remove.
+     * Preserve the original admission error, but never allow that secondary
+     * bookkeeping failure to skip release of a previously acquired image pin.
+     */
+    private void discardUnadmittedSlot(
+            OwnershipSlot slot, Throwable admissionFailure) {
+        if (slot == null) return;
+        try {
+            tasks.remove(slot);
+        } catch (RuntimeException | Error cleanupFailure) {
+            if (cleanupFailure != admissionFailure)
+                admissionFailure.addSuppressed(cleanupFailure);
         }
     }
 
