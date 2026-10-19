@@ -1698,6 +1698,7 @@ public final class TypeChecker {
                 || findTypeAlias(name) != null || modules.containsKey(name)
                 || importedNames.contains(name)
                 || env.hasReservedInferredType(name) || env.lookupInferredType(name) != null
+                || env.hasSeenInferredType(name)
                 || hiddenLinkedAliasNames.contains(name)) {
             return false;
         }
@@ -8916,11 +8917,22 @@ public final class TypeChecker {
         private final Map<String, String> constantStrings = new HashMap<>();
         private final Map<String, Type> inferredTypes = new HashMap<>();
         private final Set<String> reservedInferredNames = new HashSet<>();
+        /**
+         * Shared by lexical descendants of one callable/root environment.
+         * A short inferred alias may not silently reuse a name whose defining
+         * block has ended; a separate callable gets a fresh domain.
+         */
+        private final Set<String> seenInferredNames;
         private void reserveInferredType(String name) {
             if (hasReservedInferredType(name) || lookupInferredType(name) != null
+                    || seenInferredNames.contains(name)
                     || !reservedInferredNames.add(name)) {
                 throw new IllegalArgumentException("duplicate or shadowed inferred type '" + name + "'");
             }
+            seenInferredNames.add(name);
+        }
+        private boolean hasSeenInferredType(String name) {
+            return seenInferredNames.contains(name);
         }
         private boolean hasReservedInferredType(String name) {
             return reservedInferredNames.contains(name)
@@ -8955,6 +8967,8 @@ public final class TypeChecker {
             this.parent = parent;
             this.descendantsNonLexical = descendantsNonLexical;
             this.deferredCaptureBoundary = deferredCaptureBoundary;
+            this.seenInferredNames =
+                    parent == null ? new HashSet<>() : parent.seenInferredNames;
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private void define(String name, Type type, Ast.BindingKind kind) {
