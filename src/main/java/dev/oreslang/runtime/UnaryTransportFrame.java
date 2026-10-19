@@ -54,7 +54,7 @@ final class UnaryTransportFrame {
 
     private static byte[] body(Envelope envelope) {
         Objects.requireNonNull(envelope, "envelope");
-        byte[] payload = envelope.payload();
+        byte[] payload = envelope.payload;
         ByteBuffer out = ByteBuffer.allocate(ENVELOPE_BYTES + payload.length).order(ByteOrder.BIG_ENDIAN);
         out.put((byte) VERSION).put((byte) envelope.kind().wire)
                 .putLong(envelope.sessionId()).putLong(envelope.generation())
@@ -106,7 +106,15 @@ final class UnaryTransportFrame {
 
     static void writeTcp(OutputStream output, Envelope envelope) throws IOException {
         Objects.requireNonNull(output, "output");
-        output.write(encodeTcp(envelope));
+        Objects.requireNonNull(envelope, "envelope");
+        java.io.DataOutputStream writer = new java.io.DataOutputStream(output);
+        writer.writeInt(ENVELOPE_BYTES + envelope.payload.length);
+        writer.writeByte(VERSION);
+        writer.writeByte(envelope.kind().wire);
+        writer.writeLong(envelope.sessionId());
+        writer.writeLong(envelope.generation());
+        writer.writeLong(envelope.correlationId());
+        writer.write(envelope.payload);
     }
 
     /**
@@ -168,13 +176,22 @@ final class UnaryTransportFrame {
         return new TcpHead(kind, sessionId, generation, correlationId, payloadBytes);
     }
 
-    /** Read the payload for a previously validated/admitted TCP header. */
-    static Envelope readTcpPayload(InputStream input, TcpHead head) throws IOException {
+    /**
+     * Read the payload for a previously validated/admitted TCP header.
+     * The returned array is a fresh allocation owned by the caller.
+     */
+    static byte[] readTcpPayloadBytes(InputStream input, TcpHead head) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(head, "head");
         byte[] payload = new byte[head.payloadBytes()];
         try { new DataInputStream(input).readFully(payload); }
         catch (EOFException incomplete) { throw new EOFException("truncated TCP unary frame payload"); }
+        return payload;
+    }
+
+    /** Defensive envelope API layered on the owned-payload reader. */
+    static Envelope readTcpPayload(InputStream input, TcpHead head) throws IOException {
+        byte[] payload = readTcpPayloadBytes(input, head);
         return new Envelope(head.kind(), head.sessionId(), head.generation(),
                 head.correlationId(), payload);
     }
