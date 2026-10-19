@@ -117,3 +117,50 @@ remains disabled.
 the new resource and resolved-place regressions. These are checked in
 but not claimed executed. CI on current exact head must be inspected
 separately. No repository source was mirrored to a separate organization.
+
+## Compiler-to-verifier preflight slice (October 19, 2026)
+
+- Removed the public, unchecked `admit(List<Claim>)` API from
+  `TaskAccessVerifier`. Reservations now pass through `admitTyped` and
+  its resolved referent + Send/Sync validation. `reserveVerified` is
+  private. All 37 verifier JUnit fixtures were migrated to typed admission.
+- Added `TaskBorrowCompilerBridge.admitResolvedScalars`: a *compiler-only*
+  adapter converting a resolved `Ast.TypeRef` into the canonical
+  `Types.Type`. It currently permits **whole, process-local, fully
+  resolved `int`, `bool`, `float` only**. It refuses borrowed,
+  unresolved, nominal, aggregate, field/range, actor or untrusted captures.
+  It obtains types by looking up each place, never by taking a caller's
+  type annotation. This is a safety preflight, **not** source Task emission.
+- Added a cross-child referent-type consistency ledger. One place at one
+  allocation generation cannot be admitted first as one type and later as
+  another type, even with no remaining children. A checked structural
+  barrier advances the generation and discards old place witnesses.
+  Tracking is bounded to 65536 places; all changes commit only after
+  a successful loan reservation.
+- Added eight bridge JUnit regression methods for compatible/exclusive
+  access, known-disjoint roots, unsupported types/layouts, actor isolation,
+  inconsistent lookup and generation-fenced type transitions.
+- **Current checked-in total: 45 JUnit methods** across the two classes.
+  The exact-blob static check of four Java files passed 13/13 invariants,
+  including syntax delimiter balance. **No source compilation or JUnit
+  execution is claimed.** Exact-head
+  [fast-ci 39206961093](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39206961093)
+  failed with zero executed steps and no assigned runner.
+
+### Stop conditions for guest compiler integration
+
+- The current Send/Sync stack still has no `Ast.TaskExpr`/
+  `Ast.TaskBlockStmt` nodes. They live in independent draft #1377.
+  **Do not** copy the full #1377 source branch onto this stack and overwrite
+  newer Send/Sync type-checker/ownership fixes. Reconcile dependency
+  branches before adding a live `OwnershipChecker.checkTaskBody` call.
+- The bridge's compiler lookup callback and root identities are not yet
+  authenticated IR witness objects. A real source compiler must derive
+  these directly from a typed and lifetime-checked MIR.
+- Scalar-only preflight deliberately does **not** establish any SoA field
+  disjointness or array range bounds. Future MIR field/range lowering
+  must be accompanied by storage layout, alias and lifetime proofs.
+- Scheduler TaskScope must authenticate *physical* completion (including
+  defers, native pins, code-version leases, stop/restart) before any
+  `quiescent` call is emitted. Cancellation alone never releases claims.
+- Existing `TypeChecker` guest Task source fail-closed guard must stay on.
