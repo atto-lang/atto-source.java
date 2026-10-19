@@ -7,21 +7,31 @@ package dev.oreslang.runtime;
      */
     public final class TaskScope {
         private final OresFuture<Void> drained;
-        private OresFuture.Callback<Void> completion;
-        private int active;
+         private int active;
         private boolean closing;
         private boolean published;
         private Throwable firstFailure;
 
         public TaskScope() {
-            drained = OresFuture.fromCallback(callback -> completion = callback);
+            // A join is an internal lifetime gate, never a cancellable user Future.
+            // An externally cancelled join could otherwise release borrowed memory
+            // while a child still owns its physical execution lease.
+            drained = new OresFuture<>(() -> false, () -> { });
         }
 
         public synchronized Registration reserve() {
-            // A still-running child may spawn another child while the parent
-            // scope is closing. No new child can appear after active reaches 0.
-            if (closing && active == 0) {
-                throw new IllegalStateException("Task spawned after scope quiescence");
+            return reserve(null);
+        }
+
+        /**
+         * After close(), only a still-executing child that holds an active
+         * ticket from THIS scope can admit a grandchild. A captured Env or
+         * unrelated root task cannot reopen the scope during shutdown.
+         */
+        public synchronized Registration reserve(Registration parent) {
+            if (closing && (parent == null || !parent.activeIn(this))) {
+                throw new IllegalStateException(
+                        "Task spawned after scope closure without a live parent permit");
             }
             if (active == Integer.MAX_VALUE) {
                 throw new IllegalStateException("Task scope admission exhausted");
@@ -55,8 +65,8 @@ package dev.oreslang.runtime;
                 published = true;
                 failure = firstFailure;
             }
-            if (failure != null) completion.reject(failure);
-            else completion.resolve(null);
+            if (failure != null) drained.failFromRuntime(failure);
+            else drained.completeFromRuntime(null);
         }
 
         public static final class Registration {
@@ -67,6 +77,10 @@ package dev.oreslang.runtime;
             private Throwable failure;
 
             private Registration(TaskScope scope) { this.scope = scope; }
+
+            private synchronized boolean activeIn(TaskScope expected) {
+                return scope == expected && !notified && !quiescent;
+            }
 
             public void attach(OresFuture<?> future) {
                 future.whenCompleteRuntime((value, cause) -> settle(cause, false));
