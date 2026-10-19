@@ -214,6 +214,12 @@ def collect_source(root, trusted_root):
         relative = source.relative_to(trusted)
     except (OSError, RuntimeError, ValueError) as exc:
         raise Denied("source directory escapes trusted checkout") from exc
+    # A real Git checkout necessarily has repository metadata at its root.
+    # Exact-tree publication must be able to snapshot that checkout root while
+    # excluding metadata that is not part of HEAD^{tree}. A nested .git path
+    # remains forbidden so a caller cannot hide arbitrary content inside a
+    # partial source directory.
+    skip_root_git_metadata = source == trusted
 
     directories = []
     entries = []
@@ -243,7 +249,11 @@ def collect_source(root, trusted_root):
             raise Denied("source directory cannot be listed safely") from exc
         names.sort()
         for name in names:
-            if (name in (".", "..", ".git")
+            if name == ".git":
+                if depth == 0 and prefix == "" and skip_root_git_metadata:
+                    continue
+                raise Denied("source path contains unsupported .git metadata")
+            if (name in (".", "..")
                     or any(ord(ch) < 32 or ord(ch) == 127 for ch in name)
                     or "\\" in name):
                 raise Denied("source path contains unsupported name")
