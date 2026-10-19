@@ -121,8 +121,8 @@ final class ConcurrencyTestCommand {
                 String text = out.toString(StandardCharsets.UTF_8);
                 System.out.print(text);
                 System.err.print(err.toString(StandardCharsets.UTF_8));
-                if (result == 0 && !text.contains("ORES_TEST|SUMMARY|")) {
-                    System.err.println("oreslang test: native test summary missing; this is not a passing test suite");
+                if (result == 0 && !validNativeSuiteSummary(text)) {
+                    System.err.println("oreslang test: missing, malformed or inconsistent native test summary");
                     result = 1;
                 }
                 if (deadlock && detected > 0) {
@@ -146,5 +146,39 @@ final class ConcurrencyTestCommand {
             if (result != 0) return result;
         }
         return 0;
+    }
+
+    /** One independently consistent native test-suite receipt per invocation. */
+    private static boolean validNativeSuiteSummary(String output) {
+        java.util.regex.Pattern summary = java.util.regex.Pattern.compile(
+                "ORES_TEST\\\\|SUMMARY\\\\|total=(\\\\d+)\\\\|passed=(\\\\d+)"
+                + "\\\\|failed=(\\\\d+)\\\\|skipped=(\\\\d+)\\\\|filtered=(\\\\d+)");
+        long[] counted = new long[3];
+        int seen = 0;
+        long total = -1, passed = -1, failed = -1, skipped = -1;
+        for (String line : output.lines().toList()) {
+            if (line.startsWith("ORES_TEST|PASS|")) counted[0]++;
+            else if (line.startsWith("ORES_TEST|FAIL|")) counted[1]++;
+            else if (line.startsWith("ORES_TEST|SKIP|")) counted[2]++;
+            else if (line.startsWith("ORES_TEST|SUMMARY|")) {
+                var match = summary.matcher(line);
+                if (!match.matches()) return false;
+                if (++seen > 1) return false;
+                try {
+                    total = Long.parseLong(match.group(1));
+                    passed = Long.parseLong(match.group(2));
+                    failed = Long.parseLong(match.group(3));
+                    skipped = Long.parseLong(match.group(4));
+                    long filtered = Long.parseLong(match.group(5));
+                    if (total < 1 || passed < 0 || failed != 0 || skipped < 0 || filtered < 0
+                            || total != passed + failed + skipped) return false;
+                } catch (NumberFormatException malformed) {
+                    return false;
+                }
+            }
+        }
+        return seen == 1 && counted[0] == passed
+                && counted[1] == failed && counted[2] == skipped
+                && counted[0] + counted[1] + counted[2] == total;
     }
 }
