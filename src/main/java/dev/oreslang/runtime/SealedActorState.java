@@ -209,8 +209,12 @@ public final class SealedActorState {
      */
     public ScalarPublication prepareScalarPublication(ScalarSnapshot snapshot,
                                                        Map<String, Object> replacements) {
-        requireOwner();
-        if (current != null || stateCarrier.get() != null)
+        requireActorAuthority();
+        // Detached preparation must not execute from inside this carrier's
+        // live loan, but another maxThreads carrier may hold state while this
+        // carrier computes/stages from an immutable snapshot. Publication will
+        // still compare the snapshot revision/version under exclusive WRITE.
+        if (stateCarrier.get() == Thread.currentThread())
             throw new IllegalStateException("ML_PREPARE_WITH_LIVE_STATE_LOAN");
         if (snapshot == null || snapshot.issuer != this)
             throw new SecurityException("ML_INVALID_SNAPSHOT_CAPABILITY");
@@ -237,8 +241,13 @@ public final class SealedActorState {
         if (!(proposed instanceof Long next)
                 || next.longValue() != snapshot.version + 1)
             throw new IllegalArgumentException("ML_VERSION_ADVANCE_REQUIRED");
-        return new ScalarPublication(this, snapshot.versionField, snapshot.version,
+        ScalarPublication publication = new ScalarPublication(
+                this, snapshot.versionField, snapshot.version,
                 snapshot.revision, staged);
+        // If retirement won while preparation was allocating/validating,
+        // revoke the result before it escapes.
+        requireActorAuthority();
+        return publication;
     }
 
     private long nextMutationRevision() {
