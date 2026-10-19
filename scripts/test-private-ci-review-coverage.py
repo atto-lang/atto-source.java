@@ -4,6 +4,7 @@
 No GitHub API, credentials, compiler checkout, or source transfer is needed.
 This test itself MUST be both CODEOWNED and a workflow path-filter input.
 """
+import ast
 from pathlib import Path
 import re
 import unittest
@@ -176,6 +177,26 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
         cls.owners = (ROOT / ".github" / "CODEOWNERS").read_text()
         cls.workflow = (ROOT / ".github" / "workflows"
                         / "private-ci-mirror-preflight.yml").read_text()
+
+    def test_runtime_source_owner_inventory_matches_review_manifest(self):
+        # Two independently maintained security inventories must not drift:
+        # the runtime admission gate and the source-free workflow reviewer.
+        # Parse constants as data; never import/execute a potentially changed
+        # publisher from this review-coverage test.
+        source = (ROOT / "scripts" / "publish-private-ci-source.py").read_text()
+        tree = ast.parse(source)
+        assignments = [
+            stmt.value for stmt in tree.body
+            if isinstance(stmt, ast.Assign)
+            and any(isinstance(target, ast.Name)
+                    and target.id == "SOURCE_SECURITY_PATHS"
+                    for target in stmt.targets)
+        ]
+        self.assertEqual(len(assignments), 1)
+        declared = ast.literal_eval(assignments[0])
+        self.assertIsInstance(declared, tuple)
+        self.assertEqual(len(declared), len(set(declared)))
+        self.assertEqual(set(declared), set(SECURITY_PATHS))
 
     def test_current_checkout_is_reviewed_and_triggered(self):
         validate(self.owners, self.workflow)
