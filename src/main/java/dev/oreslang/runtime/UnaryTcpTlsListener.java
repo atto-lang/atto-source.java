@@ -1,10 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -12,7 +10,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
-import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLServerSocket;
 
 /**
@@ -39,54 +36,6 @@ final class UnaryTcpTlsListener implements AutoCloseable {
     private final AtomicBoolean serving = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile Thread acceptingThread;
-
-    /**
-     * Production bind path: enforce supervisor ownership and scoped NET
-     * permission before the socket is created or bound.
-     */
-    static UnaryTcpTlsListener bind(
-            OresContext context,
-            SSLContext tlsContext,
-            String host,
-            int port,
-            int backlog,
-            UnaryTcpSessionAdapter.Limits limits,
-            UnaryTcpMutualTlsAuthenticator.CertificateAuthorizer authorizer,
-            UnaryTcpSessionAdapter.Dispatcher dispatcher) throws IOException {
-        Objects.requireNonNull(context, "context");
-        Objects.requireNonNull(tlsContext, "tlsContext");
-        if (ActorRuntime.inActorExecution())
-            throw new SecurityException("unary TCP listeners belong to the supervisor");
-        if (host == null || host.isBlank()
-                || port < 0 || port > 65535
-                || backlog < 1 || backlog > 65536) {
-            throw new IllegalArgumentException("invalid unary TCP listener endpoint");
-        }
-
-        context.requirePermission(
-                RuntimePermissions.Permission.NET,
-                host.toLowerCase(Locale.ROOT) + ":" + port,
-                "unary.tcp.listen");
-
-        SSLServerSocket endpoint = (SSLServerSocket)
-                tlsContext.getServerSocketFactory().createServerSocket();
-        boolean transferred = false;
-        try {
-            endpoint.bind(new InetSocketAddress(host, port), backlog);
-            UnaryTcpTlsListener bound = new UnaryTcpTlsListener(
-                    endpoint, limits, authorizer, dispatcher);
-            transferred = true;
-            return bound;
-        } finally {
-            if (!transferred) {
-                try {
-                    endpoint.close();
-                } catch (IOException ignored) {
-                    // Preserve the bind/configuration failure.
-                }
-            }
-        }
-    }
 
     UnaryTcpTlsListener(
             SSLServerSocket listener,
