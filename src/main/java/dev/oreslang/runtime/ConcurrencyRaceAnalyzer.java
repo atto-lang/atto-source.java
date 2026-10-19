@@ -18,6 +18,7 @@ import java.util.Objects;
 public final class ConcurrencyRaceAnalyzer {
     private static final int MAX_EVENTS = 100_000;
     private static final int MAX_FINDINGS = 1_000;
+    private static final int MAX_PARTICIPANTS = 256;
 
     public record Finding(String location, String priorParticipant,
                           String currentParticipant, String conflict) { }
@@ -25,7 +26,9 @@ public final class ConcurrencyRaceAnalyzer {
     private record Access(String participant, Map<String, Long> clock) { }
 
     private static final class Location {
-        Access lastWrite;
+        // Preserve one latest access per participant and mode. Overwriting a
+        // different participant's last writer would lose a concurrent history.
+        final Map<String, Access> writes = new HashMap<>();
         final Map<String, Access> reads = new HashMap<>();
     }
 
@@ -35,6 +38,7 @@ public final class ConcurrencyRaceAnalyzer {
     private final Map<String, Map<String, Long>> locks = new HashMap<>();
     private final List<Finding> findings = new ArrayList<>();
     private int events;
+    private long conflictCount;
 
     private static String key(String name) {
         Objects.requireNonNull(name, "identity");
@@ -49,7 +53,15 @@ public final class ConcurrencyRaceAnalyzer {
     }
 
     private Map<String, Long> clock(String participant) {
-        return clocks.computeIfAbsent(key(participant), ignored -> new LinkedHashMap<>());
+        String id = key(participant);
+        Map<String, Long> existing = clocks.get(id);
+        if (existing != null) return existing;
+        if (clocks.size() == MAX_PARTICIPANTS) {
+            throw new IllegalStateException("race analyzer participant budget exhausted");
+        }
+        Map<String, Long> fresh = new LinkedHashMap<>();
+        clocks.put(id, fresh);
+        return fresh;
     }
 
     private static void merge(Map<String, Long> destination, Map<String, Long> incoming) {
@@ -70,9 +82,12 @@ public final class ConcurrencyRaceAnalyzer {
     }
 
     private void conflict(String location, Access previous, Access current, String kind) {
-        if (previous != null && !happensBefore(previous.clock(), current.clock())
-                && findings.size() < MAX_FINDINGS) {
-            findings.add(new Finding(location, previous.participant(), current.participant(), kind));
+        if (previous != null && !happensBefore(previous.clock(), current.clock())) {
+            conflictCount = Math.addExact(conflictCount, 1L);
+            if (findings.size() < MAX_FINDINGS) {
+                findings.add(new Finding(location, previous.participant(),
+                        current.participant(), kind));
+            }
         }
     }
 
@@ -81,7 +96,9 @@ public final class ConcurrencyRaceAnalyzer {
         String loc = key(location);
         Access access = tick(participant);
         Location state = locations.computeIfAbsent(loc, ignored -> new Location());
-        conflict(loc, state.lastWrite, access, "write-read");
+        for (Access writer : state.writes.values()) {
+            conflict(loc, writer, access, "write-read");
+        }
         state.reads.put(participant, access);
     }
 
@@ -90,12 +107,13 @@ public final class ConcurrencyRaceAnalyzer {
         String loc = key(location);
         Access access = tick(participant);
         Location state = locations.computeIfAbsent(loc, ignored -> new Location());
-        conflict(loc, state.lastWrite, access, "write-write");
+        for (Access writer : state.writes.values()) {
+            conflict(loc, writer, access, "write-write");
+        }
         for (Access reader : state.reads.values()) {
             conflict(loc, reader, access, "read-write");
         }
-        state.reads.clear();
-        state.lastWrite = access;
+        state.writes.put(participant, access);
     }
 
     /** One unique, single-consumer message token, not a reusable channel name. */
@@ -132,5 +150,10 @@ public final class ConcurrencyRaceAnalyzer {
 
     public synchronized int eventCount() {
         return events;
+    }
+
+    /** Total observed conflicts; findings() is only the first 1000 examples. */
+    public synchronized long conflictCount() {
+        return conflictCount;
     }
 }
