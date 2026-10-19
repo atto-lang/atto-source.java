@@ -150,6 +150,50 @@ final class ThreadSafetyTraitsTest {
     }
 
     @Test
+    void malformedNestedNominalsCannotExploitTypeShortcuts() {
+        Type malformed = new Types.Named(null, List.of());
+        Type nested = new Types.Record(Map.of(
+                "payload", new Types.Named("Option", List.of(malformed))));
+
+        assertFalse(Types.isAssignable(nested, Types.Unknown.INSTANCE),
+                "Unknown compatibility must not bless malformed nested metadata");
+        assertFalse(Types.isAssignable(nested, new Types.Generic("T")),
+                "generic compatibility must not bless malformed nested metadata");
+        assertFalse(Types.areProvablyDisjoint(
+                nested,
+                new Types.Record(Map.of(
+                        "payload", new Types.Named(
+                                "Option", List.of(Types.Primitive.INT))))),
+                "malformed nested metadata cannot become a negative-type proof");
+        assertFalse(Types.isAssignable(
+                nested,
+                Types.notOf(new Types.Record(Map.of(
+                        "payload", new Types.Named(
+                                "Option", List.of(Types.Primitive.INT)))))),
+                "Not<T> admission must fail closed on malformed nested metadata");
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(5)
+    void malformedTypeValidationIsBoundedBeforeEqualityShortcuts() {
+        Type healthy = Types.Primitive.INT;
+        for (int i = 0; i < 200; i++) {
+            healthy = new Types.ListType(healthy);
+        }
+        assertTrue(Types.isAssignable(healthy, healthy));
+
+        Type tooDeep = Types.Primitive.INT;
+        for (int i = 0; i < 8192; i++) {
+            tooDeep = new Types.ListType(tooDeep);
+        }
+        assertFalse(Types.isAssignable(tooDeep, tooDeep),
+                "pathological direct Type graphs must deny instead of overflowing");
+        assertFalse(Types.areProvablyDisjoint(
+                tooDeep, Types.Primitive.STRING),
+                "disjointness proof must also obey structural validation budget");
+    }
+
+    @Test
     void legacySharedSafetyAndActorBoundariesDenyMalformedNominals() throws Exception {
         var constructor = TypeChecker.class.getDeclaredConstructor();
         constructor.setAccessible(true);
