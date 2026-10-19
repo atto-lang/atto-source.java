@@ -34,6 +34,7 @@ for program in javac java mvn git; do
 done
 
 echo "Exact-head Oreslang record verification: $actual_sha"
+bash scripts/check-record-parser.sh
 bash scripts/check-soa-snapshot.sh
 
 # The targeted suite includes a *real GraalVM guest execution*, not just
