@@ -230,6 +230,28 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
 
     public LogicalActorRef ref() { return logicalRef; }
 
+    /**
+     * Trusted host bridge for serialized proxy delivery. Physical mailbox
+     * admission and the drain watermark are both acquired under the SAME
+     * route lookup monitor: an upgrade cannot cut between them. The returned
+     * future succeeds only when the physical actor has completed every
+     * accepted message through this send, not when it was merely enqueued.
+     *
+     * No guest-visible per-message receipt is claimed here. A separate
+     * compiler-owned wire codec and authenticated completion protocol are
+     * required before parallel/async proxy dispatch is supported.
+     */
+    OresFuture<Void> sendAndDrainForProxy(Object message) {
+        requireBlockingHostSurface("proxy-send a logical source actor");
+        synchronized (routeLock) {
+            awaitUpgradeLocked();
+            requireOpenLocked();
+            reapRetiredLocked();
+            active.physical.send(message);
+            return active.physical.drain();
+        }
+    }
+
     public HotReloadManager.Generation generation() {
         synchronized (routeLock) {
             requireOpenLocked();
