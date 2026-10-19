@@ -13,6 +13,68 @@ import static org.junit.jupiter.api.Assertions.*;
  * single-state publication path. Does not claim compiler-lowered tensor VJP.
  */
 final class SealedActorMlScalarPublicationTest {
+    @Test void scalarSnapshotCannotBeInspectedByForeignActorOrHostThread() throws Exception {
+        var snapshotReady = new CountDownLatch(1);
+        var foreignChecked = new CountDownLatch(1);
+        var retired = new CountDownLatch(1);
+        var snapshotRef = new AtomicReference<SealedActorState.ScalarSnapshot>();
+        var stateRef = new AtomicReference<SealedActorState>();
+        var failure = new AtomicReference<Throwable>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var owner = runtime.<Integer>spawnShared(() -> (mail, context) -> {
+                try {
+                    if (mail == 1) {
+                        var state = new SealedActorState(context.self().id(),
+                                Map.of("version", "int", "weight", "int"),
+                                Map.of("version", 1L, "weight", 5L));
+                        stateRef.set(state);
+                        snapshotRef.set(state.critical(false,
+                                read -> read.snapshotScalars("version", "weight")));
+                        snapshotReady.countDown();
+                    } else if (mail == 2) {
+                        stateRef.get().retireFromRuntime(context.self().id());
+                        retired.countDown();
+                    }
+                } catch (Throwable thrown) {
+                    failure.compareAndSet(null, thrown);
+                    snapshotReady.countDown();
+                    foreignChecked.countDown();
+                    retired.countDown();
+                }
+            });
+            var foreign = runtime.<Integer>spawnShared(() -> (mail, context) -> {
+                try {
+                    assertTrue(snapshotReady.await(5, TimeUnit.SECONDS));
+                    var snapshot = snapshotRef.get();
+                    assertNotNull(snapshot);
+                    assertThrows(SecurityException.class,
+                            () -> snapshot.scalar("weight"));
+                    assertThrows(SecurityException.class,
+                            () -> snapshot.version());
+                    assertThrows(SecurityException.class,
+                            () -> snapshot.revision());
+                } catch (Throwable thrown) {
+                    failure.compareAndSet(null, thrown);
+                } finally {
+                    foreignChecked.countDown();
+                }
+            });
+
+            owner.send(1);
+            assertTrue(snapshotReady.await(5, TimeUnit.SECONDS));
+            var snapshot = snapshotRef.get();
+            assertNotNull(snapshot);
+            assertThrows(SecurityException.class, () -> snapshot.scalar("weight"),
+                    "host thread must not inspect actor snapshot");
+            foreign.send(1);
+            assertTrue(foreignChecked.await(5, TimeUnit.SECONDS));
+            owner.send(2);
+            assertTrue(retired.await(5, TimeUnit.SECONDS));
+            if (failure.get() != null) fail(failure.get());
+        }
+    }
+
     @Test void atomicScalarVersionPublicationAndAdversarialRecovery() throws Exception {
         var completion = new CountDownLatch(1);
         var failure = new AtomicReference<Throwable>();

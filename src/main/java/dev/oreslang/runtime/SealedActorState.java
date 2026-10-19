@@ -169,11 +169,19 @@ public final class SealedActorState {
             this.scalars = Map.copyOf(scalars);
         }
 
-        public long version() { return version; }
-        public long revision() { return revision; }
+        public long version() {
+            issuer.requireOwner();
+            return version;
+        }
+
+        public long revision() {
+            issuer.requireOwner();
+            return revision;
+        }
 
         /** Immutable scalar copied under the originating state loan. */
         public Object scalar(String name) {
+            issuer.requireOwner();
             if (!scalars.containsKey(name))
                 throw new IllegalArgumentException("scalar was not captured in snapshot: " + name);
             return scalars.get(name);
@@ -780,6 +788,10 @@ public final class SealedActorState {
                 || value instanceof java.math.BigInteger
                 || value instanceof java.math.BigDecimal
                 || value instanceof Boolean || value instanceof Character) return true;
+        // Structured loan escapes are limited to private-constructor immutable
+        // snapshots, both authority-bound to this exact state issuer.
+        if (value instanceof ScalarSnapshot snapshot)
+            return snapshot.issuer == this;
         if (value instanceof TensorSnapshotF64 snapshot)
             return snapshot.issuer == this && !snapshot.erased;
         // Avoid arbitrary mutable guest/Java wrappers and every possible
@@ -793,7 +805,7 @@ public final class SealedActorState {
      * quiesced, not by arbitrary guest code. The owner ID fences accidental
      * cross-actor finalization or stale actor incarnation references.
      */
-    public void retireFromRuntime(ActorRuntime.ActorId confirmedOwner) {
+    void retireFromRuntime(ActorRuntime.ActorId confirmedOwner) {
         if (!owner.equals(confirmedOwner)) {
             throw new SecurityException("cannot retire state for a foreign actor");
         }
