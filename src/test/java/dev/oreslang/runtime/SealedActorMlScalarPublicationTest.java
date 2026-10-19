@@ -26,9 +26,22 @@ final class SealedActorMlScalarPublicationTest {
                             Map.of("version", 1L, "weight", 5L,
                                    "optimizer", 0L, "name", "stage"));
 
+                    // Real host scalar forward/backward: y = w * x,
+                    // loss = (y - target)^2, dLoss/dWeight = 2*x*(y-target).
+                    // Compute all numerical operations AFTER releasing READ loan.
+                    long w = state.critical(false, read ->
+                            ((Number) read.read("weight")).longValue());
+                    long x = 2, target = 8, learningRateDenominator = 8;
+                    long prediction = Math.multiplyExact(w, x);
+                    long gradient = Math.multiplyExact(
+                            2 * x, Math.subtractExact(prediction, target));
+                    assertEquals(8L, gradient);
+                    long nextWeight = Math.subtractExact(
+                            w, gradient / learningRateDenominator);
+                    assertEquals(4L, nextWeight);
                     // Candidate computation/staging occurs with no loan.
                     var first = state.prepareScalarPublication("version", 1,
-                            Map.of("version", 2L, "weight", 4L, "optimizer", 1L));
+                            Map.of("version", 2L, "weight", nextWeight, "optimizer", 1L));
                     assertThrows(IllegalStateException.class,
                             () -> state.critical(false, read -> {
                                 state.prepareScalarPublication("version", 1,
