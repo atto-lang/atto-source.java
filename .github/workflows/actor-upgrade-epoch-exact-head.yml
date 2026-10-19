@@ -14,6 +14,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/ActorRoutePublicationV1Test.java'
       - 'src/test/java/dev/oreslang/runtime/ActorRoutePublicationAuthorityAuditTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorRoutePublicationTransportAuditTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorRoutePublicationPlacementAuditTest.java'
       - 'src/main/java/dev/oreslang/runtime/ActorUpgradeAtomicPublicationV1.java'
       - 'src/main/java/dev/oreslang/runtime/LogicalActorProxyMailboxV1.java'
       - 'src/main/java/dev/oreslang/runtime/OresTaskScope.java'
@@ -48,7 +49,7 @@ jobs:
           distribution: graalvm
           cache: maven
       - name: Run focused actor JUnit regression
-        run: mvn -B -ntp -Dtest=ActorUpgradeEpochGateTest,ActorHotReloadPlacementAndTaskPinTest,ActorTaskGenerationBridgeTest,ActorUpgradePreflightV1Test,ActorRoutePublicationV1Test,ActorRoutePublicationAuthorityAuditTest,ActorRoutePublicationTransportAuditTest,ActorUpgradeAtomicPublicationV1Test,LogicalActorProxyMailboxV1Test -DfailIfNoTests=true test
+        run: mvn -B -ntp -Dtest=ActorUpgradeEpochGateTest,ActorHotReloadPlacementAndTaskPinTest,ActorTaskGenerationBridgeTest,ActorUpgradePreflightV1Test,ActorRoutePublicationV1Test,ActorRoutePublicationAuthorityAuditTest,ActorRoutePublicationTransportAuditTest,ActorRoutePublicationPlacementAuditTest,ActorUpgradeAtomicPublicationV1Test,LogicalActorProxyMailboxV1Test -DfailIfNoTests=true test
       - name: Record exact-tree JUnit receipt (not a Graal isolate proof)
         if: always()
         env:
@@ -77,6 +78,7 @@ jobs:
               "ActorRoutePublicationV1Test": 11,
               "ActorRoutePublicationAuthorityAuditTest": 2,
               "ActorRoutePublicationTransportAuditTest": 1,
+              "ActorRoutePublicationPlacementAuditTest": 1,
               "ActorUpgradeAtomicPublicationV1Test": 10,
               "LogicalActorProxyMailboxV1Test": 17,
           }
