@@ -106,6 +106,17 @@ final class InferredStructBoundaryTest {
     }
 
     @Test
+    void recordAndStructValueDomainsAreDisjointForEqualityChecks() {
+        rejected("""
+                fnc bad(): bool {
+                    const Row row = infer<Row> record{x: 1, y: 2};
+                    const Point point = infer<Point> struct{x: 1, y: 2};
+                    return row == point;
+                }
+                """);
+    }
+
+    @Test
     void recordsRemainStructuralAndCanonicalRecordBracesParse() {
         accepted("""
                 fnc read(): int {
