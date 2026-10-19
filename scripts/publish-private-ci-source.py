@@ -268,7 +268,8 @@ def publish(repository, source, branch, trusted_root):
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
     try:
-        pinned.verify_snapshot(trusted_root, source, files, attestation["source_sha"])
+        expected_subtree = valid_sha(pinned.verify_snapshot(
+            trusted_root, source, files, attestation["source_sha"]))
     except pinned.AdmissionDenied as exc:
         raise Denied("exported bytes do not match the reviewed Git tree") from exc
     base = checked_repo(repository)
@@ -310,6 +311,8 @@ def publish(repository, source, branch, trusted_root):
     isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
                       payload={"tree": elements})
     isolated_sha = valid_sha(isolated.get("sha"))
+    if isolated_sha != expected_subtree:
+        raise Denied("mirror subtree SHA differs from reviewed source Git tree")
     # Replace the entire PREFIX subtree atomically in the new root tree.
     # Preserve unrelated destination files and CI workflows from base_tree.
     authorize_write()
