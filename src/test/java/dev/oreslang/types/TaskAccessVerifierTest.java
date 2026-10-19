@@ -273,7 +273,7 @@ final class TaskAccessVerifierTest {
         release(ticket);
         assertThrows(IllegalArgumentException.class,
                 () -> ledger.admitScopedTyped(List.of(new TaskAccessVerifier.TypedClaim(
-                        read(unique), new Types.Generic("T"))), CORE);
+                        read(unique), new Types.Generic("T"))), CORE));
         assertEquals(0, ledger.activeChildren());
     }
 
@@ -485,7 +485,7 @@ final class TaskAccessVerifierTest {
                         if (!start.await(10, java.util.concurrent.TimeUnit.SECONDS)) {
                             throw new AssertionError("start gate timed out");
                         }
-                        TaskAccessVerifier.Ticket ticket;
+                        TaskAccessVerifier.Admission ticket;
                         try {
                             ticket = admit(verifier, List.of(write(place)));
                             winners.incrementAndGet();
@@ -585,6 +585,21 @@ final class TaskAccessVerifierTest {
         release(a);
         assertThrows(IllegalArgumentException.class, () ->
                 admit(ledger, List.of(read(process))));
+    }
+
+    @Test void sealedScopeStillWaitsForPhysicalCompletion() {
+        var verifier = new TaskAccessVerifier();
+        var place = TaskAccessVerifier.Place.whole(WORLD);
+        var admission = admit(verifier, List.of(write(place)));
+        verifier.seal();
+
+        assertThrows(IllegalStateException.class, verifier::finishScope);
+        assertFalse(verifier.parentMayAccess(read(place)),
+                "sealed scope never grants fresh parent authority");
+
+        release(admission);
+        verifier.finishScope();
+        assertEquals(0, verifier.activeChildren());
     }
 
     @Test void arbitraryTrustDomainAndUnsealedFinishFailClosed() {
