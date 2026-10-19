@@ -283,6 +283,36 @@ final class NamedCallTrailingClosureSyntaxTest {
     }
 
     @Test
+    void closureCaptureAnalysisSeesMoveOnlyValuesInsideNamedArguments() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+
+                        fnc consume(Box box): void {
+                          return;
+                        }
+
+                        pub fnc main(): void {
+                          let box = new Box();
+                          val Fnc<void> callback = fnc() {
+                            consume(box: box);
+                            return;
+                          };
+                          stdio.stdout.write(box.value);
+                          return;
+                        }
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("box")
+                        || failure.getMessage().contains("capture")
+                        || failure.getMessage().contains("moved"),
+                failure::toString);
+    }
+
+    @Test
     void genericAndDynamicNamedCallsRemainFailClosed() {
         IllegalArgumentException generic = assertThrows(
                 IllegalArgumentException.class,
