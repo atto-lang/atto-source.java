@@ -18,6 +18,7 @@ javac --release 21 -encoding UTF-8 -Xlint:all -Werror -d "$tmp" \
   "$root/src/main/java/dev/oreslang/parser/Parser.java" \
   "$root/src/main/java/dev/oreslang/runtime/OresSymbol.java" \
   "$root/src/main/java/dev/oreslang/types/Types.java" \
+  "$root/src/main/java/dev/oreslang/types/GenericCallArguments.java" \
   "$root/src/main/java/dev/oreslang/types/ReturnCleanupChecker.java" \
   "$root/src/main/java/dev/oreslang/types/OwnershipChecker.java" \
   "$root/src/main/java/dev/oreslang/types/TypeChecker.java" \
