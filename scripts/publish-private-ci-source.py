@@ -48,7 +48,7 @@ SOURCE_SNAPSHOT_ENTRY = re.compile(
 )
 CARRIER_APPROVAL_PATH = ".github/private-oreslang-approved-source-snapshots.txt"
 CARRIER_SOURCE_ENTRY = re.compile(
-    r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19})$"
+    r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19}) ([1-9][0-9]{0,19})$"
 )
 PROTECTED_REVIEWS_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection/required_pull_request_reviews"
 CODEOWNERS_ROUTE = SOURCE_METADATA_ROUTE + "/contents/.github/CODEOWNERS?ref=main"
@@ -466,20 +466,60 @@ def require_carrier_source_approval(repository, expected_commit, expected_tree,
     if reviewed_blob_sha is not None and digest != reviewed_blob_sha:
         raise Denied("private carrier source approval changed during transfer")
 
-    approved = set()
+    approvals = {}
     for line in lines:
         if not line or line.startswith("#"):
             continue
         match = CARRIER_SOURCE_ENTRY.fullmatch(line)
         if match is None:
             raise Denied("invalid private carrier source-approval entry")
-        entry = (match.group(1), match.group(2), int(match.group(3)))
-        if entry in approved:
-            raise Denied("duplicate private carrier source approval")
-        approved.add(entry)
-    if (expected_commit, expected_tree, SOURCE_REPOSITORY_ID) not in approved:
+        key = (match.group(1), match.group(2), int(match.group(3)))
+        ruleset_id = int(match.group(4))
+        if key in approvals:
+            raise Denied("duplicate or ambiguous private carrier source approval")
+        approvals[key] = ruleset_id
+    key = (expected_commit, expected_tree, SOURCE_REPOSITORY_ID)
+    ruleset_id = approvals.get(key)
+    if ruleset_id is None:
         raise Denied("private carrier has not independently approved this source snapshot")
-    return digest
+    return digest, ruleset_id
+
+
+def require_carrier_source_ruleset(repository, ruleset_id):
+    """Require immutable ci/oreslang-* refs before any source bytes are sent."""
+    if type(ruleset_id) is not int or ruleset_id <= 0:
+        raise Denied("private carrier source ruleset ID is invalid")
+    ruleset = gh_api(f"repos/{repository}/rulesets/{ruleset_id}")
+    if (type(ruleset.get("id")) is not int or ruleset["id"] != ruleset_id
+            or ruleset.get("target") != "branch"
+            or ruleset.get("enforcement") != "active"
+            or ruleset.get("source_type") != "Repository"
+            or not isinstance(ruleset.get("source"), str)
+            or ruleset["source"].casefold() != repository.casefold()):
+        raise Denied("private carrier source-branch ruleset identity is not enforced")
+    bypass = ruleset.get("bypass_actors")
+    if not isinstance(bypass, list) or bypass:
+        raise Denied("private carrier source-branch ruleset permits bypass")
+    conditions = ruleset.get("conditions")
+    ref_name = conditions.get("ref_name") if isinstance(conditions, dict) else None
+    if (not isinstance(ref_name, dict)
+            or ref_name.get("include") != ["refs/heads/ci/oreslang-*"]
+            or ref_name.get("exclude") != []):
+        raise Denied("private carrier ruleset does not exclusively target Oreslang CI refs")
+    rules = ruleset.get("rules")
+    if not isinstance(rules, list) or not all(isinstance(rule, dict) for rule in rules):
+        raise Denied("private carrier source-branch rules are unavailable")
+    types = [rule.get("type") for rule in rules]
+    if "creation" in types:
+        raise Denied("private carrier ruleset unexpectedly blocks reviewed branch creation")
+    if types.count("update") != 1 or types.count("deletion") != 1:
+        raise Denied("private carrier Oreslang refs must forbid updates and deletion")
+    update = next(rule for rule in rules if rule.get("type") == "update")
+    params = update.get("parameters")
+    if (not isinstance(params, dict)
+            or params.get("update_allows_fetch_and_merge") is not False):
+        raise Denied("private carrier Oreslang ref update rule is not fully immutable")
+    return ruleset_id
 
 
 def require_protected_main_policy(approved_policy):
@@ -1061,8 +1101,9 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         return current_sha
     base_sha = require_pinned_carrier_main(
         approved_carrier_main_sha, approved_carrier_tree)
-    carrier_approval_sha = require_carrier_source_approval(
+    carrier_approval_sha, carrier_ruleset_id = require_carrier_source_approval(
         repository, expected_source_commit, expected_source_tree)
+    require_carrier_source_ruleset(repository, carrier_ruleset_id)
     # The ledger read itself must come from the same carrier main revision
     # that the source-side approval pinned.
     require_pinned_carrier_main(base_sha, approved_carrier_tree)
@@ -1096,9 +1137,12 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         current = checked_repo(repository, expected_id=approved_destination_id)
         if current.get("default_branch") != "main":
             raise Denied("private carrier default branch changed during transfer")
-        require_carrier_source_approval(
+        carrier_approval = require_carrier_source_approval(
             repository, expected_source_commit, expected_source_tree,
             carrier_approval_sha)
+        if carrier_approval[1] != carrier_ruleset_id:
+            raise Denied("private carrier source ruleset approval changed during transfer")
+        require_carrier_source_ruleset(repository, carrier_ruleset_id)
         require_pinned_carrier_main(base_sha, approved_carrier_tree)
 
     isolated_sha = None
