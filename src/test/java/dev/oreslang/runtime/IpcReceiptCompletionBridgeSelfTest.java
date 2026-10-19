@@ -43,6 +43,11 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         denied(() -> gate.acceptVerified(
                 one, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
         check(!first.toCompletableFuture().isDone());
+        denied(() -> gate.acceptVerified(one, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
+        check(!first.toCompletableFuture().isDone());
+        gate.commitDispatch(one);
+        denied(() -> gate.commitDispatch(one));
+        denied(() -> gate.rejectBeforeRemote(one));
         gate.acceptVerified(one, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
         denied(() -> gate.acceptVerified(
                 one, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
@@ -135,6 +140,7 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                 callbackFailure.compareAndSet(null, interrupted);
             }
         });
+        onTerminal.commitDispatch(three);
         onTerminal.acceptVerified(three, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
         onTerminal.acceptVerified(three, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
         check(result(completion) == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
@@ -142,10 +148,63 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         check(observed.get() == 1);
         check(onTerminal.invariant());
 
+        // Physical transmission must begin only after commitDispatch,
+        // which races atomically with local never-sent rejection. Regardless
+        // of which wins, there is exactly one terminal host completion.
+        for (int trial = 0; trial < 512; ++trial) {
+            var competing = new IpcReceiptCompletionBridge(1);
+            var message = env(1, "raced");
+            var future = competing.admit(message);
+            CountDownLatch fire = new CountDownLatch(1);
+            AtomicInteger committed = new AtomicInteger();
+            AtomicInteger preRejected = new AtomicInteger();
+            AtomicReference<Throwable> problem = new AtomicReference<>();
+            Thread publisher = new Thread(() -> {
+                try {
+                    fire.await();
+                    competing.commitDispatch(message);
+                    committed.incrementAndGet();
+                } catch (IllegalArgumentException expectedLost) {
+                    // Reject-before-publish won the gate.
+                } catch (Throwable failure) { problem.compareAndSet(null, failure); }
+            });
+            Thread deny = new Thread(() -> {
+                try {
+                    fire.await();
+                    competing.rejectBeforeRemote(message);
+                    preRejected.incrementAndGet();
+                } catch (IllegalArgumentException expectedCommitted) {
+                    // The dispatch fence already won.
+                } catch (Throwable failure) { problem.compareAndSet(null, failure); }
+            });
+            publisher.start();
+            deny.start();
+            fire.countDown();
+            publisher.join();
+            deny.join();
+            check(problem.get() == null);
+            check(committed.get() + preRejected.get() == 1);
+            check(competing.invariant());
+            if (committed.get() == 1) {
+                check(!future.toCompletableFuture().isDone());
+                check(competing.counters().transportCredits() == 1);
+                check(competing.transportLost("raced") == 1);
+                check(result(future) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            } else {
+                check(result(future) == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
+                denied(() -> competing.commitDispatch(message));
+                check(competing.transportLost("raced") == 0);
+            }
+            check(competing.invariant());
+            check(competing.counters().pending() == 0);
+            check(competing.counters().transportCredits() == 0);
+        }
+
         for (int trial = 0; trial < 512; ++trial) {
             var racing = new IpcReceiptCompletionBridge(1);
             var message = env(1, "session");
             var future = racing.admit(message);
+            racing.commitDispatch(message);
             CountDownLatch start = new CountDownLatch(1);
             AtomicInteger lost = new AtomicInteger();
             AtomicReference<Throwable> problem = new AtomicReference<>();
