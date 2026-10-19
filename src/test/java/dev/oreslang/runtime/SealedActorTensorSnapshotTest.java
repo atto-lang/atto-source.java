@@ -172,7 +172,7 @@ final class SealedActorTensorSnapshotTest {
                         assertThrows(IllegalStateException.class,
                                 () -> state.critical(false, read -> {
                                     state.prepareTensorPublication(
-                                            authority, "weights",
+                                            authority, snapshot, "weights",
                                             "run_id", "graph_id", "incarnation",
                                             new int[] {2, 2},
                                             new double[] {5, 6, 7, 8});
