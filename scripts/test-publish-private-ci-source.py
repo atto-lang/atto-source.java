@@ -25,7 +25,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source.mkdir()
         (self.root / ".github").mkdir()
         self.approval = self.root / ".github" / "private-ci-approved-repositories.txt"
-        self.approval.write_text("trusted/ci\n")
+        self.approval.write_text("trusted/ci@424242\n")
         self.protected_main_policy = self.approval.read_bytes()
         self.main_is_protected = True
         self.main_requires_codeowners = True
@@ -955,7 +955,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_unreviewed_local_allowlist_cannot_self_authorize(self):
         pinned = self.expected_source_tree()
-        self.approval.write_text("trusted/ci\nother/attacker\n")
+        self.approval.write_text("trusted/ci@424242\nother/attacker@424243\n")
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             # Rejection must happen *before* reading any private source bytes.
             with patch.object(pub, "collect_source",
@@ -1664,6 +1664,59 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(pub.Denied, "revoked or absent"):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_name_only_approval_is_not_a_numeric_id_authorization(self):
+        pinned = self.expected_source_tree()
+        self.approval.write_text("trusted/ci\n")
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read")):
+            with self.assertRaisesRegex(pub.Denied, "numeric-id"):
+                self.publish(expected_tree=pinned)
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
+
+    def test_noncanonical_and_out_of_range_repository_ids_fail_closed(self):
+        pinned = self.expected_source_tree()
+        bad_entries = (
+            "trusted/ci@0", "trusted/ci@000424242",
+            "trusted/ci@+424242", "trusted/ci@424242.0",
+            "trusted/ci@9223372036854775808", "trusted/ci@false",
+            "trusted/ci@424242 # after", "trusted/ci@424242\t",
+        )
+        for row in bad_entries:
+            with self.subTest(entry=row):
+                self.route_calls.clear()
+                self.approval.write_text(row + "\n")
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("private source read")):
+                    with self.assertRaises(pub.Denied):
+                        self.publish(expected_tree=pinned)
+                self.assertFalse(any(method == "POST"
+                                     for method, _, _ in self.route_calls))
+
+    def test_duplicate_casefolded_destination_approval_is_denied(self):
+        self.approval.write_text(
+            "trusted/ci@424242\nTRUSTED/CI@424242\n")
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read")):
+            with self.assertRaisesRegex(pub.Denied, "duplicates a repository"):
+                self.publish()
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
+
+    def test_real_preflight_denies_numeric_repository_substitution(self):
+        # A replacement repo can retain the same owner/name but must never
+        # authorize an export against the old protected policy.
+        self.mock_destination_repo_id = 424243
+        with patch.object(pub, "require_preflight", wraps=REAL_PREFLIGHT):
+            with patch.object(pub, "gh_api", side_effect=self.fake_api):
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("private source read")):
+                    with self.assertRaisesRegex(pub.Denied, "differs from reviewed policy"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, self.expected_source_tree(), 1286, A)
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
 
     def test_preflight_destination_id_must_be_attested_before_source_read(self):
         # A source PR cannot swap the owner/name to a different numeric repo
