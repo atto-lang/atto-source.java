@@ -77,6 +77,9 @@ final class ConcurrencyTestCommand {
             if (replayArg != null && (iterations != 1 || fuzz || scheduleFuzz)) {
                 throw new IllegalArgumentException("--replay is one exact trace; cannot combine with fuzzing or multiple runs");
             }
+            if (traceArg != null && iterations != 1) {
+                throw new IllegalArgumentException("--trace-output requires one iteration; otherwise traces overwrite each other");
+            }
         } catch (IllegalArgumentException invalid) {
             System.err.println("oreslang test: " + invalid.getMessage());
             return 2;
@@ -85,6 +88,17 @@ final class ConcurrencyTestCommand {
         Path entryPath = Path.of(entry);
         if (!Files.isRegularFile(entryPath)) {
             System.err.println("oreslang test: not a file: " + entryPath);
+            return 2;
+        }
+        if (traceArg != null && entryPath.toAbsolutePath().normalize()
+                .equals(Path.of(traceArg).toAbsolutePath().normalize())) {
+            System.err.println("oreslang test: trace output cannot overwrite the test entrypoint");
+            return 2;
+        }
+        if (traceArg != null && replayArg != null
+                && Path.of(traceArg).toAbsolutePath().normalize()
+                .equals(Path.of(replayArg).toAbsolutePath().normalize())) {
+            System.err.println("oreslang test: trace output cannot overwrite the replay input");
             return 2;
         }
         // This is the entry file digest, not a full linked-import closure hash.
@@ -185,7 +199,7 @@ final class ConcurrencyTestCommand {
     }
 
     /** One independently consistent native test-suite receipt per invocation. */
-    private static boolean validNativeSuiteSummary(String output) {
+    static boolean validNativeSuiteSummary(String output) {
         java.util.regex.Pattern summary = java.util.regex.Pattern.compile(
                 "ORES_TEST\\|SUMMARY\\|total=(\\d+)\\|passed=(\\d+)"
                 + "\\|failed=(\\d+)\\|skipped=(\\d+)\\|filtered=(\\d+)");
@@ -206,7 +220,7 @@ final class ConcurrencyTestCommand {
                     failed = Long.parseLong(match.group(3));
                     skipped = Long.parseLong(match.group(4));
                     long filtered = Long.parseLong(match.group(5));
-                    if (total < 1 || passed < 0 || failed != 0 || skipped < 0 || filtered < 0
+                    if (total < 1 || passed < 1 || failed != 0 || skipped < 0 || filtered < 0
                             || total != passed + failed + skipped) return false;
                 } catch (NumberFormatException malformed) {
                     return false;
