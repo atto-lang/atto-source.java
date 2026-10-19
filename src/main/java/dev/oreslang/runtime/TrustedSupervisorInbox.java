@@ -82,6 +82,7 @@ final class TrustedSupervisorInbox implements AutoCloseable {
     /** Only the trusted runtime's lifecycle owner may call this method. */
     synchronized ChildBinding bindVerifiedChild(long childId, long incarnation) {
         checkOpen();
+        if (overflowEscalation) throw new IllegalStateException("parent escalation pending");
         if (childId <= 0 || incarnation <= 0 || boundChildren.containsKey(childId)) {
             throw new IllegalArgumentException("invalid/duplicate live supervisor child binding");
         }
