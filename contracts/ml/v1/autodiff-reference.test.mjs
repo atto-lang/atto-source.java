@@ -84,7 +84,7 @@ test('duplicates, unknown messages, excessive batches, and stale step fail close
   assert.throws(()=>back(g),/MISSING_FORWARD/);
   fwd(g);
   assert.throws(()=>fwd(g),/DUPLICATE_FORWARD/);
-  assert.throws(()=>fwd(g,1),/TOO_MANY_MICROBATCHES/);
+  assert.throws(()=>fwd(g,1),/MICROBATCH_ID_OUT_OF_RANGE/);
   assert.throws(()=>g.backward({runId:'runB',stepId:3,microbatchId:0}),/STALE_STEP_OR_VERSION/);
   back(g);
   assert.throws(()=>back(g),/DUPLICATE_BACKWARD/);
@@ -184,12 +184,12 @@ test('reject unknown node fields and accessor or sparse graph arrays',()=>{
   const sp=linear();sp[0].unauthorized=true;
   assert.throws(()=>graph(sp),/unknown or missing/);
   const notDense=linear();delete notDense[0].inputs[0];
-  assert.throws(()=>graph(notDense),/sparse\/accessor/);
+  assert.throws(()=>graph(notDense),/(bounded dense array|sparse\/accessor)/);
   const getter=linear();
   Object.defineProperty(getter[0],'bias',{enumerable:true,get(){throw new Error('UNSAFE_GETTER');}});
   assert.throws(()=>graph(getter),/accessor/);
   const matrix=linear();delete matrix[0].weights[1];
-  assert.throws(()=>graph(matrix),/sparse\/accessor/);
+  assert.throws(()=>graph(matrix),/(bounded dense array|sparse\/accessor)/);
   const extra=linear();extra[1].weights=[[1]];
   assert.throws(()=>graph(extra),/unexpected parameters/);
 });
