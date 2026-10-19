@@ -270,6 +270,7 @@ def collect_git_tree(root, source_commit):
         raise Denied("source Git tree exceeds file-count limit")
 
     entries = []
+    seen_paths = set()
     total = 0
     for raw in records:
         try:
@@ -287,10 +288,14 @@ def collect_git_tree(root, source_commit):
         parts = rel.split("/")
         if (not rel or rel.startswith("/") or any(
                 not part or part in {".", ".."} for part in parts)
+                or any(part.casefold() == ".git" for part in parts)
                 or len(parts) > 64
                 or "\\" in rel
                 or any(ord(ch) < 32 or ord(ch) == 127 for ch in rel)):
             raise Denied("source Git tree contains unsupported path")
+        if rel in seen_paths:
+            raise Denied("source Git tree contains duplicate path")
+        seen_paths.add(rel)
 
         size_text = git_text(trusted, "cat-file", "-s", blob_sha)
         if not size_text.isdigit():
