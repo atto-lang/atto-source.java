@@ -1064,6 +1064,21 @@ public final class Ast {
             }
         }
 
+        /**
+         * Semantic-preserving compiler rewrites clone AST nodes. Preserve a
+         * checked projection proof by identity for the resulting node; do not
+         * broaden keys or mint proofs for unchecked array/tuple accesses.
+         */
+        public static synchronized IndexExpr propagate(
+                IndexExpr original, IndexExpr rewritten) {
+            java.util.Objects.requireNonNull(original, "original index site");
+            java.util.Objects.requireNonNull(rewritten, "rewritten index site");
+            expunge();
+            java.util.Set<String> visible = KEYS.get(new IdentityKey(original, null));
+            if (visible != null) record(rewritten, visible);
+            return rewritten;
+        }
+
         /** Prevents an erased or widened runtime value from exposing hidden fields. */
         public static synchronized void require(IndexExpr site, String key) {
             java.util.Objects.requireNonNull(site, "index site");
