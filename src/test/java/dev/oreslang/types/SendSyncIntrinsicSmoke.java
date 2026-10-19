@@ -120,9 +120,17 @@ public final class SendSyncIntrinsicSmoke {
                     trait, CORE), "verified Result " + trait);
         }
         expect(supports(immutableRecord, Trait.SEND, CORE),
-                "readonly record remains movable Send");
+                "readonly record remains raw structural Send");
         expect(!supports(immutableRecord, Trait.SYNC, CORE),
                 "readonly view alone must never grant Sync");
+        expect(!ThreadSafetyTraits.isOwnedSend(immutableRecord, CORE),
+                "readonly view cannot enter detached Task without backing proof");
+        expect(!ThreadSafetyTraits.isOwnedSend(
+                new Types.Named("Option", List.of(immutableRecord)), CORE),
+                "nested readonly view cannot hide in detached Option");
+        expect(!ThreadSafetyTraits.isOwnedSend(
+                new Types.Record(Map.of("view", immutableRecord)), CORE),
+                "nested readonly view cannot hide in detached writable record");
         expect(!supports(new Types.Borrow(immutableRecord, false),
                 Trait.SEND, CORE), "shared borrow of nonfrozen view cannot be Send");
         expect(supports(new Types.Named("Channel", List.of(integer)),
@@ -161,6 +169,20 @@ public final class SendSyncIntrinsicSmoke {
                 "deep owned Send preflight must fail closed");
         expect(!supports(nested, Trait.SYNC, CORE), "deep Sync must fail closed");
         expect(supports(integer, Trait.SEND, CORE), "post-depth valid query");
+
+        Type shared = integer;
+        for (int i = 0; i < 200; i++) shared = new Types.ListType(shared);
+        java.util.ArrayList<Type> repeated = new java.util.ArrayList<>();
+        for (int i = 0; i < 1000; i++) repeated.add(shared);
+        expect(supports(new Types.Tuple(repeated), Trait.SEND, CORE),
+                "shared DAG should reuse completed proof");
+
+        java.util.ArrayList<Type> wide = new java.util.ArrayList<>();
+        for (int i = 0; i < 100_100; i++) wide.add(integer);
+        expect(!supports(new Types.Tuple(wide), Trait.SEND, CORE),
+                "wide type must exhaust proof-step budget");
+        expect(supports(integer, Trait.SEND, CORE),
+                "post-budget valid query");
         System.out.println("SendSyncIntrinsicSmoke PASS assertions=" + checked);
     }
 }
