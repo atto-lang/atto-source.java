@@ -9,8 +9,10 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Real parser/ownership-checker path, not a synthetic Send trait fixture.
- * The TypeChecker must continue to reject executing nb Task source.
+ * Real parser/ownership-checker path for the deny-only AST Send preflight.
+ * Passing this suite never constitutes semantic Send permission: the resolved
+ * ThreadSafetyTraits authority is still required, and TypeChecker must continue
+ * to reject executing unlowered nb Task source.
  */
 final class TaskSpawnSendAdmissionTest {
     private static Ast.Program verify(String body) {
@@ -77,7 +79,7 @@ final class TaskSpawnSendAdmissionTest {
         for (String type : new String[]{"RawPointer<int>", "NativeHandle<int>", "FfiHandle<int>"}) {
             reject("pub fnc main(" + type + " handle): void {"
                     + " do nb { stdio.stdout.log(handle); }; return; }",
-                    "requires proven Send");
+                    "fails conservative Task Send preflight");
         }
     }
 
@@ -88,19 +90,19 @@ final class TaskSpawnSendAdmissionTest {
                 let Task<int> t = task { stdio.stdout.log(receiver); return 1; };
                 return;
             }
-            """, "requires proven Send");
+            """, "fails conservative Task Send preflight");
         reject("""
             pub fnc main(Option<RawPointer<int>> x): void {
                 do task { stdio.stdout.log(x); };
                 return;
             }
-            """, "requires proven Send");
+            """, "fails conservative Task Send preflight");
         reject("""
             pub fnc main(Array<NativeHandle<int>> handles): void {
                 do task { stdio.stdout.log(handles); };
                 return;
             }
-            """, "requires proven Send");
+            """, "fails conservative Task Send preflight");
     }
 
     @Test
@@ -110,7 +112,7 @@ final class TaskSpawnSendAdmissionTest {
                 let Task<int> t = (async task |Future<int> f| -> { return 1; })(7);
                 return;
             }
-            """, "requires proven Send");
+            """, "fails conservative Task Send preflight");
         assertDoesNotThrow(() -> verify("""
             pub fnc main(): void {
                 let Task<int> t = (async task |int x| -> { return x; })(7);
@@ -129,7 +131,7 @@ final class TaskSpawnSendAdmissionTest {
                 })(7);
                 return;
             }
-            """, "requires proven Send");
+            """, "fails conservative Task Send preflight");
     }
     @Test
     void fullSourceCompilerStillRefusesToExecuteUnloweredTasks() {
