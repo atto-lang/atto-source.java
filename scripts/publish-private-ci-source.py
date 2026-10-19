@@ -174,118 +174,127 @@ def checked_protected_policy_fingerprint(repository):
         raise Denied("protected private CI approval policy is not valid base64") from exc
     return _policy_authorization(contents, repository)
 
-def collect_source(root, trusted_root):
-    """Snapshot regular files using descriptor-relative, no-follow traversal.
-
-    O_NOFOLLOW on the final file is insufficient when a parent directory can
-    be replaced with a symlink between path validation and file open. All
-    descendants are opened relative to directory descriptors anchored at
-    the trusted checkout, so a rename cannot redirect them outside it.
-    """
-    if (not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY")
-            or not hasattr(os, "O_NONBLOCK")):
-        raise Denied("OS cannot enforce descriptor-relative no-follow reads")
-    if root.is_symlink() or not root.is_dir():
-        raise Denied("source path must be a real directory")
+def git_bytes(root, *args, timeout=45):
+    """Read immutable objects from the trusted local Git database."""
+    argv = ["git", "-C", str(root), *args]
+    env = dict(
+        os.environ,
+        GIT_TERMINAL_PROMPT="0",
+        GIT_CONFIG_NOSYSTEM="1",
+        GIT_PAGER="cat",
+    )
     try:
-        trusted = trusted_root.resolve(strict=True)
-        source = root.resolve(strict=True)
-        relative = source.relative_to(trusted)
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise Denied("source directory escapes trusted checkout") from exc
+        p = subprocess.run(
+            argv,
+            capture_output=True,
+            env=env,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Denied("trusted Git object query unavailable") from exc
+    if p.returncode != 0:
+        raise Denied("trusted Git object query failed")
+    return p.stdout
 
-    directories = []
+
+def git_text(root, *args):
+    raw = git_bytes(root, *args)
+    try:
+        return raw.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise Denied("trusted Git metadata is not UTF-8") from exc
+
+
+def git_blob_sha(data):
+    return hashlib.sha1(
+        b"blob " + str(len(data)).encode("ascii") + bytes([0]) + data
+    ).hexdigest()
+
+
+def collect_git_tree(root, source_commit):
+    """Read exactly one immutable Git commit tree, never the working directory.
+
+    Untracked/generated/secret files cannot enter the mirror because bytes are
+    read only through git cat-file for blob IDs named by git ls-tree.
+    Symlinks and submodules fail closed because executing them below the
+    destination prefix could escape the isolated source subtree.
+    """
+    if not SHA.fullmatch(source_commit):
+        raise Denied("source commit must be an exact 40-character Git SHA")
+    if root.is_symlink() or not root.is_dir():
+        raise Denied("source repository must be a real directory")
+    try:
+        trusted = root.resolve(strict=True)
+    except OSError as exc:
+        raise Denied("source repository cannot be resolved") from exc
+
+    top = git_text(trusted, "rev-parse", "--show-toplevel")
+    try:
+        top_path = Path(top).resolve(strict=True)
+    except OSError as exc:
+        raise Denied("trusted Git top-level cannot be resolved") from exc
+    if top_path != trusted:
+        raise Denied("source directory must be the trusted Git checkout root")
+
+    resolved_commit = git_text(
+        trusted, "rev-parse", "--verify", source_commit + "^{commit}")
+    if resolved_commit != source_commit:
+        raise Denied("source commit does not resolve to the requested exact SHA")
+    source_tree = valid_sha(
+        git_text(trusted, "rev-parse", source_commit + "^{tree}"))
+
+    raw_tree = git_bytes(
+        trusted, "ls-tree", "-r", "-z", "--full-tree", source_commit)
+    records = raw_tree.split(bytes([0]))
+    if records and records[-1] == b"":
+        records.pop()
+    if not records:
+        raise Denied("source Git tree is empty")
+    if len(records) > MAX_FILES:
+        raise Denied("source Git tree exceeds file-count limit")
+
     entries = []
     total = 0
-    visited = 0
-    entered_dirs = 0
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
-
-    def walk(directory_fd, prefix, depth):
-        nonlocal total, visited, entered_dirs
-        entered_dirs += 1
-        if depth > 64 or entered_dirs > MAX_DIRECTORIES:
-            raise Denied("source directory nesting or count exceeds safety limit")
-        # scandir() can stream entries from an opened descriptor. Do not use
-        # os.listdir(), which materializes an unbounded directory before any
-        # quota can be checked.
-        names = []
+    for raw in records:
         try:
-            with os.scandir(directory_fd) as scan:
-                for entry in scan:
-                    visited += 1
-                    if visited > MAX_DIRECTORY_ENTRIES:
-                        raise Denied("source directory entry count exceeds safety limit")
-                    names.append(entry.name)
-        except OSError as exc:
-            raise Denied("source directory cannot be listed safely") from exc
-        names.sort()
-        for name in names:
-            if (name in (".", "..", ".git")
-                    or any(ord(ch) < 32 or ord(ch) == 127 for ch in name)
-                    or "\\" in name):
-                raise Denied("source path contains unsupported name")
-            rel = prefix + name
-            try:
-                metadata = os.stat(name, dir_fd=directory_fd,
-                                   follow_symlinks=False)
-                if stat.S_ISDIR(metadata.st_mode):
-                    child_fd = os.open(name, directory_flags, dir_fd=directory_fd)
-                    try:
-                        if not stat.S_ISDIR(os.fstat(child_fd).st_mode):
-                            raise Denied("source directory changed during traversal")
-                        walk(child_fd, rel + "/", depth + 1)
-                    finally:
-                        os.close(child_fd)
-                elif stat.S_ISREG(metadata.st_mode):
-                    file_fd = os.open(name, file_flags, dir_fd=directory_fd)
-                    try:
-                        stream = os.fdopen(file_fd, "rb")
-                    except BaseException:
-                        os.close(file_fd)
-                        raise
-                    with stream:
-                        metadata = os.fstat(stream.fileno())
-                        if not stat.S_ISREG(metadata.st_mode):
-                            raise Denied("source file changed type during traversal")
-                        # A hardlink may refer to outside-checkout bytes.
-                        if metadata.st_nlink != 1:
-                            raise Denied("hardlinked source files are not allowed")
-                        if metadata.st_size > MAX_SINGLE:
-                            raise Denied("file exceeds source mirror limit")
-                        data = stream.read(MAX_SINGLE + 1)
-                    if len(data) > MAX_SINGLE:
-                        raise Denied("file exceeds source mirror limit")
-                    total += len(data)
-                    if total > MAX_BYTES or len(entries) >= MAX_FILES:
-                        raise Denied("source mirror exceeds bounded capacity")
-                    mode = "100755" if metadata.st_mode & stat.S_IXUSR else "100644"
-                    entries.append((rel, data, mode))
-                else:
-                    raise Denied("source contains symlink or special file")
-            except OSError as exc:
-                raise Denied("source path changed or cannot be opened safely") from exc
+            metadata, raw_path = raw.split(b"\t", 1)
+            mode_raw, object_type, sha_raw = metadata.split(b" ", 2)
+            mode = mode_raw.decode("ascii")
+            object_kind = object_type.decode("ascii")
+            blob_sha = valid_sha(sha_raw.decode("ascii"))
+            rel = raw_path.decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise Denied("source Git tree contains unsupported metadata") from exc
 
-    try:
-        anchor_fd = os.open(trusted, directory_flags)
-        directories.append(anchor_fd)
-        for component in relative.parts:
-            child_fd = os.open(component, directory_flags,
-                               dir_fd=directories[-1])
-            directories.append(child_fd)
-        walk(directories[-1], "", 0)
-    except OSError as exc:
-        raise Denied("source checkout path changed during traversal") from exc
-    finally:
-        for fd in reversed(directories):
-            os.close(fd)
-    if not entries:
-        raise Denied("source directory is empty")
-    return sorted(entries, key=lambda item: item[0])
+        if object_kind != "blob" or mode not in {"100644", "100755"}:
+            raise Denied("source Git tree contains symlink, submodule, or unsupported mode")
+        parts = rel.split("/")
+        if (not rel or rel.startswith("/") or any(
+                not part or part in {".", ".."} for part in parts)
+                or len(parts) > 64
+                or "\\" in rel
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in rel)):
+            raise Denied("source Git tree contains unsupported path")
 
+        size_text = git_text(trusted, "cat-file", "-s", blob_sha)
+        if not size_text.isdigit():
+            raise Denied("source Git blob size is invalid")
+        size = int(size_text)
+        if size > MAX_SINGLE:
+            raise Denied("file exceeds source mirror limit")
+        total += size
+        if total > MAX_BYTES:
+            raise Denied("source mirror exceeds bounded capacity")
 
-def publish(repository, source, branch, trusted_root):
+        data = git_bytes(trusted, "cat-file", "blob", blob_sha)
+        if len(data) != size or git_blob_sha(data) != blob_sha:
+            raise Denied("local Git blob bytes do not match source object ID")
+        entries.append((rel, data, mode, blob_sha))
+
+    return entries, source_tree
+
+def publish(repository, source, source_commit, branch, trusted_root):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
@@ -299,11 +308,9 @@ def publish(repository, source, branch, trusted_root):
         raise Denied("local private CI approval policy differs from protected main")
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
-    try:
-        checked_source.relative_to(trusted)
-    except ValueError as exc:
-        raise Denied("source directory escapes the trusted checkout") from exc
-    files = collect_source(source, trusted_root)
+    if checked_source != trusted:
+        raise Denied("source directory must be the trusted checkout root")
+    files, source_tree_sha = collect_git_tree(checked_source, source_commit)
     base = checked_repo(repository, approved_repo_id)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
@@ -326,16 +333,14 @@ def publish(repository, source, branch, trusted_root):
         checked_repo(repository, approved_repo_id)
 
     elements = []
-    for rel, data, mode in files:
+    for rel, data, mode, source_blob_sha in files:
         authorize_write()  # recheck approval and identity before each write
         blob = gh_api(f"repos/{repository}/git/blobs", method="POST", payload={
             "content": base64.b64encode(data).decode("ascii"), "encoding": "base64"
         })
         blob_sha = valid_sha(blob.get("sha"))
-        expected = hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
-                                + bytes([0]) + data).hexdigest()
-        if blob_sha != expected:
-            raise Denied("uploaded blob digest does not match local source bytes")
+        if blob_sha != source_blob_sha:
+            raise Denied("uploaded blob digest does not match exact source Git blob")
         elements.append({"path": rel, "mode": mode,
                          "type": "blob", "sha": blob_sha})
     # Construct the source subtree from scratch, without base_tree. Overlaying
@@ -345,6 +350,8 @@ def publish(repository, source, branch, trusted_root):
     isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
                       payload={"tree": elements})
     isolated_sha = valid_sha(isolated.get("sha"))
+    if isolated_sha != source_tree_sha:
+        raise Denied("destination source subtree does not match exact source Git tree")
     # Replace the entire PREFIX subtree atomically in the new root tree.
     # Preserve unrelated destination files and CI workflows from base_tree.
     authorize_write()
@@ -355,7 +362,10 @@ def publish(repository, source, branch, trusted_root):
     new_tree_sha = valid_sha(new_tree.get("sha"))
     authorize_write()
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
-        "message": "ci: source snapshot from approved private Oreslang checkout",
+        "message": (
+            "ci: exact private Oreslang tree "
+            + source_commit + " tree " + source_tree_sha
+        ),
         "tree": new_tree_sha, "parents": [base_sha]
     })
     commit_sha = valid_sha(commit.get("sha"))
@@ -366,23 +376,34 @@ def publish(repository, source, branch, trusted_root):
     })
     if created.get("ref") != "refs/heads/" + branch:
         raise Denied("GitHub did not confirm creation of requested isolated CI branch")
-    return commit_sha, len(files)
+    return commit_sha, len(files), source_tree_sha
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("repository", help="approved private owner/repo")
     p.add_argument("--source-dir", required=True, type=Path)
+    p.add_argument("--source-commit", required=True)
     p.add_argument("--branch", required=True)
     args = p.parse_args(argv)
     # Policy and code are taken from the same trusted checkout as this script.
     root = Path(__file__).resolve().parent.parent
     try:
-        commit, count = publish(args.repository, args.source_dir, args.branch, root)
+        commit, count, source_tree = publish(
+            args.repository,
+            args.source_dir,
+            args.source_commit,
+            args.branch,
+            root,
+        )
     except Denied as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
         return 1
-    print(f"PRIVATE_CI_SNAPSHOT_CREATED: files={count} commit={commit}")
+    print(
+        "PRIVATE_CI_SNAPSHOT_CREATED: "
+        f"files={count} source_commit={args.source_commit} "
+        f"source_tree={source_tree} destination_commit={commit}"
+    )
     return 0
 
 
