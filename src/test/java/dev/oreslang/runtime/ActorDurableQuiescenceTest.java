@@ -16,10 +16,10 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(20)
 final class ActorDurableQuiescenceTest {
     @Test
-    void queuedMessagesCannotExecuteWhileFreezeProofIsHeld() throws Exception {
+    void acceptedPreFreezeMessagesMustDrainBeforeHibernateCanSucceed() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
-        CountDownLatch completed = new CountDownLatch(3);
+        CountDownLatch delivered = new CountDownLatch(3);
         AtomicInteger callbacks = new AtomicInteger();
         try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(2, 2, 1, 32))) {
@@ -27,35 +27,34 @@ final class ActorDurableQuiescenceTest {
                 callbacks.incrementAndGet();
                 if (message == 1) {
                     entered.countDown();
-                    if (!release.await(5, TimeUnit.SECONDS)) {
+                    if (!release.await(5, TimeUnit.SECONDS))
                         throw new AssertionError("test callback was not released");
-                    }
                 }
-                completed.countDown();
+                delivered.countDown();
             });
             try {
                 actor.send(1);
                 assertTrue(entered.await(3, TimeUnit.SECONDS));
-                actor.send(2);
+                actor.send(2); // accepted in memory before freeze admission
                 var pending = runtime.requestDurableQuiescence(actor);
-                assertFalse(pending.isDone(),
-                        "freeze must not complete before actor turn and carrier exit");
-                actor.send(3);
+                assertFalse(pending.isDone(), "running turn must leave before grant");
+                assertThrows(ActorRuntime.ActorSealedException.class, () -> actor.send(3),
+                        "a message sent during freeze must not be acknowledged");
                 release.countDown();
-                var proof = pending.get(5, TimeUnit.SECONDS);
+                var rejected = assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> pending.get(5, TimeUnit.SECONDS));
+                assertInstanceOf(IllegalStateException.class, rejected.getCause());
+                // Failed handoff automatically resumes dispatch for old mail.
+                // No previously acknowledged message was lost.
+                var proof = runtime.requestDurableQuiescence(actor)
+                        .get(5, TimeUnit.SECONDS);
                 assertTrue(proof.valid());
-                assertEquals(actor.id(), proof.actorId());
-                assertEquals(1, callbacks.get(),
-                        "freeze forbids a newly admitted callback while held");
-                assertFalse(completed.await(100, TimeUnit.MILLISECONDS),
-                        "queued messages stay queued during quiescence");
-                var repeat = assertThrows(java.util.concurrent.CompletionException.class,
-                        () -> runtime.requestDurableQuiescence(actor).join());
-                assertInstanceOf(IllegalStateException.class, repeat.getCause());
+                assertEquals(2, callbacks.get());
+                assertThrows(ActorRuntime.ActorSealedException.class, () -> actor.send(4));
                 proof.close();
-                assertTrue(completed.await(5, TimeUnit.SECONDS));
+                actor.send(5);
+                assertTrue(delivered.await(5, TimeUnit.SECONDS));
                 assertEquals(3, callbacks.get());
-                assertFalse(proof.valid());
             } finally {
                 release.countDown();
                 actor.cancel();
@@ -75,7 +74,8 @@ final class ActorDurableQuiescenceTest {
             var proof = runtime.requestDurableQuiescence(actor)
                     .get(3, TimeUnit.SECONDS);
             assertTrue(proof.valid());
-            actor.send("queued");
+            assertThrows(ActorRuntime.ActorSealedException.class,
+                    () -> actor.send("queued"));
             proof.stopAfterHibernate();
             assertFalse(proof.valid());
             assertThrows(ActorRuntime.ActorTerminatedException.class,
