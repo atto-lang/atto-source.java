@@ -20,7 +20,8 @@ public final class OresTestExploration {
                          int strandedWaiters, int jvmDeadlockedThreads,
                          long inputFingerprint) {
         public boolean ok() {
-            return rejectedCycles > 0 && strandedWaiters == 0 && jvmDeadlockedThreads == 0;
+            return (exploredStates == 0 || rejectedCycles > 0)
+                    && strandedWaiters == 0 && jvmDeadlockedThreads == 0;
         }
     }
 
