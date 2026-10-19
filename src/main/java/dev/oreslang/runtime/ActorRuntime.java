@@ -4595,13 +4595,19 @@ public final class ActorRuntime implements AutoCloseable {
                                 }
                                 cell.managedByGroup.set(inheritedId);
                                 inherited.managedWorkers.put(id, ref);
-                                parent.children.add(cell);
+                                // Mark cleanup authority BEFORE mutating the
+                                // parent's child set. A set implementation
+                                // can throw after inserting (e.g. injected
+                                // OOME); rollback must still remove the child.
                                 linkedToParent = true;
+                                parent.children.add(cell);
                                 actors.put(id, cell);
                             }
                         } else {
-                            parent.children.add(cell);
+                            // Publication into parent.children can
+                            // throw after taking effect. Pre-arm rollback.
                             linkedToParent = true;
+                            parent.children.add(cell);
                             actors.put(id, cell);
                         }
                     }
