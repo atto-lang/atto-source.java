@@ -62,6 +62,24 @@ public final class IpcReceiptCompletionBridge {
         if (done != null) done.complete(stage);
     }
 
+    /**
+     * Trusted LOCAL send-path rejection, prior to remote publication.
+     * Do not route authenticated remote receipts or actor guest DATA here.
+     * User callbacks complete only after releasing the correlation monitor.
+     */
+    public void rejectBeforeRemote(IpcReceiptCorrelation.Envelope envelope) {
+        Objects.requireNonNull(envelope, "envelope");
+        CompletableFuture<IpcReceiptCorrelation.Stage> done;
+        synchronized (gate) {
+            correlations.rejectBeforeRemote(envelope);
+            done = completions.remove(envelope.messageSequence());
+            if (done == null) {
+                throw new IllegalStateException("missing host completion");
+            }
+        }
+        done.complete(IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
+    }
+
     public int transportLost(String trustedSession) {
         ArrayList<CompletableFuture<IpcReceiptCorrelation.Stage>> done = new ArrayList<>();
         synchronized (gate) {
