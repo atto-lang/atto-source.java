@@ -257,6 +257,22 @@ final class UntrustedActorTest {
     }
 
     @Test
+    void untrustedRuntimeRejectsNestedActorReferencesBeforeMailboxAdmission() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var trusted = runtime.<String>spawnShared(() -> (message, context) -> { });
+            var untrusted = runtime.<Object>spawnUntrusted(
+                    context -> (message, turn) -> { });
+
+            assertThrows(SecurityException.class,
+                    () -> untrusted.send(java.util.List.of(trusted)));
+            assertThrows(SecurityException.class,
+                    () -> untrusted.send(java.util.Map.of("actor", trusted)));
+            untrusted.send("data-only");
+            untrusted.drain().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void untrustedSafepointsTerminateCpuHogInsteadOfTrustingSourceYield() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
             var ref = runtime.<String>spawnUntrusted(context -> (message, turn) -> {
