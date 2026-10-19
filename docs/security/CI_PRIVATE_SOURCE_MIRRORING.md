@@ -117,14 +117,27 @@ root-owned and not group/other writable. Missing binaries, symlinks,
 non-root owners, nonexecutable files and writable path components fail
 closed before GitHub credentials are passed to a subprocess.
 
-The GitHub subprocess environment retains supported authentication tokens
-but overrides `PATH` and `GH_HOST`, disables prompts, and omits dynamic
-loader overrides. Administrator-managed hosts where `gh` is installed
-elsewhere (including typical Homebrew locations) must provision the trusted
-system package path, or develop and independently review an equivalent
-executable-pinning policy; do not bypass the check with a user-writable
-symlink. This requirement applies to the publisher, not its local offline
-regression runner.
+The GitHub subprocess now receives a minimal, explicit environment: exactly
+one nonempty `GH_TOKEN` **or** `GITHUB_TOKEN` must be supplied by the trusted
+invoker. Missing or simultaneous credentials are denied before any API
+subprocess. No implicit `gh auth login` user configuration is accepted.
+`GH_HOST` is forced to `github.com`, prompts are disabled, executable lookup
+is fixed at `/usr/bin:/bin`, and HOME/XDG_CONFIG_HOME do not point at an
+inherited caller configuration. `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`,
+`SSL_CERT_FILE`, `SSL_CERT_DIR`, `CURL_CA_BUNDLE`, dynamic loader hooks,
+`GH_CONFIG_DIR`, and every other caller-supplied environment variable are
+excluded, preventing the caller's environment from redirecting the approved
+GitHub connection or replacing its TLS trust roots. Only inject an approved
+short-lived, narrowly scoped credential via the trusted publisher host;
+do not print, log, copy, or persist it in Actions artifacts. This change
+intentionally rejects proxy-dependent hosts until a separately reviewed
+transport policy exists.
+
+Administrator-managed hosts where `gh` is installed elsewhere (including
+typical Homebrew locations) must provision the trusted system package path,
+or develop and independently review an equivalent executable-pinning policy;
+do not bypass the check with a user-writable symlink. This requirement
+applies to the publisher, not its local offline regression runner.
 
 ## Destination-bound source snapshot publisher
 
@@ -334,11 +347,12 @@ missing merged-main discovery, a truncated test suite, and a **full-size**
 test suite where a mandatory security regression has been replaced with
 an unrelated passing test.
 Every publisher-suite repetition independently discovers and executes the
-same Python TestSuite; the publisher requires at least 105 canonical
-publisher tests and 10 merged-main cases (115 total), unique test IDs,
+same Python TestSuite; the publisher requires at least 107 canonical
+publisher tests and 10 merged-main cases (117 total), unique test IDs,
 equal discovered/executed counts, and mandatory adversarial test IDs
 for source-policy revocation, destination CODEOWNERS revocation,
-root-tree/commit/ref read-back, and merged-main provenance.
+root-tree/commit/ref read-back, explicit-token isolation and TLS/proxy
+injection rejection, and merged-main provenance.
 These checks are a regression-inventory guard, **not an attestation**
 that arbitrary renamed test bodies retain their intended assertions.
 A single passing test is not sufficient.
@@ -354,7 +368,7 @@ Local validation on October 18 used the exact committed Git blobs
 for the runner, review-coverage validator, CODEOWNERS and workflow.
 The review validator passed 21/21 tests; a separate synthetic fixture
 exercised the earlier runner with its then-current 107-test minimum and
-six adversarial checks. The new 115-case floor, revised synthetic self-test,
+six adversarial checks. The new 117-case floor, revised synthetic self-test,
 and full publisher suite are not yet verified by a hosted runner. These
 historical results are NOT execution of the current complete Python suite. The source org's Actions remains unallocated (zero job steps).
 Do not publish sensitive blobs to a different org based on synthetic tests.
