@@ -370,6 +370,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(Path(captured["home"]).exists(),
                          "ephemeral gh config directory must be cleaned up")
 
+    def test_unavailable_system_temp_directory_denies_before_network(self):
+        with patch.object(pub.os, "stat", side_effect=OSError("unavailable")):
+            with patch.object(pub.subprocess, "run") as runner:
+                with self.assertRaisesRegex(
+                        pub.Denied, "authenticated GitHub API request unavailable"):
+                    pub.gh_api("repos/trusted/ci")
+                runner.assert_not_called()
+
     def test_real_preflight_never_executes_checkout_shell_or_inherited_bash_env(self):
         # Approval is now parsed strictly as data: even a script that
         # explicitly writes a marker must never be invoked by the publisher.
