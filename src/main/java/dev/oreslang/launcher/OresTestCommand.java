@@ -132,15 +132,16 @@ final class OresTestCommand {
             }
         }
 
-        // Trace reproducibility needs the source bytes to remain stable
-        // across guest execution, not just at trace creation/replay time.
+        // Trace reproducibility needs the complete reachable source closure
+        // to remain stable across guest execution and runtime stress.
+        // This snapshot does not capture scheduler nondeterminism.
         String sourceHashBefore = null;
         if (replayData != null || record != null) {
             try {
                 sourceHashBefore = OresTestTrace.hash(file);
                 if (replayData != null
-                        && !sourceHashBefore.equals(replayData.sourceHash())) {
-                    return usage("source changed after trace validation");
+                        && !sourceHashBefore.equals(replayData.closureHash())) {
+                    return usage("source closure changed after trace validation");
                 }
             } catch (java.io.IOException changed) {
                 return usage("cannot snapshot replay source: " + changed.getMessage());
@@ -159,7 +160,7 @@ final class OresTestCommand {
         if (sourceHashBefore != null) {
             try {
                 if (!sourceHashBefore.equals(OresTestTrace.hash(file))) {
-                    return usage("source changed during native guest execution; "
+                    return usage("source closure changed during native guest execution; "
                             + "refusing to record/replay an ambiguous trace");
                 }
             } catch (java.io.IOException changed) {
@@ -236,7 +237,7 @@ final class OresTestCommand {
                     // trace. Write itself hashes once more and refuses to
                     // overwrite an existing trace file.
                     if (!sourceHashBefore.equals(OresTestTrace.hash(file))) {
-                        return usage("source changed during runtime exploration");
+                        return usage("source closure changed during runtime exploration");
                     }
                     OresTestTrace.write(record, file, seed, stress, explore, report);
                 } catch (java.io.IOException invalid) {
