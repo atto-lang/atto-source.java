@@ -8481,15 +8481,35 @@ public final class ActorRuntime implements AutoCloseable {
                 } else {
                     dispatcher.execute(dispatch);
                 }
-            } catch (RejectedExecutionException rejected) {
+            } catch (RuntimeException | Error submissionFailure) {
+                // A dispatch failure AFTER physical mailbox acceptance must
+                // terminally revoke the actor, not leave scheduled=true with
+                // accepted mail and unresolved exact-message receipts. This
+                // includes allocation errors and unexpected executor failures,
+                // not only RejectedExecutionException.
+                //
+                // An adversarial executor could enqueue the runnable and THEN
+                // throw. Do not retry that ticket: stop/fence the actor, and
+                // never convert an ambiguously accepted dispatch into a
+                // successful receipt. The carrier identity check prevents a
+                // stale runnable from impersonating a new turn.
                 synchronized (lifecycleLock) {
                     if (scheduledDispatchToken == dispatchTicket && !carrierActive) {
                         scheduledDispatchToken = null;
                         scheduled.set(false);
                     }
                 }
-                stop();
-                if (!closed.get()) throw rejected;
+                try {
+                    stop();
+                } catch (RuntimeException | Error stopFailure) {
+                    if (stopFailure != submissionFailure)
+                        submissionFailure.addSuppressed(stopFailure);
+                }
+                // Existing close shutdown may legitimately reject queued
+                // dispatch; only suppress that expected closed-runtime case.
+                if (submissionFailure instanceof RejectedExecutionException
+                        && closed.get()) return;
+                throw submissionFailure;
             }
         }
 
