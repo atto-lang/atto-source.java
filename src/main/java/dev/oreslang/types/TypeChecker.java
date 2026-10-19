@@ -2062,6 +2062,21 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.StagedCallExpr named
+                && OptionalCallShapeBinder.isDirectScalarLiteralNamedCall(named)) {
+            Ast.NameExpr name = (Ast.NameExpr) named.callee();
+            if (env.lookup(name.name()) != null) {
+                throw new IllegalArgumentException(
+                        "named literal call target is shadowed by a local binding");
+            }
+            Ast.FunctionDecl resolved = findFunction(
+                    name.name(), named.arguments().size());
+            Ast.CallExpr lowered = OptionalCallShapeBinder.lowerDirectScalarLiteralNamedCall(
+                    named, resolved);
+            // Existing callable resolution, visibility, return-type and
+            // argument checks remain authoritative for this pure subset.
+            return typeOf(lowered, env, generics, self);
+        }
         if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
             throw new IllegalArgumentException(
                     "named/optional call argument lowering is not yet enabled;"
