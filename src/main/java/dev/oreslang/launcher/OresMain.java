@@ -9,10 +9,12 @@ import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.NativeBuildMode;
 import dev.oreslang.runtime.CorePerf;
 import dev.oreslang.runtime.CoreDebug;
+import dev.oreslang.runtime.CoreLog;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
 import dev.oreslang.runtime.PermissionCheckMode;
 import dev.oreslang.runtime.RuntimePermissions;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -44,7 +46,14 @@ public final class OresMain {
     /** Testable CLI boundary: syntax/configuration failures never masquerade as success. */
     static int exitStatusForArgs(String[] args) {
         try {
-            return runForExitStatus(args);
+            int status = runForExitStatus(args);
+            // PrintStream records failed writes instead of throwing IOException.
+            // Flush and inspect both CLI streams before publishing success.
+            if (status == 0 && (System.out.checkError() || System.err.checkError())) {
+                System.err.println("oreslang: failed to publish CLI output");
+                return 1;
+            }
+            return status;
         } catch (UsageException failure) {
             System.err.println("oreslang: " + failure.getMessage());
             return 2;
@@ -67,6 +76,7 @@ public final class OresMain {
         }
         String perfEnv = System.getenv("ORES_CORE_PERF");
         boolean corePerf = "true".equalsIgnoreCase(perfEnv) || "1".equals(perfEnv);
+        String coreLogLevel = System.getenv().getOrDefault("ORES_CORE_LOG_LEVEL", "off");
         String debugEnv = System.getenv("ORES_CORE_DEBUG");
         boolean coreDebug = "true".equalsIgnoreCase(debugEnv) || "1".equals(debugEnv);
         boolean strict = false;
@@ -90,6 +100,9 @@ public final class OresMain {
                 else if (arg.equals("--check")) checkOnly = true;
                 else if (arg.equals("--core-perf")) corePerf = true;
                 else if (arg.equals("--no-core-perf")) corePerf = false;
+                else if (arg.startsWith("--core-log-level="))
+                    coreLogLevel = arg.substring("--core-log-level=".length());
+                else if (arg.equals("--no-core-log")) coreLogLevel = "off";
                 else if (arg.equals("--core-debug")) coreDebug = true;
                 else if (arg.equals("--no-core-debug")) coreDebug = false;
                 else if (arg.equals("--build-analysis")) buildAnalysis = true;
@@ -149,6 +162,13 @@ public final class OresMain {
             throw new UsageException("--check and --build-analysis are mutually exclusive");
         }
 
+        final CoreLog.Level admittedLogLevel;
+        try {
+            admittedLogLevel = CoreLog.Level.parse(coreLogLevel);
+        } catch (IllegalArgumentException badLogLevel) {
+            throw new UsageException(badLogLevel.getMessage());
+        }
+        CoreLog.configure(admittedLogLevel);
         CorePerf.configure(corePerf);
         CoreDebug.configure(coreDebug);
         try {
@@ -177,7 +197,7 @@ public final class OresMain {
         }
         if (!Files.isRegularFile(path)) throw new IllegalArgumentException("not a file: " + path);
 
-        String directOresSource = filename.endsWith(".ores") ? Files.readString(path) : null;
+        String directOresSource = filename.endsWith(".ores") ? readBoundedOresSource(path) : null;
         if (directOresSource != null) {
             formatSyntaxWarnings(path, directOresSource).forEach(System.err::println);
             formatSelectReturnWarnings(path, directOresSource).forEach(System.err::println);
@@ -211,7 +231,7 @@ public final class OresMain {
             if (!filename.endsWith(".ores")) {
                 throw new UsageException("--build-analysis currently requires a .ores source file");
             }
-            String source = Files.readString(path);
+            String source = directOresSource;
             if (permissionCheckMode == PermissionCheckMode.COMPILE) {
                 OresCompiler.validateForIsolate(source, policy);
             }
@@ -258,6 +278,11 @@ public final class OresMain {
                 System.out,
                 System.err).exitStatus();
         return exitStatus;
+    }
+
+    // Share admission policy with the linked-unit loader, including imports.
+    private static String readBoundedOresSource(Path path) throws IOException {
+        return dev.oreslang.runtime.BoundedSourceReader.readUtf8(path);
     }
 
     private static final class UsageException extends IllegalArgumentException {
@@ -320,7 +345,8 @@ public final class OresMain {
                         + "[--allow-ffi[=PATH,...]] [--deny-ffi[=PATH,...]] "
                         + "[--allow-import[=PATH,...]] [--deny-import[=PATH,...]] "
                         + "[--no-prompt] [--define=name=value ...] [--entry=symbol ...] "
-                        + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] [--mode=aot|jit|hybrid] "
+                        + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] "
+                        + "[--core-log-level=off|error|warn|info|debug|trace] [--no-core-log] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
                         + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
                         + "[file.ores|file.java]");
