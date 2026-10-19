@@ -45,9 +45,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
 
     int reserveLane() { return Math.floorMod(nextLane.getAndIncrement(), lanes.size()); }
     int cpuForLane(int lane) {
-        if (cpus.length == 0) return -1;
-        int index = (int) Math.floorMod(cpuLaneOffset + (long) lane, (long) cpus.length);
-        return cpus[index];
+        return ActorCpuAffinityConfig.cpuForLane(cpus, cpuLaneOffset, lane);
     }
     boolean nativeCarriers() { return lanes.stream().allMatch(NativeCarrierExecutor.class::isInstance); }
 
