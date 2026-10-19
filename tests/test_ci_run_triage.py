@@ -296,5 +296,87 @@ class PaginationHardeningTests(unittest.TestCase):
             m.inspect("org/repo", 42, SHA, fetch=duplicate)
 
 
+
+class VerifiedPRModeTests(unittest.TestCase):
+    PR = {"number": 17, "state": "open", "head": {"sha": SHA}}
+
+    @staticmethod
+    def _job(**overrides):
+        j = job(steps=[step("Run unit tests", "failure")],
+                run_id=42, run_attempt=2, head_sha=SHA)
+        j.update(overrides)
+        return j
+
+    def _fetch(self, *, pr=None, run=None, candidate=None):
+        calls = []
+        def fetch(path):
+            calls.append(path)
+            if path.endswith("pulls/17"):
+                return pr or self.PR
+            if "jobs?" in path:
+                return {"total_count": 1, "jobs": [candidate or self._job()]}
+            return run or RUN
+        return fetch, calls
+
+    def test_full_exact_pr_head_job_and_attempt_verification(self):
+        fetch, calls = self._fetch()
+        out = m.inspect("org/repo", 42, SHA, fetch=fetch, pr_number=17)
+        self.assertEqual(out["category"], "executed_build_test_failure")
+        self.assertTrue(out["pr_head_verified"])
+        self.assertTrue(out["job_provenance_verified"])
+        self.assertEqual(out["run_attempt"], 2)
+        self.assertEqual(calls, ["repos/org/repo/pulls/17", "repos/org/repo/actions/runs/42",
+                                 "repos/org/repo/actions/runs/42/jobs?per_page=100",
+                                 "repos/org/repo/actions/runs/42", "repos/org/repo/pulls/17"])
+
+    def test_stale_pr_head_rejected_before_run_reads(self):
+        fetch, calls = self._fetch(pr={"number": 17, "state": "open", "head": {"sha": "b" * 40}})
+        with self.assertRaisesRegex(m.TriageError, "PR current head SHA"):
+            m.inspect("org/repo", 42, SHA, fetch=fetch, pr_number=17)
+        self.assertEqual(calls, ["repos/org/repo/pulls/17"])
+
+    def test_head_changes_during_inspection(self):
+        fetch, calls = self._fetch()
+        def racing(path):
+            if path.endswith("pulls/17") and sum(p.endswith("pulls/17") for p in calls) == 1:
+                calls.append(path)
+                return {"number": 17, "state": "open", "head": {"sha": "b" * 40}}
+            return fetch(path)
+        with self.assertRaisesRegex(m.TriageError, "PR current head SHA"):
+            m.inspect("org/repo", 42, SHA, fetch=racing, pr_number=17)
+
+    def test_missing_or_mismatched_attempt_and_sha_provenance(self):
+        for changed in ({"run_attempt": None}, {"run_attempt": 3},
+                        {"head_sha": None}, {"head_sha": "b" * 40},
+                        {"run_id": None}, {"run_id": 43}):
+            with self.subTest(changed=changed):
+                fetch, _ = self._fetch(candidate=self._job(**changed))
+                with self.assertRaisesRegex(m.TriageError, "provenance"):
+                    m.inspect("org/repo", 42, SHA, fetch=fetch, pr_number=17)
+
+    def test_run_attempt_missing_rejected_without_pr_too(self):
+        for bad in (None, 0, True, "1"):
+            with self.subTest(attempt=bad):
+                fetch, _ = self._fetch(run={**RUN, "run_attempt": bad})
+                with self.assertRaisesRegex(m.TriageError, "run attempt"):
+                    m.inspect("org/repo", 42, SHA, fetch=fetch)
+
+    def test_closed_or_unverifiable_pr_denied(self):
+        for pr in ({"number": 17, "state": "closed", "head": {"sha": SHA}},
+                   {"number": 17, "state": "open", "head": {}},
+                   {"number": 18, "state": "open", "head": {"sha": SHA}}):
+            with self.subTest(pr=pr):
+                fetch, _ = self._fetch(pr=pr)
+                with self.assertRaises(m.TriageError):
+                    m.inspect("org/repo", 42, SHA, fetch=fetch, pr_number=17)
+
+    def test_invalid_pr_number_rejected_before_api(self):
+        for bad in (0, -1, True, "17"):
+            with self.subTest(number=bad):
+                with self.assertRaises(m.TriageError):
+                    m.inspect("org/repo", 42, SHA, pr_number=bad,
+                              fetch=lambda _: self.fail("unexpected API request"))
+
+
 if __name__ == "__main__":
     unittest.main()
