@@ -22,6 +22,7 @@ import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
+import dev.oreslang.runtime.TaskScope;
 import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
@@ -9030,113 +9031,6 @@ public final class OresEvalRootNode extends RootNode {
     private record TailCallable(Evaluator owner, Invokable delegate) implements TailInvokable {
         @Override public Object call(List<Object> arguments) {
             return delegate.call(arguments);
-        }
-    }
-
-    /**
-     * Structured Task barrier. A cancelled Future alone is NOT a quiescence
-     * witness. Each child holds its ticket until both its terminal notification
-     * and the scheduler's post-carrier retirement callback have occurred.
-     */
-    private static final class TaskScope {
-        private final OresFuture<Void> drained;
-        private OresFuture.Callback<Void> completion;
-        private int active;
-        private boolean closing;
-        private boolean published;
-        private Throwable firstFailure;
-
-        private TaskScope() {
-            drained = OresFuture.fromCallback(callback -> completion = callback);
-        }
-
-        private synchronized Registration reserve() {
-            // A still-running child may spawn another child while the parent
-            // scope is closing. No new child can appear after active reaches 0.
-            if (closing && active == 0) {
-                throw new IllegalStateException("Task spawned after scope quiescence");
-            }
-            if (active == Integer.MAX_VALUE) {
-                throw new IllegalStateException("Task scope admission exhausted");
-            }
-            active++;
-            return new Registration(this);
-        }
-
-        private OresFuture<Void> close() {
-            synchronized (this) { closing = true; }
-            publishIfReady();
-            return drained;
-        }
-
-        private void childDone(Throwable failure) {
-            synchronized (this) {
-                if (active == 0) throw new IllegalStateException("Task scope ticket underflow");
-                if (failure != null) {
-                    if (firstFailure == null) firstFailure = failure;
-                    else if (firstFailure != failure) firstFailure.addSuppressed(failure);
-                }
-                active--;
-            }
-            publishIfReady();
-        }
-
-        private void publishIfReady() {
-            Throwable failure;
-            synchronized (this) {
-                if (published || !closing || active != 0) return;
-                published = true;
-                failure = firstFailure;
-            }
-            if (failure != null) completion.reject(failure);
-            else completion.resolve(null);
-        }
-
-        private static final class Registration {
-            private final TaskScope scope;
-            private boolean quiescent;
-            private boolean terminal;
-            private boolean notified;
-            private Throwable failure;
-
-            private Registration(TaskScope scope) { this.scope = scope; }
-
-            private void attach(OresFuture<?> future) {
-                future.whenCompleteRuntime((value, cause) -> settle(cause, false));
-            }
-
-            private void quiesced() { settle(null, true); }
-
-            private void failedAdmission(Throwable cause) {
-                synchronized (this) {
-                    if (notified) return;
-                    failure = cause;
-                    terminal = true;
-                    quiescent = true;
-                }
-                notifyIfReady();
-            }
-
-            private void settle(Throwable cause, boolean isQuiescence) {
-                synchronized (this) {
-                    if (isQuiescence) quiescent = true;
-                    else {
-                        terminal = true;
-                        failure = cause;
-                    }
-                }
-                notifyIfReady();
-            }
-
-            private void notifyIfReady() {
-                Throwable cause;
-                synchronized (this) {
-                    if (notified || !quiescent || !terminal) return;
-                    notified = true;
-                    cause = failure;
-                }
-                scope.childDone(cause);
-            }
         }
     }
 
