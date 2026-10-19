@@ -4185,6 +4185,33 @@ public final class OresEvalRootNode extends RootNode {
             Ast.NamedCallProof proof = Ast.CheckedNamedCallPlan.require(call);
             List<Ast.Expr> sourceExpressions = stagedSourceExpressions(call);
 
+            if (isStagedTypeConstructor(call)) {
+                Ast.TypeRef sourceType =
+                        ((Ast.TypeExpr) ((Ast.MemberExpr) call.callee()).receiver()).type();
+                evalSuspendableArguments(
+                        task,
+                        sourceExpressions,
+                        env,
+                        (t, sourceValues, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                List<Object> args =
+                                        proof.valuesInFormalOrder(sourceValues);
+                                continuation.accept(
+                                        t,
+                                        instantiateStagedTypeConstructor(
+                                                sourceType, proof, args, env),
+                                        null);
+                            } catch (RuntimeException | Error failure2) {
+                                continuation.accept(t, null, failure2);
+                            }
+                        });
+                return;
+            }
+
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct =
@@ -4290,6 +4317,11 @@ public final class OresEvalRootNode extends RootNode {
             Ast.NamedCallProof proof = Ast.CheckedNamedCallPlan.require(call);
             List<Ast.Expr> sourceExpressions = stagedSourceExpressions(call);
 
+            if (isStagedTypeConstructor(call)) {
+                throw new IllegalStateException(
+                        "Type<T>.new must use constructor lowering, not callable invocation lowering");
+            }
+
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct =
@@ -4320,6 +4352,57 @@ public final class OresEvalRootNode extends RootNode {
 
             throw new IllegalStateException(
                     "checked named-call target no longer has a supported static shape");
+        }
+
+        private boolean isStagedTypeConstructor(Ast.StagedCallExpr call) {
+            return call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.TypeExpr
+                    && member.member().equals("new");
+        }
+
+        private OresObject instantiateStagedTypeConstructor(
+                Ast.TypeRef sourceType,
+                Ast.NamedCallProof proof,
+                List<Object> args,
+                Env env) {
+            if (sourceType.inferArguments()) {
+                throw new IllegalStateException(
+                        "checked Type<>.new reached runtime without explicit generic arguments");
+            }
+
+            Ast.ClassDecl klass = findClass(sourceType.name());
+            Evaluator owner = this;
+            boolean externalConstruction = false;
+            if (klass == null) {
+                Object imported = importedValue(sourceType.name());
+                if (imported instanceof ClassFacade externalClass) {
+                    owner = externalClass.owner();
+                    klass = externalClass.klass();
+                    externalConstruction = true;
+                }
+            }
+            if (klass == null) {
+                throw new IllegalStateException(
+                        "checked Type<T>.new class no longer resolves at runtime: "
+                                + sourceType.name());
+            }
+            if (sourceType.arguments().size() != klass.genericParameters().size()) {
+                throw new IllegalStateException(
+                        "checked Type<T>.new generic arity changed before runtime for "
+                                + klass.name());
+            }
+            Ast.ConstructorDecl constructor = klass.constructor();
+            if (constructor == null) {
+                throw new IllegalStateException(
+                        "checked Type<T>.new explicit constructor disappeared before runtime for "
+                                + klass.name());
+            }
+            verifyStagedFunctionTarget(
+                    proof,
+                    "constructor",
+                    klass.name(),
+                    constructor.parameters());
+            return owner.instantiate(klass, args, externalConstruction);
         }
 
         private Invocation prepareStagedInvocationEvaluated(
@@ -6370,6 +6453,19 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.StagedCallExpr call) {
+                if (isStagedTypeConstructor(call)) {
+                    Ast.NamedCallProof proof =
+                            Ast.CheckedNamedCallPlan.require(call);
+                    Ast.TypeRef sourceType =
+                            ((Ast.TypeExpr) ((Ast.MemberExpr) call.callee()).receiver()).type();
+                    List<Object> sourceValues =
+                            evaluateArguments(stagedSourceExpressions(call), env);
+                    return instantiateStagedTypeConstructor(
+                            sourceType,
+                            proof,
+                            proof.valuesInFormalOrder(sourceValues),
+                            env);
+                }
                 return invoke(prepareStagedInvocation(call, env));
             }
             if (expr instanceof Ast.StagedNewExpr) {
