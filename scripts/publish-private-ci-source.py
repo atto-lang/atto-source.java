@@ -34,7 +34,7 @@ EXPECTED_POLICY_BLOB_SHA = "7f06fd603fb385273ccd6ef47b3c7ec4c6a40604"
 CARRIER_WORKFLOW_PATH = ".github/workflows/private-oreslang-exact-tree.yml"
 # Independently reviewed destination-main workflow. The publisher overlays only
 # PREFIX, so this exact workflow remains part of the carrier commit that runs.
-EXPECTED_CARRIER_WORKFLOW_BLOB_SHA = "192b09a4c40add46d0edc8a89da3ca87bf18d332"
+EXPECTED_CARRIER_WORKFLOW_BLOB_SHA = "a32ca1b747aba32f66f44c2bb43a280663833166"
 MAX_POLICY_BYTES = 16 * 1024
 
 
