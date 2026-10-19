@@ -792,6 +792,9 @@ public final class OwnershipChecker {
             return switch (runtime.operation()) {
                 case "borrow" -> {
                     VarState owner = borrowOwner(argument, scope);
+                    if (containsMlScalarCapabilityType(owner.type)) {
+                        throw error("rt borrow cannot borrow actor scalar snapshot/publication capabilities");
+                    }
                     validateBorrow(owner, false);
                     yield new ValueInfo(
                             Ast.TypeRef.borrowed(owner.type, false),
@@ -800,6 +803,9 @@ public final class OwnershipChecker {
                 }
                 case "take" -> {
                     ValueInfo taken = checkExpr(argument, scope, true);
+                    if (containsMlScalarCapabilityType(taken.type)) {
+                        throw error("rt take cannot transfer actor scalar snapshot/publication capabilities");
+                    }
                     if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW
                             || (taken.type != null && taken.type.isBorrow())) {
                         throw error("rt take requires owned data; a borrow cannot regain ownership");
@@ -815,6 +821,9 @@ public final class OwnershipChecker {
                 }
                 case "copy" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
+                    if (containsMlScalarCapabilityType(source.type)) {
+                        throw error("rt copy cannot clone actor scalar snapshot/publication capabilities");
+                    }
                     if (source.kind != ValueKind.COPY) {
                         throw error(
                                 "rt copy of move-only values requires the Symbol.rtCopy copy-contract lowering; "
@@ -824,6 +833,9 @@ public final class OwnershipChecker {
                 }
                 case "share" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
+                    if (containsMlScalarCapabilityType(source.type)) {
+                        throw error("rt share cannot expose actor scalar snapshot/publication capabilities");
+                    }
                     if (source.kind != ValueKind.COPY) {
                         throw error(
                                 "rt share of move-only values requires the owning Shared<T> convergence; "
@@ -837,6 +849,9 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.AssignExpr assignment) {
             checkAssignmentTarget(assignment.target(), scope);
             ValueInfo assigned = checkExpr(assignment.value(), scope, true);
+            if (containsMlScalarCapabilityType(assigned.type)) {
+                throw error("actor scalar snapshot/publication capabilities cannot be assigned into mutable storage");
+            }
             if (containsMutexGuardType(assigned.type)) {
                 throw error("guard-bearing values cannot be assigned or overwritten; bind them once with val");
             }
@@ -1285,6 +1300,9 @@ public final class OwnershipChecker {
             for (Ast.Expr argument : call.arguments()) {
                 Ast.Expr value = argument instanceof Ast.SpreadExpr spread ? spread.expression() : argument;
                 ValueInfo info = checkExpr(value, scope, false);
+                if (containsMlScalarCapabilityType(info.type)) {
+                    throw error("actor scalar snapshot/publication capabilities cannot be formatted or logged");
+                }
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be formatted or logged");
                 }
