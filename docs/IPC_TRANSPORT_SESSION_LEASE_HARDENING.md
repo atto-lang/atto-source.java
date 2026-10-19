@@ -144,3 +144,15 @@ The source-free funded canary independently exercises the corresponding
 properties without copying Oreslang source. Its current run is intentionally
 evidence about hosted JDK/socket behavior and the abstract security contract,
 not source-head certification.
+
+
+### Managed-runtime secret-erasure caveat
+
+Zero-filling the adapter-owned byte array is a best-effort lifetime reduction,
+not proof that every key copy has been physically erased from JVM memory.
+SecretKeySpec, JCE provider internals, compiler temporaries, crash dumps or
+heap snapshots may contain transient copies outside this object's control.
+Production key management must therefore rely on short-lived per-connection
+derived keys, process/isolate boundaries and platform secret-handling policy;
+the source test only proves that the adapter's retained clone is zero-filled
+after authoritative retirement.
