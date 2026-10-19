@@ -106,6 +106,34 @@ public final class IpcTransportSessionLeaseSelfTest {
         check(quarantine.closeFailure() instanceof IOException);
         check(quarantine.invariant());
 
+        // A trusted supervisor may explicitly retry a quarantined physical
+        // close, but no write admission reopens during recovery.
+        var recoveryBridge = new IpcReceiptCompletionBridge(1);
+        var recoveryMessage = message(1, "recovery");
+        var recoveryResult = recoveryBridge.admit(recoveryMessage);
+        AtomicInteger closeAttempts = new AtomicInteger();
+        var recovery = new IpcTransportSessionLease("recovery", 57, 1,
+                recoveryBridge, () -> {
+                    if (closeAttempts.incrementAndGet() == 1) {
+                        throw new IOException("first close was unconfirmed");
+                    }
+                });
+        recovery.writeFrame(57, recoveryMessage, value -> { });
+        recovery.requestClose();
+        check(recovery.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
+        check(!recoveryResult.toCompletableFuture().isDone());
+        deny(() -> {
+            try { recovery.writeFrame(57, recoveryMessage, value -> { }); }
+            catch (IOException impossible) { throw new AssertionError(impossible); }
+        });
+        recovery.retryQuarantinedClose();
+        check(closeAttempts.get() == 2);
+        check(recovery.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
+        check(recoveryResult.toCompletableFuture().join()
+                == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+        check(recovery.invariant());
+        deny(recovery::retryQuarantinedClose);
+
         // Verify close never recycles a descriptor during a real host write.
         for (int trial = 0; trial < 512; ++trial) {
             var candidateBridge = new IpcReceiptCompletionBridge(1);
