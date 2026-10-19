@@ -148,6 +148,68 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void admissionRacingSourceUpgradeStaysQueuedForAuthoritativeNewRoute()
+            throws Exception {
+        try (HotReloadManager manager =
+                     new HotReloadManager(IsolatePolicy.developer(),
+                             ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("race-v1.ores", V1);
+            var second = manager.stageActorGeneration("race-v2.ores", V2);
+            try (var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
+                    first, "Counter", WAIT, 4, 8, 32)) {
+                bridge.admitLong(41L);
+                assertTrue(bridge.dispatchOne(WAIT));
+                assertEquals(42L, next(bridge));
+
+                var start = new java.util.concurrent.CountDownLatch(1);
+                var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                Thread ingress = Thread.ofPlatform().start(() -> {
+                    try {
+                        start.await();
+                        bridge.admitLong(-1L);
+                    } catch (Throwable unexpected) {
+                        failure.set(unexpected);
+                    }
+                });
+                start.countDown();
+                assertTrue(bridge.upgradeTo(second, WAIT));
+                ingress.join(5000);
+                assertFalse(ingress.isAlive(), "ingress did not finish");
+                assertNull(failure.get());
+                assertEquals(2L, bridge.address().routeEpoch());
+                assertEquals(1, bridge.snapshot().queuedMessages());
+                assertTrue(bridge.dispatchOne(WAIT));
+                assertEquals(43L, next(bridge));
+                assertEquals(2L, bridge.snapshot().completionWatermark());
+                assertEquals(0, bridge.snapshot().retainedMessages());
+            }
+        }
+    }
+
+    @Test
+    void incompatiblePhysicalUpgradeFailsSealedInsteadOfReplayingMail()
+            throws Exception {
+        try (HotReloadManager manager =
+                     new HotReloadManager(IsolatePolicy.developer(),
+                             ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("same-v1.ores", V1);
+            var sameCode = manager.stageActorGeneration("same-code.ores", V1);
+            try (var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
+                    first, "Counter", WAIT, 2, 8, 16)) {
+                assertThrows(IllegalArgumentException.class,
+                        () -> bridge.upgradeTo(sameCode, WAIT),
+                        "source actor checkpoint refuses identical code generation");
+                assertTrue(bridge.failSealed());
+                assertThrows(IllegalStateException.class,
+                        () -> bridge.admitLong(1L));
+                assertThrows(IllegalStateException.class,
+                        () -> bridge.dispatchOne(WAIT));
+                assertEquals(1L, bridge.address().routeEpoch());
+            }
+        }
+    }
+
+    @Test
     void closingCannotSilentlyDropAcceptedQueuedActorMail() throws Exception {
         try (HotReloadManager manager =
                      new HotReloadManager(IsolatePolicy.developer(),
