@@ -333,8 +333,13 @@ final class CheckedDynamicIndexAccessTest {
         assertEquals(null, Ast.CheckedIndexKeys.knownTupleSlot(second));
         Ast.CheckedIndexKeys.propagate(first, second);
         assertEquals(0, Ast.CheckedIndexKeys.knownTupleSlot(second));
+        assertDoesNotThrow(() -> Ast.CheckedIndexKeys.requireTupleSlot(second, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.CheckedIndexKeys.requireTupleSlot(second, 1));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedIndexKeys.recordTupleSlot(first, 1));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.record(first, Set.of("x")));
     }
 
     @Test
@@ -355,6 +360,8 @@ final class CheckedDynamicIndexAccessTest {
         Ast.IndexExpr second = new Ast.IndexExpr(
                 new Ast.NameExpr("data"), new Ast.LiteralExpr("x"));
         Ast.CheckedIndexKeys.record(first, Set.of("x"));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.recordTupleSlot(first, 0));
         assertDoesNotThrow(() -> Ast.CheckedIndexKeys.require(first, "x"));
         assertThrows(IllegalArgumentException.class,
                 () -> Ast.CheckedIndexKeys.require(first, "secret"));
