@@ -44,6 +44,49 @@ final class SourceActorTypedWireV2 {
         return Math.min(configured, MAX_FRAME_BYTES);
     }
 
+    /**
+     * Preflight strict UTF-16 before any payload buffer allocation. The exact
+     * UTF-8 length is always >= the UTF-16 code-unit count for well-formed
+     * strings, but may be much larger for multibyte values. Rejecting from
+     * the source String directly prevents allocate-then-reject pressure at
+     * a configured quota and rejects unpaired surrogate code units.
+     */
+    private static int checkedUtf8Length(String value, int available) {
+        if (value.length() > available)
+            throw new IllegalArgumentException(
+                    "typed actor string exceeds bounded frame capacity");
+        int count = 0;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            int width;
+            if (ch <= 0x7f) {
+                width = 1;
+            } else if (ch <= 0x7ff) {
+                width = 2;
+            } else if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= value.length()
+                        || !Character.isLowSurrogate(value.charAt(i + 1))) {
+                    throw new IllegalArgumentException(
+                            "unpaired high surrogate in actor string");
+                }
+                i++;
+                width = 4;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw new IllegalArgumentException(
+                        "unpaired low surrogate in actor string");
+            } else {
+                width = 3;
+            }
+            // Subtract rather than add before bounds checking: count never
+            // exceeds the configured <= 1 MiB limit and cannot overflow.
+            if (width > available - count)
+                throw new IllegalArgumentException(
+                        "typed actor UTF-8 exceeds bounded frame capacity");
+            count += width;
+        }
+        return count;
+    }
+
     private static byte[] frame(
             Binding binding, byte[] payload, int configuredLimit) {
         Objects.requireNonNull(binding, "binding");
@@ -88,12 +131,8 @@ final class SourceActorTypedWireV2 {
             throw new SecurityException("compiled receive type does not accept string");
         Objects.requireNonNull(value, "value");
         int available = maximum(maxBytes) - HEADER_BYTES;
-        // Each UTF-16 code unit contributes at least one encoded UTF-8 byte
-        // in a well-formed string. Reject oversize values before allocating.
-        if (value.length() > available)
-            throw new IllegalArgumentException("typed actor string exceeds bounded frame capacity");
-        int initial = (int) Math.min((long) available, 4L * value.length());
-        ByteBuffer utf8 = ByteBuffer.allocate(initial);
+        int exactUtf8Length = checkedUtf8Length(value, available);
+        ByteBuffer utf8 = ByteBuffer.allocate(exactUtf8Length);
         var encoder = StandardCharsets.UTF_8.newEncoder()
                 .onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT);
@@ -109,10 +148,10 @@ final class SourceActorTypedWireV2 {
         } catch (CharacterCodingException invalid) {
             throw new IllegalArgumentException("noncanonical UTF-16 actor string", invalid);
         }
-        byte[] payload = new byte[utf8.position()];
-        utf8.flip();
-        utf8.get(payload);
-        return frame(binding, payload, maxBytes);
+        if (utf8.position() != exactUtf8Length)
+            throw new IllegalStateException(
+                    "typed actor UTF-8 encoder violated checked byte count");
+        return frame(binding, utf8.array(), maxBytes);
     }
 
     static Object decode(Binding binding, byte[] wire) {
