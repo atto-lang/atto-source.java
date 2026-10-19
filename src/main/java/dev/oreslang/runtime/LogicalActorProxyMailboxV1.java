@@ -318,6 +318,25 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
     }
 
     /**
+     * Trusted physical-router ownership proof. A matching sequence or copied
+     * payload is not sufficient: the SAME immutable Envelope object must be
+     * currently outstanding in THIS mailbox and owned by THIS route epoch.
+     * Call before physical acceptance and again under the route monitor
+     * immediately before a successful drain refunds credits.
+     */
+    void requireOutstandingEnvelope(Envelope envelope, long expectedRouteEpoch) {
+        Objects.requireNonNull(envelope, "envelope");
+        synchronized (lock) {
+            requireOpenLocked();
+            if (expectedRouteEpoch != routeEpoch
+                    || outstanding.get(envelope.messageSequence()) != envelope) {
+                throw new SecurityException(
+                        "foreign, completed or stale logical proxy envelope");
+            }
+        }
+    }
+
+    /**
      * Logical mail completion. This is the point at which proxy capacity is
      * refunded. Completion order may differ from admission/dispatch order.
      */
