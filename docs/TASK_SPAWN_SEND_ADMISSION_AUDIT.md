@@ -223,3 +223,40 @@ concurrency-contract #39324362365 / job #118306241700 again failed with
 **zero recorded steps**. No Maven/JUnit/GraalVM pass is claimed. The
 authorized cross-org exact-tree path remains blocked until #1430 is
 independently approved and merged into protected `main`.
+
+
+### Opaque-import and projection-selection hardening
+
+A further audit closed two admission edges:
+
+1. **Opaque imported runtime captures fail closed.** A Task capture that is not
+   a local `Env` binding but is present in the TypeChecker's runtime-value
+   import namespace can no longer be silently skipped. Detached blocks and
+   scheduled lambdas reject it until linked semantic type **and** ownership
+   metadata are available. Compile-time namespaces remain distinct from this
+   rule.
+2. **Callable member selection is not a moved field.** The recursive
+   projection-laundering guard follows ownership-bearing call arguments but
+   does not treat the `MemberExpr` used to select a method as an extracted
+   affine field. A fresh move-only return such as `optional.unwrap()` can
+   therefore be admitted normally, while direct `nested[0]` and wrapped
+   `rt take nested[0]` scheduled transfers still fail closed.
+
+Current exact head before this documentation commit:
+`71feabe479ebc3b3d5b3510fd0eaac3500eecd32`.
+
+Current exact compiler/test blobs:
+- `TypeChecker.java`: `1e3e40d96b36f37d6379d382dfafc3d3a565c2fa`
+- `OwnershipChecker.java`: `c72d42845b688b498ed83c0a9ec913c25bab3fe5`
+- `TaskTransferProvenance.java`: `4f9e8a9b346eb2835ea3f05ae55bcda05c983d76`
+- `ResolvedTaskSendAuthorityTest.java`: `c863c079f3324d214031dc8ca8e3e4ba94386755` (7 tests)
+- `TaskTransferProvenanceTest.java`: `736a7b172c70337fc34c36e542a60541b60484df` (5 tests)
+
+Targeted Task admission inventory is now **30 JUnit methods**
+(13 spawn/preflight + 7 resolved semantic authority + 5 capture analysis +
+5 transfer provenance).
+
+Latest source-org fast-ci #39324842529 / job #118307863719 and
+concurrency-contract #39324842366 / job #118307861781 both completed with
+**zero recorded steps**. They are runner/admission failures, not compiler or
+JUnit results. No exact-source pass is claimed.
