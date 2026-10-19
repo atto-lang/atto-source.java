@@ -161,7 +161,8 @@ class DispatcherTest(unittest.TestCase):
         auth_branch="ci/authorized-"+commit
         try:
             for mutated in ("authorization-sha","authorization-type",
-                            "payload-sha","payload-type"):
+                            "authorization-name","authorization-missing",
+                            "payload-sha","payload-type","payload-name","payload-missing"):
                 with self.subTest(mutated=mutated):
                     calls=[]; writes=[]
                     def api(route,method="GET",payload=None):
@@ -172,13 +173,18 @@ class DispatcherTest(unittest.TestCase):
                         self.assertEqual(method,"GET")
                         if route.endswith("/git/ref/heads/"+auth_branch):
                             calls.append("authorization-readback")
-                            return {"ref":"refs/heads/"+auth_branch,
+                            return {"ref":"" if mutated=="authorization-missing" else
+                                         "refs/heads/"+auth_branch+"-other"
+                                         if mutated=="authorization-name" else "refs/heads/"+auth_branch,
                                     "object":{"type":"tag" if mutated=="authorization-type" else "commit",
                                               "sha":other if mutated=="authorization-sha" else commit}}
                         self.assertTrue(route.endswith("/git/ref/heads/"+payload_branch))
                         calls.append("payload-readback")
                         returning_mutation=len([x for x in calls if x=="payload-readback"])>1
-                        return {"ref":"refs/heads/"+payload_branch,
+                        return {"ref":("" if mutated=="payload-missing" else
+                                       "refs/heads/"+payload_branch+"-other" if mutated=="payload-name"
+                                       else "refs/heads/"+payload_branch) if returning_mutation
+                                       else "refs/heads/"+payload_branch,
                                 "object":{"type":"tag" if returning_mutation and mutated=="payload-type" else "commit",
                                           "sha":other if returning_mutation and mutated=="payload-sha" else commit}}
                     MOD.PUB.gh_api=api
