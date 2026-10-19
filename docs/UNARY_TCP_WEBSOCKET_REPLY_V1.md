@@ -125,13 +125,19 @@ methods invoke neither guest callbacks nor socket I/O while holding their
 monitor; a future network adapter must handle actual task cancellation,
 reply delivery and timeout scheduling outside this lock.
 
-The standalone registry remains a per-session/local-request primitive.
-`UnaryTcpSessionAdapter` supplies the separate inbound network ledger: it
-requires a successful `Authenticator.authenticateAndBind(...)` before reading
-the first unary frame, verifies the supervisor-minted session/generation on the
-fixed header before body reads, requires strictly increasing peer REQUEST
-correlation IDs, rejects future/unissued CANCEL IDs, and treats late/duplicate
-CANCEL as already terminal. Envelope IDs are never treated as credentials.
+The standalone `UnaryRequestRegistry` remains a per-session/local-request
+primitive. Authenticated peer-selected IDs use `UnaryInboundRequestRegistry`,
+and `UnaryTcpSessionAdapter` now delegates its live replay/count/request-byte
+accounting to that same ledger instead of maintaining a parallel high-water
+implementation. The adapter requires a successful
+`Authenticator.authenticateAndBind(...)` before reading the first unary frame,
+verifies the supervisor-minted session/generation on the fixed header before
+body reads, requires strictly increasing peer REQUEST correlation IDs, rejects
+future/unissued CANCEL IDs, and treats late/duplicate CANCEL as already
+terminal. An authenticated syntactically valid request ID is consumed even
+when bounded admission rejects it and returns a terminal overload ERROR; retry
+must use a fresh larger ID. This prevents a lost overload ERROR from making the
+same request identity executable later. Envelope IDs are never credentials.
 
 The adapter independently bounds active connections, per-connection request
 count and **combined pending-request + queued-response payload bytes**, global
