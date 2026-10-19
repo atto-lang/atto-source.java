@@ -253,7 +253,7 @@ def gh_api(route, method="GET", payload=None):
     # unexpected response shape still fails closed.
     effective_rules_route = re.fullmatch(
         r"repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/rules/branches/"
-        r"ci%2Foreslang-[a-f0-9]{40}-[a-f0-9]{40}", route)
+        r"ci%2Foreslang-[a-f0-9]{40}-[a-f0-9]{40}\\?per_page=100&page=1", route)
     matching_refs_route = re.fullmatch(
         r"repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/git/matching-refs/heads/"
         r"ci/oreslang-[a-f0-9]{40}-[a-f0-9]{40}\?per_page=1&page=1", route)
@@ -553,9 +553,13 @@ def require_effective_carrier_source_rules(repository, branch, ruleset_id):
     # Encode the slash so GitHub interprets the complete ref name as one path parameter.
     encoded_branch = branch.replace("/", "%2F")
     effective = gh_api(
-        f"repos/{repository}/rules/branches/{encoded_branch}")
-    if not effective or not all(isinstance(rule, dict) for rule in effective):
-        raise Denied("effective private carrier source-branch rules are unavailable")
+        f"repos/{repository}/rules/branches/{encoded_branch}?per_page=100&page=1")
+    # A full first page may conceal another page with a conflicting rule.
+    # Never authorize partial active-rule evidence to export private files.
+    if (not isinstance(effective, list) or not effective
+            or len(effective) >= 100
+            or not all(isinstance(rule, dict) for rule in effective)):
+        raise Denied("effective private carrier source-branch rules are unavailable or incomplete")
     # A second active ruleset can independently block branch creation even
     # when the reviewed immutable ruleset itself allows it. Detect that before
     # reading or uploading private source; otherwise the final ref POST can
