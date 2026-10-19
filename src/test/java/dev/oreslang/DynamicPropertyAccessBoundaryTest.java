@@ -31,7 +31,7 @@ final class DynamicPropertyAccessBoundaryTest {
         accepted("""
                 fnc read(): float {
                     const Point point = infer<Point> struct{x: 3.0, y: 4.0};
-                    const key = "x";
+                    const key = 'x';
                     const float value = point[key];
                     return value;
                 }
