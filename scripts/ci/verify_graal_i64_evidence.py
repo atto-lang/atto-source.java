@@ -40,11 +40,18 @@ def read_bounded(path, limit=1024 * 1024):
     return path.read_bytes()
 
 
+# Reviewed Graal JUnit test identity; 17 arbitrary successes are not evidence.
+JUNIT_CLASS = "dev.oreslang.GraalI64RuntimeCharacterizationTest"
+REQUIRED_JUNIT_NAMES = frozenset(["max","min","max-plus-one-wraps","min-minus-one-wraps","max-times-two-wraps","negate-min-wraps","min-times-negative-one-wraps","overflow-then-cancel","negative-remainder","min-remainder-negative-one","max-minus-one","min-plus-one","min-plus-min-wraps","max-squared-wraps","min-minus-max-wraps","min-remainder-positive-three","zeroDivisorThrowsFromActualGuestEvaluation"])
+
+
 def check_junit(xml_data):
     root = ET.fromstring(xml_data)
-    suites = [root] if root.tag == "testsuite" else list(root) if root.tag == "testsuites" else []
-    require(bool(suites) and all(x.tag == "testsuite" for x in suites),
-            "expected Surefire testsuite XML")
+    # The file is the single-class, bounded Surefire XML promised by this job.
+    # Never admit a synthetic 17-pass report from unrelated test classes.
+    require(root.tag == "testsuite" and root.get("name") == JUNIT_CLASS,
+            "wrong JUnit suite or class")
+    suites = [root]
     total = 0
     for suite in suites:
         tests = int(suite.attrib.get("tests", "-1"))
@@ -57,8 +64,16 @@ def check_junit(xml_data):
         require(all(all(child.tag in {"system-out", "system-err"} for child in case)
                     for case in cases),
                 "JUnit test contains failure, skipped or unexpected child evidence")
+        require(all(case.get("classname") == JUNIT_CLASS for case in cases),
+                "JUnit testcase originates from an unrelated class")
+        names = [case.get("name") for case in cases]
+        require(len(names) == len(REQUIRED_JUNIT_NAMES)
+                and len(set(names)) == len(names)
+                and set(names) == REQUIRED_JUNIT_NAMES,
+                "missing, substituted or duplicate named Graal JUnit testcase")
         total += tests
-    require(total >= 17, "fewer than 16 numeric + 1 zero-divisor JUnit cases")
+    require(total == len(REQUIRED_JUNIT_NAMES),
+            "JUnit test count differs from reviewed 16 numeric + 1 divisor cases")
     return total
 
 
