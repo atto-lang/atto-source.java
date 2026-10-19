@@ -692,6 +692,109 @@ public final class UnaryTcpSessionAdapterCheck {
         }
     }
 
+    private static void throwingCancellationCannotStrandCredits() throws Exception {
+        for (boolean timeoutWins : new boolean[] {false, true}) {
+            BindingAuthenticator auth = new BindingAuthenticator();
+            AtomicInteger dispatches = new AtomicInteger();
+            AtomicInteger cancellations = new AtomicInteger();
+            UnaryTcpSessionAdapter.Dispatcher dispatcher = request -> {
+                if (dispatches.incrementAndGet() == 1) {
+                    return new UnaryTcpSessionAdapter.DispatchHandle() {
+                        @Override public void whenComplete(
+                                BiConsumer<? super UnaryTcpSessionAdapter.Reply,
+                                           ? super Throwable> completion) { }
+                        @Override public boolean cancel() {
+                            cancellations.incrementAndGet();
+                            throw new IllegalStateException("intentional hostile cancel callback");
+                        }
+                    };
+                }
+                TestHandle handle = new TestHandle();
+                handle.reply((byte) 42);
+                return handle;
+            };
+            try (var adapter = new UnaryTcpSessionAdapter(
+                            limits(2, 16, 2, 32, timeoutWins ? 90 : 1500),
+                            auth, dispatcher);
+                 var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
+                 var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                Future<?> served = pool.submit(() -> {
+                    try { adapter.serve(server.accept()); }
+                    catch (IOException failure) { throw new AssertionError(failure); }
+                });
+                try (Socket client = new Socket(
+                        InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                    client.setSoTimeout(1500);
+                    Binding binding = binding(client);
+                    send(client, request(binding, 1, new byte[] {1, 2}));
+                    awaitTrue(() -> dispatches.get() == 1, 1000,
+                            "first hostile cancellation dispatch");
+                    if (timeoutWins) {
+                        var terminal = read(client);
+                        check(terminal.kind() == UnaryTransportFrame.Kind.ERROR
+                                        && terminal.correlationId() == 1,
+                                "hostile timeout must still publish an opaque terminal");
+                    } else {
+                        send(client, cancel(binding, 1));
+                    }
+                    awaitTrue(() -> cancellations.get() == 1
+                                    && adapter.activeGlobalWorkItems() == 0
+                                    && adapter.activeGlobalPayloadBytes() == 0,
+                            1000, "hostile cancel must reclaim credits");
+                    send(client, request(binding, 2, new byte[] {3}));
+                    var recovered = read(client);
+                    check(recovered.kind() == UnaryTransportFrame.Kind.REPLY
+                                    && recovered.correlationId() == 2
+                                    && Arrays.equals(recovered.payload(), new byte[] {42}),
+                            "session must recover after throwing cancel hook");
+                }
+                served.get(3, TimeUnit.SECONDS);
+                check(adapter.activeConnections() == 0
+                                && adapter.activeGlobalWorkItems() == 0,
+                        "hostile cancellation must not strand connection credits");
+            }
+        }
+
+        BindingAuthenticator auth = new BindingAuthenticator();
+        AtomicInteger dispatches = new AtomicInteger();
+        AtomicInteger cancellations = new AtomicInteger();
+        UnaryTcpSessionAdapter.Dispatcher dispatcher = request -> {
+            dispatches.incrementAndGet();
+            return new UnaryTcpSessionAdapter.DispatchHandle() {
+                @Override public void whenComplete(
+                        BiConsumer<? super UnaryTcpSessionAdapter.Reply,
+                                   ? super Throwable> completion) { }
+                @Override public boolean cancel() {
+                    cancellations.incrementAndGet();
+                    throw new AssertionError("intentional hostile close callback");
+                }
+            };
+        };
+        try (var adapter = new UnaryTcpSessionAdapter(
+                        limits(4, 16, 4, 32, 1500), auth, dispatcher);
+             var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> served = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+            try (Socket client = new Socket(
+                    InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                Binding binding = binding(client);
+                send(client, request(binding, 1, new byte[] {1}));
+                send(client, request(binding, 2, new byte[] {2}));
+                awaitTrue(() -> dispatches.get() == 2, 1000, "two pending requests");
+            }
+            served.get(3, TimeUnit.SECONDS);
+            check(cancellations.get() == 2,
+                    "session close must attempt cancellation of every pending request");
+            check(adapter.activeConnections() == 0
+                            && adapter.activeGlobalWorkItems() == 0
+                            && adapter.activeGlobalPayloadBytes() == 0,
+                    "hostile close callbacks must release all session credits");
+        }
+    }
+
     public static void main(String[] unused) throws Exception {
         echoAndReplayFence();
         wrongBindingRejectedBeforePayloadRead();
@@ -704,6 +807,7 @@ public final class UnaryTcpSessionAdapterCheck {
         terminalWriteDeadlineClosesSlowReader();
         sessionCloseCancelsPending();
         adapterCloseUnblocksAuthentication();
+        throwingCancellationCannotStrandCredits();
         System.out.println("PASS: authenticated unary TCP sessions, request/response budgets, deadlines and 250 completion/cancel races");
     }
 }
