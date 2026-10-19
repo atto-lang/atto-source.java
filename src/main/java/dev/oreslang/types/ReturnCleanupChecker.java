@@ -284,6 +284,10 @@ public final class ReturnCleanupChecker {
             }
             expression(assignment.target(), scope, inDefer, state);
             expression(assignment.value(), scope, inDefer, state);
+        } else if (expr instanceof Ast.TaskExpr task) {
+            // nb Task is an independent return/cleanup control scope. Never
+            // treat Task returns or defers as operating on the caller frame.
+            callable(task.body(), List.of(), scope);
         } else if (expr instanceof Ast.LambdaExpr lambda) {
             // A return inside a nested lambda returns from that lambda, not
             // from the enclosing finally or function.
