@@ -931,6 +931,14 @@ public final class TypeChecker {
         }
     }
     private void checkClass(String module, Ast.ClassDecl klass) {
+        // Parsing layout intent is not permission to run it as ordinary AoS.
+        // Fail closed until the owning column store, loan analysis, and
+        // compiler/runtime lowering are connected end-to-end.
+        if (klass.inverted()) {
+            throw new IllegalArgumentException("inverted class '" + klass.name()
+                    + "' requires typed InvertedArray ownership, columnar field lowering "
+                    + "and checked borrow effects; executable SoA classes are not yet enabled");
+        }
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
         try {
