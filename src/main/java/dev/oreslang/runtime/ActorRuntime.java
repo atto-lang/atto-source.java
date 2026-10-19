@@ -482,6 +482,14 @@ public final class ActorRuntime implements AutoCloseable {
             new java.util.HashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
+    /**
+     * Runtime close is retryable. A first close attempt may fail while
+     * preparing one actor's teardown (for example OOME) after the global
+     * closed bit is visible. Dispatcher shutdown therefore has its own
+     * retryable publication rather than being tied to "first close".
+     */
+    private final Object dispatcherShutdownLock = new Object();
+    private boolean dispatchersShutdown;
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
     private final Object memoryBudgetLock = new Object();
@@ -7726,29 +7734,40 @@ public final class ActorRuntime implements AutoCloseable {
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
 
-        final boolean firstClose;
         final List<ActorCell<?>> snapshot;
         synchronized (runtimeLifecycleLock) {
-            firstClose = closed.compareAndSet(false, true);
+            // Allocate the actor snapshot before publishing global close. If
+            // this allocation fails, no runtime lifecycle state has changed.
             snapshot = List.copyOf(actors.values());
+            closed.set(true);
         }
+        // Each ActorCell prepares all fallible receipt/operation snapshots
+        // before publishing its own stopped state. A failure here intentionally
+        // leaves dispatcher shutdown unpublished so a later close() can retry.
         for (ActorCell<?> cell : snapshot) cell.stopForRuntimeClose();
 
-        if (firstClose) {
-            // Stop executor carriers so queued work is rejected/removed and
-            // blocked host-side executor operations can wake. This interrupt is
-            // backend shutdown mechanics only; it is never an actor
-            // cancellation identity. Every ActorCell above was already marked
-            // stopped through the structured runtime lifecycle.
-            privateDispatcher.shutdownNow();
-            sharedDispatcher.shutdownNow();
-            untrustedDispatcher.shutdownNow();
+        synchronized (dispatcherShutdownLock) {
+            if (!dispatchersShutdown) {
+                // Stop executor carriers so queued work is rejected/removed and
+                // blocked host-side executor operations can wake. This interrupt is
+                // backend shutdown mechanics only; it is never an actor
+                // cancellation identity. Every ActorCell above was already marked
+                // stopped through the structured runtime lifecycle.
+                privateDispatcher.shutdownNow();
+                sharedDispatcher.shutdownNow();
+                untrustedDispatcher.shutdownNow();
 
-            // shutdownNow() removes queued tasks without invoking runBatch().
-            // Clear those cells' scheduled bits only when no carrier actually
-            // entered the TurnExecutor boundary. Active carriers retain the bit
-            // until their executor finally exits.
-            for (ActorCell<?> cell : snapshot) cell.cancelQueuedScheduleOnShutdown();
+                // shutdownNow() removes queued tasks without invoking runBatch().
+                // Clear those cells' scheduled bits only when no carrier actually
+                // entered the TurnExecutor boundary. Active carriers retain the bit
+                // until their executor finally exits.
+                for (ActorCell<?> cell : snapshot) {
+                    cell.cancelQueuedScheduleOnShutdown();
+                }
+                // Publish only after every shutdown/cancel-queued operation
+                // returned. If one throws, a later close attempt retries.
+                dispatchersShutdown = true;
+            }
         }
 
         long deadline = System.nanoTime() + CLOSE_WAIT_NANOS;
