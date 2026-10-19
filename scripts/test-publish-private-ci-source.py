@@ -144,7 +144,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     "require_code_owner_reviews": True,
                     "dismiss_stale_reviews": True,
                     "bypass_pull_request_allowances": {}}
-        if route == pub.CODEOWNERS_ROUTE:
+        if route == pub.at_ref(pub.CODEOWNERS_ROUTE, A):
             raw = self.codeowners_text.encode("utf-8")
             blob_sha = hashlib.sha1(
                 b"blob " + str(len(raw)).encode("ascii")
@@ -153,15 +153,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {"type": "file", "encoding": "base64", "size": len(raw),
                     "sha": self.codeowners_fake_sha or blob_sha,
                     "content": base64.b64encode(raw).decode("ascii")}
-        if route == pub.CODEOWNERS_ERRORS_ROUTE:
+        if route == pub.at_ref(pub.CODEOWNERS_ERRORS_ROUTE, A):
             return {"errors": self.codeowners_errors}
         if route == pub.CODEOWNER_PERMISSION_ROUTE:
             return {"permission": self.codeowner_permission,
                     "user": {"login": self.codeowner_login,
                              "type": self.codeowner_type}}
-        if route == pub.PROTECTED_POLICY_ROUTE:
+        if route == pub.at_ref(pub.PROTECTED_POLICY_ROUTE, A):
             return {"type": "file", "sha": self.protected_policy_sha}
-        if route == pub.REVIEWED_SNAPSHOTS_ROUTE:
+        if route == pub.at_ref(pub.REVIEWED_SNAPSHOTS_ROUTE, A):
             raw = self.reviewed_snapshot.encode("utf-8")
             return {"type": "file", "encoding": "base64",
                     "size": len(raw), "sha": self.snapshot_sha,
@@ -209,15 +209,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     "bypass_pull_request_allowances": {
                         "users": ["bypasser"] if self.carrier_review_bypass.pop(0) else [],
                         "teams": [], "apps": []}}
-        if route == "repos/trusted/ci/contents/.github/CODEOWNERS?ref=main":
+        if route == pub.at_ref("repos/trusted/ci/contents/.github/CODEOWNERS", A):
             raw = self.carrier_codeowners_text.encode("utf-8")
             sha = hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
                                 + bytes([0]) + raw).hexdigest()
             return {"type": "file", "encoding": "base64", "size": len(raw),
                     "sha": self.carrier_codeowners_sha or sha,
                     "content": base64.b64encode(raw).decode("ascii")}
-        if route == ("repos/trusted/ci/contents/"
-                     + pub.CARRIER_APPROVAL_PATH + "?ref=main"):
+        if route == pub.at_ref(
+                "repos/trusted/ci/contents/" + pub.CARRIER_APPROVAL_PATH, A):
             raw = self.carrier_reviewed_snapshot.encode("utf-8")
             return {"type": "file", "encoding": "base64", "size": len(raw),
                     "sha": self.carrier_snapshot_sha,
@@ -243,7 +243,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     {"type": "deletion"},
                 ],
             }
-        if route == "repos/trusted/ci/codeowners/errors?ref=main":
+        if route == pub.at_ref("repos/trusted/ci/codeowners/errors", A):
             return {"errors": self.carrier_codeowners_errors}
         if route == "repos/trusted/ci/collaborators/ORESoftware/permission":
             return {"permission": self.carrier_security_permission,
@@ -940,7 +940,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_github_owner_admission_endpoints_must_be_available(self):
         original = self.fake_api
-        for endpoint in (pub.CODEOWNERS_ERRORS_ROUTE,
+        for endpoint in (pub.at_ref(pub.CODEOWNERS_ERRORS_ROUTE, A),
                          pub.CODEOWNER_PERMISSION_ROUTE):
             with self.subTest(endpoint=endpoint):
                 self.route_calls.clear()
@@ -1703,7 +1703,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.subTest(wrong=wrong):
                 self.route_calls.clear()
                 def untrusted_main(route, method="GET", payload=None):
-                    if route == pub.PROTECTED_POLICY_ROUTE:
+                    if route == pub.at_ref(pub.PROTECTED_POLICY_ROUTE, A):
                         self.route_calls.append((method, route, payload))
                         return wrong
                     return original(route, method, payload)
@@ -2463,6 +2463,93 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             self.root, self.expected_tree, D)
         writes = [route for method, route, _ in self.route_calls if method == "POST"]
         self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+
+
+    def test_source_authorization_reads_are_bound_to_reviewed_main_commit(self):
+        self.publish()
+        sensitive = {
+            pub.at_ref(pub.PROTECTED_POLICY_ROUTE, A),
+            pub.at_ref(pub.REVIEWED_SNAPSHOTS_ROUTE, A),
+            pub.at_ref(pub.CODEOWNERS_ROUTE, A),
+            pub.at_ref(pub.CODEOWNERS_ERRORS_ROUTE, A),
+        }
+        requested = {route for method, route, _ in self.route_calls
+                     if method == "GET" and route in sensitive}
+        self.assertEqual(requested, sensitive)
+        self.assertFalse(any(
+            route.endswith("?ref=main")
+            for method, route, _ in self.route_calls
+            if method == "GET" and route.startswith(pub.SOURCE_METADATA_ROUTE + "/")))
+
+    def test_floating_source_snapshot_cannot_authorize_pinned_main(self):
+        original = self.fake_api
+        empty = b"# no source snapshots at reviewed commit\n"
+        empty_sha = hashlib.sha1(
+            b"blob " + str(len(empty)).encode("ascii") + b"\\0" + empty
+        ).hexdigest()
+
+        def split_source_main(route, method="GET", payload=None):
+            if route == pub.at_ref(pub.REVIEWED_SNAPSHOTS_ROUTE, A):
+                self.route_calls.append((method, route, payload))
+                return {"type": "file", "encoding": "base64",
+                        "size": len(empty), "sha": empty_sha,
+                        "content": base64.b64encode(empty).decode("ascii")}
+            if route == pub.REVIEWED_SNAPSHOTS_ROUTE + "?ref=main":
+                raise AssertionError("floating source main must never be consulted")
+            return original(route, method, payload)
+
+        with patch.object(pub, "gh_api", side_effect=split_source_main):
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("private source read too early")):
+                with self.assertRaisesRegex(
+                        pub.Denied, "immutable source snapshot is not independently approved"):
+                    pub.publish("trusted/ci", self.source, TEST_BRANCH,
+                                self.root, self.expected_tree, D)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_authorization_reads_are_bound_to_pinned_main_commit(self):
+        self.publish()
+        expected = {
+            pub.at_ref("repos/trusted/ci/contents/.github/CODEOWNERS", A),
+            pub.at_ref("repos/trusted/ci/codeowners/errors", A),
+            pub.at_ref("repos/trusted/ci/contents/" + pub.CARRIER_APPROVAL_PATH, A),
+        }
+        requested = {route for method, route, _ in self.route_calls
+                     if method == "GET" and route in expected}
+        self.assertEqual(requested, expected)
+        self.assertFalse(any(
+            route.endswith("?ref=main")
+            for method, route, _ in self.route_calls
+            if method == "GET" and route.startswith("repos/trusted/ci/")))
+
+    def test_floating_carrier_ledger_cannot_authorize_pinned_main(self):
+        original = self.fake_api
+        empty = b"# no carrier source approvals at reviewed commit\n"
+        empty_sha = hashlib.sha1(
+            b"blob " + str(len(empty)).encode("ascii") + b"\\0" + empty
+        ).hexdigest()
+        pinned = pub.at_ref(
+            "repos/trusted/ci/contents/" + pub.CARRIER_APPROVAL_PATH, A)
+
+        def split_carrier_main(route, method="GET", payload=None):
+            if route == pinned:
+                self.route_calls.append((method, route, payload))
+                return {"type": "file", "encoding": "base64",
+                        "size": len(empty), "sha": empty_sha,
+                        "content": base64.b64encode(empty).decode("ascii")}
+            if route == ("repos/trusted/ci/contents/" + pub.CARRIER_APPROVAL_PATH
+                         + "?ref=main"):
+                raise AssertionError("floating carrier main must never be consulted")
+            return original(route, method, payload)
+
+        with patch.object(pub, "gh_api", side_effect=split_carrier_main):
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("private source read too early")):
+                with self.assertRaisesRegex(
+                        pub.Denied, "has not independently approved"):
+                    pub.publish("trusted/ci", self.source, TEST_BRANCH,
+                                self.root, self.expected_tree, D)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
 
     def test_api_json_rejects_duplicate_repository_id(self):
