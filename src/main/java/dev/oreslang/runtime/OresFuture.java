@@ -180,7 +180,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     public static <T> OresFuture<T> fromCallback(
             Consumer<? super Callback<T>> registrar) {
-        return fromCallback(registrar, () -> true, () -> { });
+        return fromCallback(registrar, () -> true, () -> { }, false);
     }
 
     /**
@@ -196,13 +196,21 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             Consumer<? super Callback<T>> registrar,
             BooleanSupplier cancelAdmission,
             Runnable cancelHook) {
+        return fromCallback(registrar, cancelAdmission, cancelHook, true);
+    }
+
+    private static <T> OresFuture<T> fromCallback(
+            Consumer<? super Callback<T>> registrar,
+            BooleanSupplier cancelAdmission,
+            Runnable cancelHook,
+            boolean failIfOwnerStopped) {
         Objects.requireNonNull(registrar, "registrar");
         OresFuture<T> future = new OresFuture<>(
                 Objects.requireNonNull(cancelAdmission, "cancelAdmission"),
                 Objects.requireNonNull(cancelHook, "cancelHook"));
         // This overload represents a committed-operation cancellation gate.
         // A forcibly stopped owning actor must not strand it indefinitely.
-        future.failIfOwnerStopped = true;
+        future.failIfOwnerStopped = failIfOwnerStopped;
         AtomicBoolean callbackClaimed = new AtomicBoolean();
 
         Callback<T> completion = new Callback<>() {
