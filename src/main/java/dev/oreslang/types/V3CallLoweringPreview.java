@@ -117,6 +117,17 @@ public final class V3CallLoweringPreview {
                     originalByDenseSource[source] = raw;
                 }
             }
+            // Every parsed source call item is either a supplied expression
+            // or an explicit omit. Missing raw indexes would allow a forged
+            // Preview to hide an omitted argument, including its provenance.
+            // Implicit defaults have no source item and retain raw index -1.
+            int rawItems = usedRawCallItems.size();
+            for (int raw = 0; raw < rawItems; raw++) {
+                if (!usedRawCallItems.contains(raw)) {
+                    throw new IllegalArgumentException(
+                            "v3 preview has a gap in original call-item provenance");
+                }
+            }
             int previousCallItem = -1;
             for (int source = 0; source < used.length; source++) {
                 if (!used[source]) {
