@@ -21,19 +21,52 @@ final class ThreadSafetyTraitsTest {
     }
 
     @Test
-    void scalarsRecordsTuplesAndDataContainersDeriveBothTraitsTransitively() {
-        Type payload = new Types.Record(Map.of(
+    void scalarsAndImmutableValuesDeriveBothTraitsTransitively() {
+        Type frozen = new Types.Record(Map.of(
                 "pos", new Types.Tuple(List.of(Types.Primitive.FLOAT, Types.Primitive.FLOAT)),
-                "velocity", new Types.ListType(Types.Primitive.INT)));
+                "hp", Types.Primitive.INT), true);
         for (Trait trait : Trait.values()) {
             assertTrue(has(Types.Primitive.INT, trait));
             assertTrue(has(Types.Primitive.STRING, trait));
-            assertTrue(has(payload, trait));
-            assertTrue(has(new Types.Named("Option", List.of(payload)), trait));
-            assertTrue(has(new Types.Named("Result", List.of(payload, Types.Primitive.STRING)), trait));
+            assertTrue(has(frozen, trait));
+            assertTrue(has(new Types.Named("Option", List.of(frozen)), trait));
+            assertTrue(has(new Types.Named("Result", List.of(frozen, Types.Primitive.STRING)), trait));
             assertTrue(has(new Types.Union(List.of(Types.Primitive.INT, Types.Primitive.STRING)), trait));
             assertFalse(has(Types.Primitive.VOID, trait));
         }
+    }
+
+    @Test
+    void writableContainersAreSendButNotSyncEvenForSyncElements() {
+        Type list = new Types.ListType(Types.Primitive.INT);
+        Type record = new Types.Record(Map.of("hp", Types.Primitive.INT));
+        Type fixedArray = new Types.Tuple(
+                List.of(Types.Primitive.INT, Types.Primitive.INT),
+                Types.TupleKind.FIXED_ARRAY);
+        Type fixedList = new Types.Tuple(
+                List.of(Types.Primitive.INT), Types.TupleKind.FIXED_LIST);
+        for (Type mutable : List.of(list, record, fixedArray, fixedList)) {
+            assertTrue(has(mutable, Trait.SEND), "owned aggregate can move: " + mutable);
+            assertFalse(has(mutable, Trait.SYNC), "mutable aggregate cannot be shared: " + mutable);
+            assertFalse(has(new Types.Borrow(mutable, false), Trait.SEND),
+                    "non-Sync borrowed aggregate cannot cross threads: " + mutable);
+        }
+        Type readonlyWithMutableNestedField = new Types.Record(Map.of("values", list), true);
+        assertTrue(has(readonlyWithMutableNestedField, Trait.SEND));
+        assertFalse(has(readonlyWithMutableNestedField, Trait.SYNC));
+        assertFalse(has(new Types.Named("Option", List.of(list)), Trait.SYNC));
+        assertFalse(has(new Types.Named("Result", List.of(record, Types.Primitive.INT)), Trait.SYNC));
+        assertFalse(has(new Types.Union(List.of(list, Types.Primitive.INT)), Trait.SYNC));
+
+        // Even an authorized nominal Sync proof for an element cannot turn
+        // the enclosing mutable collection into Sync.
+        Type syncOnly = new Types.Named("SyncOnly", List.of());
+        ThreadSafetyTraits.NominalProof proof =
+                (type, trait) -> type.name().equals("SyncOnly") && trait == Trait.SYNC;
+        assertFalse(ThreadSafetyTraits.has(new Types.ListType(syncOnly), Trait.SYNC, proof));
+        assertFalse(ThreadSafetyTraits.has(new Types.Record(Map.of("x", syncOnly)), Trait.SYNC, proof));
+        assertTrue(ThreadSafetyTraits.has(
+                new Types.Record(Map.of("x", syncOnly), true), Trait.SYNC, proof));
     }
 
     @Test
