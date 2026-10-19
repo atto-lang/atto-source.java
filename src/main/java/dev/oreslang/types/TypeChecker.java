@@ -3964,10 +3964,10 @@ public final class TypeChecker {
         // validateActorCallableBoundaryType/isSharedSafe instead and remain
         // strictly non-callable. Borrows cannot inhabit buffered channels
         // until channel-bound lifetimes are expressible and checked.
-        if (containsChannelBorrow(element, new LinkedHashSet<>(), Map.of())) {
+        if (containsChannelBorrowOrDyn(element, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
-                    where + " cannot transport borrowed payloads, including nested fields: "
-                            + "channel storage may outlive their owners");
+                    where + " cannot transport borrowed or dyn interface payloads, including nested fields: "
+                            + "channel storage may outlive borrowed owners or escape erased-view provenance");
         }
         if (element == Unknown.INSTANCE) {
             throw new IllegalArgumentException(where + " requires a statically resolved channel payload type");
@@ -4048,41 +4048,41 @@ public final class TypeChecker {
      * A local channel cannot retain any borrowed value while its buffer/registration
      * may outlive the borrow's lexical scope.
      */
-    private boolean containsChannelBorrow(
+    private boolean containsChannelBorrowOrDyn(
             Type type,
             Set<Ast.ClassDecl> seen,
             Map<String, Type> genericBindings) {
         // Check the borrow wrapper BEFORE deref can erase lifetime metadata.
-        if (type instanceof Borrow) return true;
+        if (type instanceof Borrow || type instanceof Dyn) return true;
         type = deref(type);
         if (type instanceof SelfType receiverSelf) {
-            return containsChannelBorrow(receiverSelf.bound(), seen, genericBindings);
+            return containsChannelBorrowOrDyn(receiverSelf.bound(), seen, genericBindings);
         }
         if (type instanceof ListType list) {
-            return containsChannelBorrow(list.element(), seen, genericBindings);
+            return containsChannelBorrowOrDyn(list.element(), seen, genericBindings);
         }
         if (type instanceof Tuple tuple) {
             return tuple.elements().stream()
-                    .anyMatch(element -> containsChannelBorrow(element, seen, genericBindings));
+                    .anyMatch(element -> containsChannelBorrowOrDyn(element, seen, genericBindings));
         }
         if (type instanceof Union union) {
             return union.options().stream()
-                    .anyMatch(option -> containsChannelBorrow(option, seen, genericBindings));
+                    .anyMatch(option -> containsChannelBorrowOrDyn(option, seen, genericBindings));
         }
         if (type instanceof Record record) {
             return record.members().values().stream()
-                    .anyMatch(member -> containsChannelBorrow(member, seen, genericBindings));
+                    .anyMatch(member -> containsChannelBorrowOrDyn(member, seen, genericBindings));
         }
         if (type instanceof Generic generic) {
             Type bound = genericBindings.get(generic.name());
             return bound != null
                     && bound != type
-                    && containsChannelBorrow(bound, seen, genericBindings);
+                    && containsChannelBorrowOrDyn(bound, seen, genericBindings);
         }
         if (!(type instanceof Named named)) return false;
 
         for (Type argument : named.arguments()) {
-            if (containsChannelBorrow(argument, seen, genericBindings)) return true;
+            if (containsChannelBorrowOrDyn(argument, seen, genericBindings)) return true;
         }
 
         Ast.ClassDecl klass = findClass(named.name());
@@ -4098,7 +4098,7 @@ public final class TypeChecker {
 
             for (Ast.FieldDecl field : klass.fields()) {
                 Type fieldType = resolveSharedGeneric(classFieldType(klass, field), classBindings);
-                if (containsChannelBorrow(fieldType, seen, classBindings)) return true;
+                if (containsChannelBorrowOrDyn(fieldType, seen, classBindings)) return true;
             }
 
             Set<String> classGenerics = Set.copyOf(klass.genericParameters());
@@ -4108,7 +4108,7 @@ public final class TypeChecker {
                 Type parentType = resolveSharedGeneric(
                         resolve(parentRef, classGenerics, nominal),
                         classBindings);
-                if (containsChannelBorrow(parentType, seen, classBindings)) return true;
+                if (containsChannelBorrowOrDyn(parentType, seen, classBindings)) return true;
             }
             return false;
         } finally {
