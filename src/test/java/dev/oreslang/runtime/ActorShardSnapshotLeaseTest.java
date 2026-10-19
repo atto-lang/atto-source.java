@@ -45,6 +45,23 @@ final class ActorShardSnapshotLeaseTest {
             assertNotNull(copies);
             assertEquals(1000, copies.size());
             assertEquals(62.0, copies.get(999).read(31));
+            CountDownLatch foreignDone = new CountDownLatch(1);
+            AtomicReference<Throwable> foreignFailure = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> foreign = runtime.spawnSharedTrusted(
+                    ctx -> (value, turn) -> {
+                        try {
+                            assertThrows(SecurityException.class, () -> copies.get(999).read(0));
+                            assertThrows(SecurityException.class, () -> copies.get(999).length());
+                            assertThrows(SecurityException.class, () -> copies.get(999).close());
+                        } catch (Throwable error) {
+                            foreignFailure.set(error);
+                        } finally {
+                            foreignDone.countDown();
+                        }
+                    });
+            foreign.send(1);
+            assertTrue(foreignDone.await(5, TimeUnit.SECONDS));
+            assertNull(foreignFailure.get());
             long snapshotBytes = 1000L * 32L * Double.BYTES;
             assertTrue(runtime.sharedMemoryBytes() >= before + snapshotBytes,
                     "all 1000 detached snapshots remain charged");
