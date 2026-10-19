@@ -123,29 +123,40 @@ public final class Types {
      * absence is not proof: a narrowed/widened record view may hide fields.
      */
     public static boolean areProvablyDisjoint(Type first, Type second) {
+        Objects.requireNonNull(first);
+        Objects.requireNonNull(second);
+        int[] validationBudget = new int[] {100_000};
+        if (containsMalformedNominalName(first, 0, validationBudget)
+                || containsMalformedNominalName(second, 0, validationBudget)) {
+            return false;
+        }
+        return areProvablyDisjointChecked(first, second);
+    }
+
+    private static boolean areProvablyDisjointChecked(Type first, Type second) {
         if (first == Unknown.INSTANCE || second == Unknown.INSTANCE
                 || first instanceof Generic || second instanceof Generic) return false;
         if (first.equals(second)) return false;
         if (first instanceof Union union) {
-            return union.options().stream().allMatch(option -> areProvablyDisjoint(option, second));
+            return union.options().stream().allMatch(option -> areProvablyDisjointChecked(option, second));
         }
         if (second instanceof Union union) {
-            return union.options().stream().allMatch(option -> areProvablyDisjoint(first, option));
+            return union.options().stream().allMatch(option -> areProvablyDisjointChecked(first, option));
         }
         if (first instanceof Not not) {
-            return isAssignable(second, not.excluded()) && !containsUncertainType(second);
+            return isAssignableChecked(second, not.excluded()) && !containsUncertainType(second);
         }
         if (second instanceof Not not) {
-            return isAssignable(first, not.excluded()) && !containsUncertainType(first);
+            return isAssignableChecked(first, not.excluded()) && !containsUncertainType(first);
         }
         if (first instanceof BoolLiteral a && second instanceof BoolLiteral b) return a.value() != b.value();
         if (first instanceof BoolLiteral) return second != Primitive.BOOL
                 && second != Primitive.VOID && second != Primitive.NULL
                 && !(second instanceof Not);
-        if (second instanceof BoolLiteral) return areProvablyDisjoint(second, first);
+        if (second instanceof BoolLiteral) return areProvablyDisjointChecked(second, first);
         if (first instanceof StringLiteral && second instanceof StringLiteral) return !first.equals(second);
         if (first instanceof StringLiteral) return second != Primitive.STRING;
-        if (second instanceof StringLiteral) return areProvablyDisjoint(second, first);
+        if (second instanceof StringLiteral) return areProvablyDisjointChecked(second, first);
         if (first instanceof Primitive a && second instanceof Primitive b) {
             // Numeric widening makes primitive numeric domains potentially overlap.
             return a != b && !(isNumeric(a) && isNumeric(b));
@@ -154,7 +165,7 @@ public final class Types {
             // Only conflicting *known* fields prove disjointness. Missing keys do not.
             for (var entry : a.members().entrySet()) {
                 Type candidate = b.members().get(entry.getKey());
-                if (candidate != null && areProvablyDisjoint(entry.getValue(), candidate)) return true;
+                if (candidate != null && areProvablyDisjointChecked(entry.getValue(), candidate)) return true;
             }
             return false;
         }
@@ -187,52 +198,58 @@ public final class Types {
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
-        // Compiler transformations and embedding callers may construct Type
-        // objects directly. Malformed nominal spellings must never become a
-        // positive compatibility proof merely because two malformed records
-        // compare equal, and must not trigger name dereference crashes later.
-        if (hasMalformedNominalName(from) || hasMalformedNominalName(to)) return false;
+        // Validate the entire structural type once before any permissive
+        // Unknown/generic/equality/negative-type shortcut can authorize it.
+        // The shared budget also turns pathologically deep or wide malformed
+        // compiler API input into a controlled fail-closed result.
+        int[] validationBudget = new int[] {100_000};
+        if (containsMalformedNominalName(from, 0, validationBudget)
+                || containsMalformedNominalName(to, 0, validationBudget)) {
+            return false;
+        }
+        return isAssignableChecked(from, to);
+    }
+
+    private static boolean isAssignableChecked(Type from, Type to) {
         // Complements must be checked before permissive Unknown/Generic rules.
         // No compiler pass may turn uncertainty into a negative-type proof.
         if (to instanceof Not negative) {
             if (from instanceof Not source) return source.excluded().equals(negative.excluded());
-            return areProvablyDisjoint(from, negative.excluded());
+            return areProvablyDisjointChecked(from, negative.excluded());
         }
         if (from instanceof Not) return to == Unknown.INSTANCE;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
-        if (from.equals(to)) {
-            return !containsMalformedNominalName(from, 0, new int[] {100_000});
-        }
+        if (from.equals(to)) return true;
         if (from instanceof SelfType source) {
             if (to instanceof SelfType target) {
-                return isAssignable(source.bound(), target.bound())
-                        && isAssignable(target.bound(), source.bound());
+                return isAssignableChecked(source.bound(), target.bound())
+                        && isAssignableChecked(target.bound(), source.bound());
             }
-            return isAssignable(source.bound(), to);
+            return isAssignableChecked(source.bound(), to);
         }
         // A nominal base value cannot manufacture the receiver-polymorphic proof.
         if (to instanceof SelfType) return false;
         if (from instanceof StringLiteral && to == Primitive.STRING) return true;
 
         if (from instanceof Union source) {
-            return source.options().stream().allMatch(option -> isAssignable(option, to));
+            return source.options().stream().allMatch(option -> isAssignableChecked(option, to));
         }
         if (to instanceof Union target) {
-            return target.options().stream().anyMatch(option -> isAssignable(from, option));
+            return target.options().stream().anyMatch(option -> isAssignableChecked(from, option));
         }
 
         if (from instanceof Borrow source && to instanceof Borrow target) {
             if (target.mutable() && !source.mutable()) return false;
-            return isAssignable(source.target(), target.target()) && isAssignable(target.target(), source.target());
+            return isAssignableChecked(source.target(), target.target()) && isAssignableChecked(target.target(), source.target());
         }
 
         if (from instanceof Named source && to instanceof Named target && source.name().equals(target.name())) {
             if (source.arguments().size() != target.arguments().size()) return false;
             for (int i = 0; i < source.arguments().size(); i++) {
                 Type a = source.arguments().get(i), b = target.arguments().get(i);
-                if (!isAssignable(a, b) || !isAssignable(b, a)) return false;
+                if (!isAssignableChecked(a, b) || !isAssignableChecked(b, a)) return false;
             }
             return true;
         }
@@ -240,20 +257,20 @@ public final class Types {
         if (from instanceof Record source && to instanceof Record target) {
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
                 Type actual = source.members().get(required.getKey());
-                if (actual == null || !isAssignable(actual, required.getValue())) return false;
+                if (actual == null || !isAssignableChecked(actual, required.getValue())) return false;
             }
             return true;
         }
 
         if (from instanceof ListType source && to instanceof ListType target) {
-            return isAssignable(source.element(), target.element()) && isAssignable(target.element(), source.element());
+            return isAssignableChecked(source.element(), target.element()) && isAssignableChecked(target.element(), source.element());
         }
 
         if (from instanceof Tuple source && to instanceof Tuple target) {
             if (source.kind() != target.kind()) return false;
             if (source.elements().size() != target.elements().size()) return false;
             for (int i = 0; i < source.elements().size(); i++) {
-                if (!isAssignable(source.elements().get(i), target.elements().get(i))) return false;
+                if (!isAssignableChecked(source.elements().get(i), target.elements().get(i))) return false;
             }
             return true;
         }
@@ -266,9 +283,9 @@ public final class Types {
             // on which arguments may be mutated.
             if (!source.mutableParameters().equals(target.mutableParameters())) return false;
             for (int i = 0; i < source.parameters().size(); i++) {
-                if (!isAssignable(target.parameters().get(i), source.parameters().get(i))) return false;
+                if (!isAssignableChecked(target.parameters().get(i), source.parameters().get(i))) return false;
             }
-            return isAssignable(source.result(), target.result());
+            return isAssignableChecked(source.result(), target.result());
         }
 
         return numericWidening(from, to);
