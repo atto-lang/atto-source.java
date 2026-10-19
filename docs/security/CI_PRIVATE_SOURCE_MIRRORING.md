@@ -87,10 +87,12 @@ other copies before resolving the incident.
 In addition to the legacy exact-name approval list, the publisher now calls
 `scripts/private_ci_pinned_admission.py` **before reading private source**.
 The new protected-main policy file
-`.github/private-ci-approved-destinations.json` has a fixed, empty
-`repositories` array by default. An entry requires both `name` and an
-independently reviewed numeric GitHub repository `id`; the caller may
-not approve a destination by supplying an environment variable.
+`.github/private-ci-approved-destinations.json` has fixed, empty
+`repositories` **and** `source_commits` arrays by default. An approved
+destination requires an exact `name` and independently reviewed numeric
+GitHub repository `id`. The intended exact source SHA must also appear in
+the protected policy's `source_commits` list: an environment variable alone
+cannot make a private branch eligible for export.
 
 The reviewed checkout must be an unmodified Git commit belonging to the
 pinned private Java source repository, GitHub repository ID `1400792274`.
@@ -108,8 +110,10 @@ compares local `HEAD` and the Git tree against the remote pinned source,
 and refuses dirty/untracked working-tree content. It independently checks
 **every collected source file's bytes, mode, name and SHA-1 Git blob identity**
 against `git ls-tree` for the exact reviewed source commit **before any
-private Git blob is written**. It also checks the numeric destination ID and
-reviewed policy main SHA before every Git write.
+private Git blob is written**. The returned GitHub isolated-subtree SHA must
+then exactly equal the locally resolved pinned Git subtree before creating
+a new destination root commit or CI branch. It also checks the numeric
+destination ID and reviewed policy main SHA before every Git write.
 
 These admission checks are necessary but **do not by themselves constitute
 human security approval**. Security issue #962 also calls for independent
@@ -126,4 +130,5 @@ python3 -m unittest discover -s tests -p 'test_private_ci_pinned_admission.py' -
 python3 scripts/test-publish-private-ci-source.py
 ```
 
-**Current authorization: zero destination entries. No live transfer is permitted.**
+**Current authorization: zero destination entries AND zero approved source
+commits. No live transfer is permitted.**
