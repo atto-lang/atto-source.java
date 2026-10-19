@@ -220,6 +220,51 @@ public class TaskCancellationTest {
         assertEquals(0, callbacks.get());
     }
 
+
+    @Test void fatalRevokerStillCompletesRevocationBarrierAndPreservesError() {
+        TaskCancellation root = new TaskCancellation();
+        TaskCancellation child = root.child();
+        AtomicInteger revoked = new AtomicInteger();
+        AtomicInteger observed = new AtomicInteger();
+        AtomicInteger late = new AtomicInteger();
+
+        child.onRevoke(() -> { throw new LinkageError("host callback failed"); });
+        child.onRevoke(revoked::incrementAndGet);
+        child.onCancel(() -> {
+            assertEquals(1, revoked.get(), "revokers must finish before observers");
+            observed.incrementAndGet();
+        });
+        assertThrows(LinkageError.class, () -> root.cancel("shutdown"));
+        assertTrue(root.isCancelled());
+        assertTrue(child.isCancelled());
+        assertEquals(1, revoked.get(), "remaining revokers must not be skipped");
+        assertEquals(1, observed.get(), "observers must not be stranded");
+        child.onCancel(late::incrementAndGet);
+        assertEquals(1, late.get(), "late observer must see completed revocation");
+        assertFalse(root.cancel("again"));
+    }
+
+    @Test void fatalNestedObserverCannotDiscardQueuedCancellation() {
+        for (int i = 0; i < 100; i++) {
+            TaskCancellation parent = new TaskCancellation();
+            TaskCancellation downstream = new TaskCancellation();
+            AtomicInteger revoked = new AtomicInteger();
+            AtomicInteger observed = new AtomicInteger();
+            downstream.onRevoke(revoked::incrementAndGet);
+            downstream.onCancel(observed::incrementAndGet);
+            parent.onCancel(() -> {
+                downstream.cancel("linked");
+                throw new LinkageError("failure after nested cancellation admission");
+            });
+            assertThrows(LinkageError.class, () -> parent.cancel("stop"));
+            assertTrue(downstream.isCancelled());
+            assertEquals(1, revoked.get(),
+                    "queued descendant revoker dropped when parent hook failed");
+            assertEquals(1, observed.get(),
+                    "queued descendant observer dropped when parent hook failed");
+        }
+    }
+
     private static void await(CountDownLatch latch) {
         try { if (!latch.await(3, TimeUnit.SECONDS)) throw new AssertionError("timed out"); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
