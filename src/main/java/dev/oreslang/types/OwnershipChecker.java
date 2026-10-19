@@ -2813,43 +2813,12 @@ public final class OwnershipChecker {
             }
             return true;
         }
-        if (expression instanceof Ast.CallExpr call) {
-            if (call.callee() instanceof Ast.NameExpr constructor
-                    && (constructor.name().equals("Some")
-                        || constructor.name().equals("Ok")
-                        || constructor.name().equals("Err"))) {
-                for (Ast.Expr argument : call.arguments()) {
-                    if (!isProvenTaskOwnedRvalue(argument, scope)) {
-                        return false;
-                    }
-                }
-                return true;
-            }
-            if (call.callee() instanceof Ast.MemberExpr member
-                    && member.receiver() instanceof Ast.NameExpr receiver
-                    && Set.of(
-                            "unwrap", "unwrap_safe", "unwrap_all",
-                            "flatten", "expect", "unwrap_or")
-                            .contains(member.member())) {
-                VarState state = scope.lookup(receiver.name());
-                if (state == null) return false;
-                VarState root = ownershipRoot(state);
-                if (state.kind != ValueKind.COPY
-                        && (!root.moved
-                            || root.immutableBorrows > 0
-                            || root.mutableBorrowed)) {
-                    return false;
-                }
-                for (Ast.Expr argument : call.arguments()) {
-                    if (!isProvenTaskOwnedRvalue(argument, scope)) {
-                        return false;
-                    }
-                }
-                return true;
-            }
-            // No return-provenance/effect summary exists for arbitrary
-            // functions or methods yet. An rvalue call result is not itself
-            // proof that its backing storage is uniquely owned.
+        if (expression instanceof Ast.CallExpr) {
+            // Never infer owned return provenance from callee spelling. A guest
+            // function/method can be named Some/Ok/Err/unwrap/flatten/etc.
+            // Until TypeChecker/lowering supplies an exact resolved intrinsic
+            // or callable return-ownership witness, every call result fails
+            // closed for detached Task OWNED_RVALUE minting.
             return false;
         }
         return false;
