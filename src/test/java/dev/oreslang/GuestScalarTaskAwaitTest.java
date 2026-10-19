@@ -34,7 +34,7 @@ final class GuestScalarTaskAwaitTest {
         String output = execute("""
                 pub fnc main(): void {
                     let int x = 41;
-                    let int answer = await nb { return x; };
+                    let int answer = await task { return x; };
                     stdio.stdout.write(answer);
                     stdio.stdout.write(x);
                     return;
@@ -47,9 +47,9 @@ final class GuestScalarTaskAwaitTest {
     void awaitedScalarLiteralsAreExecutedThroughRealGuestContext() throws Exception {
         String output = execute("""
                 pub fnc main(): void {
-                    let int i = await nb { return 42; };
-                    let bool b = await nb { return true; };
-                    let string s = await nb { return "ok"; };
+                    let int i = await task { return 42; };
+                    let bool b = await task { return true; };
+                    let string s = await task { return "ok"; };
                     stdio.stdout.write(i);
                     stdio.stdout.write(b);
                     stdio.stdout.write(s);
@@ -60,23 +60,35 @@ final class GuestScalarTaskAwaitTest {
     }
 
     @Test
+    void legacyNbAliasRetainsTheSameScalarGuestSemantics() throws Exception {
+        String output = execute("""
+                pub fnc main(): void {
+                    let int result = await nb { return 43; };
+                    stdio.stdout.write(result);
+                    return;
+                }
+                """);
+        assertTrue(output.contains("43"), output);
+    }
+
+    @Test
     void standaloneAndEscapingTaskHandlesStayRejected() {
-        rejects("let Task<int> work = nb { return 7; };");
-        rejects("do nb { return; };");
-        rejects("let Task<int> work = nb { return 2; }; await work;");
+        rejects("let Task<int> work = task { return 7; };");
+        rejects("do task { return; };");
+        rejects("let Task<int> work = task { return 2; }; await work;");
     }
 
     @Test
     void nestedTasksGuestCallsAndNonScalarBodiesStayRejected() {
-        rejects("let int n = await nb { return nb { return 1; }; };");
-        rejects("let int n = await nb { let int value = 1; return value; };");
-        rejects("let int n = await nb { return 3 + 4; };");
-        rejects("let int n = await nb { return; };");
-        rejects("let data = arr[1, 2]; let int n = await nb { return data; };");
+        rejects("let int n = await task { return task { return 1; }; };");
+        rejects("let int n = await task { let int value = 1; return value; };");
+        rejects("let int n = await task { return 3 + 4; };");
+        rejects("let int n = await task { return; };");
+        rejects("let data = arr[1, 2]; let int n = await task { return data; };");
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 fnc sideEffect(): int { return 5; }
                 pub fnc main(): void {
-                    let int n = await nb { return sideEffect(); };
+                    let int n = await task { return sideEffect(); };
                     return;
                 }
                 """));
@@ -85,7 +97,7 @@ final class GuestScalarTaskAwaitTest {
     @Test
     void nonRootGuestCallableCannotLaunchScalarTask() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
-                suspends fnc worker(): int { return await nb { return 1; }; }
+                suspends fnc worker(): int { return await task { return 1; }; }
                 pub fnc main(): void {
                     let int result = worker();
                     return;
@@ -95,7 +107,7 @@ final class GuestScalarTaskAwaitTest {
 
     @Test
     void borrowedValuesAndHostCapabilitiesAreNotScalarCaptures() {
-        rejects("let data = arr[1, 2]; let borrowed = rt borrow data; let int n = await nb { return borrowed; };");
-        rejects("let data = arr[1, 2]; let result = await nb { return data; };");
+        rejects("let data = arr[1, 2]; let borrowed = rt borrow data; let int n = await task { return borrowed; };");
+        rejects("let data = arr[1, 2]; let result = await task { return data; };");
     }
 }
