@@ -369,6 +369,54 @@ public final class UnaryTcpSessionAdapterCheck {
         }
     }
 
+    private static void overloadRejectedIdCannotReplay() throws Exception {
+        BindingAuthenticator auth = new BindingAuthenticator();
+        ManualDispatcher dispatcher = new ManualDispatcher();
+
+        try (var adapter = new UnaryTcpSessionAdapter(
+                        limits(1, 4, 2, 8, 1000), auth, dispatcher);
+             var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> served = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+
+            try (Socket client = new Socket(
+                    InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                client.setSoTimeout(1500);
+                Binding b = binding(client);
+
+                send(client, request(b, 1, new byte[] {1, 2, 3, 4}));
+                TestHandle first = dispatcher.await(b.sessionId(), 1);
+                send(client, request(b, 2, new byte[] {5}));
+                var overloaded = read(client);
+                check(overloaded.kind() == UnaryTransportFrame.Kind.ERROR
+                                && overloaded.correlationId() == 2,
+                        "overload rejection must terminally consume correlation ID");
+
+                send(client, cancel(b, 1));
+                awaitTrue(first.cancelled::get, 1000, "first cancellation before replay probe");
+                awaitTrue(() -> adapter.activeGlobalWorkItems() == 0,
+                        1000, "overload replay probe credit release");
+
+                send(client, request(b, 2, new byte[0]));
+                try {
+                    read(client);
+                    throw new AssertionError("overload-rejected correlation ID replayed");
+                } catch (IOException expected) { }
+                check(dispatcher.dispatches.get() == 1,
+                        "terminally rejected correlation ID must never dispatch later");
+            }
+
+            served.get(3, TimeUnit.SECONDS);
+            check(adapter.activeConnections() == 0
+                            && adapter.activeGlobalWorkItems() == 0
+                            && adapter.activeGlobalPayloadBytes() == 0,
+                    "overload replay rejection must reclaim all credits");
+        }
+    }
+
     private static void deadlineCancelsDispatch() throws Exception {
         BindingAuthenticator auth = new BindingAuthenticator();
         ManualDispatcher dispatcher = new ManualDispatcher();
@@ -851,6 +899,7 @@ public final class UnaryTcpSessionAdapterCheck {
         echoAndReplayFence();
         wrongBindingRejectedBeforePayloadRead();
         overloadCancelAndRecovery();
+        overloadRejectedIdCannotReplay();
         deadlineCancelsDispatch();
         globalBudgetAcrossConnections();
         responseBudgetIsPerConnection();
