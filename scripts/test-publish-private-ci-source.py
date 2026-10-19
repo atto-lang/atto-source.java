@@ -79,7 +79,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             b"/.github/CODEOWNERS @ORESoftware\n")
         self.destination_codeowners_exists = True
         self.destination_codeowners_sha_override = None
-        self.preflight = patch.object(pub, "require_preflight")
+        self.preflight = patch.object(pub, "require_preflight", return_value={"id": 424242})
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
 
@@ -1664,6 +1664,35 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(pub.Denied, "revoked or absent"):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_preflight_destination_id_must_be_attested_before_source_read(self):
+        # A source PR cannot swap the owner/name to a different numeric repo
+        # after an earlier permitted preflight. No source bytes are read.
+        pinned = self.expected_source_tree()
+        with patch.object(pub, "require_preflight", return_value={"id": 424243}):
+            with patch.object(pub, "gh_api", side_effect=self.fake_api):
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("source bytes read")):
+                    with self.assertRaisesRegex(pub.Denied, "ID changed after reviewed preflight"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, pinned, 1286, A)
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
+
+    def test_preflight_rejects_noninteger_or_missing_destination_identity(self):
+        pinned = self.expected_source_tree()
+        for invalid in (None, {}, {"id": True}, {"id": "424242"},
+                        {"id": -1}, {"id": 0}):
+            with self.subTest(preflight=invalid):
+                self.route_calls.clear()
+                with patch.object(pub, "require_preflight", return_value=invalid):
+                    with patch.object(pub, "collect_source",
+                                      side_effect=AssertionError("source bytes read")):
+                        with self.assertRaisesRegex(pub.Denied, "preflight lacks immutable"):
+                            pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                        self.root, pinned, 1286, A)
+                self.assertFalse(any(method == "POST"
+                                     for method, _, _ in self.route_calls))
 
     def test_source_repository_numeric_identity_cannot_be_replaced(self):
         pinned = self.expected_source_tree()
