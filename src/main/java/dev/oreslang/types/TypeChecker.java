@@ -7,6 +7,7 @@ import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
+import dev.oreslang.types.Types.BoolLiteral;
 import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.Generic;
 import dev.oreslang.types.Types.ListType;
@@ -5246,6 +5247,12 @@ public final class TypeChecker {
         }
     }
 
+    private boolean isUnshadowedCompilerBuiltin(String name) {
+        return findClass(name) == null
+                && findInterface(name) == null
+                && findTypeAlias(name) == null;
+    }
+
     private void validateActorCallableBoundaryType(
             Type type,
             Ast.ActorKind actorKind,
@@ -8419,6 +8426,8 @@ public final class TypeChecker {
                 }
                 yield new Named(ref.name(), List.of(payload));
             }
+            case "OptionUnwrapError" -> throw new IllegalArgumentException(
+                    "OptionUnwrapError is compiler-internal and cannot be named in source declarations");
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
