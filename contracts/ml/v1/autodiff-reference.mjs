@@ -3,6 +3,38 @@
 // It makes correlation, gradient fan-in, parameter-version, and commit rules testable.
 const VALID_ID = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const RESERVED_INPUT = '$input';
+// Conservative limits for the host reference, not production actor resource quotas.
+const MAX_NODES = 128;
+const MAX_PARAMETER_SCALARS = 65536;
+const MAX_ACTIVATION_SCALARS = 65536;
+const MAX_MICROBATCHES = 4096;
+const MAX_LEDGER_ENTRIES = 4096;
+function record(value, required, optional=[], name='record') {
+  if (!value || typeof value!=='object' || Array.isArray(value) ||
+      (Object.getPrototypeOf(value)!==Object.prototype &&
+       Object.getPrototypeOf(value)!==null)) throw new TypeError(name+' must be a plain record');
+  const keys=Reflect.ownKeys(value);
+  const allowed=new Set([...required,...optional]);
+  if (keys.some(k=>typeof k!=='string'||!allowed.has(k)) ||
+      required.some(k=>!Object.hasOwn(value,k))) throw new TypeError(name+' unknown or missing fields');
+  for (const k of keys) {
+    const d=Object.getOwnPropertyDescriptor(value,k);
+    if(!d||!('value' in d)||!d.enumerable) throw new TypeError(name+' accessor/hidden field forbidden');
+  }
+}
+function dataArray(value,name,max) {
+  if (!Array.isArray(value)||Object.getPrototypeOf(value)!==Array.prototype ||
+      value.length<1||value.length>max||Reflect.ownKeys(value).length!==value.length+1) {
+    throw new TypeError(name+' must be a bounded dense array');
+  }
+  const out=[];
+  for(let i=0;i<value.length;i++) {
+    const d=Object.getOwnPropertyDescriptor(value,String(i));
+    if(!d||!('value' in d)||!d.enumerable) throw new TypeError(name+' sparse/accessor array forbidden');
+    out.push(d.value);
+  }
+  return out;
+}
 
 function assertId(value, what) {
   if (typeof value !== 'string' || !VALID_ID.test(value)) {
@@ -48,35 +80,37 @@ function cloneParams(nodes) {
   return out;
 }
 function compileNodes(specs, output) {
-  if (!Array.isArray(specs) || !specs.length) throw new TypeError('nodes required');
+  const records=dataArray(specs,'nodes',MAX_NODES);
+  let parameterScalars=0;
   const seen = new Set([RESERVED_INPUT]);
   const nodes = [];
-  for (const spec of specs) {
-    if (!spec || Object.getPrototypeOf(spec) !== Object.prototype) throw new TypeError('plain node required');
+  for (const spec of records) {
+    record(spec,['id','type','inputs'],['weights','bias'],'node');
     const {id, type, inputs} = spec;
     assertId(id, 'node id');
     if (seen.has(id)) throw new Error(`duplicate node ${id}`);
     if (!['dense','relu','add','mse'].includes(type)) throw new Error(`unknown operation ${type}`);
-    if (!Array.isArray(inputs) || inputs.length !== (type === 'add' ? 2 : 1)) {
-      throw new Error(`${id} invalid input arity`);
-    }
-    for (const source of inputs) {
+    const sources=dataArray(inputs,id+' inputs',2);
+    if(sources.length !== (type === 'add' ? 2 : 1)) throw new Error(`${id} invalid input arity`);
+    for (const source of sources) {
       if (typeof source !== 'string' || !seen.has(source)) {
         throw new Error(`${id} references missing, forward, or cyclic input ${source}`);
       }
     }
     if (type === 'mse' && spec.id !== output) throw new Error('loss must be final graph output');
     if (type === 'dense') {
-      if (!Array.isArray(spec.weights) || !spec.weights.length || spec.weights.length > 4096) {
-        throw new TypeError(`${id} weights rows required`);
-      }
-      const weights = spec.weights.map((row,i)=>vector(row,`${id}.weights[${i}]`));
-      const bias = vector(spec.bias,`${id}.bias`);
+      if (!Object.hasOwn(spec,'weights')||!Object.hasOwn(spec,'bias')) throw new TypeError(`${id} missing weights/bias`);
+      const rows=dataArray(spec.weights,id+' weight rows',4096);
+      const weights=rows.map((row,i)=>vector(row,`${id}.weights[${i}]`));
+      const bias=vector(spec.bias,`${id}.bias`);
       if (bias.length !== weights.length) throw new RangeError(`${id} bias rows mismatch`);
       for (const w of weights) same(w,weights[0],`${id} weight matrix`);
-      nodes.push({id,type,inputs:inputs.slice(),weights,bias});
+      parameterScalars+=weights.length*weights[0].length+bias.length;
+      if(parameterScalars>MAX_PARAMETER_SCALARS) throw new RangeError('PARAMETER_BUDGET_EXCEEDED');
+      nodes.push({id,type,inputs:sources,weights,bias});
     } else {
-      nodes.push({id,type,inputs:inputs.slice()});
+      if(Object.hasOwn(spec,'weights')||Object.hasOwn(spec,'bias')) throw new TypeError(`${id} unexpected parameters`);
+      nodes.push({id,type,inputs:sources});
     }
     seen.add(id);
   }
@@ -91,20 +125,28 @@ function compileNodes(specs, output) {
 
 // Messages are represented by method arguments; callers cannot mutate owned tape/weights.
 export class ActorAutodiffReference {
-  #nodes; #modelVersion=0; #step=null; #maxInFlight; #committedIds=new Set();
-  constructor({nodes, output, maxInFlight=8}) {
-    this.#nodes=compileNodes(nodes, output);
-    this.#maxInFlight=integer(maxInFlight,'maxInFlight',1);
+  #nodes; #modelVersion=0; #step=null; #maxInFlight; #maxCommittedSteps; #committedIds=new Set();
+  constructor(config) {
+    record(config,['nodes','output'],['maxInFlight','maxCommittedSteps'],'config');
+    this.#nodes=compileNodes(config.nodes,config.output);
+    this.#maxInFlight=integer(config.maxInFlight??8,'maxInFlight',1);
+    if(this.#maxInFlight>MAX_MICROBATCHES) throw new RangeError('maxInFlight too large');
+    this.#maxCommittedSteps=integer(config.maxCommittedSteps??MAX_LEDGER_ENTRIES,'maxCommittedSteps',1);
+    if(this.#maxCommittedSteps>MAX_LEDGER_ENTRIES) throw new RangeError('maxCommittedSteps too large');
   }
   get version() { return this.#modelVersion; }
   parameters() { return cloneParams(this.#nodes); }
-  beginStep({runId,stepId,expectedMicrobatches}) {
+  beginStep(message) {
+    record(message,['runId','stepId','expectedMicrobatches'],[],'beginStep');
+    const {runId,stepId,expectedMicrobatches}=message;
     assertId(runId,'runId');
     integer(stepId,'stepId');
     integer(expectedMicrobatches,'expectedMicrobatches',1);
-    if (expectedMicrobatches > 4096) throw new RangeError('microbatch count too large');
+    if (expectedMicrobatches > MAX_MICROBATCHES) throw new RangeError('microbatch count too large');
     if (this.#committedIds.has(JSON.stringify([runId,stepId]))) throw new Error('ALREADY_COMMITTED');
     if (this.#step) throw new Error('training step already active');
+    // Never evict replay tokens: refuse new steps once this in-memory ledger is full.
+    if(this.#committedIds.size>=this.#maxCommittedSteps) throw new Error('REPLAY_LEDGER_EXHAUSTED');
     this.#step = {runId,stepId,expectedMicrobatches,version:this.#modelVersion,
       frames:new Map(),completed:new Set(),gradients:new Map(),receipts:[]};
     return {runId,stepId,parameterVersion:this.#modelVersion};
@@ -116,15 +158,20 @@ export class ActorAutodiffReference {
     }
     return this.#step;
   }
-  forward({runId,stepId,microbatchId,input,target}) {
-    const s=this.#match({runId,stepId});
+  forward(message) {
+    record(message,['runId','stepId','microbatchId','input','target'],[],'forward');
+    const {runId,stepId,microbatchId,input,target}=message;
+    const s=this.#match(message);
     integer(microbatchId,'microbatchId');
+    if(microbatchId>=s.expectedMicrobatches) throw new RangeError('MICROBATCH_ID_OUT_OF_RANGE');
     if (s.frames.has(microbatchId) || s.completed.has(microbatchId)) throw new Error('DUPLICATE_FORWARD');
     if (s.frames.size >= this.#maxInFlight) throw new Error('BACKPRESSURE');
     if (s.frames.size+s.completed.size>=s.expectedMicrobatches) throw new Error('TOO_MANY_MICROBATCHES');
     const activations=new Map([[RESERVED_INPUT,vector(input,'input')]]);
     const targetCopy=vector(target,'target');
     const receipts=[];
+    let activationScalars=activations.get(RESERVED_INPUT).length+targetCopy.length;
+    if(activationScalars>MAX_ACTIVATION_SCALARS) throw new RangeError('ACTIVATION_BUDGET_EXCEEDED');
     for (const n of this.#nodes) {
       const ins=n.inputs.map(id=>activations.get(id));
       let out;
@@ -135,16 +182,24 @@ export class ActorAutodiffReference {
       else if(n.type==='add') { same(ins[0],ins[1],`${n.id} add`); out=ins[0].map((x,i)=>x+ins[1][i]); }
       else { same(ins[0],targetCopy,`${n.id} target`); out=[ins[0].reduce((a,x,i)=>a+0.5*(x-targetCopy[i])**2,0)]; }
       finite(out,`${n.id} forward`);
+      activationScalars+=out.length;
+      if(activationScalars>MAX_ACTIVATION_SCALARS) throw new RangeError('ACTIVATION_BUDGET_EXCEEDED');
       activations.set(n.id,out);
-      receipts.push({kind:'forward',node:n.id,microbatchId,parameterVersion:s.version});
+      for(let slot=0;slot<n.inputs.length;slot++) receipts.push({
+        kind:'forward',runId,stepId,node:n.id,from:n.inputs[slot],inputSlot:slot,
+        microbatchId,parameterVersion:s.version
+      });
     }
     s.frames.set(microbatchId,{activations,target:targetCopy});
     s.receipts.push(...receipts);
-    return {loss:activations.get(this.#nodes.at(-1).id)[0],parameterVersion:s.version};
+    return {loss:activations.get(this.#nodes.at(-1).id)[0],runId,stepId,microbatchId,parameterVersion:s.version};
   }
-  backward({runId,stepId,microbatchId}) {
-    const s=this.#match({runId,stepId});
+  backward(message) {
+    record(message,['runId','stepId','microbatchId'],[],'backward');
+    const {runId,stepId,microbatchId}=message;
+    const s=this.#match(message);
     integer(microbatchId,'microbatchId');
+    if(microbatchId>=s.expectedMicrobatches) throw new RangeError('MICROBATCH_ID_OUT_OF_RANGE');
     if (s.completed.has(microbatchId)) throw new Error('DUPLICATE_BACKWARD');
     const frame=s.frames.get(microbatchId);
     if (!frame) throw new Error('MISSING_FORWARD');
@@ -176,7 +231,7 @@ export class ActorAutodiffReference {
       gins.forEach((grad,i)=>{
         finite(grad,`${n.id} backward`);
         addTo(gradients,n.inputs[i],grad);
-        receipts.push({kind:'backward',from:n.id,to:n.inputs[i],microbatchId,parameterVersion:s.version});
+        receipts.push({kind:'backward',runId,stepId,from:n.id,to:n.inputs[i],inputSlot:i,microbatchId,parameterVersion:s.version});
       });
     }
     // Compute all merged gradients without modifying committed state on failure.
@@ -198,7 +253,7 @@ export class ActorAutodiffReference {
     s.frames.delete(microbatchId);
     s.completed.add(microbatchId);
     s.receipts.push(...receipts);
-    return {inputGradient:dx.slice(),parameterVersion:s.version};
+    return {inputGradient:dx.slice(),runId,stepId,microbatchId,parameterVersion:s.version};
   }
   gradients() {
     if (!this.#step) throw new Error('NO_ACTIVE_STEP');
@@ -210,8 +265,10 @@ export class ActorAutodiffReference {
     if (!this.#step) throw new Error('NO_ACTIVE_STEP');
     return this.#step.receipts.map(r=>({...r}));
   }
-  commit({runId,stepId,learningRate}) {
-    const s=this.#match({runId,stepId});
+  commit(message) {
+    record(message,['runId','stepId','learningRate'],[],'commit');
+    const {runId,stepId,learningRate}=message;
+    const s=this.#match(message);
     if(typeof learningRate!=='number'||!Number.isFinite(learningRate)||learningRate<=0)
       throw new RangeError('positive finite learningRate required');
     if(s.frames.size || s.completed.size!==s.expectedMicrobatches) throw new Error('INCOMPLETE_STEP');
@@ -232,5 +289,9 @@ export class ActorAutodiffReference {
     this.#step=null;
     return {committedVersion:this.#modelVersion,completedMicrobatches:divisor};
   }
-  cancel({runId,stepId}) { this.#match({runId,stepId}); this.#step=null; }
+  cancel(message) {
+    record(message,['runId','stepId'],[],'cancel');
+    this.#match(message);
+    this.#step=null;
+  }
 }
