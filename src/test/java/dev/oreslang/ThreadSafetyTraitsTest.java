@@ -463,6 +463,67 @@ final class ThreadSafetyTraitsTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void legacySharedSafetyRejectsExponentialDagsAndOversizedFlatTypes() throws Exception {
+        var constructor = TypeChecker.class.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance();
+        var sharedSafe = TypeChecker.class.getDeclaredMethod(
+                "isSharedSafe", Types.Type.class, java.util.Set.class, java.util.Map.class);
+        sharedSafe.setAccessible(true);
+
+        // A 35-level pair-sharing DAG has 36 physical type nodes but
+        // over 2^35 logical traversals without a work budget.
+        Type dag = Types.Primitive.INT;
+        for (int i = 0; i < 35; i++) {
+            dag = new Types.Tuple(List.of(dag, dag));
+        }
+        assertEquals(Boolean.FALSE, sharedSafe.invoke(checker, dag,
+                new java.util.LinkedHashSet<>(), Map.of()));
+
+        Type wide = new Types.Tuple(java.util.Collections.nCopies(
+                100_001, Types.Primitive.INT));
+        assertEquals(Boolean.FALSE, sharedSafe.invoke(checker, wide,
+                new java.util.LinkedHashSet<>(), Map.of()));
+        assertEquals(Boolean.TRUE, sharedSafe.invoke(checker,
+                new Types.Tuple(List.of(Types.Primitive.INT)),
+                new java.util.LinkedHashSet<>(), Map.of()));
+    }
+
+    @Test
+    void actorBoundaryRejectsForgedDataContainerArities() throws Exception {
+        var constructor = TypeChecker.class.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance();
+        var validate = TypeChecker.class.getDeclaredMethod(
+                "validateActorCallableBoundaryType", Types.Type.class,
+                dev.oreslang.ast.Ast.ActorKind.class, boolean.class, String.class);
+        validate.setAccessible(true);
+        for (var forged : List.of(
+                new Types.Named("Option", List.of()),
+                new Types.Named("Option", List.of(Types.Primitive.INT, Types.Primitive.INT)),
+                new Types.Named("Result", List.of(Types.Primitive.INT)),
+                new Types.Named("Result", List.of(Types.Primitive.INT,
+                        Types.Primitive.INT, Types.Primitive.INT)),
+                new Types.Named("OptionUnwrapError", List.of(Types.Primitive.INT)))) {
+            var failure = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> validate.invoke(checker, forged,
+                            dev.oreslang.ast.Ast.ActorKind.SHARED,
+                            false, "mailbox value"));
+            assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains("type arguments"),
+                    failure.getCause().getMessage());
+        }
+        for (var valid : List.of(
+                new Types.Named("Option", List.of(Types.Primitive.INT)),
+                new Types.Named("Result", List.of(Types.Primitive.INT, Types.Primitive.STRING)),
+                new Types.Named("OptionUnwrapError", List.of()))) {
+            assertDoesNotThrow(() -> validate.invoke(checker, valid,
+                    dev.oreslang.ast.Ast.ActorKind.SHARED, false, "mailbox value"));
+        }
+    }
+
+    @Test
     void sharedMutexAcceptsSendOwnedDataButRejectsUnprovenPayloads() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc good(): void {
