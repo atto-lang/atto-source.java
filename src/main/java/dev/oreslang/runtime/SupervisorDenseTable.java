@@ -184,6 +184,13 @@ public final class SupervisorDenseTable implements AutoCloseable {
         Arrays.fill(data, 0);
         Arrays.fill(denseBySlot, -1);
         Arrays.fill(generationBySlot, 0L);
+        // Release strong references to potentially million-row allocations.
+        data = null;
+        slotByDense = null;
+        denseBySlot = null;
+        generationBySlot = null;
+        freeSlots = null;
+        capacity = 0;
         size = 0;
         freeCount = 0;
     }
