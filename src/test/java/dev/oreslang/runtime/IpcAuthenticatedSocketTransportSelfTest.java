@@ -617,6 +617,69 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             }
         }
 
+        // If active-write abort scheduling itself is rejected, the
+        // generation is quarantined. A host supervisor can explicitly retry
+        // the abort after capacity returns, but receipt retirement remains a
+        // separate explicit recovery after the write pin has drained.
+        var retryAbortMessage = envelope(1, "retryAbort", 3, 4, blockedPayload);
+        try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
+             Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
+             Socket peer = server.accept()) {
+            client.setSendBufferSize(1024);
+            peer.setReceiveBufferSize(1024);
+            AtomicInteger scheduled = new AtomicInteger();
+            IpcTransportSessionLease.CleanupScheduler scheduler = cleanup -> {
+                if (scheduled.incrementAndGet() == 1) {
+                    throw new IllegalStateException("abort queue saturated");
+                }
+                offCallerCleanup(cleanup);
+            };
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    client, bridge, retryAbortMessage, 915, 1, key, scheduler);
+            AtomicReference<IpcAuthenticatedSocketTransport.SendSubmission> result =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            Thread sender = new Thread(() -> {
+                try {
+                    result.set(transport.send(retryAbortMessage, blockedPayload));
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                }
+            }, "ipc-test-retry-abort-writer");
+            sender.start();
+            boolean pinned = false;
+            for (int i = 0; i < 400; ++i) {
+                if (transport.snapshot().activeWrites() == 1 && sender.isAlive()) {
+                    pinned = true;
+                    break;
+                }
+                Thread.sleep(5);
+            }
+            check(pinned);
+            check(!transport.requestCloseAndAwait(3000));
+            check(transport.snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(transport.snapshot().activeWrites() == 1);
+            check(sender.isAlive());
+            transport.retryQuarantinedAbort();
+            sender.join(3000);
+            check(!sender.isAlive());
+            check(failure.get() == null);
+            check(result.get() != null && result.get().writeAttemptFailed());
+            check(transport.snapshot().activeWrites() == 0);
+            check(transport.snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            transport.retryQuarantinedClose();
+            check(transport.snapshot().phase()
+                    == IpcTransportSessionLease.Phase.RETIRED);
+            check(result.get().outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(transport.keyMaterialDestroyed());
+            check(scheduled.get() == 3);
+            check(bridge.invariant());
+        }
+
         // If the bounded host cleanup domain accepts but does not run the
         // active-write abort before the supervisor deadline, shutdown returns
         // false and the physical generation is quarantined. No retry/replay is
