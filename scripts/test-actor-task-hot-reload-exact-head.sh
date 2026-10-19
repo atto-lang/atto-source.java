@@ -68,6 +68,9 @@ test_classes=(
   ActorTaskGenerationBridgeTest
   ActorUpgradePreflightV1Test
   ActorRoutePublicationV1Test
+  ActorRoutePublicationAuthorityAuditTest
+  ActorRoutePublicationTransportAuditTest
+  ActorRoutePublicationPlacementAuditTest
   ActorUpgradeAtomicPublicationV1Test
   LogicalActorProxyMailboxV1Test
   OresTaskScopeFrameTest
