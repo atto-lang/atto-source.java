@@ -69,6 +69,8 @@ public final class TypeChecker {
     private Env currentTypeScope;
     /** Names declared by named inference, including aliases not yet initialized. */
     private final Set<String> inferredTypeNames = new HashSet<>();
+    /** Short named inference is resolved only for otherwise unbound capitalized row type names. */
+    private final IdentityHashMap<Ast.BindingStmt, String> shortInferredTypeNames = new IdentityHashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
@@ -1623,10 +1625,58 @@ public final class TypeChecker {
                     env.reserveInferredType(binding.inferredTypeName());
                 }
             }
+            // After reserving explicit aliases, give the short form a new name
+            // only if that name does not already denote a type in this scope.
+            // Forward use of a later explicit alias must remain an error.
+            for (Ast.Stmt stmt : body) {
+                if (stmt instanceof Ast.BindingStmt binding
+                        && isShortNamedRowInference(binding, env, generics)) {
+                    String name = binding.declaredType().name();
+                    shortInferredTypeNames.put(binding, name);
+                    inferredTypeNames.add(name);
+                    env.reserveInferredType(name);
+                }
+            }
             for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
         } finally {
             currentTypeScope = previousTypeScope;
         }
+    }
+
+    /**
+     * A short name introduces an alias only when the name is truly absent.
+     * Existing aliases, class/interface names, generics, builtins, and an
+     * explicitly reserved forward alias use the ordinary declared-type path.
+     * Limiting the implicit form to uppercase-starting names prevents a typo
+     * in lowercase builtins from silently manufacturing a type.
+     */
+    private boolean isShortNamedRowInference(
+            Ast.BindingStmt binding, Env env, Set<String> generics) {
+        if (binding.inferredTypeName() != null || binding.kind() != Ast.BindingKind.CONST
+                || binding.mutableReferent()
+                || !(binding.initializer() instanceof Ast.ObjectExpr object && object.inferredStruct())) {
+            return false;
+        }
+        Ast.TypeRef ref = binding.declaredType();
+        if (ref == null || ref.name() == null || ref.name().isEmpty()
+                || !Character.isUpperCase(ref.name().codePointAt(0))
+                || ref.name().contains(".") || ref.isRecordType()
+                || ref.inferArguments() || !ref.arguments().isEmpty()) {
+            return false;
+        }
+        String name = ref.name();
+        if (generics.contains(name) || GENERIC_DEFAULT_BUILTINS.contains(name)
+                || Set.of("Object", "Any", "Unknown", "Error", "Symbol",
+                        "Ref", "WeakRef", "Map", "OrderedMap", "DynamicStruct").contains(name)
+                || findClass(name) != null || findInterface(name) != null
+                || findTypeAlias(name) != null || modules.containsKey(name)
+                || env.hasReservedInferredType(name) || env.lookupInferredType(name) != null
+                || hiddenLinkedAliasNames.contains(name)) {
+            return false;
+        }
+        // Do not turn a missing import into an inferred alias.
+        rejectUnimportedTypeDependency(name);
+        return true;
     }
 
     private void checkLoopBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
@@ -1664,7 +1714,9 @@ public final class TypeChecker {
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
         if (stmt instanceof Ast.BindingStmt binding) {
-            boolean namedInference = binding.inferredTypeName() != null;
+            String inferredName = binding.inferredTypeName() != null
+                    ? binding.inferredTypeName() : shortInferredTypeNames.get(binding);
+            boolean namedInference = inferredName != null;
             Type declaredAhead = namedInference || binding.declaredType() == null
                     ? null : resolve(binding.declaredType(), generics, self);
             if (binding.declaredType() != null && binding.initializer() instanceof Ast.ListExpr listLiteral) {
@@ -1707,7 +1759,7 @@ public final class TypeChecker {
             }
 
             if (namedInference) {
-                String name = binding.inferredTypeName();
+                String name = inferredName;
                 if (generics.contains(name)
                         || Set.of(
                                 "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
