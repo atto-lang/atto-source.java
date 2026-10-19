@@ -143,6 +143,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     }
 
     private final Object routeLock = new Object();
+    // Serializes multiple supervisor close attempts; unlike the routeLock,
+    // it may be held while waiting for physical actor finalization.
+    private final Object closeLock = new Object();
     private final UUID logicalId = UUID.randomUUID();
     private final HotReloadManager manager;
     private final ActorRuntime.ActorKind kind;
@@ -152,6 +155,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     private Route active;
     private boolean upgrading;
     private boolean closed;
+    // Under routeLock. A close timeout may retain the active physical actor
+    // in retiredRoutes until another supervisor cleanup attempt reaps it.
+    private boolean activeRouteLeaseReleased;
 
     private LogicalSourceActorRouterV1(
             ActorRuntime.ActorKind kind,
@@ -531,8 +537,11 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             Route old = retiredRoutes.get(i);
             if (old.view.runtime().physicallyFinalizedForHotUpgrade(
                     old.physical)) {
-                retiredRoutes.remove(i);
+                // Close the lease BEFORE forgetting its owner. If lease
+                // release fails, the route remains tracked for a retry.
                 old.generationLease.close();
+                retiredRoutes.remove(i);
+                if (old == active) activeRouteLeaseReleased = true;
                 released++;
             }
         }
@@ -600,51 +609,74 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     @Override
     public void close() {
         requireBlockingHostSurface("close a logical source actor");
-        final Route route;
-        synchronized (routeLock) {
-            awaitUpgradeLocked();
-            if (closed) return;
-            closed = true;
-            route = active;
-            routeLock.notifyAll();
-        }
+        synchronized (closeLock) {
+            final Route route;
+            synchronized (routeLock) {
+                if (!closed) {
+                    awaitUpgradeLocked();
+                    closed = true;
+                    routeLock.notifyAll();
+                } else if (activeRouteLeaseReleased && retiredRoutes.isEmpty()) {
+                    return;
+                }
+                route = active;
+            }
 
-        route.physical.stop();
-        boolean interrupted = false;
-        boolean activeTerminated = false;
-        try {
-            activeTerminated =
-                    route.physical.awaitTermination(5, TimeUnit.SECONDS);
-        } catch (InterruptedException interruption) {
-            interrupted = true;
-        }
-
-        final ArrayList<Route> oldRoutes;
-        synchronized (routeLock) {
-            reapRetiredLocked();
-            oldRoutes = new ArrayList<>(retiredRoutes);
-        }
-        for (Route old : oldRoutes) {
+            // ActorRuntime.stop() has a bounded host wait and can throw after
+            // requesting stop. The generation must remain pinned even when
+            // that wait times out. Record it before propagating the failure,
+            // rather than leaving a sealed, unreapable logical router.
             try {
-                old.physical.awaitTermination(5, TimeUnit.SECONDS);
+                route.physical.stop();
+            } catch (RuntimeException | Error stopFailure) {
+                synchronized (routeLock) {
+                    if (!activeRouteLeaseReleased
+                            && !retiredRoutes.contains(route)) {
+                        retiredRoutes.add(route);
+                    }
+                }
+                throw stopFailure;
+            }
+
+            boolean interrupted = false;
+            boolean activeTerminated = false;
+            try {
+                activeTerminated =
+                        route.physical.awaitTermination(5, TimeUnit.SECONDS);
             } catch (InterruptedException interruption) {
                 interrupted = true;
-                break;
             }
-        }
 
-        synchronized (routeLock) {
-            reapRetiredLocked();
-            if (activeTerminated) {
-                route.generationLease.close();
-            } else if (!retiredRoutes.contains(route)) {
-                retiredRoutes.add(route);
+            final ArrayList<Route> oldRoutes;
+            synchronized (routeLock) {
+                reapRetiredLocked();
+                oldRoutes = new ArrayList<>(retiredRoutes);
             }
-            if (interrupted) Thread.currentThread().interrupt();
-            if (!activeTerminated || !retiredRoutes.isEmpty()) {
-                throw new IllegalStateException(
-                        "logical actor close did not observe complete physical retirement; "
-                                + "generation lease(s) remain pinned");
+            for (Route old : oldRoutes) {
+                try {
+                    old.physical.awaitTermination(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interruption) {
+                    interrupted = true;
+                    break;
+                }
+            }
+
+            synchronized (routeLock) {
+                reapRetiredLocked();
+                if (activeTerminated && !activeRouteLeaseReleased) {
+                    route.generationLease.close();
+                    activeRouteLeaseReleased = true;
+                    retiredRoutes.remove(route);
+                } else if (!activeTerminated && !activeRouteLeaseReleased
+                        && !retiredRoutes.contains(route)) {
+                    retiredRoutes.add(route);
+                }
+                if (interrupted) Thread.currentThread().interrupt();
+                if (!activeTerminated || !retiredRoutes.isEmpty()) {
+                    throw new IllegalStateException(
+                            "logical actor close did not observe complete physical retirement; "
+                                    + "generation lease(s) remain pinned for supervisor retry");
+                }
             }
         }
     }
