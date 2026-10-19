@@ -517,3 +517,38 @@ empty step list, and its log download returned BlobNotFound. These are
 runner-admission failures/unknown reasons, **not** executable Maven/JUnit
 receipts or proof of a precise minutes shortage. Private mirroring remains
 blocked by the empty reviewed destination policy and security issue #962.
+
+## Fail-sealed publication status and canonical image receipts — October 19, 2026
+
+A live SHARED bridge's coherent `publication()` record remained readable
+after failed/ambiguous migration. Some source-compiled tests deliberately
+read that record after quarantine to diagnose the route. However, its record
+previously had no field distinguishing a healthy dispatch authority from a
+fail-sealed diagnostic: the exact source/code/ABI digests and mailbox epochs
+could match even though the bridge had permanently denied subsequent
+physical dispatch.
+
+`Publication` now includes an immutable `failSealed` bit sampled under
+the dispatch monitor, plus `authoritativeForDispatch()` which returns false
+if the bridge was quarantined, its mailbox closed, or its logical/proxy
+epochs disagree. After a rejected compiler-ABI upgrade, the regression
+still inspects the unchanged old generation and route but explicitly verifies
+`failSealed == true` and refuses to treat matching digests as proof of
+healthy dispatch. The compatible upgrade asserts the inverse.
+
+Image receipts are also validated **before any actor route lease or
+physical transfer**. The immutable linked-code, persistent-state-layout
+and receive-message fingerprints must each be exactly 64 ASCII lowercase
+hexadecimal characters; missing, shortened, uppercase, Unicode or otherwise
+malformed hashes fail closed before publication. This matches the existing
+`ActorRuntime` physical checkpoint digest syntax. New
+`LogicalSourceActorImageReceiptCanonicalityTest` checks the positive
+and negative cases for each of the three independent compiler fields.
+
+**Test status:** the JUnit sources are committed, but exact-head JDK25
+Maven/Graal execution remains unverified. Latest source-head fast/full CI
+failed with no reliable executed Maven steps; the source policy allowlist
+still has zero approved private destinations and security #962 remains open.
+No private Git tree was mirrored to another organization. Neither a
+well-formed code digest nor a host publication snapshot constitutes
+a production cryptographic artifact signature or code-retirement proof.
