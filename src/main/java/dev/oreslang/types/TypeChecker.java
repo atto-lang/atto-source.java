@@ -2224,6 +2224,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.AssignExpr assignment) {
             Type targetType;
             List<Type> dynamicFixedSlots = List.of();
+            String initializedIndexedField = null;
             String where;
             if (assignment.target() instanceof Ast.NameExpr name) {
                 Env.Binding binding = env.lookup(name.name());
@@ -2244,6 +2245,7 @@ public final class TypeChecker {
                                 "cannot mutate a readonly structural record through indexed access");
                     }
                     if (index instanceof StringLiteral key) {
+                        initializedIndexedField = key.value();
                         targetType = record.members().get(key.value());
                         if (targetType == null) {
                             throw new IllegalArgumentException(
@@ -2345,6 +2347,11 @@ public final class TypeChecker {
             if (assignment.target() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr owner) {
                 env.markInitialized(owner.name(), member.member());
+            }
+            if (initializedIndexedField != null
+                    && assignment.target() instanceof Ast.IndexExpr indexed
+                    && indexed.receiver() instanceof Ast.NameExpr owner) {
+                env.markInitialized(owner.name(), initializedIndexedField);
             }
             return targetType;
         }
@@ -3726,8 +3733,25 @@ public final class TypeChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             Type receiver = receiverDispatchType(deref(typeOf(indexed.receiver(), env, generics, self)));
             Type index = typeOf(indexed.index(), env, generics, self);
+            Env.Binding indexedOwner = indexed.receiver() instanceof Ast.NameExpr ownerName
+                    ? env.lookup(ownerName.name()) : null;
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "record/struct field key");
+                if (indexedOwner != null && indexedOwner.hasUninitializedFields()) {
+                    if (index instanceof StringLiteral key) {
+                        if (indexedOwner.isUninitialized(key.value())) {
+                            throw new IllegalArgumentException(
+                                    "explicit struct field '" + key.value()
+                                            + "' is read before initialization on '"
+                                            + ((Ast.NameExpr) indexed.receiver()).name() + "'");
+                        }
+                    } else {
+                        throw new IllegalArgumentException(
+                                "dynamic indexed read cannot select from partially initialized struct '"
+                                        + ((Ast.NameExpr) indexed.receiver()).name()
+                                        + "'; initialize every field or use an exact initialized key");
+                    }
+                }
                 if (index instanceof StringLiteral key) {
                     Type member = record.members().get(key.value());
                     if (member == null) {
