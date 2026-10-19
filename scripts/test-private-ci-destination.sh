@@ -98,4 +98,50 @@ mv "$work/fixture/.github" "$work/approved-policy-directory"
 ln -s "$work/approved-policy-directory" "$work/fixture/.github"
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
+# A source-free publisher stub verifies the shell entrypoint itself.
+# The real publisher is not executed here and no GitHub request is made.
+mv "$script_dir/publish-private-ci-source.py" "$work/private-publisher-original.py"
+cat > "$script_dir/publish-private-ci-source.py" <<'STUB'
+import os, sys
+assert sys.flags.isolated == 1
+assert sys.dont_write_bytecode
+assert sys.executable == "/usr/bin/python3"
+assert os.environ["PATH"] == "/usr/bin:/bin"
+assert os.environ["PYTHONPATH"] not in sys.path
+assert len(sys.argv) == 12
+print("SOURCE_FREE_PRIVATE_WRAPPER_OK=" + sys.argv[8])
+STUB
+mkdir -p "$work/path-poison" "$work/pythonpath"
+for executable in python3 dirname sh bash; do
+  cat > "$work/path-poison/$executable" <<'FAKE'
+#!/bin/sh
+printf 'unsafely executed\n' >> "$WRAPPER_UNSAFE_MARKER"
+FAKE
+  chmod +x "$work/path-poison/$executable"
+done
+cat > "$work/startup-hook" <<'HOOK'
+printf 'unsafely executed\n' >> "$WRAPPER_UNSAFE_MARKER"
+HOOK
+cat > "$work/pythonpath/sitecustomize.py" <<'SITE'
+import os
+open(os.environ["WRAPPER_UNSAFE_MARKER"], "w").write("unsafely executed")
+SITE
+for source_selector in --source-pr --source-merged-pr; do
+  rm -f "$work/wrapper-unsafe-marker"
+  PATH="$work/path-poison:$PATH" \
+  BASH_ENV="$work/startup-hook" ENV="$work/startup-hook" \
+  PYTHONPATH="$work/pythonpath" \
+  WRAPPER_UNSAFE_MARKER="$work/wrapper-unsafe-marker" \
+    /bin/sh "$script_dir/run-in-private-ci-destination.sh" \
+       trusted/ci --source-dir "$work/fixture/source" \
+       --branch ci/oreslang-test \
+       --expected-source-tree 0000000000000000000000000000000000000000 \
+       "$source_selector" 1286 \
+       --expected-source-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+       > "$work/out" 2>&1 || { cat "$work/out" >&2; exit 1; }
+  grep -Fxq "SOURCE_FREE_PRIVATE_WRAPPER_OK=$source_selector" "$work/out"
+  test ! -e "$work/wrapper-unsafe-marker"
+done
+mv "$work/private-publisher-original.py" "$script_dir/publish-private-ci-source.py"
+printf 'PASS: both launcher modes resist PATH, BASH_ENV and PYTHONPATH injection\n'
 printf 'PASS: private identity, symlink directory and multiline API rejection, child not executed\n'
