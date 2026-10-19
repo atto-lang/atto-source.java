@@ -332,7 +332,7 @@ public final class OresTaskScope implements AutoCloseable {
 
     /** Cancel all owned descendants. Does NOT imply physical quiescence. */
     public boolean cancel() {
-        List<Runnable> notifications = new ArrayList<>();
+        ArrayList<Runnable> notifications = new ArrayList<>();
         // First seal the ENTIRE owned tree, then revoke ALL producers, then
         // invoke any synchronous Future subscribers. A parent cancellation
         // hook must never admit a fresh Task into an as-yet-unvisited child.
@@ -359,7 +359,7 @@ public final class OresTaskScope implements AutoCloseable {
         return won;
     }
 
-    private boolean cancelTreeIterative(List<Runnable> notifications) {
+    private boolean cancelTreeIterative(ArrayList<Runnable> notifications) {
         // A failed traversal, iterator, set growth or snapshot allocation
         // MUST NOT leave a partially cancelled tree. First build a complete
         // plan while holding the tree's shared admission gate; only after
@@ -385,6 +385,11 @@ public final class OresTaskScope implements AutoCloseable {
                     allLinks.addAll(scope.externalCancellation);
                 }
             }
+
+            // Reserve all notification slots before the irreversible seal.
+            // Otherwise an ArrayList growth OOME after a Future cancellation
+            // CAS could lose its deferred notification forever.
+            notifications.ensureCapacity(allTasks.size());
 
             // Commit phase is allocation-free and cannot invoke user code.
             // All admissions and descendant creations remain blocked until
