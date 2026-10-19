@@ -1,25 +1,25 @@
-# Durable actor execution quiescence: host runtime boundary (draft)
+# Durable actor execution quiescence — fail-closed handoff (draft)
 
-This change adds a host/supervisor-only, nonblocking `ActorRuntime.requestDurableQuiescence(ActorRef<?>)` operation. It is **a runtime execution barrier only**, not a durable persistence adapter, guest heap serializer, ownership transfer protocol, or complete GraalVM restart feature.
+This is a host/supervisor-only ActorRuntime execution barrier, not yet a durable mailbox implementation or a GraalVM snapshot/restore mechanism.
 
-## Protocol
+## Safe admission and freeze protocol
 
-1. The supervisor obtains the actor handle and requests quiescence; actors/CONTROL Mailmen cannot call this host-only API.
-2. Under the actor's existing `lifecycleLock`, the request inhibits new scheduling and turn admission, including runtime continuations. Already-admitted envelopes finish.
-3. The returned `CompletableFuture<DurableQuiescence>` settles only after `TurnExecutor.execute` has returned and the physical carrier owner and dispatch token have been cleared. Callbacks are dispatched off-carrier through the common pool, not inline under the actor lock.
-4. Suspended source receives, outstanding owned futures, unfinished cleanup and active untrusted logical tasks fail closed rather than publishing an unsafe snapshot. No polling or synchronous waiting occurs on the CONTROL scheduler.
-5. While the opaque proof is held, new user messages may still enter the bounded mailbox but cannot execute. `close()` releases the scheduler barrier on failure or aborted persistence; `stopAfterHibernate()` seals/stops the actor *before* reopening dispatch admission on successful persistence.
-6. Duplicate freeze requests reject; rejected Future cancellation does not silently resume execution.
+1. A supervisor calls `requestDurableQuiescence(actorRef)` only for an initialized actor. The request serializes against scheduler admission and user-mailbox writes under `ActorCell.lifecycleLock`.
+2. Already running guest execution finishes, but no new dispatch is admitted. A `send()` during freeze **throws `ActorSealedException`**. The rejection applies at both the preliminary slot reservation and the final mailbox-write admission, so a sender preparing its payload cannot bypass the freeze.
+3. Once the `TurnExecutor` exits, the actor can grant a quiescence proof **only if both its accepted user mailbox and continuation mailbox are empty**, its source receive is not suspended and no owned logical operations remain. If old accepted mail is still queued, the freeze fails closed and scheduling resumes to drain it. Accepted messages are never silently dropped as a successful hibernation side effect.
+4. The host-only proof is released with `close()` after an aborted persistence attempt, or consumed with `stopAfterHibernate()` **only after persistence commits**. A successful hibernate stop and a competing resume are serialized by the same actor lifecycle monitor. The caller cannot mutate the authoritative completion future.
+5. The freeze does **not** redirect new work to PostgreSQL. Ingress must handle `ActorSealedException` without acknowledging delivery, or use the existing authenticated durable PostgreSQL inbox independently of `ActorRef.send()`. The ingress-to-activation mapping and durable replay are not wired here.
 
-## Invariants and deliberate limitations
+## Boundaries and limitations
 
-- The physical worker lease remains the existing `ActorCell` single-writer lease; freezing uses the same lifecycle monitor. Queued dispatch tickets cannot run guest code if freeze admission won.
-- The proof is *not* a PostgreSQL lease owner credential. It does not bind `DurableActorStore.Address` to a runtime `ActorRef`; an authorized supervisor must supply that binding.
-- The existing `DurableActivationCoordinator.freezeLeased` still needs to be migrated to accept this runtime proof, and database I/O must occur off-carrier.
-- No snapshot bytes are generated, no actor heap is restored, and no external side effects become exactly-once.
-- This first implementation cannot serialize a suspended receive with active continuations; it rejects instead of pretending those continuations are quiescent.
-- Scoped verification can parse the exact Java source and test the existing PostgreSQL host adapter. **Only full Java/GraalVM CI executing `ActorDurableQuiescenceTest` can prove real runtime behavior.**
+- An in-memory mailbox contains no persisted acknowledgment: `send()` success is not a durable delivery guarantee before freeze begins. A truly durable caller must enqueue into the PostgreSQL inbox and obtain a commit receipt before acknowledging external input.
+- This proof is not a PostgreSQL activation lease credential, does not serialize actor-owned heaps, and cannot be used as a substitute for the real snapshot codec and schema validation.
+- Continuations and suspended receives are **not** made serializable. Instead, the barrier rejects freezing until their logical ownership ends.
+- Database I/O must be dispatched off actor and CONTROL carriers. The supervisor must bind `DurableActorStore.Address`, activation owner UUID, execution proof, and exact code generation before hibernation.
+- `requires static java.sql` exists to compile optional JDBC integration without imposing a mandatory Java SQL runtime dependency on the Oreslang actor core.
 
-## Planned regression coverage
+## Regression evidence
 
-`src/test/java/dev/oreslang/runtime/ActorDurableQuiescenceTest.java` covers in-flight turns, queued messages, suspended receives, no resurrection after stop, host callback isolation, and delayed `TurnExecutor` exit.
+Prior exact-source private CI run [#39179146095](https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/actions/runs/39179146095) compiled all 86 Java production sources and passed **five** original `ActorDurableQuiescenceTest` JUnit tests before the mailbox-loss fixes.
+
+The hardened branch adds the rejection-based mailbox handoff and seven tests in total, including stop/resume races and forged observer completion. **These newest changes have not passed full runtime CI yet**: the source Actions jobs execute zero test steps and publication of an updated full-runtime mirror to a private carrier was blocked. Do not treat the earlier five-test run as validation of the new changes.
