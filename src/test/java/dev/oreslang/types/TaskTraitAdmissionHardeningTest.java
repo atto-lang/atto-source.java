@@ -29,6 +29,37 @@ final class TaskTraitAdmissionHardeningTest {
     }
 
     @Test
+    void namedOptionResultAndIteratorWrappersNeedResolvedIntrinsicIdentity() {
+        for (String name : List.of("Option", "Result", "IteratorResult",
+                "OptionUnwrapError")) {
+            List<Types.Type> arguments = switch (name) {
+                case "Result" -> List.of(Types.Primitive.INT, Types.Primitive.STRING);
+                case "OptionUnwrapError" -> List.of();
+                default -> List.of(Types.Primitive.INT);
+            };
+            var impersonator = new Types.Named(name, arguments);
+            for (var trait : ThreadSafetyTraits.Trait.values()) {
+                // The nominal callback is intentionally over-permissive:
+                // a matching *name* is not compiler-authenticated identity.
+                assertFalse(ThreadSafetyTraits.has(
+                        impersonator, trait, (type, requested) -> true),
+                        name + " must not self-authorize " + trait);
+                assertFalse(ThreadSafetyTraits.has(
+                        new Types.Named("OpaqueEnvelope", List.of(impersonator)),
+                        trait, (type, requested) -> true),
+                        "nested " + name + " must also fail");
+            }
+        }
+        // This hardening is specific to unverified builtin spellings.
+        // Independently proven ordinary nominal values still have Send/Sync.
+        var ordinary = new Types.Named(
+                "OrdinaryValue", List.of(Types.Primitive.INT));
+        assertTrue(ThreadSafetyTraits.has(
+                ordinary, ThreadSafetyTraits.Trait.SEND,
+                (type, requested) -> type.name().equals("OrdinaryValue")));
+    }
+
+    @Test
     void sourceClassesCannotImpersonateUnloweredCapabilityAliases() {
         for (String name : List.of("SharedMutex", "NativePointer", "UnsafeCell",
                 "AtomicRef", "TRef", "Ref", "RcWeak", "ReadGuard", "WriteGuard")) {
