@@ -154,6 +154,40 @@ final class SourceActorTypedPrimitiveUpgradeTest {
     }
 
     @Test
+    void malformedOrm2FrameIsRejectedBeforePhysicalSendReservation()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var generation = manager.stageActorGeneration(
+                    "orm2-tampered-frame.ores", STRING_V1);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                         generation, ActorRuntime.ActorKind.SHARED,
+                         "TypedSink", WAIT);
+                 var mailbox = new LogicalActorProxyMailboxV1(3, 128, 384)) {
+                router.bindProxyMailboxForSupervisor(mailbox, false, true);
+                var binding = router.typedWireBindingForProxy(mailbox);
+                byte[] malformed = SourceActorTypedWireV2.encodeString(
+                        binding, "hello", 128);
+                malformed[32] ^= 1; // protected compiler message ABI header
+                var envelope = mailbox.admit(malformed);
+                assertSame(envelope, mailbox.pollDispatch());
+                var before = mailbox.snapshot();
+                assertThrows(SecurityException.class,
+                        () -> router.sendAndDrainForProxy(
+                                mailbox, envelope, before.routeEpoch()));
+                assertEquals(before, mailbox.snapshot(),
+                        "invalid wire may not submit a physical actor message");
+                // The absence of a physical-send attempt is proven by the
+                // mailbox's own trusted ledger; no ambiguous replay is allowed.
+                mailbox.requeueProvenUnsent(envelope.messageSequence());
+                assertEquals(1, mailbox.snapshot().queuedMessages());
+                assertEquals(0, mailbox.snapshot().outstandingMessages());
+                assertEquals(1, mailbox.snapshot().retainedMessages());
+            }
+        }
+    }
+
+    @Test
     void incompatibleCompilerTypeAndOversizedStringFailBeforeMailboxMutation()
             throws Exception {
         try (var manager = new HotReloadManager(
