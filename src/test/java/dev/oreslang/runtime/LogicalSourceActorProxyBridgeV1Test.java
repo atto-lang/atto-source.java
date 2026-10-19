@@ -135,6 +135,59 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void physicalReceiptTimeoutIrrevocablyConsumesCompletionClaim()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("timeout-receipt-v1.ores", V1);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                         first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT);
+                 var proxy = new LogicalActorProxyMailboxV1(2, 8, 16)) {
+                router.bindProxyMailboxForSupervisor(proxy);
+                byte[] wire = new byte[Long.BYTES];
+                wire[Long.BYTES - 1] = 41;
+                var envelope = proxy.admit(wire);
+                assertSame(envelope, proxy.pollDispatch());
+                var receipt = router.sendAndDrainForProxy(
+                        proxy, envelope, proxy.snapshot().routeEpoch());
+
+                // Deliberately replace only the receipt's test observation
+                // Future with a never-settling one. The real physical send
+                // already happened; this reproduces an ambiguous terminal
+                // acknowledgment without relying on scheduler timing.
+                var physicalField = receipt.getClass()
+                        .getDeclaredField("physicalReceipt");
+                physicalField.setAccessible(true);
+                Object physical = physicalField.get(receipt);
+                var terminalField = physical.getClass().getDeclaredField("terminal");
+                terminalField.setAccessible(true);
+                var pending = new OresFuture<Void>(() -> false, () -> { });
+                terminalField.set(physical, pending);
+
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> receipt.awaitAndComplete(
+                                envelope, Duration.ofMillis(1)));
+                assertEquals(1, proxy.snapshot().outstandingMessages());
+                assertEquals(1, proxy.snapshot().retainedMessages());
+                assertEquals(0L, proxy.snapshot().completionWatermark());
+                assertThrows(IllegalStateException.class,
+                        () -> receipt.awaitAndComplete(envelope, WAIT),
+                        "a timed-out receipt must never be retried to refund credits");
+                pending.completeFromRuntime(null);
+                assertThrows(IllegalStateException.class,
+                        () -> receipt.awaitAndComplete(envelope, WAIT),
+                        "even a late successful terminal cannot revive consumed receipt");
+                assertThrows(IllegalStateException.class,
+                        () -> router.sendAndDrainForProxy(
+                                proxy, envelope, proxy.snapshot().routeEpoch()),
+                        "ambiguous physical send remains recorded and cannot replay");
+                assertEquals(1, proxy.snapshot().retainedMessages(),
+                        "failed receipt must preserve credits for supervisor quarantine");
+            }
+        }
+    }
+
+    @Test
     void realCompiledSharedActorUpgradeWaitsForSuspendedPinnedTask()
             throws Exception {
         try (HotReloadManager manager =
