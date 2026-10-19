@@ -117,6 +117,37 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void reconstructedVariadicPlanCannotPermuteOrInterleaveRestValues() {
+        // These forged public Plans previously passed uniqueness/contiguity
+        // checks even though they would reverse or interleave rest payloads.
+        assertThrows(IllegalArgumentException.class,
+                () -> new Plan(List.of(0, -1), 1, List.of(2, 1),
+                        List.of(), List.of(0, 1, 2)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Plan(List.of(2, -1), 1, List.of(0, 1),
+                        List.of(), List.of(0, 1, 2)));
+
+        Plan valid = new Plan(List.of(0, -1), 1, List.of(1, 2),
+                List.of(), List.of(0, 1, 2));
+        assertEquals(List.of(1, 2), valid.variadicSourceIndices());
+        assertEquals(List.of(0, 1, 2), valid.callItemIndexByEvaluatedSource());
+    }
+
+    @Test
+    void ordinaryBinderPreservesVariadicElementSequenceAfterOptionalOmission() {
+        List<Parameter> params = List.of(
+                Parameter.required("a"), Parameter.optional("b"),
+                Parameter.required("c"), Parameter.variadic("tags"));
+        Plan plan = OptionalCallShapeBinder.bind(params, List.of(
+                Argument.positional(), Argument.underscore(),
+                Argument.positional(), Argument.positional(), Argument.positional()));
+        assertEquals(List.of(2, 3), plan.variadicSourceIndices());
+        assertEquals(List.of(0, 2, 3, 4), plan.callItemIndexByEvaluatedSource());
+        assertEquals(List.of(new OptionalCallShapeBinder.OmittedCallItem(1, 1)),
+                plan.omittedCallItemBindings());
+    }
+
+    @Test
     void parsedSignatureFamilySelectionIsStaticAndArityOnly() {
         Ast.TypeRef intType = Ast.TypeRef.simple("int");
         Ast.TypeRef stringType = Ast.TypeRef.simple("string");
