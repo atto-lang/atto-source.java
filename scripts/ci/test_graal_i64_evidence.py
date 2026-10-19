@@ -146,6 +146,11 @@ class EvidenceAdmissionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "test case count disagrees"):
             check_junit(bad)
 
+    def test_junit_per_test_output_is_not_a_failure(self):
+        good = xml(17).replace(b'<testcase name="0" />',
+                               b'<testcase name="0"><system-out>diagnostic metadata</system-out></testcase>')
+        self.assertEqual(check_junit(good), 17)
+
     def test_junit_hidden_failure_node(self):
         bad = xml(17).replace(b'<testcase name="0" />',
                               b'<testcase name="0"><failure /></testcase>')
