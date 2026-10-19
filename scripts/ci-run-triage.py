@@ -101,6 +101,8 @@ def _classify_job(job, run, run_id=None):
     if attempt is not None and job.get("run_attempt") is not None and job["run_attempt"] != attempt:
         raise TriageError("job run attempt mismatch")
     status, conclusion = job.get("status"), job.get("conclusion")
+    if status is not None and not isinstance(status, str):
+        raise TriageError("invalid job status")
     if status not in (None, "completed") and status not in PENDING_STATES:
         raise TriageError("invalid job status")
     if conclusion is not None and not isinstance(conclusion, str):
@@ -139,6 +141,8 @@ def _classify_job(job, run, run_id=None):
         if not isinstance(step, dict):
             raise TriageError("invalid step metadata")
         step_status, step_conclusion = step.get("status"), step.get("conclusion")
+        if step_status is not None and not isinstance(step_status, str):
+            raise TriageError("invalid step status")
         if step_status is not None and step_status not in ("completed", "queued", "in_progress", "pending", "waiting", "requested"):
             raise TriageError("invalid step status")
         if step_conclusion is not None and not isinstance(step_conclusion, str):
