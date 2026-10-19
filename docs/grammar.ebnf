@@ -342,10 +342,11 @@ inferred_struct_literal
 inferred_record_literal
                 = "infer" "record"
                   "{" [ struct_value_field { "," struct_value_field } ] "}" ;
-(* Canonical anonymous record syntax is record {...}. infer record {...} remains
-   accepted for compatibility and explicit infer<T> record may capture a structural
-   alias. Records are structural readonly values. Inferred/explicit structs are a
-   distinct concrete closed-shape category; no implicit record<->struct erasure. *)
+(* Canonical anonymous record syntax is record {...}; it carries no type-capture
+   intent. infer record {...} remains accepted for compatibility and explicit
+   infer<T> record may capture a structural alias. Records are structural readonly
+   values. Inferred/explicit structs are a distinct concrete closed-shape category;
+   no implicit record<->struct erasure. *)
 explicit_struct_literal
                 = "struct" "{"
                   [ struct_field_spec { "," struct_field_spec } ]
