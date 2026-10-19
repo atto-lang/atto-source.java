@@ -658,6 +658,12 @@ public final class OresScheduler implements AutoCloseable {
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
+        /**
+         * Guest cancellation checkpoints are observed during the turn, but
+         * host Future subscribers must be notified after the guest execution
+         * boundary unwinds. Only the RUNNING -> TERMINAL winner owns this.
+         */
+        private final AtomicBoolean checkpointCancellationPending = new AtomicBoolean();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -802,11 +808,15 @@ public final class OresScheduler implements AutoCloseable {
                             "OresScheduler task returned null Step");
                 } catch (Throwable failure) {
                     if (TaskHandle.isAuthenticatedCheckpointCancellation(failure)) {
-                        // The private marker belongs to this exact Task domain
-                        // and its owner really requested cancellation. Revoke
-                        // the result Future instead of recording a failure.
-                        // The physical carrier remains live until afterTurn.
-                        completion.cancel(false);
+                        // Only the winning checkpoint may change RUNNING to
+                        // TERMINAL. A wall deadline or forced cancellation
+                        // that already won keeps its existing terminal cause.
+                        if (phase.compareAndSet(RUNNING, TERMINAL)) {
+                            checkpointCancellationPending.set(true);
+                        }
+                        // Never invoke arbitrary synchronous Future listeners
+                        // while the guest turn/Truffle context is still bound.
+                        // afterCarrierTurn() will publish cancellation.
                         return;
                     }
                     failTerminal(failure);
@@ -873,6 +883,13 @@ public final class OresScheduler implements AutoCloseable {
             try {
                 retireWhenQuiescent();
             } finally {
+                // runBound() and the guest turn have fully unwound. At this
+                // point Future subscribers may run without observing a live
+                // guest context. A competing wall deadline retains precedence
+                // because only the RUNNING -> TERMINAL winner set this bit.
+                if (checkpointCancellationPending.getAndSet(false)) {
+                    completion.cancel(false);
+                }
                 publishTerminalIfReady();
                 scheduleReadyResume();
             }
