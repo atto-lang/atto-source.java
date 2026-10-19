@@ -160,7 +160,7 @@ final class TaskAccessVerifier {
                 throw new IllegalArgumentException("Task access requires proven " + needed);
             }
         }
-        return admit(typed.stream().map(TypedClaim::claim).toList());
+        return reserveVerified(typed.stream().map(TypedClaim::claim).toList());
     }
 
     /** Opaque compiler-issued child identity. A cancelled Ticket is still live. */
@@ -249,10 +249,11 @@ final class TaskAccessVerifier {
     }
 
     /**
-     * Conservatively reserves all child borrows, or none. The frontend must
-     * verify Send/Sync and task scope lifetime *before* invoking this method.
+     * Internal reservation step, reachable only after admitTyped validated
+     * the trusted resolved-place type and transitive Send/Sync proof.
+     * Scope/lifetime checks must still be validated by the compiler.
      */
-    public synchronized Ticket admit(List<Claim> requested) {
+    private synchronized Ticket reserveVerified(List<Claim> requested) {
         if (sealed) throw new IllegalStateException("TaskScope is sealed");
         List<Claim> claims = List.copyOf(Objects.requireNonNull(requested, "claims"));
         if (live.size() >= MAX_CHILDREN || claims.size() > MAX_CLAIMS_PER_CHILD
