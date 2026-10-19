@@ -7,6 +7,8 @@ import dev.oreslang.types.EcsAccessPlanner.SystemAccess;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.ArrayList;
+import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -72,6 +74,63 @@ final class EcsAccessPlannerTest {
         SystemAccess c = sys("c", read(y, 0, 8));
         assertEquals(List.of(List.of(a), List.of(b), List.of(c)),
                 EcsAccessPlanner.plan(List.of(a, b, c)));
+    }
+
+    @Test
+    void missingEffectFootprintsAreSerializationBarriers() {
+        Object positions = new Object();
+        SystemAccess unknownEffects = sys("unknown");
+        SystemAccess readOnly = sys("read", read(positions, 0, 32));
+        SystemAccess readOnly2 = sys("read2", read(positions, 0, 32));
+        assertTrue(EcsAccessPlanner.conflicts(unknownEffects, readOnly));
+        assertTrue(EcsAccessPlanner.conflicts(readOnly, unknownEffects));
+        assertTrue(EcsAccessPlanner.conflicts(unknownEffects, sys("unknown2")));
+        assertEquals(List.of(List.of(readOnly), List.of(unknownEffects), List.of(readOnly2)),
+                EcsAccessPlanner.plan(List.of(readOnly, unknownEffects, readOnly2)));
+    }
+
+    @Test
+    void seededRandomAccessGraphsHonorEveryConflictAndBarrier() {
+        Random random = new Random(0x5eed);
+        Object[] allocations = {new Object(), new Object(), new Object()};
+        for (int trial = 0; trial < 500; trial++) {
+            List<SystemAccess> workload = new ArrayList<>();
+            for (int index = 0; index < 8; index++) {
+                List<Access> footprint = new ArrayList<>();
+                for (int count = random.nextInt(4); count > 0; count--) {
+                    int allocation = random.nextInt(4);
+                    long start = random.nextInt(20);
+                    footprint.add(new Access(
+                            allocation == 3 ? null : allocations[allocation],
+                            start, start + random.nextInt(7) + 1,
+                            random.nextBoolean() ? Mode.READ : Mode.WRITE));
+                }
+                workload.add(new SystemAccess(Integer.toString(index), footprint));
+            }
+            List<List<SystemAccess>> batches = EcsAccessPlanner.plan(workload);
+            List<Integer> assigned = new ArrayList<>();
+            int consumed = 0;
+            for (int batch = 0; batch < batches.size(); batch++) {
+                List<SystemAccess> systems = batches.get(batch);
+                for (int i = 0; i < systems.size(); i++) {
+                    assertEquals(workload.get(consumed++), systems.get(i));
+                    assigned.add(batch);
+                    for (int j = i + 1; j < systems.size(); j++) {
+                        assertFalse(EcsAccessPlanner.conflicts(systems.get(i), systems.get(j)),
+                                "conflicting systems placed in the same batch");
+                    }
+                }
+            }
+            assertEquals(workload.size(), consumed);
+            for (int i = 0; i < workload.size(); i++) {
+                for (int j = i + 1; j < workload.size(); j++) {
+                    if (EcsAccessPlanner.conflicts(workload.get(i), workload.get(j))) {
+                        assertTrue(assigned.get(i) < assigned.get(j),
+                                "a conflicting later system overtook its prerequisite");
+                    }
+                }
+            }
+        }
     }
 
     @Test
