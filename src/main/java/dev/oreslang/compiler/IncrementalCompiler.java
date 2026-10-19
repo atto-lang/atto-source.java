@@ -115,9 +115,13 @@ public final class IncrementalCompiler {
                 try {
                     // Foreign layouts are used for type and ownership proofs;
                     // their declarations are never executed in the importer.
-                    checked = TypeChecker.checkTypesWithImportedClasses(
-                            Parser.parse(normalized.get(id)), linked.classes(), linked.aliases());
-                    OwnershipChecker.checkWithImportedClasses(checked, linked.classes());
+                    TypeChecker.TypeCheckResult analysis =
+                            TypeChecker.checkTypesWithImportedClassesWithDiagnostics(
+                                    Parser.parse(normalized.get(id)),
+                                    linked.classes(), linked.aliases());
+                    checked = analysis.program();
+                    OwnershipChecker.checkWithImportedClasses(
+                            checked, linked.classes(), analysis.shortInferredAliases());
                 } catch (IllegalArgumentException invalid) {
                     throw new IllegalArgumentException(
                             "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
