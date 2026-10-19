@@ -37,6 +37,12 @@ public final class RegionAccessPlanner {
             accesses = List.copyOf(accesses);
             if (accesses.isEmpty())
                 throw new IllegalArgumentException("system access set must be explicit");
+            java.util.Map<Long, Long> generations = new java.util.HashMap<>();
+            for (Access access : accesses) {
+                Long previous = generations.putIfAbsent(access.regionId(), access.generation());
+                if (previous != null && previous.longValue() != access.generation())
+                    throw new IllegalArgumentException("mixed or stale region generation in one system");
+            }
         }
     }
 
@@ -65,9 +71,12 @@ public final class RegionAccessPlanner {
     public static List<List<SystemAccess>> plan(List<SystemAccess> ordered) {
         Objects.requireNonNull(ordered, "ordered");
         List<SystemAccess> visited = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
         List<Integer> levels = new ArrayList<>();
         List<List<SystemAccess>> stages = new ArrayList<>();
         for (SystemAccess current : ordered) {
+            if (!names.add(current.name()))
+                throw new IllegalArgumentException("duplicate ECS system identity");
             int level = 0;
             for (int i = 0; i < visited.size(); i++) {
                 if (conflicts(current, visited.get(i)))
