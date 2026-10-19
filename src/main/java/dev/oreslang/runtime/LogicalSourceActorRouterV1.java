@@ -328,6 +328,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             ActorRuntime.ActorAddress physicalAddress,
             long generationId,
             String codeSha256,
+            String linkedCodeSha256,
+            String stateSchemaSha256,
+            String messageAbiSha256,
             LogicalActorProxyMailboxV1.Snapshot mailbox) { }
 
     SupervisorPublication supervisorPublication(
@@ -339,12 +342,23 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             if (boundProxyMailbox != mailbox)
                 throw new SecurityException("foreign supervisor publication mailbox");
             Route current = active;
+            // These compiler-issued immutable fingerprints are observed
+            // against the SAME authoritative route as its physical actor
+            // and mailbox. A source-generation text SHA alone is not a
+            // checkpoint layout or receive-contract compatibility receipt.
+            var compiler = current.view.executor();
+            String linkedCode = compiler.actorCodeSha256(actorTypeName);
+            String stateSchema = compiler.actorStateSchemaSha256(actorTypeName);
+            String messageAbi = compiler.actorMessageAbiSha256(actorTypeName);
             return new SupervisorPublication(
                     new LogicalAddress(
                             logicalId, current.incarnation, current.routeEpoch, kind),
                     current.physical.address(),
                     current.generation.id(),
                     current.generation.sha256(),
+                    linkedCode,
+                    stateSchema,
+                    messageAbi,
                     mailbox.snapshot());
         }
     }
