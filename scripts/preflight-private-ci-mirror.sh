@@ -76,10 +76,15 @@ local_main="$(git rev-parse --verify refs/remotes/origin/main 2>/dev/null)" \
 policy="$(git show "$main_sha:$POLICY_PATH")" \
   || die "cannot read the protected main allowlist"
 found=0
+declare -A seen_destinations=()
 while IFS= read -r entry || [[ -n "$entry" ]]; do
   [[ -z "$entry" || "$entry" == \#* ]] && continue
-  [[ "$entry" != *[[:space:]]* ]] \
-    || die "malformed policy line: whitespace forbidden"
+  # Check all effective policy lines, not only the matching destination.
+  [[ "$entry" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+    || die "malformed private mirror allowlist line"
+  [[ ! -v seen_destinations["$entry"] ]] \
+    || die "duplicate private mirror allowlist destination"
+  seen_destinations["$entry"]=1
   if [[ "$entry" == "$DEST_REPO" ]]; then
     found=$((found + 1))
   fi
