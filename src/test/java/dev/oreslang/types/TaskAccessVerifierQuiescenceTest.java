@@ -152,6 +152,37 @@ final class TaskAccessVerifierQuiescenceTest {
     }
 
     @Test
+    void dynCannotEnterScopedReadOrWriteEvenWithPermissiveNominal() {
+        var permissive = new ThreadSafetyTraits.NominalProof() {
+            @Override
+            public boolean has(
+                    Types.Named type,
+                    ThreadSafetyTraits.Trait trait) {
+                return true;
+            }
+
+            @Override
+            public boolean trustedIntrinsic(Types.Named type) {
+                return true;
+            }
+        };
+        var verifier = new TaskAccessVerifier();
+        var place = TaskAccessVerifier.Place.whole(ROOT);
+        Types.Type dyn = new Types.Dyn(
+                new Types.Named("Worker", List.of()));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> verifier.admitScopedTyped(
+                        List.of(read(place, dyn)), permissive));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> verifier.admitScopedTyped(
+                        List.of(write(place, dyn)), permissive));
+        assertEquals(0, verifier.activeChildren());
+    }
+
+    @Test
     void unsupportedCapabilityCannotEnterScopedLoanViaPermissiveNominal() {
         var permissive = new ThreadSafetyTraits.NominalProof() {
             @Override
