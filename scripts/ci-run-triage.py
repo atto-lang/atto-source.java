@@ -187,6 +187,11 @@ def assess(run, jobs, expected_head_sha, run_id=None):
         raise TriageError("invalid API response shape")
     if not _valid_sha(expected_head_sha) or run.get("head_sha") != expected_head_sha:
         raise TriageError("run head SHA mismatches requested exact source")
+    # Reject malformed JSON types without surfacing unhandled TypeError from set lookup.
+    if run.get("status") is not None and not isinstance(run["status"], str):
+        raise TriageError("invalid run status")
+    if run.get("conclusion") is not None and not isinstance(run["conclusion"], str):
+        raise TriageError("invalid run conclusion")
     if run_id is not None and (not _positive_int(run_id) or run.get("id") not in (None, run_id)):
         raise TriageError("run ID mismatch")
     if run.get("status") in PENDING_STATES:
