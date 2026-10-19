@@ -8,22 +8,30 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Runtime negative coverage for computed fixed-product access. */
 final class DynamicPropertyAccessRuntimeFailureTest {
-    private static void runtimeRejected(String source, String name) {
+    private static void runtimeRejected(
+            String source,
+            String name,
+            String expectedMessageFragment) {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         Source program = assertDoesNotThrow(() ->
                 Source.newBuilder(OresLanguage.ID, source, name)
                         .mimeType(OresLanguage.MIME_TYPE)
                         .build());
-        assertThrows(PolyglotException.class, () -> {
+        PolyglotException failure = assertThrows(PolyglotException.class, () -> {
             try (Context context = Context.newBuilder(OresLanguage.ID)
                     .allowAllAccess(false)
                     .build()) {
                 context.eval(program);
             }
         });
+        assertTrue(
+                failure.getMessage() != null
+                        && failure.getMessage().contains(expectedMessageFragment),
+                () -> "unexpected runtime failure: " + failure.getMessage());
     }
 
     @Test
@@ -40,7 +48,7 @@ final class DynamicPropertyAccessRuntimeFailureTest {
                     stdio.println(value);
                     return;
                 }
-                """, "dynamic-record-missing-key.ores");
+                """, "dynamic-record-missing-key.ores", "unknown record field key missing");
     }
 
     @Test
@@ -55,7 +63,7 @@ final class DynamicPropertyAccessRuntimeFailureTest {
                     stdio.println(value);
                     return;
                 }
-                """, "dynamic-tuple-oob.ores");
+                """, "dynamic-tuple-oob.ores", "array/list/tuple index 4 outside length 2");
     }
 
     @Test
@@ -75,7 +83,7 @@ final class DynamicPropertyAccessRuntimeFailureTest {
                     stdio.println(value);
                     return;
                 }
-                """, "dynamic-class-missing-key.ores");
+                """, "dynamic-class-missing-key.ores", "unknown class field key Point.missing");
     }
 
     @Test
@@ -89,7 +97,7 @@ final class DynamicPropertyAccessRuntimeFailureTest {
                     point[key] = 9;
                     return;
                 }
-                """, "dynamic-struct-write-missing-key.ores");
+                """, "dynamic-struct-write-missing-key.ores", "unknown struct field key missing");
     }
 
     @Test
@@ -108,7 +116,7 @@ final class DynamicPropertyAccessRuntimeFailureTest {
                     point[key] = 9;
                     return;
                 }
-                """, "dynamic-class-write-missing-key.ores");
+                """, "dynamic-class-write-missing-key.ores", "unknown class field key Point.missing");
     }
 
     @Test
@@ -123,7 +131,7 @@ final class DynamicPropertyAccessRuntimeFailureTest {
                     stdio.println(value);
                     return;
                 }
-                """, "dynamic-struct-read-missing-key.ores");
+                """, "dynamic-struct-read-missing-key.ores", "unknown struct field key missing");
     }
 
     @Test
@@ -138,7 +146,7 @@ final class DynamicPropertyAccessRuntimeFailureTest {
                     stdio.println(value);
                     return;
                 }
-                """, "dynamic-tuple-negative-index.ores");
+                """, "dynamic-tuple-negative-index.ores", "array/list/tuple index -1 outside length 2");
     }
 
     @Test
@@ -153,7 +161,7 @@ final class DynamicPropertyAccessRuntimeFailureTest {
                     stdio.println(value);
                     return;
                 }
-                """, "dynamic-tuple-index-overflow.ores");
+                """, "dynamic-tuple-index-overflow.ores", "array/list index outside supported signed 32-bit range: 2147483648");
     }
 
 }
