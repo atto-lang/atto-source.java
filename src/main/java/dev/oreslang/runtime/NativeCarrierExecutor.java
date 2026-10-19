@@ -61,6 +61,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     /** Precomputed immutable steal order; published only on carrier startup. */
     private volatile CarrierTopologyPlan topologyPlan;
     private final CarrierTopologyPlan.Location[] carrierLocations;
+    private int observedCarrierLocations; // protected by publishCarrierLocation monitor
     private final AtomicLong affinitySameLlcSteals = new AtomicLong();
     private final AtomicLong affinitySameNumaSteals = new AtomicLong();
     private final AtomicLong affinityRemoteSteals = new AtomicLong();
@@ -309,8 +310,13 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private synchronized void publishCarrierLocation(
             int slot, CarrierTopologyPlan.Location location) {
         carrierLocations[slot] = location;
-        // Only on native worker startup, never in the hot scheduling path.
-        topologyPlan = new CarrierTopologyPlan(carrierLocations);
+        int observed = ++observedCarrierLocations;
+        // Avoid O(worker³) startup allocation churn from rebuilding an
+        // O(worker²) plan for every pthread. Unknown entries retain the
+        // correct global-rotating fallback until the final snapshot.
+        if (CarrierTopologyPlan.publishAfterWorker(observed, maximumPoolSize)) {
+            topologyPlan = new CarrierTopologyPlan(carrierLocations);
+        }
     }
 
     private Runnable pollStealableTask(int thiefSlot) {
