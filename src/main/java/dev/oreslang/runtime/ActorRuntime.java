@@ -234,6 +234,21 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public enum CancellationMode { STRUCTURED, FORCE_ISOLATED }
 
+    /**
+     * Runtime-only terminal class for one physically accepted user message.
+     * This is deliberately coarser than source-language throw/raise/panic:
+     * an uncaught guest terminal failure remains FAILED and its exact Throwable
+     * is carried by the receipt's exceptional terminal Future.
+     */
+    enum PhysicalMailDisposition {
+        PROCESSED,
+        STOPPED,
+        CANCELLED,
+        FORCE_CANCELLED,
+        RUNTIME_CLOSED,
+        FAILED
+    }
+
     public record IsolationTarget(
             ActorId actorId,
             Object executionDomain) {
@@ -285,13 +300,21 @@ public final class ActorRuntime implements AutoCloseable {
 
     public static final class ActorCancelledException extends CancellationException {
         private final ActorId actorId;
+        private final CancellationMode mode;
 
         private ActorCancelledException(ActorId actorId, String message) {
+            this(actorId, message, CancellationMode.STRUCTURED);
+        }
+
+        private ActorCancelledException(
+                ActorId actorId, String message, CancellationMode mode) {
             super(message);
-            this.actorId = actorId;
+            this.actorId = Objects.requireNonNull(actorId, "actorId");
+            this.mode = Objects.requireNonNull(mode, "mode");
         }
 
         public ActorId actorId() { return actorId; }
+        public CancellationMode mode() { return mode; }
     }
 
     /**
@@ -5113,7 +5136,8 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             attempt.root.cancel(new ActorCancelledException(
                     ref.id(),
-                    "actor " + ref.id() + " was force-cancelled"));
+                    "actor " + ref.id() + " was force-cancelled",
+                    CancellationMode.FORCE_ISOLATED));
             return true;
         } finally {
             clearForceKillFence(attempt, false);
@@ -6089,6 +6113,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorRef<?> physical;
         private final long acceptedSequence;
         private final OresFuture<Void> terminal;
+        private final AtomicReference<PhysicalMailDisposition> disposition =
+                new AtomicReference<>();
 
         private PhysicalMailReceipt(
                 ActorRef<?> physical, long acceptedSequence,
@@ -6101,6 +6127,46 @@ public final class ActorRuntime implements AutoCloseable {
         ActorRef<?> physical() { return physical; }
         long acceptedSequence() { return acceptedSequence; }
         OresFuture<Void> terminal() { return terminal; }
+
+        /**
+         * Null until terminal() is settled. The disposition is installed
+         * before the Future's terminal CAS, so observing terminal().isDone()
+         * implies this value is non-null.
+         */
+        PhysicalMailDisposition terminalDisposition() {
+            return terminal.isDone() ? disposition.get() : null;
+        }
+
+        private void completeProcessed() {
+            if (!disposition.compareAndSet(
+                    null, PhysicalMailDisposition.PROCESSED)) {
+                throw new IllegalStateException(
+                        "physical mail receipt already has terminal disposition");
+            }
+            if (!terminal.completeFromRuntime(null)) {
+                throw new IllegalStateException(
+                        "physical mail terminal Future settled before runtime disposition");
+            }
+        }
+
+        private void failTerminal(
+                PhysicalMailDisposition terminalDisposition,
+                Throwable failure) {
+            Objects.requireNonNull(terminalDisposition, "terminalDisposition");
+            Objects.requireNonNull(failure, "failure");
+            if (terminalDisposition == PhysicalMailDisposition.PROCESSED) {
+                throw new IllegalArgumentException(
+                        "processed physical mail cannot use failure settlement");
+            }
+            if (!disposition.compareAndSet(null, terminalDisposition)) {
+                throw new IllegalStateException(
+                        "physical mail receipt already has terminal disposition");
+            }
+            if (!terminal.failFromRuntime(failure)) {
+                throw new IllegalStateException(
+                        "physical mail terminal Future settled before runtime disposition");
+            }
+        }
     }
 
     /**
@@ -6248,7 +6314,7 @@ public final class ActorRuntime implements AutoCloseable {
                     Long receiptKey = tracked ? Long.valueOf(sequence) : null;
                     envelope = MessageEnvelope.message(
                             prepared, release, sender, sequence);
-                    OresFuture<Void> trackedTerminal = null;
+                    PhysicalMailReceipt trackedReceipt = null;
                     if (tracked) {
                         if (cell.pendingPhysicalReceipts.size()
                                 >= ActorCell.MAX_PENDING_PHYSICAL_RECEIPTS)
@@ -6258,16 +6324,17 @@ public final class ActorRuntime implements AutoCloseable {
                         // failure therefore cannot accept work without a
                         // terminal witness. This quota is deliberately
                         // independent of public cumulative drain observers.
-                        trackedTerminal =
+                        OresFuture<Void> trackedTerminal =
                                 new OresFuture<>(() -> false, () -> { });
                         receipt = new PhysicalMailReceipt(
                                 ref, sequence, trackedTerminal);
+                        trackedReceipt = receipt;
                         if (cell.pendingPhysicalReceipts.containsKey(receiptKey)) {
                             throw new IllegalStateException(
                                     "duplicate physical mail receipt sequence for "
                                             + ref.id());
                         }
-                        cell.pendingPhysicalReceipts.put(receiptKey, trackedTerminal);
+                        cell.pendingPhysicalReceipts.put(receiptKey, trackedReceipt);
                     }
                     boolean wrote = false;
                     try {
@@ -6276,9 +6343,9 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                         wrote = true;
                     } finally {
-                        if (!wrote && trackedTerminal != null) {
+                        if (!wrote && trackedReceipt != null) {
                             cell.pendingPhysicalReceipts.remove(
-                                    receiptKey, trackedTerminal);
+                                    receiptKey, trackedReceipt);
                         }
                     }
                     cell.nextUserMessageSequence = nextSequence;
@@ -7665,7 +7732,7 @@ public final class ActorRuntime implements AutoCloseable {
             firstClose = closed.compareAndSet(false, true);
             snapshot = List.copyOf(actors.values());
         }
-        for (ActorCell<?> cell : snapshot) cell.stop();
+        for (ActorCell<?> cell : snapshot) cell.stopForRuntimeClose();
 
         if (firstClose) {
             // Stop executor carriers so queued work is rejected/removed and
@@ -7916,7 +7983,7 @@ public final class ActorRuntime implements AutoCloseable {
          * exhaustion cannot starve supervisor/hot-reload receipt admission.
          * Guarded by lifecycleLock and bounded independently.
          */
-        private final HashMap<Long, OresFuture<Void>> pendingPhysicalReceipts =
+        private final HashMap<Long, PhysicalMailReceipt> pendingPhysicalReceipts =
                 new HashMap<>();
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
@@ -8136,7 +8203,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void markMessageProcessed(long sequence) {
             final ArrayList<OresFuture<Void>> completedDrains;
-            OresFuture<Void> exactReceipt;
+            PhysicalMailReceipt exactReceipt;
             synchronized (lifecycleLock) {
                 if (sequence != lastProcessedUserMessageSequence + 1L) {
                     throw new IllegalStateException(
@@ -8164,7 +8231,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             // Complete outside the lifecycle monitor: Future callbacks may
             // synchronously request actor stop or another lifecycle operation.
-            if (exactReceipt != null) exactReceipt.completeFromRuntime(null);
+            if (exactReceipt != null) exactReceipt.completeProcessed();
             for (OresFuture<Void> waiter : completedDrains)
                 waiter.completeFromRuntime(null);
         }
@@ -8890,18 +8957,37 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void fail(Throwable failure) {
-            terminateTree(failure, true);
+            terminateTree(
+                    failure, true, PhysicalMailDisposition.FAILED);
         }
 
         private void stop() {
-            terminateTree(null, false);
+            terminateTree(
+                    null, false, PhysicalMailDisposition.STOPPED);
+        }
+
+        private void stopForRuntimeClose() {
+            terminateTree(
+                    null, false, PhysicalMailDisposition.RUNTIME_CLOSED);
         }
 
         private void cancel(ActorCancelledException cancellation) {
-            terminateTree(cancellation, true);
+            PhysicalMailDisposition disposition =
+                    cancellation.mode() == CancellationMode.FORCE_ISOLATED
+                            ? PhysicalMailDisposition.FORCE_CANCELLED
+                            : PhysicalMailDisposition.CANCELLED;
+            terminateTree(cancellation, true, disposition);
         }
 
-        private void terminateTree(Throwable cause, boolean recordCause) {
+        private void terminateTree(
+                Throwable cause,
+                boolean recordCause,
+                PhysicalMailDisposition receiptDisposition) {
+            Objects.requireNonNull(receiptDisposition, "receiptDisposition");
+            if (receiptDisposition == PhysicalMailDisposition.PROCESSED) {
+                throw new IllegalArgumentException(
+                        "actor teardown cannot publish PROCESSED receipts");
+            }
             /*
              * Prepare every allocation-bearing teardown witness BEFORE the
              * irreversible stopped/sealed transition. In particular an OOME
@@ -8916,7 +9002,7 @@ public final class ActorRuntime implements AutoCloseable {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             List<DrainWaiter> failedDrainWaiters;
-            List<OresFuture<Void>> failedPhysicalReceipts;
+            List<PhysicalMailReceipt> failedPhysicalReceipts;
             synchronized (lifecycleLock) {
                 if (finalized) return;
 
@@ -8952,8 +9038,8 @@ public final class ActorRuntime implements AutoCloseable {
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish failure only after teardown has released lifecycleLock.
-            for (OresFuture<Void> exact : failedPhysicalReceipts) {
-                exact.failFromRuntime(drainFailure);
+            for (PhysicalMailReceipt exact : failedPhysicalReceipts) {
+                exact.failTerminal(receiptDisposition, drainFailure);
             }
             for (DrainWaiter waiter : failedDrainWaiters) {
                 waiter.completion().failFromRuntime(drainFailure);
@@ -8964,9 +9050,19 @@ public final class ActorRuntime implements AutoCloseable {
             for (OresFuture<?> future : pending) future.cancel(false);
 
             for (ActorCell<?> child : descendants) {
+                if (receiptDisposition == PhysicalMailDisposition.RUNTIME_CLOSED) {
+                    child.terminateTree(
+                            null, false, PhysicalMailDisposition.RUNTIME_CLOSED);
+                    continue;
+                }
+                CancellationMode childMode =
+                        receiptDisposition == PhysicalMailDisposition.FORCE_CANCELLED
+                                ? CancellationMode.FORCE_ISOLATED
+                                : CancellationMode.STRUCTURED;
                 child.cancel(new ActorCancelledException(
                         child.ref.id(),
-                        "parent actor " + ref.id() + " terminated"));
+                        "parent actor " + ref.id() + " terminated",
+                        childMode));
             }
         }
     }
