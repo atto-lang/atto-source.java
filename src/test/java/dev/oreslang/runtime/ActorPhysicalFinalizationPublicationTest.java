@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Timeout;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -414,6 +415,64 @@ final class ActorPhysicalFinalizationPublicationTest {
             assertNull(stopFailure.get(), "physical stop raised an exception");
             assertTrue(runtime.physicallyFinalizedForHotUpgrade(actor));
             assertTrue(actor.awaitTermination(0, TimeUnit.NANOSECONDS));
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void failedPreSettlementTeardownRetainsBatchForSupervisorRetry()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            var registry = (java.util.Map<Object, Object>)
+                    actorsField.get(runtime);
+            Object cell = registry.get(actor.id());
+            assertNotNull(cell);
+
+            var hookField = cell.getClass().getDeclaredField(
+                    "terminalTeardownFaultForTesting");
+            hookField.setAccessible(true);
+            var attempts = new AtomicInteger();
+            hookField.set(cell, (Runnable) () -> {
+                if (attempts.incrementAndGet() == 1) {
+                    throw new OutOfMemoryError(
+                            "injected failure after terminal settlement publication");
+                }
+            });
+
+            var batchField = cell.getClass().getDeclaredField(
+                    "terminalSettlementBatch");
+            var activeField = cell.getClass().getDeclaredField(
+                    "terminalSettlementActive");
+            batchField.setAccessible(true);
+            activeField.setAccessible(true);
+
+            var failure = assertThrows(OutOfMemoryError.class, actor::stop);
+            assertTrue(failure.getMessage().contains("injected failure"));
+            Object retainedOwner = batchField.get(cell);
+            assertNotNull(retainedOwner,
+                    "the already-sealed actor must retain exact terminal ownership");
+            assertFalse(activeField.getBoolean(cell),
+                    "failure must release exclusive settlement claim for retry");
+            assertFalse(runtime.physicallyFinalizedForHotUpgrade(actor));
+            assertFalse(actor.awaitTermination(0, TimeUnit.NANOSECONDS));
+
+            actor.stop();
+            assertEquals(2, attempts.get(),
+                    "the same batch must resume teardown preparation");
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(runtime.physicallyFinalizedForHotUpgrade(actor));
+            assertNull(batchField.get(cell),
+                    "a successful retry must consume its terminal settlement owner");
+            assertFalse(activeField.getBoolean(cell));
+            // A settled actor must not replay teardown on subsequent stops.
+            actor.stop();
+            assertEquals(2, attempts.get());
         }
     }
 }
