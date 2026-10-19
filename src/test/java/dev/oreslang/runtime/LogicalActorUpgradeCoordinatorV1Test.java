@@ -231,4 +231,90 @@ final class LogicalActorUpgradeCoordinatorV1Test {
             assertEquals(0,proxy.snapshot().retainedMessages());
         }
     }
+    @Test
+    void externalCodeGateCloseDuringRollbackQuarantinesRatherThanThaws() {
+        var gate = new ActorUpgradeEpochGate(310, image('a'));
+        var proxy = new LogicalActorProxyMailboxV1(4, 64, 256);
+        var coordinator = new LogicalActorUpgradeCoordinatorV1(gate, proxy);
+        var tx = coordinator.prepare(image('b'));
+        gate.close(); // Simulate an external supervisor retiring the candidate.
+        assertThrows(IllegalStateException.class, tx::rollback);
+        assertTrue(coordinator.quarantined());
+        assertTrue(proxy.snapshot().dispatchFrozen());
+        assertEquals(1L, proxy.snapshot().routeEpoch());
+        assertThrows(IllegalStateException.class, coordinator::close);
+        assertThrows(IllegalStateException.class, () -> coordinator.prepare(image('c')));
+        proxy.close();
+    }
+
+    @Test
+    void externalCodeGateCloseDuringCommitQuarantinesUnverifiedPublication() {
+        var gate = new ActorUpgradeEpochGate(311, image('a'));
+        var proxy = new LogicalActorProxyMailboxV1(4, 64, 256);
+        var coordinator = new LogicalActorUpgradeCoordinatorV1(gate, proxy);
+        var tx = coordinator.prepare(image('b'));
+        gate.close();
+        assertThrows(IllegalStateException.class, tx::commit);
+        assertTrue(coordinator.quarantined());
+        assertTrue(proxy.snapshot().dispatchFrozen());
+        assertEquals(1L, proxy.snapshot().routeEpoch());
+        assertEquals(1L, gate.epoch());
+        assertThrows(IllegalStateException.class, tx::rollback);
+        proxy.close();
+    }
+
+    @Test
+    void lostMailboxDuringDrainCheckMustBeQuarantined() {
+        var gate = new ActorUpgradeEpochGate(312, image('a'));
+        var proxy = new LogicalActorProxyMailboxV1(4, 64, 256);
+        var coordinator = new LogicalActorUpgradeCoordinatorV1(gate, proxy);
+        var tx = coordinator.prepare(image('b'));
+        proxy.close();
+        assertThrows(IllegalStateException.class, tx::drained);
+        assertTrue(coordinator.quarantined());
+        assertThrows(IllegalStateException.class, coordinator::close);
+        gate.close();
+    }
+
+    @Test
+    void racingPrepareAndCommitCannotCreateTwoActiveTransactions() throws Exception {
+        for (int i = 0; i < 32; ++i) {
+            try (var gate = new ActorUpgradeEpochGate(400 + i, image('a'));
+                 var proxy = new LogicalActorProxyMailboxV1(4, 64, 256);
+                 var coordinator = new LogicalActorUpgradeCoordinatorV1(gate, proxy)) {
+                var first = coordinator.prepare(image('b'));
+                var start = new java.util.concurrent.CountDownLatch(1);
+                var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+                try {
+                    var committing = pool.submit(() -> {
+                        start.await();
+                        return first.commit();
+                    });
+                    var competing = pool.submit(() -> {
+                        start.await();
+                        try {
+                            var second = coordinator.prepare(image('c'));
+                            second.rollback();
+                            return true;
+                        } catch (IllegalStateException expectedBusy) {
+                            return false;
+                        }
+                    });
+                    start.countDown();
+                    assertTrue(committing.get(5, java.util.concurrent.TimeUnit.SECONDS));
+                    // A competitor may run before commit (rejected) or after
+                    // commit (legally stages and rolls back). Neither is poison.
+                    competing.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                    assertFalse(coordinator.quarantined());
+                    assertEquals(2L, gate.epoch());
+                    assertEquals(2L, proxy.snapshot().routeEpoch());
+                    assertEquals(image('b'), gate.image());
+                    assertFalse(proxy.snapshot().dispatchFrozen());
+                } finally {
+                    pool.shutdownNow();
+                }
+            }
+        }
+    }
+
 }
