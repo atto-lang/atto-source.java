@@ -203,19 +203,30 @@ final class ActorDurableQuiescenceTest {
 
     @Test
     void callerCannotFabricateRuntimeFreezeByCompletingObserver() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
         try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
                      new ActorRuntime.DispatcherConfig(2, 2, 1, 32))) {
-            var actor = runtime.<String>spawnShared(() -> (message, ctx) -> {});
+            var actor = runtime.<String>spawnShared(() -> (message, ctx) -> {
+                entered.countDown();
+                if (!release.await(5, TimeUnit.SECONDS))
+                    throw new AssertionError("frozen-test receive was not released");
+            });
             try {
-                actor.ready().get(3, TimeUnit.SECONDS);
-                var authoritativeCopy = runtime.requestDurableQuiescence(actor);
-                assertTrue(authoritativeCopy.complete(null));
+                actor.send("hold");
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                var callerView = runtime.requestDurableQuiescence(actor);
+                assertFalse(callerView.isDone(),
+                        "actor turn keeps the authoritative freeze pending");
+                assertTrue(callerView.complete(null),
+                        "the caller may complete only its isolated copy");
                 var rejected = assertThrows(java.util.concurrent.CompletionException.class,
                         () -> runtime.requestDurableQuiescence(actor).join());
                 assertInstanceOf(IllegalStateException.class, rejected.getCause());
                 assertThrows(ActorRuntime.ActorSealedException.class,
                         () -> actor.send("not admitted while frozen"));
             } finally {
+                release.countDown();
                 actor.cancel();
             }
         }
