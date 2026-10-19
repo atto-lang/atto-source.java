@@ -39,8 +39,11 @@ public final class IpcReceiptPhysicalBindingSelfTest {
         deny(() -> bridge.claimPhysicalTransport(owner, epoch, 201));
         deny(() -> bridge.transportLost(epoch));
 
-        CompletionStage<IpcReceiptCorrelation.Stage> result = bridge.admit(epoch);
-        bridge.commitDispatch(epoch);
+        deny(() -> bridge.admit(epoch));
+        CompletionStage<IpcReceiptCorrelation.Stage> result =
+                bridge.admit(owner, epoch, 201);
+        deny(() -> bridge.commitDispatch(epoch));
+        bridge.commitDispatch(owner, epoch, 201);
         deny(() -> bridge.transportLost(foreignOwner, epoch, 201));
         deny(() -> bridge.transportLost(owner, epoch, 202));
 
@@ -64,8 +67,8 @@ public final class IpcReceiptPhysicalBindingSelfTest {
         var fresh = new IpcReceiptCompletionBridge(1);
         fresh.claimPhysicalTransport(foreignOwner, epoch, 202);
         var next = env(2);
-        var nextResult = fresh.admit(next);
-        fresh.commitDispatch(next);
+        var nextResult = fresh.admit(foreignOwner, next, 202);
+        fresh.commitDispatch(foreignOwner, next, 202);
         check(fresh.transportLost(foreignOwner, next, 202) == 1);
         check(nextResult.toCompletableFuture().join()
                 == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
