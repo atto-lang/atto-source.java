@@ -1,6 +1,7 @@
 package dev.oreslang.launcher;
 
 import dev.oreslang.runtime.ConcurrencyTestProbe;
+import dev.oreslang.runtime.ConcurrencySourceFingerprint;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
@@ -123,6 +124,15 @@ final class ConcurrencyTestCommand {
                 java.security.MessageDigest.getInstance("SHA-256")
                         .digest(Files.readAllBytes(entryPath)));
         String backendId = mode + "-" + platform;
+        String workspaceSha256;
+        try {
+            workspaceSha256 = ConcurrencySourceFingerprint.ofWorkspace(
+                    Path.of("").toAbsolutePath());
+        } catch (java.io.IOException | IllegalArgumentException invalid) {
+            System.err.println("oreslang test: source workspace fingerprint failed: "
+                    + invalid.getMessage());
+            return 2;
+        }
         if (!backendId.matches("[A-Za-z0-9_.-]{1,80}")) {
             System.err.println("oreslang test: invalid backend provenance identity");
             return 2;
@@ -130,10 +140,11 @@ final class ConcurrencyTestCommand {
         List<String> replay = null;
         if (replayArg != null) {
             var trace = ConcurrencyTestProbe.readTraceData(Path.of(replayArg));
-            if (trace.entrySha256() == null
+            if (trace.workspaceSha256() == null
                     || !entrySha256.equals(trace.entrySha256())
-                    || !backendId.equals(trace.backend())) {
-                System.err.println("oreslang test: replay source/backend provenance mismatch or legacy V1 trace");
+                    || !backendId.equals(trace.backend())
+                    || !workspaceSha256.equals(trace.workspaceSha256())) {
+                System.err.println("oreslang test: replay entry/workspace/backend mismatch or unbound legacy trace");
                 return 2;
             }
             if (seedSpecified && seed != trace.seed()) {
@@ -158,7 +169,8 @@ final class ConcurrencyTestCommand {
             int result;
             int detected;
             try (ConcurrencyTestProbe.Session session = ConcurrencyTestProbe.start(
-                    runSeed, scheduleFuzz || fuzz, replay, entrySha256, backendId)) {
+                    runSeed, scheduleFuzz || fuzz, replay,
+                    entrySha256, backendId, workspaceSha256)) {
                 try {
                     var executed = LinkedProgramRunner.runWithExitStatus(
                             entryPath,
