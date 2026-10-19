@@ -248,6 +248,29 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void deeplyNestedIdleTaskScopesDoNotOverflowHostStack() throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var generation = manager.stageActorGeneration(
+                    "deep-scope-tree.ores", V1);
+            try (var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
+                    generation, "Counter", WAIT, 2, 8, 16)) {
+                var root = bridge.childHostTaskScopeForUpgrade();
+                var leaf = root;
+                // Deep enough to overflow the former recursive tree probe
+                // on ordinary host thread stacks. Close is also iterative.
+                for (int i = 0; i < 12000; i++) {
+                    leaf = leaf.childScope();
+                }
+                assertTrue(root.physicallyQuiescent());
+                root.close();
+                assertTrue(root.physicallyQuiescent());
+                assertTrue(leaf.physicallyQuiescent());
+            }
+        }
+    }
+
+    @Test
     void nestedScopeCloseJoinsPhysicalChildrenAndReconcilesOwnerSlots()
             throws Exception {
         try (HotReloadManager manager = new HotReloadManager(
