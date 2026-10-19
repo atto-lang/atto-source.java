@@ -44,9 +44,11 @@ done
 reviewed_blobs=(
   'src/main/java/dev/oreslang/runtime/LogicalActorProxyMailboxV1.java:a11ff977f32952b19d115a46b49f1083a7d6e6b3'
   'src/main/java/dev/oreslang/runtime/LogicalSourceActorRouterV1.java:11362a6706729f6f903addc66e83cd82e2e2a853'
-  'src/main/java/dev/oreslang/runtime/ActorUpgradeEpochGate.java:95c896a9837b65babb7277a21951fe6ea58f8a16'
+  'src/main/java/dev/oreslang/runtime/ActorUpgradeEpochGate.java:6a915cf2d084426eef0f06abe50fbb3f31a7c63a'
   'src/main/java/dev/oreslang/runtime/OresTaskScope.java:6220209e55dc43311e7d2ead98225e916ee9540e'
   'src/main/java/dev/oreslang/runtime/OresContext.java:c0e8d02cacb036c8570cb4bb5a6c3967ab6030b8'
+  'src/main/java/dev/oreslang/runtime/ActorRoutePublicationV1.java:790ad06cba2b430781695c27419727c7598255f2'
+  'src/main/java/dev/oreslang/runtime/ActorUpgradePreflightV1.java:3e6b9fae365332ca8fbf325ff2f7d8568a654b4f'
 )
 for record in "${reviewed_blobs[@]}"; do
   path="${record%%:*}"
@@ -64,6 +66,7 @@ test_classes=(
   ActorHotReloadPlacementAndTaskPinTest
   ActorTaskGenerationBridgeTest
   ActorUpgradePreflightV1Test
+  ActorRoutePublicationV1Test
   LogicalActorProxyMailboxV1Test
   OresTaskScopeFrameTest
   SourceActorHotUpgradeExecutionTest
