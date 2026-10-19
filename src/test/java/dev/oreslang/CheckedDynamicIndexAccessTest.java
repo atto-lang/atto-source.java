@@ -262,6 +262,41 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void constructorSelfCannotUseComputedFieldReadBeforeInitializationProof() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse("""
+                define class Box as
+                  val int value;
+                  constructor(int next) {
+                    const int observed = self["value"];
+                    self.value = next;
+                  }
+                end
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse("""
+                define class Box as
+                  val int value;
+                  constructor(int next) {
+                    self.value = next;
+                    const string field = "value";
+                    const int observed = self[field];
+                  }
+                end
+                """)));
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
+                define class Box as
+                  val int value;
+                  constructor(int next) {
+                    self.value = next;
+                  }
+                  pub get(): int {
+                    const string field = "value";
+                    return self[field];
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void fixedTupleReadCannotDuplicateMoveOnlyElement() {
         String source = """
                 fnc bad(): Array<int> {
