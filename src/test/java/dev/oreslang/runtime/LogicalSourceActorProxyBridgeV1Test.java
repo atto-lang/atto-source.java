@@ -140,7 +140,7 @@ final class LogicalSourceActorProxyBridgeV1Test {
                 // The malformed frame was refused BEFORE reserving a physical
                 // send, so a trusted supervisor may requeue it without
                 // erasing uncertain physical delivery.
-                proxy.requeueProvenUnsent(attempted.messageSequence());
+                proxy.requeueProvenUnsent(attempted, proxy.snapshot().routeEpoch());
                 assertEquals(1, proxy.snapshot().queuedMessages());
                 assertEquals(0, proxy.snapshot().outstandingMessages());
                 assertEquals(1, proxy.snapshot().retainedMessages());
@@ -198,7 +198,7 @@ final class LogicalSourceActorProxyBridgeV1Test {
                 // even if its cumulative drain has not been consumed.
                 var attempted = proxy.snapshot();
                 assertThrows(IllegalStateException.class,
-                        () -> proxy.requeueProvenUnsent(dispatched.messageSequence()),
+                        () -> proxy.requeueProvenUnsent(dispatched, proxy.snapshot().routeEpoch()),
                         "sequence-only requeue must never erase attempted physical delivery");
                 assertEquals(attempted, proxy.snapshot());
                 assertThrows(IllegalStateException.class,
