@@ -5695,6 +5695,8 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean finalized;
         /** Set under lifecycleLock when every physical turn/child has retired. */
         private boolean finalizationReady;
+        /** Mailboxes must close and reservations drain before cleanup can win. */
+        private boolean terminationSealed;
         /** Single winner for the potentially callback-running outside-lock cleanup. */
         private boolean finalizationStarted;
         private long turnStartedWallNanos;
@@ -5925,6 +5927,7 @@ public final class ActorRuntime implements AutoCloseable {
             // TurnExecutor owns context enter/leave. Never retire actor-owned
             // memory or critical tickets until its outermost carrier is gone.
             if (finalized || finalizationReady || finalizationStarted
+                    || !terminationSealed
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
@@ -5942,6 +5945,10 @@ public final class ActorRuntime implements AutoCloseable {
          * output closure, memory revocation and the exit hook all finish.
          */
         private void completeFinalizationIfReady() {
+            if (Thread.holdsLock(lifecycleLock)) {
+                throw new IllegalStateException(
+                        "actor finalization was entered with lifecycleLock held");
+            }
             final OresScheduler scheduler;
             synchronized (lifecycleLock) {
                 if (!finalizationReady || finalizationStarted || finalized) return;
@@ -5950,13 +5957,8 @@ public final class ActorRuntime implements AutoCloseable {
                 sourceScheduler = null;
             }
 
-            // Never invoke this while reentrantly holding the actor lifecycle
-            // monitor: scheduler.close() can run Future/cancellation callbacks.
-            if (Thread.holdsLock(lifecycleLock)) {
-                throw new IllegalStateException(
-                        "actor finalization was entered with lifecycleLock held");
-            }
-
+            // No callbacks can observe a half-finalized actor under the
+            // outer lifecycle monitor.
             Throwable cleanupFailure = null;
             try {
                 if (scheduler != null) scheduler.close();
@@ -6455,21 +6457,32 @@ public final class ActorRuntime implements AutoCloseable {
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
                 }
+                // Exactly one terminator owns mailbox sealing. A reentrant
+                // Future callback must never close channels a second time.
+                if (stopped.get()) return;
                 stopped.set(true);
+                descendants = List.copyOf(children);
+                pending = List.copyOf(pendingOperations);
+                pendingOperations.clear();
+                lifecycleLock.notifyAll();
+            }
+
+            // Channel.close() may settle waiting Futures. Never execute it
+            // under lifecycleLock. The finalization gate remains CLOSED until
+            // this entire sealing sequence has released mailbox reservations.
+            try {
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
                 drainMailboxReservations();
-                descendants = List.copyOf(children);
-                pending = List.copyOf(pendingOperations);
-                pendingOperations.clear();
-                finalizeStopLocked();
-                lifecycleLock.notifyAll();
+            } finally {
+                synchronized (lifecycleLock) {
+                    terminationSealed = true;
+                    finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
+                completeFinalizationIfReady();
             }
-
-            // No completion/cancellation callback can execute beneath the
-            // outer lifecycle lock after a finalization claim.
-            completeFinalizationIfReady();
 
             // Cancellation removes channel/select waiter registrations before
             // any future channel activity can revive work for this dead actor.
