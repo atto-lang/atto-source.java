@@ -80,6 +80,11 @@ public final class RegionAccessPlanner {
         // Validate all region generations BEFORE the first conflict can
         // short-circuit; an earlier overlap must not conceal stale metadata.
         assertConsistentGenerations(List.of(first, second));
+        return conflictsWithValidatedGenerations(first, second);
+    }
+
+    private static boolean conflictsWithValidatedGenerations(
+            SystemAccess first, SystemAccess second) {
         for (Access a : first.accesses()) {
             for (Access b : second.accesses()) {
                 if (overlapsMutably(a, b)) return true;
@@ -107,7 +112,7 @@ public final class RegionAccessPlanner {
                 throw new IllegalArgumentException("duplicate ECS system identity");
             int level = 0;
             for (int i = 0; i < visited.size(); i++) {
-                if (conflicts(current, visited.get(i)))
+                if (conflictsWithValidatedGenerations(current, visited.get(i)))
                     level = Math.max(level, levels.get(i) + 1);
             }
             while (stages.size() <= level) stages.add(new ArrayList<>());
