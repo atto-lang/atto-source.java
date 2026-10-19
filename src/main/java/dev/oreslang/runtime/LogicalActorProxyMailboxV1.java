@@ -410,17 +410,6 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
         }
     }
 
-    /**
-     * Trusted mailbox ledger primitive retained for unit models. Production
-     * physical receipts must use completeAfterPhysicalReceipt, not this
-     * sequence-only helper.
-     */
-    void complete(long messageSequence) {
-        synchronized (lock) {
-            completeLocked(messageSequence);
-        }
-    }
-
     private void completeLocked(long messageSequence) {
             requireOpenLocked();
             // A boxed sequence key may allocate outside Java's Long cache.
