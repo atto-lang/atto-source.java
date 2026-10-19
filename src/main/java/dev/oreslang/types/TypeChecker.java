@@ -5011,6 +5011,18 @@ public final class TypeChecker {
             Ast.ActorKind actorKind,
             boolean returnPosition,
             String where) {
+        validateActorCallableBoundaryType(type, actorKind, returnPosition, where, 0);
+    }
+
+    private void validateActorCallableBoundaryType(
+            Type type,
+            Ast.ActorKind actorKind,
+            boolean returnPosition,
+            String where,
+            int depth) {
+        if (depth > 256) {
+            throw new IllegalArgumentException(where + " exceeds actor transport type nesting budget");
+        }
         if (returnPosition && type == Primitive.VOID) return;
         if (returnPosition) rejectLiveActorCallableResult(type, where, 0);
         if (type == Primitive.VOID) {
@@ -5023,24 +5035,24 @@ public final class TypeChecker {
         }
         if (type instanceof Primitive || type instanceof StringLiteral) return;
         if (type instanceof ListType list) {
-            validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element");
+            validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element", depth + 1);
             return;
         }
         if (type instanceof Tuple tuple) {
             for (int i = 0; i < tuple.elements().size(); i++) {
-                validateActorCallableBoundaryType(tuple.elements().get(i), actorKind, false, where + " tuple element " + i);
+                validateActorCallableBoundaryType(tuple.elements().get(i), actorKind, false, where + " tuple element " + i, depth + 1);
             }
             return;
         }
         if (type instanceof Union union) {
             for (Type option : union.options()) {
-                validateActorCallableBoundaryType(option, actorKind, false, where + " union member");
+                validateActorCallableBoundaryType(option, actorKind, false, where + " union member", depth + 1);
             }
             return;
         }
         if (type instanceof Record record) {
             for (Map.Entry<String, Type> member : record.members().entrySet()) {
-                validateActorCallableBoundaryType(member.getValue(), actorKind, false, where + " field '" + member.getKey() + "'");
+                validateActorCallableBoundaryType(member.getValue(), actorKind, false, where + " field '" + member.getKey() + "'", depth + 1);
             }
             return;
         }
@@ -5089,7 +5101,7 @@ public final class TypeChecker {
         }
 
         for (Type argument : named.arguments()) {
-            validateActorCallableBoundaryType(argument, actorKind, false, where + " type argument");
+            validateActorCallableBoundaryType(argument, actorKind, false, where + " type argument", depth + 1);
         }
 
         // Built-in sum/container values are data-only when their arguments pass.
