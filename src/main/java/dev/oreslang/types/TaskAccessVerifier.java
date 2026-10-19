@@ -72,13 +72,24 @@ final class TaskAccessVerifier {
         }
     }
 
-    /** Half-open byte/element span with checked layout and backing-allocation identity. */
-    public record Range(long start, long end, boolean disjointLayoutProven)
-            implements Projection {
+    /**
+     * Coordinate units must be explicit for actual byte-layout projections.
+     * Comparing byte offsets with array element indices as if they shared one
+     * number line could falsely prove that two overlapping writes are disjoint.
+     */
+    public enum RangeUnit { ELEMENTS, BYTES }
+
+    /** Half-open span tied to a single verified allocation, unit and layout. */
+    public record Range(long start, long end, boolean disjointLayoutProven,
+                        RangeUnit unit) implements Projection {
         public Range {
-            if (start < 0 || end <= start) {
+            Objects.requireNonNull(unit, "range coordinate unit");
+            if (start < 0 || end <= start)
                 throw new IllegalArgumentException("invalid half-open range");
-            }
+        }
+        /** Backward-compatible element-index API; never interpret as bytes. */
+        public Range(long start, long end, boolean proven) {
+            this(start, end, proven, RangeUnit.ELEMENTS);
         }
     }
 
@@ -104,8 +115,16 @@ final class TaskAccessVerifier {
         }
 
         public Place range(long from, long to, boolean provenContiguousLayout) {
+            return rangeIn(from, to, provenContiguousLayout, RangeUnit.ELEMENTS);
+        }
+
+        public Place byteRange(long from, long to, boolean provenByteLayout) {
+            return rangeIn(from, to, provenByteLayout, RangeUnit.BYTES);
+        }
+
+        private Place rangeIn(long from, long to, boolean provenLayout, RangeUnit unit) {
             ArrayList<Projection> next = new ArrayList<>(projections);
-            next.add(new Range(from, to, provenContiguousLayout));
+            next.add(new Range(from, to, provenLayout, unit));
             return new Place(root, next);
         }
     }
@@ -290,6 +309,9 @@ final class TaskAccessVerifier {
                 continue;
             }
             if (ap instanceof Range ar && bp instanceof Range br) {
+                // Different coordinate systems are incomparable without a
+                // trusted element-width conversion / physical layout proof.
+                if (ar.unit() != br.unit()) return true;
                 if ((ar.end() <= br.start() || br.end() <= ar.start())
                         && ar.disjointLayoutProven() && br.disjointLayoutProven()) {
                     return false;
