@@ -107,3 +107,54 @@ Next run, on an authorized exact-Git-tree JDK25/GraalVM carrier:
    UNTRUSTED physical workers and LLVM/native image parity.
 
 Keep hot reload PR #1367 **DRAFT** until those gates are satisfied.
+
+
+## Durable ActorRef termination wait — 2026-10-19 follow-up audit
+
+**Concrete second-order regression fixed:** The previous change correctly
+refused to call an *absent* registry record proof of physical finalization,
+but `ActorRef.awaitTermination(timeout, unit)` returned
+`physicallyFinalized.get()` **immediately** if `actors.get(id)` was null.
+Because registry removal happens before synchronous `getDone()` callbacks,
+a supervisor calling `awaitTermination(5s)` during a blocked callback
+incorrectly received an immediate false without waiting five seconds.
+The previously authored blocked-callback JUnit would expose this defect.
+
+`ActorRef` now owns a one-shot `CountDownLatch`
+(`physicalFinalizationLatch`) in addition to its durable atomic
+`physicallyFinalized` witness. The host `awaitTermination` method no
+longer depends on `ActorCell` membership or its lifecycle monitor.
+It waits on the reference-owned latch for the caller's requested deadline
+and returns true only after the final marker is published. Actor teardown
+publishes the marker **after** synchronous runtime and group callbacks
+have completed and then releases latch waiters. This also avoids an
+`ActorCell` monitor becoming unreachable while a waiter is pending.
+The same-finalizer-thread self-join protection remains mandatory.
+
+A new real-source JUnit,
+`terminationWaitSurvivesRegistryRemovalWithoutSpuriousTimeout`,
+temporarily removes a live actor from the runtime registry, starts a
+five-second wait, proves that no immediate false result escapes,
+restores the registry entry and stops the actor, then requires the waiter
+to observe true physical completion. The existing
+`blockedTerminalObserverCannotPublishEarlyCodeImageRetirement` also
+requires an external waiter to remain blocked through the terminal
+callback and complete after the callback returns. Neither JUnit
+fixture has an executed Maven/GraalVM result yet.
+
+### Executed source-free Java 21 probe
+
+A separate `ActorRefLatchOracle.java`, stored locally at
+`/mnt/data/oreslang_physical_latch_audit/`, compiled with
+`javac --release 21 -Xlint:all -Werror` and passed
+**242,250 / 242,250** assertions: 100,000 sequential absent-registry
+nonfinal/final cases, 250 eight-reader concurrent completion rounds,
+and 20,000 explicit same-finalizer-thread self-join denials plus their
+eventual completion. The oracle is independently authored and does not
+compile or execute private Oreslang runtime source; it is not a JDK25
+CI or production validation receipt.
+
+**Release security hold persists:** the source-owned Actions jobs still
+fail before running steps, the approved cross-org private-code destination
+allowlist remains empty, and source security issues #962/#904 remain open.
+No private source was copied or mirrored to another organization.
