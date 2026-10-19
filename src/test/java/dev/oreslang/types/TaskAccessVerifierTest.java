@@ -431,6 +431,30 @@ final class TaskAccessVerifierTest {
         }
     }
 
+    @Test void deterministicRangeAliasMatrixIsSymmetricAndConservative() {
+        var random = new java.util.Random(0x71A5D00DL);
+        var column = TaskAccessVerifier.Place.whole(WORLD).field("positions", true);
+        var unproven = TaskAccessVerifier.Place.whole(WORLD).field("unproven", false);
+        for (int i = 0; i < 2000; i++) {
+            long a = random.nextInt(512);
+            long b = random.nextInt(512);
+            long ae = a + random.nextInt(64) + 1;
+            long be = b + random.nextInt(64) + 1;
+            boolean aProven = random.nextBoolean();
+            boolean bProven = random.nextBoolean();
+            var left = column.range(a, ae, aProven);
+            var right = column.range(b, be, bProven);
+            boolean provenDisjoint = aProven && bProven && (ae <= b || be <= a);
+            assertEquals(!provenDisjoint, TaskAccessVerifier.mayAlias(left, right));
+            assertEquals(TaskAccessVerifier.mayAlias(left, right),
+                    TaskAccessVerifier.mayAlias(right, left));
+            assertTrue(TaskAccessVerifier.mayAlias(
+                    unproven.range(a, ae, true),
+                    unproven.range(b, be, true)),
+                    "unproven ancestor cannot be used to prove child disjointness");
+        }
+    }
+
     @Test void oversizedProvenanceAndProjectionPathsFailBeforeAdmission() {
         String oversized = "x".repeat(257);
         assertThrows(IllegalArgumentException.class, () ->
