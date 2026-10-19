@@ -35,9 +35,11 @@ public final class InvertedArray implements AutoCloseable {
         private final String className;
         private final List<Field> fields;
         private final Map<String, Integer> indices;
+        private final boolean requiresMethodPlan;
 
-        private Schema(String className, List<Field> fields) {
+        private Schema(String className, List<Field> fields, boolean requiresMethodPlan) {
             this.className = Objects.requireNonNull(className, "class name");
+            this.requiresMethodPlan = requiresMethodPlan;
             if (fields.isEmpty()) throw new IllegalArgumentException("inverted class requires fields");
             LinkedHashMap<String, Integer> mapped = new LinkedHashMap<>();
             for (int i = 0; i < fields.size(); i++) {
@@ -83,7 +85,7 @@ public final class InvertedArray implements AutoCloseable {
                 };
                 ordered.add(new Field(field.name(), kind));
             }
-            return new Schema(klass.name(), ordered);
+            return new Schema(klass.name(), ordered, !klass.methods().isEmpty());
         }
 
         public String className() { return className; }
@@ -114,6 +116,10 @@ public final class InvertedArray implements AutoCloseable {
 
     private InvertedArray(Schema schema, int initialCapacity, Map<String, InvertedRowMethod> methods) {
         this.schema = Objects.requireNonNull(schema, "schema");
+        if (schema.requiresMethodPlan && methods.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "inverted class methods require verified row-method lowering; no silent omission");
+        }
         this.methods = Map.copyOf(methods);
         store = new InvertedColumnStore(schema.columnKinds());
         try {
