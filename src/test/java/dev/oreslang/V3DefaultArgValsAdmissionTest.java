@@ -242,4 +242,67 @@ final class V3DefaultArgValsAdmissionTest {
         assertEquals(List.of(true, false), shapes.stream()
                 .map(OptionalCallShapeBinder.Parameter::optional).toList());
     }
+
+    @Test
+    void namedDefaultsOnMethodsAndConstructorsAreStagedNotExecutable() {
+        Ast.Program classProgram = Parser.parseStagedV3("""
+                define class Box as
+                    val int id;
+                    @DefaultArgVals(id: 3)
+                    constructor(int id?) {
+                        self.id = id;
+                    }
+                    @DefaultArgVals(x: 4)
+                    pub fnc answer(int x?): int {
+                        return x;
+                    }
+                end
+                """);
+        Ast.ClassDecl klass = classProgram.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast).findFirst().orElseThrow();
+        assertEquals("DefaultArgVals", klass.constructor().annotations().getFirst().name());
+        assertTrue(klass.constructor().parameters().getFirst().argumentOmittable());
+        assertEquals("DefaultArgVals", klass.methods().getFirst().annotations().getFirst().name());
+        assertThrows(IllegalArgumentException.class, () ->
+                OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(classProgram));
+    }
+
+    @Test
+    void annotationIsNotAllowedOnModulesOrFields() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parseStagedV3("""
+                @DefaultArgVals(a: 5)
+                define module M as
+                    pub fnc f(int a): void { return; }
+                end
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parseStagedV3("""
+                define class Box as
+                    @DefaultArgVals(a: 5)
+                    val int a = 3;
+                end
+                """));
+    }
+
+    @Test
+    void lambdaAndInterfaceNameOmissionRequiresDefaultOrOptionType() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parseStagedV3("""
+                pub fnc f(): void {
+                    val inner = (int x?) -> x;
+                    return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parseStagedV3("""
+                define interface I as
+                    fnc f(int x?): int;
+                end
+                """));
+        assertDoesNotThrow(() -> Parser.parseStagedV3("""
+                pub fnc f(): void {
+                    val inner = (int? x?) -> x;
+                    return;
+                }
+                """));
+    }
 }
