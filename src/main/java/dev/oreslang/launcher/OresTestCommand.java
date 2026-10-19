@@ -132,6 +132,21 @@ final class OresTestCommand {
             }
         }
 
+        // Trace reproducibility needs the source bytes to remain stable
+        // across guest execution, not just at trace creation/replay time.
+        String sourceHashBefore = null;
+        if (replayData != null || record != null) {
+            try {
+                sourceHashBefore = OresTestTrace.hash(file);
+                if (replayData != null
+                        && !sourceHashBefore.equals(replayData.sourceHash())) {
+                    return usage("source changed after trace validation");
+                }
+            } catch (java.io.IOException changed) {
+                return usage("cannot snapshot replay source: " + changed.getMessage());
+            }
+        }
+
         // Native TestSuite orchestration always runs guest Oreslang.
         ByteArrayOutputStream out = new BoundedCapture();
         ByteArrayOutputStream err = new BoundedCapture();
@@ -141,6 +156,17 @@ final class OresTestCommand {
         System.out.write(out.toByteArray());
         System.err.write(err.toByteArray());
         if (result.exitStatus() != 0) return result.exitStatus();
+        if (sourceHashBefore != null) {
+            try {
+                if (!sourceHashBefore.equals(OresTestTrace.hash(file))) {
+                    return usage("source changed during native guest execution; "
+                            + "refusing to record/replay an ambiguous trace");
+                }
+            } catch (java.io.IOException changed) {
+                return usage("cannot verify replay source after execution: "
+                        + changed.getMessage());
+            }
+        }
 
         String guestOutput = out.toString(StandardCharsets.UTF_8);
         final OresTestReportParser.Suite suite;
@@ -206,6 +232,12 @@ final class OresTestCommand {
             }
             if (record != null) {
                 try {
+                    // Also check after runtime stress, before writing the
+                    // trace. Write itself hashes once more and refuses to
+                    // overwrite an existing trace file.
+                    if (!sourceHashBefore.equals(OresTestTrace.hash(file))) {
+                        return usage("source changed during runtime exploration");
+                    }
                     OresTestTrace.write(record, file, seed, stress, explore, report);
                 } catch (java.io.IOException invalid) {
                     return usage("could not save bounded exploration trace: "
