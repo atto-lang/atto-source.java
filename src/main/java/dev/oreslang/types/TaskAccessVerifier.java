@@ -234,8 +234,7 @@ final class TaskAccessVerifier {
                 throw new IllegalArgumentException("TaskScope cannot mix allocation owner identities");
             }
             Objects.requireNonNull(claim, "claim");
-            AllocationKey key = new AllocationKey(
-                    claim.place().root().domain(), claim.place().root().allocationId());
+            AllocationKey key = new AllocationKey(root.domain(), root.ownerId(), root.allocationId());
             Long incoming = incomingGenerations.putIfAbsent(
                     key, claim.place().root().generation());
             if (incoming != null && incoming != claim.place().root().generation()) {
@@ -293,7 +292,7 @@ final class TaskAccessVerifier {
         Root root = claim.place().root();
         if (scopeDomain == null || !scopeDomain.equals(
                 new ScopeKey(root.domain(), root.ownerId()))) return false;
-        Long current = knownGenerations.get(new AllocationKey(root.domain(), root.allocationId()));
+        Long current = knownGenerations.get(new AllocationKey(root.domain(), root.ownerId(), root.allocationId()));
         if (current == null || current != root.generation()) return false;
         for (Child child : live.values()) {
             for (Claim held : child.claims) {
