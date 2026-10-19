@@ -3813,6 +3813,24 @@ public final class TypeChecker {
                 env.restoreInitialization(before);
             }
         }
+        if (expr instanceof Ast.StaticSelectExpr selectedExpr) {
+            Ast.SelectStmt selected = selectedExpr.select();
+            if (selected.mode() != Ast.WaitMode.NONBLOCKING
+                    || selected.explicitDo()) {
+                throw new IllegalArgumentException(
+                        "static select expressions require nonblocking, non-procedural mode");
+            }
+            if (currentActorKind == Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "tracked nb select requires an executing actor domain");
+            }
+            // Reuse the modern source select's FutureCase/Channel<T>
+            // typing, capture boundary, arm scope, and effect checks.
+            // Returns from detached arms have no caller result slot;
+            // an all-void selection yields an observable Future<void>.
+            checkStatement(selected, env, generics, Primitive.VOID, self);
+            return new Named("Future", List.of(Primitive.VOID));
+        }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
             // Dynamic select accepts a SelectSet directly or a runtime
             // list/map of SelectCase values. The exact case element type may
