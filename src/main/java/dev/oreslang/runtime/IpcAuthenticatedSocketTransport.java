@@ -59,6 +59,9 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     private final InputStream input;
     private final OutputStream output;
     private final IpcTransportSessionLease.CleanupScheduler cleanupScheduler;
+    // Opaque host identity used only to bind one receipt bridge to this exact
+    // physical connection object. It is never serialized or guest-visible.
+    private final Object physicalOwner = new Object();
     private final AtomicBoolean abortScheduled = new AtomicBoolean();
     private final Object sendGate = new Object();
     private final Object readGate = new Object();
@@ -103,6 +106,18 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             }
             throw constructionFailure;
         }
+        try {
+            receipts.claimPhysicalTransport(
+                    physicalOwner, trustedEpoch, physicalGeneration);
+        } catch (RuntimeException | Error bindingFailure) {
+            Arrays.fill(privateMacKey, (byte) 0);
+            try {
+                socket.close();
+            } catch (IOException closeFailure) {
+                bindingFailure.addSuppressed(closeFailure);
+            }
+            throw bindingFailure;
+        }
         this.macKey = privateMacKey;
         this.physicalGeneration = physicalGeneration;
         this.input = socketInput;
@@ -112,6 +127,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                 physicalGeneration,
                 maxOutstandingWrites,
                 receipts,
+                physicalOwner,
                 (ignoredEnvelope, preparedFrame) -> {
                     synchronized (writeGate) {
                         writeWireFrame(output, preparedFrame);
