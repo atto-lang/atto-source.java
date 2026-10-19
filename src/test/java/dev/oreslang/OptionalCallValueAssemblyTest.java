@@ -40,6 +40,11 @@ final class OptionalCallValueAssemblyTest {
             created.add("None");
             return new OptionBox(false, null);
         }
+
+        @Override public boolean isNominalOption(Ast.TypeRef type, Object value) {
+            assertEquals(STRING, type);
+            return value instanceof OptionBox;
+        }
     }
 
     private static OptionalCallAbiPreview.Slot slot(
@@ -132,6 +137,42 @@ final class OptionalCallValueAssemblyTest {
     }
 
     @Test
+    void suppliedOptionMustBeNominalNotMerelyOptionTypedByMetadata() {
+        var preview = new OptionalCallAbiPreview.Preview(
+                List.of(new Ast.NameExpr("provided")),
+                List.of(slot(0, OPTION_STRING,
+                        OptionalCallAbiPreview.Action.PASS_OPTION, 0, 0)));
+        Options factory = new Options();
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallValueAssembly.assemble(
+                        preview, List.of("not an Option"), factory));
+        assertTrue(factory.created.isEmpty());
+    }
+
+    @Test
+    void trustedFactoryCannotForgeSomeWithWrongRuntimeRepresentation() {
+        var preview = new OptionalCallAbiPreview.Preview(
+                List.of(new Ast.LiteralExpr("hello")),
+                List.of(slot(0, OPTION_STRING,
+                        OptionalCallAbiPreview.Action.WRAP_SOME, 0, 0)));
+        OptionalCallValueAssembly.TrustedOptionFactory invalid =
+                new OptionalCallValueAssembly.TrustedOptionFactory() {
+                    @Override public Object some(Ast.TypeRef type, Object value) {
+                        return value;
+                    }
+                    @Override public Object none(Ast.TypeRef type) {
+                        return new OptionBox(false, null);
+                    }
+                    @Override public boolean isNominalOption(Ast.TypeRef type, Object value) {
+                        return value instanceof OptionBox;
+                    }
+                };
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallValueAssembly.assemble(
+                        preview, List.of("hello"), invalid));
+    }
+
+    @Test
     void rejectsNullNominalOptionObjectsReturnedByFactory() {
         var preview = new OptionalCallAbiPreview.Preview(
                 List.of(), List.of(
@@ -140,6 +181,9 @@ final class OptionalCallValueAssemblyTest {
                 new OptionalCallValueAssembly.TrustedOptionFactory() {
                     @Override public Object some(Ast.TypeRef type, Object value) { return null; }
                     @Override public Object none(Ast.TypeRef type) { return null; }
+                    @Override public boolean isNominalOption(Ast.TypeRef type, Object value) {
+                        return value instanceof OptionBox;
+                    }
                 };
         assertThrows(IllegalArgumentException.class,
                 () -> OptionalCallValueAssembly.assemble(preview, List.of(), invalid));
