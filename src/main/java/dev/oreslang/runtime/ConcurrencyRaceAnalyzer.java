@@ -62,7 +62,8 @@ public final class ConcurrencyRaceAnalyzer {
     }
 
     private void budget() {
-        if (++events > MAX_EVENTS) throw new IllegalStateException("race analyzer event budget exhausted");
+        if (events >= MAX_EVENTS) throw new IllegalStateException("race analyzer event budget exhausted");
+        ++events;
     }
 
     private Map<String, Long> clock(String participant) {
@@ -105,8 +106,10 @@ public final class ConcurrencyRaceAnalyzer {
     }
 
     public synchronized void read(String participant, String location) {
-        budget();
         String loc = key(location);
+        key(participant);
+        clock(participant);
+        budget();
         Access access = tick(participant);
         Location state = locations.computeIfAbsent(loc, ignored -> new Location());
         for (Access writer : state.writes.values()) {
@@ -116,8 +119,10 @@ public final class ConcurrencyRaceAnalyzer {
     }
 
     public synchronized void write(String participant, String location) {
-        budget();
         String loc = key(location);
+        key(participant);
+        clock(participant);
+        budget();
         Access access = tick(participant);
         Location state = locations.computeIfAbsent(loc, ignored -> new Location());
         for (Access writer : state.writes.values()) {
@@ -131,20 +136,28 @@ public final class ConcurrencyRaceAnalyzer {
 
     /** One unique, single-consumer message token, not a reusable channel name. */
     public synchronized void send(String participant, String messageId) {
-        budget();
         String id = key(messageId);
-        if (!issuedMessageIds.add(id)) {
+        String actor = key(participant);
+        if (issuedMessageIds.contains(id)) {
             throw new IllegalStateException("message token cannot be reused, including after receive");
         }
-        messages.put(id, tick(participant).clock());
+        clock(actor);
+        budget();
+        Map<String, Long> published = tick(actor).clock();
+        issuedMessageIds.add(id);
+        messages.put(id, published);
     }
 
     public synchronized void receive(String participant, String messageId) {
-        budget();
-        Map<String, Long> sent = messages.remove(key(messageId));
+        String id = key(messageId);
+        String actor = key(participant);
+        Map<String, Long> sent = messages.get(id);
         if (sent == null) throw new IllegalStateException("message token not published");
-        merge(clock(participant), sent);
-        tick(participant);
+        Map<String, Long> destination = clock(actor);
+        budget();
+        merge(destination, sent);
+        tick(actor);
+        messages.remove(id);
     }
 
     /**
