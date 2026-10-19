@@ -78,6 +78,44 @@ final class DynNominalWitnessTest {
     }
 
     @Test
+    void dynCannotBeImplicitlyDeepCopied() {
+        String source = API + """
+                fnc invalid(dyn Deployable instance): void {
+                    val duplicate = rt copy instance;
+                    return;
+                }
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("rt copy of move-only"), error::getMessage);
+    }
+
+    @Test
+    void dynCannotBeMadeSharedWithoutOwnershipContract() {
+        String source = API + """
+                fnc invalid(dyn Deployable instance): void {
+                    val shared = rt share instance;
+                    return;
+                }
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("rt share of move-only"), error::getMessage);
+    }
+
+    @Test
+    void nestedDynIsForbiddenInActorMailContract() {
+        String source = API + """
+                fnc invalid(ActorMail<List<dyn Deployable>> mail): void {
+                    return;
+                }
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("transport/ownership ABI"), error::getMessage);
+    }
+
+    @Test
     void dynCannotEscapeThroughGenericChannelAlias() {
         String source = API + """
                 define type Payload<T> = List<T>;
