@@ -78,17 +78,17 @@ public final class Lexer {
                     add(ELLIPSIS);
                 } else add(DOT);
             }
-            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> add(BACKTICK); case '+' -> add(PLUS);
-            case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(PIPE); case '&' -> add(AMP);
+            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> add(BACKTICK); case '+' -> add(match('=') ? PLUS_EQUAL : PLUS);
+            case '*' -> add(match('=') ? STAR_EQUAL : STAR); case '%' -> add(match('=') ? PERCENT_EQUAL : PERCENT); case '|' -> add(PIPE); case '&' -> add(AMP);
             case '^' -> add(CARET); case '~' -> add(TILDE);
-            case '-' -> add(match('>') ? ARROW : MINUS);
+            case '-' -> add(match('>') ? ARROW : match('=') ? MINUS_EQUAL : MINUS);
             case '!' -> add(match('=') ? BANG_EQUAL : BANG);
             case '=' -> add(match('>') ? FAT_ARROW : match('=') ? EQUAL_EQUAL : EQUAL);
             case '<' -> add(match('=') ? LTE : LT); case '>' -> add(match('=') ? GTE : GT);
             case '/' -> {
                 if (match('/')) while (peek() != '\n' && !isAtEnd()) advance();
                 else if (match('*')) blockComment();
-                else add(SLASH);
+                else add(match('=') ? SLASH_EQUAL : SLASH);
             }
             case ' ', '\r', '\t' -> { }
             case '\n' -> newline();
