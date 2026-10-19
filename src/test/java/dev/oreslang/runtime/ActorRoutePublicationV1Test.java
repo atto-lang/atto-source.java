@@ -1,0 +1,251 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Host coordinator proof only: guest state validation, physical ready
+ * attestations, authenticated mail.done and isolation are separate gates.
+ */
+final class ActorRoutePublicationV1Test {
+    private static String sha(char c) { return String.valueOf(c).repeat(64); }
+
+    private static ActorUpgradeEpochGate.Image image(char code) {
+        return new ActorUpgradeEpochGate.Image(
+                sha(code), sha('1'), sha('2'), sha('3'));
+    }
+
+    private static ActorRoutePublicationV1.StateSnapshot state(int value) {
+        return new ActorRoutePublicationV1.StateSnapshot(
+                sha('1'), new byte[] {(byte) value});
+    }
+
+    private static ActorRoutePublicationV1<String> newAuthority(
+            ActorUpgradeEpochGate gate, LogicalActorProxyMailboxV1 mailbox) {
+        return new ActorRoutePublicationV1<>(gate, mailbox, state(7), "old-physical");
+    }
+
+    @Test
+    void singleSnapshotPublishesIdentityCodeStatePhysicalAndWatermarkTogether() {
+        try (var gate = new ActorUpgradeEpochGate(40, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(8, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            var old = authority.current();
+            assertEquals(40, old.actorIdentity());
+            authority.admit(new byte[] {1});
+            List<String> delivered = new ArrayList<>();
+            assertTrue(authority.dispatchNext((route, envelope) ->
+                    delivered.add(route + ":" + envelope.messageSequence())));
+            assertEquals(List.of("old-physical:1"), delivered);
+
+            try (var stage = authority.stage(image('b'))) {
+                var queued = authority.admit(new byte[] {2});
+                assertEquals(2, queued.messageSequence());
+                assertFalse(stage.quiescent());
+                assertFalse(authority.dispatchNext((route, mail) -> fail("frozen")));
+                authority.complete(1);
+                assertTrue(stage.quiescent());
+                var restored = state(9);
+                assertTrue(stage.publish(restored, "new-physical"));
+                var next = authority.current();
+                assertEquals(old.actorIdentity(), next.actorIdentity());
+                assertEquals(old.incarnation(), next.incarnation());
+                assertEquals(2, next.routeEpoch());
+                assertEquals(image('b'), next.image());
+                assertSame(restored, next.state());
+                assertEquals("new-physical", next.physicalRoute());
+                assertEquals(1, next.oldDispatchWatermark());
+                assertEquals(2, mailbox.snapshot().routeEpoch());
+                assertFalse(mailbox.snapshot().dispatchFrozen());
+                assertEquals(0, gate.livePins());
+                assertThrows(IllegalStateException.class, gate::pin);
+                try (var newTask = next.taskAdmission().pin(
+                        ActorUpgradeEpochGate.LeaseKind.SUSPENDED_TASK)) {
+                    assertTrue(next.taskAdmission().permits(newTask));
+                }
+                assertTrue(authority.dispatchNext((route, envelope) ->
+                        delivered.add(route + ":" + envelope.messageSequence())));
+                assertEquals(List.of("old-physical:1", "new-physical:2"), delivered);
+                authority.complete(2);
+                assertEquals(0, mailbox.snapshot().retainedMessages());
+            }
+        }
+    }
+
+    @Test
+    void oldSuspendedTaskAndLogicalMailBothGateCommit() {
+        try (var gate = new ActorUpgradeEpochGate(41, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            var lease = gate.pin(ActorUpgradeEpochGate.LeaseKind.SUSPENDED_TASK);
+            authority.admit(new byte[] {1});
+            assertTrue(authority.dispatchNext((r, e) -> {}));
+            try (var stage = authority.stage(image('b'))) {
+                assertFalse(stage.publish(state(2), "candidate"));
+                authority.complete(1);
+                assertFalse(stage.publish(state(2), "candidate"),
+                        "Task remains pinned after the last old mail.done");
+                lease.close(); // actual system closes only on physical Task exit
+                assertTrue(stage.publish(state(2), "candidate"));
+                assertEquals(2, authority.current().routeEpoch());
+            } finally {
+                lease.close();
+            }
+        }
+    }
+
+    @Test
+    void rollbackReopensOldRouteWithoutEpochOrSequenceChange() {
+        try (var gate = new ActorUpgradeEpochGate(42, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            authority.admit(new byte[] {1});
+            try (var stage = authority.stage(image('b'))) {
+                authority.admit(new byte[] {2});
+                assertTrue(stage.quiescent());
+            }
+            assertEquals(image('a'), authority.current().image());
+            assertEquals(1, authority.current().routeEpoch());
+            assertEquals(1, mailbox.snapshot().routeEpoch());
+            List<Long> routed = new ArrayList<>();
+            assertTrue(authority.dispatchNext((r, e) -> {
+                assertEquals("old-physical", r);
+                routed.add(e.messageSequence());
+            }));
+            authority.complete(1);
+            assertTrue(authority.dispatchNext((r, e) -> routed.add(e.messageSequence())));
+            authority.complete(2);
+            assertEquals(List.of(1L, 2L), routed);
+            assertFalse(gate.frozen());
+        }
+    }
+
+    @Test
+    void schemaMismatchAndSamePhysicalRouteRejectBeforePublication() {
+        try (var gate = new ActorUpgradeEpochGate(43, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox);
+             var stage = authority.stage(image('b'))) {
+            var invalid = new ActorRoutePublicationV1.StateSnapshot(
+                    sha('f'), new byte[]{1});
+            assertThrows(SecurityException.class,
+                    () -> stage.publish(invalid, "candidate"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> stage.publish(state(3), "old-physical"));
+            assertEquals(1, authority.current().routeEpoch());
+            assertEquals(image('a'), authority.current().image());
+            assertTrue(mailbox.snapshot().dispatchFrozen());
+            assertTrue(stage.publish(state(3), "candidate"));
+            assertThrows(IllegalStateException.class,
+                    () -> stage.publish(state(3), "candidate"));
+        }
+    }
+
+    @Test
+    void staleStageAndDuplicatePublicationCannotReplayRouteChange() {
+        try (var gate = new ActorUpgradeEpochGate(44, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            var stale = authority.stage(image('b'));
+            stale.close();
+            assertThrows(IllegalStateException.class, stale::quiescent);
+            assertThrows(IllegalStateException.class,
+                    () -> stale.publish(state(2), "candidate"));
+            try (var fresh = authority.stage(image('c'))) {
+                assertTrue(fresh.publish(state(3), "replacement"));
+            }
+            assertEquals(image('c'), authority.current().image());
+            assertEquals(2, authority.current().routeEpoch());
+        }
+    }
+
+    @Test
+    void authorityLossBeforePublicationCannotExposeCandidateOrOldData() {
+        try (var gate = new ActorUpgradeEpochGate(45, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            var stage = authority.stage(image('b'));
+            gate.close(); // supervisor teardown invalidates candidate
+            assertThrows(IllegalStateException.class,
+                    () -> stage.publish(state(2), "candidate"));
+            assertEquals(image('a'), authority.current().image());
+            assertTrue(mailbox.snapshot().dispatchFrozen());
+            assertThrows(IllegalStateException.class, stage::close);
+            assertThrows(IllegalStateException.class, authority::current);
+            assertThrows(IllegalStateException.class,
+                    () -> authority.dispatchNext((r,e) -> fail("unsafe")));
+            assertEquals(1, mailbox.snapshot().routeEpoch());
+        }
+    }
+
+    @Test
+    void stateBytesAreDefensivelyClonedAndDigestBound() {
+        byte[] bytes = {1, 2, 3};
+        var snapshot = new ActorRoutePublicationV1.StateSnapshot(sha('1'), bytes);
+        var digest = snapshot.contentSha256();
+        bytes[0] = 9;
+        snapshot.bytes()[1] = 8;
+        assertArrayEquals(new byte[] {1, 2, 3}, snapshot.bytes());
+        assertEquals(digest, snapshot.contentSha256());
+        assertEquals(64, digest.length());
+    }
+
+    @Test
+    void concurrentPhysicalAdmissionCannotRacePastFreeze() throws Exception {
+        try (var gate = new ActorUpgradeEpochGate(46, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox);
+             var pool = Executors.newFixedThreadPool(2)) {
+            authority.admit(new byte[] {1});
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var send = pool.submit(() -> authority.dispatchNext((route, msg) -> {
+                assertEquals("old-physical", route);
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS))
+                        throw new AssertionError("test submit blocked too long");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                }
+            }));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            var staging = pool.submit(() -> authority.stage(image('b')));
+            try {
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> staging.get(50, TimeUnit.MILLISECONDS),
+                        "stage cannot freeze or publish inside a physical send");
+            } finally {
+                release.countDown();
+            }
+            assertTrue(send.get(5, TimeUnit.SECONDS));
+            try (var stage = staging.get(5, TimeUnit.SECONDS)) {
+                assertFalse(stage.quiescent());
+                authority.complete(1);
+                assertTrue(stage.publish(state(2), "replacement"));
+                assertEquals(2, authority.current().routeEpoch());
+            }
+        }
+    }
+
+    @Test
+    void protectedKindsRemainFailClosedUntilAttestedWorkerBackend() {
+        var protectedPlacement = new ActorUpgradeEpochGate.Placement(
+                ActorUpgradeEpochGate.ActorKind.PRIVATE,
+                ActorUpgradeEpochGate.ProtectionDomain.TRUSTED_PROCESS,
+                sha('0'));
+        try (var gate = new ActorUpgradeEpochGate(47, protectedPlacement, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128)) {
+            assertThrows(SecurityException.class,
+                    () -> newAuthority(gate, mailbox));
+        }
+    }
+}
