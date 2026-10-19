@@ -309,6 +309,21 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "LD_PRELOAD": str(self.root / "payload.so"),
             "PYTHONPATH": str(self.root),
             "GH_HOST": "attacker.invalid",
+            "GH_CONFIG_DIR": str(self.root / "forged-gh-config"),
+            "XDG_CONFIG_HOME": str(self.root / "forged-xdg-config"),
+            "HTTPS_PROXY": "http://attacker.invalid:8123",
+            "HTTP_PROXY": "http://attacker.invalid:8123",
+            "ALL_PROXY": "socks5://attacker.invalid:8123",
+            "NO_PROXY": "*",
+            "https_proxy": "http://attacker.invalid:8123",
+            "http_proxy": "http://attacker.invalid:8123",
+            "all_proxy": "socks5://attacker.invalid:8123",
+            "no_proxy": "*",
+            "SSL_CERT_FILE": str(self.root / "forged-ca.pem"),
+            "SSL_CERT_DIR": str(self.root / "forged-ca-dir"),
+            "CURL_CA_BUNDLE": str(self.root / "forged-ca.pem"),
+            "REQUESTS_CA_BUNDLE": str(self.root / "forged-ca.pem"),
+            "NODE_EXTRA_CA_CERTS": str(self.root / "forged-ca.pem"),
         }
         with patch.dict(os.environ, suspicious):
             child = pub.verified_child_env()
