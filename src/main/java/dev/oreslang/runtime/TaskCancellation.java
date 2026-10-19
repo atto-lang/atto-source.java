@@ -73,6 +73,12 @@ final class TaskCancellation {
         List<Registration> detached = new ArrayList<>();
         synchronized (GRAPH_LOCK) {
             if (retired) return;
+            // Retiring a parent with live children would orphan structured
+            // cancellation authority: their next owner could no longer
+            // request revocation through this parent.
+            if (!children.isEmpty()) {
+                throw new IllegalStateException("cannot retire authority with live children");
+            }
             retired = true;
             if (owner != null) owner.children.remove(this);
             owner = null;
