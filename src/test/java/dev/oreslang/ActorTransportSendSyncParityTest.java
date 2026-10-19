@@ -27,6 +27,46 @@ final class ActorTransportSendSyncParityTest {
     }
 
     @Test
+    void untrustedMailboxesRejectActorRefsIncludingNestedReferences() {
+        for (String payload : new String[] {
+                "ActorRef<Endpoint>",
+                "Option<ActorRef<Endpoint>>",
+                "List<ActorRef<Endpoint>>",
+                "Result<int, ActorRef<Endpoint>>"
+        }) {
+            String source = """
+                    define actor Endpoint as
+                      receive(ActorMail<String> mail): void { return; }
+                    end
+
+                    define untrusted actor Worker as
+                      receive(ActorMail<%s> mail): void { return; }
+                    end
+                    """.formatted(payload);
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), payload);
+            assertTrue(error.getMessage().contains("cannot transport ActorRef to an untrusted actor"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void trustedActorMailboxesRetainExplicitActorRefRouting() {
+        for (String kind : new String[] { "shared", "private" }) {
+            String source = """
+                    define actor Endpoint as
+                      receive(ActorMail<String> mail): void { return; }
+                    end
+
+                    define %s actor Router as
+                      receive(ActorMail<ActorRef<Endpoint>> mail): void { return; }
+                    end
+                    """.formatted(kind);
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)), kind);
+        }
+    }
+
+    @Test
     void unknownActorRefTargetCannotForgeRoutingCapability() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
