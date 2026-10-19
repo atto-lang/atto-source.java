@@ -145,6 +145,8 @@ public final class ActorShardColumns implements AutoCloseable {
     @Deprecated
     public double[] snapshotColumn(int field) {
         requireOwner();
+        if (field < 0 || field >= fields)
+            throw new IndexOutOfBoundsException("field");
         double[] copy = new double[rows];
         copyColumnInto(field, copy, 0);
         return copy;
