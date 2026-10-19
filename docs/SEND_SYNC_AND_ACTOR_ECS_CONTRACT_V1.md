@@ -28,12 +28,16 @@ end-to-end contract, not evidence that parallel actor ECS already executes.
   certain explicitly recognized built-ins.
 * Owned mutable Array/List/Vector/Slice, ordinary writable record, FixedArray
   and FixedList can be Send when all elements are Send, but are **not Sync**
-  just because those elements are Sync. Immutable Tuple and explicitly readonly
-  record types derive Sync only when all nested fields are also Sync. A
-  readonly outer record containing a mutable list remains non-Sync. Later
-  immutable buffer/container APIs must have separate, verified storage and
-  aliasing semantics; `rt share` cannot manufacture Sync from read-only
-  syntax alone.
+  just because those elements are Sync. An immutable Tuple derives Sync
+  only when all its nested elements are Sync. **No structural Record currently
+  derives Sync**, even when `Record.readOnly` is true: that flag is a view
+  capability that can be overlaid onto a mutable owner's storage, not
+  proof of exclusive ownership or a deep-frozen backing allocation.
+  Readonly records remain Send when their fields are Send. A separate
+  compiler-backed freeze/alias-exclusivity witness must precede Record Sync.
+  Later immutable buffer/container APIs need similarly verified storage
+  and aliasing semantics; `rt share` cannot manufacture Sync from
+  read-only syntax alone.
 * `TypeChecker.validateAsyncBoundaryType` now requires both the pre-existing
   owned/task-safe test and a Send proof; the existing actor message-specific
   rejection rules remain intact.
