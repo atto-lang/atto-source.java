@@ -167,6 +167,24 @@ final class DynamicPropertyAccessBoundaryTest {
     }
 
     @Test
+    void computedProductBorrowsRemainFailClosedWithoutPathExclusiveLoans() {
+        rejected("""
+                fnc bad(string key): void {
+                    val Point point = struct{x: int, y: int}{x: 1, y: 2};
+                    const field = rt borrow point[key];
+                    return;
+                }
+                """);
+        rejected("""
+                fnc bad(int index): void {
+                    const pair = tuple(1, 2);
+                    const slot = rt borrow pair[index];
+                    return;
+                }
+                """);
+    }
+
+    @Test
     void structuralRecordsRemainReadonlyThroughIndexedAccess() {
         rejected("""
                 fnc bad(): void {
