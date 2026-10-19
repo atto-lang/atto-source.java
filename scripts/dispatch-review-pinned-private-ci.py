@@ -325,6 +325,12 @@ def create_authorization_ref(r,commit_sha):
     if (created.get("ref")!="refs/heads/"+branch or created_obj.get("type")!="commit"
             or require_sha(created_obj.get("sha"),"authorization ref commit")!=commit_sha):
         raise Denied("carrier authorization ref creation response mismatch")
+    authorized=PUB.gh_api(f"repos/{CARRIER_REPO}/git/ref/heads/{branch}")
+    authorized_obj=authorized.get("object") or {}
+    if (authorized.get("ref")!="refs/heads/"+branch
+            or authorized_obj.get("type")!="commit"
+            or require_sha(authorized_obj.get("sha"),"authorization ref readback")!=commit_sha):
+        raise Denied("authorization ref readback mismatch")
     return branch
 
 def require_reviewed_ledgers(r):
