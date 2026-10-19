@@ -1680,7 +1680,8 @@ public final class TypeChecker {
             Ast.BindingStmt binding, Env env, Set<String> generics) {
         if (binding.inferredTypeName() != null || binding.kind() != Ast.BindingKind.CONST
                 || binding.mutableReferent()
-                || !(binding.initializer() instanceof Ast.ObjectExpr object && object.inferredAggregate())) {
+                || !((binding.initializer() instanceof Ast.ObjectExpr object && object.inferredAggregate())
+                     || binding.initializer() instanceof Ast.TupleExpr)) {
             return false;
         }
         Ast.TypeRef ref = binding.declaredType();
@@ -3653,12 +3654,18 @@ public final class TypeChecker {
                     }
                     return member;
                 }
-                if (record.members().isEmpty()) return Unknown.INSTANCE;
+                if (record.members().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "cannot index an empty closed record/struct");
+                }
                 return indexedElementUnion(record.members().values());
             }
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
             if (receiver instanceof Tuple tuple) {
+                if (tuple.elements().isEmpty()) {
+                    throw new IllegalArgumentException("cannot index an empty finite tuple");
+                }
                 Long constant = constantTupleIndex(indexed.index());
                 if (constant != null) {
                     if (constant < 0 || constant >= tuple.elements().size()) {
@@ -3670,7 +3677,7 @@ public final class TypeChecker {
                 return indexedElementUnion(tuple.elements());
             }
             throw new IllegalArgumentException(
-                    "indexing requires an array/list, tuple, or closed struct with a statically known string key");
+                    "indexing requires an array/list, tuple, or closed record/struct; class members use named field access");
         }
         if (expr instanceof Ast.NewExpr created) {
             // Guest Symbols are immutable keys, not fresh reference capabilities.
