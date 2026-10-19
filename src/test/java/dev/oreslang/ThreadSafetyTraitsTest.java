@@ -321,6 +321,41 @@ final class ThreadSafetyTraitsTest {
     }
 
     @Test
+    void deeplyNestedActorMailboxTypesFailWithBoundedDiagnostic() throws Exception {
+        var constructor = TypeChecker.class.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance();
+        var validate = TypeChecker.class.getDeclaredMethod(
+                "validateActorCallableBoundaryType",
+                Types.Type.class, dev.oreslang.ast.Ast.ActorKind.class,
+                boolean.class, String.class);
+        validate.setAccessible(true);
+
+        Type nested = Types.Primitive.INT;
+        for (int i = 0; i < 8192; i++) {
+            nested = switch (i % 3) {
+                case 0 -> new Types.ListType(nested);
+                case 1 -> new Types.Named("Option", List.of(nested));
+                default -> new Types.Record(Map.of("cell", nested));
+            };
+        }
+        Type tooDeep = nested;
+        for (var actorKind : List.of(
+                dev.oreslang.ast.Ast.ActorKind.SHARED,
+                dev.oreslang.ast.Ast.ActorKind.PRIVATE,
+                dev.oreslang.ast.Ast.ActorKind.UNTRUSTED)) {
+            var failure = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> validate.invoke(checker, tooDeep, actorKind, false, "mailbox"));
+            assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains("nesting budget"),
+                    failure.getCause().getMessage());
+        }
+        assertDoesNotThrow(() -> validate.invoke(
+                checker, Types.Primitive.INT, dev.oreslang.ast.Ast.ActorKind.SHARED,
+                false, "mailbox"));
+    }
+
+    @Test
     void sharedMutexAcceptsSendOwnedDataButRejectsUnprovenPayloads() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc good(): void {
