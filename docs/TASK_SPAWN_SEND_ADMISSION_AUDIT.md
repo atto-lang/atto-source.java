@@ -322,3 +322,43 @@ two contracts specifically reject arbitrary rvalue-call ownership and
 projection laundering. This run contains no Oreslang private source and is
 therefore supporting model/runner evidence only, not exact-source compiler,
 JUnit, Maven or GraalVM evidence.
+
+
+### Callee-spelling provenance forgery + ledger resource bounds — 2026-10-19
+
+A later audit found that `isProvenTaskOwnedRvalue` was granting
+`OWNED_RVALUE` based on call spelling alone for names such as
+`Some`, `Ok`, `Err`, `unwrap`, `flatten`, and related members.
+That is not an ownership proof: guest code may define a function or method
+with the same spelling. Until semantic lowering carries an exact resolved
+callee/intrinsic return-ownership witness, **all call results now fail closed**
+for detached-Task `OWNED_RVALUE` minting. Call results can still be passed
+after first binding/moving through an ownership-tracked local once the ordinary
+ownership rules establish the move.
+
+The provenance ledger is also bounded against hostile source:
+- at most 4,096 Task boundaries;
+- at most 4,096 transfers per boundary;
+- at most 65,536 total transfers;
+- transfer labels are 1..256 nonblank characters;
+- capacity/duplicate rejection is atomic and does not partially mutate the
+  ledger.
+
+Current exact code/test blobs before this documentation commit:
+- `OwnershipChecker.java`: `251046bf4ef912813380d43aea9cde7e48cd601a`
+- `TaskTransferProvenance.java`: `83d306357241f3ad00954d17e7b47d4e5cf074c2`
+- `TaskTransferProvenanceTest.java`: `e27029914848ef5d704440e1d618c4cedc10c3dc`
+
+Source-org exact-head fast-ci #39327841115 / job #118318170411 and
+concurrency-contract #39327840968 / job #118318168389 again had **zero
+recorded steps**, so they provide no compiler/JUnit result.
+
+The funded carrier
+`ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra`
+was rechecked without transferring source. Source-free canary run
+#39303220290 was re-run; attempt job #118317869431 completed successfully
+with setup, destination-local checkout, authorization/tree oracle, evidence
+boundary, and completion steps all executed. This proves current Actions
+capacity there, but protected `main` still has an empty private-CI allowlist
+and #1430 has no independent approval, so no private source mirror is
+authorized.
