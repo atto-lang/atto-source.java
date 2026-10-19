@@ -114,6 +114,19 @@ final class DynInterfaceViewTest {
     }
 
     @Test
+    void dynRejectsStructuralOnlyInterfaceMethods() {
+        String source = """
+                define interface Shape as
+                    structural fnc compute(int x): int;
+                end
+                fnc bad(dyn Shape value): void { return; }
+                """;
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("structural method contract"), failure::getMessage);
+    }
+
+    @Test
     void dynRejectsReceiverDependentSignaturesAndNestedErasure() {
         for (String source : new String[] {
                 "define interface Bad as fnc clone(): self; end fnc use(dyn Bad value): void { return; }",
