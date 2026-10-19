@@ -86,10 +86,26 @@ lowered. LLVM native source is a deliberately restricted compiler subset.
    The compiler must reject unknown fields, duplicates, aliasing conflicts,
    or selectors from a different nominal type. These are never general
    reflection pointers or unrestricted access to another actor's heap.
-   Current Java `parsePostfix` does not yet parse `Region<Motion>.new(...)`:
+   Java mainline `parsePostfix` does not yet parse `Region<Motion>.new(...)`:
    unlike `Region.new<Motion>(...)`, its generic type arguments precede
    a member access. This requires a dedicated type-member AST and binding
    path; do not silently attach type specialization to an unrelated method.
+
+## October 19 compiler staging status
+
+Java draft #1491 (stacked on #1487) now **parses** named call items,
+`Region<Motion>.new` type-member specialization, and `+=` writes into
+first-class source AST nodes; it includes exact-example and negative
+regression fixtures. It does **not** execute them. Both Java TypeChecker
+and OwnershipChecker explicitly reject unlowered nodes before interpretation.
+Named-argument calls on ordinary `new Type(...)` and actor `spawn`
+are also retained but denied; spreading constructor/spawn arguments remains
+unsupported. LLVM draft #673 has dedicated negative-source admission gates,
+but no equivalent executable scheduler/Region guest compiler path.
+
+Next promotion must connect typed declaration resolution, checked
+source-order call evaluation and ABI slots, Region<T> field selectors,
+single-evaluation compound writes, and nonparking Group.compute tasks.
 
 ## Execution / concurrency invariants
 
