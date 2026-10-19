@@ -3571,7 +3571,8 @@ public final class OresEvalRootNode extends RootNode {
                                                         indexValue(
                                                                 receiver,
                                                                 key,
-                                                                env),
+                                                                env,
+                                                                index.receiver()),
                                                         null);
                                             } catch (RuntimeException | Error failure3) {
                                                 continuation.accept(
@@ -3632,7 +3633,8 @@ public final class OresEvalRootNode extends RootNode {
                                                                                 receiver,
                                                                                 key,
                                                                                 value,
-                                                                                env),
+                                                                                env,
+                                                                                target.receiver()),
                                                                         null);
                                                             } catch (RuntimeException | Error failure2) {
                                                                 continuation.accept(
@@ -4632,7 +4634,11 @@ public final class OresEvalRootNode extends RootNode {
             return index;
         }
 
-        private Object indexValue(Object receiver, Object index, Env env) {
+        private Object indexValue(
+                Object receiver,
+                Object index,
+                Env env,
+                Ast.Expr receiverExpression) {
             if (receiver instanceof OresObject object) {
                 if (!object.klass.actorKind().equals(Ast.ActorKind.NONE)) {
                     throw new IllegalArgumentException(
@@ -4642,22 +4648,39 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "class field index must be a String");
                 }
-                OwnedField ownedField = object.owner.findField(
-                        object.klass, key, new LinkedHashSet<>());
+
+                Ast.ClassDecl staticClass = staticClassView(receiverExpression, env);
+                if (staticClass == null || staticClass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "computed class indexing requires a preserved ordinary static class view");
+                }
+                OwnedField ownedField = findField(
+                        staticClass, key, new LinkedHashSet<>());
                 if (ownedField == null) {
                     throw new IllegalArgumentException(
-                            "unknown class field key " + object.klass.name() + "." + key);
+                            "unknown class field key " + staticClass.name() + "." + key);
                 }
-                object.owner.requireClassMemberVisible(
+                requireClassMemberVisible(
                         ownedField.field().visibility(),
                         ownedField.owner(),
                         env == null ? null : env.accessClass(),
                         "field",
                         ownedField.field().name());
+
+                // The object may be a subtype of staticClass, but computed
+                // access is intentionally bounded by the static receiver
+                // domain. A child-only field must never appear merely because
+                // the runtime object is more derived than the checked type.
+                if (!object.fields.containsKey(key)) {
+                    throw new IllegalStateException(
+                            "runtime object " + object.klass.name()
+                                    + " does not contain statically admitted field "
+                                    + staticClass.name() + "." + key);
+                }
                 Object value = object.fields.get(key);
                 if (value == UNINITIALIZED_FIELD) {
                     throw new IllegalArgumentException(
-                            "field '" + object.klass.name() + "." + key
+                            "field '" + staticClass.name() + "." + key
                                     + "' is read before constructor initialization");
                 }
                 return value;
@@ -4725,7 +4748,8 @@ public final class OresEvalRootNode extends RootNode {
                 Object receiver,
                 Object key,
                 Object value,
-                Env env) {
+                Env env,
+                Ast.Expr receiverExpression) {
             if (receiver instanceof OresObject object) {
                 if (!object.klass.actorKind().equals(Ast.ActorKind.NONE)) {
                     throw new IllegalArgumentException(
@@ -4735,13 +4759,19 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "class field index must be a String");
                 }
-                OwnedField targetField = object.owner.findField(
-                        object.klass, fieldName, new LinkedHashSet<>());
+
+                Ast.ClassDecl staticClass = staticClassView(receiverExpression, env);
+                if (staticClass == null || staticClass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "computed class indexing requires a preserved ordinary static class view");
+                }
+                OwnedField targetField = findField(
+                        staticClass, fieldName, new LinkedHashSet<>());
                 if (targetField == null) {
                     throw new IllegalArgumentException(
-                            "unknown class field key " + object.klass.name() + "." + fieldName);
+                            "unknown class field key " + staticClass.name() + "." + fieldName);
                 }
-                object.owner.requireClassMemberVisible(
+                requireClassMemberVisible(
                         targetField.field().visibility(),
                         targetField.owner(),
                         env == null ? null : env.accessClass(),
@@ -4752,6 +4782,12 @@ public final class OresEvalRootNode extends RootNode {
                             "field '" + targetField.owner().name() + "."
                                     + targetField.field().name()
                                     + "' is immutable/final");
+                }
+                if (!object.fields.containsKey(fieldName)) {
+                    throw new IllegalStateException(
+                            "runtime object " + object.klass.name()
+                                    + " does not contain statically admitted field "
+                                    + staticClass.name() + "." + fieldName);
                 }
                 object.fields.put(fieldName, value);
                 return value;
@@ -4834,7 +4870,8 @@ public final class OresEvalRootNode extends RootNode {
             if (target instanceof Ast.IndexExpr index) {
                 Object receiver = eval(index.receiver(), env);
                 Object key = eval(index.index(), env);
-                return assignIndexValue(receiver, key, value, env);
+                return assignIndexValue(
+                        receiver, key, value, env, index.receiver());
             }
             throw new IllegalArgumentException(
                     "unsupported assignment target");
@@ -6532,7 +6569,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
-                    return assignIndexValue(receiver, index, value, env);
+                    return assignIndexValue(
+                            receiver, index, value, env, target.receiver());
                 }
                 throw new IllegalArgumentException("unsupported assignment target");
             }
@@ -6668,7 +6706,8 @@ public final class OresEvalRootNode extends RootNode {
                 return indexValue(
                         eval(indexed.receiver(), env),
                         eval(indexed.index(), env),
-                        env);
+                        env,
+                        indexed.receiver());
             }
             if (expr instanceof Ast.NewExpr created) {
                 if (created.type().name().equals("Array")
