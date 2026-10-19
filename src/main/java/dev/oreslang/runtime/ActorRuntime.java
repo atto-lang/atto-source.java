@@ -9185,16 +9185,20 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 terminalSettlementComplete = true;
             } finally {
-                if (terminalSettlementComplete) {
-                    synchronized (lifecycleLock) {
-                        terminalSettlementPending = false;
-                        if (stopped.get()) finalizeStopLocked();
-                        lifecycleLock.notifyAll();
+                try {
+                    if (terminalSettlementComplete) {
+                        synchronized (lifecycleLock) {
+                            terminalSettlementPending = false;
+                            if (stopped.get()) finalizeStopLocked();
+                            lifecycleLock.notifyAll();
+                        }
                     }
+                } finally {
+                    // Also clear identity if the final callback itself
+                    // fails: a reused host carrier must not inherit stale
+                    // stop-thread authority or block future supervisor joins.
+                    ref.terminalSettlementOwnerThread = null;
                 }
-                // Even when a callback throws and the actor remains sealed,
-                // do not leave stale thread identity after unwinding.
-                ref.terminalSettlementOwnerThread = null;
             }
         }
     }
