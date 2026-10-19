@@ -164,3 +164,65 @@ separately. No repository source was mirrored to a separate organization.
   defers, native pins, code-version leases, stop/restart) before any
   `quiescent` call is emitted. Cancellation alone never releases claims.
 - Existing `TypeChecker` guest Task source fail-closed guard must stay on.
+
+## Follow-up security audit and CI carrier investigation (October 19, 2026)
+
+**P0: physical place identity is not its proof flags.** Previously
+`knownPlaceTypes` keyed full `Place` records; `uniqueAllocationProven`
+and field/range `disjointLayoutProven` booleans were part of equality.
+The same allocation/generation/field could therefore be admitted under a
+different referent type by changing only an evidence flag. This revision
+introduces a canonical `PlaceIdentity` with allocation owner, numeric
+allocation ID, generation and projection path, **excluding evidence flags**.
+A conflicting type for the same physical place now fails even after all
+earlier child tickets are quiescent. A checked generation barrier still
+permits deliberate retyping with fresh evidence.
+
+**P0: uniqueness proof escalation.** A root's `uniqueAllocationProven`
+bit was not pinned between admissions. A later caller could claim the
+same allocation ID was unique even if an earlier claim had uncertain
+alias provenance. `knownUniqueness` now commits the first witnessed
+allocation proof atomically, rejects any same-batch or cross-child
+inconsistency, validates structural barriers against that witness,
+and clears it on final scope closure.
+
+**P1: validation callback reentrancy.** Java `synchronized` is reentrant.
+The type/trait resolver could call `quiescent`, `requestCancel`,
+`finishScope` or nested `admitTyped` while the outer admission held
+the monitor. `admissionInProgress` now fails closed on nested admission
+or those state mutations until validation and reservation complete;
+a `finally` resets the gate on exceptions.
+
+**P1: algorithmic preflight.** `admitTyped` now checks sealed status,
+per-child and total live-claim quotas and the pairwise comparison-work
+budget **before copying input or invoking compiler type/trait callbacks**.
+The private reserve step rechecks quota and conflict conditions.
+
+**Regression coverage.** The branch now contains 54 checked-in JUnit
+methods across the verifier (46) and compiler bridge (8), including six
+new proof-identity, budget and reentrancy tests. Source-structural review
+found 10/10 inspected conditions and balanced delimiters. **This is not
+a source Java compilation or an executed JUnit pass.** A separate,
+independently written isolated Java 21 proof-key model compiled and
+completed 100,010 assertions over 50,000 randomized range pairs;
+this tests the model only, not the real GraalVM repository.
+
+**Cross-org GitHub Actions status.** Project security issue
+[#962](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/962)
+explicitly requires reviewed protected-source proof, immutable source
+SHA/tree, authenticated source/destination numeric IDs, private
+destination, and independent approval before mirroring. The checked-in
+`.github/private-ci-approved-repositories.txt` on main contains **zero
+approved destinations**. Consequently **no private source was mirrored
+to another organization**. Read-only checks of three accessible private
+repositories in unrelated organizations showed zero steps and no
+assigned runners in sampled recent workflows; none confirms available
+Actions minutes/budget. A different repo's `GITHUB_TOKEN` would not by
+itself authorize reading this private source.
+
+Keep this PR **DRAFT**. The required next CI proof is an authorized
+runner executing actual exact-head Java 21+/Maven/JUnit tests without
+exposing private source; another-org mirroring first requires #962's
+protected policy and provenance gates. Source Task borrow execution
+remains disabled pending MIR proof minting and authenticated TaskScope
+physical quiescence.
