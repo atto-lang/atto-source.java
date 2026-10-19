@@ -29,7 +29,7 @@ public final class OresTaskScope implements AutoCloseable {
     private final OresTaskScope parent;
     private final Object gate = new Object();
     private final Set<OresTask<?>> tasks = new HashSet<>();
-    /** Reserved-but-unbound compiler Task join slots, never discarded by cancel. */
+    /** Unbound Task join slots, never discarded before physical exit. */
     private final Set<OresFuture<Void>> pendingCompilerFrames = new HashSet<>();
     private final Set<OresTaskScope> childScopes = new HashSet<>();
     /** Directed cancellation observers; do not carry lifecycle ownership. */
@@ -51,19 +51,51 @@ public final class OresTaskScope implements AutoCloseable {
 
     public <T> OresTask<T> submit(AsyncRuntime.Task<T> work) {
         Objects.requireNonNull(work, "work");
+        // Host async executor may run callbacks inline before submitTask
+        // returns. Track an independent physical join slot while it is
+        // unbound, just as for a compiler-generated scheduler frame.
+        OresFuture<Void> admissionExit = new OresFuture<>();
         synchronized (gate) {
             ensureAdmitting();
-            OresTask<T> child = runtime.submitTask(work);
+            pendingCompilerFrames.add(admissionExit);
+        }
+
+        final OresTask<T> child;
+        try {
+            child = runtime.submitTask(work);
+        } catch (RuntimeException | Error rejected) {
+            // AsyncRuntime.submitTask already closes its own failed
+            // registration. No work was admitted by this scope.
+            admissionExit.completeFromRuntime(null);
+            synchronized (gate) {
+                pendingCompilerFrames.remove(admissionExit);
+            }
+            throw rejected;
+        }
+
+        final boolean cancelAfterBind;
+        synchronized (gate) {
             tasks.add(child);
-            // Host-only observer: child membership is retained through
-            // cleanup, NOT merely until the cancelable result is settled.
-            child.getDone().whenCompleteRuntime((value, failure) -> {
+            pendingCompilerFrames.remove(admissionExit);
+            cancelAfterBind = cancelled;
+        }
+        // Complete the former pending slot only after true physical exit,
+        // even if close() snapped it before the Task handle was bound.
+        child.getDone().whenCompleteRuntime((ignored, failure) -> {
+            if (failure == null) {
+                admissionExit.completeFromRuntime(null);
                 synchronized (gate) {
                     tasks.remove(child);
                 }
-            });
-            return child;
+            } else {
+                admissionExit.failFromRuntime(failure);
+            }
+        });
+        if (cancelAfterBind) {
+            Runnable notifyCancelled = child.cancelDeferredNotification();
+            if (notifyCancelled != null) notifyCancelled.run();
         }
+        return child;
     }
 
     /**
@@ -227,10 +259,14 @@ public final class OresTaskScope implements AutoCloseable {
         }
         OresCancellationToken.Registration registration =
                 token.onCancellationRequested(this::cancel);
+        final boolean unregister;
         synchronized (gate) {
-            if (cancelled) registration.close();
-            else externalCancellation.add(registration);
+            unregister = cancelled;
+            if (!unregister) externalCancellation.add(registration);
         }
+        // The subscription's close() may invoke arbitrary host code and
+        // must not run while holding the owning scope's admission monitor.
+        if (unregister) registration.close();
     }
 
 
