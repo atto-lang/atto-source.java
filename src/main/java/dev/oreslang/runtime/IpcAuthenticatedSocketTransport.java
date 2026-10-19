@@ -57,6 +57,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     private final OutputStream output;
     private final IpcTransportSessionLease.CleanupScheduler cleanupScheduler;
     private final AtomicBoolean abortScheduled = new AtomicBoolean();
+    private final Object sendGate = new Object();
     private final Object readGate = new Object();
     private final Object writeGate = new Object();
 
@@ -141,26 +142,32 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                     impossibleMemoryEncodingFailure);
         }
 
-        CompletionStage<IpcReceiptCorrelation.Stage> outcome = receipts.admit(message);
-        Throwable failure = null;
-        try {
-            sessionLease.writeFrame(
-                    physicalGeneration, message, preparedFrame);
-        } catch (IpcTransportSessionLease.PreDispatchRejectedException sendFailure) {
-            failure = sendFailure;
-            // The lease proves commitDispatch never succeeded, so the bound
-            // physical writer was never invoked and never-sent is authoritative.
+        synchronized (sendGate) {
+            // Correlation admission, dispatch commitment and TCP publication
+            // share one stream-order linearization point. Receipt lifetimes
+            // may overlap after send() returns, but accepted frames cannot be
+            // physically reordered by competing host sender threads.
+            CompletionStage<IpcReceiptCorrelation.Stage> outcome = receipts.admit(message);
+            Throwable failure = null;
             try {
-                receipts.rejectBeforeRemote(message);
-            } catch (RuntimeException | Error cleanupFailure) {
-                sendFailure.addSuppressed(cleanupFailure);
+                sessionLease.writeFrame(
+                        physicalGeneration, message, preparedFrame);
+            } catch (IpcTransportSessionLease.PreDispatchRejectedException sendFailure) {
+                failure = sendFailure;
+                // The lease proves commitDispatch never succeeded, so the bound
+                // physical writer was never invoked and never-sent is authoritative.
+                try {
+                    receipts.rejectBeforeRemote(message);
+                } catch (RuntimeException | Error cleanupFailure) {
+                    sendFailure.addSuppressed(cleanupFailure);
+                }
+            } catch (IOException | RuntimeException | Error sendFailure) {
+                // Any failure after dispatch commitment is ambiguous. The lease
+                // requests close on bound-writer failure and never authorizes replay.
+                failure = sendFailure;
             }
-        } catch (IOException | RuntimeException | Error sendFailure) {
-            // Any failure after dispatch commitment is ambiguous. The lease
-            // requests close on bound-writer failure and never authorizes replay.
-            failure = sendFailure;
+            return new SendSubmission(outcome, failure);
         }
-        return new SendSubmission(outcome, failure);
     }
 
     /**
