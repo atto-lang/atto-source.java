@@ -50,6 +50,47 @@ final class DynamicPropertyAccessRuntimeTest {
     }
 
     @Test
+    void computedAssignmentPreservesRhsBeforeKeyOrder() {
+        String source = """
+                fnc rhs(): int {
+                    stdio.println("rhs");
+                    return 7;
+                }
+
+                fnc key(): string {
+                    stdio.println("key");
+                    return "x";
+                }
+
+                pub fnc main(): void {
+                    val Point point = infer struct{x: 1, y: 2};
+                    point[key()] = rhs();
+                    stdio.println(point["x"]);
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(OresLanguage.ID, source, "dynamic-property-assignment-order-sync.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        String text = output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
+        assertEquals("rhs\nkey\n7\n", text);
+    }
+
+    @Test
     void suspendableComputedAssignmentPreservesRhsBeforeKeyOrder() {
         String source = """
                 async fnc rhs(): int {
