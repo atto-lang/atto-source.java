@@ -47,6 +47,11 @@ public final class ConcurrencyRaceAnalyzer {
     private final Map<String, Map<String, Long>> locks = new HashMap<>();
     private final Map<String, String> lockOwners = new HashMap<>();
     private final Map<String, Integer> lockDepths = new HashMap<>();
+    // Only distinct logical child lifetimes may supply fork/join synchronization.
+    private final Map<String, String> forkParents = new HashMap<>();
+    private final Map<String, Map<String, Long>> completedChildren = new HashMap<>();
+    private final Set<String> finishedParticipants = new HashSet<>();
+    private final Set<String> joinedChildren = new HashSet<>();
     private final List<Finding> findings = new ArrayList<>();
     private int events;
     private long conflictCount;
@@ -68,6 +73,9 @@ public final class ConcurrencyRaceAnalyzer {
 
     private Map<String, Long> clock(String participant) {
         String id = key(participant);
+        if (finishedParticipants.contains(id)) {
+            throw new IllegalStateException("participant lifetime already finished");
+        }
         Map<String, Long> existing = clocks.get(id);
         if (existing != null) return existing;
         if (clocks.size() == MAX_PARTICIPANTS) {
@@ -170,6 +178,7 @@ public final class ConcurrencyRaceAnalyzer {
         if (!actor.equals(lockOwners.get(id))) {
             throw new IllegalStateException("release requires the current lock owner");
         }
+        clock(actor);
         budget();
         int depth = lockDepths.get(id);
         if (depth > 1) {
@@ -192,6 +201,7 @@ public final class ConcurrencyRaceAnalyzer {
         if (owner != null && lockDepths.get(id) == Integer.MAX_VALUE) {
             throw new IllegalStateException("reentrant lock depth exhausted");
         }
+        clock(actor);
         budget();
         if (owner != null) {
             tick(actor);
@@ -203,6 +213,70 @@ public final class ConcurrencyRaceAnalyzer {
             lockOwners.put(id, actor);
             lockDepths.put(id, 1);
         }
+    }
+
+    /**
+     * Fork a fresh logical task/message lifetime. The child inherits only
+     * events preceding fork, never later parent or sibling operations.
+     */
+    public synchronized void fork(String parent, String child) {
+        String ancestor = key(parent);
+        String descendant = key(child);
+        if (ancestor.equals(descendant) || clocks.containsKey(descendant)
+                || forkParents.containsKey(descendant)
+                || finishedParticipants.contains(descendant)) {
+            throw new IllegalStateException("fork requires a fresh child participant");
+        }
+        clock(ancestor);
+        if (clocks.size() >= MAX_PARTICIPANTS) {
+            throw new IllegalStateException("race analyzer participant budget exhausted");
+        }
+        budget();
+        Map<String, Long> inherited = tick(ancestor).clock();
+        Map<String, Long> childClock = new LinkedHashMap<>(inherited);
+        childClock.put(descendant, 1L);
+        clocks.put(descendant, childClock);
+        forkParents.put(descendant, ancestor);
+    }
+
+    /**
+     * A completion event cannot be forged by join: only finish captures the
+     * child's final vector clock. A finished lifetime cannot emit more events.
+     */
+    public synchronized void finish(String participant) {
+        String child = key(participant);
+        Map<String, Long> childClock = clocks.get(child);
+        if (childClock == null || finishedParticipants.contains(child)) {
+            throw new IllegalStateException("finish requires one live participant");
+        }
+        for (var held : lockOwners.entrySet()) {
+            if (held.getValue().equals(child)) {
+                throw new IllegalStateException("cannot finish while owning a lock");
+            }
+        }
+        budget();
+        Map<String, Long> completed = tick(child).clock();
+        finishedParticipants.add(child);
+        if (forkParents.containsKey(child)) {
+            completedChildren.put(child, completed);
+        }
+    }
+
+    /** Join a finished, directly forked child exactly once. */
+    public synchronized void join(String parent, String child) {
+        String ancestor = key(parent);
+        String descendant = key(child);
+        if (!ancestor.equals(forkParents.get(descendant))
+                || !completedChildren.containsKey(descendant)
+                || joinedChildren.contains(descendant)) {
+            throw new IllegalStateException("join requires a finished direct child, exactly once");
+        }
+        Map<String, Long> destination = clock(ancestor);
+        budget();
+        merge(destination, completedChildren.get(descendant));
+        tick(ancestor);
+        joinedChildren.add(descendant);
+        completedChildren.remove(descendant);
     }
 
     public synchronized List<Finding> findings() {
