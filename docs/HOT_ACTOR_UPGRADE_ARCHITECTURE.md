@@ -1083,3 +1083,45 @@ foreign Actions repo merely because its budget has capacity.
 
 This is a local in-process receipt safety property, not a remote
 authenticated `mail.done`, durable deduplication, or exactly-once effects.
+
+### ABI-bound scalar hot-path audit — October 19, 2026
+
+The SHARED bridge's new opt-in `SourceActorScalarWireV1` is the single
+canonical 72-byte fixed-length i64 wire format. A concurrent duplicate
+`LogicalActorTypedI64WireV1` implementation was removed; independently
+invented magic/version layouts cannot be allowed to diverge.
+
+The production codec now validates its canonical lowercase compiler
+message-ABI digest once in the immutable `Binding`, then encodes/decodes
+all 32 digest bytes directly from that validated string. The decode path
+checks the complete logical UUID/incarnation and all digest bytes without
+constructing temporary UUID or digest byte arrays. It rejects changed
+magic/version/type/reserved fields, foreign actor or incarnation, different
+compiler ABI and noncanonical frame lengths before physical send attempts
+are reserved. The bounded mailbox still clones and owns admitted bytes.
+
+**Executed product-source codec evidence (isolated, not full runtime):**
+the Java file's local Git blob SHA was
+`442260316ef1f4db313ca0b1001ea44e37b6e6db`, exactly the GitHub
+committed source blob. OpenJDK 21
+`javac --release 21 -Xlint:all -Werror` passed, followed by a
+standalone deterministic driver reporting **50,513 / 50,513 checks PASS**:
+512 header-bit mutations rejected, 25,000 signed-i64 encode/decode
+round trips with length checks, and a canonical initial fixture.
+The new repository JUnit source contains equivalent exhaustive mutations
+and randomized round trips; it still needs Maven/JUnit execution on an
+approved JDK25/Graal runner. This evidence covers only the self-contained
+codec, **not** the compiler, actor router, state transfer, Task scheduler,
+or Native Image.
+
+**Remaining compiler gate:** the ABI fingerprint is emitted by the linked
+actor executor, but the transport still accepts only host-supplied signed
+i64 values. General actor-mail payload types (structs, records, unions,
+tuples, optionals) require compiler-generated typed encoders and decoders,
+closed-world type checking, payload bounds and ownership/capability proofs.
+The i64 frame is not a remotely authenticated message or worker attestation.
+
+**Private-source CI hold:** the destination allowlist is empty and
+source security review #962 is unresolved; no private code or Git tree was
+mirrored to a foreign GitHub Actions organization on the basis of available
+minutes alone.
