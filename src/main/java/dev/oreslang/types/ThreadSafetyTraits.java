@@ -52,7 +52,13 @@ public final class ThreadSafetyTraits {
             // must depend on an independently verified allocation/control-block ABI.
             "Arc", "Weak", "Rc", "RcWeak", "Cell", "RefCell",
             "RwLock", "ReadGuard", "WriteGuard", "RawPointer",
-            "NativePointer", "ThreadLocal", "NativeHandle");
+            "NativePointer", "ThreadLocal", "NativeHandle",
+            // Task/actor/FFI and unlowered shared-state capabilities must not
+            // be made thread-safe by nominal classes spoofing their names.
+            "ActorGroup", "Supervisor", "ActorContext", "ActorState",
+            "Task", "ThreadBound", "Pointer", "OresPointer", "FfiHandle",
+            "RwLockGuard", "BorrowGuard", "Shared", "AtomicRef",
+            "TRef", "Ref", "UnsafeCell");
 
     public enum Trait { SEND, SYNC }
 
