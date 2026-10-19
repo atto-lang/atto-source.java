@@ -127,6 +127,9 @@ final class SealedActorMlScalarPublicationTest {
                     assertThrows(IllegalArgumentException.class,
                             () -> state.prepareScalarPublication(inputSnapshot,
                                     Map.of("version", 2L, "weight", "bad")));
+                    assertThrows(IllegalArgumentException.class,
+                            () -> state.prepareScalarPublication(inputSnapshot,
+                                    Map.of("version", 2L, "name", "blind-overwrite")));
 
                     state.critical(false, read -> {
                         assertThrows(SecurityException.class, () -> read.publishScalars(first));
