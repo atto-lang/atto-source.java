@@ -40,6 +40,14 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         return key;
     }
 
+    private static byte[] binding(int seed) {
+        byte[] binding = new byte[16];
+        for (int i = 0; i < binding.length; ++i) {
+            binding[i] = (byte) (seed + i + 1);
+        }
+        return binding;
+    }
+
     private static String digest(byte[] payload) {
         try {
             return HexFormat.of().formatHex(
@@ -85,13 +93,15 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             IpcReceiptCorrelation.Envelope message,
             long physicalGeneration,
             IpcReceiptCorrelation.Stage localStage,
+            byte[] connectionBinding,
             byte[] key) throws Exception {
         byte[] frame = IpcAuthenticatedSocketTransport.encodeReceiptFrame(
                 message, physicalGeneration,
-                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, key);
+                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                connectionBinding, key);
         int bodyLength = frame.length - 32;
         // Receipt code is deliberately the final authenticated body byte.
-        // Local enum ordinals have no valid v2 wire meaning; re-MAC the frame
+        // Local enum ordinals have no valid v3 wire meaning; re-MAC the frame
         // to prove authentication alone cannot authorize a host-local verdict.
         frame[bodyLength - 1] = (byte) localStage.ordinal();
         Mac mac = Mac.getInstance("HmacSHA256");
@@ -103,6 +113,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
 
     public static void main(String[] ignored) throws Exception {
         byte[] key = key();
+        byte[] connectionBinding = binding(1);
 
         // TCP stream publication is single-file. Physical write concurrency
         // greater than one is rejected; outstanding receipt lifetimes are a
@@ -115,7 +126,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             var bridge = new IpcReceiptCompletionBridge(2);
             try {
                 new IpcAuthenticatedSocketTransport(
-                        client, bridge, configMessage, 10, 2, key,
+                        client, bridge, configMessage, 10, 2, key, connectionBinding,
                         IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
                 throw new AssertionError("parallel TCP physical writers accepted");
             } catch (IllegalArgumentException expected) {
@@ -131,7 +142,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
              Socket peer = server.accept()) {
             var bridge = new IpcReceiptCompletionBridge(1);
             var transport = new IpcAuthenticatedSocketTransport(
-                    client, bridge, configMessage, 10, 1, key,
+                    client, bridge, configMessage, 10, 1, key, connectionBinding,
                     IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
             try {
                 transport.requestCloseAndAwait(-1);
@@ -201,7 +212,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 client.setSoTimeout(3000);
                 var bridge = new IpcReceiptCompletionBridge(4);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, message, 11, 1, key, cleanup::execute);
+                        client, bridge, message, 11, 1, key, connectionBinding, cleanup::execute);
                 var submission = transport.send(message, payload);
                 check(!submission.writeAttemptFailed());
                 check(!submission.outcome().toCompletableFuture().isDone());
@@ -236,7 +247,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             try {
                 var bridge = new IpcReceiptCompletionBridge(2);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, oldEpoch, 71, 1, key, cleanup::execute);
+                        client, bridge, oldEpoch, 71, 1, key, connectionBinding, cleanup::execute);
                 try {
                     transport.send(upgraded, epochPayload);
                     throw new AssertionError("upgraded route used stale transport authority");
@@ -263,7 +274,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             try {
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, rejectedMessage, 72, 1, key, cleanup::execute);
+                        client, bridge, rejectedMessage, 72, 1, key, connectionBinding, cleanup::execute);
                 transport.requestClose();
                 awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
                 var submission = transport.send(rejectedMessage, rejectedPayload);
@@ -310,7 +321,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 client.setSoTimeout(3000);
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, maliciousMessage, 73, 1, key, cleanup::execute);
+                        client, bridge, maliciousMessage, 73, 1, key, connectionBinding, cleanup::execute);
                 var submission = transport.send(maliciousMessage, maliciousPayload);
                 check(!submission.writeAttemptFailed());
                 try {
@@ -359,7 +370,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 client.setSoTimeout(3000);
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, replayMessage, 81, 1, key, cleanup::execute);
+                        client, bridge, replayMessage, 81, 1, key, connectionBinding, cleanup::execute);
                 var submission = transport.send(replayMessage, replayPayload);
                 check(!submission.writeAttemptFailed());
                 try {
@@ -502,7 +513,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 client.setSoTimeout(3000);
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, tamperMessage, 74, 1, key, cleanup::execute);
+                        client, bridge, tamperMessage, 74, 1, key, connectionBinding, cleanup::execute);
                 var submission = transport.send(tamperMessage, tamperPayload);
                 try {
                     transport.readVerifiedReceipt();
@@ -533,7 +544,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             peer.setSoTimeout(3000);
             var bridge = new IpcReceiptCompletionBridge(1);
             var transport = new IpcAuthenticatedSocketTransport(
-                    client, bridge, inlineMessage, 88, 1, key, Runnable::run);
+                    client, bridge, inlineMessage, 88, 1, key, connectionBinding, Runnable::run);
             var submission = transport.send(inlineMessage, inlinePayload);
             check(!submission.writeAttemptFailed());
             IpcAuthenticatedSocketTransport.readDataWireFrame(peer.getInputStream());
@@ -564,7 +575,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 offCallerCleanup(cleanup); // deterministic host-supervisor retry fixture
             };
             var transport = new IpcAuthenticatedSocketTransport(
-                    client, bridge, quarantineMessage, 89, 1, key, scheduler);
+                    client, bridge, quarantineMessage, 89, 1, key, connectionBinding, scheduler);
             var submission = transport.send(quarantineMessage, quarantinePayload);
             check(!submission.writeAttemptFailed());
             var decoded = IpcAuthenticatedSocketTransport.decodeDataFrame(
@@ -609,7 +620,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, silentMessage, 90, 1, key, cleanup::execute);
+                        client, bridge, silentMessage, 90, 1, key, connectionBinding, cleanup::execute);
                 var submission = transport.send(silentMessage, silentPayload);
                 check(!submission.writeAttemptFailed());
                 check(peerSawData.await(2, TimeUnit.SECONDS));
@@ -659,7 +670,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             try {
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, blockedMessage, 91, 1, key, cleanup::execute);
+                        client, bridge, blockedMessage, 91, 1, key, connectionBinding, cleanup::execute);
                 AtomicReference<IpcAuthenticatedSocketTransport.SendSubmission> sendResult =
                         new AtomicReference<>();
                 AtomicReference<Throwable> sendFailure = new AtomicReference<>();
@@ -718,7 +729,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             };
             var bridge = new IpcReceiptCompletionBridge(1);
             var transport = new IpcAuthenticatedSocketTransport(
-                    client, bridge, retryAbortMessage, 915, 1, key, scheduler);
+                    client, bridge, retryAbortMessage, 915, 1, key, connectionBinding, scheduler);
             AtomicReference<IpcAuthenticatedSocketTransport.SendSubmission> result =
                     new AtomicReference<>();
             AtomicReference<Throwable> failure = new AtomicReference<>();
@@ -783,7 +794,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             };
             var bridge = new IpcReceiptCompletionBridge(1);
             var transport = new IpcAuthenticatedSocketTransport(
-                    client, bridge, deadlineMessage, 92, 1, key, scheduler);
+                    client, bridge, deadlineMessage, 92, 1, key, connectionBinding, scheduler);
             AtomicReference<IpcAuthenticatedSocketTransport.SendSubmission> result =
                     new AtomicReference<>();
             AtomicReference<Throwable> failure = new AtomicReference<>();
