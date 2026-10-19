@@ -914,6 +914,12 @@ public final class ActorRuntime implements AutoCloseable {
         synchronized (cell.lifecycleLock) {
             if (closed.get() || cell.stopped.get() || cell.finalized
                     || cell.sealing || cell.forceKillFenced) throw terminated(target);
+            // There is no live atomic actor-route publisher in this stack yet.
+            // In particular, arbitrary positive host-supplied epochs must not
+            // fabricate an upgrade or authorize a stale incarnation.
+            if (routeEpoch != cell.supervisorRouteEpoch)
+                throw new IllegalStateException(
+                        "stale or uncommitted supervisor route epoch");
             command = cell.upgradeCommands.submit(
                     new OtpSupervisorCommandLaneV1.Target(
                             runtimeInstanceId, target.id().value(), target.generation()),
@@ -7165,6 +7171,9 @@ public final class ActorRuntime implements AutoCloseable {
          * Fatal child failures retain their independent reserved CONTROL slots. */
         private final OtpSupervisorCommandLaneV1 upgradeCommands =
                 new OtpSupervisorCommandLaneV1(1);
+        /** Advanced ONLY after the future atomic route+code+state CAS.
+         * No such publisher is wired yet; remain at initial epoch one. */
+        private long supervisorRouteEpoch = 1;
         private final AtomicLong supervisorFairnessYields = new AtomicLong();
         private int consecutiveSupervisorControls;
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
@@ -8086,7 +8095,15 @@ public final class ActorRuntime implements AutoCloseable {
                                             SupervisorOperation.valueOf(command.kind().name()),
                                             command.candidateDigest()),
                                     context);
-                            active.ack();
+                            // Stop may concurrently quarantine the command
+                            // while its callback was already admitted. Retired
+                            // leases are NEVER ACKed or treated as a commit.
+                            // Serialize that final decision against stop's
+                            // lifecycleLock -> command-lane lock ordering.
+                            synchronized (lifecycleLock) {
+                                if (!stopped.get() && !finalized
+                                        && !forceKillFenced) active.ack();
+                            }
                         }
                         if (consecutiveSupervisorControls < MAX_SUPERVISOR_CONTROL_BURST)
                             consecutiveSupervisorControls++;
