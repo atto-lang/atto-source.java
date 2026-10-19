@@ -53,6 +53,7 @@ public final class OwnershipChecker {
     }
 
     public static Ast.Program check(Ast.Program program) {
+        UnloweredDefaultArgValsGuard.reject(program);
         OwnershipChecker checker = new OwnershipChecker(program);
         checker.validate(program);
         return program;
@@ -63,6 +64,10 @@ public final class OwnershipChecker {
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses) {
         if (linkedClasses == null) {
             throw new IllegalArgumentException("linked public classes cannot be null");
+        }
+        UnloweredDefaultArgValsGuard.reject(program);
+        for (Ast.ClassDecl linked : linkedClasses.values()) {
+            if (linked != null) UnloweredDefaultArgValsGuard.rejectClass(linked);
         }
         OwnershipChecker checker = new OwnershipChecker(program);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
