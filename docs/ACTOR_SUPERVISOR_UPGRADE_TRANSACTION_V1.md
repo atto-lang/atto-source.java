@@ -197,5 +197,3 @@ router's post-spawn check. The failed transaction must leave the old route
 authoritative, clear publication authority, retain a candidate owner containing
 the exact physical ActorRef, mark that owner retirement-eligible, and permit
 exactly one later reap after physical finalization.
-
-<!-- audit-probe -->
