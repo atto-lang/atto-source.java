@@ -17,8 +17,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      # A pull_request event's github.sha is the synthetic merge head.
+      # Pin this checkout to the exact PR source head (or push commit).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
@@ -31,9 +34,13 @@ jobs:
       # First execute the small real-GraalVM checked-i64 guest suite; a
       # zero-step workflow cannot be reported as test execution or parity.
       - name: Checked-i64 targeted linked-guest regressions
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          echo "Executed checkout commit: $(git rev-parse HEAD)"
+          set -euo pipefail
+          test -n "$EXPECTED_SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          echo "Verified PR/push source head: $EXPECTED_SOURCE_SHA"
           echo "Executed checkout tree: $(git rev-parse 'HEAD^{tree}')"
           mvn -B -ntp \
             -Dtest=CheckedI64SourceHeaderTest,ExperimentalHirV1CheckedArithmeticRuntimeTest,ExperimentalHirV1CheckedArithmeticBoundaryTest,ExperimentalHirV1CheckedArithmeticBoundaryMatrixTest,ExperimentalCheckedI64RemainderParityTest,ExperimentalHirV1CheckedEffectIdentityTest,ExperimentalHirV1CheckedEffectOracleTest \
