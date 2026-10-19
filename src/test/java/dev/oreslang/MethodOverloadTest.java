@@ -260,6 +260,35 @@ final class MethodOverloadTest {
     }
 
     @Test
+    void overridesMustPreserveParameterLabelsForNamedCallSourceCompatibility() {
+        IllegalArgumentException instance = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Base as
+                          pub pick(int value): int { return value; }
+                        end
+                        define class Child extends Base as
+                          pub pick(int renamed): int { return renamed; }
+                        end
+                        """)));
+        assertTrue(instance.getMessage().contains("preserve parameter label 'value'"),
+                instance::toString);
+
+        IllegalArgumentException staticFunction = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Base as
+                          pub static fnc pick(int value): int { return value; }
+                        end
+                        define class Child extends Base as
+                          pub static fnc pick(int renamed): int { return renamed; }
+                        end
+                        """)));
+        assertTrue(staticFunction.getMessage().contains("preserve parameter label 'value'"),
+                staticFunction::toString);
+    }
+
+    @Test
     void explicitChildOverrideResolvesSameArityMultipleInheritance() throws Exception {
         String output = run("""
                 define module m
