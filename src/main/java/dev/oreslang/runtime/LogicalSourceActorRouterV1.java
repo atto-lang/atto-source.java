@@ -343,15 +343,14 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     throw new SecurityException("physical actor route changed before completion");
                 if (mailbox.snapshot().routeEpoch() != routed.routeEpoch())
                     throw new SecurityException("physical and proxy route epochs differ");
-                // Revalidate ownership of the SAME outstanding envelope in
-                // the ORIGINAL mailbox before credit accounting. Otherwise
-                // a forged mailbox with a matching sequence could be repaid.
-                mailbox.requireOutstandingEnvelope(envelope, routed.routeEpoch());
-                // Consume BEFORE touching mailbox accounting. If completion
-                // rejects or faults, no caller may replay the receipt; its
-                // logical delivery must be reconciled by the supervisor.
+                // Consume BEFORE touching mailbox accounting. The mailbox
+                // validates exact envelope identity, route epoch and a prior
+                // physical-send attempt under one lock, then refunds credits
+                // atomically. Any rejection leaves this receipt consumed and
+                // requires supervisor reconciliation rather than replay.
                 consumed = true;
-                mailbox.complete(envelope.messageSequence());
+                mailbox.completeAfterPhysicalReceipt(
+                        envelope, routed.routeEpoch());
             }
         }
     }
