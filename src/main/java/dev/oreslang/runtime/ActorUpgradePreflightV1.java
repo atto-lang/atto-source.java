@@ -77,20 +77,23 @@ final class ActorUpgradePreflightV1 implements AutoCloseable {
         if (closed) return;
         // If one rollback fails, still attempt the other. A failed barrier
         // remains a supervisor-visible failure, not a successful upgrade.
-        Throwable failure = null;
-        try {
-            mailboxTicket.rollback();
-        } catch (RuntimeException | Error error) {
-            failure = error;
-        }
+        // Abort code publication FIRST. If that fails (for example a
+        // separate holder already committed this image), reopening DATA
+        // dispatch would route old messages under an unknown generation.
+        // Preserve the frozen mailbox and escalate for supervisor recovery.
         try {
             generation.abort(staged);
-        } catch (RuntimeException | Error error) {
-            if (failure == null) failure = error;
-            else if (failure != error) failure.addSuppressed(error);
+        } catch (RuntimeException | Error unsafeAbort) {
+            closed = true;
+            throw unsafeAbort;
         }
-        closed = true;
-        if (failure instanceof Error error) throw error;
-        if (failure instanceof RuntimeException error) throw error;
+        // Once old code is confirmed authoritative, reopening its original
+        // mailbox epoch is safe. A failed rollback is reported and remains
+        // frozen rather than falsely claiming progress.
+        try {
+            mailboxTicket.rollback();
+        } finally {
+            closed = true;
+        }
     }
 }
