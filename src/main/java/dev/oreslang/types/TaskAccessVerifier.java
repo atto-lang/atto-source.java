@@ -129,7 +129,7 @@ final class TaskAccessVerifier {
      * requires T:Send. A passing proof still does NOT establish lifetime,
      * actor-domain authorization, pinned code, or task quiescence.
      */
-    public Ticket admitTyped(List<TypedClaim> requested,
+    public synchronized Ticket admitTyped(List<TypedClaim> requested,
                              ThreadSafetyTraits.NominalProof nominalProof) {
         Objects.requireNonNull(nominalProof, "nominalProof");
         List<TypedClaim> typed = List.copyOf(Objects.requireNonNull(requested, "claims"));
