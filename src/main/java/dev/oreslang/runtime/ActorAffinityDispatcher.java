@@ -16,14 +16,21 @@ import java.util.function.IntFunction;
 final class ActorAffinityDispatcher extends AbstractExecutorService {
     private final List<ExecutorService> lanes;
     private final int[] cpus;
+    private final long cpuLaneOffset;
     private final Semaphore queueSlots;
     private final AtomicInteger nextLane = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
 
     ActorAffinityDispatcher(int parallelism, int capacity, int[] cpus,
                             IntFunction<ExecutorService> factory) {
+        this(parallelism, capacity, cpus, 0L, factory);
+    }
+
+    ActorAffinityDispatcher(int parallelism, int capacity, int[] cpus, long cpuLaneOffset,
+                            IntFunction<ExecutorService> factory) {
         if (parallelism < 1 || capacity < 1) throw new IllegalArgumentException("invalid lane limits");
         this.cpus = cpus.clone();
+        this.cpuLaneOffset = cpuLaneOffset;
         for (int cpu : cpus) NativeCarrierExecutor.requireAllowedCpu(cpu);
         this.queueSlots = new Semaphore(capacity);
         var created = new ArrayList<ExecutorService>();
@@ -37,7 +44,11 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     }
 
     int reserveLane() { return Math.floorMod(nextLane.getAndIncrement(), lanes.size()); }
-    int cpuForLane(int lane) { return cpus.length == 0 ? -1 : cpus[lane % cpus.length]; }
+    int cpuForLane(int lane) {
+        if (cpus.length == 0) return -1;
+        int index = (int) Math.floorMod(cpuLaneOffset + (long) lane, (long) cpus.length);
+        return cpus[index];
+    }
     boolean nativeCarriers() { return lanes.stream().allMatch(NativeCarrierExecutor.class::isInstance); }
 
     void executeOnLane(int lane, Runnable command) {
