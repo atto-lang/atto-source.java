@@ -215,7 +215,9 @@ public final class TaskHandle<T> {
         Throwable unwrapped = failure == null ? null : OresFuture.unwrap(failure);
         if (unwrapped == null) {
             outcome = new Success<>(value);
-        } else if (source.isCancelled() || unwrapped instanceof CancelledAtResume) {
+        } else if (source.isCancelled()
+                || (unwrapped instanceof CancelledAtResume
+                        && cancellation.isCancelled())) {
             outcome = new Cancelled<>(Objects.requireNonNullElse(
                     cancellation.cancellationReason(), "cancelled"));
         } else {
