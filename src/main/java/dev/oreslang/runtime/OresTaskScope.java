@@ -6,6 +6,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Consumer;
@@ -32,12 +33,14 @@ public final class OresTaskScope implements AutoCloseable {
     // Lock order: treeAdmissionGate -> scope gate.
     private final Object treeAdmissionGate;
     private final Set<OresTask<?>> tasks = new HashSet<>();
+    /** Physical lifetime of admitted but not yet handle-bound Tasks. */
+    private final Set<OresFuture<Void>> pendingAdmissions = new HashSet<>();
     private final Set<OresTaskScope> childScopes = new HashSet<>();
     /** Directed cancellation observers; do not carry lifecycle ownership. */
     private final List<OresCancellationToken.Registration> externalCancellation =
             new ArrayList<>();
     private final CountDownLatch fullyJoined = new CountDownLatch(1);
-    private boolean cancelled;
+    private volatile boolean cancelled;
     private boolean joining;
     private volatile Throwable closeFailure;
 
@@ -54,21 +57,53 @@ public final class OresTaskScope implements AutoCloseable {
 
     public <T> OresTask<T> submit(AsyncRuntime.Task<T> work) {
         Objects.requireNonNull(work, "work");
+        OresFuture<Void> provisionalExit = new OresFuture<>();
+        // Preserve the atomic tree-wide cancellation preflight barrier.
+        // Only registration holds these locks, not scheduler dispatch.
         synchronized (treeAdmissionGate) {
             synchronized (gate) {
-            ensureAdmitting();
-            OresTask<T> child = runtime.submitTask(work);
+                ensureAdmitting();
+                pendingAdmissions.add(provisionalExit);
+            }
+        }
+
+        final OresTask<T> child;
+        try {
+            child = runtime.submitTask(() -> {
+                if (cancelled) {
+                    throw new CancellationException(
+                            "Task scope cancelled before host Task entry");
+                }
+                return work.run();
+            });
+        } catch (RuntimeException | Error rejected) {
+            provisionalExit.completeFromRuntime(null);
+            synchronized (gate) {
+                pendingAdmissions.remove(provisionalExit);
+            }
+            throw rejected;
+        }
+        final boolean cancelAfterBind;
+        synchronized (gate) {
             tasks.add(child);
-            // Host-only observer: child membership is retained through
-            // cleanup, NOT merely until the cancelable result is settled.
-            child.getDone().whenCompleteRuntime((value, failure) -> {
+            pendingAdmissions.remove(provisionalExit);
+            cancelAfterBind = cancelled;
+        }
+        child.getDone().whenCompleteRuntime((ignored, failure) -> {
+            if (failure == null) {
+                provisionalExit.completeFromRuntime(null);
                 synchronized (gate) {
                     tasks.remove(child);
                 }
-            });
-            return child;
+            } else {
+                provisionalExit.failFromRuntime(failure);
+            }
+        });
+        if (cancelAfterBind) {
+            Runnable notifyCancelled = child.cancelDeferredNotification();
+            if (notifyCancelled != null) notifyCancelled.run();
         }
-        }
+        return child;
     }
 
     /**
@@ -103,63 +138,83 @@ public final class OresTaskScope implements AutoCloseable {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(frame, "frame");
         Objects.requireNonNull(onPhysicalExit, "onPhysicalExit");
-        synchronized (treeAdmissionGate) {
-            synchronized (gate) {
-            try {
-                ensureAdmitting();
-            } catch (RuntimeException | Error rejectedByScope) {
-                // The caller already acquired the code-generation lease
-                // before calling this method. A cancelled/closed parent
-                // scope rejects without scheduling; it still owns the
-                // responsibility to release that unused lease exactly once.
+        OresFuture<Void> exited = new OresFuture<>();
+        try {
+            synchronized (treeAdmissionGate) {
+                synchronized (gate) {
+                    ensureAdmitting();
+                    pendingAdmissions.add(exited);
+                }
+            }
+        } catch (RuntimeException | Error rejected) {
+            releaseUnadmitted(onPhysicalExit, rejected);
+            throw rejected;
+        }
+
+        OresFuture<T> completion;
+        try {
+            // Never call an executor or arbitrary callbacks with either
+            // treeAdmissionGate or gate held. A provisional physical join
+            // slot prevents concurrent cancellation/close from losing work.
+            completion = scheduler.start(resume -> {
+                if (cancelled) {
+                    throw new CancellationException(
+                            "Task scope cancelled before guest Task turn");
+                }
+                return frame.resume(resume);
+            }, () -> {
                 try {
                     onPhysicalExit.run();
-                } catch (RuntimeException | Error releaseFailure) {
-                    rejectedByScope.addSuppressed(releaseFailure);
-                }
-                throw rejectedByScope;
-            }
-            OresFuture<Void> exited = new OresFuture<>();
-            OresFuture<T> completion;
-            try {
-                completion = scheduler.start(frame, () -> {
-                    // The scheduler has already fenced the guest context/turn.
-                    // A broken host release cannot be treated as a successful
-                    // resource retirement; do not silently swallow its error.
-                    try {
-                        onPhysicalExit.run();
-                        exited.completeFromRuntime(null);
-                    } catch (RuntimeException | Error failure) {
-                        exited.failFromRuntime(failure);
-                    }
-                });
-            } catch (RuntimeException | Error rejectedBeforeAdmission) {
-                // OresScheduler.start only throws before registering a
-                // TaskRunner (closed scheduler, admission limit or live-set
-                // registration failure). No guest code can be running, so
-                // this owner must retire its already-acquired generation pin.
-                // A post-registration enqueue error instead settles via the
-                // scheduler's onQuiescent callback and cannot enter here.
-                try {
-                    onPhysicalExit.run();
-                } catch (RuntimeException | Error releaseFailure) {
-                    rejectedBeforeAdmission.addSuppressed(releaseFailure);
-                }
-                throw rejectedBeforeAdmission;
-            }
-            OresTask<T> child = new OresTask<>(completion, exited);
-            tasks.add(child);
-            child.getDone().whenCompleteRuntime((ignored, failure) -> {
-                // Do not discard an owner record if its trusted image-release
-                // callback failed. close() must still report the failed fence.
-                if (failure == null) {
-                    synchronized (gate) {
-                        tasks.remove(child);
-                    }
+                    exited.completeFromRuntime(null);
+                } catch (RuntimeException | Error failure) {
+                    exited.failFromRuntime(failure);
                 }
             });
-            return child;
+        } catch (RuntimeException | Error rejected) {
+            Throwable releaseFailure = releaseUnadmitted(onPhysicalExit, rejected);
+            if (releaseFailure == null) {
+                exited.completeFromRuntime(null);
+                synchronized (gate) {
+                    pendingAdmissions.remove(exited);
+                }
+            } else {
+                // A failed generation-pin release is retained as an explicit
+                // join failure, even if the caller discards the thrown error.
+                exited.failFromRuntime(releaseFailure);
+            }
+            throw rejected;
         }
+        OresTask<T> child = new OresTask<>(completion, exited);
+        final boolean cancelAfterBind;
+        synchronized (gate) {
+            tasks.add(child);
+            pendingAdmissions.remove(exited);
+            cancelAfterBind = cancelled;
+        }
+        child.getDone().whenCompleteRuntime((ignored, failure) -> {
+            if (failure == null) {
+                synchronized (gate) {
+                    tasks.remove(child);
+                }
+            }
+        });
+        if (cancelAfterBind) {
+            Runnable notifyCancelled = child.cancelDeferredNotification();
+            if (notifyCancelled != null) notifyCancelled.run();
+        }
+        return child;
+    }
+
+    private static Throwable releaseUnadmitted(
+            Runnable onPhysicalExit, Throwable rejected) {
+        try {
+            onPhysicalExit.run();
+            return null;
+        } catch (RuntimeException | Error releaseFailure) {
+            if (releaseFailure != rejected) {
+                rejected.addSuppressed(releaseFailure);
+            }
+            return releaseFailure;
         }
     }
 
@@ -204,15 +259,16 @@ public final class OresTaskScope implements AutoCloseable {
         }
         OresCancellationToken.Registration registration =
                 token.onCancellationRequested(this::cancel);
+        final boolean unregister;
         synchronized (treeAdmissionGate) {
             synchronized (gate) {
-                if (cancelled) registration.close();
-                else externalCancellation.add(registration);
+                unregister = cancelled;
+                if (!unregister) externalCancellation.add(registration);
             }
         }
+        // Host detach must not execute under either admission lock.
+        if (unregister) registration.close();
     }
-
-
 
     private void ensureAdmitting() {
         if (cancelled || runtime.isClosed())
@@ -311,14 +367,16 @@ public final class OresTaskScope implements AutoCloseable {
         final OresTaskScope scope;
         final List<OresTaskScope> children;
         final List<OresTask<?>> owned;
+        final List<OresFuture<Void>> pending;
         int nextChild;
         Throwable failure;
 
         CloseFrame(OresTaskScope scope, List<OresTaskScope> children,
-                List<OresTask<?>> owned) {
+                List<OresTask<?>> owned, List<OresFuture<Void>> pending) {
             this.scope = scope;
             this.children = children;
             this.owned = owned;
+            this.pending = pending;
         }
 
         void record(Throwable problem) {
@@ -333,7 +391,8 @@ public final class OresTaskScope implements AutoCloseable {
             // Failed snapshot allocation must not strand subsequent closers
             // on a join latch that no owning closer can ever count down.
             CloseFrame prepared = new CloseFrame(this,
-                    new ArrayList<>(childScopes), new ArrayList<>(tasks));
+                    new ArrayList<>(childScopes), new ArrayList<>(tasks),
+                    new ArrayList<>(pendingAdmissions));
             joining = true;
             return prepared;
         }
@@ -399,6 +458,15 @@ public final class OresTaskScope implements AutoCloseable {
             for (OresTask<?> task : current.owned) {
                 try {
                     awaitPhysicalExit(task.getDone());
+                } catch (RuntimeException | Error problem) {
+                    current.record(problem);
+                }
+            }
+            // The snapshot may capture admission before a Task handle exists.
+            // That reservation must not disappear before physical retirement.
+            for (OresFuture<Void> pending : current.pending) {
+                try {
+                    awaitPhysicalExit(pending);
                 } catch (RuntimeException | Error problem) {
                     current.record(problem);
                 }
