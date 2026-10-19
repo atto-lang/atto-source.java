@@ -116,6 +116,12 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     private final AtomicBoolean cancelRevocationComplete = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
+    /**
+     * Only operation-owned callback Futures with commit-time cancellation
+     * denial require an explicit exceptional terminal on actor STOP. This
+     * flag does not apply to regular producer Futures or ordinary callbacks.
+     */
+    private volatile boolean failIfOwnerStopped;
     private final ConcurrentLinkedQueue<RuntimeWaiterRegistration<T>> waiters = new ConcurrentLinkedQueue<>();
 
     public OresFuture() {
@@ -194,6 +200,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         OresFuture<T> future = new OresFuture<>(
                 Objects.requireNonNull(cancelAdmission, "cancelAdmission"),
                 Objects.requireNonNull(cancelHook, "cancelHook"));
+        // This overload represents a committed-operation cancellation gate.
+        // A forcibly stopped owning actor must not strand it indefinitely.
+        future.failIfOwnerStopped = true;
         AtomicBoolean callbackClaimed = new AtomicBoolean();
 
         Callback<T> completion = new Callback<>() {
@@ -208,7 +217,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 // no-op rather than an exception escaping onto the producer's
                 // thread. Marking the callback claimed still diagnoses any
                 // subsequent duplicate callback invocation.
-                return !future.isCancelled();
+                return !future.isDone();
             }
 
             @Override
@@ -490,6 +499,21 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         // successful state CAS; guest/producer authority must then be removed
         // before ordinary host completion callbacks are entered.
         return settle(new Cancelled(cancelled), this::invokeCancelHook);
+    }
+
+    /**
+     * Actor STOP fallback for a committed callback operation whose consumer
+     * cancellation predicate rejects rollback. STOP can suppress the owning
+     * actor lane before an arm's lexical cleanup executes, so fail explicitly
+     * instead of stranding a promise or falsely claiming cleanup succeeded.
+     * The winning channel operation is NOT retroactively rolled back.
+     */
+    boolean failOnOwnerStopIfPending(Throwable ownerStopReason) {
+        if (!failIfOwnerStopped || isDone()) return false;
+        return failFromRuntime(new IllegalStateException(
+                "actor stopped after asynchronous operation committed; "
+                        + "source cleanup was not verified complete",
+                Objects.requireNonNull(ownerStopReason, "ownerStopReason")));
     }
 
     /** Producer-owned cancellation publication after source cleanup. */
