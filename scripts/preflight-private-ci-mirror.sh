@@ -7,6 +7,9 @@ set -euo pipefail
 readonly SOURCE_REPO="ores-truffle-oreslang/oreslang-source.java"
 readonly DEST_REPO="ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
 readonly DEST_ID="1412142815"
+readonly DEST_DEFAULT_BRANCH="main"
+readonly DEST_BASE_COMMIT="0d6524706ce8abade8b888b0a16fac04560e395c"
+readonly DEST_BASE_TREE="a495561fe9bbe49090754c9e7fa349a0feeddb70"
 readonly SOURCE_ID="1400792274"
 readonly POLICY_PATH=".github/private-ci-approved-repositories.txt"
 readonly PREFLIGHT_PATH="scripts/preflight-private-ci-mirror.sh"
@@ -25,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: bash preflight-private-ci-mirror.sh <source-pr-number> <source-commit-sha> <source-tree-sha> [maintainer-approval-comment-id security-approval-comment-id]" >&2
+  echo "usage: bash preflight-private-ci-mirror.sh <source-pr-number> <source-commit-sha> <source-tree-sha> <destination-branch> [maintainer-approval-comment-id security-approval-comment-id]" >&2
   exit 2
 }
 
@@ -50,13 +53,15 @@ require_plan_feature_unavailable() {
     || die "cannot prove $label is unavailable on the current repository plan"
 }
 
-[[ "$#" -eq 3 || "$#" -eq 5 ]] || usage
+[[ "$#" -eq 4 || "$#" -eq 6 ]] || usage
 source_pr="$1"
 expected_commit="$2"
 expected_tree="$3"
+destination_branch="$4"
 [[ "$source_pr" =~ ^[1-9][0-9]{0,8}$ ]] || usage
 [[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$expected_tree" =~ ^[0-9a-f]{40}$ ]] || usage
+[[ "$destination_branch" =~ ^ci/oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}$ ]] || usage
 
 for tool in git gh; do
   command -v "$tool" >/dev/null 2>&1 || die "missing $tool"
@@ -167,6 +172,33 @@ done <<< "$policy"
 [[ "$found" -eq 1 ]] \
   || die "destination is not uniquely approved on main"
 
+# Bind authorization to the exact reviewed carrier content, not merely the
+# destination repository identity. A carrier-main change therefore invalidates
+# authorization before private source bytes can be read or uploaded.
+IFS=$'\t' read -r actual_id actual_name actual_private actual_push actual_default < <(
+  gh_api "repos/$DEST_REPO" \
+    --jq '[.id, .full_name, .private, (.permissions.push // false), .default_branch] | @tsv'
+) || die "cannot read authenticated destination repository"
+[[ "$actual_id" == "$DEST_ID" ]] \
+  || die "destination GitHub repository ID mismatch"
+[[ "$actual_name" == "$DEST_REPO" ]] \
+  || die "destination full name mismatch"
+[[ "$actual_private" == "true" ]] \
+  || die "destination must remain private"
+[[ "$actual_push" == "true" ]] \
+  || die "insufficient destination permissions"
+[[ "$actual_default" == "$DEST_DEFAULT_BRANCH" ]] \
+  || die "destination default branch changed"
+
+dest_base_commit="$(gh_api "repos/$DEST_REPO/git/ref/heads/$DEST_DEFAULT_BRANCH" --jq '.object.sha')" \
+  || die "cannot resolve destination carrier base commit"
+[[ "$dest_base_commit" =~ ^[0-9a-f]{40}$ && "$dest_base_commit" == "$DEST_BASE_COMMIT" ]] \
+  || die "destination carrier base commit is not the reviewed commit"
+dest_base_tree="$(gh_api "repos/$DEST_REPO/git/commits/$dest_base_commit" --jq '.tree.sha')" \
+  || die "cannot resolve destination carrier base tree"
+[[ "$dest_base_tree" =~ ^[0-9a-f]{40}$ && "$dest_base_tree" == "$DEST_BASE_TREE" ]] \
+  || die "destination carrier base tree is not the reviewed tree"
+
 auth_mode=""
 if [[ "$main_protected" == "true" ]]; then
   # "protected=true" alone is not enough. Require concrete anti-bypass review
@@ -212,17 +244,17 @@ elif [[ "$main_protected" == "false" ]]; then
     "repos/$SOURCE_REPO/branches/main/protection" "classic branch protection"
   require_plan_feature_unavailable \
     "repos/$SOURCE_REPO/rulesets" "repository rulesets"
-  [[ "$#" -eq 5 ]] \
+  [[ "$#" -eq 6 ]] \
     || die "unprotected main requires review-attested-v1 comment IDs"
-  maintainer_comment_id="$4"
-  security_comment_id="$5"
+  maintainer_comment_id="$5"
+  security_comment_id="$6"
   [[ "$maintainer_comment_id" =~ ^[1-9][0-9]*$ \
       && "$security_comment_id" =~ ^[1-9][0-9]*$ ]] \
     || die "invalid review-attested approval comment ID"
   [[ "$maintainer_comment_id" != "$security_comment_id" ]] \
     || die "maintainer and security approvals must be distinct comments"
 
-  approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=$SOURCE_REPO source_repo_id=$SOURCE_ID source_pr=$source_pr source_commit=$expected_commit source_tree=$expected_tree destination_repo=$DEST_REPO destination_repo_id=$DEST_ID policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+  approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=$SOURCE_REPO source_repo_id=$SOURCE_ID source_pr=$source_pr source_commit=$expected_commit source_tree=$expected_tree destination_repo=$DEST_REPO destination_repo_id=$DEST_ID destination_branch=$destination_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
 
   verify_attestation_comment() {
     local comment_id="$1"
@@ -258,22 +290,26 @@ else
   die "unexpected source branch protection state"
 fi
 
-# Verify the immutable private destination at time of transfer.
-IFS=$'\t' read -r actual_id actual_name actual_private actual_push < <(
+# Revalidate destination identity and the exact carrier base after authorization.
+IFS=$'\t' read -r final_id final_name final_private final_push final_default < <(
   gh_api "repos/$DEST_REPO" \
-    --jq '[.id, .full_name, .private, (.permissions.push // false)] | @tsv'
-) || die "cannot read authenticated destination repository"
-[[ "$actual_id" == "$DEST_ID" ]] \
-  || die "destination GitHub repository ID mismatch"
-[[ "$actual_name" == "$DEST_REPO" ]] \
-  || die "destination full name mismatch"
-[[ "$actual_private" == "true" ]] \
-  || die "destination must remain private"
-[[ "$actual_push" == "true" ]] \
-  || die "insufficient destination permissions"
+    --jq '[.id, .full_name, .private, (.permissions.push // false), .default_branch] | @tsv'
+) || die "cannot re-read authenticated destination repository"
+[[ "$final_id" == "$actual_id" && "$final_id" == "$DEST_ID" \
+    && "$final_name" == "$DEST_REPO" && "$final_private" == "true" \
+    && "$final_push" == "true" && "$final_default" == "$DEST_DEFAULT_BRANCH" ]] \
+  || die "destination identity, privacy, permissions or default branch changed during authorization"
+final_base_commit="$(gh_api "repos/$DEST_REPO/git/ref/heads/$DEST_DEFAULT_BRANCH" --jq '.object.sha')" \
+  || die "cannot re-resolve destination carrier base commit"
+final_base_tree="$(gh_api "repos/$DEST_REPO/git/commits/$final_base_commit" --jq '.tree.sha')" \
+  || die "cannot re-resolve destination carrier base tree"
+[[ "$final_base_commit" == "$dest_base_commit" && "$final_base_commit" == "$DEST_BASE_COMMIT" \
+    && "$final_base_tree" == "$dest_base_tree" && "$final_base_tree" == "$DEST_BASE_TREE" ]] \
+  || die "destination carrier changed during authorization"
 
-printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
-  "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$main_sha" \
+printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
+  "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$destination_branch" \
+  "$dest_base_commit" "$dest_base_tree" "$main_sha" \
   "$policy_blob" "$preflight_blob" "$guard_blob" "$wrapper_blob" "$publisher_blob" "$actual_id"
 
 # No transfer or workflow dispatch occurs. Human security-owner approval,
