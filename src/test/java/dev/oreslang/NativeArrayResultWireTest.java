@@ -20,6 +20,30 @@ final class NativeArrayResultWireTest {
     }
 
     @Test
+    void nativeStatusDecodingRejectsHighBitsAndSignedNegatives() {
+        assertEquals(NativeArrayResultWire.Result.ok(), NativeArrayResultWire.decodeNativeStatus(0));
+        assertEquals(NativeArrayResultWire.Result.err(NativeArrayResultWire.ArrayError.LIMIT),
+                NativeArrayResultWire.decodeNativeStatus(1));
+        assertEquals(NativeArrayResultWire.Result.err(NativeArrayResultWire.ArrayError.NO_MEMORY),
+                NativeArrayResultWire.decodeNativeStatus(2));
+        for (int status = 3; status < 256; ++status) {
+            final int candidate = status;
+            assertThrows(IllegalStateException.class,
+                    () -> NativeArrayResultWire.decodeNativeStatus(candidate));
+        }
+        for (int status : new int[] {-1, -2, -256, Integer.MIN_VALUE, Integer.MAX_VALUE, 256, 65536}) {
+            assertThrows(IllegalStateException.class,
+                    () -> NativeArrayResultWire.decodeNativeStatus(status));
+        }
+        assertArrayEquals(new byte[] {1, 0, 0},
+                NativeArrayResultWire.encode(NativeArrayResultWire.decodeNativeStatus(0)));
+        assertArrayEquals(new byte[] {1, 1, 1},
+                NativeArrayResultWire.encode(NativeArrayResultWire.decodeNativeStatus(1)));
+        assertArrayEquals(new byte[] {1, 1, 2},
+                NativeArrayResultWire.encode(NativeArrayResultWire.decodeNativeStatus(2)));
+    }
+
+    @Test
     void rejectsAllNoncanonicalVariantAndErrorBytePairs() {
         for (int variant = 0; variant < 256; ++variant) {
             for (int error = 0; error < 256; ++error) {

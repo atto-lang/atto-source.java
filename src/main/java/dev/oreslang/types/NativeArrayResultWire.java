@@ -35,6 +35,22 @@ public final class NativeArrayResultWire {
 
     private NativeArrayResultWire() {}
 
+    /**
+     * Decode the complete signed native C status without masking or narrowing.
+     * Unknown values are runtime-invariant violations, not guest Err values.
+     * Callers must perform owner cleanup before a fatal invalid-status exit;
+     * this host helper does not implement guest cleanup or typed lowering.
+     */
+    public static Result decodeNativeStatus(int status) {
+        return switch (status) {
+            case 0 -> Result.ok();
+            case 1 -> Result.err(ArrayError.LIMIT);
+            case 2 -> Result.err(ArrayError.NO_MEMORY);
+            default -> throw new IllegalStateException(
+                    "invalid native Array<int> status: " + status);
+        };
+    }
+
     public static byte[] encode(Result result) {
         Objects.requireNonNull(result, "result");
         if (result.variant() == Variant.OK) {
