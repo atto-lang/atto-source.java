@@ -400,7 +400,7 @@ final class LogicalActorUpgradeCoordinatorV1Test {
             var accepted = proxy.admit(bytes("after-refusal"));
             assertEquals(1L,accepted.messageSequence());
             assertEquals(1L,proxy.pollDispatch().messageSequence());
-            proxy.complete(1L);
+            LogicalActorProxyMailboxTestAccess.complete(proxy, 1L);
             assertEquals(0,proxy.snapshot().retainedMessages());
         }
     }
