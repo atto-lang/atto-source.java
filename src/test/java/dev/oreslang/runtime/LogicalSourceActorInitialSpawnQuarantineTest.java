@@ -130,4 +130,63 @@ final class LogicalSourceActorInitialSpawnQuarantineTest {
             }
         }
     }
+    @Test
+    @SuppressWarnings("unchecked")
+    void preregisteredSpawnWithoutPhysicalRefIsNeverMistakenForFailure()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var generation = manager.stageActorGeneration(
+                    "quarantine-unadmitted.ores", ACTOR);
+            var view = generation.linkActorGeneration("Counter");
+            var pin = generation.pinActorRoute();
+            Class<?> kind = Class.forName(
+                    "dev.oreslang.runtime.LogicalSourceActorRouterV1$FailedInitialSpawn");
+            var ctor = kind.getDeclaredConstructor(
+                    HotReloadManager.ActorGenerationView.class,
+                    HotReloadManager.Generation.ActorRouteLease.class);
+            ctor.setAccessible(true);
+            Object pending = ctor.newInstance(view, pin);
+            var field = LogicalSourceActorRouterV1.class
+                    .getDeclaredField("failedInitialSpawns");
+            field.setAccessible(true);
+            List<Object> ledger = (List<Object>) field.get(null);
+            var lockField = LogicalSourceActorRouterV1.class
+                    .getDeclaredField("failedSpawnLock");
+            lockField.setAccessible(true);
+            Object lock = lockField.get(null);
+            var accounting = HotReloadManager.Generation.class
+                    .getDeclaredField("actorRoutePins");
+            accounting.setAccessible(true);
+            synchronized (lock) {
+                ledger.add(pending);
+            }
+            try {
+                // Pre-admission: the registered record has no physical handle,
+                // but the startup caller still owns the generation lease.
+                LogicalSourceActorRouterV1.reapFailedInitialSpawns();
+                assertEquals(1, accounting.getInt(generation),
+                        "unpublished startup reservation is never a reclaimable owner");
+                synchronized (lock) {
+                    assertTrue(ledger.contains(pending));
+                }
+                // Explicitly hand over the failed-startup owner. Only now is
+                // a no-physical-handle record eligible for safe release.
+                var failure = kind.getDeclaredField("retryableFailure");
+                failure.setAccessible(true);
+                failure.setBoolean(pending, true);
+                assertTrue(LogicalSourceActorRouterV1.reapFailedInitialSpawns() >= 1);
+                assertEquals(0, accounting.getInt(generation));
+                synchronized (lock) {
+                    assertFalse(ledger.contains(pending));
+                }
+            } finally {
+                synchronized (lock) {
+                    ledger.remove(pending);
+                }
+                pin.close();
+            }
+        }
+    }
+
 }
