@@ -255,6 +255,34 @@ final class CallerRoleContractsTest {
     }
 
     @Test
+    void parserRejectsDiscardedClassLevelCallerAndCalleePolicy() {
+        for (String annotation : java.util.List.of(
+                "@CallerRole(Callers.A)", "@CallableBy(Callers.A)")) {
+            String top = ROLES + annotation + """
+                    
+                    define class Worker as end
+                    """;
+            assertTrue(assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(top)).getMessage().contains(
+                            "silently discarded"),
+                    "class metadata must never disappear during parsing");
+            String nested = """
+                    define module RolesModule as
+                        define enum Callers as A end
+                    end
+                    define module Example as
+                    """ + annotation + """
+                    
+                        define pub class Worker as end
+                    end
+                    """;
+            assertTrue(assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(nested)).getMessage().contains(
+                            "silently discarded"));
+        }
+    }
+
+    @Test
     void roleAnnotatedMethodMayCallProtectedStaticFunction() {
         Ast.Program program = Parser.parse(ROLES + """
                 define class Worker as
