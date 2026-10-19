@@ -1036,6 +1036,9 @@ public final class OwnershipChecker {
                             ownershipRoot(place.owner()));
                 }
                 case "take" -> {
+                    if (argument instanceof Ast.IndexExpr) {
+                        throw error("rt take cannot move an indexed projection until projection-level move tracking is available; move the containing owner or use a read/borrow");
+                    }
                     if (argument instanceof Ast.MemberExpr member) {
                         Ast.ClassDecl ownerClass = classOfReceiver(member.receiver(), scope);
                         if (ownerClass != null) {
@@ -1223,12 +1226,14 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = indexedElementType(indexed, receiver.type, scope);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
-            if (consuming && elementKind != ValueKind.COPY) {
-                if (isRootedAtActorSelf(indexed.receiver(), scope)) {
-                    throw error("cannot move actor-owned indexed state out of its mailbox turn");
-                }
-                throw error("cannot consume a move-only indexed projection until projection-level move tracking is available; access it through a borrow or move the containing owner");
+            if (consuming && elementKind != ValueKind.COPY
+                    && isRootedAtActorSelf(indexed.receiver(), scope)) {
+                throw error("cannot move actor-owned indexed state out of its mailbox turn");
             }
+            // Ordinary projection is an aliasing read, not an implicit partial
+            // move. Explicit ownership transfer remains spelled rt take; indexed
+            // rt take stays fail-closed below until projection-level move
+            // tracking can invalidate exactly the selected slot.
             return new ValueInfo(elementType, elementKind, null);
         }
         if (expr instanceof Ast.NewExpr created) {
