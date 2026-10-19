@@ -127,33 +127,80 @@ class DispatcherTest(unittest.TestCase):
         old_api=MOD.PUB.gh_api; old_list=MOD.api_list; old_refresh=MOD.refresh_authorization
         events=[]
         payload_branch="ci/oreslang-"+r["source_tree_sha"]
+        auth_branch="ci/authorized-"+commit
         try:
             def api(route,method="GET",payload=None):
                 if method=="GET":
-                    self.assertTrue(route.endswith("/git/ref/heads/"+payload_branch))
-                    events.append("payload-readback")
-                    return {
-                        "ref":"refs/heads/"+payload_branch,
-                        "object":{"type":"commit","sha":commit},
-                    }
+                    if route.endswith("/git/ref/heads/"+payload_branch):
+                        events.append("payload-readback")
+                        return {"ref":"refs/heads/"+payload_branch,
+                                "object":{"type":"commit","sha":commit}}
+                    self.assertTrue(route.endswith("/git/ref/heads/"+auth_branch))
+                    events.append("authorization-readback")
+                    return {"ref":"refs/heads/"+auth_branch,
+                            "object":{"type":"commit","sha":commit}}
                 events.append("authorization-write")
-                self.assertEqual(events[-2],"refresh")
-                self.assertEqual(
-                    payload,
-                    {"ref":"refs/heads/ci/authorized-"+commit,"sha":commit})
-                return {
-                    "ref":"refs/heads/ci/authorized-"+commit,
-                    "object":{"type":"commit","sha":commit},
-                }
+                self.assertEqual(events[-2],"payload-readback")
+                self.assertEqual(payload,{"ref":"refs/heads/"+auth_branch,"sha":commit})
+                return {"ref":"refs/heads/"+auth_branch,
+                        "object":{"type":"commit","sha":commit}}
             MOD.PUB.gh_api=api
             MOD.api_list=lambda route:[]
             MOD.refresh_authorization=lambda _: events.append("refresh")
-            self.assertEqual(
-                MOD.create_authorization_ref(r,commit),
-                "ci/authorized-"+commit)
-            self.assertEqual(
-                events,
-                ["payload-readback","refresh","authorization-write"])
+            self.assertEqual(MOD.create_authorization_ref(r,commit),auth_branch)
+            self.assertEqual(events,["refresh","payload-readback",
+                                     "authorization-write","authorization-readback",
+                                     "payload-readback"])
+        finally:
+            MOD.PUB.gh_api=old_api; MOD.api_list=old_list; MOD.refresh_authorization=old_refresh
+
+    def test_authorization_ref_post_write_readback_denies_mutation(self):
+        r=receipt(); commit="a"*40; other="b"*40
+        old_api=MOD.PUB.gh_api; old_list=MOD.api_list; old_refresh=MOD.refresh_authorization
+        payload_branch="ci/oreslang-"+r["source_tree_sha"]
+        auth_branch="ci/authorized-"+commit
+        try:
+            for mutated in ("authorization-sha","authorization-type",
+                            "payload-sha","payload-type"):
+                with self.subTest(mutated=mutated):
+                    calls=[]; writes=[]
+                    def api(route,method="GET",payload=None):
+                        if method=="POST":
+                            writes.append(payload)
+                            return {"ref":"refs/heads/"+auth_branch,
+                                    "object":{"type":"commit","sha":commit}}
+                        self.assertEqual(method,"GET")
+                        if route.endswith("/git/ref/heads/"+auth_branch):
+                            calls.append("authorization-readback")
+                            return {"ref":"refs/heads/"+auth_branch,
+                                    "object":{"type":"tag" if mutated=="authorization-type" else "commit",
+                                              "sha":other if mutated=="authorization-sha" else commit}}
+                        self.assertTrue(route.endswith("/git/ref/heads/"+payload_branch))
+                        calls.append("payload-readback")
+                        returning_mutation=len([x for x in calls if x=="payload-readback"])>1
+                        return {"ref":"refs/heads/"+payload_branch,
+                                "object":{"type":"tag" if returning_mutation and mutated=="payload-type" else "commit",
+                                          "sha":other if returning_mutation and mutated=="payload-sha" else commit}}
+                    MOD.PUB.gh_api=api
+                    MOD.api_list=lambda route:[]
+                    MOD.refresh_authorization=lambda _: None
+                    with self.assertRaisesRegex(MOD.Denied,"readback mismatch|changed after authorization"):
+                        MOD.create_authorization_ref(r,commit)
+                    self.assertEqual(len(writes),1)
+        finally:
+            MOD.PUB.gh_api=old_api; MOD.api_list=old_list; MOD.refresh_authorization=old_refresh
+
+    def test_revoked_live_authority_prevents_handoff_write(self):
+        r=receipt(); commit="a"*40
+        old_api=MOD.PUB.gh_api; old_list=MOD.api_list; old_refresh=MOD.refresh_authorization
+        writes=[]
+        try:
+            MOD.PUB.gh_api=lambda route,method="GET",payload=None: writes.append((route,method))
+            MOD.api_list=lambda route:[]
+            MOD.refresh_authorization=lambda _: (_ for _ in ()).throw(MOD.Denied("review revoked"))
+            with self.assertRaisesRegex(MOD.Denied,"review revoked"):
+                MOD.create_authorization_ref(r,commit)
+            self.assertEqual(writes,[])
         finally:
             MOD.PUB.gh_api=old_api; MOD.api_list=old_list; MOD.refresh_authorization=old_refresh
 
