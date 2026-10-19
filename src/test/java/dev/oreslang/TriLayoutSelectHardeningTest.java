@@ -24,8 +24,12 @@ final class TriLayoutSelectHardeningTest {
           var c=s.insert(new Motion(5,6,Double.MAX_VALUE,1));
           var target=layouts.iterator().next();
           long epoch=s.epoch();
+          long[] stamps=new long[Layout.values().length];
+          for(Layout l:layouts) stamps[l.ordinal()]=s.materializedEpoch(l);
           assertThrows(ArithmeticException.class,()->s.integrate(target,2.0));
           assertEquals(epoch,s.epoch());
+          for(Layout l:layouts) assertEquals(stamps[l.ordinal()],
+              s.materializedEpoch(l),"rejected integration must not refresh a cache");
           assertEquals(authority,s.authoritativeLayout());
           for(Layout l:layouts) {
             assertEquals(new Motion(1,2,1,1),s.get(a,l));
