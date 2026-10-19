@@ -100,6 +100,9 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private boolean currentMaySuspend;
+    // The first executable guest nb path is confined to the VM-owned root
+    // main, where the context can retain the copied scalar child until exit.
+    private boolean currentRootMain;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -668,6 +671,11 @@ public final class TypeChecker {
         currentGenerator = fn.generator();
         currentAsyncCallable = fn.async();
         boolean previousMaySuspend = currentMaySuspend;
+        boolean previousRootMain = currentRootMain;
+        currentRootMain = module.equals(Parser.ROOT_MODULE)
+                && fn.name().equals("main")
+                && fn.actorKind() == Ast.ActorKind.NONE
+                && fn.parameters().isEmpty();
         // The module's root main runs inside a VM-owned root Task, and
         // remains an intentional compatibility boundary for existing source
         // programs that await without an explicit suspends modifier.
@@ -684,6 +692,7 @@ public final class TypeChecker {
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
             currentMaySuspend = previousMaySuspend;
+            currentRootMain = previousRootMain;
         }
 
         if (!fn.generator() && returns != Primitive.VOID && !definitelyReturns(fn.body())) {
@@ -3705,6 +3714,23 @@ public final class TypeChecker {
             if (!currentMaySuspend) {
                 throw new IllegalArgumentException(
                         "await requires an async or suspends caller (or the VM-owned root main); a plain synchronous lambda cannot inherit the suspension effect");
+            }
+            if (awaited.expression() instanceof Ast.TaskExpr scalarTask) {
+                // Scope-bound immediate await only: no Task<T> handle escapes,
+                // no actor state, guest callable, borrowed region or object is
+                // captured. The only value crossing is a copied scalar.
+                if (!currentRootMain || currentActorKind != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "guest scalar nb requires immediate await in VM-owned root main");
+                }
+                Ast.Expr returned = ScalarTaskPlan.returnedScalar(scalarTask);
+                Type copiedType = typeOf(returned, env, generics, self);
+                if (copiedType instanceof Types.StringLiteral) return Primitive.STRING;
+                if (copiedType == Primitive.INT || copiedType == Primitive.BOOL
+                        || copiedType == Primitive.FLOAT
+                        || copiedType == Primitive.STRING) return copiedType;
+                throw new IllegalArgumentException(
+                        "guest scalar nb capture requires a proven copyable int, bool, float or string");
             }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named task
