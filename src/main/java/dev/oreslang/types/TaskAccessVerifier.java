@@ -145,6 +145,11 @@ final class TaskAccessVerifier {
     public synchronized Ticket admitTyped(List<TypedClaim> requested,
                              ThreadSafetyTraits.NominalProof nominalProof,
                              PlaceTypeProof trustedPlaceTypes) {
+        if (admissionInProgress) {
+            throw new IllegalStateException("reentrant Task access admission");
+        }
+        admissionInProgress = true;
+        try {
         Objects.requireNonNull(nominalProof, "nominalProof");
         Objects.requireNonNull(trustedPlaceTypes, "trustedPlaceTypes");
         Objects.requireNonNull(requested, "claims");
@@ -195,6 +200,9 @@ final class TaskAccessVerifier {
         Ticket admitted = reserveVerified(typed.stream().map(TypedClaim::claim).toList());
         knownPlaceTypes.putAll(pendingTypes);
         return admitted;
+        } finally {
+            admissionInProgress = false;
+        }
     }
 
     /** Opaque compiler-issued child identity. A cancelled Ticket is still live. */
@@ -260,6 +268,8 @@ final class TaskAccessVerifier {
     private long nextId = 1;
     private int liveClaimCount;
     private boolean sealed;
+    /** Java monitor locking is reentrant; proof callbacks must not mutate the ledger. */
+    private boolean admissionInProgress;
 
     /**
      * True means locations *may* alias. An UNKNOWN proof never establishes
@@ -399,6 +409,7 @@ final class TaskAccessVerifier {
 
     /** Cancellation is an intent; a still-running Task continues to own loans. */
     public synchronized void requestCancel(Ticket ticket) {
+        rejectAdmissionReentrancy();
         child(ticket).cancelRequested = true;
     }
 
@@ -427,6 +438,7 @@ final class TaskAccessVerifier {
      * physically quiescent. The ledger itself cannot prove runtime quiescence.
      */
     public synchronized void quiescent(Ticket ticket) {
+        rejectAdmissionReentrancy();
         Child completed = child(ticket); // validates this exact ticket belongs to this scope
         live.remove(ticket);
         liveClaimCount -= completed.claims.size();
@@ -438,6 +450,7 @@ final class TaskAccessVerifier {
      * Callers must independently prove owner authority and real quiescence.
      */
     public synchronized void structuralBarrier(Root oldRoot, long newGeneration) {
+        rejectAdmissionReentrancy();
         Objects.requireNonNull(oldRoot, "oldRoot");
         if (sealed) throw new IllegalStateException("TaskScope is sealed");
         if (newGeneration <= oldRoot.generation()) {
@@ -472,6 +485,7 @@ final class TaskAccessVerifier {
     }
 
     public synchronized void finishScope() {
+        rejectAdmissionReentrancy();
         if (!live.isEmpty() || liveClaimCount != 0) {
             throw new IllegalStateException("TaskScope cannot finish before child quiescence");
         }
@@ -486,6 +500,12 @@ final class TaskAccessVerifier {
 
     public synchronized int activeChildren() { return live.size(); }
     public synchronized int activeClaims() { return liveClaimCount; }
+
+    private void rejectAdmissionReentrancy() {
+        if (admissionInProgress) {
+            throw new IllegalStateException("Task proof callback cannot mutate its own ledger");
+        }
+    }
 
     private Child child(Ticket ticket) {
         Child result = live.get(Objects.requireNonNull(ticket, "ticket"));
