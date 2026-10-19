@@ -1,7 +1,10 @@
 package dev.oreslang.runtime;
 
 import java.util.Objects;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -27,6 +30,33 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
     }
 
     private static final int MAX_TICKETS = 16;
+    // Reserve one cleanup slot per live binding, BEFORE constructing HTTP
+    // resources. Consequently a finalizer can always enqueue exactly one
+    // cleanup without blocking a runtime lifecycle thread or allocating an
+    // unbounded number of host tasks.
+    private static final int MAX_LIVE_BINDINGS = 64;
+    private static final Semaphore CLEANUP_SLOTS = new Semaphore(MAX_LIVE_BINDINGS);
+    private static final ArrayBlockingQueue<TrustedActorLoopbackEgressBridge>
+            CLEANUP_QUEUE = new ArrayBlockingQueue<>(MAX_LIVE_BINDINGS);
+    private static final System.Logger LOG =
+            System.getLogger(TrustedActorLoopbackEgressBridge.class.getName());
+
+    static {
+        var cleaner = new Thread(() -> {
+            for (;;) {
+                try {
+                    CLEANUP_QUEUE.take().finishQueuedCleanup();
+                } catch (InterruptedException interrupted) {
+                    // No untrusted code controls this dedicated daemon. Keep
+                    // cleanup available across spurious worker interrupts.
+                } catch (Throwable failure) {
+                    LOG.log(System.Logger.Level.ERROR, "host egress cleanup worker failure", failure);
+                }
+            }
+        }, "oreslang-trusted-egress-cleanup");
+        cleaner.setDaemon(true);
+        cleaner.start();
+    }
     // Only the host retains bridge objects and their privileged scopes.
     private record ActorKey(ActorRuntime runtime, ActorRuntime.ActorId id) { }
     private static final ConcurrentHashMap<ActorKey, TrustedActorLoopbackEgressBridge>
@@ -40,6 +70,8 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
             new ConcurrentHashMap<>();
     private final AtomicLong nextTicket = new AtomicLong();
     private volatile boolean closed;
+    private final AtomicBoolean cleanupQueued = new AtomicBoolean();
+    private final AtomicBoolean cleanupSlotReleased = new AtomicBoolean();
 
     TrustedActorLoopbackEgressBridge(
             ActorRuntime runtime,
@@ -58,15 +90,42 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
         }
         this.bindingKey = new ActorKey(this.runtime, this.actor.id());
         this.hostDispatcher = Objects.requireNonNull(hostDispatcher);
-        this.broker = new TrustedHttpLoopbackProbe(
-                gate, child, supervisor, tenant, fixedLoopbackPort);
+        if (!CLEANUP_SLOTS.tryAcquire()) {
+            throw new IllegalStateException("host egress binding/cleanup capacity exhausted");
+        }
+        try {
+            this.broker = new TrustedHttpLoopbackProbe(
+                    gate, child, supervisor, tenant, fixedLoopbackPort);
+        } catch (RuntimeException | Error failure) {
+            CLEANUP_SLOTS.release();
+            throw failure;
+        }
         if (HOST_BINDINGS.putIfAbsent(bindingKey, this) != null) {
-            broker.close();
+            try {
+                broker.close();
+            } finally {
+                releaseCleanupSlot();
+            }
             throw new IllegalStateException("untrusted actor already has a host egress binding");
         }
-        // Runtime-owned completion notification: never execute network
-        // teardown under an actor finalization lock or guest execution turn.
-        actor.done().whenCompleteRuntime((ignored, failure) -> revokeAfterTermination());
+        // A completion callback may execute synchronously if already done.
+        // Registration failures must not leak host authority or cleanup slots.
+        try {
+            actor.done().whenCompleteRuntime((ignored, failure) -> revokeAfterTermination());
+        } catch (RuntimeException | Error failure) {
+            synchronized (this) {
+                closed = true;
+                broker.fenceNewDispatch();
+                HOST_BINDINGS.remove(bindingKey, this);
+                tickets.clear();
+            }
+            try {
+                broker.close();
+            } finally {
+                releaseCleanupSlot();
+            }
+            throw failure;
+        }
     }
 
     /**
@@ -172,9 +231,48 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
             HOST_BINDINGS.remove(bindingKey, this);
             tickets.clear();
         }
-        // Actor completion listeners can run under ActorRuntime lifecycle
-        // locks. Never perform HTTP cancellation in this callback.
-        java.util.concurrent.CompletableFuture.runAsync(() -> broker.close());
+        // Non-blocking, capacity-reserved queue; no HTTP I/O on the runtime
+        // finalization thread and no unbounded common-pool scheduling.
+        enqueueTerminatedCleanup();
+    }
+
+    private void releaseCleanupSlot() {
+        if (cleanupSlotReleased.compareAndSet(false, true)) {
+            CLEANUP_SLOTS.release();
+        }
+    }
+
+    private void enqueueTerminatedCleanup() {
+        if (cleanupSlotReleased.get() || !cleanupQueued.compareAndSet(false, true)) {
+            return;
+        }
+        // Guaranteed capacity: at most MAX_LIVE_BINDINGS unresolved instances
+        // each reserve one slot and enqueue no more than once.
+        if (!CLEANUP_QUEUE.offer(this)) {
+            cleanupQueued.set(false);
+            LOG.log(System.Logger.Level.ERROR,
+                    "reserved host egress cleanup queue unexpectedly full; binding stays revoked");
+        }
+    }
+
+    private void finishQueuedCleanup() {
+        if (cleanupSlotReleased.get()) return;
+        // Transient cancellation failures get bounded retries. Permanent
+        // failures remain visible and retain their reservation, preventing
+        // unbounded replacement of incompletely cleaned-up broker resources.
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                broker.close();
+                releaseCleanupSlot();
+                return;
+            } catch (RuntimeException | Error failure) {
+                LOG.log(System.Logger.Level.WARNING,
+                        "host egress cleanup failed, attempt " + attempt, failure);
+            }
+        }
+        cleanupQueued.set(false);
+        LOG.log(System.Logger.Level.ERROR,
+                "host egress cleanup exhausted retries; capacity reserved until host closes");
     }
 
     /** Host-only diagnostic: never exposes binding objects or network handles. */
@@ -213,5 +311,6 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
         // HTTP client cancellation may block. Keep it OUTSIDE the bridge
         // monitor; repeated close still retries unsettled host exchanges.
         broker.close();
+        releaseCleanupSlot();
     }
 }
