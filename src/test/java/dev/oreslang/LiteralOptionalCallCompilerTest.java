@@ -276,6 +276,41 @@ final class LiteralOptionalCallCompilerTest {
 
 
     @Test
+    void stagedNamedCallCannotDiscardOriginalOverloadIdentity() {
+        // A named call can choose a candidate by its labels in source syntax.
+        // Lowering discards those labels and changes optional formals to
+        // Option<T>. Until the checked compiler retains a resolution witness
+        // for the resulting positional call, a second same-name declaration
+        // must make this experimental lowering fail closed.
+        String overloaded = """
+                define module app as
+                    pub fnc greet(string? name): string { return "hello"; }
+                    pub fnc greet(int first, int second, int third): string {
+                        return "other";
+                    }
+                    pub fnc caller(): string {
+                        return greet(name: "Alice");
+                    }
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> LiteralOptionalCallCompiler.lowerAndAnalyze(
+                        overloaded, "app", "caller"));
+        assertTrue(failure.getMessage().contains(
+                        "post-lowering declaration resolution proof"),
+                failure::toString);
+
+        // The ordinary single-declaration, literal-only path stays opt-in
+        // and full-checker admitted rather than being globally disabled.
+        var nonOverloaded = LiteralOptionalCallCompiler.lowerAndAnalyze(
+                source("greet(name: \"Alice\")"), "app", "caller");
+        assertEquals(LiteralOptionalCallCompiler.SourceOrigin.ORIGINAL_STAGED_CALL,
+                nonOverloaded.sourceOrigin());
+        assertEquals(1, nonOverloaded.loweredCall().arguments().size());
+    }
+
+    @Test
     void implicitOmissionCannotCaptureAShadowedOptionConstructor() {
         String customNone = """
                 define module app as
