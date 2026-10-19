@@ -7,7 +7,6 @@ set -euo pipefail
 readonly SOURCE_REPO="ores-truffle-oreslang/oreslang-source.java"
 readonly DEST_REPO="ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
 readonly DEST_ID="1412142815"
-readonly DEST_DEFAULT_BRANCH="main"
 readonly DEST_BASE_COMMIT="4d1d65445a09eb47f383bd5dc373d36056346056"
 readonly DEST_BASE_TREE="825c75a6b4cf84c62510f717290d6c87f4611b9a"
 readonly SOURCE_ID="1400792274"
@@ -173,31 +172,18 @@ done <<< "$policy"
   || die "destination is not uniquely approved on main"
 
 # Bind authorization to the exact reviewed carrier content, not merely the
-# destination repository identity. A carrier-main change therefore invalidates
-# authorization before private source bytes can be read or uploaded.
-IFS=$'\t' read -r actual_id actual_name actual_private actual_push actual_default < <(
-  gh_api "repos/$DEST_REPO" \
-    --jq '[.id, .full_name, .private, (.permissions.push // false), .default_branch] | @tsv'
+# destination repository identity. Resolve the carrier by immutable Git object.
+IFS=$'\t' read -r actual_id actual_name actual_private actual_push < <(
+  gh_api "repos/$DEST_REPO" --jq '[.id, .full_name, .private, (.permissions.push // false)] | @tsv'
 ) || die "cannot read authenticated destination repository"
-[[ "$actual_id" == "$DEST_ID" ]] \
-  || die "destination GitHub repository ID mismatch"
-[[ "$actual_name" == "$DEST_REPO" ]] \
-  || die "destination full name mismatch"
-[[ "$actual_private" == "true" ]] \
-  || die "destination must remain private"
-[[ "$actual_push" == "true" ]] \
-  || die "insufficient destination permissions"
-[[ "$actual_default" == "$DEST_DEFAULT_BRANCH" ]] \
-  || die "destination default branch changed"
-
-dest_base_commit="$(gh_api "repos/$DEST_REPO/git/ref/heads/$DEST_DEFAULT_BRANCH" --jq '.object.sha')" \
-  || die "cannot resolve destination carrier base commit"
-[[ "$dest_base_commit" =~ ^[0-9a-f]{40}$ && "$dest_base_commit" == "$DEST_BASE_COMMIT" ]] \
-  || die "destination carrier base commit is not the reviewed commit"
-dest_base_tree="$(gh_api "repos/$DEST_REPO/git/commits/$dest_base_commit" --jq '.tree.sha')" \
-  || die "cannot resolve destination carrier base tree"
-[[ "$dest_base_tree" =~ ^[0-9a-f]{40}$ && "$dest_base_tree" == "$DEST_BASE_TREE" ]] \
-  || die "destination carrier base tree is not the reviewed tree"
+[[ "$actual_id" == "$DEST_ID" && "$actual_name" == "$DEST_REPO" \
+    && "$actual_private" == "true" && "$actual_push" == "true" ]] \
+  || die "destination identity, privacy or permissions mismatch"
+IFS=$'\t' read -r dest_base_commit dest_base_tree < <(
+  gh_api "repos/$DEST_REPO/git/commits/$DEST_BASE_COMMIT" --jq '[.sha, .tree.sha] | @tsv'
+) || die "cannot resolve reviewed destination carrier commit"
+[[ "$dest_base_commit" == "$DEST_BASE_COMMIT" && "$dest_base_tree" == "$DEST_BASE_TREE" ]] \
+  || die "destination reviewed carrier commit/tree mismatch"
 
 auth_mode=""
 if [[ "$main_protected" == "true" ]]; then
@@ -290,22 +276,19 @@ else
   die "unexpected source branch protection state"
 fi
 
-# Revalidate destination identity and the exact carrier base after authorization.
-IFS=$'\t' read -r final_id final_name final_private final_push final_default < <(
-  gh_api "repos/$DEST_REPO" \
-    --jq '[.id, .full_name, .private, (.permissions.push // false), .default_branch] | @tsv'
+# Revalidate destination identity and immutable reviewed carrier after authorization.
+IFS=$'\t' read -r final_id final_name final_private final_push < <(
+  gh_api "repos/$DEST_REPO" --jq '[.id, .full_name, .private, (.permissions.push // false)] | @tsv'
 ) || die "cannot re-read authenticated destination repository"
 [[ "$final_id" == "$actual_id" && "$final_id" == "$DEST_ID" \
-    && "$final_name" == "$DEST_REPO" && "$final_private" == "true" \
-    && "$final_push" == "true" && "$final_default" == "$DEST_DEFAULT_BRANCH" ]] \
-  || die "destination identity, privacy, permissions or default branch changed during authorization"
-final_base_commit="$(gh_api "repos/$DEST_REPO/git/ref/heads/$DEST_DEFAULT_BRANCH" --jq '.object.sha')" \
-  || die "cannot re-resolve destination carrier base commit"
-final_base_tree="$(gh_api "repos/$DEST_REPO/git/commits/$final_base_commit" --jq '.tree.sha')" \
-  || die "cannot re-resolve destination carrier base tree"
+    && "$final_name" == "$DEST_REPO" && "$final_private" == "true" && "$final_push" == "true" ]] \
+  || die "destination identity, privacy or permissions changed during authorization"
+IFS=$'\t' read -r final_base_commit final_base_tree < <(
+  gh_api "repos/$DEST_REPO/git/commits/$DEST_BASE_COMMIT" --jq '[.sha, .tree.sha] | @tsv'
+) || die "cannot re-resolve reviewed destination carrier commit"
 [[ "$final_base_commit" == "$dest_base_commit" && "$final_base_commit" == "$DEST_BASE_COMMIT" \
     && "$final_base_tree" == "$dest_base_tree" && "$final_base_tree" == "$DEST_BASE_TREE" ]] \
-  || die "destination carrier changed during authorization"
+  || die "reviewed destination carrier commit/tree is unavailable or changed"
 
 printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
   "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$destination_branch" \
