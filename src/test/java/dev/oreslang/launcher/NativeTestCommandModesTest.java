@@ -12,6 +12,12 @@ final class NativeTestCommandModesTest {
     @Test
     void nativeSeededInputsAreRequiredForFuzzMode() throws Exception {
         assertEquals(0, OresTestCommand.run(new String[] {
+                "--fuzz", "--seed=17", "--runs=97",
+                "examples/native-fuzz-testing.ores"
+        }));
+        // This fixture generates exactly 97 guest inputs. A --runs flag
+        // cannot silently measure only an unrelated host stress loop.
+        assertEquals(2, OresTestCommand.run(new String[] {
                 "--fuzz", "--seed=17", "--runs=16",
                 "examples/native-fuzz-testing.ores"
         }));
@@ -39,7 +45,7 @@ final class NativeTestCommandModesTest {
     void combineInputFuzzDeadlockAndRuntimeScheduleStress() throws Exception {
         assertEquals(0, OresTestCommand.run(new String[] {
                 "--fuzz", "--deadlock", "--schedule-fuzz",
-                "--seed=17", "--runs=34", "examples/native-fuzz-testing.ores"
+                "--seed=17", "--runs=97", "examples/native-fuzz-testing.ores"
         }));
     }
 
