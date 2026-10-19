@@ -119,3 +119,66 @@ Maven/Native Image suite covering these regression tests; fault-inject
 observer OOME, child cancellation, receipt settlement and postcommit
 retirement, and confirm canonical code/checkpoint/Task/route transaction
 ownership. Keep PR #1367 DRAFT.
+
+
+## Follow-up: retryable exact batch was defined but not wired
+
+**Concrete defect fixed during this audit.** The previous source introduced
+`TerminalSettlementBatch`, a durable owner for exact physical receipts,
+drain waiters, pending operations and child cancellations, together with a
+`settleTerminalBatch()` routine that tracks per-category progress.
+However, `terminateTree()` still ran its original one-shot terminal loop;
+it never created a batch and never called the retry function. A callback
+that failed after the Future CAS could strand `terminalSettlementPending`
+permanently with no retry path.
+
+The current production source now:
+
+- snapshots all teardown ledgers and allocates the complete
+  `TerminalSettlementBatch` **before** publishing stopped/sealed;
+- publishes a single batch authority under `lifecycleLock` before
+  clearing the ordinary ledgers;
+- on concurrent/reentrant stop, never re-snapshots or steals the active
+  settlement; on a later supervisor retry, reuses the existing owner;
+- invokes `settleTerminalBatch(batch)` *outside* `lifecycleLock`,
+  advances each progress index only after the exact Future notification
+  drain or child cancellation finishes, and rechecks an already-terminal
+  Future without claiming a second terminal disposition;
+- retains the batch and physical-retirement fence when any notification
+  release fails; only complete batch settlement permits the ordinary
+  actor finalizer and durable terminal-latch publication.
+
+A new committed product JUnit,
+`ActorPhysicalFinalizationPublicationTest.
+failedReceiptNotificationResumesExactBatchWithoutDoubleRefund`, injects two
+runtime-shaped physical receipts into an idle actor. The second receipt's
+notification-release hook fails once after its terminal CAS. The test
+requires the first stop to fail **without** physical retirement, a second
+stop to reuse the original batch, exactly one terminal transition per
+receipt, exactly one successful notification release per receipt, and
+verified eventual finalization.
+
+**Executed independent model:** the standalone
+`RetryableSettlementOracle.java` under
+`/mnt/data/oreslang_terminal_settlement_audit/` compiled with OpenJDK 21
+using `javac --release 21 -Xlint:all -Werror` and passed **933,850 /
+933,850** checks, including 100,000 three-receipt retry rounds, 350
+eight-waiter concurrency rounds, and 10,000 held-owner failure/retry
+rounds. This independently authored state-machine model does **not**
+compile `ActorRuntime.java`, validate OresFuture's Graal integration,
+run the new JUnit fixture or establish an exact-head JDK25/native pass.
+
+**Limitations still open:** an exception during irreversible mailbox/channel
+close *before* the batch reaches the external settlement loop remains
+fail-sealed; this audit does not certify automatic recovery for arbitrary
+resource-shutdown/OOME failures or distributed exactly-once effects.
+The full SHARED actor hot-upgrade supervisor transaction also requires
+exact-tree execution before its draft PR can merge.
+
+The inspected source-owned `fast-ci` run `39326400643` and full
+`ci` run `39326400706` failed with all inspected jobs reporting
+`steps: null`. These runs provide neither successful nor failed Java
+assertion evidence. The approved private source mirror destination list
+is still empty and security issues #962/#904 remain open, so **no private
+cross-organization source mirror was created**. An alternate organization's
+GitHub Actions minutes alone cannot bypass reviewed destination approval.
