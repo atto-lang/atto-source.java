@@ -203,15 +203,16 @@ final class TaskAccessVerifierTest {
         var channel = new Types.Named("Channel", List.of(Types.Primitive.INT));
         var syncRead = new TaskAccessVerifier.TypedClaim(read(unique), channel);
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admitTyped(List.of(syncRead), (name, trait) -> false));
+                () -> ledger.admitTyped(List.of(syncRead), (name, trait) -> false, place -> channel));
         assertEquals(0, ledger.activeChildren());
         var sendWrite = new TaskAccessVerifier.TypedClaim(write(unique), channel);
-        var ticket = ledger.admitTyped(List.of(sendWrite), (name, trait) -> false);
+        var ticket = ledger.admitTyped(List.of(sendWrite), (name, trait) -> false, place -> channel);
         assertEquals(1, ledger.activeChildren());
         ledger.quiescent(ticket);
         assertThrows(IllegalArgumentException.class,
                 () -> ledger.admitTyped(List.of(new TaskAccessVerifier.TypedClaim(
-                        read(unique), new Types.Generic("T"))), (name, trait) -> true));
+                        read(unique), new Types.Generic("T"))), (name, trait) -> true,
+                        place -> new Types.Generic("T")));
         assertEquals(0, ledger.activeChildren());
     }
 
@@ -223,8 +224,46 @@ final class TaskAccessVerifierTest {
                 new TaskAccessVerifier.TypedClaim(write(pos), Types.Primitive.INT),
                 new TaskAccessVerifier.TypedClaim(read(vel),
                         new Types.Named("OpaqueHostHandle", List.of()))),
-                (name, trait) -> false));
+                (name, trait) -> false,
+                place -> place.equals(pos) ? Types.Primitive.INT
+                        : new Types.Named("OpaqueHostHandle", List.of())));
         assertEquals(0, ledger.activeChildren());
+    }
+
+    @Test void mismatchedTypeAnnotationCannotForgeSendForUnsafePlace() {
+        var ledger = new TaskAccessVerifier();
+        var unsafePlace = TaskAccessVerifier.Place.whole(WORLD);
+        var actual = new Types.Named("OpaqueHostHandle", List.of());
+        var forged = new TaskAccessVerifier.TypedClaim(
+                write(unsafePlace), Types.Primitive.INT);
+        assertThrows(IllegalArgumentException.class, () ->
+                ledger.admitTyped(List.of(forged), (name, trait) -> true,
+                        place -> actual));
+        assertEquals(0, ledger.activeChildren());
+        assertEquals(0, ledger.activeClaims());
+        // This also rejects a missing trusted MIR referent, not only a mismatch.
+        assertThrows(IllegalArgumentException.class, () ->
+                ledger.admitTyped(List.of(forged), (name, trait) -> true,
+                        place -> null));
+        assertEquals(0, ledger.activeChildren());
+    }
+
+    @Test void typeResolverFailureDoesNotReserveEarlierClaims() {
+        var ledger = new TaskAccessVerifier();
+        var root = TaskAccessVerifier.Place.whole(WORLD);
+        var x = root.field("x", true);
+        var y = root.field("y", true);
+        var requests = List.of(
+                new TaskAccessVerifier.TypedClaim(write(x), Types.Primitive.INT),
+                new TaskAccessVerifier.TypedClaim(write(y), Types.Primitive.INT));
+        assertThrows(IllegalStateException.class, () ->
+                ledger.admitTyped(requests, (name, trait) -> false,
+                        place -> {
+                            if (place.equals(y)) throw new IllegalStateException("MIR lookup failed");
+                            return Types.Primitive.INT;
+                        }));
+        assertEquals(0, ledger.activeChildren());
+        assertEquals(0, ledger.activeClaims());
     }
 
     @Test void distinctReadOnlyDomainsCannotShareOneTaskScope() {
