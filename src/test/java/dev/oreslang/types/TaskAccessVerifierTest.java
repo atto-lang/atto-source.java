@@ -260,6 +260,29 @@ final class TaskAccessVerifierTest {
                 uncertainRange.field("velocity", true)));
     }
 
+    @Test void placeTypeProofCannotReenterOrMutateItsOwnLedger() {
+        var ledger = new TaskAccessVerifier();
+        var place = TaskAccessVerifier.Place.whole(WORLD);
+        var typed = new TaskAccessVerifier.TypedClaim(
+                write(place), Types.Primitive.INT);
+
+        assertThrows(IllegalStateException.class, () ->
+                ledger.admitScopedTyped(
+                        List.of(typed),
+                        CORE,
+                        ignored -> {
+                            ledger.seal();
+                            return Types.Primitive.INT;
+                        }));
+        assertEquals(0, ledger.activeChildren());
+        assertEquals(0, ledger.activeClaims());
+
+        // The failed callback did not commit the seal or any provenance.
+        var admission = ledger.admitScopedTyped(
+                List.of(typed), CORE, ignored -> Types.Primitive.INT);
+        release(admission);
+    }
+
     @Test void typedTaskAdmissionUsesSendForWriteAndSyncForRead() {
         var ledger = new TaskAccessVerifier();
         var unique = TaskAccessVerifier.Place.whole(WORLD);
