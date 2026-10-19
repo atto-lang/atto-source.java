@@ -1,9 +1,9 @@
 # Gate A — provisional physical-child reservation v2
 
-**Draft integration hardening, 2026-10-19.** This branch begins at Java scalar
-guest-Task PR #1484 head `7efaa81785fcd9861b9e7f69c6aca46bcfe4e99e`.
-It restacks the essential null/record/Send fixes of Java #1506 on that
-head without reverting newer #1484 region-verifier work. Do not merge before
+**Draft integration hardening, 2026-10-19.** Based on latest reconciled
+Java scalar guest-Task PR #1484 parent `b8e8776359d3a097ebadb4c4dbb306aa83176921`.
+Retains newer compiler/region verifier, cancellation preflight and coherent
+quiescence changes while carrying forward #1506 null/record/Send hardening. Do not merge before
 real exact-head Maven/GraalVM execution and independent review.
 
 ## What changes
@@ -29,6 +29,14 @@ real exact-head Maven/GraalVM execution and independent review.
 - Rejection **before** source dispatch calls the trusted release callback
   once, outside scope locks, and fulfills or fails the provisional
   physical-exit fence. Failed generation retirement remains reported.
+- Fix an ordinary Task handle regression: AsyncRuntime.submitTask previously
+  called the now-ambiguous constructor, which left an already-bound shell
+  instead of a provisional shell and made attachCompletion fail.
+- Ordinary `OresTaskScope.submit` now preallocates an `AsyncRuntime.TaskAdmission`
+  containing the real TaskExit physical fence and provisional Task owner, adds
+  it to scope ownership before dispatch, and starts the executor *outside*
+  scope monitors. Rejecting admission settles the unentered TaskExit; a
+  parent cancellation during the gap is replayed on Future binding.
 - Resolved primitive NULL and VOID are not Send/Sync owned payloads;
   structural readonly Record views are not Sync without independent frozen
   backing; the permitted scalar guest Task capture has a compiler-resolved
@@ -39,21 +47,22 @@ real exact-head Maven/GraalVM execution and independent review.
 ```sh
 mvn -B -ntp -Dores.runtime.carriers=java \
   -Dsurefire.failIfNoSpecifiedTests=true \
-  -Dtest=OresTaskProvisionalAdmissionTest,TaskResolvedSafetyProofTest,\
-OresTaskScopeFrameTest,TaskRegionPhysicalExitBridgeTest,\
+  -Dtest=OresTaskProvisionalAdmissionTest,OresTaskRuntimeAdmissionTest,\
+TaskResolvedSafetyProofTest,OresTaskScopeFrameTest,TaskRegionPhysicalExitBridgeTest,\
 GuestScalarTaskAwaitTest,ScopedTaskTypeBridgeTest,TaskTraitAdmissionHardeningTest test
 ```
 
 Run cancellation races with an executor blocked inside enqueue, a competing
 parent `cancel` and `close`, generation-release fault injection, and
-physical-turn cancellation. The two added test files exercise those host
+physical-turn cancellation. The added regression test files exercise those host
 transitions; the full tests above must execute on the same commit and
 produce real steps/logs. Zero-step Actions failures are not test runs.
 
 ## Explicit remaining risks/gates
 
-- `OresTaskScope.submit(AsyncRuntime.Task)` still uses its older
-  lock-held runtime dispatch and needs the analogous reserved owner/seam.
+- Ordinary scope submission now uses unlocked runtime admission, but still
+  requires the real exact-head suite, allocation/rejection fault injection,
+  and cancellation-before-binding stress before it is release-qualified.
 - Compiler-frame execution now checks parent-scope cancellation at each
   resume entry. A Task cancelled while already running may continue until
   its next legal cooperation/suspension point; no physical carrier is killed.
@@ -74,3 +83,21 @@ produce real steps/logs. Zero-step Actions failures are not test runs.
   #69 require authenticated private destinations, immutable source tree
   proof, and independent approval before transfer. No private mirror was
   created here.
+
+## CI evidence boundary (October 19)
+
+- Source-org `fast-ci` and `concurrency-contract` runs have repeatedly
+  ended with `steps=null`, not Java compilation or JUnit results.
+- The alternate private carrier's green run 39318472277 is **not an exact
+  backend result**: Maven says `No sources to compile` for its main
+  compiler, and only **21 synthetic canary JUnit tests** compile/execute
+  under `carrier-harness-canary`. The host GraalVM/native-image steps
+  verify carrier capability, not this private compiler PR's source tree.
+- A narrow local Java 21 type-kernel run passes
+  `TASK_RESOLVED_SAFETY_SMOKE_PASS 10000` and
+  `JAVA_SEND_SYNC_NULL_CONTRACT_PASS`, but does not compile the full
+  private runtime. Tests committed on this branch still require authorized
+  exact-commit runner-backed execution.
+- Security issue #962's destination allowlist remains empty. Do not mirror
+  this PR's private tree into another GitHub organization until approved
+  identity, tree pin and independent security review are proven.
