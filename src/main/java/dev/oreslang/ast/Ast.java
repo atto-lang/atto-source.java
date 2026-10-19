@@ -185,20 +185,26 @@ public final class Ast {
         }
         public boolean isTupleType() { return name.equals("$tuple$"); }
 
-        private static TypeRef recordType(java.util.Map<String, TypeRef> members, boolean readOnly) {
+        private static TypeRef aggregateType(
+                java.util.Map<String, TypeRef> members,
+                String typeTag,
+                String diagnosticName) {
             java.util.ArrayList<TypeRef> fields = new java.util.ArrayList<>(members.size());
             java.util.ArrayList<java.util.Map.Entry<String, TypeRef>> entries = new java.util.ArrayList<>(members.entrySet());
             // Reject invalid keys before sorting; even a malicious null key
             // must not trigger an uncontrolled comparison or enter a type ID.
             for (java.util.Map.Entry<String, TypeRef> entry : entries) {
                 requireStaticFieldName(entry.getKey());
-                java.util.Objects.requireNonNull(entry.getValue(), "record type field");
+                java.util.Objects.requireNonNull(entry.getValue(), diagnosticName + " type field");
             }
             entries.sort(java.util.Map.Entry.comparingByKey());
             for (java.util.Map.Entry<String, TypeRef> entry : entries) {
                 fields.add(new TypeRef("$field$" + entry.getKey(), List.of(entry.getValue()), false));
             }
-            return new TypeRef(readOnly ? "$readonly_record$" : "$record$", List.copyOf(fields), false);
+            return new TypeRef(typeTag, List.copyOf(fields), false);
+        }
+        private static TypeRef recordType(java.util.Map<String, TypeRef> members, boolean readOnly) {
+            return aggregateType(members, readOnly ? "$readonly_record$" : "$record$", "record");
         }
         public static TypeRef recordType(java.util.Map<String, TypeRef> members) {
             return recordType(members, false);
@@ -206,21 +212,34 @@ public final class Ast {
         public static TypeRef readonlyRecordType(java.util.Map<String, TypeRef> members) {
             return recordType(members, true);
         }
+        public static TypeRef structType(java.util.Map<String, TypeRef> members) {
+            return aggregateType(members, "$struct$", "struct");
+        }
         public boolean isRecordType() { return name.equals("$record$") || name.equals("$readonly_record$"); }
         public boolean isReadonlyRecordType() { return name.equals("$readonly_record$"); }
-        public java.util.Map<String, TypeRef> recordMembers() {
-            if (!isRecordType()) throw new IllegalStateException("not a record type");
+        public boolean isStructType() { return name.equals("$struct$"); }
+        public boolean isClosedAggregateType() { return isRecordType() || isStructType(); }
+        public java.util.Map<String, TypeRef> aggregateMembers() {
+            if (!isClosedAggregateType()) throw new IllegalStateException("not a closed aggregate type");
             java.util.LinkedHashMap<String, TypeRef> members = new java.util.LinkedHashMap<>();
             for (TypeRef field : arguments) {
                 if (!field.name().startsWith("$field$") || field.arguments().size() != 1 || field.inferArguments()) {
-                    throw new IllegalStateException("malformed record type field");
+                    throw new IllegalStateException("malformed closed aggregate type field");
                 }
                 String fieldName = field.name().substring("$field$".length());
                 if (members.putIfAbsent(fieldName, field.arguments().getFirst()) != null) {
-                    throw new IllegalStateException("duplicate record type field " + fieldName);
+                    throw new IllegalStateException("duplicate closed aggregate type field " + fieldName);
                 }
             }
             return java.util.Collections.unmodifiableMap(members);
+        }
+        public java.util.Map<String, TypeRef> recordMembers() {
+            if (!isRecordType()) throw new IllegalStateException("not a record type");
+            return aggregateMembers();
+        }
+        public java.util.Map<String, TypeRef> structMembers() {
+            if (!isStructType()) throw new IllegalStateException("not a struct type");
+            return aggregateMembers();
         }
     }
 
@@ -579,7 +598,7 @@ public final class Ast {
                         || !declaredType.arguments().isEmpty() || declaredType.inferArguments()) {
                     throw new IllegalArgumentException("named inferred type must match the declared binding type");
                 }
-                if (!(initializer instanceof ObjectExpr object && object.readonlyInferredAggregate())
+                if (!(initializer instanceof ObjectExpr object && object.inferredAggregate())
                         && !(initializer instanceof TupleExpr)) {
                     throw new IllegalArgumentException("named inferred type requires infer struct, record or tuple literal");
                 }
@@ -1140,10 +1159,11 @@ public final class Ast {
     /**
      * Anonymous struct expression.
      *
-     * <p>INFERRED_STRUCT and INFERRED_RECORD are both closed, permanently
-     * readonly shapes inferred entirely from their initializer. The distinct
-     * tags preserve syntax fidelity for formatting and future schema/layout
-     * lowering without changing readonly structural semantics.
+     * <p>INFERRED_RECORD is a closed structural readonly value shape.
+     * INFERRED_STRUCT is a concrete closed struct shape whose field types are
+     * inferred from the initializer; mutation authority remains a property of
+     * the binding/borrow, not of the {@code infer} keyword. The distinct tags
+     * therefore survive semantic lowering instead of collapsing to one record type.
      * EXPLICIT_STRUCT carries a separately
      * declared closed shape so declared fields may be initialized after
      * construction under an owned mutable binding. Oreslang has no open-ended
@@ -1191,12 +1211,13 @@ public final class Ast {
             }
             return ObjectKind.INFERRED_STRUCT;
         }
-        public boolean readonlyInferredAggregate() {
+        public boolean inferredAggregate() {
             return kind == ObjectKind.INFERRED_STRUCT || kind == ObjectKind.INFERRED_RECORD;
         }
-        /** Legacy checker/runtime spelling: both kinds use inferred readonly lowering. */
-        public boolean inferredStruct() { return readonlyInferredAggregate(); }
+        public boolean inferredStruct() { return kind == ObjectKind.INFERRED_STRUCT; }
         public boolean inferredRecord() { return kind == ObjectKind.INFERRED_RECORD; }
+        /** Only inferred records carry the readonly structural capability by construction. */
+        public boolean readonlyInferredAggregate() { return inferredRecord(); }
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
     }
 
