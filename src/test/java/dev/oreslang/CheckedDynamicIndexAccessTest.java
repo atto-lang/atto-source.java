@@ -69,6 +69,26 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void cachedNarrowedIndexSiteNeverAuthorizesHiddenKeyAfterValidRead() {
+        String source = """
+                fnc read({x: int} point, string key): int {
+                  return point[key];
+                }
+                pub routine main(): void {
+                  const point = struct{x: int, secret: string}{
+                    x: 7, secret: "hidden"
+                  };
+                  stdio.stdout.write(read(point, "x"));
+                  // Same checked IndexExpr now has a warmed evaluator plan.
+                  stdio.stdout.write(read(point, "secret"));
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertThrows(PolyglotException.class, () -> execute(source));
+    }
+
+    @Test
     void narrowedRecordViewAcceptsExposedRuntimeKey() throws Exception {
         String source = """
                 fnc read({x: int} point, string key): int {
