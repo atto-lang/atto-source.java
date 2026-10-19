@@ -97,6 +97,8 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             Objects.requireNonNull(payload, "payload");
             if (sessionId <= 0 || generation <= 0 || correlationId <= 0)
                 throw new IllegalArgumentException("invalid unary TCP request identity");
+            if (payload.length > UnaryTransportFrame.MAX_PAYLOAD_BYTES)
+                throw new IllegalArgumentException("unary TCP request exceeds protocol byte limit");
             payload = payload.clone();
         }
 
@@ -121,6 +123,8 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                     && kind != UnaryTransportFrame.Kind.ERROR) {
                 throw new IllegalArgumentException("terminal TCP actor result must be REPLY or ERROR");
             }
+            if (payload.length > UnaryTransportFrame.MAX_PAYLOAD_BYTES)
+                throw new IllegalArgumentException("unary TCP reply exceeds protocol byte limit");
             payload = payload.clone();
         }
 
@@ -464,9 +468,9 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                 return;
             }
 
-            final UnaryTransportFrame.Envelope envelope;
+            final byte[] payload;
             try {
-                envelope = UnaryTransportFrame.readTcpPayload(socket.getInputStream(), head);
+                payload = UnaryTransportFrame.readTcpPayloadBytes(socket.getInputStream(), head);
                 frameRead.close();
             } catch (IOException failure) {
                 retireWithoutReply(admitted, true);
@@ -478,7 +482,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             }
 
             Request request = new Request(
-                    peer, sessionId, generation, head.correlationId(), envelope.payload());
+                    peer, sessionId, generation, head.correlationId(), payload);
             ScheduledFuture<?> deadline = timers.schedule(
                     () -> timeout(admitted),
                     limits.requestDeadlineMillis(),
