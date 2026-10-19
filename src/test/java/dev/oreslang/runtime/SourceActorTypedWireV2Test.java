@@ -141,6 +141,53 @@ final class SourceActorTypedWireV2Test {
     }
 
     @Test
+    void exactUnicodeFrameBoundariesRejectBeforePayloadAllocation() {
+        var text = bind(ActorRuntime.ProxyWireScalarKind.STRING);
+        int h = SourceActorTypedWireV2.HEADER_BYTES;
+        for (String unit : new String[] {"a", "\u00e9", "\u6f22", "\ud83d\ude42"}) {
+            int unitBytes = unit.getBytes(
+                    java.nio.charset.StandardCharsets.UTF_8).length;
+            String atLimit = unit.repeat(4);
+            int cap = h + 4 * unitBytes;
+            byte[] admitted = SourceActorTypedWireV2.encodeString(
+                    text, atLimit, cap);
+            assertEquals(cap, admitted.length,
+                    "encoder must use exactly the configured byte capacity");
+            assertEquals(atLimit,
+                    SourceActorTypedWireV2.decode(text, admitted));
+            assertThrows(IllegalArgumentException.class,
+                    () -> SourceActorTypedWireV2.encodeString(
+                            text, atLimit + unit, cap),
+                    "a fifth multibyte value must not allocate past quota");
+        }
+
+        // A malformed UTF-16 String is not allowed to silently substitute a
+        // replacement byte sequence; both surrogate orientations are denied.
+        for (String malformed : new String[] {
+                "\ud800", "\udc00", "abc\ud800x", "abc\udc00",
+                "\ud800\ud800", "\udc00\ud800"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> SourceActorTypedWireV2.encodeString(
+                            text, malformed, h + 100));
+        }
+
+        int available = SourceActorTypedWireV2.MAX_FRAME_BYTES - h;
+        String exceedsAbsoluteCap = "\u6f22".repeat(available / 3 + 1);
+        assertThrows(IllegalArgumentException.class,
+                () -> SourceActorTypedWireV2.encodeString(
+                        text, exceedsAbsoluteCap, Integer.MAX_VALUE),
+                "large multibyte input must be rejected in length preflight");
+        String fitsAbsoluteCap = "\u6f22".repeat(available / 3);
+        byte[] largest = SourceActorTypedWireV2.encodeString(
+                text, fitsAbsoluteCap, Integer.MAX_VALUE);
+        assertEquals(h + fitsAbsoluteCap.getBytes(
+                java.nio.charset.StandardCharsets.UTF_8).length,
+                largest.length);
+        assertEquals(fitsAbsoluteCap,
+                SourceActorTypedWireV2.decode(text, largest));
+    }
+
+    @Test
     void deterministicRoundTripsPreserveAllSupportedPrimitiveValues() {
         var integers = bind(ActorRuntime.ProxyWireScalarKind.INT);
         var booleans = bind(ActorRuntime.ProxyWireScalarKind.BOOL);
