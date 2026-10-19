@@ -21,7 +21,7 @@ final class OresTaskScopePreparedOwnerTest {
         // Bounded host-only stress of the exact prebind/attach sequence.
         for (int trial = 0; trial < 10_000; trial++) {
             OresFuture<Void> physicalExit = new OresFuture<>();
-            OresTask<Integer> shell = new OresTask<>(physicalExit);
+            OresTask<Integer> shell = OresTask.<Integer>preAdmitted(physicalExit);
             assertNull(shell.cancelDeferredNotification(),
                     "prebound cancellation must not dereference a missing Future");
             assertFalse(shell.isQuiescent());
