@@ -68,6 +68,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.dest_allow_delete = False
         self.dest_bypass = {"users": [], "teams": [], "apps": []}
         self.destination_codeowners = (
+            b"* @ORESoftware\n"
             b"/.github/ @ORESoftware\n"
             b"/.github/CODEOWNERS @ORESoftware\n")
         self.destination_codeowners_exists = True
@@ -1110,6 +1111,31 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     with self.assertRaises(pub.Denied):
                         self.publish()
                 self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_destination_codeowners_hidden_sensitive_override_denied(self):
+        # Matching terminal workflow rules must not conceal overrides for
+        # CI scripts, policy JSON, or provenance verification code.
+        valid = self.destination_codeowners
+        variants = [
+            valid.replace(b"/.github/ @ORESoftware\n",
+                          b"/scripts/ @untrusted\n/.github/ @ORESoftware\n"),
+            valid.replace(b"/.github/ @ORESoftware\n",
+                          b"/.github/private-ci-carrier-policy.json @untrusted\n"
+                          b"/.github/ @ORESoftware\n"),
+            valid.replace(b"/.github/ @ORESoftware\n",
+                          b"* @untrusted\n/.github/ @ORESoftware\n"),
+            valid.replace(b"* @ORESoftware\n", b""),
+            valid.replace(b"* @ORESoftware\n", b"* @untrusted\n"),
+        ]
+        for contents in variants:
+            with self.subTest(contents=contents):
+                self.destination_codeowners = contents
+                self.route_calls.clear()
+                with patch.object(pub, "gh_api", side_effect=self.fake_api):
+                    with self.assertRaisesRegex(pub.Denied, "CODEOWNERS trust root"):
+                        self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+        self.destination_codeowners = valid
 
     def test_destination_codeowners_blob_digest_mismatch_fails_closed(self):
         self.destination_codeowners_sha_override = "f" * 40
