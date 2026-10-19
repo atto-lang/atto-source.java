@@ -28,6 +28,7 @@ public final class SealedActorState {
     private static final int MAX_PENDING_OWNED = 256;
     private static final int MAX_TENSOR_RANK = 16;
     private static final int MAX_TENSOR_ELEMENTS = 1_048_576;
+    private static final int MAX_TENSOR_EXTENT = 1_048_576;
     private static final long MAX_TRACKED_TENSOR_BYTES = 64L * 1024L * 1024L;
     private static final int MAX_TRACKED_TENSOR_SNAPSHOTS = 256;
 
@@ -52,6 +53,7 @@ public final class SealedActorState {
     // the state root itself keep obsolete weight generations alive forever.
     private final Set<TensorSnapshotF64> tensorSnapshots =
             Collections.newSetFromMap(new WeakHashMap<>());
+    private final Object tensorSnapshotGate = new Object();
     private volatile boolean retired;
 
     public SealedActorState(ActorRuntime.ActorId owner,
@@ -207,6 +209,8 @@ public final class SealedActorState {
             for (int dimension : shape) {
                 if (dimension < 0)
                     throw new IllegalArgumentException("ML_NEGATIVE_TENSOR_DIMENSION");
+                if (dimension > MAX_TENSOR_EXTENT)
+                    throw new IllegalArgumentException("ML_TENSOR_EXTENT_EXCEEDED");
                 if (dimension == 0) {
                     zero = true;
                     product = 0;
@@ -304,7 +308,7 @@ public final class SealedActorState {
         }
     }
 
-    private long trackedTensorBytes() {
+    private long trackedTensorBytesUnderGate() {
         long total = 0;
         for (TensorSnapshotF64 snapshot : tensorSnapshots) {
             long bytes = snapshot.byteSize();
@@ -340,12 +344,16 @@ public final class SealedActorState {
                 expectedVersion + 1,
                 Objects.requireNonNull(shape, "tensor shape"),
                 Objects.requireNonNull(values, "tensor values"));
-        long tracked = trackedTensorBytes();
         long bytes = snapshot.byteSize();
-        if (tensorSnapshots.size() >= MAX_TRACKED_TENSOR_SNAPSHOTS
-                || bytes > MAX_TRACKED_TENSOR_BYTES - tracked)
-            throw new IllegalArgumentException("ML_TENSOR_SNAPSHOT_BUDGET_EXHAUSTED");
-        tensorSnapshots.add(snapshot);
+        synchronized (tensorSnapshotGate) {
+            long tracked = trackedTensorBytesUnderGate();
+            if (tensorSnapshots.size() >= MAX_TRACKED_TENSOR_SNAPSHOTS
+                    || bytes > MAX_TRACKED_TENSOR_BYTES - tracked) {
+                snapshot.erase();
+                throw new IllegalArgumentException("ML_TENSOR_SNAPSHOT_BUDGET_EXHAUSTED");
+            }
+            tensorSnapshots.add(snapshot);
+        }
         return new TensorPublication(this, tensorField, versionField,
                 runField, graphField, incarnationField,
                 expectedVersion, expectedRevision,
@@ -373,6 +381,8 @@ public final class SealedActorState {
         var staged = new LinkedHashMap<String, Object>();
         for (var entry : replacements.entrySet()) {
             String name = Objects.requireNonNull(entry.getKey(), "scalar name");
+            if ("tensor:f64".equals(schema.get(name)))
+                throw new IllegalArgumentException("ML_TENSOR_REQUIRES_TENSOR_PUBLICATION");
             validateValue(name, entry.getValue());
             // Owned regions have no general alias-safe scalar publication path.
             staged.put(name, entry.getValue());
@@ -713,8 +723,10 @@ public final class SealedActorState {
             capsule.bytes = null;
         }
         pendingOwned.clear();
-        for (TensorSnapshotF64 snapshot : tensorSnapshots) snapshot.erase();
-        tensorSnapshots.clear();
+        synchronized (tensorSnapshotGate) {
+            for (TensorSnapshotF64 snapshot : tensorSnapshots) snapshot.erase();
+            tensorSnapshots.clear();
+        }
         for (Object value : values.values()) {
             if (value instanceof OwnedRegion region) region.erase();
         }
