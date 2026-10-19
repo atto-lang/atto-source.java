@@ -4342,7 +4342,7 @@ public final class OresEvalRootNode extends RootNode {
                 verifyStagedFunctionTarget(
                         proof,
                         "method",
-                        owner.name() + "." + method.name(),
+                        method.name(),
                         method.parameters());
                 object.owner.requireClassMemberVisible(
                         method.visibility(),
