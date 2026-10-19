@@ -1196,6 +1196,11 @@ public final class TypeChecker {
                         + "' cannot be public; expose state through mailbox-dispatched methods");
             }
             Type fieldType = classFieldType(klass, field);
+            if (fieldType == Primitive.VOID) {
+                throw new IllegalArgumentException(
+                        "class field '" + klass.name() + "." + field.name()
+                                + "' cannot store void completion");
+            }
             if (field.initializer() != null && field.type() != null) {
                 Ast.ClassDecl previousClassOwner = currentClassOwner;
                 Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
@@ -1596,12 +1601,20 @@ public final class TypeChecker {
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
+        if (actual == Primitive.VOID) {
+            throw new IllegalArgumentException(
+                    "module binding '" + field.name() + "' cannot store void completion");
+        }
         requireMutableReferentCompatible(
                 actual,
                 field.mutableReferent(),
                 "module binding '" + field.name() + "'");
         if (field.type() != null) {
             Type expected = resolve(field.type(), Set.of(), null);
+            if (expected == Primitive.VOID) {
+                throw new IllegalArgumentException(
+                        "module binding '" + field.name() + "' cannot have type void");
+            }
             requireReadonlyCapabilityPreserved(
                     actual,
                     expected,
@@ -8618,6 +8631,10 @@ public final class TypeChecker {
                 Type type,
                 Ast.BindingKind kind,
                 Set<String> uninitializedFields) {
+            if (type == Primitive.VOID) {
+                throw new IllegalArgumentException(
+                        "binding '" + name + "' cannot store void completion; use Future<void>");
+            }
             if (bindings.putIfAbsent(name, new Binding(type, kind, uninitializedFields)) != null) {
                 throw new IllegalArgumentException("duplicate binding '" + name + "'");
             }
@@ -8637,6 +8654,10 @@ public final class TypeChecker {
             return inherited;
         }
         private void replace(String name, Type type, Ast.BindingKind kind) {
+            if (type == Primitive.VOID) {
+                throw new IllegalArgumentException(
+                        "binding '" + name + "' cannot store void completion");
+            }
             if (!bindings.containsKey(name)) throw new IllegalArgumentException("unknown binding '" + name + "'");
             bindings.put(name, new Binding(type, kind, Set.of()));
         }
