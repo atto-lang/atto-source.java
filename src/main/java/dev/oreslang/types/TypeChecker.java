@@ -7477,6 +7477,17 @@ public final class TypeChecker {
             for (Ast.Expr argument : runtime.arguments()) {
                 rejectStaticClassGenericReferences(argument, classGenerics, klass, method);
             }
+        } else if (expression instanceof Ast.StagedCallExpr call) {
+            for (Ast.TypeRef argument : call.typeArguments()) {
+                rejectStaticClassGenericReference(argument, classGenerics, klass, method);
+            }
+            rejectStaticClassGenericReferences(call.callee(), classGenerics, klass, method);
+            for (Ast.CallArgument argument : call.arguments()) {
+                if (argument.value() != null) {
+                    rejectStaticClassGenericReferences(
+                            argument.value(), classGenerics, klass, method);
+                }
+            }
         } else if (expression instanceof Ast.CallExpr call) {
             for (Ast.TypeRef argument : call.typeArguments()) {
                 rejectStaticClassGenericReference(argument, classGenerics, klass, method);
