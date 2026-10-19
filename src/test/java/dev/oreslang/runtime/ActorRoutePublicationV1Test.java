@@ -282,4 +282,10 @@ final class ActorRoutePublicationV1Test {
             assertTrue(gate.retired());
         }
     }
+    @Test
+    void oversizedStateCheckpointIsRejectedBeforeImmutableCopy() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorRoutePublicationV1.StateSnapshot(
+                        sha('1'), new byte[1024 * 1024 + 1]));
+    }
 }
