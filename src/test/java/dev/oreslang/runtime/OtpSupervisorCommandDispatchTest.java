@@ -160,6 +160,15 @@ final class OtpSupervisorCommandDispatchTest {
                     });
             target.send("attempt");
             assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertThrows(UnsupportedOperationException.class,
+                    () -> runtime.submitSupervisorCommand(
+                            target, 1L, ActorRuntime.SupervisorOperation.COMMIT_NOTICE,
+                            DIGEST), "a notice is not a verified atomic publication");
+            assertThrows(UnsupportedOperationException.class,
+                    () -> runtime.submitSupervisorCommand(
+                            target, 1L, ActorRuntime.SupervisorOperation.GRACEFUL_STOP,
+                            null), "a notice is not a physical stop acknowledgment");
+            assertEquals(0, runtime.supervisorCommandStatsFor(target).outstanding());
             var foreignRuntime = new ActorRuntime();
             try {
                 var foreign = foreignRuntime.<String>spawnShared(() -> (msg, ctx) -> { });
