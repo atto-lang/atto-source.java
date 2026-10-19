@@ -8043,7 +8043,7 @@ public final class TypeChecker {
             requireDynCompatible(iface, new LinkedHashSet<>());
             // A symbolic or unknown specialization cannot furnish a runtime
             // nominal implementation proof under the current erased ABI.
-            if (containsUnknown(named) || containsGenericNamed(named, generics)) {
+            if (Types.containsUncertainType(named)) {
                 throw new IllegalArgumentException(
                         "dyn interface arguments require concrete, proven types");
             }
@@ -8352,10 +8352,12 @@ public final class TypeChecker {
 
         if (expected instanceof Dyn targetDyn) {
             if (actual instanceof Dyn sourceDyn) {
-                return interfaceTypeExtends(
-                        sourceDyn.interfaceType(), targetDyn.interfaceType(), new LinkedHashSet<>());
+                return !Types.containsUncertainType(sourceDyn.interfaceType())
+                        && interfaceTypeExtends(
+                                sourceDyn.interfaceType(), targetDyn.interfaceType(), new LinkedHashSet<>());
             }
             if (actual instanceof Named concrete) {
+                if (Types.containsUncertainType(concrete)) return false;
                 Ast.ClassDecl klass = findClass(concrete.name());
                 return klass != null && klass.actorKind() == Ast.ActorKind.NONE
                         && classTypeImplements(concrete, targetDyn.interfaceType(), new LinkedHashSet<>());
