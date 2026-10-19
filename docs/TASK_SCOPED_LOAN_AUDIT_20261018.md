@@ -28,3 +28,42 @@
 - At the inspected 2026-10-19 03:10 UTC head, Actions fast-ci run 39193409339, concurrency-contract run 39193409592 and ci run 39193409489 all show sampled jobs failing with **zero executed steps**. This is not Java test evidence.
 - Required before merge: JDK Maven exact-head TaskAccessVerifierTest and full relevant checks; positive/negative source compiler diagnostics; TaskScope cancellation vs physical quiescence; native LLVM and TSan/ASan where applicable; correct dependency revision.
 - No private-source cross-organization mirror was created or authorized. Keep this PR DRAFT.
+
+## Follow-up: owner-identity collision (P0), path budgets (P1)
+
+**P0 actor/tenant isolation:** The first verifier version modeled trust domains only by
+category string (for example `ACTOR_PRIVATE`). That is not an actor identity:
+two separately owned heaps can both be actor-private. A helper that admits
+READ/READ from those heaps into one scope violates the isolation boundary even
+when individual allocations are disjoint.
+
+**Fix in this draft:** `Root` now carries a distinct `ownerId` alongside
+the category, allocation ID, and generation. Every alias query, conflict check,
+allocation-generation key, scope admission, parent access, and structural
+barrier uses both category **and** owner identity. The four-argument
+compatibility constructor is restricted to process-local provenance; non-process
+roots require explicit owner identity. Tests exercise independent actor owners,
+owner restarts/epochs, same-owner distinct allocations, untrusted-vs-actor and
+process-vs-actor rejection. This prevents accidental category-based authority
+confusion in the compiler helper; it is **not an unforgeable runtime token**.
+
+**P1 bounded input:** Limit owner/domain labels and inline field names to 256
+UTF-16 code units and projection path depth to 64 before copying. These are
+compiler-analysis resource bounds, not runtime ECS limits.
+
+**Residual P0:** Only the compiler's trusted place/alias/type engine may mint
+`ownerId`, allocation IDs, generations, `uniqueAllocationProven`, and
+layout-disjointness proofs. Actor lifecycle epochs and tenant boundaries must be
+bound to those proofs, including when code hot reloads. Public string constructors
+by themselves do not authenticate owners; source Task borrowing stays fail-closed.
+The typed claim's referent type is also not yet checked against an authoritative
+MIR place type. `quiescent(ticket)` is not authenticated to a physical Task join,
+so the real runtime must not invoke it merely on cancellation or result settle.
+
+**New evidence:** 32 committed JUnit methods (including six additional owner,
+epoch, and resource-bound regressions), not run under Maven/GraalVM. The
+source-org fast-ci run [39194705587](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39194705587)
+and concurrency-contract run [39194705537](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39194705537)
+reported failures with **zero recorded steps** and no runner assigned on
+the inspected intermediate head. No compiler/JUnit pass is claimed, and
+no private Git tree was exported to another organization.
