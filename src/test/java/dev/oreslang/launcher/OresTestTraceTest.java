@@ -59,6 +59,35 @@ final class OresTestTraceTest {
     }
 
     @Test
+    void rejectContradictoryTraceMetadataAtReadAndWrite() throws Exception {
+        Path source = temporary.resolve("metadata.ores");
+        Path trace = temporary.resolve("metadata.trace");
+        Files.writeString(source, "pub routine main(): void { return; }\n");
+        var valid = new OresTestExploration.Report(21, 4, 7, 0, 0, 456);
+        OresTestTrace.write(trace, source, 17, 7, true, valid);
+        String original = Files.readString(trace);
+
+        for (String changed : new String[] {
+                original.replace("stress_cases=7", "stress_cases=6"),
+                original.replace("runs=7", "runs=-1"),
+                original.replace("model_check=true", "model_check=false"),
+                original.replace("states=21", "states=-1"),
+                original.replace("rejected_cycles=4", "rejected_cycles=-1"),
+                original.replace("rejected_cycles=4", "rejected_cycles=0"),
+                original.replace("states=21", "states=0")
+        }) {
+            Files.writeString(trace, changed);
+            assertThrows(IOException.class, () -> OresTestTrace.read(trace, source),
+                    changed);
+        }
+
+        assertThrows(IOException.class, () -> OresTestTrace.write(
+                temporary.resolve("bad-count.trace"), source, 17, 8, true, valid));
+        assertThrows(IOException.class, () -> OresTestTrace.write(
+                temporary.resolve("bad-mode.trace"), source, 17, 7, false, valid));
+    }
+
+    @Test
     void rejectMalformedAndOutOfBudgetTraceRecords() throws Exception {
         Path source = temporary.resolve("suite.ores");
         Path trace = temporary.resolve("gate.trace");
