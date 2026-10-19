@@ -209,18 +209,23 @@ public final class OresTaskScope implements AutoCloseable {
     /** Cancel all owned descendants. Does NOT imply physical quiescence. */
     public boolean cancel() {
         List<Runnable> notifications = new ArrayList<>();
-        // First close all child admissions and revoke all Task producers.
-        // Future cancellation notifies arbitrary synchronous host waiters;
-        // notifying one child before revoking its siblings can otherwise
-        // indefinitely delay their cancellation.
-        boolean won = cancelTreeIterative(notifications);
+        // Seal the ENTIRE descendant tree before any Task revocation hook can
+        // admit new work to a child that has not yet been visited.
+        boolean won = false;
         Throwable firstFailure = null;
+        try {
+            won = cancelTreeIterative(notifications);
+        } catch (RuntimeException | Error failure) {
+            firstFailure = failure;
+        }
+        // A faulty producer hook cannot strand already-claimed deferred
+        // notifications behind a permanently closed Future revocation gate.
         for (Runnable notification : notifications) {
             try {
                 notification.run();
             } catch (RuntimeException | Error failure) {
                 if (firstFailure == null) firstFailure = failure;
-                else firstFailure.addSuppressed(failure);
+                else if (firstFailure != failure) firstFailure.addSuppressed(failure);
             }
         }
         if (firstFailure instanceof RuntimeException failure) throw failure;
@@ -230,37 +235,49 @@ public final class OresTaskScope implements AutoCloseable {
 
     private boolean cancelTreeIterative(List<Runnable> notifications) {
         ArrayDeque<OresTaskScope> pending = new ArrayDeque<>();
+        List<OresTask<?>> ownedToCancel = new ArrayList<>();
+        List<OresCancellationToken.Registration> inboundToClose =
+                new ArrayList<>();
         pending.add(this);
         boolean wonRoot = false;
+        // Phase 1: seal child admission and collect all descendants BEFORE
+        // invoking arbitrary synchronous producer cancellation hooks.
         while (!pending.isEmpty()) {
             OresTaskScope scope = pending.removeLast();
-            final List<OresTaskScope> children;
-            final List<OresTask<?>> owned;
-            final List<OresCancellationToken.Registration> inbound;
             synchronized (scope.gate) {
-                // A competing cancellation can claim this child before
-                // traversing its grandchildren. Never mistake a claimed
-                // cancellation flag for a completed subtree sweep.
                 boolean firstClaim = !scope.cancelled;
                 scope.cancelled = true;
                 if (scope == this && firstClaim) wonRoot = true;
-                children = new ArrayList<>(scope.childScopes);
-                owned = new ArrayList<>(scope.tasks);
-                inbound = new ArrayList<>(scope.externalCancellation);
+                pending.addAll(scope.childScopes);
+                ownedToCancel.addAll(scope.tasks);
+                inboundToClose.addAll(scope.externalCancellation);
                 scope.externalCancellation.clear();
             }
-            // Sever directed inbound links before delivering host callbacks;
-            // a cancelled scope must not remain retained by its old sources.
-            for (OresCancellationToken.Registration link : inbound) link.close();
-            // Iterative traversal avoids recursive stack exhaustion with
-            // deeply nested scope trees. Closure of the admission gate is
-            // ordered before task revocation and callback delivery.
-            pending.addAll(children);
-            for (OresTask<?> task : owned) {
-                Runnable notification = task.cancelDeferredNotification();
-                if (notification != null) notifications.add(notification);
+        }
+
+        Throwable firstFailure = null;
+        // Phase 2: after all descendant gates are closed, detach directed
+        // upstream links and revoke all producers. Keep sweeping after a
+        // failure so one hook cannot strand independent siblings.
+        for (OresCancellationToken.Registration link : inboundToClose) {
+            try {
+                link.close();
+            } catch (RuntimeException | Error failure) {
+                if (firstFailure == null) firstFailure = failure;
+                else if (firstFailure != failure) firstFailure.addSuppressed(failure);
             }
         }
+        for (OresTask<?> task : ownedToCancel) {
+            try {
+                Runnable notification = task.cancelDeferredNotification();
+                if (notification != null) notifications.add(notification);
+            } catch (RuntimeException | Error failure) {
+                if (firstFailure == null) firstFailure = failure;
+                else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+            }
+        }
+        if (firstFailure instanceof RuntimeException failure) throw failure;
+        if (firstFailure instanceof Error failure) throw failure;
         return wonRoot;
     }
 
