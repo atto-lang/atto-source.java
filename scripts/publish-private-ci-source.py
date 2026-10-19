@@ -105,7 +105,10 @@ def verified_child_env():
                      "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE",
                      "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
                      # gh must not load a caller-selected config directory.
-                     "GH_CONFIG_DIR", "XDG_CONFIG_HOME")
+                     "GH_CONFIG_DIR", "XDG_CONFIG_HOME",
+                     # The gh subprocess must not select an attacker-owned
+                     # scratch directory for API request bodies or response data.
+                     "TMPDIR", "TMP", "TEMP")
                 or name.startswith(("BASH_FUNC_", "GIT_", "LD_", "DYLD_"))):
             env.pop(name, None)
     env["PATH"] = SAFE_EXEC_PATH
@@ -189,6 +192,7 @@ def gh_api(route, method="GET", payload=None):
         with tempfile.TemporaryDirectory(prefix="ores-ci-gh-", dir=temp_parent) as isolated_home:
             env["HOME"] = isolated_home
             env["XDG_CONFIG_HOME"] = isolated_home
+            env["TMPDIR"] = temp_parent
             p = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
                                capture_output=True, text=True, env=env, timeout=45, check=False)
     except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
