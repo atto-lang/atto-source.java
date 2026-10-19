@@ -167,15 +167,130 @@ final class LogicalSourceActorProxyBridgeV1Test {
                 assertEquals(2, turns.get(),
                         "resume must retain original Task pin, not admit a new one");
 
-                // Now physical Task exit allows one verified source-code route
-                // transaction. Logical identity/state survive the migration.
-                assertTrue(bridge.upgradeTo(candidate, WAIT));
+                // Result Future settlement can beat the scheduler's final
+                // physical-exit callback. Poll the authoritative ingress
+                // freeze rather than assuming get() certifies quiescence.
+                boolean published = false;
+                long deadline = System.nanoTime()
+                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                while (!published && System.nanoTime() < deadline) {
+                    published = bridge.upgradeTo(candidate, WAIT);
+                    if (!published) Thread.sleep(2L);
+                }
+                assertTrue(published,
+                        "source-image publication requires physical Task exit");
+                assertEquals(bridge.address().routeEpoch(),
+                        bridge.publication().mailbox().routeEpoch());
                 assertEquals(identity.actorId(), bridge.address().actorId());
                 assertEquals(identity.incarnation(), bridge.address().incarnation());
                 assertEquals(identity.routeEpoch() + 1, bridge.address().routeEpoch());
                 bridge.admitLong(-2L);
                 assertTrue(bridge.dispatchOne(WAIT));
                 assertEquals(45L, next(bridge));
+            }
+        }
+    }
+
+    @Test
+    void physicalTaskOwnerCloseWaitsForExecutingCancelledCarrier()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit());
+             OresScheduler scheduler = new OresScheduler(1)) {
+            var first = manager.stageActorGeneration("scope-close.ores", V1);
+            var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
+                    first, "Counter", WAIT, 2, 8, 16);
+            var entered = new java.util.concurrent.CountDownLatch(1);
+            var releaseCarrier = new java.util.concurrent.atomic.AtomicBoolean();
+            var closed = new java.util.concurrent.atomic.AtomicBoolean();
+            var closeError =
+                    new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var task = bridge.startHostPinnedTaskForUpgrade(
+                    scheduler, resume -> {
+                        entered.countDown();
+                        while (!releaseCarrier.get()) Thread.onSpinWait();
+                        return OresScheduler.done(1);
+                    });
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            Thread closer = Thread.ofPlatform().start(() -> {
+                try {
+                    bridge.close();
+                    closed.set(true);
+                } catch (Throwable problem) {
+                    closeError.set(problem);
+                }
+            });
+            try {
+                long until = System.nanoTime()
+                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+                while (!task.isDone() && System.nanoTime() < until)
+                    Thread.sleep(2);
+                assertTrue(task.isDone(),
+                        "scope close requests cancellation of the owned Task");
+                assertFalse(closed.get(),
+                        "cancelled Future must not retire an executing carrier");
+                assertTrue(closer.isAlive(),
+                        "scope close must wait for physical Task exit");
+            } finally {
+                releaseCarrier.set(true);
+                closer.join(7000);
+            }
+            assertFalse(closer.isAlive(), "bounded host close should finish");
+            assertNull(closeError.get(), "physical retirement must not fail");
+            assertTrue(closed.get());
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> bridge.startHostPinnedTaskForUpgrade(
+                            scheduler, resume -> OresScheduler.done(2)));
+        }
+    }
+
+    @Test
+    void publicationSnapshotNeverExposesMixedRouteAndMailboxEpoch()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("coherent-v1.ores", V1);
+            var next = manager.stageActorGeneration("coherent-v2.ores", V2);
+            try (var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
+                    first, "Counter", WAIT, 4, 8, 32)) {
+                var seen = new java.util.concurrent.atomic.AtomicInteger();
+                var failure =
+                        new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                var stop = new java.util.concurrent.atomic.AtomicBoolean();
+                var start = new java.util.concurrent.CountDownLatch(1);
+                Thread observer = Thread.ofPlatform().start(() -> {
+                    try {
+                        start.await();
+                        while (!stop.get()) {
+                            var publication = bridge.publication();
+                            if (publication.address().routeEpoch()
+                                    != publication.mailbox().routeEpoch()) {
+                                throw new AssertionError(
+                                        "physical and proxy route epochs torn");
+                            }
+                            seen.incrementAndGet();
+                        }
+                    } catch (Throwable problem) {
+                        failure.compareAndSet(null, problem);
+                    }
+                });
+                try {
+                    start.countDown();
+                    assertTrue(bridge.upgradeTo(next, WAIT));
+                    var publication = bridge.publication();
+                    assertEquals(2L, publication.address().routeEpoch());
+                    assertEquals(2L, publication.mailbox().routeEpoch());
+                    bridge.admitLong(41L);
+                    assertTrue(bridge.dispatchOne(WAIT));
+                    assertEquals(42L, next(bridge));
+                } finally {
+                    stop.set(true);
+                    observer.join(7000);
+                }
+                assertFalse(observer.isAlive());
+                assertNull(failure.get());
+                assertTrue(seen.get() > 0,
+                        "observer must exercise epoch snapshots during upgrade");
             }
         }
     }
