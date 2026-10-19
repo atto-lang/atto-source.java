@@ -173,6 +173,50 @@ final class OptionalCallValueAssemblyTest {
     }
 
     @Test
+    void requiredOptionRejectsPlainValueDespiteMatchingMetadata() {
+        var preview = new OptionalCallAbiPreview.Preview(
+                List.of(new Ast.LiteralExpr("fake")),
+                List.of(slot(0, OPTION_STRING,
+                        OptionalCallAbiPreview.Action.PASS_REQUIRED, 0, 0)));
+        Options factory = new Options();
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallValueAssembly.assemble(
+                        preview, List.of("fake"), factory));
+        assertTrue(factory.created.isEmpty());
+    }
+
+    @Test
+    void requiredOptionNonePreservesItsExactRuntimeIdentity() {
+        var preview = new OptionalCallAbiPreview.Preview(
+                List.of(new Ast.NameExpr("None")),
+                List.of(slot(0, OPTION_STRING,
+                        OptionalCallAbiPreview.Action.PASS_REQUIRED, 0, 0)));
+        OptionBox explicitNone = new OptionBox(false, null);
+        Options factory = new Options();
+        assertSame(explicitNone, OptionalCallValueAssembly.assemble(
+                preview, List.of(explicitNone), factory).getFirst());
+        assertTrue(factory.created.isEmpty());
+    }
+
+    @Test
+    void invalidSuppliedOptionFailsBeforeEarlierSomeIsMaterialized() {
+        var preview = new OptionalCallAbiPreview.Preview(
+                List.of(new Ast.LiteralExpr("first"),
+                        new Ast.LiteralExpr("forged")),
+                List.of(
+                        slot(0, OPTION_STRING,
+                                OptionalCallAbiPreview.Action.WRAP_SOME, 0, 0),
+                        slot(1, OPTION_STRING,
+                                OptionalCallAbiPreview.Action.PASS_OPTION, 1, 1)));
+        Options factory = new Options();
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallValueAssembly.assemble(
+                        preview, List.of("first", "forged"), factory));
+        assertTrue(factory.created.isEmpty(),
+                "no Some/None allocations before supplied Option validation");
+    }
+
+    @Test
     void rejectsNullNominalOptionObjectsReturnedByFactory() {
         var preview = new OptionalCallAbiPreview.Preview(
                 List.of(), List.of(
