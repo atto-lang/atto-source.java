@@ -228,7 +228,14 @@ public final class ReturnCleanupChecker {
                     expression(arm.value(), scope, inDefer, state);
                     Scope armScope = new Scope(scope);
                     if (arm.bindingName() != null) armScope.define(arm.bindingName());
-                    statements(arm.body(), armScope, inFinally, inDefer, trackReturns, state);
+                    // A nonblocking static arm runs as a detached continuation.
+                    // Its arm-local return never becomes the already-returned
+                    // caller's pending result. Keep scanning effects/finally,
+                    // but do not mark its return operand as a caller return.
+                    boolean returnsToCaller = trackReturns
+                            && select.mode() != Ast.WaitMode.NONBLOCKING;
+                    statements(arm.body(), armScope, inFinally, inDefer,
+                            returnsToCaller, state);
                 }
             }
         }

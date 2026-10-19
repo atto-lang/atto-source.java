@@ -15,7 +15,9 @@ import urllib.request
 
 
 MAX_RESPONSE_BYTES = 131072
+MAX_TOKEN_LENGTH = 4096
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z", re.ASCII)
+BEARER_TOKEN = re.compile(r"[A-Za-z0-9._~+/-]+={0,16}\Z", re.ASCII)
 
 
 class MirrorPreflightError(Exception):
@@ -45,14 +47,22 @@ def validate_metadata(actual, expected_name, expected_id):
         raise MirrorPreflightError("repository identity mismatch")
     if type(actual.get("id")) is not int or actual["id"] != expected_id:
         raise MirrorPreflightError("repository numeric identity mismatch")
-    if actual.get("archived") is True or actual.get("disabled") is True:
-        raise MirrorPreflightError("repository is archived or disabled")
+    # Unknown state must fail closed as well as explicitly archived/disabled.
+    if actual.get("archived") is not False or actual.get("disabled") is not False:
+        raise MirrorPreflightError("repository active status is missing or inactive")
+
+
+def validate_token(token):
+    # Bearer token68 characters only. Deny controls, whitespace, Unicode and
+    # header-breaking payloads before constructing any HTTP request.
+    if (not isinstance(token, str) or not 1 <= len(token) <= MAX_TOKEN_LENGTH
+            or not BEARER_TOKEN.fullmatch(token)):
+        raise MirrorPreflightError("authenticated repository visibility required")
 
 
 def fetch_metadata(name, token, opener=None):
     owner, repository = validate_repository_name(name)
-    if not token or not isinstance(token, str) or token.isspace():
-        raise MirrorPreflightError("authenticated repository visibility required")
+    validate_token(token)
     req = urllib.request.Request(
         f"https://api.github.com/repos/{owner}/{repository}",
         headers={
@@ -73,7 +83,7 @@ def fetch_metadata(name, token, opener=None):
             data = response.read(MAX_RESPONSE_BYTES + 1)
             if len(data) > MAX_RESPONSE_BYTES:
                 raise MirrorPreflightError("repository metadata response too large")
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         # Never include raw HTTP exception text: it can contain request data.
         raise MirrorPreflightError("repository metadata unavailable") from None
     try:
@@ -87,8 +97,14 @@ def verify(source, destination, source_id, destination_id, source_token, destina
     validate_repository_name(destination)
     if source.lower() == destination.lower():
         raise MirrorPreflightError("source and destination must be distinct repositories")
-    if source_id <= 0 or destination_id <= 0 or source_id == destination_id:
+    # bool is an int subclass in Python; never admit it as a pinned GitHub ID.
+    if (type(source_id) is not int or type(destination_id) is not int
+            or source_id <= 0 or destination_id <= 0
+            or source_id == destination_id):
         raise MirrorPreflightError("expected numeric repository identities must be distinct and positive")
+    # Require both credentials before either private repository is queried.
+    validate_token(source_token)
+    validate_token(destination_token)
     for name, expected_id, token in (
         (source, source_id, source_token),
         (destination, destination_id, destination_token),

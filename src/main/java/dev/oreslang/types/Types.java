@@ -177,6 +177,10 @@ public final class Types {
         if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof ListType list) return containsUncertainType(list.element());
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsUncertainType);
+        if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsUncertainType)
+                || containsUncertainType(function.result());
+        if (type instanceof Borrow borrow) return containsUncertainType(borrow.target());
+        if (type instanceof SelfType self) return containsUncertainType(self.bound());
         return false;
     }
 
