@@ -64,7 +64,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root)
 
-    def verified_origin_api(self, protected=True, policy=b"trusted/ci\\n"):
+    def verified_origin_api(self, protected=True, policy=b"trusted/ci\n"):
         routes = []
         def fake(route, method="GET", payload=None):
             routes.append(route)
@@ -97,7 +97,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_origin_main_must_match_local_approved_policy(self):
         api, _ = self.verified_origin_api(
-            protected=True, policy=b"# no authorized destination\\n")
+            protected=True, policy=b"# no authorized destination\n")
         with patch.object(pub, "verify_protected_origin",
                           side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
             with patch.object(pub, "gh_api", side_effect=api):
