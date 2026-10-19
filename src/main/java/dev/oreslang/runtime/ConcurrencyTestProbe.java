@@ -26,7 +26,20 @@ public final class ConcurrencyTestProbe {
     private ConcurrencyTestProbe() { }
 
     public static Session start(long seed, boolean perturb, List<String> replay) {
-        Session session = new Session(seed, perturb, replay);
+        return start(seed, perturb, replay, null, null);
+    }
+
+    /** Bound CLI evidence to its entry source bytes and backend configuration. */
+    public static Session start(long seed, boolean perturb, List<String> replay,
+            String entrySha256, String backend) {
+        if ((entrySha256 == null) != (backend == null)) {
+            throw new IllegalArgumentException("trace provenance must be complete");
+        }
+        if (entrySha256 != null && (!entrySha256.matches("[0-9a-f]{64}")
+                || !backend.matches("[A-Za-z0-9_.-]{1,80}"))) {
+            throw new IllegalArgumentException("invalid trace provenance identity");
+        }
+        Session session = new Session(seed, perturb, replay, entrySha256, backend);
         if (!ACTIVE.compareAndSet(null, session)) {
             throw new IllegalStateException("a concurrency test session is already active");
         }
@@ -50,11 +63,16 @@ public final class ConcurrencyTestProbe {
         private final boolean perturb;
         private final List<String> replay;
         private final SplittableRandom random;
+        private final String entrySha256;
+        private final String backend;
         private final List<String> events = new ArrayList<>();
         private int deadlocks;
         private boolean closed;
 
-        private Session(long seed, boolean perturb, List<String> replay) {
+        private Session(long seed, boolean perturb, List<String> replay,
+                String entrySha256, String backend) {
+            this.entrySha256 = entrySha256;
+            this.backend = backend;
             this.seed = seed;
             this.perturb = perturb;
             this.replay = replay == null ? null : List.copyOf(replay);
@@ -139,7 +157,11 @@ public final class ConcurrencyTestProbe {
         public synchronized void writeTrace(Path destination) throws IOException {
             Objects.requireNonNull(destination, "destination");
             List<String> lines = new ArrayList<>(events.size() + 1);
-            lines.add("ORES_CONCURRENCY_TRACE_V1|seed=" + seed);
+            lines.add(entrySha256 == null
+                    ? "ORES_CONCURRENCY_TRACE_V1|seed=" + seed
+                    : "ORES_CONCURRENCY_TRACE_V2|seed=" + seed
+                    + "|entry-sha256=" + entrySha256
+                    + "|backend=" + backend + "|probe=1");
             lines.addAll(events);
             Files.write(destination, lines, StandardCharsets.UTF_8);
         }
@@ -155,7 +177,8 @@ public final class ConcurrencyTestProbe {
     }
 
     /** Parsed trace receipt; the seed is part of replay identity. */
-    public record TraceData(long seed, List<String> events) { }
+    public record TraceData(long seed, List<String> events,
+            String entrySha256, String backend) { }
 
     public static TraceData readTraceData(Path trace) throws IOException {
         Objects.requireNonNull(trace, "trace");
@@ -163,22 +186,48 @@ public final class ConcurrencyTestProbe {
             throw new IllegalArgumentException("concurrency replay trace exceeds 8 MiB admission limit");
         }
         List<String> lines = Files.readAllLines(trace, StandardCharsets.UTF_8);
-        String prefix = "ORES_CONCURRENCY_TRACE_V1|seed=";
-        if (lines.isEmpty() || !lines.get(0).startsWith(prefix)) {
-            throw new IllegalArgumentException("not an Oreslang concurrency trace");
+        if (lines.isEmpty() || lines.size() > MAX_EVENTS + 1) {
+            throw new IllegalArgumentException("invalid concurrency trace event count");
         }
-        if (lines.size() > MAX_EVENTS + 1) {
-            throw new IllegalArgumentException("concurrency trace event budget exceeded");
+        String header = lines.get(0);
+        String v1 = "ORES_CONCURRENCY_TRACE_V1|seed=";
+        String v2 = "ORES_CONCURRENCY_TRACE_V2|seed=";
+        String raw;
+        String entrySha256 = null;
+        String backend = null;
+        if (header.startsWith(v2)) {
+            int entryAt = header.indexOf("|entry-sha256=", v2.length());
+            int backendAt = header.indexOf("|backend=", entryAt + 14);
+            if (entryAt < 0 || backendAt < 0 || !header.endsWith("|probe=1")) {
+                throw new IllegalArgumentException("invalid V2 trace provenance");
+            }
+            raw = header.substring(v2.length(), entryAt);
+            entrySha256 = header.substring(entryAt + "|entry-sha256=".length(), backendAt);
+            backend = header.substring(backendAt + "|backend=".length(),
+                    header.length() - "|probe=1".length());
+            if (!entrySha256.matches("[0-9a-f]{64}") ||
+                    !backend.matches("[A-Za-z0-9_.-]{1,80}")) {
+                throw new IllegalArgumentException("invalid V2 trace provenance");
+            }
+        } else if (header.startsWith(v1)) {
+            raw = header.substring(v1.length());
+        } else {
+            throw new IllegalArgumentException("not an Oreslang concurrency trace");
         }
         long seed;
         try {
-            String raw = lines.get(0).substring(prefix.length());
             if (!raw.matches("-?[0-9]+")) throw new NumberFormatException(raw);
             seed = Long.parseLong(raw);
         } catch (NumberFormatException invalid) {
             throw new IllegalArgumentException("invalid concurrency trace seed", invalid);
         }
-        return new TraceData(seed, List.copyOf(lines.subList(1, lines.size())));
+        for (int i = 1; i < lines.size(); i++) {
+            if (!lines.get(i).matches("[a-z][a-z0-9-]{0,47}\\\\|[012]")) {
+                throw new IllegalArgumentException("invalid concurrency event at " + i);
+            }
+        }
+        return new TraceData(seed, List.copyOf(lines.subList(1, lines.size())),
+                entrySha256, backend);
     }
 
     public static List<String> readTrace(Path trace) throws IOException {
