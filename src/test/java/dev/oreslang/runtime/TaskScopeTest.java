@@ -473,4 +473,43 @@ public class TaskScopeTest {
         }
     }
 
+
+    @Test void compilerOwnedReleaseWaitsForPhysicalScopeQuiescence()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch releaseGuest = new CountDownLatch(1);
+            AtomicBoolean compilerLoanReleased = new AtomicBoolean();
+
+            TaskHandle<Integer> child = scope.startTask(resume -> {
+                entered.countDown();
+                awaitUninterruptibly(releaseGuest);
+                return OresScheduler.done(17);
+            });
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+
+            // Model the compiler/runtime ownership loan bridge: reclamation or
+            // restoration of a transferred backing allocation is subscribed to
+            // the scope's physical barrier, never to cancellation/result alone.
+            scope.getDone().whenCompleteRuntime((ignored, failure) ->
+                    compilerLoanReleased.set(true));
+
+            assertTrue(scope.cancel("revoke child"));
+            assertTrue(child.isCancellationRequested());
+            assertFalse(compilerLoanReleased.get(),
+                    "cancellation request must not release compiler ownership");
+            assertFalse(scope.getDone().isDone(),
+                    "scope done cannot publish while guest code is still running");
+
+            releaseGuest.countDown();
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+            assertTrue(compilerLoanReleased.get(),
+                    "compiler ownership may release only after physical quiescence");
+            assertInstanceOf(
+                    TaskHandle.Cancelled.class,
+                    child.getDone().get(3, TimeUnit.SECONDS));
+        }
+    }
+
 }
