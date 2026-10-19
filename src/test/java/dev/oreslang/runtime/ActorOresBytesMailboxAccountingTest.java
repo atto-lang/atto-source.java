@@ -71,12 +71,13 @@ final class ActorOresBytesMailboxAccountingTest {
         try (ActorRuntime runtime = new ActorRuntime(
                 boundedPolicy(),
                 new ActorRuntime.DispatcherConfig(1, 1, 64, 128))) {
-            var actor = runtime.<Object>spawnPrivate(() -> (message, context) -> {
-                if ("hold".equals(message)) {
-                    entered.countDown();
-                    assertTrue(release.await(5, TimeUnit.SECONDS));
-                }
-            });
+            var actor = runtime.<Object>spawnPrivateTrusted(
+                    boundedPolicy(), context -> (message, selfContext) -> {
+                        if ("hold".equals(message)) {
+                            entered.countDown();
+                            assertTrue(release.await(5, TimeUnit.SECONDS));
+                        }
+                    });
             actor.send("hold");
             assertTrue(entered.await(5, TimeUnit.SECONDS));
 
