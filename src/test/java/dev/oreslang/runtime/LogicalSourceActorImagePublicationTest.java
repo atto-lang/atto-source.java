@@ -52,12 +52,26 @@ final class LogicalSourceActorImagePublicationTest {
                 IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
             var first = manager.stageActorGeneration("image-v1.ores", V1);
             var second = manager.stageActorGeneration("image-v2.ores", V2);
+            var firstCompiler = first.linkActorGeneration("Counter").executor();
+            var secondCompiler = second.linkActorGeneration("Counter").executor();
+            String firstCode = firstCompiler.actorCodeSha256("Counter");
+            String secondCode = secondCompiler.actorCodeSha256("Counter");
+            String stateLayout = firstCompiler.actorStateSchemaSha256("Counter");
+            String messageAbi = firstCompiler.actorMessageAbiSha256("Counter");
+            assertNotEquals(firstCode, secondCode);
+            assertEquals(stateLayout,
+                    secondCompiler.actorStateSchemaSha256("Counter"));
+            assertEquals(messageAbi,
+                    secondCompiler.actorMessageAbiSha256("Counter"));
             try (var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
                     first, "Counter", WAIT, 4, 8, 32)) {
                 var before = bridge.publication();
                 assertEquals(1L, before.address().routeEpoch());
                 assertEquals(first.id(), before.generationId());
                 assertEquals(first.sha256(), before.codeSha256());
+                assertEquals(firstCode, before.linkedCodeSha256());
+                assertEquals(stateLayout, before.stateSchemaSha256());
+                assertEquals(messageAbi, before.messageAbiSha256());
                 assertEquals(1L, before.mailbox().routeEpoch());
 
                 bridge.admitLong(41L);
@@ -79,12 +93,16 @@ final class LogicalSourceActorImagePublicationTest {
                             if (published.address().routeEpoch() == 1L) {
                                 assertEquals(first.id(), published.generationId());
                                 assertEquals(first.sha256(), published.codeSha256());
+                                assertEquals(firstCode, published.linkedCodeSha256());
                             } else if (published.address().routeEpoch() == 2L) {
                                 assertEquals(second.id(), published.generationId());
                                 assertEquals(second.sha256(), published.codeSha256());
+                                assertEquals(secondCode, published.linkedCodeSha256());
                             } else {
                                 throw new AssertionError("unexpected source image epoch");
                             }
+                            assertEquals(stateLayout, published.stateSchemaSha256());
+                            assertEquals(messageAbi, published.messageAbiSha256());
                             seen.incrementAndGet();
                             Thread.onSpinWait();
                         }
@@ -117,6 +135,9 @@ final class LogicalSourceActorImagePublicationTest {
                 assertNotEquals(before.codeSha256(), after.codeSha256());
                 assertEquals(second.id(), after.generationId());
                 assertEquals(second.sha256(), after.codeSha256());
+                assertEquals(secondCode, after.linkedCodeSha256());
+                assertEquals(stateLayout, after.stateSchemaSha256());
+                assertEquals(messageAbi, after.messageAbiSha256());
                 assertEquals(1, after.mailbox().queuedMessages());
                 assertTrue(bridge.dispatchOne(WAIT));
                 assertEquals(43L, next(bridge));
@@ -142,6 +163,15 @@ final class LogicalSourceActorImagePublicationTest {
                         witness.mailbox().routeEpoch());
                 assertEquals(first.id(), witness.generationId());
                 assertEquals(first.sha256(), witness.codeSha256());
+                assertEquals(
+                        first.linkActorGeneration("Counter").executor()
+                                .actorCodeSha256("Counter"), witness.linkedCodeSha256());
+                assertEquals(
+                        first.linkActorGeneration("Counter").executor()
+                                .actorStateSchemaSha256("Counter"), witness.stateSchemaSha256());
+                assertEquals(
+                        first.linkActorGeneration("Counter").executor()
+                                .actorMessageAbiSha256("Counter"), witness.messageAbiSha256());
                 assertEquals(router.physicalAddressForTesting(),
                         witness.physicalAddress());
                 assertThrows(SecurityException.class,
