@@ -150,6 +150,10 @@ public final class ThreadSafetyTraits {
         }
         if (!(type instanceof Named named)) return false;
         String name = named.name();
+        // Compiler transformations and embedding callers can construct Type
+        // objects directly. A malformed nominal spelling must deny the proof,
+        // not crash the compiler or reach a permissive nominal callback.
+        if (name == null || name.isBlank()) return false;
         // ActorId/ActorKind are sealed compiler/runtime scalar metadata. Their
         // spelling is reserved and their canonical form has no type arguments;
         // a nominal callback must not be able to bless forged generic arities.
