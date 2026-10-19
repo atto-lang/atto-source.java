@@ -6,33 +6,57 @@ cache entries, and logs.
 
 ## Destination approval
 
-The policy file `.github/private-ci-approved-repositories.txt` is **empty by
-default**. No cross-repository mirroring is authorized until maintainers and
-security reviewers explicitly add an exact `owner/repo` destination through a
-reviewed, protected-branch change.
+The policy file `.github/private-ci-approved-repositories.txt` is
+**deny-by-default**. Active rows use
+`owner/repo@numeric-github-repository-id`; repository names alone are not an
+authorization boundary. The live GitHub repository ID must still match the
+reviewed immutable ID immediately before export writes.
 
-Do **not** accept a CI destination allowlist from environment variables or
-unreviewed workflow inputs: a caller must not be able to grant its own approval.
-Run the checked transfer from trusted, reviewed source, not an untrusted PR
-checkout. If an approval policy can be modified by the code under test, treat
-the result as untrusted.
+The preferred authorization mode is a reviewed policy on protected `main`.
+When branch protection is technically unavailable, the only staged fallback is
+`review-attested-v1`: each export needs two distinct, unedited GitHub issue
+comments from the pinned maintainer and security owner. Both comments must be
+the exact same one-line payload binding the live source PR/head/tree,
+destination name/ID, and the authoritative-main blobs for the policy,
+preflight, destination guard, wrapper, and publisher. Any bound change voids
+the comments. The fallback is not active merely because its code exists on a
+feature branch; it must itself be independently reviewed and merged first.
+
+Do **not** accept a destination allowlist or approval payload from arbitrary
+environment variables or unreviewed workflow inputs. The source checkout may
+be the exact PR tree being tested, but every security-critical export program
+must hash identically to its reviewed `main` blob before the preflight passes.
+A PR therefore cannot weaken its own exporter.
 
 ## Destination-bound source snapshot publisher
 
 The only supported transfer entry point is **not an arbitrary command
-launcher**. It accepts an approved destination, a bounded local source
-directory, and a new isolated CI branch:
+launcher**. It accepts one reviewed destination, a bounded local source directory, a new
+isolated CI branch, and the exact source PR/commit/tree authorization:
 
 ```bash
 scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --source-dir ./verified-source-tree \
-  --branch ci/oreslang-verified-20261013
+  --branch ci/oreslang-verified-20261019 \
+  --source-pr 1425 \
+  --source-commit <40-hex-live-pr-head> \
+  --source-tree <40-hex-exact-tree> \
+  --maintainer-approval-comment <comment-id> \
+  --security-approval-comment <comment-id>
 ```
 
-The checked-in policy file must explicitly list the destination. The
-publisher checks the live GitHub identity and `visibility=private` /
-`private=true` before sending any private bytes and rechecks visibility
-immediately before each write. Every GitHub API write is constructed from
+The two comment flags are omitted only when protected-main authorization is
+effective. Before reading potentially sensitive source bytes, the publisher
+runs `preflight-private-ci-mirror.sh`. That preflight verifies the exact clean
+source checkout, live same-repository PR head, fresh authenticated `main`,
+authoritative security-program blobs, applicable approval mode, policy row, and
+destination identity. The checked-in policy must explicitly list
+`owner/repo@numeric-id`.
+
+The publisher then checks the live GitHub repository ID, full name and
+`visibility=private` / `private=true` before sending private bytes, and
+rechecks the immutable ID and private visibility immediately before each
+write. Every GitHub API write is constructed from
 that **same validated owner/repo**, rather than a caller-provided URL, Git
 remote, shell command or separate destination argument. It creates blobs,
 then a **fresh standalone source tree with no `base_tree`**, followed by a
@@ -49,29 +73,30 @@ prevent parent-directory symlink swap races. It rejects symbolic links,
 hardlinks to outside files, FIFOs, `.git` directories, and other unsafe
 filesystem objects. Directory enumeration is bounded to 4,096 entries,
 1,024 directories and a maximum depth of 64. It verifies every uploaded
-Git blob SHA-1 against the source bytes. It checks that the reviewed
-destination policy has not changed
-before every API write, in addition to rechecking the destination's live
-private visibility. It does not print source contents in API failures.
+Git blob SHA-1 against the source bytes. It checks that the reviewed destination policy fingerprint and immutable
+repository ID have not changed before every API write, in addition to
+rechecking the destination's live private visibility. It does not print source contents in API failures.
 API failure before ref creation can leave unreferenced Git objects in
 the private destination; a follow-up retention policy is still needed.
 
 It does **not** intercept arbitrary connector/API tool writes, cannot
 completely prevent visibility changes between API checks, and cannot
-guarantee that the source directory itself is free of secrets. Run only
-from an authorized protected checkout using narrowly scoped credentials.
-There is no permission to use a public repository when CI minutes run out.
+guarantee that the source directory itself is free of secrets. Run only through the reviewed authorization path using narrowly scoped
+credentials. There is no permission to use a public/internal repository, or to
+treat available Actions minutes as source-export approval.
 
 Test without network access or sending any source:
 
 ```bash
 bash scripts/test-private-ci-destination.sh
+bash scripts/test-preflight-private-ci-mirror.sh
 python3 scripts/test-publish-private-ci-source.py
 ```
 
-The Bash test uses a temporary policy checkout; Python tests mock all GitHub
-API operations. The real policy remains empty and **no destination is
-authorized** unless separately reviewed.
+The Bash tests use synthetic Git/policy/API fixtures; Python tests mock all
+GitHub API writes. They never transfer Oreslang source. A policy row on a draft
+branch is **not authorization**: the applicable protected-main or independently
+reviewed dual-attestation gate must also pass.
 
 ## Active disclosure incident
 
