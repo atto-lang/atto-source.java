@@ -3,6 +3,7 @@ package dev.oreslang.types;
 import dev.oreslang.ast.Ast;
 import org.junit.jupiter.api.Test;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -77,5 +78,32 @@ final class TaskTraitAdmissionHardeningTest {
         var trusted = new SendSyncTraits(new Ast.Program(List.of()), Set.of("Arc"));
         assertEquals(SendSyncTraits.Traits.BOTH,
                 trusted.derive(source("Arc", source("int"))));
+    }
+
+    @Test
+    void readonlyRecordViewCannotImpersonateFrozenThreadSafeBacking() {
+        var readonly = new Types.Record(Map.of("count", Types.Primitive.INT), true);
+        var writable = new Types.Record(Map.of("count", Types.Primitive.INT), false);
+        ThreadSafetyTraits.NominalProof noNominalProof = (type, trait) -> false;
+
+        assertTrue(ThreadSafetyTraits.has(readonly,
+                ThreadSafetyTraits.Trait.SEND, noNominalProof),
+                "a uniquely owned record remains transferable");
+        assertTrue(ThreadSafetyTraits.has(writable,
+                ThreadSafetyTraits.Trait.SEND, noNominalProof));
+
+        for (var record : List.of(readonly, writable)) {
+            assertFalse(ThreadSafetyTraits.has(record,
+                    ThreadSafetyTraits.Trait.SYNC, noNominalProof),
+                    "record view alone is not an immutable backing proof");
+            assertFalse(ThreadSafetyTraits.has(
+                    new Types.Borrow(record, false),
+                    ThreadSafetyTraits.Trait.SEND, noNominalProof),
+                    "sending a shared borrow requires the referent to be Sync");
+            assertFalse(ThreadSafetyTraits.has(
+                    new Types.Named("Option", List.of(record)),
+                    ThreadSafetyTraits.Trait.SYNC, noNominalProof),
+                    "nested immutable-looking wrappers cannot restore Sync");
+        }
     }
 }
