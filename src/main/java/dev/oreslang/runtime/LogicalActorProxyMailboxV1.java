@@ -1,7 +1,10 @@
 package dev.oreslang.runtime;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
@@ -26,13 +29,23 @@ import java.util.TreeSet;
  */
 public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
 
-    public record Envelope(long messageSequence, byte[] payload) {
+    public record Envelope(
+            long messageSequence,
+            byte[] payload,
+            String payloadSha256) {
+        public Envelope(long messageSequence, byte[] payload) {
+            this(messageSequence, payload, null);
+        }
+
         public Envelope {
             if (messageSequence <= 0) {
                 throw new IllegalArgumentException(
                         "messageSequence must be positive");
             }
             payload = Objects.requireNonNull(payload, "payload").clone();
+            // Never trust a caller-supplied digest. The mailbox-owned
+            // immutable bytes mint their own canonical content identity.
+            payloadSha256 = sha256(payload);
         }
 
         @Override public byte[] payload() {
@@ -41,6 +54,21 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
 
         int retainedBytes() {
             return payload.length;
+        }
+
+        boolean payloadIntegrityValid() {
+            return payloadSha256.equals(sha256(payload));
+        }
+    }
+
+    private static String sha256(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(
+                    "SHA-256 unavailable for logical actor envelope identity",
+                    impossible);
         }
     }
 
@@ -380,6 +408,14 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             if (physicalSendAttempted.contains(envelope.messageSequence())) {
                 throw new IllegalStateException(
                         "logical proxy envelope already submitted to physical transport");
+            }
+            // Re-verify the mailbox-minted content identity before granting
+            // the one-shot physical-send authority. This normally cannot fail
+            // through the public API because payload() returns a clone, but it
+            // catches accidental/reflection corruption before actor admission.
+            if (!envelope.payloadIntegrityValid()) {
+                throw new SecurityException(
+                        "logical proxy envelope payload identity mismatch");
             }
             // HashSet growth can fail before send; never submit in that case.
             physicalSendAttempted.add(envelope.messageSequence());
