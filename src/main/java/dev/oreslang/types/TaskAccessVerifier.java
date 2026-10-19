@@ -206,18 +206,17 @@ final class TaskAccessVerifier {
         if (surface == null || lowered == null || depth >= 64
                 || surface.inferArguments() || surface.isComplement()
                 || surface.isUnion() || surface.isTupleType()) return false;
-        if (surface.isBorrow()) {
-            return lowered instanceof Types.Borrow borrowed
-                    && surface.mutableBorrow() == borrowed.mutable()
-                    && corresponds(surface.borrowedTarget(), borrowed.target(), depth + 1);
-        }
+        // A lexical or mutable borrow requires a compiler-minted lifetime,
+        // provenance and physical child-exit witness. This bridge receives
+        // only type names, so even a structurally equal &T / &mut T must deny.
+        if (surface.isBorrow() || lowered instanceof Types.Borrow) return false;
         List<Ast.TypeRef> args = surface.arguments();
         if (args.isEmpty()) {
             return switch (surface.name()) {
                 case "int" -> lowered == Types.Primitive.INT;
                 case "bool" -> lowered == Types.Primitive.BOOL;
                 case "float" -> lowered == Types.Primitive.FLOAT;
-                case "string", "String" -> lowered == Types.Primitive.STRING;
+                case "string" -> lowered == Types.Primitive.STRING;
                 case "decimal" -> lowered == Types.Primitive.DECIMAL;
                 case "complex" -> lowered == Types.Primitive.COMPLEX;
                 default -> false; // nominal, literal, native or unproven builtin
@@ -228,18 +227,12 @@ final class TaskAccessVerifier {
             return lowered instanceof Types.ListType list
                     && corresponds(args.getFirst(), list.element(), depth + 1);
         }
-        if (!(lowered instanceof Types.Named named)
-                || !named.name().equals(surface.name())
-                || named.arguments().size() != args.size()
-                || !((surface.name().equals("Option") && args.size() == 1)
-                    || (surface.name().equals("Result") && args.size() == 2))) {
-            return false;
-        }
-        for (int i = 0; i < args.size(); i++) {
-            if (!corresponds(args.get(i), named.arguments().get(i), depth + 1))
-                return false;
-        }
-        return true;
+        // Types.Named carries a spelling, not a checked intrinsic identity.
+        // Comparing "Option"/"Result" strings would allow an imported type
+        // with that spelling to impersonate the built-in. This code has no
+        // trusted nominal resolution witness; fail closed until MIR provides
+        // that immutable witness rather than accepting name equality.
+        return false;
     }
 
     /** Opaque compiler-issued child identity. A cancelled Ticket is still live. */
