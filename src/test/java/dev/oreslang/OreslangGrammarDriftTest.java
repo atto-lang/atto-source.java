@@ -35,7 +35,7 @@ final class OreslangGrammarDriftTest {
             assignment conditional logic_or equality comparison additive
             multiplicative unary channel_expr channel_wait_mode postfix call_suffix
             call_argument_list call_argument member_suffix member_name index_suffix argument_list
-            primary lambda pipe_lambda lambda_param typed_legacy_lambda lambda_body
+            primary lambda pipe_lambda anonymous_fnc_lambda lambda_param typed_legacy_lambda lambda_body
             tuple_literal array_literal legacy_array_literal inferred_struct_literal explicit_struct_literal struct_field_spec
             struct_value_field static_struct_key literal type_ref type_atom borrow_type
             tuple_type record_type record_type_field alias_marker callable_generic_type named_type
