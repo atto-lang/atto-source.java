@@ -182,6 +182,26 @@ are bitwise deterministic.
   gate tracked by issue #962 are approved and enforced. No public mirror
   or unaudited CI destination may receive source blobs.
 
+## Untrusted actor capability parity audit (2026-10-19)
+
+* The runtime's `rejectUntrustedInboundCapabilities` prohibits live
+  `ActorRef` values in UNTRUSTED mailbox messages, even when nested inside
+  `Option`, `Result`, lists or other structures. The compiler now rejects
+  this at the receiving actor boundary instead of relying solely on runtime.
+* The runtime also forbids all actor-message sends from an UNTRUSTED turn,
+  including `self.send` and `ActorRef.send`. Source type checking now rejects
+  both spellings. This does not alter trusted SHARED/PRIVATE routing or the
+  reserved supervisor CONTROL terminal-reporting channel.
+* Regression tests cover untrusted nested ingress, outbound send rejection,
+  and trusted `ActorRef` delivery. They are added to the focused Actions
+  workflow but **not yet JUnit-verified**, because source-org GitHub jobs
+  continue to fail before the first step.
+* A no-source, no-checkout Actions capacity probe was launched in a separate
+  private test organization. Its result must be read directly from GitHub
+  before any claim that the organization has working current runner capacity.
+  It is not authorization to copy Oreslang's source. Source-mirror approval
+  remains blocked by security issue #962 and an empty protected allowlist.
+
 ## Planned actor/ECS design
 
 Actor isolation should remain the outer fault and networking boundary.
