@@ -6,7 +6,9 @@
 
 `TaskCertifiedLayout` is package-private. Its `Emitter` allocates an issuer-unique owner ID and monotonically increasing allocation IDs: callers cannot pass numeric IDs, owner IDs, field-disjointness booleans or unchecked range spans to the certified admission path.
 
-The emitter recognizes **only** flat, nonempty records with direct INT/FLOAT/BOOL scalar fields, or bounded FIXED_ARRAY tuples of these scalar types. Anything generic, borrowed, pointer-bearing, nominal, dynamic, opaque, nested, String, Decimal, or structurally unknown rejects. Unknown field names, read-only writes and out-of-range partitions reject. For conservative fixed-array layout proofs, a range must contain identically typed scalar elements; heterogeneous ranges require real lowered layout evidence.
+The emitter recognizes **only** flat, nonempty records with direct INT/FLOAT/BOOL scalar fields, or bounded FIXED_ARRAY tuples of these scalar types.
+
+A new `freshRecordLiteral(Ast.ObjectExpr, Types.Record)` gateway checks **actual source AST** on the straight-line compiler analysis path: exact statically named fields, matching scalar literals, inferred-struct readonly semantics and no NameExpr aliases. An AST evaluation node cannot be certified twice as two independent allocations in one emitter scope. This is a narrow source-shape gate; the Task ownership checker still must prove the resulting binding and any reborrows, and loop re-evaluation must use correctly separated runtime allocation instances. The older `freshRecord(Types.Record)` and `freshFixedArray(Types.Tuple)` remain trusted **internal fixture/lowering hooks**, not a guest admission API. Anything generic, borrowed, pointer-bearing, nominal, dynamic, opaque, nested, String, Decimal, or structurally unknown rejects. Unknown field names, read-only writes and out-of-range partitions reject. For conservative fixed-array layout proofs, a range must contain identically typed scalar elements; heterogeneous ranges require real lowered layout evidence.
 
 Certified `Access` objects are constructed exclusively by `RecordStorage`/`FixedArrayStorage` and bound to the issuing emitter. Atomic typed admission verifies Send/Sync via the existing `ThreadSafetyTraits` and delegates conflict, cancellation-not-quiescence, scope-retirement and stale-generation checks to `TaskAccessVerifier`. Concurrent compiler-side proof issuance is serialized to prevent numeric allocation identity reuse.
 
@@ -23,6 +25,6 @@ The Task AST/ownership checker source work is currently in Java draft PR #1377, 
 
 ## Tests and verification
 
-`TaskCertifiedLayoutTest` contains 15 source-controlled JUnit cases: disjoint scalar fields, adjacent array partitions, forged/foreign issuer, readonly record, unsupported pointer/generic types, bounds, heterogeneous ranges, cancellation vs quiescence, closed issuer, atomic partial admission, unsupported large shapes and a 64-allocation parallel issuance race.
+`TaskCertifiedLayoutTest` contains 20 source-controlled JUnit cases: disjoint scalar fields, adjacent array partitions, forged/foreign issuer, readonly record, unsupported pointer/generic types, bounds, heterogeneous ranges, cancellation vs quiescence, closed issuer, atomic partial admission, unsupported large shapes a 64-allocation parallel issuance race, plus five AST literal field/shape/freshness rejection cases.
 
 All are **source committed, not proven passed**. Full private checkout/JDK 21 Maven execution and GraalVM tests have not yet run; the previous source Actions jobs had zero executed steps. Do not claim source Task borrowing enabled or LLVM parity from these static certificates.
