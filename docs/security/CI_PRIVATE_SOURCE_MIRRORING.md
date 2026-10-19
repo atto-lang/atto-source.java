@@ -50,7 +50,21 @@ that digest to equal the committed source tree. After uploading to an approved
 private destination, it also requires the server-returned isolated subtree
 Git SHA to match *before* creating a destination root tree, commit or ref.
 Untracked/ignored/modified source and a copy outside the trusted checkout
-fail closed. This proves byte-level tree identity, **not** authorization of a
+fail closed. In this current draft, the source must also be a **tracked
+subdirectory of the same trusted checkout's HEAD tree**. Therefore an arbitrary
+separately checked-out actor PR or an untracked `verified-source-tree/` copy
+cannot pass the new source-admission gate. This is intentional fail-closed
+behavior, **not** a working replacement for the full actor-branch transfer
+workflow. A separate reviewed integration must establish immutable identity of
+the source PR commit and its tree while keeping source checkout bytes and
+protected-main authorization policy distinct. Never work around this boundary
+by staging private compiler source into a different GitHub organization or
+loosening the gate.
+
+Destination identity is also pinned to the **same immutable GitHub repository
+ID** first obtained at preflight. If a repository is deleted/recreated or
+replaced under the same `owner/repo` slug during a transfer, subsequent writes
+are refused even if the new repository is private. This proves byte-level tree identity, **not** authorization of a
 feature branch, protected-main provenance, CODEOWNER approval or safe private
 destination access. The repository's default source-transfer allowlist remains
 empty until independently reviewed and merged.
