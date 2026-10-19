@@ -104,6 +104,47 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
     public static void main(String[] ignored) throws Exception {
         byte[] key = key();
 
+        // TCP stream publication is single-file. Physical write concurrency
+        // greater than one is rejected; outstanding receipt lifetimes are a
+        // separate bridge/correlation concern.
+        byte[] configPayload = "config".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        var configMessage = envelope(1, "config", 3, 4, configPayload);
+        try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
+             Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
+             Socket peer = server.accept()) {
+            var bridge = new IpcReceiptCompletionBridge(2);
+            try {
+                new IpcAuthenticatedSocketTransport(
+                        client, bridge, configMessage, 10, 2, key,
+                        IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+                throw new AssertionError("parallel TCP physical writers accepted");
+            } catch (IllegalArgumentException expected) {
+                check(expected.getMessage().contains("exactly one"));
+            }
+            check(!client.isClosed());
+        }
+
+        // Invalid close deadlines are side-effect free: validation occurs
+        // before close intent or physical abort is submitted.
+        try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
+             Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
+             Socket peer = server.accept()) {
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    client, bridge, configMessage, 10, 1, key,
+                    IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+            try {
+                transport.requestCloseAndAwait(-1);
+                throw new AssertionError("invalid close deadline accepted");
+            } catch (IllegalArgumentException expected) {
+                check(expected.getMessage().contains("invalid IPC close wait"));
+            }
+            check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.OPEN);
+            check(!client.isClosed());
+            check(transport.requestCloseAndAwait(3000));
+            check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
+        }
+
         // Successful real localhost DATA -> ACK -> terminal receipt exchange.
         byte[] payload = "hello authenticated ores ipc".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         var message = envelope(1, "socketA", 3, 4, payload);
