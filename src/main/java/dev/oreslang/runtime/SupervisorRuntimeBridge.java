@@ -33,6 +33,7 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicLong childIds = new AtomicLong();
     private boolean closed;
+    private boolean escalatedToParent;
     private Throwable poison;
 
     private static final long CHILD_RUNNING = 1L;
@@ -134,6 +135,9 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
                     ? new TrustedSupervisorInbox.FailureNotice(
                             knownChildId, child.generation(), seq, faultCode)
                     : null;
+            if (escalationNotice != null) {
+                escalatedToParent = true;
+            }
 
             if (result == TrustedSupervisorInbox.Admission.ACCEPTED) {
                 // The queued FailureNotice is detached value data. Retire the
@@ -218,7 +222,7 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
     }
 
     synchronized boolean healthy() {
-        return !closed && poison == null;
+        return !closed && !escalatedToParent && poison == null;
     }
 
     synchronized void requireHealthy() {
@@ -231,6 +235,10 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
             throw new IllegalStateException(
                     "supervisor runtime bridge is poisoned by failed CONTROL delivery",
                     poison);
+        }
+        if (escalatedToParent) {
+            throw new IllegalStateException(
+                    "supervisor runtime bridge already escalated CONTROL overflow");
         }
     }
 
