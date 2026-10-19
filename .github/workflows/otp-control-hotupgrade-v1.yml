@@ -34,8 +34,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-          git status --porcelain | tee target-source-status.txt
-          test ! -s target-source-status.txt
+          test -z "$(git status --porcelain)"
+          printf '%s\n' "$EXPECTED_HEAD" > target-source-head.txt
           echo "Exact source HEAD: $EXPECTED_HEAD"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
@@ -101,7 +101,7 @@ jobs:
         with:
           name: otp-control-exact-head-junit-evidence
           path: |
-            target-source-status.txt
+            target-source-head.txt
             target/otp-control-smoke.txt
             **/surefire-reports/TEST-*.xml
           if-no-files-found: warn
