@@ -18,6 +18,11 @@ class IpcReceiptParityTest {
     }
 
     @Test
+    void oneShotPhysicalBridgeBindingRejectsReconnectAba() {
+        IpcReceiptPhysicalBindingSelfTest.main(new String[0]);
+    }
+
+    @Test
     void trustedPhysicalSessionWriteAndCloseDrain() throws Exception {
         IpcTransportSessionLeaseSelfTest.main(new String[0]);
     }
