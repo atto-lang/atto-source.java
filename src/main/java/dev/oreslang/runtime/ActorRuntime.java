@@ -841,7 +841,8 @@ public final class ActorRuntime implements AutoCloseable {
             } else if (cell.scheduled.get()
                     || queuedUser != 0
                     || queuedContinuations != 0
-                    || cell.childControl.hasPending()) {
+                    || cell.childControl.hasPending()
+                    || cell.upgradeCommands.snapshot().queued() != 0) {
                 lifecycle = ActorLifecycleState.RUNNABLE;
             } else if (!ref.readyFuture.isDone()) {
                 lifecycle = ActorLifecycleState.STARTING;
@@ -875,6 +876,58 @@ public final class ActorRuntime implements AutoCloseable {
                             cell.childControl.snapshot(),
                             cell.supervisorFairnessYields.get()));
         }
+    }
+
+    /**
+     * Trusted embedder-only admission for nonterminal supervisor commands.
+     * Source actors have no callback bridge yet and must fail closed.
+     * The authenticated hot-upgrade coordinator still owns the actual
+     * quiescence, snapshot and atomic publication transaction.
+     */
+    public SupervisorCommandNotice submitSupervisorCommand(
+            ActorRef<?> target,
+            long routeEpoch,
+            SupervisorOperation operation,
+            String candidateCodeSha256) {
+        requireRawFailureHostAccess("submit supervisor command");
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(operation, "operation");
+        if (!target.ownedBy(this))
+            throw new ActorInvalidReferenceException(
+                    "supervisor command target belongs to a different ActorRuntime");
+        ActorCell<?> cell = actors.get(target.id());
+        if (cell == null || cell.ref != target
+                || cell.ref.generation() != target.generation()) throw terminated(target);
+        if (!cell.trustedFactory || cell.codeExecutor != null || cell.kind == ActorKind.UNTRUSTED)
+            throw new SecurityException(
+                    "only trusted host behavior actors may currently accept upgrade CONTROL");
+        OtpSupervisorCommandLaneV1.Command command;
+        synchronized (cell.lifecycleLock) {
+            if (closed.get() || cell.stopped.get() || cell.finalized
+                    || cell.sealing || cell.forceKillFenced) throw terminated(target);
+            command = cell.upgradeCommands.submit(
+                    new OtpSupervisorCommandLaneV1.Target(
+                            runtimeInstanceId, target.id().value(), target.generation()),
+                    routeEpoch,
+                    OtpSupervisorCommandLaneV1.Kind.valueOf(operation.name()),
+                    candidateCodeSha256);
+        }
+        cell.schedule();
+        return new SupervisorCommandNotice(
+                target.address(), command.sequence(), command.routeEpoch(),
+                operation, command.candidateDigest());
+    }
+
+    /** Host-only diagnostics; no guest command-capability access. */
+    OtpSupervisorCommandLaneV1.Snapshot supervisorCommandStatsFor(ActorRef<?> target) {
+        requireRawFailureHostAccess("inspect supervisor upgrade CONTROL");
+        Objects.requireNonNull(target, "target");
+        if (!target.ownedBy(this))
+            throw new ActorInvalidReferenceException(
+                    "supervisor command target belongs to a different ActorRuntime");
+        ActorCell<?> cell = actors.get(target.id());
+        if (cell == null || cell.ref != target) throw terminated(target);
+        return cell.upgradeCommands.snapshot();
     }
 
     public ActorControlStats supervisionStatsFor(ActorRef<?> ref) {
@@ -1645,9 +1698,32 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** Immutable notification only; not an actor-held CONTROL authority. */
+    public enum SupervisorOperation {
+        PREPARE_UPGRADE, QUIESCE_CHECK, ABORT_UPGRADE, COMMIT_NOTICE, GRACEFUL_STOP
+    }
+
+    public record SupervisorCommandNotice(
+            ActorAddress target,
+            long sequence,
+            long routeEpoch,
+            SupervisorOperation operation,
+            String candidateCodeSha256) { }
+
     @FunctionalInterface
     public interface Behavior<M> {
         void onMessage(M message, ActorContext<M> context) throws Exception;
+
+        /**
+         * Runtime-dispatched PRIORITY CONTROL on this actor's serialized carrier.
+         * Only trusted-host behavior factories may receive these notifications.
+         * Handling one is NOT atomic hot-upgrade publication.
+         */
+        default void onSupervisorCommand(
+                SupervisorCommandNotice notice, ActorContext<M> context) throws Exception {
+            throw new UnsupportedOperationException(
+                    "trusted supervisor command handler not installed");
+        }
 
         /**
          * Priority parent-only CONTROL callback. Default behavior escalates the
@@ -7076,6 +7152,10 @@ public final class ActorRuntime implements AutoCloseable {
         /** Separate pre-reserved child terminal CONTROL plane. */
         private final ActorSupervisorControlLane childControl =
                 new ActorSupervisorControlLane(dispatcherConfig.maxActors());
+        /** Nonterminal upgrade commands have a separate bounded subquota.
+         * Fatal child failures retain their independent reserved CONTROL slots. */
+        private final OtpSupervisorCommandLaneV1 upgradeCommands =
+                new OtpSupervisorCommandLaneV1(1);
         private final AtomicLong supervisorFairnessYields = new AtomicLong();
         private int consecutiveSupervisorControls;
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
@@ -7330,7 +7410,9 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean hasQueuedWorkLocked() {
             return !continuationMailbox.isEmpty()
                     || (!sourceReceiveSuspended
-                        && (childControl.hasPending() || !mailbox.isEmpty()));
+                        && (childControl.hasPending()
+                            || upgradeCommands.snapshot().queued() != 0
+                            || !mailbox.isEmpty()));
         }
 
         private OresScheduler sourceScheduler() {
@@ -7907,6 +7989,7 @@ public final class ActorRuntime implements AutoCloseable {
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
                     MessageEnvelope envelope = null;
                     ActorFailureNotice controlNotice = null;
+                    OtpSupervisorCommandLaneV1.Lease upgradeLease = null;
                     synchronized (lifecycleLock) {
                         // Stop closes user mail and freezes CONTROL admission
                         // under this same actor lifecycle lock.
@@ -7925,7 +8008,13 @@ public final class ActorRuntime implements AutoCloseable {
                         if (!sourceReceiveSuspended && !fairnessYield) {
                             controlNotice = childControl.poll().orElse(null);
                         }
-                        if (controlNotice == null) {
+                        if (controlNotice == null && !sourceReceiveSuspended && !fairnessYield) {
+                            // Fatal child notices are always selected first.
+                            // Upgrade commands may reject admission; never consume
+                            // the pre-reserved fatal-failure CONTROL quota.
+                            upgradeLease = upgradeCommands.poll().orElse(null);
+                        }
+                        if (controlNotice == null && upgradeLease == null) {
                             envelope = continuationMailbox.tryRead().orElse(null);
                             if (envelope == null && !sourceReceiveSuspended) {
                                 envelope = mailbox.tryRead().orElse(null);
@@ -7965,6 +8054,33 @@ public final class ActorRuntime implements AutoCloseable {
                                 }
                             }
                         }
+                        processed++;
+                        continue;
+                    }
+
+                    if (upgradeLease != null) {
+                        // Source-compiled, untrusted and ordinary DATA handlers
+                        // never receive opaque supervisor CONTROL authority.
+                        // This callback executes ONLY under the existing actor
+                        // physical carrier and serialized state lease.
+                        try (OtpSupervisorCommandLaneV1.Lease active = upgradeLease) {
+                            OtpSupervisorCommandLaneV1.Command command = active.command();
+                            if (!trustedFactory || codeExecutor != null
+                                    || kind == ActorKind.UNTRUSTED)
+                                throw new SecurityException(
+                                        "untrusted actor supervisor command dispatch");
+                            behavior.onSupervisorCommand(
+                                    new SupervisorCommandNotice(
+                                            ref.address(),
+                                            command.sequence(),
+                                            command.routeEpoch(),
+                                            SupervisorOperation.valueOf(command.kind().name()),
+                                            command.candidateDigest()),
+                                    context);
+                            active.ack();
+                        }
+                        if (consecutiveSupervisorControls < MAX_SUPERVISOR_CONTROL_BURST)
+                            consecutiveSupervisorControls++;
                         processed++;
                         continue;
                     }
@@ -8136,6 +8252,10 @@ public final class ActorRuntime implements AutoCloseable {
                 // child-failure callback. Move every already-published event
                 // into its independently pre-reserved root fallback slot.
                 childControl.transferPublishedTo(rootSupervisionControl);
+                // Upgrades are NOT implicitly committed or rolled back when
+                // an actor exits. Quarantine all unacknowledged commands and
+                // revoke outstanding leases. Fatal notices retain root fallback.
+                upgradeCommands.quarantineOnTermination();
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.
