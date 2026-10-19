@@ -115,7 +115,7 @@ final class DynamicPropertyAccessBoundaryTest {
         rejected("""
                 define class Point as
                     pub val float x = 3.0;
-                    pub fnc move(): float { return x; }
+                    pub fnc move(): float { return self.x; }
                 end
 
                 fnc bad(): void {
