@@ -278,4 +278,52 @@ final class OresTaskScopeTest {
         }
     }
 
+
+    @Test
+    void parentCancellationTransitivelyDrainsNestedGrandchildScope() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(3)) {
+            CountDownLatch grandchildEntered = new CountDownLatch(1);
+            CountDownLatch releaseGrandchild = new CountDownLatch(1);
+            CountDownLatch parentQuiescent = new CountDownLatch(1);
+            OresFuture<Integer> neverParent = new OresFuture<>();
+            OresFuture<Integer> neverChild = new OresFuture<>();
+            AtomicReference<OresFuture<Integer>> childRef = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> grandchildRef = new AtomicReference<>();
+
+            OresFuture<Integer> parent = scheduler.start(resume -> {
+                OresTaskScope outer = OresTaskScope.openCurrent();
+                childRef.set(outer.fork(childResume -> {
+                    OresTaskScope inner = OresTaskScope.openCurrent();
+                    grandchildRef.set(inner.fork(grandchildResume -> {
+                        grandchildEntered.countDown();
+                        assertTrue(releaseGrandchild.await(5, TimeUnit.SECONDS));
+                        return OresScheduler.done(99);
+                    }));
+                    return OresScheduler.await(neverChild);
+                }));
+                return OresScheduler.await(neverParent);
+            }, parentQuiescent::countDown);
+
+            assertTrue(grandchildEntered.await(5, TimeUnit.SECONDS));
+            assertTrue(parent.cancel(false));
+
+            OresFuture<Integer> child = childRef.get();
+            OresFuture<Integer> grandchild = grandchildRef.get();
+            assertNotNull(child);
+            assertNotNull(grandchild);
+            assertTrue(child.isCancelled(),
+                    "outer structured child must be cancelled with its parent");
+            assertTrue(grandchild.isCancelled(),
+                    "nested structured grandchild must be cancelled transitively");
+            assertFalse(parentQuiescent.await(100, TimeUnit.MILLISECONDS),
+                    "parent must remain physically live while a nested grandchild carrier executes");
+
+            releaseGrandchild.countDown();
+
+            assertTrue(parentQuiescent.await(5, TimeUnit.SECONDS),
+                    "parent may retire only after all nested structured scopes physically drain");
+            assertTrue(parent.isCancelled());
+        }
+    }
+
 }
