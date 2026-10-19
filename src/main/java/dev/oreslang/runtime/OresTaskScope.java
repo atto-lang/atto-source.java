@@ -99,12 +99,25 @@ public final class OresTaskScope implements AutoCloseable {
             }
         });
 
-        synchronized (treeAdmissionGate) {
-            synchronized (gate) {
-                ensureAdmitting();
-                if (!tasks.add(slot))
-                    throw new IllegalStateException("duplicate Task ownership slot");
+        try {
+            synchronized (treeAdmissionGate) {
+                synchronized (gate) {
+                    ensureAdmitting();
+                    if (!tasks.add(slot))
+                        throw new IllegalStateException("duplicate Task ownership slot");
+                }
             }
+        } catch (RuntimeException | Error reservationFailure) {
+            // Even an insert-then-throw owner collection cannot strand an
+            // unbound Task. The abort fires its trusted retirement callback
+            // outside scope locks and settles the physical-exit fence.
+            try {
+                runtime.abandonPreparedTask(admission);
+            } catch (RuntimeException | Error rollbackFailure) {
+                if (rollbackFailure != reservationFailure)
+                    reservationFailure.addSuppressed(rollbackFailure);
+            }
+            throw reservationFailure;
         }
 
         // Never execute executor callbacks while holding either scope
