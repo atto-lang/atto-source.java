@@ -28,7 +28,7 @@ chmod +x "$work/gh" "$script_dir"/*.sh
 export PATH="$work:$PATH" MOCK_EXEC_LOG="$work/executed"
 expect_ok() {
   "$script_dir/check-private-ci-destination.sh" "$1" > "$work/out" 2>&1 || { cat "$work/out" >&2; exit 1; }
-  grep -q 'PRIVATE_CI_DESTINATION_APPROVED' "$work/out"
+  grep -q 'PRIVATE_CI_DESTINATION_VERIFIED_DIAGNOSTIC_ONLY' "$work/out"
 }
 expect_fail() {
   if "$script_dir/check-private-ci-destination.sh" "$@" > "$work/out" 2>&1; then echo 'Unsafe approval' >&2; exit 1; fi
@@ -57,12 +57,25 @@ export MOCK_ID=424243
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_ID
-for unsafe in 'trusted/ci' 'trusted/ci@000424242' 'trusted/ci@0' 'trusted/ci@424242 # comment'; do
+for unsafe in 'trusted/ci' 'trusted/ci@000424242' 'trusted/ci@0' 'trusted/ci@424242 # comment' 'trusted/ci@9223372036854775808'; do
   printf '%s\n' "$unsafe" > "$policy"
   expect_fail trusted/ci
 done
 printf 'trusted/ci@424242\nTRUSTED/CI@424242\n' > "$policy"
 expect_fail trusted/ci
+printf 'trusted/ci@424242\nother/repo@44\nOTHER/REPO@44\n' > "$policy"
+expect_fail trusted/ci
+# A control character in a comment must never create a phantom approval.
+for suffix in $'\013' $'\014' $'\015' $'\377'; do
+  printf '# innocent%s%s\n' "$suffix" 'trusted/ci@424242' > "$policy"
+  expect_fail trusted/ci
+done
+printf '# innocent\000trusted/ci@424242\n' > "$policy"
+expect_fail trusted/ci
+printf '# legit comment\ntrusted/ci@424242\n' > "$policy"
+export MOCK_ID=424242BAD
+expect_fail trusted/ci
+unset MOCK_ID
 printf '# Approved for this isolated test only\ntrusted/ci@424242\n' > "$policy"
 for visibility in public internal null; do
   export MOCK_VISIBILITY="$visibility"
