@@ -49,14 +49,14 @@ final class ComputedAggregateIndexBoundaryTest {
     void recordWithKnownKeyCanSelectHeterogeneousFieldWithoutErasure() {
         accepted("""
                 fnc get(): string {
-                    const T r = record{x: 3.0, y: "boo"};
+                    const r = record{x: 3.0, y: "boo"};
                     const key = "y";
                     return r[key];
                 }
                 """);
         accepted("""
                 fnc get(): float {
-                    const T r = record{x: 3.0, y: "boo"};
+                    const r = record{x: 3.0, y: "boo"};
                     return r["x"];
                 }
                 """);
@@ -66,19 +66,19 @@ final class ComputedAggregateIndexBoundaryTest {
     void unknownOrVariableHeterogeneousIndexCannotPretendToBeInt() {
         denied("""
                 fnc bad(string key): int {
-                    const T r = record{x: 3.0, y: "boo"};
+                    const r = record{x: 3.0, y: "boo"};
                     return r[key];
                 }
                 """);
         denied("""
                 fnc bad(): float {
-                    const T r = record{x: 3.0, y: "boo"};
+                    const r = record{x: 3.0, y: "boo"};
                     return r["missing"];
                 }
                 """);
         denied("""
                 fnc bad(string key): string {
-                    const T r = record{x: 3.0, y: "boo"};
+                    const r = record{x: 3.0, y: "boo"};
                     return r[key];
                 }
                 """);
@@ -158,7 +158,7 @@ final class ComputedAggregateIndexBoundaryTest {
     void emptyClosedAggregateCannotBecomeUncheckedUnknownValue() {
         denied("""
                 fnc bad(string key): int {
-                    const T empty = record{};
+                    const empty = record{};
                     return empty[key];
                 }
                 """);
@@ -223,7 +223,7 @@ final class ComputedAggregateIndexBoundaryTest {
     void computedKeysAreReadsNotDynamicFieldCreationOrReadonlyEscape() {
         denied("""
                 fnc bad(): void {
-                    const T item = record{x: 3.0};
+                    const item = record{x: 3.0};
                     const key = "x";
                     item[key] = 5.0;
                     return;
