@@ -208,6 +208,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     // Only the explicit compiler-ABI-bound scalar bridge may install this.
     // Null retains the original host i64 compatibility path.
     private SourceActorScalarWireV1.Binding scalarWireBinding;
+    // Separate explicit ORM2 mode; no implicit protocol downgrade/fallback.
+    private SourceActorTypedWireV2.Binding typedWireBinding;
     // Remains set even if physical admission throws: its outcome may be
     // ambiguous. A subsequently bound proxy could otherwise refund a raw
     // delivery with a cumulative physical drain.
@@ -308,6 +310,14 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
 
     void bindProxyMailboxForSupervisor(
             LogicalActorProxyMailboxV1 mailbox, boolean compilerAbiScalar) {
+        bindProxyMailboxForSupervisor(mailbox, compilerAbiScalar, false);
+    }
+
+    void bindProxyMailboxForSupervisor(
+            LogicalActorProxyMailboxV1 mailbox,
+            boolean compilerAbiScalar, boolean typedPrimitive) {
+        if (compilerAbiScalar && typedPrimitive)
+            throw new IllegalArgumentException("one source actor wire protocol per proxy");
         Objects.requireNonNull(mailbox, "mailbox");
         requireBlockingHostSurface("bind a compiler-ABI actor proxy");
         synchronized (routeLock) {
@@ -336,8 +346,34 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                             logicalId, active.incarnation,
                             active.view.executor().actorMessageAbiSha256(actorTypeName))
                     : null;
+            SourceActorTypedWireV2.Binding proposedTyped = null;
+            if (typedPrimitive) {
+                var kind = active.view.executor()
+                        .actorProxyWireScalarKind(actorTypeName)
+                        .orElseThrow(() -> new SecurityException(
+                                "ORM2 requires compiler-proven ActorMail<int|bool|string>"));
+                proposedTyped = new SourceActorTypedWireV2.Binding(
+                        new SourceActorScalarWireV1.Binding(
+                                logicalId, active.incarnation,
+                                active.view.executor().actorMessageAbiSha256(actorTypeName)),
+                        kind);
+            }
+            // No allocation or throwing step between publishing these
+            // internal fields and the authoritative mailbox ownership.
             scalarWireBinding = proposed;
+            typedWireBinding = proposedTyped;
             boundProxyMailbox = mailbox;
+        }
+    }
+
+    SourceActorTypedWireV2.Binding typedWireBindingForProxy(
+            LogicalActorProxyMailboxV1 mailbox) {
+        requireBlockingHostSurface("inspect ORM2 typed actor proxy binding");
+        synchronized (routeLock) {
+            requireOpenLocked();
+            if (boundProxyMailbox != mailbox || typedWireBinding == null)
+                throw new SecurityException("no compiler-verified ORM2 actor proxy bound");
+            return typedWireBinding;
         }
     }
 
@@ -520,8 +556,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 throw new SecurityException("foreign proxy mailbox on physical actor route");
             if (expectedRouteEpoch != current.routeEpoch)
                 throw new SecurityException("stale proxy dispatch route epoch");
-            final long value;
-            if (scalarWireBinding != null) {
+            final Object value;
+            if (typedWireBinding != null) {
+                // Decode the exact compiler-proven primitive before reserving
+                // a physical send. Never downgrade a malformed ORM2 frame.
+                value = SourceActorTypedWireV2.decode(typedWireBinding, wire);
+            } else if (scalarWireBinding != null) {
                 // An upgrade is only permitted between matching compiler
                 // message ABIs; the old immutable frame stays compatible
                 // with the new route and never captures an old code pointer.
@@ -774,6 +814,18 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         // before acquiring a generation lease, freezing physical ingress or
         // restoring state: old envelopes must never be interpreted under
         // the candidate's different source message contract.
+        if (typedWireBinding != null) {
+            var candidateKind = candidate.executor()
+                    .actorProxyWireScalarKind(actorTypeName)
+                    .orElseThrow(() -> new SecurityException(
+                            "upgraded ORM2 actor lost its compiler primitive receive proof"));
+            if (candidateKind != typedWireBinding.kind()
+                    || !typedWireBinding.identity().messageAbiSha256()
+                            .equals(candidateImage.messageAbiSha256())) {
+                throw new SecurityException(
+                        "upgraded ORM2 actor primitive kind or compiler message ABI drift");
+            }
+        }
         if (scalarWireBinding != null) {
             if (!candidate.executor().actorReceivesProxyLong(actorTypeName)) {
                 throw new SecurityException(
