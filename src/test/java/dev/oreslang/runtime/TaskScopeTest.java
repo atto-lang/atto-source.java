@@ -67,8 +67,12 @@ public class TaskScopeTest {
             assertTrue(bothStarted.await(3, TimeUnit.SECONDS));
             try {
                 assertTrue(scope.cancel("shutdown"));
-                assertTrue(a.result().isCancelled());
-                assertTrue(b.result().isCancelled());
+                assertTrue(a.isCancellationRequested());
+                assertTrue(b.isCancellationRequested());
+                assertFalse(a.result().isDone(),
+                        "running child cannot be revoked until its checkpoint");
+                assertFalse(b.result().isDone(),
+                        "running child cannot be revoked until its checkpoint");
                 assertFalse(scope.getDone().isDone());
                 assertThrows(TimeoutException.class, () ->
                         scope.getDone().get(30, TimeUnit.MILLISECONDS));
