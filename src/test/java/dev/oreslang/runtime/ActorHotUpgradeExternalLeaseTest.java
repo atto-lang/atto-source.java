@@ -122,4 +122,49 @@ final class ActorHotUpgradeExternalLeaseTest {
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+
+    @Test
+    void accountingFailureLeavesExternalLeaseRetryable() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> context.self().stop());
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            var lease = runtime.pinExternalWorkForHotUpgrade(actor);
+            try (var freeze = runtime.freezeUserIngressForHotUpgrade(actor)) {
+                assertEquals(1, freeze.outstandingExternalPins());
+
+                // Fault injection is test-only; no guest can access ActorCell.
+                // Restore the counter even when a regression assertion fails.
+                var cellField = lease.getClass().getDeclaredField("cell");
+                cellField.setAccessible(true);
+                Object cell = cellField.get(lease);
+                var counter = cell.getClass().getDeclaredField("hotUpgradeExternalPins");
+                counter.setAccessible(true);
+                var monitor = cell.getClass().getDeclaredField("lifecycleLock");
+                monitor.setAccessible(true);
+                Object lock = monitor.get(cell);
+                synchronized (lock) {
+                    counter.setInt(cell, 0);
+                    try {
+                        assertThrows(IllegalStateException.class, lease::close,
+                                "a corrupted pin count must not silently retire its lease");
+                    } finally {
+                        counter.setInt(cell, 1);
+                    }
+                }
+
+                assertEquals(1, freeze.outstandingExternalPins());
+                assertFalse(freeze.schedulerDrained(),
+                        "the restored pin still owns the old generation");
+                lease.close(); // MUST retry successfully after the failed close
+                lease.close(); // duplicate close MUST be idempotent
+                assertEquals(0, freeze.outstandingExternalPins());
+                drained(freeze);
+            } finally {
+                lease.close();
+            }
+            actor.send(1);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
 }
