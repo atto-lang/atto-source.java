@@ -186,7 +186,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             // share one stream-order linearization point. Receipt lifetimes
             // may overlap after send() returns, but accepted frames cannot be
             // physically reordered by competing host sender threads.
-            CompletionStage<IpcReceiptCorrelation.Stage> outcome = receipts.admit(message);
+            CompletionStage<IpcReceiptCorrelation.Stage> outcome =
+                    receipts.admit(physicalOwner, message, physicalGeneration);
             Throwable failure = null;
             try {
                 sessionLease.writeFrame(
@@ -196,7 +197,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                 // The lease proves commitDispatch never succeeded, so the bound
                 // physical writer was never invoked and never-sent is authoritative.
                 try {
-                    receipts.rejectBeforeRemote(message);
+                    receipts.rejectBeforeRemote(
+                            physicalOwner, message, physicalGeneration);
                 } catch (RuntimeException | Error cleanupFailure) {
                     sendFailure.addSuppressed(cleanupFailure);
                 }
@@ -231,7 +233,9 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                 throw new IOException("stale IPC physical transport generation");
             }
             requireTrustedEpoch(receipt.envelope());
-            receipts.acceptVerified(receipt.envelope(), receipt.stage());
+            receipts.acceptVerified(
+                    physicalOwner, receipt.envelope(),
+                    physicalGeneration, receipt.stage());
             return receipt.stage();
         } catch (IOException | RuntimeException | Error failure) {
             // Authentication, framing, EOF and state-machine violations are
