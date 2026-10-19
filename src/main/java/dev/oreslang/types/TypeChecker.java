@@ -2325,6 +2325,14 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.RuntimeCallExpr runtime) {
             if (runtime.operation().equals("spawn")) {
+                // CapabilityChecker independently requires ACTOR_SPAWN. Keep
+                // the semantic pass fail-closed too: callers that run only
+                // TypeChecker must not treat direct actor creation from an
+                // UNTRUSTED execution domain as valid source.
+                if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                    throw new IllegalArgumentException(
+                            "untrusted actors cannot spawn actors; ACTOR_SPAWN is not available");
+                }
                 if (runtime.arguments().size() != 1
                         || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
                     throw new IllegalArgumentException(
