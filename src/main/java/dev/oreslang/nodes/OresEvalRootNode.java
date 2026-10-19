@@ -6112,6 +6112,14 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "staged named/trailing-closure calls have no runtime lowering");
             }
+            if (expr instanceof Ast.TypeExpr) {
+                throw new IllegalArgumentException(
+                        "generic type qualifier has no standalone runtime value");
+            }
+            if (expr instanceof Ast.CompoundAssignExpr) {
+                throw new IllegalArgumentException(
+                        "compound-place assignment has no checked runtime lowering");
+            }
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
                 for (Ast.MatchValueArm arm : valueMatch.arms()) {
