@@ -163,6 +163,31 @@ final class ParameterPresenceV3SyntaxTest {
     }
 
     @Test
+    void forgedLambdaAstCannotSmuggleOmissionMetadata() {
+        Ast.Param forged = new Ast.Param(Ast.TypeRef.simple("int"),
+                "value", false, false, true, false);
+        assertThrows(IllegalArgumentException.class, () ->
+                new Ast.LambdaExpr(List.of(forged), new Ast.NameExpr("value"), null));
+    }
+
+    @Test
+    void optionalFormalCannotEscapeThroughImportedSignatureShape() {
+        Ast.Program p = Parser.parse("""
+                define module m
+                  pub define class Foo as
+                    pub f(Option<int> x?): void { return; }
+                  end
+                end
+                """);
+        Ast.ClassDecl klass = p.modules().stream()
+                .flatMap(m -> m.declarations().stream())
+                .filter(d -> d instanceof Ast.ClassDecl)
+                .map(d -> (Ast.ClassDecl) d).findFirst().orElseThrow();
+        assertThrows(IllegalArgumentException.class, () ->
+                UnloweredDefaultArgValsGuard.rejectClass(klass));
+    }
+
+    @Test
     void optionalTypedLambdaDoesNotBypassChecker() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define module m
