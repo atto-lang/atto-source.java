@@ -860,7 +860,7 @@ public final class OwnershipChecker {
                         || binding.declaredType() == null
                         || !binding.declaredType().name().equals(shortAlias)
                         || !(binding.initializer() instanceof Ast.ObjectExpr object
-                             && object.inferredStruct()))) {
+                             && object.inferredAggregate()))) {
                 throw error("invalid validated short inferred type alias");
             }
             if (value.type.name().equals("$infer$")
