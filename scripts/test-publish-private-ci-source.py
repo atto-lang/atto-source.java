@@ -28,6 +28,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
         self.visibility = ["private"] * 100
+        self.repo_ids = [424242] * 100
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
@@ -44,7 +45,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
-            return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
+            return dict(id=self.repo_ids.pop(0), full_name="trusted/ci",
+                        visibility=self.visibility.pop(0),
                         private=True, default_branch="main")
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
@@ -105,6 +107,25 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_same_slug_recreated_repository_id_rejected_before_next_blob(self):
+        # Same name and private visibility are NOT an immutable identity.
+        (self.source / "another.ores").write_text("second source file")
+        self.repo_ids = [424242, 424242, 313131]
+        with self.assertRaisesRegex(pub.Denied, "repository identity changed"):
+            self.publish()
+        writes = [r for m, r, _ in self.route_calls if m == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+
+    def test_invalid_repository_id_denied_before_any_write(self):
+        for bad in (0, -1, True, None, "424242"):
+            with self.subTest(repository_id=bad):
+                self.route_calls.clear()
+                self.repo_ids = [bad]
+                with self.assertRaises(pub.Denied):
+                    self.publish()
+                self.assertFalse(any(method == "POST"
+                                     for method, _, _ in self.route_calls))
 
     def test_visibility_flip_aborts_before_next_write(self):
         self.visibility = ["private", "private", "public"]
@@ -532,7 +553,7 @@ class CommittedSourceTreeTests(unittest.TestCase):
         def fake_api(route, method="GET", payload=None):
             calls.append((method, route))
             if route == "repos/trusted/ci":
-                return {"full_name": "trusted/ci", "private": True,
+                return {"id": 424242, "full_name": "trusted/ci", "private": True,
                         "visibility": "private", "default_branch": "main"}
             if route.endswith("/git/ref/heads/main"):
                 return {"object": {"sha": A}}
