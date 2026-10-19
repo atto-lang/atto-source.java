@@ -1677,13 +1677,21 @@ public final class ActorRuntime implements AutoCloseable {
      * identity or carrier pool.
      */
     public <T> OresFuture<T> startActorTask(OresScheduler.Task<T> task) {
+        return startActorTask(task, () -> { });
+    }
+
+    /** Invoked once the child has physically left its actor guest turn. */
+    public <T> OresFuture<T> startActorTask(
+            OresScheduler.Task<T> task, Runnable onQuiescent) {
         Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(onQuiescent, "onQuiescent");
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        if (cell.kind != ActorKind.UNTRUSTED) return cell.sourceScheduler().start(task);
+        if (cell.kind != ActorKind.UNTRUSTED)
+            return cell.sourceScheduler().start(task, onQuiescent);
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
         // tasks share the same quota; a second top-level task fails closed.
@@ -1763,7 +1771,11 @@ public final class ActorRuntime implements AutoCloseable {
                     // A completed Future is not proof that an untrusted
                     // physical carrier has exited the actor boundary.
                     physicalQuiescenceConfirmed.set(true);
-                    releaseTimedWhenSafe.run();
+                    try {
+                        releaseTimedWhenSafe.run();
+                    } finally {
+                        onQuiescent.run();
+                    }
                 }
             }
         };
