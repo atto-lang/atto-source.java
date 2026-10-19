@@ -31,8 +31,8 @@ git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid 
 head="$(git -C "$repo" rev-parse HEAD)"
 tree="$(git -C "$repo" rev-parse HEAD^{tree})"
 dest_branch="ci/oreslang-test"
-dest_base_commit="054b65982f0950a4e2f3fb4752e78f585198c2ff"
-dest_base_tree="09ccea168b563ee91f9cd7a938ddabb5a33078ec"
+dest_base_commit="1012deffdaa3d0aec03a98073dc1f48ec1565c08"
+dest_base_tree="de8053d4005b326929e8734a5be741e82b40e9e7"
 
 cat > "$tmp/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -122,10 +122,10 @@ case "$endpoint" in
       exit 1
     fi
     ;;
-  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/git/commits/054b65982f0950a4e2f3fb4752e78f585198c2ff")
+  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/git/commits/1012deffdaa3d0aec03a98073dc1f48ec1565c08")
     printf '%s\t%s\n' \
-      "${SYNTH_DEST_BASE_COMMIT:-054b65982f0950a4e2f3fb4752e78f585198c2ff}" \
-      "${SYNTH_DEST_BASE_TREE:-09ccea168b563ee91f9cd7a938ddabb5a33078ec}"
+      "${SYNTH_DEST_BASE_COMMIT:-1012deffdaa3d0aec03a98073dc1f48ec1565c08}" \
+      "${SYNTH_DEST_BASE_TREE:-de8053d4005b326929e8734a5be741e82b40e9e7}"
     ;;
   *)
     printf 'unexpected synthetic gh endpoint: %s\n' "$endpoint" >&2
@@ -190,6 +190,10 @@ assert_exit 1 run_preflight SYNTH_PROTECTED=false \
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_BASE_COMMIT=4d1d65445a09eb47f383bd5dc373d36056346056 \
   SYNTH_DEST_BASE_TREE=825c75a6b4cf84c62510f717290d6c87f4611b9a \
+  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+assert_exit 1 run_preflight SYNTH_PROTECTED=false \
+  SYNTH_DEST_BASE_COMMIT=054b65982f0950a4e2f3fb4752e78f585198c2ff \
+  SYNTH_DEST_BASE_TREE=09ccea168b563ee91f9cd7a938ddabb5a33078ec \
   bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
 
 # Merely leaving protection disabled must never activate the fallback when
