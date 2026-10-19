@@ -61,49 +61,75 @@ final class LogicalActorUpgradeCoordinatorV1 implements AutoCloseable {
             this.candidate = candidate;
         }
 
-        synchronized boolean drained() {
-            requireActive();
-            return ticket.drained() && code.livePins() == 0;
-        }
-
-        synchronized boolean commit() {
-            requireActive();
-            if (!drained()) return false;
-            // The physical source ActorRef route still requires its own
-            // atomic swap and health proof before this host seam is connected.
-            // No user callbacks or guest code run under this monitor.
-            if (!code.publish(candidate)) return false;
-            // This is the point of no return. Any failure thereafter must
-            // keep dispatch sealed and quarantine rather than old-route retry.
-            poisoned = true;
-            try {
-                ticket.commit();
-                done = true;
-                preparing = false;
-                poisoned = false;
-                return true;
-            } catch (RuntimeException | Error failure) {
-                done = true;
-                preparing = false;
-                throw new IllegalStateException(
-                        "code generation published but mailbox did not: "
-                                + "dispatch remains quarantined", failure);
+        boolean drained() {
+            // All coordinator state transitions must use ONE monitor. The
+            // Transaction monitor is not the coordinator monitor: mixing the
+            // two permits data races between prepare, commit, rollback and
+            // quarantine observations by independent supervisor threads.
+            synchronized (LogicalActorUpgradeCoordinatorV1.this) {
+                requireActive();
+                try {
+                    return ticket.drained() && code.livePins() == 0;
+                } catch (RuntimeException | Error uncertain) {
+                    poisoned = true;
+                    throw uncertain;
+                }
             }
         }
 
-        synchronized void rollback() {
-            requireActive();
-            // Abort the candidate before reopening old DATA dispatch.
-            code.abort(candidate);
-            try {
-                ticket.rollback();
-                done = true;
-                preparing = false;
-            } catch (RuntimeException | Error failure) {
+        boolean commit() {
+            synchronized (LogicalActorUpgradeCoordinatorV1.this) {
+                requireActive();
+                if (!drained()) return false;
+
+                // There is no safe rollback after publication begins: even a
+                // thrown publish() call is not proof that the old image is
+                // authoritative. Quarantine first; only clear it after BOTH
+                // code and proxy epochs are certified to have advanced.
                 poisoned = true;
-                done = true;
-                preparing = false;
-                throw failure;
+                try {
+                    if (!code.publish(candidate)) {
+                        throw new IllegalStateException(
+                                "code gate refused publication after verified drainage");
+                    }
+                    ticket.commit();
+                    if (code.epoch() != mailbox.snapshot().routeEpoch()) {
+                        throw new IllegalStateException(
+                                "actor code and proxy route epochs diverged after publication");
+                    }
+                    done = true;
+                    preparing = false;
+                    poisoned = false;
+                    return true;
+                } catch (RuntimeException | Error failure) {
+                    done = true;
+                    preparing = false;
+                    throw new IllegalStateException(
+                            "actor upgrade publication not fully certified: "
+                                    + "dispatch remains quarantined", failure);
+                }
+            }
+        }
+
+        void rollback() {
+            synchronized (LogicalActorUpgradeCoordinatorV1.this) {
+                requireActive();
+                try {
+                    // Only a proven candidate abort permits old-route DATA
+                    // dispatch to reopen. A failed abort leaves the mailbox
+                    // frozen even if it appears that publication did not run.
+                    code.abort(candidate);
+                    ticket.rollback();
+                    done = true;
+                    preparing = false;
+                } catch (RuntimeException | Error failure) {
+                    poisoned = true;
+                    done = true;
+                    preparing = false;
+                    throw new IllegalStateException(
+                            "actor upgrade rollback not fully certified: "
+                                    + "dispatch remains quarantined", failure);
+                }
             }
         }
 
