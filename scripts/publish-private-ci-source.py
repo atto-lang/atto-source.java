@@ -102,16 +102,12 @@ def checked_repo(repository):
 
 
 def require_preflight(repository, root):
-    guard = root / "scripts" / "check-private-ci-destination.sh"
-    if guard.is_symlink() or not guard.is_file():
-        raise Denied("trusted destination approval guard missing")
-    try:
-        p = subprocess.run(["bash", str(guard), repository],
-                           capture_output=True, text=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise Denied("destination policy check unavailable") from exc
-    if p.returncode != 0:
-        raise Denied("destination not approved by checked-in private policy")
+    """Data-only admission: never execute a checkout-supplied shell guard.
+
+    A caller-controlled PATH or modified Bash guard could otherwise expose
+    GitHub credentials before the publisher authenticates policy and source.
+    """
+    checked_policy_fingerprint(root, repository)
     return checked_repo(repository)
 
 
