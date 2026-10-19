@@ -41,10 +41,10 @@ final class UnaryTcpActorDispatcherJUnitTest {
                         assertEquals(31L, message.get("session_id"));
                         assertEquals(7L, message.get("generation"));
                         assertEquals(99L, message.get("correlation_id"));
-                        assertEquals(List.of(9L, 8L), message.get("payload"));
-                        return List.of(1L, 2L, 255L);
+                        assertEquals(OresBytes.copyOf(new byte[] {9, 8}), message.get("payload"));
+                        return OresBytes.copyOf(new byte[] {1, 2, (byte) 255});
                     },
-                    UnaryTcpActorDispatcher.byteListCodec(16));
+                    UnaryTcpActorDispatcher.bytesCodec(16));
 
             var handle = dispatcher.dispatch(new UnaryTcpSessionAdapter.Request(
                     new UnaryTcpSessionAdapter.PeerIdentity("peer:test"),
@@ -73,6 +73,49 @@ final class UnaryTcpActorDispatcherJUnitTest {
     }
 
     @Test
+    void fullWireBudgetCrossesActorMailboxAsOneCompactBytesNode() throws Exception {
+        byte[] payload = new byte[UnaryTransportFrame.MAX_PAYLOAD_BYTES];
+        payload[0] = (byte) 255;
+        payload[payload.length - 1] = 7;
+        CountDownLatch completed = new CountDownLatch(1);
+        AtomicReference<UnaryTcpSessionAdapter.Reply> reply = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var dispatcher = new UnaryTcpActorDispatcher(
+                    runtime,
+                    ActorRuntime.ActorKind.SHARED,
+                    (message, context) -> {
+                        Object value = message.get("payload");
+                        assertInstanceOf(OresBytes.class, value);
+                        OresBytes bytes = (OresBytes) value;
+                        assertEquals(UnaryTransportFrame.MAX_PAYLOAD_BYTES, bytes.size());
+                        assertEquals(255, bytes.unsignedAt(0));
+                        assertEquals(7, bytes.unsignedAt(bytes.size() - 1));
+                        return bytes;
+                    },
+                    UnaryTcpActorDispatcher.bytesCodec(
+                            UnaryTransportFrame.MAX_PAYLOAD_BYTES));
+
+            var handle = dispatcher.dispatch(new UnaryTcpSessionAdapter.Request(
+                    new UnaryTcpSessionAdapter.PeerIdentity("peer:large-bytes"),
+                    51, 9, 1, payload));
+            handle.whenComplete((value, terminal) -> {
+                reply.set(value);
+                failure.set(terminal);
+                completed.countDown();
+            });
+
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertNotNull(reply.get());
+            assertEquals(UnaryTransportFrame.MAX_PAYLOAD_BYTES, reply.get().payload().length);
+            assertEquals((byte) 255, reply.get().payload()[0]);
+            assertEquals((byte) 7, reply.get().payload()[reply.get().payload().length - 1]);
+        }
+    }
+
+    @Test
     void transportCancellationCancelsActorOwnedAsyncResult() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch producerCancelled = new CountDownLatch(1);
@@ -87,7 +130,7 @@ final class UnaryTcpActorDispatcherJUnitTest {
                         entered.countDown();
                         return new OresFuture<Object>(producerCancelled::countDown);
                     },
-                    UnaryTcpActorDispatcher.byteListCodec(16));
+                    UnaryTcpActorDispatcher.bytesCodec(16));
 
             var handle = dispatcher.dispatch(new UnaryTcpSessionAdapter.Request(
                     new UnaryTcpSessionAdapter.PeerIdentity("peer:test"),
@@ -116,7 +159,7 @@ final class UnaryTcpActorDispatcherJUnitTest {
 
     @Test
     void byteCodecIsLosslessAndRejectsNonIntegralOrOutOfRangeValues() throws Exception {
-        var codec = UnaryTcpActorDispatcher.byteListCodec(5);
+        var codec = UnaryTcpActorDispatcher.bytesCodec(5);
 
         assertArrayEquals(
                 new byte[] {(byte) 255, 0, 1, (byte) 254, (byte) 255},
@@ -140,7 +183,7 @@ final class UnaryTcpActorDispatcherJUnitTest {
         assertThrows(IllegalArgumentException.class,
                 () -> codec.encode(Arrays.asList(0L, 1L, 2L, 3L, 4L, 5L)));
         assertThrows(IllegalArgumentException.class,
-                () -> UnaryTcpActorDispatcher.byteListCodec(
+                () -> UnaryTcpActorDispatcher.bytesCodec(
                         UnaryTransportFrame.MAX_PAYLOAD_BYTES + 1));
     }
 
