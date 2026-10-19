@@ -121,6 +121,19 @@ final class TaskTransferProvenanceTest {
     }
 
     @Test
+    void ownedResultOfMemberCallIsNotMistakenForFieldProjection() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(
+                Parser.parse("""
+                    pub fnc main(Option<Array<int>> optional): void {
+                        let Task<int> result =
+                            (async task |Array<int> value| -> { return 1; })(
+                                optional.unwrap());
+                        return;
+                    }
+                    """)));
+    }
+
+    @Test
     void rejectedBorrowNeverProducesTransferResult() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
