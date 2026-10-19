@@ -9237,6 +9237,7 @@ public final class OresEvalRootNode extends RootNode {
     private static Object emitStdout(OresContext context, List<Object> args, String operation, boolean newline) {
         context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
         requireOne(args, operation);
+        rejectMlScalarCapabilityValue(args.getFirst(), operation);
         String value = String.valueOf(args.getFirst());
         long started = dev.oreslang.runtime.CorePerf.start();
         try {
@@ -9260,7 +9261,10 @@ public final class OresEvalRootNode extends RootNode {
         }
         private Object log(List<Object> args){
             context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.log");
-            for(Object arg:args)context.output().print(String.valueOf(arg));
+            for(Object arg:args){
+                rejectMlScalarCapabilityValue(arg,"stdio.stdout.log");
+                context.output().print(String.valueOf(arg));
+            }
             context.output().println();
             context.output().flush();
             return null;
@@ -9314,6 +9318,14 @@ public final class OresEvalRootNode extends RootNode {
         if(value instanceof Object[] array)return new ArrayList<>(java.util.Arrays.asList(array));
         throw new IllegalArgumentException(name+" requires an array/list/tuple value");
     }
+    private static void rejectMlScalarCapabilityValue(Object value, String operation) {
+        if (value instanceof dev.oreslang.runtime.SealedActorState.ScalarSnapshot
+                || value instanceof dev.oreslang.runtime.SealedActorState.ScalarPublication) {
+            throw new SecurityException(
+                    operation + " cannot observe compiler-issued actor scalar capabilities");
+        }
+    }
+
     private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
     private static void requireTwo(List<Object> args,String name){if(args.size()!=2)throw new IllegalArgumentException(name+" expects two arguments");}
