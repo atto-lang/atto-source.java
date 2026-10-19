@@ -36,12 +36,19 @@ public final class TaskSemanticAdmission {
         public Types.Type type() { return type; }
     }
 
+    private final Ast.Program programIdentity;
     private final IdentityHashMap<Object, List<Entry>> byBoundary =
             new IdentityHashMap<>();
     private int totalEntries;
     private boolean sealed;
 
-    TaskSemanticAdmission() { }
+    TaskSemanticAdmission() { this(null); }
+
+    TaskSemanticAdmission(Ast.Program programIdentity) {
+        this.programIdentity = programIdentity;
+    }
+
+    Ast.Program programIdentity() { return programIdentity; }
 
     void record(Object boundary, List<Entry> entries) {
         if (sealed) {
