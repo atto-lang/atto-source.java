@@ -59,7 +59,7 @@ final class TaskCertifiedLayout {
                     "PROCESS", ownerId, nextAllocationId++, 1, true);
         }
 
-        RecordStorage freshRecord(Types.Record shape) {
+        synchronized RecordStorage freshRecord(Types.Record shape) {
             Objects.requireNonNull(shape, "record shape");
             if (shape.members().isEmpty() || shape.members().size() > 1024
                     || shape.members().values().stream().anyMatch(t -> !inlineScalar(t))) {
@@ -69,7 +69,7 @@ final class TaskCertifiedLayout {
             return new RecordStorage(this, newRoot(), Map.copyOf(shape.members()), shape.readOnly());
         }
 
-        FixedArrayStorage freshFixedArray(Types.Tuple shape) {
+        synchronized FixedArrayStorage freshFixedArray(Types.Tuple shape) {
             Objects.requireNonNull(shape, "array shape");
             if (shape.kind() != Types.TupleKind.FIXED_ARRAY
                     || shape.elements().isEmpty() || shape.elements().size() > 65536
@@ -80,14 +80,14 @@ final class TaskCertifiedLayout {
             return new FixedArrayStorage(this, newRoot(), List.copyOf(shape.elements()));
         }
 
-        private Access access(TaskAccessVerifier.Place place, Types.Type type,
+        private synchronized Access access(TaskAccessVerifier.Place place, Types.Type type,
                               TaskAccessVerifier.Mode mode) {
             if (sealed) throw new IllegalStateException("Task layout issuer is sealed");
             return new Access(this, new TaskAccessVerifier.TypedClaim(
                     new TaskAccessVerifier.Claim(place, mode), type));
         }
 
-        TaskAccessVerifier.Ticket admit(List<Access> requested) {
+        synchronized TaskAccessVerifier.Ticket admit(List<Access> requested) {
             if (sealed) throw new IllegalStateException("Task layout issuer is sealed");
             List<Access> entries = List.copyOf(Objects.requireNonNull(requested, "claims"));
             for (Access access : entries) {
@@ -109,7 +109,7 @@ final class TaskCertifiedLayout {
 
         int active() { return ledger.activeChildren(); }
 
-        void finish() {
+        synchronized void finish() {
             ledger.finishScope();
             sealed = true;
         }
