@@ -40,8 +40,14 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         var first = gate.admit(one);
         var second = gate.admit(two);
         check(!first.toCompletableFuture().isDone());
-        gate.acceptVerified(one, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+        denied(() -> gate.acceptVerified(
+                one, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
         check(!first.toCompletableFuture().isDone());
+        gate.acceptVerified(one, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+        denied(() -> gate.acceptVerified(
+                one, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
+        check(!first.toCompletableFuture().isDone());
+        check(gate.invariant());
         gate.acceptVerified(two, IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
         check(result(second) == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
         check(gate.transportLost("old") == 1);
