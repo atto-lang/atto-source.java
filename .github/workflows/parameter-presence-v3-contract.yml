@@ -1,0 +1,25 @@
+name: Parameter presence v3 reference
+on:
+  pull_request:
+    paths:
+      - 'contracts/v3/**'
+      - '.github/workflows/parameter-presence-v3-contract.yml'
+  push:
+    paths:
+      - 'contracts/v3/**'
+      - '.github/workflows/parameter-presence-v3-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run pure v3 named/default/presence semantics
+        run: |
+          node --version
+          node contracts/v3/check_parameter_presence_v3.mjs
