@@ -26,20 +26,30 @@ import java.util.Objects;
 public final class LiteralOptionalCallCompiler {
     private LiteralOptionalCallCompiler() { }
 
+    /** Distinguish original source form from a verified, synthetic bridge. */
+    public enum SourceOrigin {
+        ORIGINAL_STAGED_CALL,
+        VERIFIED_IMPLICIT_EMPTY_CALL
+    }
+
     /** Only the successful full-compiler path can issue this checked result. */
     public static final class Result {
         private final Ast.Program checkedProgram;
         private final Ast.FunctionDecl checkedCaller;
         private final Ast.FunctionDecl checkedTarget;
         private final Ast.CallExpr loweredCall;
+        private final SourceOrigin sourceOrigin;
 
         private Result(Ast.Program program, Ast.FunctionDecl caller,
-                       Ast.FunctionDecl target, Ast.CallExpr call) {
+                       Ast.FunctionDecl target, Ast.CallExpr call,
+                       SourceOrigin origin) {
             checkedProgram = Objects.requireNonNull(program);
             checkedCaller = Objects.requireNonNull(caller);
             checkedTarget = Objects.requireNonNull(target);
             loweredCall = Objects.requireNonNull(call);
+            sourceOrigin = Objects.requireNonNull(origin);
         }
+        public SourceOrigin sourceOrigin() { return sourceOrigin; }
         public Ast.Program checkedProgram() { return checkedProgram; }
         public Ast.FunctionDecl checkedCaller() { return checkedCaller; }
         public Ast.FunctionDecl checkedTarget() { return checkedTarget; }
@@ -51,7 +61,8 @@ public final class LiteralOptionalCallCompiler {
         Objects.requireNonNull(source);
         Objects.requireNonNull(moduleName);
         Objects.requireNonNull(callerName);
-        return lowerAndAnalyzeParsed(Parser.parse(source), moduleName, callerName);
+        return lowerAndAnalyzeParsed(Parser.parse(source), moduleName, callerName,
+                SourceOrigin.ORIGINAL_STAGED_CALL);
     }
 
     /**
@@ -72,7 +83,7 @@ public final class LiteralOptionalCallCompiler {
         Ast.Program parsed = Parser.parse(source);
         return lowerAndAnalyzeParsed(
                 stageImplicitEmptyCall(parsed, moduleName, callerName),
-                moduleName, callerName);
+                moduleName, callerName, SourceOrigin.VERIFIED_IMPLICIT_EMPTY_CALL);
     }
 
     private static Ast.Program stageImplicitEmptyCall(
@@ -172,7 +183,8 @@ public final class LiteralOptionalCallCompiler {
     }
 
     private static Result lowerAndAnalyzeParsed(
-            Ast.Program original, String moduleName, String callerName) {
+            Ast.Program original, String moduleName, String callerName,
+            SourceOrigin sourceOrigin) {
         if (!original.imports().isEmpty() || original.modules().size() != 1) {
             throw new IllegalArgumentException(
                     "experimental optional call needs a single unimported module");
@@ -349,7 +361,7 @@ public final class LiteralOptionalCallCompiler {
             throw new IllegalArgumentException(
                     "checked compiler output lost source binding identity");
         }
-        return new Result(checked, loweredCaller, loweredTarget, normal);
+        return new Result(checked, loweredCaller, loweredTarget, normal, sourceOrigin);
     }
 
     private static Ast.Expr immediateExpression(Ast.Stmt statement) {
