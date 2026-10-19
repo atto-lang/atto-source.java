@@ -20,6 +20,13 @@ import java.util.Objects;
 public final class EcsAccessPlanner {
     private EcsAccessPlanner() { }
 
+    // A source compiler must not spend unbounded time proving pairwise
+    // conflicts from generated/untrusted metadata. These are planning limits,
+    // not ECS entity-count or allocation-size limits.
+    public static final int MAX_SYSTEMS = 4096;
+    public static final int MAX_ACCESSES_PER_SYSTEM = 4096;
+    public static final long MAX_COMPARISONS = 16_000_000L;
+
     public enum Mode { READ, WRITE }
 
     public record Access(Object allocationIdentity, long start, long end, Mode mode) {
@@ -37,6 +44,9 @@ public final class EcsAccessPlanner {
                 throw new IllegalArgumentException("ECS system needs a name");
             }
             accesses = List.copyOf(Objects.requireNonNull(accesses, "accesses"));
+            if (accesses.size() > MAX_ACCESSES_PER_SYSTEM) {
+                throw new IllegalArgumentException("ECS system access footprint exceeds the planner budget");
+            }
         }
     }
 
@@ -48,6 +58,10 @@ public final class EcsAccessPlanner {
         // atomics, globals or actor callbacks could still have side effects.
         // Until an independent effects proof exists, serialize such systems.
         if (left.accesses().isEmpty() || right.accesses().isEmpty()) return true;
+        long cost = (long) left.accesses().size() * right.accesses().size();
+        if (cost > MAX_COMPARISONS) {
+            throw new IllegalArgumentException("ECS conflict proof exceeds the planner budget");
+        }
         for (Access a : left.accesses()) {
             for (Access b : right.accesses()) {
                 if (a.mode() == Mode.READ && b.mode() == Mode.READ) continue;
@@ -70,12 +84,24 @@ public final class EcsAccessPlanner {
      */
     public static List<List<SystemAccess>> plan(List<SystemAccess> systems) {
         Objects.requireNonNull(systems, "systems");
+        if (systems.size() > MAX_SYSTEMS) {
+            throw new IllegalArgumentException("ECS planner system count exceeds the budget");
+        }
         List<List<SystemAccess>> batches = new ArrayList<>();
+        long remainingComparisons = MAX_COMPARISONS;
         List<SystemAccess> current = new ArrayList<>();
         for (SystemAccess system : systems) {
             Objects.requireNonNull(system, "system");
             boolean conflict = false;
             for (SystemAccess existing : current) {
+                // Conservative upper bound; no speculative scheduling when
+                // proof work exhausts the budget. Multiplication is safe
+                // because each operand is bounded by MAX_ACCESSES_PER_SYSTEM.
+                long cost = (long) existing.accesses().size() * system.accesses().size();
+                remainingComparisons -= Math.max(1L, cost);
+                if (remainingComparisons < 0) {
+                    throw new IllegalArgumentException("ECS scheduling proof exceeds the planner budget");
+                }
                 if (conflicts(existing, system)) {
                     conflict = true;
                     break;
