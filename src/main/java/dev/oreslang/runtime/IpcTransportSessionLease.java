@@ -210,6 +210,7 @@ final class IpcTransportSessionLease {
         }
         synchronized (this) {
             receiptsRetired = true;
+            closeFailure = null;
             cleanupExecuting = false;
             phase = Phase.RETIRED;
         }
