@@ -221,6 +221,62 @@ final class TreeShakerTest {
     }
 
     @Test
+    void treeShakingPreservesCheckedNamedCallIdentityAndReachability() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                fnc target(int first, int second): int {
+                  return first - second;
+                }
+
+                pub routine main(): void {
+                  stdio.stdout.write(target(second: 2, first: 7));
+                  return;
+                }
+                """, BuildOptions.executable(Map.of()));
+
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".target"));
+
+        Ast.FunctionDecl main = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("main"))
+                .findFirst()
+                .orElseThrow();
+        Ast.ExprStmt write = assertInstanceOf(Ast.ExprStmt.class, main.body().getFirst());
+        Ast.CallExpr stdout = assertInstanceOf(Ast.CallExpr.class, write.expression());
+        Ast.StagedCallExpr staged =
+                assertInstanceOf(Ast.StagedCallExpr.class, stdout.arguments().getFirst());
+
+        Ast.NamedCallProof proof = Ast.CheckedNamedCallPlan.require(staged);
+        assertEquals(List.of(1, 0), proof.formalIndexBySourceItem());
+        assertEquals(List.of("first", "second"), proof.formalNames());
+    }
+
+    @Test
+    void constantInliningDoesNotSpecializeThroughProofCarryingNamedCall() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                fnc target(int value): int {
+                  return value + 1;
+                }
+
+                fnc wrapper(int value): int {
+                  return target(value: value);
+                }
+
+                pub routine main(): void {
+                  stdio.stdout.write(wrapper(41));
+                  return;
+                }
+                """, BuildOptions.executable(Map.of()));
+
+        assertTrue(
+                result.retained(Parser.ROOT_MODULE + ".wrapper"),
+                "wrapper must remain because specializing through a staged call would "
+                        + "manufacture an AST node without its semantic proof");
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".target"));
+    }
+
+    @Test
     void treeShakingPreservesExplicitReferentMutability() {
         TreeShaker.Result result = OresCompiler.compileForBuild("""
                 define class Child as
