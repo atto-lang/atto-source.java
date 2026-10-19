@@ -171,8 +171,11 @@ def require_preflight(repository, root):
     interactive diagnostics, but make publisher admission entirely data-only.
     Protected-source authority is checked independently by the caller.
     """
-    checked_policy_fingerprint(root, repository)
-    return checked_repo(repository)
+    _, approved_id = checked_policy_fingerprint(root, repository)
+    destination = checked_repo(repository)
+    if destination["id"] != approved_id:
+        raise Denied("destination immutable repository ID differs from reviewed policy")
+    return destination
 
 def checked_policy_fingerprint(root, repository):
     """Read approval only through directory descriptors and O_NOFOLLOW.
@@ -211,17 +214,30 @@ def checked_policy_fingerprint(root, repository):
     if len(contents) > 16 * 1024:
         raise Denied("private CI approval policy exceeds size limit")
     lines = canonical_security_lines(contents, "private CI approval policy")
-    approved = False
+    # Every non-comment authorization record pins the immutable GitHub
+    # repository ID alongside the human-readable owner/name. An owner/name
+    # alone can be renamed, transferred or reused by a different repository.
+    approved_id = None
+    seen = set()
     for line in lines:
         if not line or line.startswith("#"):
             continue
-        if not NAME.fullmatch(line):
-            raise Denied("private CI approval policy contains an invalid entry")
-        if line.casefold() == repository.casefold():
-            approved = True
-    if not approved:
+        name, marker, numeric = line.rpartition("@")
+        if (marker != "@" or not NAME.fullmatch(name)
+                or not re.fullmatch(r"[1-9][0-9]{0,18}", numeric)):
+            raise Denied("private CI approval record lacks canonical owner/repo@numeric-id")
+        number = int(numeric)
+        if number > (1 << 63) - 1:
+            raise Denied("private CI repository ID exceeds signed 64-bit range")
+        folded = name.casefold()
+        if folded in seen:
+            raise Denied("private CI approval policy duplicates a repository")
+        seen.add(folded)
+        if folded == repository.casefold():
+            approved_id = number
+    if approved_id is None:
         raise Denied("destination approval was revoked or absent")
-    return hashlib.sha256(contents).digest()
+    return hashlib.sha256(contents).digest(), approved_id
 
 
 def require_trusted_branch_controls():
@@ -440,7 +456,9 @@ def require_protected_main_policy(repository, local_policy_digest):
     ).hexdigest()
     if valid_sha(result.get("sha")) != expected_blob:
         raise Denied("protected main policy blob digest mismatch")
-    if hashlib.sha256(contents).digest() != local_policy_digest:
+    if (not isinstance(local_policy_digest, tuple)
+            or len(local_policy_digest) != 2
+            or hashlib.sha256(contents).digest() != local_policy_digest[0]):
         raise Denied("local approval policy differs from protected source main")
     # checked_policy_fingerprint validates the exact local policy's entries,
     # including this repository; matching bytes pins that authorization to
@@ -817,6 +835,8 @@ def publish(repository, source, branch, trusted_root, expected_tree=None,
         raise Denied("initial destination preflight lacks immutable repository identity")
     preflight_destination_id = preflight_destination["id"]
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
+    if approved_policy[1] != preflight_destination_id:
+        raise Denied("preflight destination ID differs from reviewed policy")
     require_protected_main_policy(repository, approved_policy)
     verify_source()
     try:
