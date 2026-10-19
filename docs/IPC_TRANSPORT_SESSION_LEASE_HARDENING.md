@@ -55,3 +55,56 @@ The exact current GitHub `IpcTransportSessionLease.java` blob `46132a42779b54bae
 This is stronger than a synthetic reimplementation but still narrower than source-repository integration: the bridge/correlation harness was independent, so it does **not** certify the exact `IpcReceiptCompletionBridge` / `IpcReceiptCorrelation`, Maven, Graal guest, Native Image, LLVM, or authenticated socket adapter. Source-org Actions remain required.
 
 A separate private test org has current successful source-free Actions capacity (for example source-free IPC epoch run `39313810696`), but private Java export remains disallowed while conformance incidents #22/#77 are open and private-CI dispatcher PR #1217 has no independent exact-snapshot/destination approval.
+
+
+## Authenticated localhost socket adapter follow-up
+
+The branch now also contains package-private `IpcAuthenticatedSocketTransport`,
+which is the first concrete Java socket integration of the host substrate.
+
+- Guest actors cannot construct it or obtain the `Socket`, HMAC key,
+  `IpcTransportSessionLease`, frame writer, cleanup scheduler or physical
+  close authority.
+- DATA and remote receipt frames use bounded binary framing and HMAC-SHA-256.
+  The MAC covers protocol type, immutable logical transport epoch, individual
+  message identity/digest **and the physical connection generation**. A valid
+  MAC captured from generation N is rejected by generation N+1.
+- The adapter verifies payload SHA-256 before admission and on DATA decode.
+  Remote receipts admit only `REMOTE_ACCEPTED`, `HANDLER_COMMITTED` and
+  `HANDLER_FAILED`; even a peer that knows the MAC key cannot assert
+  `OUTCOME_UNKNOWN` or `REJECTED_BEFORE_REMOTE`.
+- Every physical DATA write enters `IpcTransportSessionLease.writeFrame`,
+  which commits `DISPATCH_COMMITTED` before the first stream write. A lease
+  rejection before the writer callback completes locally as
+  `REJECTED_BEFORE_REMOTE`. Writer failure after commitment is never replay
+  authority and eventually retires as `OUTCOME_UNKNOWN`.
+- Authentication, framing, stale-generation, EOF and receipt-state errors
+  fail-close the physical socket instead of continuing on a possibly
+  desynchronized stream.
+- `requestClose` first fences new lease admission and then actively closes
+  the Java Socket to interrupt blocked reads/writes. That abort is **not**
+  itself receipt retirement: the lease waits until admitted write callbacks
+  unwind, then its trusted cleanup worker confirms close and retires the exact
+  epoch. Cleanup scheduling failure remains `QUARANTINED`; the adapter
+  exposes only an explicit package-private supervisor retry.
+- The localhost self-test exercises kernel socket I/O, successful
+  DATA→ACK→HANDLER_COMMITTED, stale logical epoch, close-before-send,
+  authenticated local-verdict forgery, valid-MAC old physical generation,
+  MAC tampering, cleanup-scheduler quarantine/retry, blocked receipt reads and
+  a pressured 8 MiB synchronous write interrupted by close.
+
+### Still not production peer authentication
+
+HMAC possession is a concrete authenticated framing mechanism, not a complete
+deployment identity system. The embedding supervisor/broker must establish
+and rotate the 32+ byte key over a separately authenticated channel (for
+example TLS/Noise/mTLS or a pre-provisioned host trust root), mint a monotonic
+non-reused physical generation, bind endpoint policy, and keep key material
+unavailable to guest actors. This PR does not implement DNS authorization,
+certificate validation, remote key exchange, credential storage or LLVM peer
+parity.
+
+The real localhost socket self-test is checked into the exact Java branch and
+wired into `scripts/check-ipc-receipt-parity.sh` and `IpcReceiptParityTest`.
+Source-org Actions still need to actually allocate a runner before those
+source files can be claimed as executed.
