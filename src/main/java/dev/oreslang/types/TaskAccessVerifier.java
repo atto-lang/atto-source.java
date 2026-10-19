@@ -148,7 +148,7 @@ final class TaskAccessVerifier {
         Objects.requireNonNull(nominalProof, "nominalProof");
         Objects.requireNonNull(trustedPlaceTypes, "trustedPlaceTypes");
         List<TypedClaim> typed = List.copyOf(Objects.requireNonNull(requested, "claims"));
-        Map<Place, Types.Type> pendingTypes = new HashMap<>();
+        Map<PlaceIdentity, Types.Type> pendingTypes = new HashMap<>();
         for (TypedClaim claim : typed) {
             Types.Type actual = trustedPlaceTypes.resolvedReferent(claim.claim().place());
             if (actual == null || !actual.equals(claim.type())) {
@@ -156,8 +156,11 @@ final class TaskAccessVerifier {
                         "Task claim referent type does not match resolved place type");
             }
             Place place = claim.claim().place();
-            Types.Type previous = knownPlaceTypes.get(place);
-            Types.Type duplicate = pendingTypes.putIfAbsent(place, actual);
+            // Layout-proof bits are evidence, not storage identity: toggling
+            // their boolean values cannot erase an earlier type witness.
+            PlaceIdentity identity = PlaceIdentity.of(place);
+            Types.Type previous = knownPlaceTypes.get(identity);
+            Types.Type duplicate = pendingTypes.putIfAbsent(identity, actual);
             if ((previous != null && !previous.equals(actual))
                     || (duplicate != null && !duplicate.equals(actual))) {
                 throw new IllegalStateException(
@@ -194,6 +197,32 @@ final class TaskAccessVerifier {
     private record AllocationKey(String domain, String ownerId, long id) { }
     private record ScopeKey(String domain, String ownerId) { }
 
+    /**
+     * Equality of physical place does NOT include evidence flags. It still
+     * includes the allocation generation, so a proven structural barrier
+     * gives a fresh type identity without allowing an ABA-style overwrite.
+     */
+    private record ProjectionIdentity(String kind, String name, long start, long end) { }
+    private record PlaceIdentity(AllocationKey allocation, long generation,
+                                 List<ProjectionIdentity> projections) {
+        static PlaceIdentity of(Place place) {
+            Root root = place.root();
+            ArrayList<ProjectionIdentity> path = new ArrayList<>(place.projections().size());
+            for (Projection projection : place.projections()) {
+                if (projection instanceof Field field) {
+                    path.add(new ProjectionIdentity("field", field.name(), 0, 0));
+                } else if (projection instanceof Range range) {
+                    path.add(new ProjectionIdentity("range", "", range.start(), range.end()));
+                } else {
+                    throw new IllegalArgumentException("unverified Task place projection");
+                }
+            }
+            return new PlaceIdentity(
+                    new AllocationKey(root.domain(), root.ownerId(), root.allocationId()),
+                    root.generation(), List.copyOf(path));
+        }
+    }
+
     // Bounded compiler analysis: rejecting a huge scope is safer than unbounded
     // memory use or integer overflow. A future MIR implementation can shard.
     private static final int MAX_CHILDREN = 4096;
@@ -207,8 +236,10 @@ final class TaskAccessVerifier {
 
     private final Map<Ticket, Child> live = new LinkedHashMap<>();
     private final Map<AllocationKey, Long> knownGenerations = new HashMap<>();
-    /** Same storage/generation cannot silently change referent type between children. */
-    private final Map<Place, Types.Type> knownPlaceTypes = new HashMap<>();
+    /** A claimed allocation identity may not change its uniqueness proof. */
+    private final Map<AllocationKey, Boolean> knownUniqueness = new HashMap<>();
+    /** Same physical place/generation cannot change type by changing proof flags. */
+    private final Map<PlaceIdentity, Types.Type> knownPlaceTypes = new HashMap<>();
     /** Single trusted allocation/trust domain per scope, including READ-only claims. */
     private ScopeKey scopeDomain;
     private long nextId = 1;
@@ -286,6 +317,7 @@ final class TaskAccessVerifier {
             throw new IllegalStateException("TaskScope proof-comparison budget exceeded");
         }
         Map<AllocationKey, Long> incomingGenerations = new HashMap<>();
+        Map<AllocationKey, Boolean> incomingUniqueness = new HashMap<>();
         ScopeKey requestedDomain = scopeDomain;
         for (Claim claim : claims) {
             Root root = claim.place().root();
@@ -304,6 +336,15 @@ final class TaskAccessVerifier {
             Long established = knownGenerations.get(key);
             if (established != null && established != claim.place().root().generation()) {
                 throw new IllegalStateException("stale or conflicting allocation generation");
+            }
+            Boolean sameBatchUniqueness = incomingUniqueness.putIfAbsent(
+                    key, root.uniqueAllocationProven());
+            Boolean knownProof = knownUniqueness.get(key);
+            if ((sameBatchUniqueness != null
+                    && sameBatchUniqueness != root.uniqueAllocationProven())
+                    || (knownProof != null && knownProof != root.uniqueAllocationProven())) {
+                throw new IllegalStateException(
+                        "allocation identity changed its uniqueness proof");
             }
             for (Child other : live.values()) {
                 for (Claim existing : other.claims) {
@@ -333,8 +374,10 @@ final class TaskAccessVerifier {
         liveClaimCount += claims.size();
         for (Claim claim : claims) {
             Root root = claim.place().root();
-            knownGenerations.putIfAbsent(
-                    new AllocationKey(root.domain(), root.ownerId(), root.allocationId()), root.generation());
+            AllocationKey key = new AllocationKey(
+                    root.domain(), root.ownerId(), root.allocationId());
+            knownGenerations.putIfAbsent(key, root.generation());
+            knownUniqueness.putIfAbsent(key, root.uniqueAllocationProven());
         }
         return ticket;
     }
@@ -393,6 +436,11 @@ final class TaskAccessVerifier {
         if (current == null || current != oldRoot.generation()) {
             throw new IllegalStateException("stale structural generation");
         }
+        Boolean witnessedUnique = knownUniqueness.get(key);
+        if (witnessedUnique == null
+                || witnessedUnique != oldRoot.uniqueAllocationProven()) {
+            throw new IllegalStateException("structural barrier has inconsistent owner proof");
+        }
         for (Child child : live.values()) {
             for (Claim claim : child.claims) {
                 // A different numeric allocation ID is NOT enough to prove
@@ -405,10 +453,7 @@ final class TaskAccessVerifier {
         knownGenerations.put(key, newGeneration);
         // Old-generation type witnesses cannot be reused after a checked
         // reallocation/layout transition. New claims must re-resolve types.
-        knownPlaceTypes.keySet().removeIf(place ->
-                place.root().domain().equals(oldRoot.domain())
-                        && place.root().ownerId().equals(oldRoot.ownerId())
-                        && place.root().allocationId() == oldRoot.allocationId());
+        knownPlaceTypes.keySet().removeIf(place -> place.allocation().equals(key));
     }
 
     public synchronized void finishScope() {
@@ -419,6 +464,7 @@ final class TaskAccessVerifier {
         // No source permission is valid after scope teardown; retire
         // provenance bookkeeping rather than retaining every old allocation.
         knownGenerations.clear();
+        knownUniqueness.clear();
         knownPlaceTypes.clear();
         scopeDomain = null;
     }
