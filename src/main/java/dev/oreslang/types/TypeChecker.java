@@ -1686,7 +1686,7 @@ public final class TypeChecker {
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
         if (stmt instanceof Ast.TaskBlockStmt
                 || (stmt instanceof Ast.BindingStmt binding && binding.initializer() instanceof Ast.TaskExpr)) {
-            throw new IllegalArgumentException("nb Task blocks require ownership-safe capture and scheduler lowering; source execution is not enabled");
+            throw new IllegalArgumentException("task blocks (legacy nb Task blocks) require ownership-safe capture and scheduler lowering; source execution is not enabled");
         }
         if (stmt instanceof Ast.BindingStmt binding) {
             boolean namedInference = binding.inferredTypeName() != null;
@@ -2088,7 +2088,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("async lambda requires Future<T> lowering; returning nb Task<T> would produce Future<Task<T>> without implicit flattening");
         }
         if (expr instanceof Ast.TaskExpr) {
-            throw new IllegalArgumentException("nb Task blocks require ownership-safe capture and scheduler lowering; source execution is not enabled");
+            throw new IllegalArgumentException("task blocks (legacy nb Task blocks) require ownership-safe capture and scheduler lowering; source execution is not enabled");
         }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
