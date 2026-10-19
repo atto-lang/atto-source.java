@@ -283,4 +283,137 @@ final class LogicalSourceActorSupervisorUpgradeTxnTest {
             }
         }
     }
+
+    @Test
+    void candidatePhysicalIsOwnedBeforePostSpawnInvariantValidation()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration(
+                    "txn-post-spawn-owner-v1.ores", V1);
+            var candidate = manager.stageActorGeneration(
+                    "txn-post-spawn-owner-v2.ores", V2);
+            var candidateView = candidate.linkActorGeneration("Counter");
+            ActorRuntime candidateRuntime = candidateView.runtime();
+
+            Field dispatcherField =
+                    ActorRuntime.class.getDeclaredField("sharedDispatcher");
+            dispatcherField.setAccessible(true);
+            ExecutorService original =
+                    (ExecutorService) dispatcherField.get(candidateRuntime);
+            AtomicReference<Runnable> captured = new AtomicReference<>();
+            AtomicReference<LogicalSourceActorRouterV1> routerRef =
+                    new AtomicReference<>();
+
+            ExecutorService corrupting = new AbstractExecutorService() {
+                private volatile boolean shutdown;
+
+                @Override public void execute(Runnable command) {
+                    if (shutdown) {
+                        throw new java.util.concurrent.RejectedExecutionException();
+                    }
+                    if (!captured.compareAndSet(null, command)) {
+                        throw new AssertionError(
+                                "candidate unexpectedly submitted multiple schedules");
+                    }
+                    LogicalSourceActorRouterV1 router = routerRef.get();
+                    if (router == null) {
+                        throw new AssertionError("router not published to injector");
+                    }
+                    try {
+                        Field txnField = LogicalSourceActorRouterV1.class
+                                .getDeclaredField("activeUpgradeTxn");
+                        txnField.setAccessible(true);
+                        Object txn = txnField.get(router);
+                        assertNotNull(txn, "candidate admission must be transaction-owned");
+                        Field phase = txn.getClass().getDeclaredField("phase");
+                        phase.setAccessible(true);
+                        @SuppressWarnings({"rawtypes", "unchecked"})
+                        Object abandoned = Enum.valueOf(
+                                (Class<? extends Enum>) phase.getType(),
+                                "ABANDONED");
+                        // Inject corruption after the transaction has admitted
+                        // candidate scheduling but before spawn returns to the
+                        // router's post-spawn validation.
+                        phase.set(txn, abandoned);
+                    } catch (ReflectiveOperationException failure) {
+                        throw new AssertionError(failure);
+                    }
+                }
+
+                @Override public void shutdown() { shutdown = true; }
+                @Override public List<Runnable> shutdownNow() {
+                    shutdown = true;
+                    return List.of();
+                }
+                @Override public boolean isShutdown() { return shutdown; }
+                @Override public boolean isTerminated() { return shutdown; }
+                @Override public boolean awaitTermination(
+                        long timeout, TimeUnit unit) {
+                    return shutdown;
+                }
+            };
+
+            dispatcherField.set(candidateRuntime, corrupting);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                    first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT)) {
+                routerRef.set(router);
+
+                var failure = assertThrows(
+                        IllegalStateException.class,
+                        () -> router.upgradeTo(candidate, WAIT));
+                assertTrue(
+                        failure.getMessage().contains(
+                                "candidate physical publication outside staging transaction"),
+                        failure::getMessage);
+                assertEquals(1L, router.ref().routeEpoch(),
+                        "post-spawn invariant failure cannot publish candidate route");
+                assertNotNull(captured.get(),
+                        "candidate physical scheduling must have occurred");
+
+                Field txnField = LogicalSourceActorRouterV1.class
+                        .getDeclaredField("activeUpgradeTxn");
+                txnField.setAccessible(true);
+                assertNull(txnField.get(router),
+                        "failed transaction must release publication authority");
+
+                Field candidates = LogicalSourceActorRouterV1.class
+                        .getDeclaredField("retiredCandidates");
+                candidates.setAccessible(true);
+                @SuppressWarnings("unchecked")
+                var owners = (ArrayList<Object>) candidates.get(router);
+                assertEquals(1, owners.size(),
+                        "physically admitted candidate must remain retry-owned");
+                Object owner = owners.getFirst();
+                Field physical = owner.getClass().getDeclaredField("physical");
+                physical.setAccessible(true);
+                assertNotNull(physical.get(owner),
+                        "candidate ref must be stored before invariant validation");
+                Field eligible = owner.getClass()
+                        .getDeclaredField("retirementEligible");
+                eligible.setAccessible(true);
+                assertTrue(eligible.getBoolean(owner),
+                        "failed post-spawn transaction transfers retirement authority");
+
+                // The queued carrier never entered guest execution. Once run
+                // after stop, it is stale/inert and physical finalization can
+                // be observed by the retry reaper.
+                captured.get().run();
+                long deadline = System.nanoTime()
+                        + TimeUnit.SECONDS.toNanos(5);
+                int reaped = 0;
+                while (reaped == 0 && System.nanoTime() < deadline) {
+                    reaped += router.reapRetired();
+                    if (reaped == 0) Thread.sleep(2);
+                }
+                assertEquals(1, reaped);
+                assertTrue(owners.isEmpty());
+                assertEquals(0, router.reapRetired());
+            } finally {
+                dispatcherField.set(candidateRuntime, original);
+                corrupting.shutdownNow();
+            }
+        }
+    }
+
 }
