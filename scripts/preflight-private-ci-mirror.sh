@@ -33,6 +33,23 @@ gh_api() {
   GH_HOST=github.com GH_PROMPT_DISABLED=1 command gh api "$@"
 }
 
+require_plan_feature_unavailable() {
+  local endpoint="$1"
+  local label="$2"
+  local output status=0
+  output="$(GH_HOST=github.com GH_PROMPT_DISABLED=1 command gh api "$endpoint" 2>&1)" \
+    || status="$?"
+  if [[ "$status" -eq 0 ]]; then
+    die "$label is available; review-attested-v1 fallback is forbidden"
+  fi
+  # A generic 403/404 or integration-scope error is not proof that the
+  # repository plan lacks the feature. Only GitHub's explicit plan-upgrade
+  # denial may activate the unprotected-main fallback.
+  [[ "$output" == *"Upgrade to GitHub Pro"* \
+      && "$output" == *"make this repository public"* ]] \
+    || die "cannot prove $label is unavailable on the current repository plan"
+}
+
 [[ "$#" -eq 3 || "$#" -eq 5 ]] || usage
 source_pr="$1"
 expected_commit="$2"
@@ -188,7 +205,13 @@ if [[ "$main_protected" == "true" ]]; then
 elif [[ "$main_protected" == "false" ]]; then
   # Fallback is intentionally per-export and independently attested. It remains
   # inert unless this fallback implementation itself has first been reviewed and
-  # merged to authoritative main.
+  # merged to authoritative main. An unprotected branch by itself is NOT enough:
+  # prove that both classic protection and repository rulesets are unavailable
+  # specifically because of the current private-repository plan.
+  require_plan_feature_unavailable \
+    "repos/$SOURCE_REPO/branches/main/protection" "classic branch protection"
+  require_plan_feature_unavailable \
+    "repos/$SOURCE_REPO/rulesets" "repository rulesets"
   [[ "$#" -eq 5 ]] \
     || die "unprotected main requires review-attested-v1 comment IDs"
   maintainer_comment_id="$4"
