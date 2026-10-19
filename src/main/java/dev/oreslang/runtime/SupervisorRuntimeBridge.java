@@ -30,6 +30,7 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicLong childIds = new AtomicLong();
     private boolean closed;
+    private Throwable poison;
 
     SupervisorRuntimeBridge(
             ActorRuntime runtime,
@@ -45,7 +46,7 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
      * finalization callback. ActorRef generation is used as the incarnation fence.
      */
     synchronized void register(ActorRuntime.ActorRef<?> child) {
-        checkOpen();
+        checkHealthy();
         Objects.requireNonNull(child, "child");
         if (bindings.containsKey(child)) {
             throw new IllegalArgumentException("child already registered");
@@ -112,9 +113,24 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         }
 
         // External parent routing must never run under the bridge/inbox locks.
-        if (escalationNotice != null && !escalation.escalate(escalationNotice)) {
-            throw new IllegalStateException(
-                    "supervisor CONTROL overflow escalation was not durably accepted");
+        if (escalationNotice != null) {
+            final boolean accepted;
+            try {
+                accepted = escalation.escalate(escalationNotice);
+            } catch (VirtualMachineError | ThreadDeath fatal) {
+                poison(fatal);
+                throw fatal;
+            } catch (Throwable failure) {
+                poison(failure);
+                throw new IllegalStateException(
+                        "supervisor CONTROL parent escalation failed", failure);
+            }
+            if (!accepted) {
+                IllegalStateException failure = new IllegalStateException(
+                        "supervisor CONTROL overflow escalation was not durably accepted");
+                poison(failure);
+                throw failure;
+            }
         }
     }
 
@@ -148,8 +164,25 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         return hash;
     }
 
-    private void checkOpen() {
+    private synchronized void poison(Throwable failure) {
+        if (poison == null) poison = Objects.requireNonNull(failure, "failure");
+    }
+
+    synchronized boolean healthy() {
+        return !closed && poison == null;
+    }
+
+    synchronized void requireHealthy() {
+        checkHealthy();
+    }
+
+    private void checkHealthy() {
         if (closed) throw new IllegalStateException("supervisor runtime bridge closed");
+        if (poison != null) {
+            throw new IllegalStateException(
+                    "supervisor runtime bridge is poisoned by failed CONTROL delivery",
+                    poison);
+        }
     }
 
     @Override
