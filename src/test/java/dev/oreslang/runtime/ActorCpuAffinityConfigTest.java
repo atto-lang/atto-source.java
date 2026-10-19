@@ -64,8 +64,8 @@ final class ActorCpuAffinityConfigTest {
     @Test void laneMappingWrapsWithoutOverflow() {
         int[] cpus = {10, 20, 30};
         assertEquals(10, ActorCpuAffinityConfig.cpuForLane(cpus, 3L, 0));
-        assertEquals(30, ActorCpuAffinityConfig.cpuForLane(cpus, Long.MAX_VALUE, 0));
-        assertEquals(10, ActorCpuAffinityConfig.cpuForLane(cpus, Long.MAX_VALUE, 1));
+        assertEquals(20, ActorCpuAffinityConfig.cpuForLane(cpus, Long.MAX_VALUE, 0));
+        assertEquals(30, ActorCpuAffinityConfig.cpuForLane(cpus, Long.MAX_VALUE, 1));
         assertEquals(30, ActorCpuAffinityConfig.cpuForLane(cpus, 0L, -1));
         assertEquals(-1, ActorCpuAffinityConfig.cpuForLane(new int[0], Long.MAX_VALUE, Integer.MAX_VALUE));
     }
