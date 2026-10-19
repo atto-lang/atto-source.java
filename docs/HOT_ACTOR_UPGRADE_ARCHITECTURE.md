@@ -987,3 +987,48 @@ Current source-owned Actions still create jobs with zero executed steps, so
 those jobs are neither pass evidence nor meaningful code-failure evidence.
 Private cross-org source mirroring remains disallowed while the reviewed
 destination allowlist is empty.
+
+### Runtime-minted exact physical message receipts — 2026-10-19
+
+The trusted SHARED source-actor proxy now uses
+`ActorRuntime.sendWithPhysicalReceipt(ref, message)` instead of pairing
+`ActorRef.send` with a cumulative `ActorRef.drain()`.
+
+The normal `send(ref, message)` and the tracked send share ONE physical
+mailbox acceptance implementation. For a tracked send, the runtime allocates
+an opaque `PhysicalMailReceipt`, non-cancellable terminal `OresFuture`,
+and exact-sequence drain waiter **before** physical admission. Under the
+actor's lifecycle monitor it records the waiter, attempts mailbox admission
+and rolls back that registration if the mailbox rejects the message.
+The accepted sequence is assigned by the runtime at the same linearization
+point, never taken from the logical proxy or guest source. A terminal witness
+settles only once this physical sequence is marked processed, or fails if
+the physical actor stops/fails before it is processed.
+
+`LogicalSourceActorRouterV1.ProxyDrainReceipt` binds that opaque physical
+receipt to the exact authoritative physical `ActorRef`, copied logical
+envelope, owning mailbox, and logical route epoch. The bridge refunds
+credits only after the runtime-minted terminal receipt succeeds; a failed,
+cancelled, or timed-out physical receipt leaves outstanding mail fail-sealed
+without automatic replay. Physical sequence numbers are **not** logical
+message sequence numbers and restart from the new physical actor on upgrade.
+
+This is an in-process trusted terminal acknowledgment, **not** a remotely
+authenticated `mail.done()` receipt, transactional persistence, exactly-once
+side effects, or a compiler-generated typed envelope. A future PRIVATE /
+UNTRUSTED network/IPC transport must bind worker attestation, incarnation,
+route epoch, message ABI digest, and opaque accepted-message identity in
+independently authenticated receipts.
+
+Regression sources include real `ActorRuntime` physical receipt tests
+for exact sequential and concurrent admissions, per-actor sequence namespaces,
+non-cancellable completion observers, faulted actor receive, and existing
+source-compiled SHARED proxy upgrade tests. These remain authored test code,
+**not an exact-head JDK25/GraalVM execution pass** while source-owned Actions
+are runner-blocked.
+
+Related code-image accounting hardening: `Generation.pinActorRoute()`
+allocates the lease before charging its counter; `ActorRouteLease.close()`
+checks the counter before consuming its release token. Failed pin accounting
+remains retryable. Dedicated generation race tests cover corrupted accounting,
+16 simultaneous releases, and concurrent code retirement.
