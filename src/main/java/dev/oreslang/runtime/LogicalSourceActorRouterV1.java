@@ -233,6 +233,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 awaitUpgradeLocked();
                 requireOpenLocked();
                 reapRetiredLocked();
+                requireAdmissibleRouteLocked();
                 if (boundProxyMailbox != null)
                     throw new SecurityException(
                             "raw logical ActorRef.send bypasses bound proxy admission");
@@ -258,6 +259,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 awaitUpgradeLocked();
                 requireOpenLocked();
                 reapRetiredLocked();
+                requireAdmissibleRouteLocked();
                 // Reader registration is part of route lookup linearization.
                 // The transfer gate checks physical pending output readers; if
                 // next() happened after releasing routeLock an upgrade could
@@ -406,6 +408,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     // Under routeLock. A close timeout may retain the active physical actor
     // in retiredRoutes until another supervisor cleanup attempt reaps it.
     private boolean activeRouteLeaseReleased;
+    // A post-publication failure must not reopen a new physical route while
+    // its retired predecessor is still live or its route lease is unsettled.
+    // Only the supervisor reaper, after the last retired route is fully
+    // finalized AND its generation lease is debited, may clear this fence.
+    // Protected by routeLock; diagnostic route observations remain available.
+    private boolean retirementQuarantined;
 
     private LogicalSourceActorRouterV1(
             ActorRuntime.ActorKind kind,
@@ -803,6 +811,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             awaitUpgradeLocked();
             requireOpenLocked();
             reapRetiredLocked();
+            requireAdmissibleRouteLocked();
             Route current = active;
             if (boundProxyMailbox != mailbox)
                 throw new SecurityException("foreign proxy mailbox on physical actor route");
@@ -891,6 +900,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             awaitUpgradeLocked();
             requireOpenLocked();
             reapRetiredLocked();
+            requireAdmissibleRouteLocked();
             if (expectedRouteEpoch != 0L
                     && active.routeEpoch != expectedRouteEpoch) {
                 throw new java.util.concurrent.RejectedExecutionException(
@@ -923,6 +933,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             awaitUpgradeLocked();
             requireOpenLocked();
             reapRetiredLocked();
+            requireAdmissibleRouteLocked();
             if (expectedRouteEpoch != 0L
                     && active.routeEpoch != expectedRouteEpoch) {
                 throw new java.util.concurrent.RejectedExecutionException(
@@ -1045,6 +1056,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         if (activeUpgradeTxn != null)
             throw new IllegalStateException(
                     "logical actor upgrade already in progress");
+        if (retirementQuarantined)
+            throw new IllegalStateException(
+                    "previous actor upgrade requires physical retirement reconciliation");
         if (proxyMailbox == null) {
             if (boundProxyMailbox != null)
                 throw new SecurityException(
@@ -1076,6 +1090,11 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             throw new IllegalArgumentException(
                     "nonterminal supervisor upgrade phase");
         }
+        // Set the persistent fail-closed fence BEFORE waking route waiters.
+        // Clearing activeUpgradeTxn alone would otherwise reopen physical
+        // message/Task ingress after an uncertain old-actor retirement.
+        if (terminalPhase == UpgradePhase.RETIREMENT_PENDING)
+            retirementQuarantined = true;
         txn.phase = terminalPhase;
         activeUpgradeTxn = null;
         routeLock.notifyAll();
@@ -1560,6 +1579,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         int released = 0;
         for (int i = retiredRoutes.size() - 1; i >= 0; --i) {
             Route old = retiredRoutes.get(i);
+            // The still-active transaction exclusively owns its old route
+            // until finishUpgradeLocked commits a terminal phase. An
+            // opportunistic reaper must not debit that same generation lease
+            // while the upgrader is completing physical retirement.
+            if (activeUpgradeTxn != null && old == activeUpgradeTxn.prior)
+                continue;
             if (old.view.runtime().physicallyFinalizedForHotUpgrade(
                     old.physical)) {
                 // Close the lease BEFORE forgetting its owner. If lease
@@ -1589,6 +1614,13 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 retiredCandidates.remove(i);
                 released++;
             }
+        }
+        if (retirementQuarantined && activeUpgradeTxn == null
+                && retiredRoutes.isEmpty()) {
+            // All old physical actors are finalized and their generation
+            // route pins have been successfully debited. This is the only
+            // path that reopens the quarantined route.
+            retirementQuarantined = false;
         }
         return released;
     }
@@ -1633,6 +1665,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     private void requireOpenLocked() {
         if (closed)
             throw new IllegalStateException("logical actor router is closed");
+    }
+
+    private void requireAdmissibleRouteLocked() {
+        if (retirementQuarantined)
+            throw new IllegalStateException(
+                    "actor route quarantined until verified physical retirement");
     }
 
     private static void requireBlockingHostSurface(String operation) {
