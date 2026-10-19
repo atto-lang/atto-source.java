@@ -401,13 +401,33 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
 
     <T> ActorHotUpgradeTaskBridgeV1.PinnedTask<T> startHostPinnedTaskTrackedForUpgrade(
             OresScheduler scheduler, OresScheduler.Task<T> frame) {
+        return startHostPinnedTaskTrackedForUpgrade(scheduler, frame, 0L);
+    }
+
+    /**
+     * Bind a structured child Task scope to exactly one physical code epoch.
+     * 0 is reserved for the trusted logical supervisor's root Task owner; an
+     * epoch-bound child can never silently retarget an old captured frame to
+     * newly published actor code. Check epoch AND acquire the physical lease
+     * under the same route monitor, before scheduler admission.
+     */
+    <T> ActorHotUpgradeTaskBridgeV1.PinnedTask<T> startHostPinnedTaskTrackedForUpgrade(
+            OresScheduler scheduler, OresScheduler.Task<T> frame,
+            long expectedRouteEpoch) {
         requireBlockingHostSurface("start pinned source actor Task proof");
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(frame, "frame");
+        if (expectedRouteEpoch < 0L)
+            throw new IllegalArgumentException("invalid Task scope route epoch");
         synchronized (routeLock) {
             awaitUpgradeLocked();
             requireOpenLocked();
             reapRetiredLocked();
+            if (expectedRouteEpoch != 0L
+                    && active.routeEpoch != expectedRouteEpoch) {
+                throw new java.util.concurrent.RejectedExecutionException(
+                        "old actor generation Task scope cannot launch in new route epoch");
+            }
             return ActorHotUpgradeTaskBridgeV1.startPinnedTracked(
                     active.view.runtime(), active.physical, scheduler, frame);
         }
