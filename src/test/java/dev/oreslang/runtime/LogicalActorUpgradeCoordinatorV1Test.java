@@ -117,6 +117,104 @@ final class LogicalActorUpgradeCoordinatorV1Test {
         gate.close();
     }
 
+
+    @Test
+    void closedCodeGateDuringPublicationQuarantinesInsteadOfThawingOldRoute() {
+        var gate = new ActorUpgradeEpochGate(23, image('a'));
+        var proxy = new LogicalActorProxyMailboxV1(4, 64, 256);
+        var coordinator = new LogicalActorUpgradeCoordinatorV1(gate, proxy);
+        var transaction = coordinator.prepare(image('b'));
+        proxy.admit(bytes("held"));
+        gate.close(); // an independent physical retirement / supervisor race
+        assertThrows(IllegalStateException.class, transaction::commit);
+        assertTrue(coordinator.quarantined());
+        assertTrue(proxy.snapshot().dispatchFrozen());
+        assertEquals(1L, gate.epoch());
+        assertEquals(1L, proxy.snapshot().routeEpoch());
+        assertThrows(IllegalStateException.class, transaction::rollback);
+        assertThrows(IllegalStateException.class, coordinator::close);
+        // Only the trusted supervisor may tear down the quarantined proxy.
+        proxy.close();
+    }
+
+    @Test
+    void failedCandidateAbortMustNeverReopenOldRouteDispatch() {
+        var gate = new ActorUpgradeEpochGate(24, image('a'));
+        var proxy = new LogicalActorProxyMailboxV1(4, 64, 256);
+        var coordinator = new LogicalActorUpgradeCoordinatorV1(gate, proxy);
+        var transaction = coordinator.prepare(image('b'));
+        proxy.admit(bytes("queued"));
+        gate.close();
+        assertThrows(IllegalStateException.class, transaction::rollback);
+        assertTrue(coordinator.quarantined());
+        assertTrue(proxy.snapshot().dispatchFrozen());
+        assertTrue(proxy.snapshot().dispatchFrozen(), "failed abort cannot thaw");
+        assertEquals(1, proxy.snapshot().queuedMessages());
+        proxy.close();
+    }
+
+    @Test
+    void failedDrainageObservationQuarantinesCoordinator() {
+        var gate = new ActorUpgradeEpochGate(25, image('a'));
+        var proxy = new LogicalActorProxyMailboxV1(4, 64, 256);
+        var coordinator = new LogicalActorUpgradeCoordinatorV1(gate, proxy);
+        var transaction = coordinator.prepare(image('b'));
+        proxy.close(); // physical mailbox is no longer an authority
+        assertThrows(IllegalStateException.class, transaction::drained);
+        assertTrue(coordinator.quarantined());
+        assertThrows(IllegalStateException.class, transaction::commit);
+        gate.close();
+    }
+
+    @Test
+    void racingCommitAndRollbackHaveExactlyOneWinner() throws Exception {
+        for (int attempt = 0; attempt < 48; ++attempt) {
+            try (var gate = new ActorUpgradeEpochGate(100 + attempt, image('a'));
+                 var proxy = new LogicalActorProxyMailboxV1(4, 64, 256);
+                 var coordinator = new LogicalActorUpgradeCoordinatorV1(gate, proxy)) {
+                var transaction = coordinator.prepare(image('b'));
+                var start = new java.util.concurrent.CountDownLatch(1);
+                var wins = new java.util.concurrent.atomic.AtomicInteger();
+                var unexpected = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                Runnable commit = () -> {
+                    try {
+                        start.await();
+                        if (transaction.commit()) wins.incrementAndGet();
+                    } catch (IllegalStateException expectedStale) {
+                        // The competing supervisor operation already resolved
+                        // this single transaction under the coordinator lock.
+                    } catch (Throwable failure) {
+                        unexpected.compareAndSet(null, failure);
+                    }
+                };
+                Runnable rollback = () -> {
+                    try {
+                        start.await();
+                        transaction.rollback();
+                        wins.incrementAndGet();
+                    } catch (IllegalStateException expectedStale) {
+                        // Exactly one transaction resolver is authoritative.
+                    } catch (Throwable failure) {
+                        unexpected.compareAndSet(null, failure);
+                    }
+                };
+                var a = Thread.ofPlatform().start(commit);
+                var b = Thread.ofPlatform().start(rollback);
+                start.countDown();
+                a.join(5000);
+                b.join(5000);
+                assertFalse(a.isAlive() || b.isAlive());
+                assertNull(unexpected.get());
+                assertEquals(1, wins.get());
+                assertFalse(coordinator.quarantined());
+                assertFalse(proxy.snapshot().dispatchFrozen());
+                assertEquals(gate.epoch(), proxy.snapshot().routeEpoch());
+                if (gate.epoch() == 1L) assertEquals(image('a'), gate.image());
+                else assertEquals(image('b'), gate.image());
+            }
+        }
+    }
+
     @Test
     void failedAbiPreparationRetainsOldActorAndFutureAdmissionCapacity() {
         try (var gate = new ActorUpgradeEpochGate(22,image('a'));
