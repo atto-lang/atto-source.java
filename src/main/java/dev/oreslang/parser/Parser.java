@@ -1297,6 +1297,7 @@ public final class Parser {
         if (check(PIPE)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
+            List<Ast.Annotation> formalAnnotations = parseFormalAnnotations();
             boolean structural = matchContextualKeyword("structural");
 
             // Migration spelling for named-argument-friendly declarations:
@@ -1306,7 +1307,7 @@ public final class Parser {
                 consume(COLON, "expected ':' after compatibility parameter name");
                 Ast.TypeRef type = parseFormalTypeRef();
                 boolean mutable = match(MUT);
-                params.add(new Ast.Param(type, name, false, mutable));
+                params.add(new Ast.Param(type, name, false, mutable, formalAnnotations));
                 continue;
             }
 
@@ -1316,7 +1317,7 @@ public final class Parser {
             if (structural && mutable) {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
-            params.add(new Ast.Param(type, name, structural, mutable));
+            params.add(new Ast.Param(type, name, structural, mutable, formalAnnotations));
         } while (match(COMMA));
         return List.copyOf(params);
     }
@@ -1356,6 +1357,45 @@ public final class Parser {
     }
 
     /**
+     * Parse only parameter-local @Default(literal) witnesses. No guest
+     * expression is evaluated, and these staged annotations are rejected by
+     * TypeChecker/OwnershipChecker until checked constant lowering exists.
+     * Ordinary declaration annotations are intentionally a distinct grammar.
+     */
+    private List<Ast.Annotation> parseFormalAnnotations() {
+        if (!check(AT)) return List.of();
+        List<Ast.Annotation> result = new ArrayList<>();
+        while (check(AT) && checkNextLexeme("Default")) {
+            consume(AT, "expected parameter annotation");
+            String annotation = consume(IDENT, "expected annotation name").lexeme();
+            if (!annotation.equals("Default")) throw error(previous(), "expected @Default");
+            consume(LPAREN, "@Default requires parenthesized literal; @Default<...> is forbidden");
+            Ast.TypeRef constant;
+            if (match(MINUS)) {
+                String magnitude = consume(INT, "@Default negative value must be integer literal").lexeme();
+                constant = Ast.TypeRef.intLiteral("-" + magnitude);
+            } else {
+                constant = parseMetaValue();
+            }
+            boolean admissible = constant.isIntLiteral()
+                    || constant.isBoolLiteral()
+                    || constant.isStringLiteral()
+                    || (constant.name().equals("None") && constant.arguments().isEmpty());
+            if (!admissible) {
+                throw error(previous(),
+                        "@Default only accepts closed int, bool, string or None literal");
+            }
+            consume(RPAREN, "@Default requires exactly one literal");
+            result.add(new Ast.Annotation(annotation, List.of(constant)));
+            if (result.size() != 1) throw error(previous(), "duplicate @Default formal annotation");
+        }
+        if (!result.isEmpty() && check(AT) && !checkNextLexeme("Structural")) {
+            throw error(peek(), "only @Default and legacy @Structural are recognized on formals");
+        }
+        return List.copyOf(result);
+    }
+
+    /**
      * The postfix '?' is a property of a callable formal, NOT a globally
      * optional type or a default argument. Retain the source element type
      * until explicit checked Option<T> lowering is available.
@@ -1373,6 +1413,7 @@ public final class Parser {
         if (check(terminator)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
+            List<Ast.Annotation> formalAnnotations = parseFormalAnnotations();
             boolean structural = matchContextualKeyword("structural");
 
             // Canonical type-first structural spelling: structural Foo y
@@ -1383,7 +1424,7 @@ public final class Parser {
                 if (mutable) {
                     throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
                 }
-                params.add(new Ast.Param(type, name, true, false));
+                params.add(new Ast.Param(type, name, true, false, formalAnnotations));
                 continue;
             }
 
@@ -1397,7 +1438,7 @@ public final class Parser {
                 if (mutable) {
                     throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
                 }
-                params.add(new Ast.Param(type, name, true, false));
+                params.add(new Ast.Param(type, name, true, false, formalAnnotations));
                 continue;
             }
 
@@ -1409,7 +1450,7 @@ public final class Parser {
                 if (mutable) {
                     throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
                 }
-                params.add(new Ast.Param(type, name, true, false));
+                params.add(new Ast.Param(type, name, true, false, formalAnnotations));
                 continue;
             }
 
@@ -1427,7 +1468,7 @@ public final class Parser {
                 consume(COLON, "expected ':' after compatibility parameter name");
                 Ast.TypeRef type = parseFormalTypeRef();
                 boolean mutable = match(MUT);
-                params.add(new Ast.Param(type, name, false, mutable));
+                params.add(new Ast.Param(type, name, false, mutable, formalAnnotations));
                 continue;
             }
 
@@ -1437,7 +1478,7 @@ public final class Parser {
             if (structural && mutable) {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
-            params.add(new Ast.Param(type, name, structural, mutable));
+            params.add(new Ast.Param(type, name, structural, mutable, formalAnnotations));
         } while (match(COMMA));
         return params;
     }
@@ -1467,7 +1508,7 @@ public final class Parser {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
             if (allowed.contains(param.name())) found.add(param.name());
-            result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable()));
+            result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable(), param.annotations()));
         }
         if (!found.equals(allowed)) {
             java.util.Set<String> missing = new java.util.HashSet<>(allowed);
@@ -3756,9 +3797,10 @@ public final class Parser {
         List<Ast.Param> params = new ArrayList<>();
         if (!check(PIPE)) {
             do {
+                List<Ast.Annotation> formalAnnotations = parseFormalAnnotations();
                 if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
-                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false, formalAnnotations));
                 } else if (check(IDENT) && checkNext(COLON)) {
                     // Match declared pipe callables and parenthesized lambdas:
                     // compatibility name-first formals preserve the T? slot marker.
@@ -3766,12 +3808,12 @@ public final class Parser {
                     consume(COLON, "expected ':' after compatibility lambda parameter name");
                     Ast.TypeRef type = parseFormalTypeRef();
                     boolean mutable = match(MUT);
-                    params.add(new Ast.Param(type, name, false, mutable));
+                    params.add(new Ast.Param(type, name, false, mutable, formalAnnotations));
                 } else {
                     Ast.TypeRef type = parseFormalTypeRef();
                     boolean mutable = match(MUT);
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
-                    params.add(new Ast.Param(type, name, false, mutable));
+                    params.add(new Ast.Param(type, name, false, mutable, formalAnnotations));
                 }
             } while (match(COMMA));
         }
