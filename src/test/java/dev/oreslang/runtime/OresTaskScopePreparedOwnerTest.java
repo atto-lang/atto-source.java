@@ -58,4 +58,52 @@ final class OresTaskScopePreparedOwnerTest {
             assertThrows(IllegalStateException.class, prepared::start);
         }
     }
+
+    @Test
+    void simultaneousPrepareStartAndRejectHaveExactlyOneWinner() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime()) {
+            for (int trial = 0; trial < 128; trial++) {
+                AsyncRuntime.PreparedTask<Integer> prepared =
+                        runtime.prepareTask(() -> 23);
+                java.util.concurrent.CountDownLatch begin =
+                        new java.util.concurrent.CountDownLatch(1);
+                AtomicInteger succeeded = new AtomicInteger();
+                AtomicInteger rejected = new AtomicInteger();
+                java.util.concurrent.atomic.AtomicReference<Throwable> unexpected =
+                        new java.util.concurrent.atomic.AtomicReference<>();
+                Thread starter = Thread.ofVirtual().start(() -> {
+                    try {
+                        begin.await();
+                        prepared.start();
+                        succeeded.incrementAndGet();
+                    } catch (IllegalStateException expected) {
+                        rejected.incrementAndGet();
+                    } catch (Throwable failure) {
+                        unexpected.compareAndSet(null, failure);
+                    }
+                });
+                Thread canceller = Thread.ofVirtual().start(() -> {
+                    try {
+                        begin.await();
+                        prepared.rejectUnadmitted();
+                        succeeded.incrementAndGet();
+                    } catch (IllegalStateException expected) {
+                        rejected.incrementAndGet();
+                    } catch (Throwable failure) {
+                        unexpected.compareAndSet(null, failure);
+                    }
+                });
+                begin.countDown();
+                starter.join(5_000);
+                canceller.join(5_000);
+                assertFalse(starter.isAlive());
+                assertFalse(canceller.isAlive());
+                assertNull(unexpected.get());
+                assertEquals(1, succeeded.get(), "one first claim on trial " + trial);
+                assertEquals(1, rejected.get(), "one losing claim on trial " + trial);
+                assertNull(AsyncRuntime.await(prepared.owner().getDone()));
+                assertTrue(prepared.owner().isQuiescent());
+            }
+        }
+    }
 }
