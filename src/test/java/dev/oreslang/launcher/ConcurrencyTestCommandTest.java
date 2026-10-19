@@ -51,6 +51,38 @@ final class ConcurrencyTestCommandTest {
     }
 
     @Test
+    void replayRejectsTamperedEntryAndBackendIdentities() throws Exception {
+        Path trace = tmp.resolve("provenance.trace");
+        assertEquals(0, ConcurrencyTestCommand.run(new String[]{
+                "examples/native-testing.ores", "--seed=19", "--trace-output=" + trace
+        }));
+        var evidence = dev.oreslang.runtime.ConcurrencyTestProbe.readTraceData(trace);
+        assertEquals(64, evidence.entrySha256().length());
+        String original = Files.readString(trace);
+        String alteredDigest = evidence.entrySha256().startsWith("0")
+                ? "1" + evidence.entrySha256().substring(1)
+                : "0" + evidence.entrySha256().substring(1);
+        Files.writeString(trace, original.replace(evidence.entrySha256(), alteredDigest));
+        assertEquals(2, ConcurrencyTestCommand.run(new String[]{
+                "examples/native-testing.ores", "--replay=" + trace
+        }));
+        Files.writeString(trace, original.replace("|backend=" + evidence.backend(),
+                "|backend=foreign-backend"));
+        assertEquals(2, ConcurrencyTestCommand.run(new String[]{
+                "examples/native-testing.ores", "--replay=" + trace
+        }));
+    }
+
+    @Test
+    void replayRejectsLegacyUnboundTrace() throws Exception {
+        Path trace = tmp.resolve("legacy.trace");
+        Files.writeString(trace, "ORES_CONCURRENCY_TRACE_V1|seed=19" + System.lineSeparator());
+        assertEquals(2, ConcurrencyTestCommand.run(new String[]{
+                "examples/native-testing.ores", "--replay=" + trace
+        }));
+    }
+
+    @Test
     void refusesOverflowedFuzzSeedRange() throws Exception {
         assertEquals(2, ConcurrencyTestCommand.run(new String[]{
                 "examples/native-testing.ores", "--seed=" + Long.MAX_VALUE,
