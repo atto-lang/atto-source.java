@@ -123,9 +123,14 @@ final class SealedActorTensorSnapshotTest {
                                     write.write("weights", snapshot);
                                     return null;
                                 }));
+                        var scalarSnapshot = new AtomicReference<SealedActorState.ScalarSnapshot>();
+                        state.critical(false, read -> {
+                            scalarSnapshot.set(read.snapshotScalars("version", "run_id"));
+                            return null;
+                        });
                         assertThrows(IllegalArgumentException.class,
                                 () -> state.prepareScalarPublication(
-                                        "version", 1, 1,
+                                        scalarSnapshot.get(),
                                         Map.of("version", 2L,
                                                "weights", snapshot)));
 
