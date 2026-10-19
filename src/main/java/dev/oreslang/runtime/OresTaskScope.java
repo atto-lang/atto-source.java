@@ -216,7 +216,17 @@ public final class OresTaskScope implements AutoCloseable {
 
         final OresFuture<T> completion;
         try {
-            completion = scheduler.start(frame, () -> {
+            completion = scheduler.start(resume -> {
+                // A parent cancelled during the provisional enqueue window
+                // cannot grant a later guest turn permission to run. This
+                // cooperative admission check never interrupts a pthread or
+                // releases locks belonging to an executing Task.
+                if (isCancelRequested()) {
+                    throw new java.util.concurrent.CancellationException(
+                            "Task scope cancelled before guest turn");
+                }
+                return frame.resume(resume);
+            }, () -> {
                 // Physical exit, not Future cancellation, is the only
                 // authority to retire the child's code/resource lease.
                 try {
