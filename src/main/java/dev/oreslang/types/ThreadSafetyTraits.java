@@ -119,15 +119,15 @@ public final class ThreadSafetyTraits {
             }
             if (!(type instanceof Named named)) return false;
             String name = named.name();
-            if (name.equals("OptionUnwrapError")) return named.arguments().isEmpty();
-            if (name.equals("Option") || name.equals("IteratorResult")) {
-                return named.arguments().size() == 1
-                        && has(named.arguments().getFirst(), trait, nominalProof, visiting, depth + 1);
-            }
-            if (name.equals("Result")) {
-                return named.arguments().size() == 2
-                        && has(named.arguments().get(0), trait, nominalProof, visiting, depth + 1)
-                        && has(named.arguments().get(1), trait, nominalProof, visiting, depth + 1);
+            // A Types.Named contains only a spelling, not an authenticated
+            // intrinsic/symbol identity. Accepting "Option"/"Result" based
+            // on that string would grant auto-traits to a shadowing guest
+            // nominal class, even if the compiler's nominal callback is
+            // permissive. Keep the provisional resolved-type Task admission
+            // closed until MIR carries a trusted built-in identity witness.
+            if (name.equals("OptionUnwrapError") || name.equals("Option")
+                    || name.equals("IteratorResult") || name.equals("Result")) {
+                return false;
             }
             // Channel/Task/runtime handles are denied until a separately
             // verified handle ownership ABI exists. Payload Send alone does
