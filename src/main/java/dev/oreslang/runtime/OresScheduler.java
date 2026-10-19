@@ -377,6 +377,32 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
+     * Read-only cooperative cancellation poll for a compiler-generated safe
+     * point inside the CURRENT tracked Task turn. It grants no cancellation
+     * authority and never interrupts a physical carrier.
+     *
+     * Ordinary scheduler tasks without a tracked cancellation owner report
+     * false; nested inline Task turns restore the previous owner's token.
+     */
+    public static boolean cancellationRequested() {
+        return TaskHandle.currentCancellationRequested();
+    }
+
+    /**
+     * Explicit cancellation checkpoint for compiler-lowered loops and
+     * carefully selected synchronous boundaries. A pending cancellation
+     * raises a private runtime marker, unwinding ordinary Java finally blocks
+     * before the Task reaches its terminal quiescence barrier.
+     *
+     * Never lower this inside an ownership-critical or non-reentrant section;
+     * do not insert it automatically into every ordinary watchdog poll.
+     * Async finally/defer lowering requires a separate cleanup state machine.
+     */
+    public static void cancellationCheckpoint() {
+        TaskHandle.checkCurrentCancellationCheckpoint();
+    }
+
+    /**
      * Start one compiler-lowered async task on this scheduler.
      *
      * <p>The returned Future represents the whole task. Awaiting it from another
