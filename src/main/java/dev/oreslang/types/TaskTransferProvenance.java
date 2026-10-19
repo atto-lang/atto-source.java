@@ -103,6 +103,16 @@ public final class TaskTransferProvenance {
         return transfers == null ? List.of() : transfers;
     }
 
+    void forEachBoundary(
+            java.util.function.BiConsumer<Object, List<Transfer>> consumer) {
+        Objects.requireNonNull(consumer, "consumer");
+        if (!sealed) {
+            throw new IllegalStateException(
+                    "Task transfer provenance must be sealed before iteration");
+        }
+        byBoundary.forEach(consumer);
+    }
+
     public int boundaryCount() {
         return byBoundary.size();
     }
