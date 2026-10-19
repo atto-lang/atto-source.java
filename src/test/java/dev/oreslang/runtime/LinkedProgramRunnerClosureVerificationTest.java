@@ -52,6 +52,17 @@ final class LinkedProgramRunnerClosureVerificationTest {
     }
 
     @Test
+    void unchangedCompiledClosureExecutesNormally() throws Exception {
+        Path entry = directory.resolve("unchanged.ores");
+        Files.writeString(entry, "pub routine main(): void { return; }\n");
+        String fingerprint = LinkedProgramRunner.sourceClosureSha256(entry, Map.of());
+        var result = LinkedProgramRunner.runWithExitStatusVerified(
+                entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                fingerprint, new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(0, result.exitStatus());
+    }
+
+    @Test
     void rejectsMissingOrMalformedPreflightDigest() throws Exception {
         Path entry = directory.resolve("simple.ores");
         Files.writeString(entry, "pub routine main(): void { return; }\n");
