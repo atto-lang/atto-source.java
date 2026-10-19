@@ -156,10 +156,16 @@ public final class TaskAccessVerifier {
     public Ticket admit(List<Claim> requested) {
         if (sealed) throw new IllegalStateException("TaskScope is sealed");
         List<Claim> claims = List.copyOf(Objects.requireNonNull(requested, "claims"));
+        Map<AllocationKey, Long> incomingGenerations = new HashMap<>();
         for (Claim claim : claims) {
             Objects.requireNonNull(claim, "claim");
             AllocationKey key = new AllocationKey(
                     claim.place().root().domain(), claim.place().root().allocationId());
+            Long incoming = incomingGenerations.putIfAbsent(
+                    key, claim.place().root().generation());
+            if (incoming != null && incoming != claim.place().root().generation()) {
+                throw new IllegalStateException("conflicting allocation generations in one Task");
+            }
             Long established = knownGenerations.get(key);
             if (established != null && established != claim.place().root().generation()) {
                 throw new IllegalStateException("stale or conflicting allocation generation");
@@ -216,6 +222,34 @@ public final class TaskAccessVerifier {
     public void quiescent(Ticket ticket) {
         child(ticket); // validates this exact ticket belongs to this scope
         live.remove(ticket);
+    }
+
+    /**
+     * Compiler-validated structural barrier: replace the layout generation
+     * only after all child borrows of that allocation are physically drained.
+     * Callers must independently prove owner authority and real quiescence.
+     */
+    public void structuralBarrier(Root oldRoot, long newGeneration) {
+        Objects.requireNonNull(oldRoot, "oldRoot");
+        if (sealed) throw new IllegalStateException("TaskScope is sealed");
+        if (newGeneration <= oldRoot.generation()) {
+            throw new IllegalArgumentException("generation must advance");
+        }
+        AllocationKey key = new AllocationKey(oldRoot.domain(), oldRoot.allocationId());
+        Long current = knownGenerations.get(key);
+        if (current == null || current != oldRoot.generation()) {
+            throw new IllegalStateException("stale structural generation");
+        }
+        for (Child child : live.values()) {
+            for (Claim claim : child.claims) {
+                Root other = claim.place().root();
+                if (other.domain().equals(oldRoot.domain())
+                        && other.allocationId() == oldRoot.allocationId()) {
+                    throw new IllegalStateException("cannot change layout during live Task borrow");
+                }
+            }
+        }
+        knownGenerations.put(key, newGeneration);
     }
 
     public void finishScope() {
