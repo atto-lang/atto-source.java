@@ -2734,6 +2734,12 @@ public final class OwnershipChecker {
                 scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
             }
         }
+        else if (expr instanceof Ast.TaskExpr nested) {
+            // A nested Task is a deferred closure, not a capture barrier.
+            // Include its free variables transitively when proving ownership
+            // of the surrounding Task or lambda.
+            scanStatements(nested.body(), locals, outer, recursiveBinding, captures);
+        }
         else if (expr instanceof Ast.LambdaExpr lambda) {
             // A lexical nested closure can reference values that belong to an
             // activation outside the current lambda. Those are transitive
