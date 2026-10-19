@@ -136,4 +136,26 @@ class CarrierTopologyPlanTest {
                 CarrierTopologyPlan.discoverAt(-1, root));
     }
 
+    @Test void boundedGlobalProbesEventuallyVisitEveryRemoteLane() {
+        for (int workers = 2; workers <= 128; workers++) {
+            CarrierTopologyPlan.Location[] loc = new CarrierTopologyPlan.Location[workers];
+            java.util.Arrays.fill(loc, CarrierTopologyPlan.Location.UNKNOWN);
+            var plan = new CarrierTopologyPlan(loc);
+            for (int thief = 0; thief < workers; thief++) {
+                boolean[] visited = new boolean[workers];
+                // Model a maximum of eight successful, aged steal probes per
+                // periodic global sweep. The cursor advances independently of
+                // the 16-poll frequency.
+                for (int sweep = 0; sweep < workers; sweep++) {
+                    for (int rank = 0; rank < Math.min(workers - 1, 8); rank++) {
+                        visited[plan.globalVictimAt(thief, rank, sweep)] = true;
+                    }
+                }
+                for (int victim = 0; victim < workers; victim++)
+                    if (victim != thief) assertTrue(visited[victim],
+                            "starved remote lane " + victim + " of " + workers);
+            }
+        }
+    }
+
 }
