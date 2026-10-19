@@ -9,8 +9,8 @@ readonly DEST_REPO="ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-
 readonly DEST_ID="1412142815"
 readonly DEST_BASE_COMMIT="fc49aa44726eac47301ae2d676c4b38954d3cc46"
 readonly DEST_BASE_TREE="1e9dec690e45df80758547e991d37f6b18872e33"
-readonly DEST_CLEANUP_PATH=".github/workflows/private-oreslang-cleanup.yml"
-readonly DEST_CLEANUP_BLOB="02f62cd41b8995a6bc7eca9c6f6aff32e698b2f2"
+readonly DEST_WORKFLOW_PATH=".github/workflows/private-oreslang-exact-tree.yml"
+readonly DEST_WORKFLOW_BLOB="6f532dfaa5149a023ca1ccd6ed3d8364c6df44e0"
 readonly SOURCE_ID="1400792274"
 readonly POLICY_PATH=".github/private-ci-approved-repositories.txt"
 readonly PREFLIGHT_PATH="scripts/preflight-private-ci-mirror.sh"
@@ -200,10 +200,10 @@ IFS=$'\t' read -r dest_base_commit dest_base_tree < <(
 ) || die "cannot resolve reviewed destination carrier commit"
 [[ "$dest_base_commit" == "$DEST_BASE_COMMIT" && "$dest_base_tree" == "$DEST_BASE_TREE" ]] \
   || die "destination reviewed carrier commit/tree mismatch"
-dest_cleanup_blob="$(gh_api "repos/$DEST_REPO/contents/$DEST_CLEANUP_PATH?ref=main" --jq '.sha')" \
-  || die "cannot resolve trusted destination cleanup workflow"
-[[ "$dest_cleanup_blob" == "$DEST_CLEANUP_BLOB" ]] \
-  || die "destination cleanup workflow differs from reviewed blob"
+dest_workflow_blob="$(gh_api "repos/$DEST_REPO/contents/$DEST_WORKFLOW_PATH?ref=$DEST_BASE_COMMIT" --jq '.sha')" \
+  || die "cannot resolve reviewed destination exact-tree workflow"
+[[ "$dest_workflow_blob" == "$DEST_WORKFLOW_BLOB" ]] \
+  || die "destination exact-tree workflow differs from reviewed blob"
 require_destination_branch_absent
 
 auth_mode=""
@@ -261,7 +261,7 @@ elif [[ "$main_protected" == "false" ]]; then
   [[ "$maintainer_comment_id" != "$security_comment_id" ]] \
     || die "maintainer and security approvals must be distinct comments"
 
-  approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=$SOURCE_REPO source_repo_id=$SOURCE_ID source_pr=$source_pr source_commit=$expected_commit source_tree=$expected_tree destination_repo=$DEST_REPO destination_repo_id=$DEST_ID destination_branch=$destination_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_cleanup_blob=$dest_cleanup_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+  approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=$SOURCE_REPO source_repo_id=$SOURCE_ID source_pr=$source_pr source_commit=$expected_commit source_tree=$expected_tree destination_repo=$DEST_REPO destination_repo_id=$DEST_ID destination_branch=$destination_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_workflow_blob=$dest_workflow_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
 
   verify_attestation_comment() {
     local comment_id="$1"
@@ -310,15 +310,15 @@ IFS=$'\t' read -r final_base_commit final_base_tree < <(
 [[ "$final_base_commit" == "$dest_base_commit" && "$final_base_commit" == "$DEST_BASE_COMMIT" \
     && "$final_base_tree" == "$dest_base_tree" && "$final_base_tree" == "$DEST_BASE_TREE" ]] \
   || die "reviewed destination carrier commit/tree is unavailable or changed"
-final_cleanup_blob="$(gh_api "repos/$DEST_REPO/contents/$DEST_CLEANUP_PATH?ref=main" --jq '.sha')" \
-  || die "cannot re-resolve trusted destination cleanup workflow"
-[[ "$final_cleanup_blob" == "$dest_cleanup_blob" && "$final_cleanup_blob" == "$DEST_CLEANUP_BLOB" ]] \
-  || die "destination cleanup workflow changed during authorization"
+final_workflow_blob="$(gh_api "repos/$DEST_REPO/contents/$DEST_WORKFLOW_PATH?ref=$DEST_BASE_COMMIT" --jq '.sha')" \
+  || die "cannot re-resolve reviewed destination exact-tree workflow"
+[[ "$final_workflow_blob" == "$dest_workflow_blob" && "$final_workflow_blob" == "$DEST_WORKFLOW_BLOB" ]] \
+  || die "destination exact-tree workflow changed during authorization"
 require_destination_branch_absent
 
-printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s destination_cleanup_blob=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
+printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s destination_workflow_blob=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
   "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$destination_branch" \
-  "$dest_base_commit" "$dest_base_tree" "$dest_cleanup_blob" "$main_sha" \
+  "$dest_base_commit" "$dest_base_tree" "$dest_workflow_blob" "$main_sha" \
   "$policy_blob" "$preflight_blob" "$guard_blob" "$wrapper_blob" "$publisher_blob" "$actual_id"
 
 # No transfer or workflow dispatch occurs. Human security-owner approval,
