@@ -1168,6 +1168,9 @@ public final class Ast {
         // Bound only by the ownership pass, before lowering/execution. null
         // means an unchecked AST and MUST NOT be treated as empty captures.
         private volatile List<String> capturedNames;
+        // Established by the type checker before the ownership checker runs.
+        // Only compiler-checked Task results can flow into a Task handle.
+        private volatile TypeRef checkedResultType;
 
         public TaskExpr(List<Stmt> body) {
             this.body = List.copyOf(body);
@@ -1185,6 +1188,22 @@ public final class Ast {
                 throw new IllegalStateException("Task capture metadata changed after ownership checking");
             }
             capturedNames = copy;
+        }
+
+        public synchronized void bindResultType(TypeRef result) {
+            java.util.Objects.requireNonNull(result, "Task result");
+            if (checkedResultType != null && !checkedResultType.equals(result)) {
+                throw new IllegalStateException("Task result changed after type checking");
+            }
+            checkedResultType = result;
+        }
+
+        public TypeRef checkedResultType() {
+            TypeRef type = checkedResultType;
+            if (type == null) {
+                throw new IllegalStateException("Task reached ownership checking without result type");
+            }
+            return type;
         }
 
         public List<String> captures() {
