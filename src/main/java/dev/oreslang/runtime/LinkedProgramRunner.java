@@ -220,6 +220,29 @@ public final class LinkedProgramRunner {
                 PermissionCheckMode.COMPILE, profile, Set.of(), System.getenv(), out, err);
     }
 
+    /**
+     * Require the exact loaded, immutable-in-memory closure to match the
+     * caller's preflight digest before compiling or executing guest code.
+     * This prevents a source rewrite between a trace check and actual load
+     * from executing under the original trace's identity.
+     */
+    public static RunResult runWithExitStatusVerified(
+            Path entryFile,
+            IsolatePolicy policy,
+            ExecutionProfile profile,
+            String expectedClosureHash,
+            OutputStream out,
+            OutputStream err) throws IOException {
+        if (expectedClosureHash == null
+                || !expectedClosureHash.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("a valid source-closure SHA-256 is required");
+        }
+        return runWithExitStatus(entryFile, policy,
+                RuntimePermissions.fromCapabilities(policy.capabilities()),
+                PermissionCheckMode.COMPILE, profile, Set.of(), System.getenv(),
+                expectedClosureHash, out, err);
+    }
+
     public static RunResult runWithExitStatus(
             Path entryFile,
             IsolatePolicy policy,
@@ -230,6 +253,22 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             OutputStream out,
             OutputStream err) throws IOException {
+        return runWithExitStatus(entryFile, policy, permissions,
+                permissionCheckMode, executionProfile, allowedHostClasses,
+                environment, null, out, err);
+    }
+
+    private static RunResult runWithExitStatus(
+            Path entryFile,
+            IsolatePolicy policy,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses,
+            Map<String, String> environment,
+            String expectedClosureHash,
+            OutputStream out,
+            OutputStream err) throws IOException {
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
@@ -238,6 +277,14 @@ public final class LinkedProgramRunner {
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions);
         ensureJavaEntryContainsOres(entry, units);
+        if (expectedClosureHash != null) {
+            String loaded = hashCollectedSourceClosure(
+                    projectConfig, units, importResolutions);
+            if (!expectedClosureHash.equals(loaded)) {
+                throw new IOException(
+                        "source closure changed between trace validation and compiler load");
+            }
+        }
         boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
         if (hasJavaSource) {
             policy.require(IsolatePolicy.Capability.JAVA_SOURCE_INTEROP, "mixed Java/Ores source islands");
