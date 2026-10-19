@@ -24,6 +24,11 @@ public final class CallerRoleContracts {
     public static final class Index {
         private final IdentityHashMap<Object, Set<String>> granted = new IdentityHashMap<>();
         private final IdentityHashMap<Object, Set<String>> permitted = new IdentityHashMap<>();
+        // Record every validated callable, including those with no annotations.
+        // Without this, an AST copy that silently loses @CallableBy would be
+        // mistaken for an unrestricted declaration by the authorization gate.
+        private final Set<Object> checkedDeclarations =
+                Collections.newSetFromMap(new IdentityHashMap<>());
 
         private Index() { }
 
@@ -33,9 +38,12 @@ public final class CallerRoleContracts {
         }
 
         public boolean isRestricted(Object declaration) {
-            // Unknown linked/rewritten declarations carrying policy are
-            // restricted by default; loss of index linkage cannot clear it.
-            return permitted.containsKey(declaration) || hasPolicyAnnotation(declaration, "CallableBy");
+            // A linked/rewritten callable whose exact declaration identity
+            // was never validated must not be treated as unrestricted, even
+            // if its metadata was dropped during an AST transformation.
+            return isCallable(declaration) && !checkedDeclarations.contains(declaration)
+                    || permitted.containsKey(declaration)
+                    || hasPolicyAnnotation(declaration, "CallableBy");
         }
 
         /**
@@ -47,6 +55,12 @@ public final class CallerRoleContracts {
             // Only this index may derive the caller roles from its validated,
             // identity-keyed declaration bindings. null denotes a lambda or
             // another unannotated, separately executing callback.
+            if (isCallable(callee) && !checkedDeclarations.contains(callee)) {
+                throw new IllegalArgumentException("@CallableBy target '" + displayName
+                        + "' is not bound to the checked source role index; "
+                        + "unverified linked or rewritten callables fail closed "
+                        + "even if their policy annotation was removed");
+            }
             Set<String> allowed = permitted.get(callee);
             if (allowed == null) {
                 if (hasPolicyAnnotation(callee, "CallableBy")) {
@@ -164,6 +178,11 @@ public final class CallerRoleContracts {
         return index;
     }
 
+    private static boolean isCallable(Object declaration) {
+        return declaration instanceof Ast.FunctionDecl
+                || declaration instanceof Ast.MethodDecl;
+    }
+
     private static boolean hasPolicyAnnotation(Object declaration, String annotation) {
         if (declaration instanceof Ast.FunctionDecl fn) {
             return has(fn.annotations(), annotation);
@@ -189,6 +208,10 @@ public final class CallerRoleContracts {
 
     private static void put(Index index, Object declaration, List<Ast.Annotation> annotations,
                             String module, Map<String, Ast.EnumDecl> enums, String label) {
+        if (!index.checkedDeclarations.add(declaration)) {
+            throw new IllegalArgumentException(
+                    "duplicate callable declaration identity in caller-role index: " + label);
+        }
         boolean sawCallerRole = false;
         boolean sawCallableBy = false;
         for (Ast.Annotation annotation : annotations) {
