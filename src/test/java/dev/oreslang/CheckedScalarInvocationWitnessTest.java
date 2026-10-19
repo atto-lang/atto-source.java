@@ -439,6 +439,44 @@ final class CheckedScalarInvocationWitnessTest {
                 () -> TypeChecker.inspectStagedScalarInvocation(forged, modified, call));
     }
 
+    @Test
+    void syntheticCallerSelfCannotMasqueradeAsOrdinaryScalarParameter() {
+        Ast.Program original = program();
+        Ast.FunctionDecl caller = caller(original);
+        Ast.StagedCallExpr originalCall = call(caller);
+        Ast.FunctionDecl forged = withSignature(caller, caller.returnType(),
+                List.of(new Ast.Param(Ast.TypeRef.simple("int"), "self")), caller.body());
+        Ast.Program constructed = withCaller(original, forged);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.inspectStagedScalarInvocation(
+                        constructed, forged, originalCall));
+        assertTrue(error.getMessage().contains("constructor self"), error::toString);
+    }
+
+    @Test
+    void syntheticSelectedSelfNeverBecomesAbiValueFormal() {
+        Ast.Program original = program();
+        Ast.ModuleDecl module = original.modules().getFirst();
+        Ast.FunctionDecl selected = (Ast.FunctionDecl) module.declarations().getFirst();
+        Ast.FunctionDecl caller = caller(original);
+        Ast.StagedCallExpr forgedCall = new Ast.StagedCallExpr(
+                new Ast.NameExpr("target"), List.of(), false,
+                List.of(Ast.CallArgument.named("self", new Ast.LiteralExpr(5L))));
+        Ast.FunctionDecl forgedTarget = withSignature(selected, selected.returnType(),
+                List.of(new Ast.Param(Ast.TypeRef.simple("int"), "self")),
+                List.of(new Ast.ReturnStmt(new Ast.NameExpr("self"))));
+        Ast.FunctionDecl forgedCaller = withBody(caller, List.of(
+                new Ast.BindingStmt(Ast.BindingKind.CONST, Ast.TypeRef.inferred(),
+                        "result", forgedCall), new Ast.ReturnStmt(null)));
+        Ast.Program constructed = new Ast.Program(List.of(new Ast.ModuleDecl(
+                module.name(), module.annotations(), module.contracts(),
+                List.of(forgedTarget, forgedCaller))));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.inspectStagedScalarInvocation(
+                        constructed, forgedCaller, forgedCall));
+        assertTrue(error.getMessage().contains("constructor self"), error::toString);
+    }
+
     private static Ast.FunctionDecl withSignature(
             Ast.FunctionDecl original, Ast.TypeRef returnType,
             List<Ast.Param> formals, List<Ast.Stmt> statements) {
