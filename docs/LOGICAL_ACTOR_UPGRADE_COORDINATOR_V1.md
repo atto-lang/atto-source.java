@@ -281,3 +281,41 @@ requeue path remains allowed with original FIFO/credit accounting.
 CI status: code and regression tests are committed but an exact-head Java
 execution result remains required; no cross-organization copy of the private
 tree has been performed because the reviewed destination allowlist is empty.
+
+## October 19 — supervisor authorization and receipt carrier audit
+
+The SHARED router now validates the **current physical route and exact bound
+mailbox freeze ticket before candidate generation linking or pinning**. A
+second validation occurs under the route monitor immediately before route
+freeze, because an independently authorized supervisor or close attempt may
+change the route while the candidate loader runs. The preliminary check does
+not perform the loader operation under the route monitor: existing DATA sends
+on the old route therefore remain independent of candidate compilation.
+
+The preflight prevents foreign, unproxied, stale and already-upgrading requests
+from making the compiler/linker perform work they were never authorized to
+start. The real-source regression uses a well-formed generation whose actor
+type does not match the routed actor: supervisor denial must occur **before**
+its source actor can be linked. A denial neither changes the mailbox freeze
+nor pins the rejected candidate generation.
+
+The one-use `ProxyDrainReceipt.awaitAndComplete` now also enforces the same
+host-only execution-carrier guard as proxy send/upgrade. Its underlying
+runtime-minted exact physical terminal Future cannot be consumed from a
+guest actor, active scheduler frame, scheduler terminal callback or async
+carrier as a backdoor blocking operation. A separate actual scheduler Task
+regression checks that rejected waits do not refund transport credits,
+followed by successful completion from an authorized host thread.
+
+**Scope:** this secures two host/supervisor seams; it does not add remote
+cryptographic authenticity, compiler-owned message/capability receipts or a
+global code-loader/TaskScope/checkpoint publication commit. The physical
+runtime receipt remains local and host-only. Keep production hot reload
+disabled until the whole SHARED transaction and exact JDK25/Graal tests pass.
+
+**CI policy / provenance:** at the time of this audit, source `main` still
+has an empty reviewed private destination allowlist and security issue #962
+remains open. The source-owned `ci` / `fast-ci` jobs still fail with no
+recorded execution steps. The authored tests are *not* claimed to have run.
+Do not export private source into another org without protected-source and
+reviewed immutable numeric-destination authorization.
