@@ -615,4 +615,49 @@ final class V3DefaultArgValsAdmissionTest {
                         List.of(expression), List.of(supplied, duplicate)));
     }
 
+    @Test
+    void previewNeverReusesOmissionOriginsOrShufflesLexicalCallItems() {
+        var type = Ast.TypeRef.simple("int");
+        var literal = new Ast.LiteralExpr(11);
+        var other = new Ast.LiteralExpr(22);
+        var suppliedA = new V3CallLoweringPreview.Slot(0, "a", type,
+                V3CallLoweringPreview.SlotAction.CHECK_SUPPLIED,
+                null, 1, 3, false);
+        var suppliedB = new V3CallLoweringPreview.Slot(1, "b", type,
+                V3CallLoweringPreview.SlotAction.CHECK_SUPPLIED,
+                null, 0, 1, false);
+        var defaultA = new V3CallLoweringPreview.Slot(0, "a", type,
+                V3CallLoweringPreview.SlotAction.DEFAULT_SCALAR,
+                DefaultArgumentPolicy.Literal.integer(10), -1, 2, false);
+        var defaultB = new V3CallLoweringPreview.Slot(1, "b", type,
+                V3CallLoweringPreview.SlotAction.DEFAULT_SCALAR,
+                DefaultArgumentPolicy.Literal.integer(20), -1, 2, false);
+        var absentDefaultB = new V3CallLoweringPreview.Slot(1, "b", type,
+                V3CallLoweringPreview.SlotAction.DEFAULT_SCALAR,
+                DefaultArgumentPolicy.Literal.integer(20), -1, -1, false);
+        assertEquals(2, new V3CallLoweringPreview.Preview(
+                List.of(literal, other), List.of(suppliedA, suppliedB))
+                .unevaluatedExpressionsInSourceOrder().size());
+        assertThrows(IllegalArgumentException.class,
+                () -> new V3CallLoweringPreview.Preview(
+                        List.of(literal), List.of(new V3CallLoweringPreview.Slot(
+                                0, "a", type, V3CallLoweringPreview.SlotAction.CHECK_SUPPLIED,
+                                null, 0, 3, false), defaultB)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new V3CallLoweringPreview.Preview(
+                        List.of(literal, other), List.of(
+                                new V3CallLoweringPreview.Slot(0, "a", type,
+                                        V3CallLoweringPreview.SlotAction.CHECK_SUPPLIED,
+                                        null, 0, 3, false),
+                                new V3CallLoweringPreview.Slot(1, "b", type,
+                                        V3CallLoweringPreview.SlotAction.CHECK_SUPPLIED,
+                                        null, 1, 1, false))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new V3CallLoweringPreview.Preview(
+                        List.of(), List.of(defaultA, defaultB)));
+        assertEquals(2, new V3CallLoweringPreview.Preview(
+                List.of(), List.of(defaultA, absentDefaultB))
+                .formalOrderSlots().size());
+    }
+
 }
