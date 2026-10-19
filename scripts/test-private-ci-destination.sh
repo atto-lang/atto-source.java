@@ -9,7 +9,7 @@ cp "$original_script_dir/run-in-private-ci-destination.sh" "$work/fixture/script
 cp "$original_script_dir/publish-private-ci-source.py" "$work/fixture/scripts/"
 script_dir="$work/fixture/scripts"
 policy="$work/fixture/.github/private-ci-approved-repositories.txt"
-printf '# Approved for this isolated test only\ntrusted/ci\n' > "$policy"
+printf '# Approved for this isolated test only\ntrusted/ci@424242\n' > "$policy"
 cat > "$work/gh" <<'MOCK'
 #!/usr/bin/env bash
 [[ "${GH_HOST:-}" == github.com ]] || exit 2
@@ -20,7 +20,7 @@ if [[ " $* " == *" --method POST "* || "${2:-}" == *"/git/"* ]]; then
 fi
 [[ "${3:-}" == --jq ]] || exit 2
 [[ "${MOCK_API_FAILURE:-false}" != true ]] || exit 4
-printf '%s\t%s\t%s%s\n' "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_EXTRA_LINE:-}"
+printf '%s\t%s\t%s\t%s%s\n' "${MOCK_ID:-424242}" "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_EXTRA_LINE:-}"
 MOCK
 mkdir -p "$work/fixture/source"
 printf 'pub fnc main(): int { return 42; }\n' > "$work/fixture/source/main.ores"
@@ -52,6 +52,18 @@ expect_wrapper_merged_reject() {
   grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
 }
 expect_ok trusted/ci
+# A reused owner/name with a different immutable repository ID must fail.
+export MOCK_ID=424243
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+unset MOCK_ID
+for unsafe in 'trusted/ci' 'trusted/ci@000424242' 'trusted/ci@0' 'trusted/ci@424242 # comment'; do
+  printf '%s\n' "$unsafe" > "$policy"
+  expect_fail trusted/ci
+done
+printf 'trusted/ci@424242\nTRUSTED/CI@424242\n' > "$policy"
+expect_fail trusted/ci
+printf '# Approved for this isolated test only\ntrusted/ci@424242\n' > "$policy"
 for visibility in public internal null; do
   export MOCK_VISIBILITY="$visibility"
   expect_fail trusted/ci
@@ -93,7 +105,7 @@ expect_fail trusted/ci
 ln -s "$work/fixture/scripts/check-private-ci-destination.sh" "$policy"
 expect_fail trusted/ci
 rm "$policy"
-printf 'trusted/ci\n' > "$policy"
+printf 'trusted/ci@424242\n' > "$policy"
 mv "$work/fixture/.github" "$work/approved-policy-directory"
 ln -s "$work/approved-policy-directory" "$work/fixture/.github"
 expect_fail trusted/ci
