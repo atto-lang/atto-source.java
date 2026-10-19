@@ -83,6 +83,13 @@ public final class IpcReceiptCompletionBridge {
         }
     }
 
+    private void requireUnboundPhysicalBridge() {
+        if (physicalOwner != null) {
+            throw new IllegalStateException(
+                    "bound IPC bridge requires physical owner/generation");
+        }
+    }
+
     public CompletionStage<IpcReceiptCorrelation.Stage> admit(
             IpcReceiptCorrelation.Envelope envelope) {
         Objects.requireNonNull(envelope, "envelope");
@@ -90,6 +97,32 @@ public final class IpcReceiptCompletionBridge {
         CompletableFuture<IpcReceiptCorrelation.Stage> future = new CompletableFuture<>();
         CompletionStage<IpcReceiptCorrelation.Stage> publicView = future.minimalCompletionStage();
         synchronized (gate) {
+            requireUnboundPhysicalBridge();
+            if (completions.containsKey(envelope.messageSequence())) {
+                throw new IllegalArgumentException("duplicate host correlation");
+            }
+            completions.put(envelope.messageSequence(), future);
+            try {
+                correlations.admit(envelope);
+            } catch (RuntimeException | Error e) {
+                completions.remove(envelope.messageSequence());
+                throw e;
+            }
+        }
+        return publicView;
+    }
+
+    CompletionStage<IpcReceiptCorrelation.Stage> admit(
+            Object owner,
+            IpcReceiptCorrelation.Envelope envelope,
+            long generation) {
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(envelope, "envelope");
+        CompletableFuture<IpcReceiptCorrelation.Stage> future = new CompletableFuture<>();
+        CompletionStage<IpcReceiptCorrelation.Stage> publicView =
+                future.minimalCompletionStage();
+        synchronized (gate) {
+            requirePhysicalTransport(owner, envelope, generation);
             if (completions.containsKey(envelope.messageSequence())) {
                 throw new IllegalArgumentException("duplicate host correlation");
             }
@@ -114,6 +147,21 @@ public final class IpcReceiptCompletionBridge {
     void commitDispatch(IpcReceiptCorrelation.Envelope envelope) {
         Objects.requireNonNull(envelope, "envelope");
         synchronized (gate) {
+            requireUnboundPhysicalBridge();
+            if (!completions.containsKey(envelope.messageSequence())) {
+                throw new IllegalArgumentException("missing IPC dispatch correlation");
+            }
+            correlations.commitDispatch(envelope);
+        }
+    }
+
+    void commitDispatch(Object owner,
+                        IpcReceiptCorrelation.Envelope envelope,
+                        long generation) {
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(envelope, "envelope");
+        synchronized (gate) {
+            requirePhysicalTransport(owner, envelope, generation);
             if (!completions.containsKey(envelope.messageSequence())) {
                 throw new IllegalArgumentException("missing IPC dispatch correlation");
             }
@@ -126,6 +174,7 @@ public final class IpcReceiptCompletionBridge {
                                IpcReceiptCorrelation.Stage stage) {
         CompletableFuture<IpcReceiptCorrelation.Stage> done = null;
         synchronized (gate) {
+            requireUnboundPhysicalBridge();
             correlations.acceptVerified(envelope, stage);
             if (stage != IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED) {
                 done = completions.remove(envelope.messageSequence());
@@ -134,6 +183,27 @@ public final class IpcReceiptCompletionBridge {
         }
         // An arbitrary dependent callback may synchronously reenter the actor:
         // never invoke it from within the admission/correlation monitor.
+        if (done != null) done.complete(stage);
+    }
+
+    void acceptVerified(Object owner,
+                        IpcReceiptCorrelation.Envelope envelope,
+                        long generation,
+                        IpcReceiptCorrelation.Stage stage) {
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(envelope, "envelope");
+        Objects.requireNonNull(stage, "stage");
+        CompletableFuture<IpcReceiptCorrelation.Stage> done = null;
+        synchronized (gate) {
+            requirePhysicalTransport(owner, envelope, generation);
+            correlations.acceptVerified(envelope, stage);
+            if (stage != IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED) {
+                done = completions.remove(envelope.messageSequence());
+                if (done == null) {
+                    throw new IllegalStateException("missing host completion");
+                }
+            }
+        }
         if (done != null) done.complete(stage);
     }
 
@@ -146,6 +216,24 @@ public final class IpcReceiptCompletionBridge {
         Objects.requireNonNull(envelope, "envelope");
         CompletableFuture<IpcReceiptCorrelation.Stage> done;
         synchronized (gate) {
+            requireUnboundPhysicalBridge();
+            correlations.rejectBeforeRemote(envelope);
+            done = completions.remove(envelope.messageSequence());
+            if (done == null) {
+                throw new IllegalStateException("missing host completion");
+            }
+        }
+        done.complete(IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
+    }
+
+    void rejectBeforeRemote(Object owner,
+                            IpcReceiptCorrelation.Envelope envelope,
+                            long generation) {
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(envelope, "envelope");
+        CompletableFuture<IpcReceiptCorrelation.Stage> done;
+        synchronized (gate) {
+            requirePhysicalTransport(owner, envelope, generation);
             correlations.rejectBeforeRemote(envelope);
             done = completions.remove(envelope.messageSequence());
             if (done == null) {
