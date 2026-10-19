@@ -120,6 +120,13 @@ independently verified absent afterward. This proves the carrier and containment
 harness only; it is not evidence that private Oreslang source passed any
 compiler test.
 
+Targeted source-free run `39328095244` also completed all four jobs
+successfully. Its synthetic tree contains the complete five-file computed-access
+test set, so the isolated `computed-access` command path executed successfully;
+the JDK 25/GraalVM and Native Image jobs also passed, and the cleanup job deleted
+the exact tested ref. As with the base canary, this is containment/harness
+evidence only, not private-source compiler evidence.
+
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
 checkout**, and walks the source **through directory file descriptors** to
