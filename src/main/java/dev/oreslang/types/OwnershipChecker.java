@@ -993,10 +993,8 @@ public final class OwnershipChecker {
                 }
                 boolean mutable = unary.operator().equals("&mut");
                 BorrowPlace place = borrowPlace(unary.operand(), scope);
-                if (mutable && !(unary.operand() instanceof Ast.NameExpr)) {
-                    throw error("mutable projected borrows need path-exclusive loan tracking");
-                }
-                validateBorrow(place.owner(), mutable);
+                if (mutable) validateMutableBorrowTarget(unary.operand(), scope);
+                validateBorrow(place, mutable);
                 return new ValueInfo(Ast.TypeRef.borrowed(place.type(), mutable), mutable ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW, ownershipRoot(place.owner()));
             }
             return checkExpr(unary.operand(), scope, false);
@@ -2084,12 +2082,19 @@ public final class OwnershipChecker {
 
     // A borrow argument becomes live as soon as its expression is evaluated
     // and remains live until the complete invocation has been validated.
-    // Argument-root comparison alone does not protect f(&mut q, q.method()).
-    private record CallArgumentLoan(VarState root, boolean mutable) { }
+    private record CallArgumentLoan(
+            VarState root,
+            boolean mutable,
+            ProjectionLoan projectionLoan) { }
+    private record InvocationLoan(BorrowPlace place, boolean mutable) { }
 
-    private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
+    private void checkArguments(
+            List<Ast.Expr> arguments,
+            List<Ast.Param> params,
+            Scope scope,
+            String callable) {
         int parameterIndex = 0;
-        Map<VarState, Boolean> invocationLoans = new IdentityHashMap<>();
+        List<InvocationLoan> invocationLoans = new ArrayList<>();
         List<CallArgumentLoan> activeLoans = new ArrayList<>();
         try {
             for (Ast.Expr argument : arguments) {
@@ -2103,7 +2108,7 @@ public final class OwnershipChecker {
                     }
 
                     int width = spreadType.arguments().size();
-                    if (parameterIndex + width > params.size()) return; // TypeChecker reports arity.
+                    if (parameterIndex + width > params.size()) return;
                     for (int i = 0; i < width; i++) {
                         Ast.Param target = params.get(parameterIndex + i);
                         if (target.structural() || target.type().isBorrow()) {
@@ -2121,82 +2126,83 @@ public final class OwnershipChecker {
                     continue;
                 }
 
-                if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
+                if (parameterIndex >= params.size()) return;
                 Ast.Param param = params.get(parameterIndex);
-                VarState loanOwner = param.type().isBorrow()
-                        ? invocationLoanRoot(argument, scope) : null;
-                boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
-                if (loanOwner != null) {
-                    Boolean previous = invocationLoans.get(loanOwner);
-                    if (previous != null && (previous || mutable)) {
-                        throw error(callable + " has overlapping mutable borrow arguments at position "
-                                + (parameterIndex + 1));
+                BorrowPlace loanPlace = param.type().isBorrow()
+                        ? invocationLoanPlace(argument, scope) : null;
+                boolean mutable =
+                        param.type().isBorrow() && param.type().mutableBorrow();
+
+                if (loanPlace != null) {
+                    VarState root = ownershipRoot(loanPlace.owner());
+                    for (InvocationLoan previous : invocationLoans) {
+                        if (ownershipRoot(previous.place().owner()) != root) continue;
+                        if (projectionPathsOverlap(
+                                previous.place().steps(), loanPlace.steps())
+                                && (previous.mutable() || mutable)) {
+                            throw error(callable
+                                    + " has overlapping mutable borrow arguments at position "
+                                    + (parameterIndex + 1));
+                        }
                     }
                 }
-                checkArgument(argument, param, scope, callable, parameterIndex + 1);
-                if (loanOwner != null) {
-                    // Borrowed arguments remain live until the call completes,
-                    // including forwarded incoming &mut parameters. Their
-                    // incoming lifetime is longer than this specific call and
-                    // is not itself protection against nested argument reads.
-                    // A local retained borrow already owns a lexical lease;
-                    // unlike incoming parameters it must not be double-leased.
+
+                checkArgument(
+                        argument, param, scope, callable, parameterIndex + 1);
+
+                if (loanPlace != null) {
                     boolean explicit = argument instanceof Ast.UnaryExpr unary
-                            && (unary.operator().equals("&") || unary.operator().equals("&mut"));
+                            && (unary.operator().equals("&")
+                                || unary.operator().equals("&mut"));
                     explicit |= argument instanceof Ast.RuntimeCallExpr runtime
                             && runtime.operation().equals("borrow")
                             && runtime.arguments().size() == 1;
                     boolean forwarded = argument instanceof Ast.NameExpr name
                             && isIncomingBorrow(scope.lookup(name.name()));
+
                     if (explicit || forwarded) {
-                        beginPersistentBorrow(loanOwner, mutable);
-                        activeLoans.add(new CallArgumentLoan(ownershipRoot(loanOwner), mutable));
+                        ProjectionLoan projectionLoan =
+                                beginPersistentBorrow(loanPlace, mutable);
+                        activeLoans.add(new CallArgumentLoan(
+                                ownershipRoot(loanPlace.owner()),
+                                mutable,
+                                projectionLoan));
                     }
-                    invocationLoans.put(loanOwner, mutable);
+                    invocationLoans.add(new InvocationLoan(loanPlace, mutable));
                 }
                 parameterIndex++;
             }
         } finally {
-            // Restore the parent scope on every path: successful call,
-            // failed argument and nested validation exception alike.
             for (int i = activeLoans.size() - 1; i >= 0; i--) {
                 CallArgumentLoan loan = activeLoans.get(i);
-                if (loan.mutable()) {
-                    if (!loan.root().mutableBorrowed)
-                        throw new IllegalStateException("missing exclusive call argument loan");
-                    loan.root().mutableBorrowed = false;
-                } else {
-                    if (loan.root().immutableBorrows <= 0)
-                        throw new IllegalStateException("missing shared call argument loan");
-                    loan.root().immutableBorrows--;
-                }
+                releasePersistentBorrow(
+                        loan.root(), loan.mutable(), loan.projectionLoan());
             }
         }
     }
 
-    private VarState invocationLoanRoot(Ast.Expr expression, Scope scope) {
+    private BorrowPlace invocationLoanPlace(
+            Ast.Expr expression,
+            Scope scope) {
         Ast.Expr place = null;
         if (expression instanceof Ast.UnaryExpr unary
-                && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+                && (unary.operator().equals("&")
+                    || unary.operator().equals("&mut"))) {
             place = unary.operand();
         } else if (expression instanceof Ast.RuntimeCallExpr runtime
-                && runtime.operation().equals("borrow") && runtime.arguments().size() == 1) {
+                && runtime.operation().equals("borrow")
+                && runtime.arguments().size() == 1) {
             place = runtime.arguments().getFirst();
         } else if (expression instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
-            return state == null ? null : ownershipRoot(state);
+            return state == null
+                    ? null
+                    : new BorrowPlace(state, state.type, List.of());
         }
 
-        // Resolve a simple syntactic owner without reading it first. A loan
-        // from an earlier argument may already prohibit such a read; the
-        // invocation alias map must issue the stable duplicate-loan error
-        // before ordinary usability checks. checkArgument validates this
-        // operand after the overlap test, including its visibility/mutability.
-        if (place instanceof Ast.NameExpr name) {
-            VarState state = scope.lookup(name.name());
-            return state == null ? null : ownershipRoot(state);
-        }
-        return place == null ? null : ownershipRoot(borrowPlace(place, scope).owner());
+        // Resolve without issuing a loan yet so the per-invocation path map can
+        // produce deterministic overlap diagnostics before ordinary validation.
+        return place == null ? null : resolveBorrowPlace(place, scope);
     }
 
     private void checkArgument(
