@@ -118,6 +118,48 @@ final class ActorRuntimePhysicalMailReceiptTest {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    private static ThreadLocal<Boolean> carrierMarker(
+            Class<?> owner, String fieldName) throws Exception {
+        var field = owner.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        return (ThreadLocal<Boolean>) field.get(null);
+    }
+
+    @Test
+    void carrierOnlyCallbacksCannotMintPhysicalMessageReceipts()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var received = new AtomicInteger();
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> received.incrementAndGet());
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            for (var entry : new Object[][] {
+                    {OresScheduler.class, "SCHEDULER_CARRIER"},
+                    {AsyncRuntime.class, "ASYNC_CARRIER"}}) {
+                var carrier = carrierMarker(
+                        (Class<?>) entry[0], (String) entry[1]);
+                Boolean before = carrier.get();
+                try {
+                    carrier.set(Boolean.TRUE);
+                    assertThrows(SecurityException.class,
+                            () -> runtime.sendWithPhysicalReceipt(actor, 1),
+                            "cleared active-turn marker must not confer CONTROL authority");
+                } finally {
+                    if (before == null) carrier.remove();
+                    else carrier.set(before);
+                }
+            }
+            var receipt = runtime.sendWithPhysicalReceipt(actor, 3);
+            assertEquals(0L, receipt.acceptedSequence(),
+                    "rejected carrier calls must not accept physical mail");
+            receipt.terminal().get(5, TimeUnit.SECONDS);
+            assertEquals(1, received.get());
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
     @Test
     void concurrentTrackedSendsHaveUniqueAcceptedSequencesAndComplete()
             throws Exception {
