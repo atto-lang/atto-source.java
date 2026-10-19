@@ -168,7 +168,7 @@ def verified_child_env():
 MAX_GITHUB_API_JSON_BYTES = 2 * 1024 * 1024
 
 
-def strict_github_api_json(raw):
+def strict_github_api_json(raw, root_type=dict):
     """Deny ambiguous or nonstandard responses used for security decisions."""
     if not isinstance(raw, str):
         raise Denied("invalid GitHub API JSON response")
@@ -210,12 +210,14 @@ def strict_github_api_json(raw):
                           parse_int=strict_int, parse_float=strict_float)
     except (ValueError, RecursionError) as exc:
         raise Denied("invalid GitHub API JSON response") from exc
-    if not isinstance(data, dict):
+    if root_type not in (dict, list):
+        raise Denied("invalid expected GitHub response shape")
+    if not isinstance(data, root_type):
         raise Denied("unexpected GitHub response shape")
     return data
 
 
-def gh_api(route, method="GET", payload=None):
+def gh_api(route, method="GET", payload=None, root_type=dict):
     argv = ["gh", "api", "--method", method, route,
             "--header", "Accept: application/vnd.github+json"]
     if payload is not None:
@@ -246,7 +248,7 @@ def gh_api(route, method="GET", payload=None):
     if p.returncode != 0:
         # Never echo stderr: a client can include private file bytes in errors.
         raise Denied("authenticated GitHub API request failed")
-    return strict_github_api_json(p.stdout)
+    return strict_github_api_json(p.stdout, root_type=root_type)
 
 
 def checked_repo(repository, expected_id=None):
@@ -527,6 +529,38 @@ def require_carrier_source_ruleset(repository, ruleset_id):
     if (not isinstance(params, dict)
             or params.get("update_allows_fetch_and_merge") is not False):
         raise Denied("private carrier Oreslang ref update rule is not fully immutable")
+    return ruleset_id
+
+
+def require_effective_carrier_source_rules(repository, branch, ruleset_id):
+    """Prove GitHub applies the reviewed immutable ruleset to this exact CI ref."""
+    if not isinstance(branch, str) or BRANCH.fullmatch(branch) is None:
+        raise Denied("private carrier effective-rules branch is invalid")
+    if type(ruleset_id) is not int or ruleset_id <= 0:
+        raise Denied("private carrier source ruleset ID is invalid")
+    # Branch is validated above and contains only one slash plus hex/hyphen.
+    # Encode the slash so GitHub interprets the complete ref name as one path parameter.
+    encoded_branch = branch.replace("/", "%2F")
+    effective = gh_api(
+        f"repos/{repository}/rules/branches/{encoded_branch}", root_type=list)
+    if not effective or not all(isinstance(rule, dict) for rule in effective):
+        raise Denied("effective private carrier source-branch rules are unavailable")
+    matched = [
+        rule for rule in effective
+        if type(rule.get("ruleset_id")) is int
+        and rule["ruleset_id"] == ruleset_id
+        and rule.get("ruleset_source_type") == "Repository"
+        and isinstance(rule.get("ruleset_source"), str)
+        and rule["ruleset_source"].casefold() == repository.casefold()
+    ]
+    types = [rule.get("type") for rule in matched]
+    if types.count("update") != 1 or types.count("deletion") != 1:
+        raise Denied("reviewed carrier ruleset is not effective for the exact CI branch")
+    update = next(rule for rule in matched if rule.get("type") == "update")
+    params = update.get("parameters")
+    if (not isinstance(params, dict)
+            or params.get("update_allows_fetch_and_merge") is not False):
+        raise Denied("effective private carrier update rule is not immutable")
     return ruleset_id
 
 
@@ -1116,6 +1150,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     carrier_approval_sha, carrier_ruleset_id = require_carrier_source_approval(
         repository, expected_source_commit, expected_source_tree, base_sha)
     require_carrier_source_ruleset(repository, carrier_ruleset_id)
+    require_effective_carrier_source_rules(
+        repository, branch, carrier_ruleset_id)
     # The ledger read itself must come from the same carrier main revision
     # that the source-side approval pinned.
     require_pinned_carrier_main(base_sha, approved_carrier_tree)
@@ -1155,6 +1191,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         if carrier_approval[1] != carrier_ruleset_id:
             raise Denied("private carrier source ruleset approval changed during transfer")
         require_carrier_source_ruleset(repository, carrier_ruleset_id)
+        require_effective_carrier_source_rules(
+            repository, branch, carrier_ruleset_id)
         require_pinned_carrier_main(base_sha, approved_carrier_tree)
 
     isolated_sha = None
