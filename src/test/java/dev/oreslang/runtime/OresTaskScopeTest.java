@@ -183,4 +183,99 @@ final class OresTaskScopeTest {
         assertThrows(IllegalStateException.class, OresTaskScope::openCurrent);
     }
 
+
+    @Test
+    void terminalAccountingBypassesBlockingOrdinarySubscriber() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            CountDownLatch childEntered = new CountDownLatch(1);
+            CountDownLatch releaseChild = new CountDownLatch(1);
+            CountDownLatch subscriberEntered = new CountDownLatch(1);
+            CountDownLatch releaseSubscriber = new CountDownLatch(1);
+
+            OresFuture<Integer> child = scope.fork(resume -> {
+                childEntered.countDown();
+                assertTrue(releaseChild.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(42);
+            });
+            assertTrue(childEntered.await(5, TimeUnit.SECONDS));
+
+            child.whenCompleteRuntime((value, failure) -> {
+                subscriberEntered.countDown();
+                try {
+                    releaseSubscriber.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+
+            OresFuture<Void> drained = scope.quiesce();
+            releaseChild.countDown();
+
+            assertTrue(subscriberEntered.await(5, TimeUnit.SECONDS));
+            assertTrue(drained.isDone(),
+                    "scope terminal accounting must run before ordinary Future subscribers");
+            assertNull(drained.get(5, TimeUnit.SECONDS));
+
+            releaseSubscriber.countDown();
+            assertEquals(42, child.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void structuredCancellationRevokesAllChildrenBeforeSubscriberPublication() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(3)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            CountDownLatch entered = new CountDownLatch(3);
+            CountDownLatch releaseTasks = new CountDownLatch(1);
+            CountDownLatch subscriberEntered = new CountDownLatch(1);
+            CountDownLatch releaseSubscribers = new CountDownLatch(1);
+            java.util.List<OresFuture<Integer>> children = new java.util.ArrayList<>();
+
+            for (int i = 0; i < 3; i++) {
+                OresFuture<Integer> child = scope.fork(resume -> {
+                    entered.countDown();
+                    assertTrue(releaseTasks.await(5, TimeUnit.SECONDS));
+                    return OresScheduler.done(1);
+                });
+                child.whenCompleteRuntime((value, failure) -> {
+                    subscriberEntered.countDown();
+                    try {
+                        releaseSubscribers.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                children.add(child);
+            }
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            AtomicReference<OresFuture<Void>> drainedRef = new AtomicReference<>();
+            Thread canceller = Thread.ofPlatform().start(
+                    () -> drainedRef.set(scope.cancelAndQuiesce()));
+
+            assertTrue(subscriberEntered.await(5, TimeUnit.SECONDS),
+                    "at least one ordinary subscriber should be blocking publication");
+            for (OresFuture<Integer> child : children) {
+                assertTrue(child.isCancelled(),
+                        "all child cancellation claims must win before subscriber publication");
+                assertNotNull(child.runtimeTerminalStateOrNull(),
+                        "all child revocation hooks must finish before the first subscriber can block");
+            }
+
+            releaseSubscribers.countDown();
+            canceller.join(5000);
+            assertFalse(canceller.isAlive());
+
+            OresFuture<Void> drained = drainedRef.get();
+            assertNotNull(drained);
+            assertFalse(drained.isDone(),
+                    "physical child carriers are still executing after logical cancellation");
+
+            releaseTasks.countDown();
+            assertNull(drained.get(5, TimeUnit.SECONDS));
+            assertEquals(0, scope.activeChildren());
+        }
+    }
+
 }
