@@ -1,5 +1,6 @@
 # Private CI destinations explicitly approved for source transfers.
 # No repositories are approved by default.
 # Changes must be reviewed by maintainers and security owners on a protected branch.
-# Format: one exact owner/repo per uncommented line, no whitespace or wildcards.
-ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra
+# Format: exact owner/repo, one ASCII space, immutable numeric GitHub repository ID.
+# No wildcards, aliases, redirects, or slug-only approvals.
+ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra 1412142815
