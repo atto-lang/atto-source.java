@@ -3491,7 +3491,8 @@ public final class OresEvalRootNode extends RootNode {
                                                         t2,
                                                         indexValue(
                                                                 receiver,
-                                                                key),
+                                                                key,
+                                                                env),
                                                         null);
                                             } catch (RuntimeException | Error failure3) {
                                                 continuation.accept(
@@ -3775,9 +3776,9 @@ public final class OresEvalRootNode extends RootNode {
                                 "duplicate struct field " + entry.getKey());
                     }
                 }
-                Object built = object.explicitStruct()
-                        ? result
-                        : new ReadonlyRecordValue(result);
+                Object built = object.structuralRecord()
+                        ? new ReadonlyRecordValue(result)
+                        : result;
                 continuation.accept(task, built, null);
                 return;
             }
@@ -4486,7 +4487,32 @@ public final class OresEvalRootNode extends RootNode {
             return Math.toIntExact(((Number) value).longValue());
         }
 
-        private Object indexValue(Object receiver, Object index) {
+        private Object indexValue(Object receiver, Object index, Env env) {
+            if (receiver instanceof OresObject object) {
+                if (!(index instanceof String key)) {
+                    throw new IllegalArgumentException(
+                            "class field index must be a String");
+                }
+                OwnedField ownedField = object.owner.findField(
+                        object.klass, key, new LinkedHashSet<>());
+                if (ownedField == null) {
+                    throw new IllegalArgumentException(
+                            "unknown class field key " + object.klass.name() + "." + key);
+                }
+                object.owner.requireClassMemberVisible(
+                        ownedField.field().visibility(),
+                        ownedField.owner(),
+                        env == null ? null : env.accessClass(),
+                        "field",
+                        ownedField.field().name());
+                Object value = object.fields.get(key);
+                if (value == UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            "field '" + object.klass.name() + "." + key
+                                    + "' is read before constructor initialization");
+                }
+                return value;
+            }
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
                     throw new IllegalArgumentException(
@@ -4509,6 +4535,62 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof Object[] array) return array[i];
             throw new IllegalArgumentException(
                     "value is not indexable");
+        }
+
+        private Object assignIndexValue(
+                Object receiver,
+                Object key,
+                Object value,
+                Env env) {
+            if (receiver instanceof OresObject object) {
+                if (!(key instanceof String fieldName)) {
+                    throw new IllegalArgumentException(
+                            "class field index must be a String");
+                }
+                OwnedField targetField = object.owner.findField(
+                        object.klass, fieldName, new LinkedHashSet<>());
+                if (targetField == null) {
+                    throw new IllegalArgumentException(
+                            "unknown class field key " + object.klass.name() + "." + fieldName);
+                }
+                object.owner.requireClassMemberVisible(
+                        targetField.field().visibility(),
+                        targetField.owner(),
+                        env == null ? null : env.accessClass(),
+                        "field",
+                        targetField.field().name());
+                if (targetField.field().bindingKind() != Ast.BindingKind.LET) {
+                    throw new IllegalArgumentException(
+                            "field '" + targetField.owner().name() + "."
+                                    + targetField.field().name()
+                                    + "' is immutable/final");
+                }
+                object.fields.put(fieldName, value);
+                return value;
+            }
+            if (receiver instanceof LinkedHashMap<?, ?> rawStruct) {
+                if (!(key instanceof String fieldName)) {
+                    throw new IllegalArgumentException(
+                            "struct field index must be a String");
+                }
+                @SuppressWarnings("unchecked")
+                LinkedHashMap<String, Object> struct =
+                        (LinkedHashMap<String, Object>) rawStruct;
+                if (!struct.containsKey(fieldName)) {
+                    throw new IllegalArgumentException(
+                            "unknown struct field key " + fieldName);
+                }
+                struct.put(fieldName, value);
+                return value;
+            }
+            if (receiver instanceof List<?> raw) {
+                @SuppressWarnings("unchecked")
+                List<Object> list = (List<Object>) raw;
+                list.set(sequenceIndex(key), value);
+                return value;
+            }
+            throw new IllegalArgumentException(
+                    "indexed assignment requires mutable class/struct state or a mutable sequence");
         }
 
         private Object unaryValue(String operator, Object value) {
@@ -4568,14 +4650,7 @@ public final class OresEvalRootNode extends RootNode {
             if (target instanceof Ast.IndexExpr index) {
                 Object receiver = eval(index.receiver(), env);
                 Object key = eval(index.index(), env);
-                if (receiver instanceof List<?> raw) {
-                    @SuppressWarnings("unchecked")
-                    List<Object> list = (List<Object>) raw;
-                    list.set(sequenceIndex(key), value);
-                    return value;
-                }
-                throw new IllegalArgumentException(
-                        "indexed assignment requires a mutable array/list; struct fields use statically known member assignment");
+                return assignIndexValue(receiver, key, value, env);
             }
             throw new IllegalArgumentException(
                     "unsupported assignment target");
@@ -6266,14 +6341,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
-                    int i = sequenceIndex(index);
-                    if (receiver instanceof List<?> raw) {
-                        @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
-                        list.set(i, value);
-                        return value;
-                    }
-                    throw new IllegalArgumentException(
-                            "indexed assignment requires a mutable array/list; struct fields use statically known member assignment");
+                    return assignIndexValue(receiver, index, value, env);
                 }
                 throw new IllegalArgumentException("unsupported assignment target");
             }
@@ -6406,7 +6474,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
             if (expr instanceof Ast.IndexExpr indexed) {
-                return indexValue(eval(indexed.receiver(), env), eval(indexed.index(), env));
+                return indexValue(
+                        eval(indexed.receiver(), env),
+                        eval(indexed.index(), env),
+                        env);
             }
             if (expr instanceof Ast.NewExpr created) {
                 if (created.type().name().equals("Array")
@@ -6521,8 +6592,9 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException("duplicate struct field " + key);
                     }
                 }
-                if (object.explicitStruct()) return result;
-                return new ReadonlyRecordValue(result);
+                return object.structuralRecord()
+                        ? new ReadonlyRecordValue(result)
+                        : result;
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -9257,9 +9329,10 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     /**
-     * Runtime provenance for infer struct. It behaves as a Map for existing
-     * structural operations while remaining immutable across aliases and async
-     * detachment/copy boundaries.
+     * Runtime representation for structural record values. It behaves as a Map
+     * for structural reads while remaining immutable across aliases and async
+     * detachment/copy boundaries. Concrete structs use mutable owned maps; the
+     * static binding/borrow checker decides whether a particular reference may write.
      */
     private static final class ReadonlyRecordValue
             extends java.util.AbstractMap<String, Object>
@@ -9374,7 +9447,7 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         write("}");
                     } else if (value instanceof ReadonlyRecordValue readonly) {
-                        write("infer struct");
+                        write("record");
                         append(readonly.fields, depth + 1);
                     } else if (value instanceof OptionValue option) {
                         if (!option.present()) {
