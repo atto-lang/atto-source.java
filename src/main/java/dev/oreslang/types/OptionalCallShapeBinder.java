@@ -478,9 +478,14 @@ public final class OptionalCallShapeBinder {
     }
 
     private static void requireNoOmittableTypeOutsideFormal(Ast.TypeRef type, String location) {
+        if (type != null && type.containsStagedV3Option()) {
+            throw new IllegalArgumentException(
+                    "staged v3 type '?' in " + location
+                    + " requires verified Option identity and ABI lowering");
+        }
         if (type != null && type.isOmittableFormal()) {
             throw new IllegalArgumentException(
-                    "T? is only valid on formal argument slots, not " + location);
+                    "legacy T? is only valid on formal argument slots, not " + location);
         }
     }
 
@@ -488,6 +493,11 @@ public final class OptionalCallShapeBinder {
         Objects.requireNonNull(parameters, "parameters");
         for (Ast.Param formal : parameters) {
             Objects.requireNonNull(formal, "formal");
+            if (formal.type().containsStagedV3Option()) {
+                throw new IllegalArgumentException(
+                        "staged v3 Option type '?' for '" + formal.name()
+                        + "' requires nominal resolution/ownership/ABI lowering");
+            }
             if (formal.argumentOmittable()) {
                 throw new IllegalArgumentException(
                         "v3 parameter-name '?' for '" + formal.name()
@@ -555,9 +565,9 @@ public final class OptionalCallShapeBinder {
         List<Parameter> result = new ArrayList<>(parameters.size());
         for (Ast.Param formal : parameters) {
             Objects.requireNonNull(formal, "formal");
-            if (formal.argumentOmittable()) {
+            if (formal.argumentOmittable() || formal.type().containsStagedV3Option()) {
                 throw new IllegalArgumentException(
-                        "legacy binder cannot reinterpret v3 name-suffix argument presence");
+                        "legacy binder cannot reinterpret staged v3 type/presence metadata");
             }
             result.add(formal.optional() ? Parameter.optional(formal.name())
                                          : Parameter.required(formal.name()));
@@ -622,9 +632,9 @@ public final class OptionalCallShapeBinder {
         List<Parameter> result = new ArrayList<>(formals.size());
         for (Ast.Param formal : formals) {
             Objects.requireNonNull(formal, "formal");
-            if (formal.argumentOmittable()) {
+            if (formal.argumentOmittable() || formal.type().containsStagedV3Option()) {
                 throw new IllegalArgumentException(
-                        "legacy formal binder cannot reinterpret v3 name-suffix argument presence");
+                        "legacy formal binder cannot reinterpret staged v3 type/presence metadata");
             }
             if (formal.optional() && (formal.structural() || formal.mutable())) {
                 throw new IllegalArgumentException(
