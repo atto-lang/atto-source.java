@@ -49,7 +49,8 @@ public final class IpcTransportSessionLeaseSelfTest {
         AtomicInteger writes = new AtomicInteger();
         AtomicInteger closes = new AtomicInteger();
         var transport = new IpcTransportSessionLease(frame, 81, 1,
-                bridge, value -> writes.incrementAndGet(), closes::incrementAndGet,
+                bridge, (value, preparedFrame) -> writes.incrementAndGet(),
+                closes::incrementAndGet,
                 IpcTransportSessionLeaseSelfTest::offCallerCleanup);
         transport.writeFrame(81, frame, new byte[] { 1 });
         check(writes.get() == 1);
@@ -103,6 +104,31 @@ public final class IpcTransportSessionLeaseSelfTest {
         check(failedCloses.get() == 1);
         check(failing.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
         check(failing.invariant());
+
+        // VM-level host Errors are never converted into ordinary send
+        // failures. The lease still requests close, releases the write pin,
+        // and retires the committed correlation as OUTCOME_UNKNOWN.
+        var fatalBridge = new IpcReceiptCompletionBridge(1);
+        var fatalMessage = message(1, "fatal");
+        var fatalFuture = fatalBridge.admit(fatalMessage);
+        AtomicInteger fatalCloses = new AtomicInteger();
+        var fatal = new IpcTransportSessionLease(fatalMessage, 551, 1,
+                fatalBridge, (value, preparedFrame) -> {
+                    throw new AssertionError("fatal writer");
+                }, fatalCloses::incrementAndGet,
+                IpcTransportSessionLeaseSelfTest::offCallerCleanup);
+        try {
+            fatal.writeFrame(551, fatalMessage, new byte[] { 1 });
+            throw new AssertionError("fatal writer Error was swallowed");
+        } catch (AssertionError expected) {
+            check(expected.getMessage().equals("fatal writer"));
+        }
+        check(fatalFuture.toCompletableFuture().join()
+                == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+        check(fatalCloses.get() == 1);
+        check(fatal.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
+        check(fatal.snapshot().activeWrites() == 0);
+        check(fatal.invariant());
 
         // A failed physical close is QUARANTINED, never marked reusable.
         var quarantineBridge = new IpcReceiptCompletionBridge(1);
