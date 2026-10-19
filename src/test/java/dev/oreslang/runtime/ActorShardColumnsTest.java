@@ -65,6 +65,11 @@ final class ActorShardColumnsTest {
                 for (int i = 0; i < 65; i++) assertEquals(4.0 * i, copy[i]);
                 actor.stop();
                 assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+                java.lang.reflect.Field storageField =
+                        ActorShardColumns.class.getDeclaredField("storage");
+                storageField.setAccessible(true);
+                assertNull(storageField.get(confined.get()),
+                        "actor finalization must detach shared backing before quota refund");
                 assertThrows(SecurityException.class,
                         () -> confined.get().integrate(0, 1, 1));
             }
