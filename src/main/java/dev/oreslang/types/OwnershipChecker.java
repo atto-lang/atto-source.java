@@ -330,6 +330,10 @@ public final class OwnershipChecker {
                     }
                 }
                 ValueInfo returned = checkExpr(ret.value(), scope, true);
+                if (containsMlScalarCapabilityType(returned.type)
+                        && actorStateLoanDepth == 0) {
+                    throw error("actor scalar snapshot/publication capabilities cannot be returned from ordinary functions/routines");
+                }
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
@@ -345,6 +349,9 @@ public final class OwnershipChecker {
                 throw error("cannot yield while a borrow is live; suspended generator frames currently require owned locals");
             }
             ValueInfo value = checkExpr(yielded.value(), scope, true);
+            if (containsMlScalarCapabilityType(value.type)) {
+                throw error("actor scalar snapshot/publication capabilities cannot cross a yield boundary");
+            }
             Ast.TypeRef exposed = yielded.delegated()
                     ? iterableElementType(value.type, currentAsyncGenerator)
                     : value.type;
@@ -692,6 +699,10 @@ public final class OwnershipChecker {
         Ast.TypeRef storedType = binding.declaredType() == null ? value.type : binding.declaredType();
         if (readonlyRecord && storedType.isRecordType() && !storedType.isReadonlyRecordType()) {
             storedType = Ast.TypeRef.readonlyRecordType(storedType.recordMembers());
+        }
+        if (binding.kind() == Ast.BindingKind.LET
+                && containsMlScalarCapabilityType(storedType)) {
+            throw error("actor scalar snapshot/publication capabilities are linear and cannot use let; bind them once with val/const");
         }
         if (binding.kind() == Ast.BindingKind.LET && containsMutexGuardType(storedType)) {
             throw error("guard-bearing values are linear and cannot use let; bind them once with val");
@@ -1575,6 +1586,9 @@ public final class OwnershipChecker {
             if (parameterCount == call.arguments().size()) {
                 for (int i = 0; i < call.arguments().size(); i++) {
                     ValueInfo argument = checkExpr(call.arguments().get(i), scope, false);
+                    if (containsMlScalarCapabilityType(argument.type)) {
+                        throw error("actor scalar snapshot/publication capabilities cannot cross a first-class Fnc call boundary");
+                    }
                     if (containsMutexGuardType(argument.type)) {
                         throw error("guard-bearing values cannot cross a first-class Fnc call boundary");
                     }
@@ -1590,6 +1604,9 @@ public final class OwnershipChecker {
         // Unknown host/dynamic callables remain conservative and consuming.
         for (Ast.Expr arg : call.arguments()) {
             ValueInfo argument = checkExpr(arg, scope, true);
+            if (containsMlScalarCapabilityType(argument.type)) {
+                throw error("actor scalar snapshot/publication capabilities cannot cross an arbitrary call boundary");
+            }
             if (containsMutexGuardType(argument.type)) {
                 throw error("guard-bearing values cannot cross an arbitrary call boundary");
             }
@@ -1726,6 +1743,10 @@ public final class OwnershipChecker {
         }
         if (param.structural() && !param.type().isBorrow()) {
             ValueInfo argument = checkExpr(arg, scope, false);
+            if (containsMlScalarCapabilityType(argument.type)) {
+                throw error(callable + " argument " + position
+                        + " cannot receive actor scalar snapshot/publication capabilities");
+            }
             if (containsMutexGuardType(argument.type)
                     || (mutexCriticalSectionDepth > 0 && argument.type.isBorrow())) {
                 throw error(callable + " argument " + position
@@ -1763,6 +1784,10 @@ public final class OwnershipChecker {
             throw error(callable + " argument " + position + " must be an explicit borrow");
         }
         ValueInfo argument = checkExpr(arg, scope, true);
+        if (containsMlScalarCapabilityType(argument.type)) {
+            throw error(callable + " argument " + position
+                    + " cannot consume actor scalar snapshot/publication capabilities");
+        }
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
@@ -2951,6 +2976,10 @@ public final class OwnershipChecker {
             // Borrowed aliases of self follow ordinary lexical lifetime rules.
             if (isDirectActorSelfCapture(capture) && isActorConfinedBorrow(source)) continue;
 
+            if (containsMlScalarCapabilityType(source.type)) {
+                throw error("deferred/select continuation cannot capture actor scalar snapshot/publication capability '"
+                        + capture.name + "'");
+            }
             if (source.kind == ValueKind.IMM_BORROW
                     || source.kind == ValueKind.MUT_BORROW
                     || source.type.isBorrow()) {
