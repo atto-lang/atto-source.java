@@ -5070,6 +5070,13 @@ public final class TypeChecker {
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
         }
         if (named.name().equals("ActorRef")) {
+            // The runtime's rejectUntrustedInboundCapabilities rejects live
+            // ActorRef values before accepting UNTRUSTED mailbox messages.
+            // Enforce the same rule statically, including nested containers.
+            if (actorKind == Ast.ActorKind.UNTRUSTED) {
+                throw new IllegalArgumentException(
+                        where + " cannot transport ActorRef to an untrusted actor; untrusted mailboxes are data-only");
+            }
             // ActorRef is a sealed, generation-bound routing capability, not
             // an ordinary nominal object or an automatically Send/Sync value.
             // Runtime transport enforces actor-runtime ownership and epoch.
