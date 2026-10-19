@@ -104,8 +104,14 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     /** Released at terminal CAS so retained settled Futures cannot pin actor/channel state. */
     private volatile BooleanSupplier cancelAdmission;
-    /** One-shot release after terminal subscribers complete; never retain owners afterwards. */
+    /**
+     * Runtime-only release after terminal subscribers complete. A failing
+     * release remains owned and may be retried by the runtime; callbacks used
+     * here must therefore be idempotent. Successful execution clears it.
+     */
     private volatile Runnable onNotificationDrained;
+    private final Object notificationDrainLock = new Object();
+    private volatile boolean notificationDrainReady;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
     /**
@@ -498,9 +504,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                     notifyWaiter(waiter, terminal);
                 }
             } finally {
-                Runnable drained = onNotificationDrained;
-                onNotificationDrained = null;
-                if (drained != null) drained.run();
+                notificationDrainReady = true;
+                retryNotificationDrainedFromRuntime();
             }
         };
         if (!state.compareAndSet(PENDING, terminal)) return null;
@@ -699,12 +704,36 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             // Terminal state can be visible long before a synchronous waiter
             // returns. A bounded host notification permit cannot be reused
             // just because isDone() became true during a blocked callback.
-            Runnable drained = onNotificationDrained;
-            onNotificationDrained = null;
-            // There is exactly one winning terminal CAS, hence one release.
-            // Keep the callback live until every synchronous waiter returns.
-            if (drained != null) drained.run();
+            // Publish readiness only after every ordinary waiter was drained.
+            // If the release itself fails, retain it for explicit runtime
+            // retry instead of losing the only accounting owner.
+            notificationDrainReady = true;
+            retryNotificationDrainedFromRuntime();
         }
+    }
+
+    /**
+     * Runtime-only retry for the terminal notification-drain owner.
+     *
+     * <p>This never replays the Future result or ordinary completion waiters.
+     * It may only run after the original settlement reached the post-waiter
+     * drain point. A callback is forgotten only after it returns normally.</p>
+     */
+    boolean retryNotificationDrainedFromRuntime() {
+        if (!notificationDrainReady || state.get() == PENDING) return false;
+        synchronized (notificationDrainLock) {
+            Runnable drained = onNotificationDrained;
+            if (drained == null) return true;
+            drained.run();
+            if (onNotificationDrained == drained) {
+                onNotificationDrained = null;
+            }
+            return true;
+        }
+    }
+
+    boolean runtimeNotificationDrained() {
+        return notificationDrainReady && onNotificationDrained == null;
     }
 
     @SuppressWarnings("unchecked")
