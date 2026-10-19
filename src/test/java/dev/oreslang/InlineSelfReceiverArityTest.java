@@ -142,6 +142,24 @@ final class InlineSelfReceiverArityTest {
     }
 
     @Test
+    void inheritedOverridesCannotDistinguishImplicitAndInlineSelf() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Base as
+                  pub pick(self, int x): int { return x; }
+                end
+                define class Child extends Base as
+                  pub pick(int x): int { return x + 1; }
+                end
+                define class ReverseBase as
+                  pub pick(int x): int { return x; }
+                end
+                define class ReverseChild extends ReverseBase as
+                  pub pick(self, int x): int { return x + 1; }
+                end
+                """)));
+    }
+
+    @Test
     void explicitlyBorrowedSelfIsARealUserArgument() {
         String program = """
                 define class Counter as
