@@ -162,6 +162,10 @@ final class TaskAccessVerifier {
     // memory use or integer overflow. A future MIR implementation can shard.
     private static final int MAX_CHILDREN = 4096;
     private static final int MAX_CLAIMS_PER_CHILD = 1024;
+    private static final int MAX_LIVE_CLAIMS = 8192;
+    // Avoid quadratic compile-time DoS: a single admission cannot demand
+    // more than two million pairwise compatibility decisions.
+    private static final long MAX_PAIRWISE_CHECKS_PER_ADMISSION = 2_000_000L;
     private static final int MAX_TRACKED_ALLOCATIONS = 65536;
 
     private final Map<Ticket, Child> live = new LinkedHashMap<>();
@@ -169,6 +173,7 @@ final class TaskAccessVerifier {
     /** Single trusted allocation/trust domain per scope, including READ-only claims. */
     private ScopeKey scopeDomain;
     private long nextId = 1;
+    private int liveClaimCount;
     private boolean sealed;
 
     /**
@@ -230,8 +235,15 @@ final class TaskAccessVerifier {
     public synchronized Ticket admit(List<Claim> requested) {
         if (sealed) throw new IllegalStateException("TaskScope is sealed");
         List<Claim> claims = List.copyOf(Objects.requireNonNull(requested, "claims"));
-        if (live.size() >= MAX_CHILDREN || claims.size() > MAX_CLAIMS_PER_CHILD) {
+        if (live.size() >= MAX_CHILDREN || claims.size() > MAX_CLAIMS_PER_CHILD
+                || claims.size() > MAX_LIVE_CLAIMS - liveClaimCount) {
             throw new IllegalStateException("TaskScope access capacity exceeded");
+        }
+        long claimCount = claims.size();
+        long comparisons = claimCount * liveClaimCount
+                + claimCount * (claimCount - 1) / 2;
+        if (comparisons > MAX_PAIRWISE_CHECKS_PER_ADMISSION) {
+            throw new IllegalStateException("TaskScope proof-comparison budget exceeded");
         }
         Map<AllocationKey, Long> incomingGenerations = new HashMap<>();
         ScopeKey requestedDomain = scopeDomain;
@@ -278,6 +290,7 @@ final class TaskAccessVerifier {
         // Only now commit the scope domain, claims and allocation generations.
         scopeDomain = requestedDomain;
         live.put(ticket, new Child(claims));
+        liveClaimCount += claims.size();
         for (Claim claim : claims) {
             Root root = claim.place().root();
             knownGenerations.putIfAbsent(
@@ -316,8 +329,9 @@ final class TaskAccessVerifier {
      * physically quiescent. The ledger itself cannot prove runtime quiescence.
      */
     public synchronized void quiescent(Ticket ticket) {
-        child(ticket); // validates this exact ticket belongs to this scope
+        Child completed = child(ticket); // validates this exact ticket belongs to this scope
         live.remove(ticket);
+        liveClaimCount -= completed.claims.size();
     }
 
     /**
@@ -352,7 +366,7 @@ final class TaskAccessVerifier {
     }
 
     public synchronized void finishScope() {
-        if (!live.isEmpty()) {
+        if (!live.isEmpty() || liveClaimCount != 0) {
             throw new IllegalStateException("TaskScope cannot finish before child quiescence");
         }
         sealed = true;
@@ -363,6 +377,7 @@ final class TaskAccessVerifier {
     }
 
     public synchronized int activeChildren() { return live.size(); }
+    public synchronized int activeClaims() { return liveClaimCount; }
 
     private Child child(Ticket ticket) {
         Child result = live.get(Objects.requireNonNull(ticket, "ticket"));
