@@ -36,5 +36,8 @@ javac --release 21 -Xlint:all -Werror -d "$tmp/classes" \
     src/main/java/dev/oreslang/runtime/UnaryTransportFrame.java \
     src/main/java/dev/oreslang/runtime/UnaryTcpSessionAdapter.java \
     src/main/java/dev/oreslang/runtime/UnaryTcpMutualTlsAuthenticator.java \
-    src/test/java/dev/oreslang/runtime/UnaryTcpMutualTlsLoopbackCheck.java
+    src/main/java/dev/oreslang/runtime/UnaryTcpTlsListener.java \
+    src/test/java/dev/oreslang/runtime/UnaryTcpMutualTlsLoopbackCheck.java \
+    src/test/java/dev/oreslang/runtime/UnaryTcpTlsListenerCheck.java
 java -cp "$tmp/classes" dev.oreslang.runtime.UnaryTcpMutualTlsLoopbackCheck "$tmp"
+java -cp "$tmp/classes" dev.oreslang.runtime.UnaryTcpTlsListenerCheck "$tmp"
