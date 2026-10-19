@@ -1056,3 +1056,38 @@ handoff, not a guest invocation. The JUnit methods include original
 have not passed** until actual Maven/GraalVM Actions execute on the exact
 Git tree. Do not promote this into the default compiler until provenance,
 effect order, nested expressions, receiver and async ownership are proven.
+
+
+## Experimental implicit empty-call bridge (opt-in; not default execution)
+
+`LiteralOptionalCallCompiler.lowerImplicitAndAnalyze(source, moduleName,
+callerName)` is a **separate opt-in API**, not a relaxation of the default
+parser, TypeChecker, OwnershipChecker, or runtime staged-call rejection. It
+parses untrusted text fresh, requires one unimported undecorated module and an
+ordinary caller, identifies exactly one immediate **original** `CallExpr` of
+the form `greet()`, and rejects type application, supplied arguments,
+overloaded targets, recursion, missing targets, and zero-formal/required-formal
+targets. Every selected target formal must be `T?` with an exact scalar
+`T` (int/float/bool/string).
+
+Only after checking that source occurrence does this opt-in bridge create a
+single intermediate `StagedCallExpr` with no supplied items; it then reuses
+`SameModuleLiteralInvocation`, the checked formal-order ABI slot plan,
+`Option<T>` substitution and `OresCompiler.analyze` (real TypeChecker
+**and** OwnershipChecker). Thus a call with multiple optional formals yields
+one independent typed `None` per formal, without an invented source
+expression, missing required value or evaluation-order effect.
+
+The existing `lowerAndAnalyze` API still requires an original staged
+named/omitted call, and the normal production compiler still rejects
+unlowered `T?` formals. The opt-in return object is checked **AST**, not a
+guest-executable capability: no arbitrary source or AST can skip compilation,
+and no public guest program automatically obtains this lowering yet. Target
+body/return correctness still depends on both real checkers and needs actual
+JDK25/JUnit and runtime test evidence before any integration.
+
+The new JUnit source regressions cover successful `greet()`, multiple
+optional parameters, explicit/default gate separation, and negatives for
+required or zero-formal signatures, ambiguity, generic type application,
+and nonempty calls. They are committed but **not claimed green** until a
+funded runner executes the exact source tree.
