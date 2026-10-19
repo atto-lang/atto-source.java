@@ -1,7 +1,9 @@
 package dev.oreslang.types;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -64,6 +66,9 @@ public final class ThreadSafetyTraits {
             "TRef", "Ref", "UnsafeCell");
 
     public enum Trait { SEND, SYNC }
+
+    // Keep depth-keyed memoization collision-free if the trusted trait set grows.
+    private static final int TRAIT_COUNT = Trait.values().length;
 
     @FunctionalInterface
     public interface NominalProof {
@@ -158,14 +163,18 @@ public final class ThreadSafetyTraits {
         // never turn a recursive cycle into a positive result.
         if (!visiting.add(type)) return false;
         try {
-            Boolean[] cached = proven.get(type);
-            if (cached != null && cached[trait.ordinal()] != null) {
-                return cached[trait.ordinal()];
+            // A proof reached at a shallow depth cannot authorize the same
+            // physical type node when another path reaches it deeper. Otherwise
+            // identity memoization can bypass MAX_TYPE_DEPTH on shared DAGs.
+            int proofKey = depth * TRAIT_COUNT + trait.ordinal();
+            Map<Integer, Boolean> cached = proven.get(type);
+            if (cached != null && cached.containsKey(proofKey)) {
+                return cached.get(proofKey);
             }
             boolean result = derive(
                     type, trait, nominalProof, visiting, proven, steps, depth);
-            proven.computeIfAbsent(type,
-                    ignored -> new Boolean[Trait.values().length])[trait.ordinal()] = result;
+            proven.computeIfAbsent(type, ignored -> new HashMap<>())
+                    .put(proofKey, result);
             return result;
         } finally {
             visiting.remove(type);
