@@ -120,11 +120,47 @@ public final class AsyncRuntime implements AutoCloseable {
      */
     public <T> OresTask<T> submitTask(Task<T> task) {
         Objects.requireNonNull(task, "task");
-        TaskExit exit = new TaskExit();
-        OresTask<T> owner = new OresTask<>(exit.quiesced);
-        OresFuture<T> completion = submitInternal(task, exit);
-        owner.attachCompletion(completion);
-        return owner;
+        TaskAdmission<T> admitted = prepareTaskAdmission();
+        submitPreparedTask(admitted, task);
+        return admitted.owner;
+    }
+
+    /**
+     * Compiler/runtime-only physical ownership reservation. A scope owns the
+     * Task shell and quiescence fence before dispatch, so cancellation and
+     * close can join a producer even if executor admission blocks.
+     */
+    static final class TaskAdmission<T> {
+        private final TaskExit exit = new TaskExit();
+        final OresTask<T> owner = OresTask.provisional(exit.quiesced);
+        private final java.util.concurrent.atomic.AtomicBoolean started =
+                new java.util.concurrent.atomic.AtomicBoolean();
+    }
+
+    <T> TaskAdmission<T> prepareTaskAdmission() {
+        return new TaskAdmission<>();
+    }
+
+    <T> void submitPreparedTask(TaskAdmission<T> admission, Task<T> task) {
+        Objects.requireNonNull(admission, "admission");
+        Objects.requireNonNull(task, "task");
+        if (!admission.started.compareAndSet(false, true))
+            throw new IllegalStateException("Task admission already attempted");
+        try {
+            OresFuture<T> completion = submitInternal(task, admission.exit);
+            // If the owner was cancelled while the host executor was
+            // admitting it, binding replays cancellation without scope locks.
+            admission.owner.attachCompletion(completion);
+        } catch (RuntimeException | Error failure) {
+            // A pre-dispatch failure has no carrier to retire the fence.
+            // Never claim physical exit when a carrier already entered.
+            if (admission.exit.state.compareAndSet(0, 2)) {
+                OresFuture<?> registered = admission.exit.completion;
+                if (registered != null) taskExits.remove(registered, admission.exit);
+                admission.exit.markExited();
+            }
+            throw failure;
+        }
     }
 
     /** Supervised discarded-handle form; failure is never silently ignored. */
