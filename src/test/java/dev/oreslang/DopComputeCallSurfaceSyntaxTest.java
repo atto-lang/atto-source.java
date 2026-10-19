@@ -2,6 +2,8 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.CapabilityChecker;
+import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.ReturnCleanupChecker;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
@@ -144,6 +146,33 @@ final class DopComputeCallSurfaceSyntaxTest {
                 IllegalArgumentException.class,
                 () -> ReturnCleanupChecker.check(program));
         assertTrue(failure.getMessage().contains("compound-place"), failure::toString);
+    }
+
+    @Test
+    void capabilityCheckerRejectsStagedTypeAndCompoundNodesDirectly() {
+        Ast.Program typeProgram = Parser.parse("""
+                pub fnc main(): void {
+                    Region<Motion>.new();
+                    return;
+                }
+                """);
+        SecurityException typeFailure = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(typeProgram, IsolatePolicy.developer()));
+        assertTrue(typeFailure.getMessage().contains("type-qualified"), typeFailure::toString);
+
+        Ast.Program compoundProgram = Parser.parse("""
+                pub fnc main(): void {
+                    let x = 1;
+                    x += side_effect();
+                    return;
+                }
+                """);
+        SecurityException compoundFailure = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(compoundProgram, IsolatePolicy.developer()));
+        assertTrue(compoundFailure.getMessage().contains("compound-place"),
+                compoundFailure::toString);
     }
 
     @Test
