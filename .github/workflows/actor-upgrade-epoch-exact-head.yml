@@ -46,7 +46,7 @@ jobs:
           distribution: graalvm
           cache: maven
       - name: Run focused actor JUnit regression
-        run: mvn -B -ntp -Dtest=ActorUpgradeEpochGateTest,ActorHotReloadPlacementAndTaskPinTest,ActorTaskGenerationBridgeTest,ActorUpgradePreflightV1Test,ActorUpgradeAtomicPublicationV1Test,LogicalActorProxyMailboxV1Test -DfailIfNoTests=true test
+        run: mvn -B -ntp -Dtest=ActorUpgradeEpochGateTest,ActorHotReloadPlacementAndTaskPinTest,ActorTaskGenerationBridgeTest,ActorUpgradePreflightV1Test,ActorRoutePublicationV1Test,ActorUpgradeAtomicPublicationV1Test,LogicalActorProxyMailboxV1Test -DfailIfNoTests=true test
       - name: Record exact-tree JUnit receipt (not a Graal isolate proof)
         if: always()
         env:
@@ -73,7 +73,7 @@ jobs:
               "ActorTaskGenerationBridgeTest": 5,
               "ActorUpgradePreflightV1Test": 5,
               "ActorRoutePublicationV1Test": 10,
-              "ActorUpgradeAtomicPublicationV1Test": 8,
+              "ActorUpgradeAtomicPublicationV1Test": 10,
               "LogicalActorProxyMailboxV1Test": 17,
           }
           total = {"tests": 0, "errors": 0, "failures": 0, "skipped": 0}
