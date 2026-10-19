@@ -17,7 +17,7 @@ concurrency:
 jobs:
   deny-unapproved-runner:
     # Hosted-only denial: no source checkout. Never interpret skipped as passing.
-    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.repository_id != '1400792274' || github.event.repository.fork == true || github.event.repository.private != true || !(github.ref == 'refs/heads/security/review-pinned-private-ci-dispatcher-v2-20261017' || github.ref == 'refs/heads/hardening/canonical-review-pinned-ledger-20261017') || github.ref_protected != true || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == '' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != github.sha || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE == '' }}
+    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.repository_id != '1400792274' || github.event.repository.fork == true || github.event.repository.private != true || !(github.ref == 'refs/heads/security/review-pinned-private-ci-dispatcher-v2-20261017' || github.ref == 'refs/heads/hardening/canonical-review-pinned-ledger-20261017') || github.ref_protected != true || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_REF == '' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_REF != github.ref || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == '' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != github.sha || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -27,10 +27,11 @@ jobs:
           exit 1
 
   approved-source-validation:
-    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.repository_id == '1400792274' && github.event.repository.fork == false && github.event.repository.private == true && (github.ref == 'refs/heads/security/review-pinned-private-ci-dispatcher-v2-20261017' || github.ref == 'refs/heads/hardening/canonical-review-pinned-ledger-20261017') && github.ref_protected == true && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.repository_id == '1400792274' && github.event.repository.fork == false && github.event.repository.private == true && (github.ref == 'refs/heads/security/review-pinned-private-ci-dispatcher-v2-20261017' || github.ref == 'refs/heads/hardening/canonical-review-pinned-ledger-20261017') && github.ref_protected == true && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_REF != '' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_REF == github.ref && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}
     runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
     timeout-minutes: 120
     env:
+      APPROVED_REF: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_REF }}
       APPROVED_SHA: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA }}
       APPROVED_TREE: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE }}
       APPROVED_RUNNER: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER }}
@@ -47,6 +48,7 @@ jobs:
           esac
           test "$GITHUB_REF_PROTECTED" = "true"
           test "$APPROVED_RUNNER" = "true"
+          test "$APPROVED_REF" = "$GITHUB_REF"
           test "$APPROVED_SHA" = "$GITHUB_SHA"
           [[ "$APPROVED_TREE" =~ ^[0-9a-f]{40}$ ]]
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -58,10 +60,17 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$APPROVED_SHA"
           test "$(git rev-parse 'HEAD^{tree}')" = "$APPROVED_TREE"
-          test -z "$(git diff --name-only)"
-          test -z "$(git diff --cached --name-only)"
-          # Fail closed on workspace-injected Python modules or shell scripts.
-          test -z "$(git status --porcelain --untracked-files=all)"
+          # core.fileMode=false suppresses executable-bit changes in plain status.
+          git -c core.fileMode=true diff --no-ext-diff --quiet --exit-code
+          git -c core.fileMode=true diff --no-ext-diff --cached --quiet --exit-code
+          # Refuse hidden index flags (skip-worktree / assume-unchanged).
+          index_flags="$(git ls-files -v)"
+          if printf '%s\n' "$index_flags" | grep -q -v '^H '; then
+            echo "Hidden or unexpected Git index flags" >&2
+            exit 1
+          fi
+          # Reject untracked/injected source, even if .gitignore hides build files.
+          test -z "$(git -c core.fileMode=true status --porcelain=v1 --untracked-files=all)"
 
       - name: Syntax-check every private CI authorization entrypoint
         run: |
@@ -205,6 +214,8 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -Dores.runtime.carriers=native clean verify
+          git -c core.fileMode=true diff --no-ext-diff --quiet --exit-code
+          git -c core.fileMode=true diff --no-ext-diff --cached --quiet --exit-code
           test "$(git rev-parse HEAD)" = "$APPROVED_SHA"
           test "$(git rev-parse 'HEAD^{tree}')" = "$APPROVED_TREE"
 

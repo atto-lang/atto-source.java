@@ -161,3 +161,20 @@ and #77 and all private-source export approval gates remain independent holds.
 - If either source head changes after the approval SHA was set, stop the
   private runner jobs, re-review the resulting tree, and update the approved
   SHA; never bypass the check in YAML to make a job run.
+
+## Exact-ref and executable-bit admission hardening
+
+A source-local private ephemeral job requires `ORESLANG_PRIVATE_EPHEMERAL_APPROVED_REF`
+to equal the protected push ref in addition to the approved SHA/tree. Approval
+for one enumerated branch cannot implicitly authorize the other. The variable
+is a defense-in-depth binding, **not** independent review or source-export
+permission.
+
+After checkout, Git checks force `core.fileMode=true` so executable-bit
+mutations remain visible even where a checkout has `core.fileMode=false`.
+Unexpected skip-worktree/assume-unchanged index flags cause denial. Both
+staged and unstaged diffs are rechecked after Maven. These checks do not
+replace independent exact-head approvals or real executed test-step evidence.
+
+Cross-organization source transfer remains forbidden pending independent
+source/destination/snapshot approvals and closure of both P0 incidents #22/#77.

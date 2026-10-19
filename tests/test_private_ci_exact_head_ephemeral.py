@@ -43,6 +43,9 @@ class SourceLocalEphemeralWorkflowTests(unittest.TestCase):
         self.assertIn("vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha",self.job)
         self.assertIn('test "$APPROVED_SHA" = "$GITHUB_SHA"',self.job)
         self.assertIn(canonical+"|"+hardened+") ;;",self.job)
+        self.assertIn("vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_REF == github.ref",self.job)
+        self.assertIn("vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_REF != github.ref",self.deny)
+        self.assertIn('test "$APPROVED_REF" = "$GITHUB_REF"',self.job)
         self.assertIn("*) echo \"Exact reviewed source branch required\"",self.job)
 
     def test_hardening_branch_does_not_relax_runner_or_repository_identity(self):
@@ -110,11 +113,33 @@ class SourceLocalEphemeralWorkflowTests(unittest.TestCase):
         self.assertIn('"release_ready":False',self.job)
 
     def test_workspace_injection_checked_before_imports(self):
-        self.assertLess(self.job.index("git status --porcelain --untracked-files=all"),
+        self.assertLess(self.job.index("git -c core.fileMode=true status --porcelain=v1 --untracked-files=all"),
                         self.job.index("python3 -I -m py_compile"))
-        self.assertLess(self.job.index("git status --porcelain --untracked-files=all"),
+        self.assertLess(self.job.index("git -c core.fileMode=true status --porcelain=v1 --untracked-files=all"),
                         self.job.index("Execute mirror preflight adversarial suite"))
-        self.assertIn('test -z "$(git status --porcelain --untracked-files=all)"',self.job)
+        self.assertIn('test -z "$(git -c core.fileMode=true status --porcelain=v1 --untracked-files=all)"',self.job)
+
+    def test_executable_mode_and_index_flag_bypasses_are_denied(self):
+        # Force Git's mode behavior rather than inheriting core.fileMode=false.
+        self.assertGreaterEqual(
+            self.job.count("git -c core.fileMode=true diff --no-ext-diff --quiet --exit-code"), 2)
+        self.assertIn(
+            "git -c core.fileMode=true diff --no-ext-diff --cached --quiet --exit-code",
+            self.job)
+        self.assertIn('index_flags="$(git ls-files -v)"', self.job)
+        self.assertIn("grep -q -v '^H '", self.job)
+        self.assertIn("Hidden or unexpected Git index flags", self.job)
+        self.assertIn("git -c core.fileMode=true status --porcelain=v1 --untracked-files=all", self.job)
+        self.assertNotIn("git diff --name-only", self.job)
+
+    def test_approved_ref_is_required_before_checkout(self):
+        self.assertIn(
+            "vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_REF == github.ref", self.job)
+        self.assertIn(
+            "vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_REF != github.ref", self.deny)
+        self.assertIn('APPROVED_REF: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_REF }}', self.job)
+        self.assertLess(self.job.index('test "$APPROVED_REF" = "$GITHUB_REF"'),
+                        self.job.index("uses: actions/checkout@"))
 
     def test_receipt_is_exclusive_nofollow_private(self):
         self.assertIn("os.O_CREAT|os.O_EXCL|os.O_CLOEXEC|os.O_NOFOLLOW,0o600",self.job)
