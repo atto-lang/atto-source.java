@@ -96,11 +96,13 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         final Throwable failure = child.failure().orElse(doneFailure);
         final TrustedSupervisorInbox.Admission result;
         final TrustedSupervisorInbox.FailureNotice escalationNotice;
+        final SupervisorDenseTable.Handle terminalRow;
 
         synchronized (this) {
             bindings.remove(child, binding);
             Long knownChildId = childIdsByBinding.remove(binding);
             SupervisorDenseTable.Handle row = rowsByBinding.get(binding);
+            terminalRow = row;
             if (knownChildId == null || row == null) {
                 if (closed) return;
                 throw new IllegalStateException("trusted child identity/metadata unavailable");
@@ -165,19 +167,10 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
                 throw failure;
             }
             synchronized (this) {
-                SupervisorDenseTable.Handle row = rowsByBinding.remove(
-                        findBindingForChildId(escalationNotice.childId()));
-                if (row != null) eraseRowIfLive(row);
+                rowsByBinding.remove(binding);
+                eraseRowIfLive(terminalRow);
             }
         }
-    }
-
-    private synchronized TrustedSupervisorInbox.ChildBinding findBindingForChildId(long childId) {
-        for (Map.Entry<TrustedSupervisorInbox.ChildBinding, Long> entry
-                : childIdsByBinding.entrySet()) {
-            if (entry.getValue() == childId) return entry.getKey();
-        }
-        return null;
     }
 
     private void eraseRowIfLive(SupervisorDenseTable.Handle row) {
@@ -245,8 +238,9 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         closed = true;
         for (TrustedSupervisorInbox.ChildBinding binding : bindings.values()) {
             revokeIfLive(binding);
-            SupervisorDenseTable.Handle row = rowsByBinding.remove(binding);
-            if (row != null) eraseRowIfLive(row);
+        }
+        for (SupervisorDenseTable.Handle row : rowsByBinding.values()) {
+            eraseRowIfLive(row);
         }
         bindings.clear();
         childIdsByBinding.clear();
