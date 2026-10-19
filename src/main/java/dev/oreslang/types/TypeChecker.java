@@ -1782,7 +1782,7 @@ public final class TypeChecker {
             }
             if (actual instanceof Record record && record.readOnly() && binding.mutableReferent()) {
                 throw new IllegalArgumentException(
-                        "infer struct values are closed and readonly; they cannot be bound with mutable referent access");
+                        "readonly record values cannot be bound with mutable referent access");
             }
 
             if (namedInference) {
@@ -4984,7 +4984,7 @@ public final class TypeChecker {
                 unwrapMutexGuard(deref(rawReceiver)));
         if (writing && receiver instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
-                    "cannot mutate a readonly record value; inferred structs are closed and readonly");
+                    "cannot mutate a readonly structural record value");
         }
         if (receiver instanceof Record record) {
             Type result = record.members().get(member.member());
