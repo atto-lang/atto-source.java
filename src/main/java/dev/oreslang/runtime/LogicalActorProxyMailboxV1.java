@@ -353,6 +353,10 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
         Objects.requireNonNull(envelope, "envelope");
         synchronized (lock) {
             requireOpenLocked();
+            if (dispatchFrozen) {
+                throw new IllegalStateException(
+                        "physical send cannot start after an upgrade dispatch freeze");
+            }
             if (expectedRouteEpoch != routeEpoch
                     || outstanding.get(envelope.messageSequence()) != envelope) {
                 throw new SecurityException(
