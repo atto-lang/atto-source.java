@@ -97,7 +97,12 @@ public final class IpcReceiptCompletionBridge {
         done.complete(IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
     }
 
-    public int transportLost(String trustedSession) {
+    /**
+     * Only the local trusted adapter may report physical session loss.
+     * Use the complete authenticated transport epoch; never a reusable
+     * string session id or a peer-provided EOF claim.
+     */
+    int transportLost(IpcReceiptCorrelation.Envelope trustedEpoch) {
         ArrayList<CompletableFuture<IpcReceiptCorrelation.Stage>> done = new ArrayList<>();
         synchronized (gate) {
             // Reserve all notification capacity BEFORE the native-equivalent
@@ -106,7 +111,7 @@ public final class IpcReceiptCompletionBridge {
             if (completions.size() != correlations.counters().pending()) {
                 throw new IllegalStateException("host correlation parity violated");
             }
-            var losses = correlations.retireTransportLost(trustedSession);
+            var losses = correlations.retireTransportLost(trustedEpoch);
             for (var loss : losses) {
                 var completion = completions.remove(loss.envelope().messageSequence());
                 if (completion == null) throw new IllegalStateException("missing lost completion");
