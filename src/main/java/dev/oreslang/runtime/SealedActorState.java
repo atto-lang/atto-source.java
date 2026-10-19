@@ -400,11 +400,14 @@ public final class SealedActorState {
     public <T> T critical(boolean writable, Function<Access, T> callback) {
         Objects.requireNonNull(callback, "critical state callback");
         requireOwner();
-        if (serial == Long.MAX_VALUE) throw new IllegalStateException("actor loan serial exhausted");
         final Thread carrier = Thread.currentThread();
         final boolean newlyAdmitted = stateCarrier.compareAndSet(null, carrier);
         if (!newlyAdmitted && stateCarrier.get() != carrier)
             throw new IllegalStateException("ML_STATE_LOAN_CONCURRENT_CARRIER");
+        if (serial == Long.MAX_VALUE) {
+            if (newlyAdmitted) stateCarrier.compareAndSet(carrier, null);
+            throw new IllegalStateException("actor loan serial exhausted");
+        }
         Access previous = current;
         // A read grant must never be upgraded while it is live, even through
         // indirect calls that evade source-level interprocedural inference.
