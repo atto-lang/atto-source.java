@@ -92,6 +92,47 @@ public final class LinkedProgramRunner {
         }
     }
 
+    /**
+     * Fingerprint the same transitive import closure and import resolutions
+     * used by {@link #runWithExitStatus}. All loaded raw sources (including
+     * packaged std/* modules and mixed Java islands) are included.
+     *
+     * This is a bounded snapshot check, not a file-system lock: callers must
+     * also verify the digest after program execution before recording replay.
+     */
+    public static String sourceClosureSha256(Path entryFile) throws IOException {
+        return sourceClosureSha256(entryFile, System.getenv());
+    }
+
+    public static String sourceClosureSha256(
+            Path entryFile, Map<String, String> environment) throws IOException {
+        Path entry = entryFile.toAbsolutePath().normalize();
+        if (!Files.isRegularFile(entry)) {
+            throw new IOException("source closure entry is not a regular file: " + entry);
+        }
+        OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
+        LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
+        LinkedHashMap<String, Map<String, String>> resolutions = new LinkedHashMap<>();
+        collectImportClosure(entry, units, projectConfig, resolutions);
+        ensureJavaEntryContainsOres(entry, units);
+
+        LinkedHashMap<String, String> sourceText = new LinkedHashMap<>();
+        for (var unit : units.values()) sourceText.put(unit.unitId(), unit.rawSource());
+        Path manifest = projectConfig.manifestPath().orElse(null);
+        byte[] manifestText = new byte[0];
+        if (manifest != null) {
+            if (Files.size(manifest) > 1024L * 1024L) {
+                throw new IOException("project manifest too large for test closure trace");
+            }
+            manifestText = Files.readAllBytes(manifest);
+        }
+        return SourceClosureFingerprint.sha256(
+                sourceText, resolutions,
+                manifest == null ? "" : manifest.toString(),
+                manifestText,
+                projectConfig.searchRoots().stream().map(Path::toString).toList());
+    }
+
     public static IncrementalCompiler.BuildResult run(
             Path entryFile,
             IsolatePolicy policy,
