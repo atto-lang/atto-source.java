@@ -46,3 +46,38 @@ relevant GraalVM/native-image checks and LLVM/TSan parity once lowering exists.
 Source-org Actions currently fail before executing job steps; do not treat those
 failures as test evidence. Private cross-org testing remains gated by the
 reviewed protected-main allowlist in #1430.
+
+
+## Never-started admission retirement hardening — 2026-10-19
+
+A compiler may reserve a scoped loan before invoking runtime Task admission.
+If `TaskHandle.start` throws before a scheduler Task exists (for example, the
+scheduler is already closed), there is no child `getDone()` event that can
+release that reservation. The previous integration therefore leaked the loan
+and could leave the compiler/runtime access ledger permanently live.
+
+`TaskScope.startTask(task, retirementHook)` now has two—and only two—trusted
+retirement paths:
+
+1. normal admission: invoke the hook from the child's `getDone()` callback
+   after physical quiescence and descendant retirement;
+2. admission throws before a Task exists: invoke the hook immediately on the
+   never-started path, because no guest execution could own the reservation.
+
+If never-started retirement itself fails, the failure is attached as suppressed
+evidence to the admission exception, the scope is poisoned/cancelled, and the
+reserved join slot remains live. It fails closed rather than pretending memory
+authority was released.
+
+Current exact code/test blobs before this documentation commit:
+- `TaskScope.java`: `f4c048706269a3ee7cb1c50b9ba6816269b3bb48`
+- `TaskScopeTest.java`: `5b2e7a5c114fad12f2a0ed703d3df575ac917150`
+
+Exact-head source-org fast-ci #39327703161 / job #118317693556 and
+concurrency-contract #39327703029 / job #118317693612 completed with zero
+recorded steps; no runtime/JUnit pass is claimed.
+
+The alternate funded carrier has current source-free execution capacity:
+re-run job #118317869431 in canary run #39303220290 completed successfully.
+No private source was transferred because protected-main approval #1430 is
+still absent.
