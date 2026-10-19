@@ -25,6 +25,16 @@ final class ActorHotUpgradeTaskBridgeV1 {
             ActorRuntime.ActorRef<?> actor,
             OresScheduler scheduler,
             OresScheduler.Task<T> frame) {
+        // This temporary bridge has no compiler-issued actor/task affinity
+        // receipt. Do not let executing guest turns launch an unscoped sibling
+        // or acquire a new old-generation pin through this host seam.
+        if (ActorRuntime.inActorExecution()
+                || OresScheduler.current() != null
+                || OresScheduler.isSchedulerCarrierThread()
+                || AsyncRuntime.isAsyncCarrierThread()) {
+            throw new SecurityException(
+                    "unscoped actor hot-upgrade Task admission is host-only");
+        }
         Objects.requireNonNull(runtime, "runtime");
         Objects.requireNonNull(actor, "actor");
         Objects.requireNonNull(scheduler, "scheduler");
