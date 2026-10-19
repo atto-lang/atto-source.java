@@ -262,7 +262,15 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         return appendMac(raw.toByteArray(), key);
     }
 
-    static DecodedData decodeDataFrame(byte[] frame, byte[] key) throws IOException {
+    static DecodedData decodeDataFrame(
+            byte[] frame,
+            IpcReceiptCorrelation.Envelope expectedEpoch,
+            long expectedPhysicalGeneration,
+            byte[] key) throws IOException {
+        Objects.requireNonNull(expectedEpoch, "expectedEpoch");
+        if (expectedPhysicalGeneration <= 0) {
+            throw new IllegalArgumentException("physical generation must be positive");
+        }
         byte[] authenticated = verifyAndStripMac(frame, key);
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(authenticated))) {
             long physicalGeneration = requireHeader(in, TYPE_DATA);
@@ -277,6 +285,10 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             }
             if (!sha256Hex(payload).equals(envelope.payloadSha256())) {
                 throw new IOException("authenticated IPC payload digest mismatch");
+            }
+            if (physicalGeneration != expectedPhysicalGeneration
+                    || !sameEpoch(expectedEpoch, envelope)) {
+                throw new IOException("stale IPC DATA transport epoch/generation");
             }
             return new DecodedData(envelope, physicalGeneration, payload);
         }
