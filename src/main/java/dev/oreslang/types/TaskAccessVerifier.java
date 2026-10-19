@@ -1,5 +1,7 @@
 package dev.oreslang.types;
 
+import dev.oreslang.ast.Ast;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -141,6 +143,97 @@ final class TaskAccessVerifier {
             }
         }
         return admit(typed.stream().map(TypedClaim::claim).toList());
+    }
+
+    /**
+     * A proof that the source AST and resolved compiler type denote the SAME
+     * explicitly supported built-in payload. Raw guest values cannot supply
+     * this claim: caller must have already resolved the trusted place root,
+     * field layout and ownership identity in compiler-owned state.
+     */
+    public record CoherentTypedClaim(Claim claim, Ast.TypeRef sourceType,
+                                     Types.Type resolvedType) {
+        public CoherentTypedClaim {
+            Objects.requireNonNull(claim, "claim");
+            Objects.requireNonNull(sourceType, "sourceType");
+            Objects.requireNonNull(resolvedType, "resolvedType");
+        }
+    }
+
+    /**
+     * Atomic, dual-representation admission for supported source Task
+     * captures and future scoped region loans. A passing type proof is still
+     * NOT physical quiescence, actor authorization or executable nb lowering.
+     * Unsupported nominal/record layouts deny until a trusted resolved
+     * identity + field-layout witness exists.
+     */
+    public synchronized Ticket admitCoherentTyped(
+            List<CoherentTypedClaim> requested, SendSyncTraits sourceProof,
+            ThreadSafetyTraits.NominalProof resolvedNominals) {
+        Objects.requireNonNull(sourceProof, "sourceProof");
+        Objects.requireNonNull(resolvedNominals, "resolvedNominals");
+        List<CoherentTypedClaim> typed = List.copyOf(
+                Objects.requireNonNull(requested, "claims"));
+        for (CoherentTypedClaim entry : typed) {
+            if (!corresponds(entry.sourceType(), entry.resolvedType(), 0)) {
+                throw new IllegalArgumentException(
+                        "source and lowered Task types lack a matching trusted layout");
+            }
+            boolean send = entry.claim().mode() == Mode.WRITE;
+            boolean sourceAllowed = send ? sourceProof.isSend(entry.sourceType())
+                    : sourceProof.isSync(entry.sourceType());
+            ThreadSafetyTraits.Trait needed = send
+                    ? ThreadSafetyTraits.Trait.SEND : ThreadSafetyTraits.Trait.SYNC;
+            if (!sourceAllowed || !ThreadSafetyTraits.has(
+                    entry.resolvedType(), needed, resolvedNominals)) {
+                throw new IllegalArgumentException(
+                        "Task access lacks matching source/resolved " + needed + " proof");
+            }
+        }
+        // Reuses the SAME ledger and all-or-nothing alias/generation rules.
+        return admit(typed.stream().map(CoherentTypedClaim::claim).toList());
+    }
+
+    /** Intentionally small trusted ABI subset; no nominal name guessing. */
+    private static boolean corresponds(Ast.TypeRef surface, Types.Type lowered,
+                                        int depth) {
+        if (surface == null || lowered == null || depth >= 64
+                || surface.inferArguments() || surface.isComplement()
+                || surface.isUnion() || surface.isTupleType()) return false;
+        if (surface.isBorrow()) {
+            return lowered instanceof Types.Borrow borrowed
+                    && surface.mutableBorrow() == borrowed.mutable()
+                    && corresponds(surface.borrowedTarget(), borrowed.target(), depth + 1);
+        }
+        List<Ast.TypeRef> args = surface.arguments();
+        if (args.isEmpty()) {
+            return switch (surface.name()) {
+                case "int" -> lowered == Types.Primitive.INT;
+                case "bool" -> lowered == Types.Primitive.BOOL;
+                case "float" -> lowered == Types.Primitive.FLOAT;
+                case "string", "String" -> lowered == Types.Primitive.STRING;
+                case "decimal" -> lowered == Types.Primitive.DECIMAL;
+                case "complex" -> lowered == Types.Primitive.COMPLEX;
+                default -> false; // nominal, literal, native or unproven builtin
+            };
+        }
+        if (args.size() == 1
+                && (surface.name().equals("Array") || surface.name().equals("List"))) {
+            return lowered instanceof Types.ListType list
+                    && corresponds(args.getFirst(), list.element(), depth + 1);
+        }
+        if (!(lowered instanceof Types.Named named)
+                || !named.name().equals(surface.name())
+                || named.arguments().size() != args.size()
+                || !((surface.name().equals("Option") && args.size() == 1)
+                    || (surface.name().equals("Result") && args.size() == 2))) {
+            return false;
+        }
+        for (int i = 0; i < args.size(); i++) {
+            if (!corresponds(args.get(i), named.arguments().get(i), depth + 1))
+                return false;
+        }
+        return true;
     }
 
     /** Opaque compiler-issued child identity. A cancelled Ticket is still live. */
