@@ -1003,6 +1003,35 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     }
 
     /**
+     * Temporary package-level compatibility seam for older tests. The supplied
+     * ticket is NEVER used for publication: it is validated and explicitly
+     * rolled back under routeLock, then the real supervisor transaction
+     * acquires its own fresh freeze. Production bridge code uses the three-
+     * argument overload and cannot pass a reusable freeze capability.
+     */
+    @Deprecated
+    boolean upgradeToForProxy(
+            HotReloadManager.Generation candidateGeneration,
+            Duration readyTimeout,
+            LogicalActorProxyMailboxV1 mailbox,
+            LogicalActorProxyMailboxV1.FreezeTicket legacyTicket)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        Objects.requireNonNull(mailbox, "mailbox");
+        Objects.requireNonNull(legacyTicket, "legacyTicket");
+        synchronized (routeLock) {
+            requireOpenLocked();
+            if (boundProxyMailbox != mailbox)
+                throw new SecurityException("foreign proxy upgrade authority");
+            mailbox.requireFreezeTicketForRouteEpoch(
+                    legacyTicket, active.routeEpoch);
+            // Consume the caller-owned capability before any candidate
+            // linking or supervisor transaction can begin.
+            legacyTicket.rollback();
+        }
+        return upgradeInternal(candidateGeneration, readyTimeout, mailbox);
+    }
+
+    /**
      * Nonallocating supervisor preflight under routeLock. In particular, a
      * caller lacking the exact proxy freeze cannot cause candidate linking
      * as a side effect. Called both before linking and at route freeze.
