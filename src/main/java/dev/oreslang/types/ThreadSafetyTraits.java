@@ -177,10 +177,11 @@ public final class ThreadSafetyTraits {
                 return true;
             }
             if (type instanceof Record record) {
-                // Structural records are writable by default. Only the
-                // explicitly readonly record type can establish shared
-                // access, and every nested field must independently be Sync.
-                if (trait == Trait.SYNC && !record.readOnly()) return false;
+                // Record.readOnly is a *view capability*, not frozen storage.
+                // Other aliases can still write the same allocation. Until
+                // the compiler proves exclusive freeze/published immutability,
+                // a readonly record is Send but never automatically Sync.
+                if (trait == Trait.SYNC) return false;
                 for (Type member : record.members().values()) {
                     if (!has(member, trait, nominalProof, visiting, depth + 1)) return false;
                 }
