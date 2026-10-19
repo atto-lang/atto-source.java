@@ -33,6 +33,11 @@ final class GenServerReplyLedger {
             this.correlation = correlation;
         }
 
+        /** Runtime-only owning actor identity for indexed retirement. */
+        Target target() {
+            return target;
+        }
+
         boolean matchesTarget(Target candidate) {
             return target.equals(candidate);
         }
