@@ -9123,6 +9123,109 @@ public final class ActorRuntime implements AutoCloseable {
             terminateTree(cancellation, true, disposition);
         }
 
+        private void settleTerminalBatch(TerminalSettlementBatch batch) {
+            ref.terminalSettlementOwnerThread = Thread.currentThread();
+            boolean complete = false;
+            try {
+                while (batch.physicalReceiptIndex
+                        < batch.physicalReceipts.size()) {
+                    PhysicalMailReceipt exact = batch.physicalReceipts.get(
+                            batch.physicalReceiptIndex);
+                    OresFuture<Void> terminal = exact.terminal();
+                    if (!terminal.isDone()) {
+                        exact.failTerminal(
+                                batch.receiptDisposition, batch.drainFailure);
+                    }
+                    if (exact.terminalDisposition()
+                            != batch.receiptDisposition) {
+                        throw new IllegalStateException(
+                                "physical mail receipt has unexpected teardown disposition");
+                    }
+                    if (!terminal.retryNotificationDrainedFromRuntime()) {
+                        throw new IllegalStateException(
+                                "physical receipt notification drain is not ready");
+                    }
+                    batch.physicalReceiptIndex++;
+                }
+
+                while (batch.drainWaiterIndex < batch.drainWaiters.size()) {
+                    OresFuture<Void> completion = batch.drainWaiters.get(
+                            batch.drainWaiterIndex).completion();
+                    if (!completion.isDone()) {
+                        completion.failFromRuntime(batch.drainFailure);
+                    }
+                    if (!completion.isDone()
+                            || !completion.retryNotificationDrainedFromRuntime()) {
+                        throw new IllegalStateException(
+                                "actor drain notification did not settle");
+                    }
+                    batch.drainWaiterIndex++;
+                }
+
+                while (batch.operationIndex < batch.operations.size()) {
+                    OresFuture<?> operation =
+                            batch.operations.get(batch.operationIndex);
+                    if (!operation.isDone()) {
+                        operation.cancel(false);
+                    }
+                    if (!operation.isDone()
+                            || !operation.retryNotificationDrainedFromRuntime()) {
+                        throw new IllegalStateException(
+                                "actor operation cancellation did not settle");
+                    }
+                    batch.operationIndex++;
+                }
+
+                while (batch.descendantIndex < batch.descendants.size()) {
+                    ActorCell<?> child =
+                            batch.descendants.get(batch.descendantIndex);
+                    if (batch.receiptDisposition
+                            == PhysicalMailDisposition.RUNTIME_CLOSED) {
+                        child.terminateTree(
+                                null, false,
+                                PhysicalMailDisposition.RUNTIME_CLOSED);
+                    } else {
+                        CancellationMode childMode =
+                                batch.receiptDisposition
+                                                == PhysicalMailDisposition.FORCE_CANCELLED
+                                        ? CancellationMode.FORCE_ISOLATED
+                                        : CancellationMode.STRUCTURED;
+                        child.cancel(new ActorCancelledException(
+                                child.ref.id(),
+                                "parent actor " + ref.id() + " terminated",
+                                childMode));
+                    }
+                    synchronized (child.lifecycleLock) {
+                        if (!child.stopped.get()
+                                || child.terminalSettlementPending) {
+                            throw new IllegalStateException(
+                                    "child actor terminal settlement remains pending");
+                        }
+                    }
+                    batch.descendantIndex++;
+                }
+                complete = true;
+            } finally {
+                try {
+                    synchronized (lifecycleLock) {
+                        if (terminalSettlementBatch != batch) {
+                            throw new IllegalStateException(
+                                    "actor terminal settlement retry owner changed");
+                        }
+                        terminalSettlementActive = false;
+                        if (complete) {
+                            terminalSettlementBatch = null;
+                            terminalSettlementPending = false;
+                            if (stopped.get()) finalizeStopLocked();
+                        }
+                        lifecycleLock.notifyAll();
+                    }
+                } finally {
+                    ref.terminalSettlementOwnerThread = null;
+                }
+            }
+        }
+
         private void terminateTree(
                 Throwable cause,
                 boolean recordCause,
