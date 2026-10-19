@@ -88,11 +88,14 @@ public final class OresTaskScope implements AutoCloseable {
         AsyncRuntime.TaskAdmission<T> admission = runtime.prepareTaskAdmission();
         OwnershipSlot slot = new OwnershipSlot();
         slot.task = admission.owner;
-        admission.owner.quiescenceFence().whenCompleteRuntime((ignored, failure) -> {
-            if (failure == null) {
-                synchronized (gate) {
-                    tasks.remove(slot);
-                }
+        // Hook registration happens before the owner becomes executable.
+        // Generic Future listeners intentionally isolate thrown callbacks,
+        // so slot retirement must run as part of TaskExit itself.
+        admission.installRetirement(() -> {
+            synchronized (gate) {
+                if (!tasks.remove(slot))
+                    throw new IllegalStateException(
+                            "ordinary Task owner slot missing at physical retirement");
             }
         });
 
