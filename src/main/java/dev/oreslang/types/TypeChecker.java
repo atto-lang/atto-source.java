@@ -107,16 +107,30 @@ public final class TypeChecker {
     private final List<String> warnings = new ArrayList<>();
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
-    public record TypeCheckResult(Ast.Program program, List<String> warnings) {
-        public TypeCheckResult { warnings = List.copyOf(warnings); }
+    public record TypeCheckResult(
+            Ast.Program program,
+            List<String> warnings,
+            Map<Ast.BindingStmt, String> shortInferredAliases) {
+        public TypeCheckResult {
+            warnings = List.copyOf(warnings);
+            // BindingStmt is a value record. Two separately declared bindings
+            // can compare equal, but they are not the same lexical declaration.
+            // Retain AST identity instead of collapsing them in Map.copyOf().
+            shortInferredAliases = java.util.Collections.unmodifiableMap(
+                    new IdentityHashMap<>(shortInferredAliases));
+        }
+
+        public TypeCheckResult(Ast.Program program, List<String> warnings) {
+            this(program, warnings, Map.of());
+        }
     }
     /** The one explicit struct literal currently permitted to omit declared fields. */
     private Ast.ObjectExpr permittedPartialStructInitializer;
 
     public static Ast.Program check(Ast.Program program) {
-        program = checkTypes(program);
-        OwnershipChecker.check(program);
-        return program;
+        TypeCheckResult checked = checkTypesWithDiagnostics(program);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
     }
 
     /** Type analysis only; executable admission must use OresCompiler.analyze. */
@@ -131,7 +145,7 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings);
+        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
     /**
