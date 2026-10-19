@@ -275,20 +275,46 @@ public final class AsyncRuntime implements AutoCloseable {
 
     @Override
     public void close() {
-        if (!closed.compareAndSet(false, true)) return;
-        executor.shutdownNow();
+        // The first caller owns shutdown initiation, but EVERY caller owns an
+        // independent physical-quiescence join. Merely observing closed=true
+        // must never permit VM teardown while carriers are still executing.
+        if (closed.compareAndSet(false, true)) {
+            java.util.ArrayList<Runnable> notifications = new java.util.ArrayList<>();
+            // Revoke sibling Task producers before delivering potentially
+            // blocking host observers. A racing submit that registered after
+            // this snapshot independently observes closed and cancels itself.
+            for (OresFuture<?> completion : taskExits.keySet()) {
+                Runnable delivery = completion.cancelDeferredNotification();
+                if (delivery != null) notifications.add(delivery);
+            }
+            executor.shutdownNow();
+            for (Runnable delivery : notifications) {
+                // Runtime waiters isolate observer failures; do not allow
+                // broken host accounting to suppress sibling delivery.
+                delivery.run();
+            }
+        }
 
         boolean interrupted = false;
+        final long deadline = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(CLOSE_WAIT_MILLIS);
         try {
-            if (!executor.awaitTermination(CLOSE_WAIT_MILLIS, TimeUnit.MILLISECONDS)) {
-                throw new IllegalStateException(
-                        "async runtime did not terminate all tasks after cancellation");
+            for (;;) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0L && !executor.isTerminated()) {
+                    throw new IllegalStateException(
+                            "async runtime did not terminate all tasks after cancellation");
+                }
+                try {
+                    if (executor.awaitTermination(Math.max(0L, remaining),
+                            TimeUnit.NANOSECONDS)) return;
+                } catch (InterruptedException ignored) {
+                    // An interrupt does not prove physical cleanup. Continue
+                    // joining up to the configured deadline and restore the
+                    // caller's interrupt once the barrier has settled.
+                    interrupted = true;
+                }
             }
-        } catch (InterruptedException waitInterrupted) {
-            interrupted = true;
-            throw new IllegalStateException(
-                    "interrupted while closing async runtime",
-                    waitInterrupted);
         } finally {
             if (interrupted) Thread.currentThread().interrupt();
         }
