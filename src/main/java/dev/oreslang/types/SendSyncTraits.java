@@ -16,6 +16,7 @@ import java.util.Set;
  * No user-asserted unsafe trait implementation is consulted here.
  */
 public final class SendSyncTraits {
+    private static final int MAX_TYPE_DERIVATION_DEPTH = 64;
     public record Traits(boolean send, boolean sync) {
         public static final Traits NONE = new Traits(false, false);
         public static final Traits BOTH = new Traits(true, true);
@@ -81,7 +82,8 @@ public final class SendSyncTraits {
     }
 
     private Traits derive(Ast.TypeRef type, Map<String, Ast.TypeRef> substitutions, Set<Key> active) {
-        if (type == null || type.inferArguments() || type.isComplement()
+        if (type == null || active.size() >= MAX_TYPE_DERIVATION_DEPTH
+                || type.inferArguments() || type.isComplement()
                 || type.name().equals("$infer$")) return Traits.NONE;
         Ast.TypeRef replacement = substitutions.get(type.name());
         if (replacement != null && type.arguments().isEmpty()) {
@@ -192,12 +194,20 @@ public final class SendSyncTraits {
 
     private static Ast.TypeRef substitute(Ast.TypeRef type,
                                           Map<String, Ast.TypeRef> substitutions) {
+        return substitute(type, substitutions, 0);
+    }
+
+    private static Ast.TypeRef substitute(Ast.TypeRef type,
+                                          Map<String, Ast.TypeRef> substitutions, int depth) {
+        if (type == null || depth >= MAX_TYPE_DERIVATION_DEPTH)
+            return Ast.TypeRef.inferred();
         if (substitutions.containsKey(type.name()) && type.arguments().isEmpty()) {
             return substitutions.get(type.name());
         }
         if (type.arguments().isEmpty()) return type;
         List<Ast.TypeRef> args = new ArrayList<>(type.arguments().size());
-        for (Ast.TypeRef arg : type.arguments()) args.add(substitute(arg, substitutions));
+        for (Ast.TypeRef arg : type.arguments())
+            args.add(substitute(arg, substitutions, depth + 1));
         return new Ast.TypeRef(type.name(), args, type.inferArguments());
     }
     private Traits all(List<Ast.TypeRef> types,
