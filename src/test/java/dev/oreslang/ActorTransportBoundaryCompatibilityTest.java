@@ -29,7 +29,6 @@ final class ActorTransportBoundaryCompatibilityTest {
                   val worker = spawn Worker();
                   val relay = spawn Relay();
                   relay.send(Some(worker));
-                  pass_ref(worker);
                   return;
                 }
                 """)));
