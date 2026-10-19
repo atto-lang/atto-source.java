@@ -101,4 +101,26 @@ final class VerifiedDirectModuleCallTest {
         assertEquals("42", out.toString(StandardCharsets.UTF_8));
     }
 
+    @Test
+    void ambiguousOrRecursiveUnqualifiedTargetsNeedResolvedCallsiteEvidence() {
+        String ambiguous = """
+                define module other as
+                    pub fnc target(int x): int { return x; }
+                end
+                define module app as
+                    pub fnc target(int x): int { return x; }
+                    pub fnc caller(): int { return target(42); }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class, () ->
+                VerifiedDirectModuleCall.analyzeAndIssue(ambiguous, "app", "caller"));
+        String recursive = """
+                define module app as
+                    pub fnc caller(): int { return caller(); }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class, () ->
+                VerifiedDirectModuleCall.analyzeAndIssue(recursive, "app", "caller"));
+    }
+
 }
