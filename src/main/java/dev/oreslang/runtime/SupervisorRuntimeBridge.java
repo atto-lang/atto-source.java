@@ -20,6 +20,7 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         boolean escalate(TrustedSupervisorInbox.FailureNotice notice);
     }
 
+    private final ActorRuntime runtime;
     private final TrustedSupervisorInbox inbox;
     private final ParentEscalation escalation;
     private final Map<ActorRuntime.ActorRef<?>, TrustedSupervisorInbox.ChildBinding> bindings =
@@ -31,8 +32,10 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
     private boolean closed;
 
     SupervisorRuntimeBridge(
+            ActorRuntime runtime,
             TrustedSupervisorInbox inbox,
             ParentEscalation escalation) {
+        this.runtime = Objects.requireNonNull(runtime, "runtime");
         this.inbox = Objects.requireNonNull(inbox, "inbox");
         this.escalation = Objects.requireNonNull(escalation, "escalation");
     }
@@ -47,6 +50,12 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         if (bindings.containsKey(child)) {
             throw new IllegalArgumentException("child already registered");
         }
+
+        // Reuse ActorRuntime's own local-capability ownership validation. This
+        // rejects foreign-runtime refs and already-finalized children before
+        // any supervisor binding is minted.
+        runtime.heapStatusFor(child);
+
         long childId = nextChildId();
         TrustedSupervisorInbox.ChildBinding binding =
                 inbox.bindVerifiedChild(childId, child.generation());
