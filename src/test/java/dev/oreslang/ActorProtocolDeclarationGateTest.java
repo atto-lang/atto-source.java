@@ -49,6 +49,18 @@ final class ActorProtocolDeclarationGateTest {
     }
 
     @Test
+    void unaryTransportIsNeverExecutableWithoutReplyCorrelation() {
+        for (String name : List.of("http", "ipc", "tcp", "ffi", "proxy", "websocket")) {
+            String source = "define unary " + name + " actor Gateway as end";
+            Ast.ClassDecl parsed = actor(source);
+            assertEquals(Ast.ActorReplyRole.UNARY,
+                    parsed.actorSpecialization().replyRole(), source);
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+        }
+    }
+
+    @Test
     void serialUnaryHttpIsOrthogonalAndFailsClosed() {
         Ast.ClassDecl klass = actor("""
                 @Outbound
