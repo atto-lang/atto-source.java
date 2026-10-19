@@ -72,6 +72,25 @@ canonical-column checks. The local audited build used OpenJDK 21
 `java -Xmx96m -ea`. This is intentionally independent
 of actor memory domains, LLVM, guest compiler intrinsics, and FFI.
 
+## Offline JDK-only compiler-front-end gate
+
+`bash scripts/check-record-frontend.sh` compiles the real AST, lexer,
+parser, import rules, type representations, TypeChecker, ReturnCleanupChecker,
+and OwnershipChecker with OpenJDK 21 and no Maven, Truffle, secrets,
+network access or alternate CI organization. Its executable smoke runs
+parser -> type checker -> ownership checks over positive and negative named
+record/struct aliases, literal/quoted keys, readonly capability protection,
+forward explicit-alias conflicts, structural field mismatches and
+identity-keyed alias provenance. This is a stronger assertion than the
+parser-only `check-record-parser.sh` script.
+
+The exact-head CI gate now runs all **three** JDK-only checks (parser,
+front-end compiler and host SoA) before Maven/GraalVM. The frontend smoke
+does not execute the guest interpreter or prove GraalVM Native Image, LLVM,
+Wasm, formatter, multi-file linked runtime, or runtime data layout.
+A successful isolated frontend smoke does not satisfy the remaining
+Maven/JUnit/native-image merge requirements.
+
 ## Reproducible private CI verification
 
 The standalone oracle is gated by a full checkout test runner in
