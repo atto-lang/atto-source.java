@@ -62,8 +62,15 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
             TrustedSupervisorInbox.ChildBinding binding,
             Throwable doneFailure) {
         final Throwable failure = child.failure().orElse(doneFailure);
+        final long childId;
         synchronized (this) {
             bindings.remove(child, binding);
+            Long knownChildId = childIdsByBinding.remove(binding);
+            if (knownChildId == null) {
+                if (closed) return;
+                throw new IllegalStateException("trusted child identity unavailable");
+            }
+            childId = knownChildId;
             if (closed || failure == null) {
                 revokeIfLive(binding);
                 return;
@@ -77,7 +84,7 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         if (result == TrustedSupervisorInbox.Admission.ESCALATE_TO_PARENT) {
             TrustedSupervisorInbox.FailureNotice notice =
                     new TrustedSupervisorInbox.FailureNotice(
-                            childIdFor(binding), child.generation(), seq, faultCode);
+                            childId, child.generation(), seq, faultCode);
             if (!escalation.escalate(notice)) {
                 throw new IllegalStateException(
                         "supervisor CONTROL overflow escalation was not durably accepted");
@@ -105,12 +112,6 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
     private long nextChildId() {
         long value = childIds.incrementAndGet();
         if (value <= 0) throw new IllegalStateException("supervisor child identity exhausted");
-        return value;
-    }
-
-    private synchronized long childIdFor(TrustedSupervisorInbox.ChildBinding binding) {
-        Long value = childIdsByBinding.get(binding);
-        if (value == null) throw new IllegalStateException("trusted child identity unavailable");
         return value;
     }
 
