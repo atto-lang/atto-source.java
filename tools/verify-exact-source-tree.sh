@@ -112,7 +112,7 @@ try:
     # listings. Equality alone then attests a partial checkout. Rebuild the
     # canonical recursive Git tree from the listing and compare its digest
     # with the independently supplied immutable subtree SHA.
-    source_path = os.fsencode(sys.argv[3])
+    source_path = os.path.normpath(os.fsencode(sys.argv[3]))
     prefix = b"" if source_path == b"." else source_path + b"/"
     nested = {}
     for path, mode, oid in committed:
