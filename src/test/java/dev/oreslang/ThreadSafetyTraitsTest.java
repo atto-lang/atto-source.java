@@ -149,7 +149,7 @@ final class ThreadSafetyTraitsTest {
     @Test
     void deeplyNestedTypeQueriesAreBoundedAndDoNotPoisonOtherChecks() {
         Type nested = Types.Primitive.INT;
-        for (int i = 0; i < 300; i++) {
+        for (int i = 0; i < 8192; i++) {
             nested = new Types.ListType(nested);
         }
         assertFalse(has(nested, Trait.SEND), "unbounded type recursion must fail closed");
