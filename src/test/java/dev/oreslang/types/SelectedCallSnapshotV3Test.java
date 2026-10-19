@@ -73,6 +73,9 @@ final class SelectedCallSnapshotV3Test {
                 target, firstCall, params, items);
         assertDoesNotThrow(() -> receipt.verifyForCallSite(
                 firstCall, target, params, items));
+        // Downgrading an AST-bound plan to weak shape-only verification must fail.
+        assertThrows(IllegalArgumentException.class, () ->
+                receipt.verify(target, params, items));
         assertThrows(IllegalArgumentException.class, () ->
                 receipt.verifyForCallSite(otherCall, target, params, items));
         var shapeOnly = SelectedCallSnapshotV3.bind(target, params, items);
