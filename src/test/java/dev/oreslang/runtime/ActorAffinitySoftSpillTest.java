@@ -105,6 +105,35 @@ final class ActorAffinitySoftSpillTest {
     }
 
     @Test
+    void shutdownRevokesAbandonedLaneRunnableEvenIfItRunsLate() {
+        class DeferredExecutor extends AbstractExecutorService {
+            private boolean closed;
+            private final List<Runnable> pending = new java.util.ArrayList<>();
+            @Override public void execute(Runnable command) { pending.add(command); }
+            @Override public void shutdown() { closed = true; }
+            @Override public List<Runnable> shutdownNow() {
+                closed = true;
+                return List.copyOf(pending);
+            }
+            @Override public boolean isShutdown() { return closed; }
+            @Override public boolean isTerminated() { return closed; }
+            @Override public boolean awaitTermination(long timeout, TimeUnit unit) {
+                return closed;
+            }
+        }
+        DeferredExecutor worker = new DeferredExecutor();
+        ActorAffinityDispatcher dispatcher = new ActorAffinityDispatcher(
+                1, 1, new int[0], ignored -> worker);
+        AtomicInteger executed = new AtomicInteger();
+        dispatcher.executeOnLane(0, executed::incrementAndGet);
+        Runnable abandoned = worker.pending.get(0);
+        assertEquals(1, dispatcher.shutdownNow().size());
+        for (int i = 0; i < 10_000; i++) abandoned.run();
+        assertEquals(0, executed.get(), "abandoned lane turn must never enter actor code");
+        assertTrue(dispatcher.isShutdown());
+    }
+
+    @Test
     void invalidLaneCannotLeakAdmissionCapacity() throws Exception {
         ActorAffinityDispatcher dispatcher = new ActorAffinityDispatcher(
                 1, 1, new int[0], index -> Executors.newSingleThreadExecutor());
