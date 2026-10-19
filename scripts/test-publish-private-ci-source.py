@@ -32,6 +32,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.destination = patch.object(pub, "MIRROR_DESTINATION", "trusted/ci")
         self.destination.start()
         self.addCleanup(self.destination.stop)
+        self.default_branch = patch.object(pub, "DEST_DEFAULT_BRANCH", "main")
+        self.default_branch.start()
+        self.addCleanup(self.default_branch.stop)
+        self.base_commit = patch.object(pub, "DEST_BASE_COMMIT", A)
+        self.base_commit.start()
+        self.addCleanup(self.base_commit.stop)
+        self.base_tree = patch.object(pub, "DEST_BASE_TREE", B)
+        self.base_tree.start()
+        self.addCleanup(self.base_tree.stop)
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
@@ -69,7 +78,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.preflight.stop()
         try:
             with self.assertRaisesRegex(pub.Denied, "exact source PR"):
-                pub.require_preflight("trusted/ci", self.root, None, None, None)
+                pub.require_preflight("trusted/ci", "ci/oreslang-test", self.root, None, None, None)
         finally:
             self.preflight.start()
 
@@ -99,7 +108,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(
                     pub.Denied, "source subtree does not match authorized source tree"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test",
-                            self.root, source_tree=C)
+                            self.root, source_pr=1425, source_commit=C, source_tree=C)
         writes = [r for m, r, _ in self.route_calls if m == "POST"]
         self.assertEqual(writes, [
             "repos/trusted/ci/git/blobs",
@@ -122,6 +131,34 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(tree_writes[1]["tree"], [
             {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}])
         self.assertEqual(tree_writes[1]["base_tree"], B)
+
+    def test_destination_base_commit_drift_aborts_before_source_upload(self):
+        original = self.fake_api
+        def drift(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/ref/heads/main":
+                return {"object": {"sha": C}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=drift):
+            with self.assertRaisesRegex(pub.Denied, "base commit changed"):
+                pub.publish(
+                    "trusted/ci", self.source, "ci/oreslang-test", self.root,
+                    source_pr=1425, source_commit=C, source_tree=D)
+        self.assertFalse(any(r.endswith("/git/commits") or r.endswith("/git/refs")
+                             for m, r, _ in self.route_calls if m == "POST"))
+
+    def test_destination_base_tree_drift_aborts_before_source_upload(self):
+        original = self.fake_api
+        def drift(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/commits/" + A:
+                return {"tree": {"sha": C}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=drift):
+            with self.assertRaisesRegex(pub.Denied, "base tree changed"):
+                pub.publish(
+                    "trusted/ci", self.source, "ci/oreslang-test", self.root,
+                    source_pr=1425, source_commit=C, source_tree=D)
+        self.assertFalse(any(r.endswith("/git/commits") or r.endswith("/git/refs")
+                             for m, r, _ in self.route_calls if m == "POST"))
 
     def test_public_visibility_aborts_before_any_write(self):
         self.visibility = ["public"]
