@@ -1109,9 +1109,22 @@ public final class Ast {
             return KEYS.containsKey(key) || TUPLE_SLOTS.containsKey(key);
         }
 
-        /** Runtime guard: optimizer clones must not change a certified tuple slot. */
-        public static void requireTupleSlot(IndexExpr site, int actual) {
-            Integer known = knownTupleSlot(site);
+        /**
+         * Runtime guard for positional receivers. A checked structural/class
+         * field site must never fall through into array/list access if an
+         * erased or corrupted runtime value changes receiver representation.
+         * This check runs for ordinary lists too; the absent-proof case remains
+         * valid because their integer bounds are checked by the evaluator.
+         */
+        public static synchronized void requireTupleSlot(IndexExpr site, int actual) {
+            java.util.Objects.requireNonNull(site, "index site");
+            expunge();
+            IdentityKey key = new IdentityKey(site, null);
+            if (KEYS.containsKey(key)) {
+                throw new IllegalArgumentException(
+                        "runtime sequence receiver violates certified record/class field view");
+            }
+            Integer known = TUPLE_SLOTS.get(key);
             if (known != null && known.intValue() != actual) {
                 throw new IllegalArgumentException(
                         "runtime index differs from the compiler-verified tuple slot");
