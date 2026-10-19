@@ -16,6 +16,7 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -105,9 +106,12 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         }
 
         CompletionStage<IpcReceiptCorrelation.Stage> outcome = receipts.admit(message);
+        AtomicBoolean physicalWriterEntered = new AtomicBoolean();
         Throwable failure = null;
         try {
             sessionLease.writeFrame(physicalGeneration, message, ignored -> {
+                // writeFrame invokes this callback only AFTER commitDispatch.
+                physicalWriterEntered.set(true);
                 byte[] frame = encodeDataFrame(message, body, macKey);
                 synchronized (writeGate) {
                     writeWireFrame(output, frame);
@@ -115,6 +119,18 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             });
         } catch (IOException | RuntimeException | Error sendFailure) {
             failure = sendFailure;
+            if (!physicalWriterEntered.get()) {
+                // The lease rejected admission before dispatch commitment, so
+                // no physical write was possible and never-sent is provable.
+                try {
+                    receipts.rejectBeforeRemote(message);
+                } catch (RuntimeException | Error cleanupFailure) {
+                    sendFailure.addSuppressed(cleanupFailure);
+                }
+            }
+            // Once the physical writer callback has been entered, the dispatch
+            // commitment is irreversible. IpcTransportSessionLease requests
+            // close on writer failure and the outcome becomes unknown.
         }
         return new SendSubmission(outcome, failure);
     }
