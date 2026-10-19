@@ -314,3 +314,58 @@ repository and enforced main branch protection is still absent. Do not
 mirror the private Java Git tree across organizations until independent
 approval and exact numeric-ID/tree provenance gates pass. The prior
 source-free funded carrier canary does not authorize source export.
+
+
+## Cooperative TaskHandle cancellation checkpoints — current audit
+
+**Policy:** `TaskHandle.cancel(reason)` is a structured cancellation
+**request**, not an asynchronous exception injection, thread interruption,
+or proof that the guest has left its carrier. A queued Task is rejected before
+its first resume; a suspended Task's Future/await registration is revoked;
+and a Task currently executing a compiler-generated `Task.resume` is
+allowed to finish that synchronous turn, including Java `finally` clauses,
+before the result Future is cancelled at the **post-resume checkpoint**.
+Cancellation also checks the token before every subsequent resume.
+No further guest turn is admitted once a checkpoint observes cancellation.
+
+`TaskHandle` now arbitrates cancellation and guest-entry on an internal
+`resumeBoundaryLock`. The revoker defers `result.cancel(false)` while a
+guest turn is active, rather than transitioning the producer Future to
+cancelled in the middle of ordinary guest instructions. The cancellation
+request token/reason is still published immediately and can be inspected
+without waiting for the guest. Result completion and `getDone()` remain
+distinct: `getDone` completes only after scheduler physical quiescence.
+External `result().cancel()`, scheduler hard shutdown, wall deadline and
+force cancellation remain separate immediate revocation mechanisms, not
+graceful TaskHandle cancellation.
+
+**Failure ordering:** if guest execution throws (including a guest-thrown
+`CancellationException`) and is unwinding, do not overwrite that error by
+cancelling its Future at the post-resume checkpoint. A genuine scheduler
+`CancelledAtResume` still yields the Cancelled outcome. The first valid
+cancellation reason wins for cooperative cancellation, and late cancellation
+cannot rewrite an already-terminal Task result.
+
+**Not yet guaranteed:** asynchronously suspended Oreslang `finally` /
+`defer` cleanup is not currently lowered as a special cancellation cleanup
+continuation. This change guarantees synchronous turn-local cleanup only;
+a future compiler/runtime feature needs an explicit bounded, noncancellable
+cleanup state machine to ensure async-finally runs after cancellation, with
+failure suppression rules. Arbitrary CPU loops, native calls, FFI and blocked
+host callbacks have no forced cooperative progress; the watchdog can request
+a yield, but only compiler-generated safepoints can actually cooperate.
+Cancelling an `OresFuture` directly still bypasses this structured request.
+
+**Committed regression source:** TaskHandleTest tests running-turn deferred
+cancellation, synchronous finally, one-turn cooperate cutoff, guest-error
+preservation, borrowed pending Future ownership and queued task rejection.
+TaskScopeTest now asserts that cancellation of two actively executing child
+turns keeps their result Futures pending until their resume checkpoints.
+These are committed JUnit source tests; source-org CI has not yet executed
+the Maven/GraalVM suite due to zero-step runner failures.
+
+**Follow-up compiler contract:** lower source `rt cooperate`, explicit
+`await`, scheduler suspension and selected generated loop safepoints as
+checkpoints; check cancellation before entering the next guest frame and
+after the current turn unwinds. Add async cleanup unwinding and eventually
+task-local cancellation shielding only for short, bounded cleanup scopes.
