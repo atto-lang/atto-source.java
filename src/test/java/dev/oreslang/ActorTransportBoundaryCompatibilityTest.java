@@ -144,9 +144,7 @@ final class ActorTransportBoundaryCompatibilityTest {
                 }
                 """)));
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                actor fnc good(int x): Result<int, String> {
-                  return Ok(x);
-                }
+                actor fnc good(int x): int { return x; }
                 """)));
     }
 
