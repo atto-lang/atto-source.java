@@ -48,6 +48,12 @@ public final class IpcReceiptCorrelationSelfTest {
         denies(() -> book.acceptVerified(first, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
         denies(() -> book.acceptVerified(first, IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE));
         check(book.counters().equals(new IpcReceiptCorrelation.Counters(1, 1)));
+        denies(() -> book.acceptVerified(first, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
+        denies(() -> book.acceptVerified(first, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED));
+        check(book.counters().equals(new IpcReceiptCorrelation.Counters(1, 1)));
+        book.commitDispatch(first);
+        denies(() -> book.commitDispatch(first));
+        denies(() -> book.rejectBeforeRemote(first));
         book.acceptVerified(first, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
         denies(() -> book.acceptVerified(first, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
         denies(() -> book.acceptVerified(first, IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE));
@@ -59,6 +65,7 @@ public final class IpcReceiptCorrelationSelfTest {
         check(lost.get(0).lastObserved() == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
         check(book.counters().equals(new IpcReceiptCorrelation.Counters(1, 1)));
         check(book.retireTransportLost("sessionA").isEmpty());
+        book.commitDispatch(second);
         book.acceptVerified(second, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
         book.acceptVerified(second, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
         check(book.counters().equals(new IpcReceiptCorrelation.Counters(0, 0)));
@@ -77,6 +84,7 @@ public final class IpcReceiptCorrelationSelfTest {
         var generationOne = env(1, "sessionA");
         evolving.admit(generationOne);
         denies(() -> evolving.admit(env(2, "sessionB")));
+        evolving.commitDispatch(generationOne);
         evolving.acceptVerified(generationOne,
                 IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
         evolving.acceptVerified(generationOne,
@@ -103,6 +111,7 @@ public final class IpcReceiptCorrelationSelfTest {
         var racing = new IpcReceiptCorrelation(1);
         var raceMessage = env(1, "session");
         racing.admit(raceMessage);
+        racing.commitDispatch(raceMessage);
         CountDownLatch start = new CountDownLatch(1);
         AtomicInteger accepted = new AtomicInteger();
         List<Thread> carriers = new ArrayList<>();
@@ -137,9 +146,56 @@ public final class IpcReceiptCorrelationSelfTest {
         denies(() -> local.rejectBeforeRemote(localMessage));
         var postAck = new IpcReceiptCorrelation(1);
         postAck.admit(localMessage);
+        postAck.commitDispatch(localMessage);
         postAck.acceptVerified(localMessage, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
         denies(() -> postAck.rejectBeforeRemote(localMessage));
         check(postAck.counters().equals(new IpcReceiptCorrelation.Counters(1, 0)));
+
+        // Dispatch and never-sent rejection compete on one linearization
+        // point. Exactly one may win, including under carrier races.
+        for (int trial = 0; trial < 512; ++trial) {
+            var gate = new IpcReceiptCorrelation(1);
+            var msg = env(1, "race");
+            gate.admit(msg);
+            CountDownLatch fire = new CountDownLatch(1);
+            AtomicInteger published = new AtomicInteger();
+            AtomicInteger rejected = new AtomicInteger();
+            Thread dispatch = new Thread(() -> {
+                try {
+                    fire.await();
+                    gate.commitDispatch(msg);
+                    published.incrementAndGet();
+                } catch (IllegalArgumentException | InterruptedException expected) { }
+            });
+            Thread decline = new Thread(() -> {
+                try {
+                    fire.await();
+                    gate.rejectBeforeRemote(msg);
+                    rejected.incrementAndGet();
+                } catch (IllegalArgumentException | InterruptedException expected) { }
+            });
+            dispatch.start();
+            decline.start();
+            fire.countDown();
+            dispatch.join();
+            decline.join();
+            check(published.get() + rejected.get() == 1);
+            check(gate.invariant());
+            if (published.get() == 1) {
+                check(gate.counters().equals(new IpcReceiptCorrelation.Counters(1, 1)));
+                denies(() -> gate.rejectBeforeRemote(msg));
+                var failures = gate.retireTransportLost("race");
+                check(failures.size() == 1);
+                check(failures.get(0).lastObserved()
+                        == IpcReceiptCorrelation.Stage.DISPATCH_COMMITTED);
+            } else {
+                check(gate.counters().equals(new IpcReceiptCorrelation.Counters(0, 0)));
+                denies(() -> gate.commitDispatch(msg));
+                check(gate.retireTransportLost("race").isEmpty());
+            }
+            check(gate.counters().equals(new IpcReceiptCorrelation.Counters(0, 0)));
+            check(gate.invariant());
+        }
 
         Random rng = new Random(20261018);
         for (int trial = 0; trial < 2048; trial++) {
@@ -158,8 +214,13 @@ public final class IpcReceiptCorrelationSelfTest {
                         // disconnected transport can report uncertainty.
                         denies(() -> ledger.acceptVerified(
                                 msg, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
-                        check(ledger.retireTransportLost("session").size() == 1);
+                        ledger.commitDispatch(msg);
+                        var uncertain = ledger.retireTransportLost("session");
+                        check(uncertain.size() == 1);
+                        check(uncertain.get(0).lastObserved()
+                                == IpcReceiptCorrelation.Stage.DISPATCH_COMMITTED);
                     } else {
+                        ledger.commitDispatch(msg);
                         ledger.acceptVerified(msg, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
                         ledger.acceptVerified(msg, choice == 2
                                 ? IpcReceiptCorrelation.Stage.HANDLER_COMMITTED
