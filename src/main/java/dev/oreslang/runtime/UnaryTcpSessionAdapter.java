@@ -249,6 +249,8 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
         return thread;
     });
     private final Set<Session> sessions = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    // Includes pre-authentication sockets, which are not yet Session instances.
+    private final Set<Socket> admittedSockets = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
     private long nextSessionId = 1;
     private long nextGeneration = 1;
@@ -280,8 +282,11 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             return;
         }
 
+        admittedSockets.add(socket);
         Session session = null;
         try {
+            // Shutdown can race connection admission; never begin auth after it wins.
+            if (closed.get()) return;
             long[] identity = mintSessionIdentity();
             socket.setSoTimeout(limits.readDeadlineMillis());
             PeerIdentity peer = Objects.requireNonNull(
@@ -297,6 +302,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             // Authentication, protocol and transport failures are session-local.
             // Never serialize arbitrary host exception text onto the wire.
         } finally {
+            admittedSockets.remove(socket);
             if (session != null) session.close();
             else {
                 closeQuietly(socket);
@@ -644,6 +650,9 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
 
     @Override public void close() {
         if (!closed.compareAndSet(false, true)) return;
+        // Close unauthenticated handshakes as well as established sessions.
+        // An in-flight serve() rechecks closed after socket registration.
+        for (Socket socket : List.copyOf(admittedSockets)) closeQuietly(socket);
         for (Session session : List.copyOf(sessions)) session.close();
         timers.shutdownNow();
         io.shutdownNow();
