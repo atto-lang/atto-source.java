@@ -166,6 +166,62 @@ final class ActorPhysicalTurnGateTest {
     }
 
     @Test
+    void transferInProgressCannotStartGuestWorkAfterGateCloses() throws Exception {
+        ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 8);
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch finishFirst = new CountDownLatch(1);
+        CountDownLatch beforeSecondSubmission = new CountDownLatch(1);
+        CountDownLatch allowSecondSubmission = new CountDownLatch(1);
+        CountDownLatch finished = new CountDownLatch(2);
+        AtomicInteger executedAfterClose = new AtomicInteger();
+        AtomicInteger rejectedOnClose = new AtomicInteger();
+        try (var workers = Executors.newSingleThreadExecutor()) {
+            gate.dispatch(() -> {
+                started.countDown();
+                try {
+                    assertTrue(finishFirst.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    finished.countDown();
+                }
+            }, workers::execute, failure -> fail(failure));
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+
+            gate.dispatch(() -> {
+                executedAfterClose.incrementAndGet();
+                finished.countDown();
+            }, command -> {
+                beforeSecondSubmission.countDown();
+                try {
+                    assertTrue(allowSecondSubmission.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                workers.execute(command);
+            }, failure -> {
+                assertInstanceOf(RejectedExecutionException.class, failure);
+                rejectedOnClose.incrementAndGet();
+                finished.countDown();
+            });
+
+            finishFirst.countDown();
+            assertTrue(beforeSecondSubmission.await(5, TimeUnit.SECONDS));
+            gate.close();
+            allowSecondSubmission.countDown();
+            assertTrue(finished.await(5, TimeUnit.SECONDS));
+        } finally {
+            gate.close();
+            finishFirst.countDown();
+            allowSecondSubmission.countDown();
+        }
+        assertEquals(0, executedAfterClose.get(),
+                "queued callback may not enter guest code after gate closure");
+        assertEquals(1, rejectedOnClose.get(),
+                "transferred-but-not-started callback must be rejected exactly once");
+    }
+
+    @Test
     void actorRuntimeGateSerializesDifferentSchedulerDomains() throws Exception {
         String key = "ores.runtime.actor.max-active-turns";
         String prior = System.getProperty(key);
