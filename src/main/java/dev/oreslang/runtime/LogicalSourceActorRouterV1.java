@@ -96,6 +96,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 awaitUpgradeLocked();
                 requireOpenLocked();
                 reapRetiredLocked();
+                if (boundProxyMailbox != null)
+                    throw new SecurityException(
+                            "raw logical ActorRef.send bypasses bound proxy admission");
                 active.physical.send(message);
             }
         }
@@ -153,6 +156,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     private final LogicalActorRef logicalRef = new LogicalActorRef();
     private final ArrayList<Route> retiredRoutes = new ArrayList<>();
     private Route active;
+    // Bound once by a trusted supervisor. Once bound, the host raw send()
+    // path must not bypass the proxy's immutable bounded admission ledger.
+    private LogicalActorProxyMailboxV1 boundProxyMailbox;
     private boolean upgrading;
     private boolean closed;
     // Under routeLock. A close timeout may retain the active physical actor
@@ -237,6 +243,39 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     public LogicalActorRef ref() { return logicalRef; }
 
     /**
+     * Trusted supervisor binding. Only one authoritative immutable mailbox
+     * may ever own this physical route; rebinding would permit credit/ACK
+     * forgery and bypass the frozen migration watermark.
+     */
+    void bindProxyMailboxForSupervisor(LogicalActorProxyMailboxV1 mailbox) {
+        Objects.requireNonNull(mailbox, "mailbox");
+        synchronized (routeLock) {
+            requireOpenLocked();
+            if (boundProxyMailbox != null)
+                throw new IllegalStateException("logical route proxy already bound");
+            var snapshot = mailbox.snapshot();
+            if (snapshot.closed() || snapshot.dispatchFrozen()
+                    || snapshot.retainedMessages() != 0
+                    || snapshot.routeEpoch() != active.routeEpoch)
+                throw new IllegalStateException(
+                        "proxy binding requires an empty, open, epoch-aligned mailbox");
+            boundProxyMailbox = mailbox;
+        }
+    }
+
+    /**
+     * Coherent diagnostic of code route and proxy epoch: lock ordering is
+     * routeLock -> mailbox lock, identical to physical send/receipt/commit.
+     * Two independent public snapshots would not form an atomic observation.
+     */
+    boolean proxyRouteEpochAlignedForTesting(LogicalActorProxyMailboxV1 mailbox) {
+        synchronized (routeLock) {
+            return boundProxyMailbox == mailbox
+                    && active.routeEpoch == mailbox.snapshot().routeEpoch();
+        }
+    }
+
+    /**
      * Opaque, trusted-host-only cumulative physical-drain acknowledgment.
      * This is bound to the exact immutable envelope AND the route instance
      * that accepted it. It is NOT a remote authenticated mail.done() receipt:
@@ -281,7 +320,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             synchronized (owner.routeLock) {
                 if (consumed)
                     throw new IllegalStateException("consumed physical drain receipt");
-                if (owner.closed || owner.upgrading || owner.active != routed)
+                if (owner.closed || owner.upgrading || owner.active != routed
+                        || owner.boundProxyMailbox != mailbox)
                     throw new SecurityException("physical actor route changed before completion");
                 if (mailbox.snapshot().routeEpoch() != routed.routeEpoch())
                     throw new SecurityException("physical and proxy route epochs differ");
@@ -319,6 +359,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             requireOpenLocked();
             reapRetiredLocked();
             Route current = active;
+            if (boundProxyMailbox != mailbox)
+                throw new SecurityException("foreign proxy mailbox on physical actor route");
             if (expectedRouteEpoch != current.routeEpoch)
                 throw new SecurityException("stale proxy dispatch route epoch");
             // Physical submission is reserved exactly once under the owning
@@ -383,6 +425,32 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             HotReloadManager.Generation candidateGeneration,
             Duration readyTimeout)
             throws InterruptedException, ExecutionException, TimeoutException {
+        return upgradeInternal(candidateGeneration, readyTimeout, null, null);
+    }
+
+    /**
+     * SHARED proxy route migration. A supervisor-held dispatch freeze is
+     * committed under routeLock alongside the physical route replacement.
+     * The owning bridge serializes dispatch vs upgrade with dispatchLock;
+     * ordinary bounded admission remains independently open.
+     */
+    boolean upgradeToForProxy(
+            HotReloadManager.Generation candidateGeneration,
+            Duration readyTimeout,
+            LogicalActorProxyMailboxV1 mailbox,
+            LogicalActorProxyMailboxV1.FreezeTicket ticket)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        Objects.requireNonNull(mailbox, "mailbox");
+        Objects.requireNonNull(ticket, "ticket");
+        return upgradeInternal(candidateGeneration, readyTimeout, mailbox, ticket);
+    }
+
+    private boolean upgradeInternal(
+            HotReloadManager.Generation candidateGeneration,
+            Duration readyTimeout,
+            LogicalActorProxyMailboxV1 proxyMailbox,
+            LogicalActorProxyMailboxV1.FreezeTicket proxyTicket)
+            throws InterruptedException, ExecutionException, TimeoutException {
         Objects.requireNonNull(candidateGeneration, "candidateGeneration");
         Objects.requireNonNull(readyTimeout, "readyTimeout");
         if (readyTimeout.isNegative() || readyTimeout.isZero())
@@ -413,6 +481,16 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             synchronized (routeLock) {
                 requireOpenLocked();
                 reapRetiredLocked();
+                if (proxyMailbox == null) {
+                    if (boundProxyMailbox != null)
+                        throw new SecurityException(
+                                "bound proxy route requires supervisor-owned upgrade");
+                } else {
+                    if (boundProxyMailbox != proxyMailbox)
+                        throw new SecurityException("foreign proxy upgrade authority");
+                    proxyMailbox.requireFreezeTicketForRouteEpoch(
+                            proxyTicket, active.routeEpoch);
+                }
                 if (upgrading)
                     throw new IllegalStateException(
                             "logical actor upgrade already in progress");
@@ -448,13 +526,26 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 if (!upgrading || active != prior)
                     throw new IllegalStateException(
                             "logical actor route changed while candidate staged");
-                active = new Route(
+                // Allocate the next route BEFORE committing the proxy epoch.
+                // Route lookup, physical send, and receipt retirement all take
+                // routeLock. The proxy bridge serializes pollDispatch against
+                // this same transaction with dispatchLock. Neither can observe
+                // one epoch changed without the other.
+                Route next = new Route(
                         candidateGeneration,
                         candidateLease,
                         candidate,
                         replacement,
                         prior.incarnation,
                         Math.addExact(prior.routeEpoch, 1L));
+                if (proxyMailbox != null) {
+                    proxyMailbox.requireFreezeTicketForRouteEpoch(
+                            proxyTicket, prior.routeEpoch);
+                    proxyTicket.commit();
+                }
+                // No throwing/allocation-bearing operation between proxy
+                // commit and the authoritative physical route pointer swap.
+                active = next;
                 candidateLeaseTransferred = true;
                 published = true;
                 // Keep host route admission paused until the old physical
