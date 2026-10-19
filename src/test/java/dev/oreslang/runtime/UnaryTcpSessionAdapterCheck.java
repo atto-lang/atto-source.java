@@ -230,32 +230,28 @@ public final class UnaryTcpSessionAdapterCheck {
         }
     }
 
-    private static void lazyActorPayloadProjection() {
+    private static void compactActorPayloadProjection() {
         byte[] original = new byte[UnaryTransportFrame.MAX_PAYLOAD_BYTES];
         original[0] = (byte) 255;
         original[original.length - 1] = (byte) 254;
         var request = new UnaryTcpSessionAdapter.Request(
-                new UnaryTcpSessionAdapter.PeerIdentity("peer:lazy-bytes"),
+                new UnaryTcpSessionAdapter.PeerIdentity("peer:compact-bytes"),
                 7, 3, 1, original);
         original[0] = 0;
 
         Object payload = request.actorMessage().get("payload");
-        check(payload instanceof java.util.List<?>,
-                "actor payload projection must remain list-compatible");
-        java.util.List<?> values = (java.util.List<?>) payload;
-        check(values.size() == UnaryTransportFrame.MAX_PAYLOAD_BYTES,
-                "lazy payload projection preserves wire length");
-        check(values.get(0).equals(255L)
-                        && values.get(values.size() - 1).equals(254L),
-                "lazy payload projection is unsigned and backed by the request copy");
-        check(values.getClass().getSimpleName().equals("UnsignedByteList"),
-                "actor payload must not eagerly allocate a boxed ArrayList");
-        try {
-            @SuppressWarnings("unchecked")
-            java.util.List<Object> mutable = (java.util.List<Object>) values;
-            mutable.set(0, 1L);
-            throw new AssertionError("lazy actor payload projection was mutable");
-        } catch (UnsupportedOperationException expected) { }
+        check(payload instanceof OresBytes,
+                "actor payload must use compact immutable OresBytes");
+        OresBytes bytes = (OresBytes) payload;
+        check(bytes.size() == UnaryTransportFrame.MAX_PAYLOAD_BYTES,
+                "compact payload preserves wire length");
+        check(bytes.unsignedAt(0) == 255
+                        && bytes.unsignedAt(bytes.size() - 1) == 254,
+                "compact payload is unsigned and backed by the request copy");
+        byte[] copy = bytes.toByteArray();
+        copy[0] = 1;
+        check(bytes.unsignedAt(0) == 255,
+                "OresBytes must not expose mutable backing storage");
     }
 
     private static void echoAndReplayFence() throws Exception {
@@ -1080,7 +1076,7 @@ public final class UnaryTcpSessionAdapterCheck {
     }
 
     public static void main(String[] unused) throws Exception {
-        lazyActorPayloadProjection();
+        compactActorPayloadProjection();
         echoAndReplayFence();
         wrongBindingRejectedBeforePayloadRead();
         overloadCancelAndRecovery();
