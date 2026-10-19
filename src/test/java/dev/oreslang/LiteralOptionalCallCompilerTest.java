@@ -5,6 +5,10 @@ import dev.oreslang.compiler.LiteralOptionalCallCompiler;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import java.util.List;
 
@@ -150,6 +154,38 @@ final class LiteralOptionalCallCompilerTest {
                 .arguments().get(1)).name());
         assertEquals(7L, ((Ast.LiteralExpr) checked.loweredCall()
                 .arguments().get(0)).value());
+    }
+
+    @Test
+    void equivalentOrdinaryOptionProgramRunsUsingExistingGraalRuntime() throws Exception {
+        // The default source admission still intentionally rejects T?
+        // and StagedCallExpr. Prove the same compiled ABI values already
+        // have matching OptionValue/Some/None runtime behavior.
+        String ordinary = """
+                define module app as
+                    pub fnc greet(Option<string> name): string {
+                        return match name over
+                            on Some(n) -> n
+                            on None -> "anonymous"
+                        end
+                    }
+                end
+                pub routine main(): void {
+                    stdio.stdout.write(app.greet(Some("Alice")));
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(app.greet(None));
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.analyze(Parser.parse(ordinary)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, ordinary,
+                    "ordinary-option-abi.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("Alice|anonymous", output.toString(StandardCharsets.UTF_8));
     }
 
 }
