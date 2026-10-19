@@ -96,6 +96,7 @@ public final class Ast {
             // compiler pass constructs a TypeRef directly, bypassing the parser.
             if (name.equals("$v3_option_sugar$")) {
                 if (inferArguments || arguments.size() != 1
+                        || arguments.getFirst().isStagedV3Option() // T?? is reserved
                         || containsUnsafeV3OptionPayload(arguments.getFirst())) {
                     throw new IllegalArgumentException(
                             "staged v3 Option sugar requires a concrete owned payload without "
@@ -130,7 +131,7 @@ public final class Ast {
         private static boolean containsUnsafeV3OptionPayload(TypeRef type) {
             if (type.name().equals("void") || type.name().equals("$infer$")
                     || type.isBorrow() || type.isOmittableFormal()
-                    || type.isStagedV3Option() || type.inferArguments()) {
+                    || type.inferArguments()) {
                 return true;
             }
             for (TypeRef nested : type.arguments()) {
