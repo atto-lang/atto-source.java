@@ -39,9 +39,13 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     private static final int TYPE_DATA = 1;
     private static final int TYPE_RECEIPT = 2;
     private static final int MAC_BYTES = 32;
-    private static final int MAX_FRAME_BYTES = 16 * 1024 * 1024;
     private static final int MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
     private static final int MAX_TOKEN_BYTES = 96;
+    // Pre-authentication allocation caps. DATA needs payload headroom; a
+    // receipt is only header + envelope + stage + MAC and must never consume
+    // megabytes merely because an unauthenticated peer advertised that length.
+    private static final int MAX_DATA_FRAME_BYTES = MAX_PAYLOAD_BYTES + 1024;
+    private static final int MAX_RECEIPT_FRAME_BYTES = 1024;
 
     private final Socket socket;
     private final IpcReceiptCompletionBridge receipts;
@@ -80,7 +84,16 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                 physicalGeneration,
                 maxOutstandingWrites,
                 receipts,
-                socket::close,
+                () -> {
+                    try {
+                        socket.close();
+                    } finally {
+                        // This is our private clone, never the broker's input.
+                        // Destroy only after the lease has drained physical
+                        // writers and entered authoritative close cleanup.
+                        Arrays.fill(this.macKey, (byte) 0);
+                    }
+                },
                 Objects.requireNonNull(cleanupScheduler, "cleanupScheduler"));
     }
 
@@ -144,7 +157,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         try {
             final byte[] frame;
             synchronized (readGate) {
-                frame = readWireFrame(input);
+                frame = readReceiptWireFrame(input);
             }
             DecodedReceipt receipt = decodeReceiptFrame(frame, macKey);
             if (receipt.physicalGeneration() != physicalGeneration) {
@@ -189,6 +202,12 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
 
     IpcTransportSessionLease.Snapshot snapshot() {
         return sessionLease.snapshot();
+    }
+
+    /** Package-local audit hook: exposes no key bytes. */
+    boolean keyMaterialDestroyed() {
+        for (byte value : macKey) if (value != 0) return false;
+        return true;
     }
 
     @Override
@@ -333,7 +352,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     static void writeWireFrame(OutputStream output, byte[] authenticatedFrame) throws IOException {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(authenticatedFrame, "authenticatedFrame");
-        if (authenticatedFrame.length < MAC_BYTES || authenticatedFrame.length > MAX_FRAME_BYTES) {
+        if (authenticatedFrame.length < MAC_BYTES
+                || authenticatedFrame.length > MAX_DATA_FRAME_BYTES) {
             throw new IOException("invalid bounded IPC wire frame");
         }
         DataOutputStream out = new DataOutputStream(output);
@@ -342,8 +362,20 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         out.flush();
     }
 
-    static byte[] readWireFrame(InputStream input) throws IOException {
+    static byte[] readDataWireFrame(InputStream input) throws IOException {
+        return readWireFrame(input, MAX_DATA_FRAME_BYTES);
+    }
+
+    static byte[] readReceiptWireFrame(InputStream input) throws IOException {
+        return readWireFrame(input, MAX_RECEIPT_FRAME_BYTES);
+    }
+
+    private static byte[] readWireFrame(InputStream input, int maximumBytes)
+            throws IOException {
         Objects.requireNonNull(input, "input");
+        if (maximumBytes < MAC_BYTES || maximumBytes > MAX_DATA_FRAME_BYTES) {
+            throw new IllegalArgumentException("invalid IPC frame allocation cap");
+        }
         DataInputStream in = new DataInputStream(input);
         final int length;
         try {
@@ -351,7 +383,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         } catch (EOFException eof) {
             throw eof;
         }
-        if (length < MAC_BYTES || length > MAX_FRAME_BYTES) {
+        if (length < MAC_BYTES || length > maximumBytes) {
             throw new IOException("invalid bounded IPC wire frame length");
         }
         byte[] frame = in.readNBytes(length);
@@ -456,7 +488,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
 
     private static byte[] verifyAndStripMac(byte[] frame, byte[] key) throws IOException {
         Objects.requireNonNull(frame, "frame");
-        if (frame.length < MAC_BYTES || frame.length > MAX_FRAME_BYTES) {
+        if (frame.length < MAC_BYTES || frame.length > MAX_DATA_FRAME_BYTES) {
             throw new IOException("invalid IPC authenticated frame length");
         }
         byte[] body = Arrays.copyOf(frame, frame.length - MAC_BYTES);
