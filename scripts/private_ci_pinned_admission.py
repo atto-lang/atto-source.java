@@ -21,6 +21,15 @@ class AdmissionDenied(RuntimeError):
     pass
 
 
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate approval policy JSON key")
+        result[key] = value
+    return result
+
+
 def require_sha(value, name):
     if not isinstance(value, str) or not SHA.fullmatch(value):
         raise AdmissionDenied(name + ' missing or malformed')
@@ -84,7 +93,7 @@ def verify(repository, trusted_root, fetch, *, env=None, git=git_value):
         raw = base64.b64decode(''.join(encoded.split()), validate=True)
         if len(raw) > 16384 or not raw:
             raise ValueError('invalid length')
-        policy = json.loads(raw)
+        policy = json.loads(raw, object_pairs_hook=_unique_json_object)
     except (ValueError, binascii.Error, UnicodeError, TypeError):
         raise AdmissionDenied('reviewed numeric-ID policy is invalid') from None
     if (not isinstance(policy,dict) or set(policy) != {'version','repositories'}
