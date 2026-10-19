@@ -214,6 +214,7 @@ final class OresTestCommand {
                     + "|seed=" + seed + "|states=" + report.exploredStates()
                     + "|cycle_rejections=" + report.rejectedCycles()
                     + "|stress_cases=" + report.stressCases()
+                    + "|input_fingerprint=" + report.inputFingerprint()
                     + "|waiting=" + report.strandedWaiters()
                     + "|jvm_deadlocks=" + report.jvmDeadlockedThreads());
             if ((explore && report.rejectedCycles() == 0)
