@@ -62,6 +62,11 @@ final class LogicalSourceActorProxyBridgeV1Test {
             try (var router = LogicalSourceActorRouterV1.spawn(
                          first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT);
                  var proxy = new LogicalActorProxyMailboxV1(2, 8, 16)) {
+                router.bindProxyMailboxForSupervisor(proxy);
+                assertTrue(router.proxyRouteEpochAlignedForTesting(proxy));
+                assertThrows(SecurityException.class,
+                        () -> router.ref().send(41L),
+                        "raw host send must not bypass bound proxy credits");
                 byte[] wire = new byte[Long.BYTES];
                 wire[Long.BYTES - 1] = 41;
                 var admitted = proxy.admit(wire);
@@ -553,4 +558,105 @@ final class LogicalSourceActorProxyBridgeV1Test {
             assertEquals(0, bridge.snapshot().retainedMessages());
         }
     }
+    @Test
+    void physicalAndProxyEpochsPublishTogetherUnderConcurrentObservation()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("atomic-v1.ores", V1);
+            var second = manager.stageActorGeneration("atomic-v2.ores", V2);
+            try (var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
+                    first, "Counter", WAIT, 6, 8, 48)) {
+                var initial = bridge.address();
+                bridge.admitLong(41L);
+                assertTrue(bridge.dispatchOne(WAIT));
+                assertEquals(42L, next(bridge));
+                bridge.admitLong(-1L);
+                bridge.admitLong(-2L);
+
+                var start = new java.util.concurrent.CountDownLatch(1);
+                var started = new java.util.concurrent.CountDownLatch(1);
+                var running = new java.util.concurrent.atomic.AtomicBoolean(true);
+                var unexpected = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                Thread observer = Thread.ofPlatform().start(() -> {
+                    try {
+                        start.await();
+                        started.countDown();
+                        while (running.get()) {
+                            if (!bridge.routeEpochsAlignedForTesting()) {
+                                throw new AssertionError(
+                                        "observable split between physical and proxy route epochs");
+                            }
+                            Thread.onSpinWait();
+                        }
+                    } catch (Throwable failure) {
+                        unexpected.compareAndSet(null, failure);
+                    }
+                });
+                try {
+                    start.countDown();
+                    assertTrue(started.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                    assertTrue(bridge.upgradeTo(second, WAIT));
+                } finally {
+                    running.set(false);
+                    start.countDown();
+                    observer.join(10000);
+                }
+                assertFalse(observer.isAlive());
+                assertNull(unexpected.get());
+                assertTrue(bridge.routeEpochsAlignedForTesting());
+                assertEquals(initial.actorId(), bridge.address().actorId());
+                assertEquals(initial.incarnation(), bridge.address().incarnation());
+                assertEquals(2L, bridge.address().routeEpoch());
+                assertEquals(2L, bridge.snapshot().routeEpoch());
+                assertEquals(2, bridge.snapshot().queuedMessages());
+                assertTrue(bridge.dispatchOne(WAIT));
+                assertEquals(43L, next(bridge));
+                assertTrue(bridge.dispatchOne(WAIT));
+                assertEquals(45L, next(bridge));
+                assertEquals(0, bridge.snapshot().retainedMessages());
+            }
+        }
+    }
+
+    @Test
+    void boundRouterRejectsForeignFreezeAndUnproxiedUpgrade()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("authority-v1.ores", V1);
+            var second = manager.stageActorGeneration("authority-v2.ores", V2);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                         first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT);
+                 var proxy = new LogicalActorProxyMailboxV1(4, 8, 32);
+                 var foreign = new LogicalActorProxyMailboxV1(4, 8, 32)) {
+                router.bindProxyMailboxForSupervisor(proxy);
+                assertThrows(IllegalStateException.class,
+                        () -> router.bindProxyMailboxForSupervisor(foreign));
+                assertThrows(SecurityException.class,
+                        () -> router.upgradeTo(second, WAIT));
+                assertTrue(router.proxyRouteEpochAlignedForTesting(proxy));
+                var ownedTicket = proxy.freezeDispatchForUpgrade();
+                var foreignTicket = foreign.freezeDispatchForUpgrade();
+                assertThrows(SecurityException.class,
+                        () -> router.upgradeToForProxy(
+                                second, WAIT, foreign, foreignTicket));
+                assertThrows(IllegalStateException.class,
+                        () -> router.upgradeToForProxy(
+                                second, WAIT, proxy, foreignTicket));
+                assertEquals(1L, router.ref().routeEpoch());
+                assertTrue(proxy.snapshot().dispatchFrozen());
+                assertTrue(router.proxyRouteEpochAlignedForTesting(proxy));
+                foreignTicket.rollback();
+                // The refused attempts must not consume the trusted ticket.
+                assertTrue(router.upgradeToForProxy(
+                        second, WAIT, proxy, ownedTicket));
+                assertTrue(router.proxyRouteEpochAlignedForTesting(proxy));
+                assertEquals(2L, router.ref().routeEpoch());
+                assertEquals(2L, proxy.snapshot().routeEpoch());
+                assertThrows(IllegalStateException.class, ownedTicket::commit);
+            }
+        }
+    }
+
 }
