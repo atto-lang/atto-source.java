@@ -121,8 +121,12 @@ final class DynSendSyncConvergenceTest {
         Type immutable = new Types.Record(
                 Map.of("count", Types.Primitive.INT), true);
         Type mutable = new Types.ListType(Types.Primitive.INT);
+        // readOnly is a view, not proof of a frozen allocation.
+        assertTrue(ThreadSafetyTraits.has(immutable, Trait.SEND, NO_NOMINAL));
+        assertFalse(ThreadSafetyTraits.has(immutable, Trait.SYNC, NO_NOMINAL));
+        assertFalse(ThreadSafetyTraits.has(new Types.Borrow(immutable, false),
+                Trait.SEND, NO_NOMINAL));
         for (Trait trait : Trait.values()) {
-            assertTrue(ThreadSafetyTraits.has(immutable, trait, NO_NOMINAL));
             assertTrue(ThreadSafetyTraits.has(new Types.Tuple(List.of(
                     Types.Primitive.INT, Types.Primitive.STRING)), trait, NO_NOMINAL));
         }
