@@ -243,6 +243,19 @@ public final class LiteralOptionalCallCompiler {
                 || target == caller || !plain(target)) {
             throw new IllegalArgumentException("selected target needs pure ordinary signature");
         }
+        // The source binder may distinguish same-named candidates by argument
+        // labels, but those labels disappear in the positional Some/None ABI.
+        // Until the full checker returns a retained declaration-resolution
+        // witness for the rewritten call, forbid every other overload of this
+        // target name, including overloads with different source arity.
+        for (Ast.Decl declaration : module.declarations()) {
+            if (declaration instanceof Ast.FunctionDecl competing
+                    && competing != target
+                    && competing.name().equals(target.name())) {
+                throw new IllegalArgumentException(
+                        "target overload set needs post-lowering declaration resolution proof");
+            }
+        }
         // The future runtime representation is Option<T>; this experimental
         // rewrite admits only already-proven exact scalar T literals.
         OptionalCallTempLowering.Recipe recipe = lexical.tempRecipe();
