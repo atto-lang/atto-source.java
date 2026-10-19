@@ -173,7 +173,7 @@ final class ImportGraph {
                 }
                 if (symbol != null) {
                     throw new IllegalArgumentException(
-                            "@CallableBy import of '" + symbol + "' from '" + targetId
+                            "caller-role annotated import of '" + symbol + "' from '" + targetId
                                     + "' into '" + importer
                                     + "' requires linked declaration identity and verified caller-role ABI; "
                                     + "unlinked role-policy imports are forbidden");
@@ -242,7 +242,11 @@ final class ImportGraph {
 
     private static boolean hasCallerPolicy(java.util.List<Ast.Annotation> annotations) {
         for (Ast.Annotation annotation : annotations) {
-            if (annotation.name().equals("CallableBy")) return true;
+            // CallerRole is an authority-bearing grant just as CallableBy is
+            // an authority-bearing restriction. Importers cannot erase either
+            // until the linker verifies exact declaration and enum identities.
+            if (annotation.name().equals("CallableBy")
+                    || annotation.name().equals("CallerRole")) return true;
         }
         return false;
     }
