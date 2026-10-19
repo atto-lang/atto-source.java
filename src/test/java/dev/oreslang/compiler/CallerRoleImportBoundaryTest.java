@@ -28,6 +28,69 @@ final class CallerRoleImportBoundaryTest {
     }
 
     @Test
+    void unverifiedCallerRoleGrantCannotBeImportedAsAnOrdinaryFunction() {
+        String source = """
+                define module Granted as
+                    define enum Roles as A end
+                    @CallerRole(Roles.A)
+                    pub fnc elevated(): void {}
+                    pub fnc ordinary(): void {}
+                end
+                """;
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> link(source, "import fnc elevated from \"provider.ores\";"))
+                .getMessage().contains("verified caller-role ABI"));
+        assertDoesNotThrow(() -> link(
+                source, "import fnc ordinary from \"provider.ores\";"),
+                "unrelated, unannotated exported functions remain importable");
+    }
+
+    @Test
+    void moduleAndWildcardImportsCannotEraseCallerRoleGrants() {
+        String source = """
+                define module Granted as
+                    define enum Roles as A end
+                    @CallerRole(Roles.A)
+                    pub fnc elevated(): void {}
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> link(source, "import module Granted from \"provider.ores\";"));
+        assertThrows(IllegalArgumentException.class,
+                () -> link(source, "import * as Everything from \"provider.ores\";"));
+        assertThrows(IllegalArgumentException.class,
+                () -> link(source, "import fnc * as Api from \"provider.ores\";"));
+    }
+
+    @Test
+    void inheritedPublicCallerRoleGrantRequiresVerifiedClassLinkage() {
+        String source = """
+                define enum Roles as A end
+                define class Base as
+                    @CallerRole(Roles.A)
+                    pub static fnc privilegedHelper(): void {}
+                end
+                define pub class Derived extends Base as end
+                """;
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> link(source, "import class Derived from \"provider.ores\";"))
+                .getMessage().contains("verified caller-role ABI"));
+    }
+
+    @Test
+    void actorStaticCallerRoleGrantIsNotAnErasedActorImport() {
+        String source = """
+                define enum Roles as A end
+                define pub actor Worker as
+                    @CallerRole(Roles.A)
+                    pub static fnc privilegedHelper(): void {}
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> link(source, "import actor Worker from \"provider.ores\";"));
+    }
+
+    @Test
     void protectedFunctionCannotBeImportedWithoutAuthenticatedPolicy() {
         assertTrue(assertThrows(IllegalArgumentException.class,
                 () -> link(SOURCE, "import fnc guarded from \"provider.ores\";"))
