@@ -1185,10 +1185,18 @@ public final class OwnershipChecker {
             Ast.LambdaExpr checked = new Ast.LambdaExpr(
                     List.of(scoped), lambda.expressionBody(), lambda.blockBody(),
                     false, lambda.criticalMode());
+            boolean writableStateCallback =
+                    lambda.criticalMode() == Ast.CriticalMode.EXCLUSIVE
+                            || lambda.criticalMode() == Ast.CriticalMode.WRITE;
             actorStateLoanDepth++;
             actorStateLoanNames.push(loan.name());
             try {
-                checkLambda(checked, scope, null, false, true);
+                checkLambda(
+                        checked,
+                        scope,
+                        null,
+                        false,
+                        writableStateCallback);
             } finally {
                 actorStateLoanNames.pop();
                 actorStateLoanDepth--;
