@@ -39,6 +39,26 @@ final class DynamicPropertyAccessBoundaryTest {
     }
 
     @Test
+    void computedAccessNeverReinterpretsTheSelectedValueType() {
+        rejected("""
+                fnc bad(): void {
+                    const Point point = infer<Point> struct{x: 3.0, y: 4.0};
+                    const key = "x";
+                    const int value = point[key];
+                    return;
+                }
+                """);
+        rejected("""
+                fnc bad(): void {
+                    const tuple = tuple(3.0, 4.0);
+                    const index = 0;
+                    const int value = tuple[index];
+                    return;
+                }
+                """);
+    }
+
+    @Test
     void heterogeneousRecordLookupPreservesTheSelectedOrUnionType() {
         accepted("""
                 fnc read(): string {
@@ -213,9 +233,12 @@ final class DynamicPropertyAccessBoundaryTest {
                     return entry[key];
                 }
 
-                fnc pair_slot(Tuple[string,int] pair, int index): void {
-                    const value = pair[index];
-                    return;
+                fnc entry_dynamic(Entry<string,int> entry, string key): string | int {
+                    return entry[key];
+                }
+
+                fnc pair_slot(Tuple[string,int] pair, int index): string | int {
+                    return pair[index];
                 }
                 """);
     }
