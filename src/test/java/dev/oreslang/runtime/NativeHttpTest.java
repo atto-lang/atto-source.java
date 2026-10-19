@@ -16,7 +16,9 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
-    @Test void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
+    @org.junit.jupiter.api.RepeatedTest(5)
+    @org.junit.jupiter.api.Timeout(30)
+    void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
         for (String kind : List.of("actor", "isoactor")) {
             String output = run("""
                 define %s Worker as
@@ -59,11 +61,14 @@ class NativeHttpTest {
                         assertEquals(200, response.statusCode());
                         assertEquals(i > 1 ? "yes" : "no", response.headers().firstValue("X-Reused").orElseThrow());
                     }
-                });
+                }, 8);
             assertFalse(output.contains("ACCEPTED"), output);
             assertEquals(7, output.split("stale-rejected", -1).length - 1, output);
             assertEquals(8, output.split("closed-rejected", -1).length - 1, output);
-            assertTrue(output.contains("1\n7\n0\n"), output);
+            // Supervisor counters may interleave with post-response diagnostics.
+            var numbers = output.lines().filter(line -> line.matches("[0-9]+")).toList();
+            assertEquals(4, numbers.size(), output); // port plus three counters
+            assertEquals(List.of("1", "7", "0"), numbers.subList(1, 4), output);
         }
     }
 
@@ -313,13 +318,33 @@ class NativeHttpTest {
         }
     }
     private static String run(String program, Client client) throws Exception {
+        return run(program, client, 0);
+    }
+
+    private static String run(String program, Client client, int expectedPostResponseDiagnostics)
+            throws Exception {
         CompletableFuture<Integer> port = new CompletableFuture<>();
+        CompletableFuture<Void> diagnosticBarrier = new CompletableFuture<>();
+        CompletableFuture<Void> supervisorFooterBarrier = new CompletableFuture<>();
         ByteArrayOutputStream output = new ByteArrayOutputStream() {
             @Override public synchronized void write(byte[] b, int off, int len) {
                 super.write(b, off, len);
                 String text = toString(StandardCharsets.UTF_8);
                 int end = text.indexOf('\n');
                 if (end >= 0 && !port.isDone()) port.complete(Integer.parseInt(text.substring(0, end).trim()));
+                // HTTP response completion can precede the actor's final
+                // post-response duplicate-rejection check. Keep the context
+                // alive until the diagnostic has actually been emitted, not
+                // merely until the supervisor's response Future completes.
+                if (expectedPostResponseDiagnostics > 0
+                        && text.split("closed-rejected", -1).length - 1
+                                >= expectedPostResponseDiagnostics) {
+                    diagnosticBarrier.complete(null);
+                }
+                if (expectedPostResponseDiagnostics > 0
+                        && text.lines().filter(line -> line.matches("[0-9]+")).count() >= 4) {
+                    supervisorFooterBarrier.complete(null);
+                }
             }
         };
         try (Context context = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK)
@@ -332,9 +357,35 @@ class NativeHttpTest {
             try {
                 context.eval(Source.newBuilder(OresLanguage.ID, program, "native-http-test.ores").build());
                 clientWork.get(10, TimeUnit.SECONDS);
+                // A bounded actor-output completion barrier closes the race
+                // between response transport completion and receive cleanup.
+                // If a duplicate rejection never occurs, the test fails
+                // rather than silently reducing its expected assertion count.
+                if (expectedPostResponseDiagnostics > 0) {
+                    CompletableFuture.allOf(diagnosticBarrier, supervisorFooterBarrier)
+                            .get(8, TimeUnit.SECONDS);
+                    closeWhenQuiescent(context);
+                }
             } finally { clientWork.cancel(true); }
 
         }
         return output.toString(StandardCharsets.UTF_8);
+    }
+
+    private static void closeWhenQuiescent(Context context) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (true) {
+            try {
+                context.close(false);
+                return;
+            } catch (IllegalStateException busy) {
+                if (busy.getMessage() == null
+                        || !busy.getMessage().contains("currently executing on another thread")
+                        || System.nanoTime() >= deadline) {
+                    throw busy;
+                }
+                Thread.sleep(5);
+            }
+        }
     }
 }
