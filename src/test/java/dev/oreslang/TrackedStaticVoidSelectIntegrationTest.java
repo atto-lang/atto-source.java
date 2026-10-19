@@ -159,6 +159,39 @@ final class TrackedStaticVoidSelectIntegrationTest {
                 procedural::getMessage);
     }
 
+    @Test
+    void voidAwaitIsAnEffectButCannotBeStoredAsAValue() {
+        for (String prefix : new String[] {"const void result", "const result"}) {
+            String source = """
+                    actor fnc bad(): void {
+                      %s = await nb select first {
+                        default: -> { stdio.stdout.write("unreachable"); }
+                      };
+                      return;
+                    }
+                    """.formatted(prefix);
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source), prefix);
+            assertTrue(error.getMessage().contains("void"), error::getMessage);
+        }
+    }
+
+    @Test
+    void staticSelectDoesNotDegradeToDetachedLegacyStatement() {
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                actor fnc f(): void {
+                  nb select first {
+                    default: -> { stdio.stdout.write("legacy"); }
+                  }
+                  return;
+                }
+                """));
+        Ast.FunctionDecl function = (Ast.FunctionDecl)
+                program.modules().getFirst().declarations().getFirst();
+        assertInstanceOf(Ast.SelectStmt.class, function.body().getFirst());
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "tracked-void-select.ores")
