@@ -21,7 +21,7 @@ final class LogicalActorProxyMailboxV1Test {
                 assertEquals(i, envelope.messageSequence());
                 assertSame(envelope, mailbox.pollDispatch());
                 mailbox.beginPhysicalSendAttempt(envelope, 1L);
-                mailbox.complete(envelope.messageSequence());
+                LogicalActorProxyMailboxTestAccess.complete(mailbox, envelope.messageSequence());
             }
             assertEquals(132L, mailbox.snapshot().completionWatermark());
 
@@ -32,11 +32,11 @@ final class LogicalActorProxyMailboxV1Test {
                 assertSame(envelope, mailbox.pollDispatch());
                 mailbox.beginPhysicalSendAttempt(envelope, 1L);
             }
-            mailbox.complete(c.messageSequence());
-            mailbox.complete(b.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, c.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, b.messageSequence());
             assertEquals(132L, mailbox.snapshot().completionWatermark());
             assertEquals(2, mailbox.snapshot().sparseCompletedMessages());
-            mailbox.complete(a.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, a.messageSequence());
             assertEquals(135L, mailbox.snapshot().completionWatermark());
             assertEquals(0, mailbox.snapshot().sparseCompletedMessages());
 
@@ -49,7 +49,7 @@ final class LogicalActorProxyMailboxV1Test {
             assertThrows(IllegalStateException.class,
                     () -> mailbox.requeueProvenUnsent(later.messageSequence()));
             assertEquals(retained, mailbox.snapshot());
-            mailbox.complete(later.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, later.messageSequence());
             assertEquals(136L, mailbox.snapshot().completionWatermark());
             assertEquals(0, mailbox.snapshot().retainedMessages());
         }
@@ -78,7 +78,7 @@ final class LogicalActorProxyMailboxV1Test {
                     () -> mailbox.requeueProvenUnsent(envelope.messageSequence()));
             assertEquals(charged, mailbox.snapshot());
             assertEquals(0, mailbox.snapshot().queuedMessages());
-            mailbox.complete(envelope.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, envelope.messageSequence());
             assertEquals(0, mailbox.snapshot().retainedMessages());
             assertThrows(SecurityException.class,
                     () -> mailbox.beginPhysicalSendAttempt(envelope, 1L));
@@ -106,7 +106,7 @@ final class LogicalActorProxyMailboxV1Test {
             freeze.rollback();
             assertThrows(IllegalStateException.class,
                     () -> mailbox.requeueProvenUnsent(envelope.messageSequence()));
-            mailbox.complete(envelope.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, envelope.messageSequence());
             assertEquals(1L, mailbox.snapshot().completionWatermark());
             assertEquals(0, mailbox.snapshot().retainedMessages());
         }
@@ -164,7 +164,7 @@ final class LogicalActorProxyMailboxV1Test {
                     assertEquals(1, mailbox.snapshot().queuedMessages());
                     assertSame(envelope, mailbox.pollDispatch());
                 }
-                mailbox.complete(envelope.messageSequence());
+                LogicalActorProxyMailboxTestAccess.complete(mailbox, envelope.messageSequence());
                 assertEquals(0, mailbox.snapshot().retainedMessages());
                 assertEquals(1L, mailbox.snapshot().completionWatermark());
             }
@@ -202,7 +202,7 @@ final class LogicalActorProxyMailboxV1Test {
             assertNull(unexpected.get());
             assertEquals(1, admitted.get());
             assertEquals(1, mailbox.snapshot().outstandingMessages());
-            mailbox.complete(envelope.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, envelope.messageSequence());
             assertEquals(0, mailbox.snapshot().retainedMessages());
         }
     }
@@ -234,7 +234,7 @@ final class LogicalActorProxyMailboxV1Test {
             // A legitimate drain may settle old mail during dispatch freeze.
             var ticket = mailbox.freezeDispatchForUpgrade();
             mailbox.requireOutstandingEnvelope(dispatched, 1L);
-            mailbox.complete(dispatched.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, dispatched.messageSequence());
             assertThrows(SecurityException.class,
                     () -> mailbox.requireOutstandingEnvelope(dispatched, 1L));
             assertTrue(ticket.drained());
@@ -269,10 +269,10 @@ final class LogicalActorProxyMailboxV1Test {
             assertNull(mailbox.pollDispatch(),
                     "dispatch is frozen while admission remains open");
 
-            mailbox.complete(2L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 2L);
             assertFalse(freeze.drained(),
                     "message 1 still belongs to the old route prefix");
-            mailbox.complete(1L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 1L);
             assertTrue(freeze.drained());
 
             freeze.commit();
@@ -292,7 +292,7 @@ final class LogicalActorProxyMailboxV1Test {
 
             var freeze = mailbox.freezeDispatchForUpgrade();
             mailbox.admit(bytes("three"));
-            mailbox.complete(1L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 1L);
             assertTrue(freeze.drained());
             freeze.rollback();
 
@@ -330,8 +330,8 @@ final class LogicalActorProxyMailboxV1Test {
             assertEquals(2L, second.messageSequence());
             assertEquals(1L, mailbox.pollDispatch().messageSequence());
             assertEquals(2L, mailbox.pollDispatch().messageSequence());
-            mailbox.complete(2L);
-            mailbox.complete(1L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 2L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 1L);
             assertEquals(2L, mailbox.snapshot().completionWatermark());
             assertEquals(0, mailbox.snapshot().retainedMessages());
         }
@@ -387,8 +387,8 @@ final class LogicalActorProxyMailboxV1Test {
                     "an unsent rollback is not completion and cannot refund capacity");
             assertEquals(second.messageSequence(),
                     mailbox.pollDispatch().messageSequence());
-            mailbox.complete(first.messageSequence());
-            mailbox.complete(second.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, first.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, second.messageSequence());
             assertEquals(0, mailbox.snapshot().retainedMessages());
         }
     }
@@ -410,11 +410,11 @@ final class LogicalActorProxyMailboxV1Test {
             assertThrows(IllegalStateException.class,
                     () -> mailbox.requeueProvenUnsent(second.messageSequence()));
             freeze.rollback();
-            mailbox.complete(second.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, second.messageSequence());
             assertThrows(IllegalStateException.class,
                     () -> mailbox.requeueProvenUnsent(second.messageSequence()),
                     "completed sends must never be admitted again");
-            mailbox.complete(first.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, first.messageSequence());
             assertEquals(0, mailbox.snapshot().retainedMessages());
         }
     }
@@ -426,7 +426,7 @@ final class LogicalActorProxyMailboxV1Test {
             mailbox.pollDispatch();
             mailbox.pollDispatch();
             var last = mailbox.pollDispatch();
-            mailbox.complete(2L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 2L);
             var before = mailbox.snapshot();
             assertThrows(IllegalStateException.class,
                     () -> mailbox.requeueProvenUnsent(2L));
@@ -435,8 +435,8 @@ final class LogicalActorProxyMailboxV1Test {
             assertEquals(2L, mailbox.snapshot().highestDispatchedSequence());
             assertEquals(1L, mailbox.snapshot().queuedMessages());
             assertEquals(3L, mailbox.pollDispatch().messageSequence());
-            mailbox.complete(1L);
-            mailbox.complete(3L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 1L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 3L);
             assertEquals(3L, mailbox.snapshot().completionWatermark());
         }
     }
@@ -455,7 +455,7 @@ final class LogicalActorProxyMailboxV1Test {
                     () -> mailbox.admit(new byte[] {1}),
                     "dispatch alone must not refund a message credit");
 
-            mailbox.complete(dispatched.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, dispatched.messageSequence());
             assertDoesNotThrow(() -> mailbox.admit(new byte[] {1}));
             assertEquals(2, mailbox.snapshot().retainedMessages());
         }
@@ -476,9 +476,9 @@ final class LogicalActorProxyMailboxV1Test {
             for (int i = 0; i < 4; i++) mailbox.admit(new byte[] {(byte) i});
             for (int i = 0; i < 4; i++) assertNotNull(mailbox.pollDispatch());
 
-            mailbox.complete(4L);
-            mailbox.complete(3L);
-            mailbox.complete(2L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 4L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 3L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 2L);
             assertEquals(0L, mailbox.snapshot().completionWatermark());
 
             // Credits from 2/3/4 were refunded, so admission may proceed.
@@ -490,7 +490,7 @@ final class LogicalActorProxyMailboxV1Test {
             // while sequence 1 is still outstanding.
             assertNull(mailbox.pollDispatch());
 
-            mailbox.complete(1L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 1L);
             assertEquals(4L, mailbox.snapshot().completionWatermark());
             assertEquals(5L, mailbox.pollDispatch().messageSequence());
             assertEquals(6L, mailbox.pollDispatch().messageSequence());
@@ -509,7 +509,7 @@ final class LogicalActorProxyMailboxV1Test {
             mailbox.pollDispatch();
             mailbox.pollDispatch();
 
-            mailbox.complete(3L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 3L);
             var before = mailbox.snapshot();
             assertEquals(1, before.sparseCompletedMessages());
             assertEquals(2, before.retainedMessages());
@@ -517,7 +517,7 @@ final class LogicalActorProxyMailboxV1Test {
 
             assertThrows(
                     IllegalStateException.class,
-                    () -> mailbox.complete(99L));
+                    () -> LogicalActorProxyMailboxTestAccess.complete(mailbox, 99L));
 
             var after = mailbox.snapshot();
             assertEquals(before.retainedMessages(), after.retainedMessages());
@@ -542,12 +542,12 @@ final class LogicalActorProxyMailboxV1Test {
 
             assertThrows(
                     IllegalStateException.class,
-                    () -> mailbox.complete(2L),
+                    () -> LogicalActorProxyMailboxTestAccess.complete(mailbox, 2L),
                     "queued but undispatched message cannot complete");
-            mailbox.complete(first.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, first.messageSequence());
             assertThrows(
                     IllegalStateException.class,
-                    () -> mailbox.complete(first.messageSequence()),
+                    () -> LogicalActorProxyMailboxTestAccess.complete(mailbox, first.messageSequence()),
                     "duplicate completion must not double-refund capacity");
         }
     }
@@ -682,7 +682,7 @@ final class LogicalActorProxyMailboxV1Test {
                     mailbox.requeueProvenUnsent(1L);
                 }
                 assertEquals(1L, mailbox.pollDispatch().messageSequence());
-                mailbox.complete(1L);
+                LogicalActorProxyMailboxTestAccess.complete(mailbox, 1L);
                 assertEquals(1L, mailbox.snapshot().completionWatermark());
                 assertEquals(0, mailbox.snapshot().retainedMessages());
                 assertEquals(0L, mailbox.snapshot().retainedBytes());
@@ -730,10 +730,10 @@ final class LogicalActorProxyMailboxV1Test {
             assertEquals(1L, mailbox.pollDispatch().messageSequence());
             assertEquals(2L, mailbox.pollDispatch().messageSequence());
             assertEquals(3L, mailbox.pollDispatch().messageSequence());
-            mailbox.complete(2L);
-            mailbox.complete(3L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 2L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 3L);
             assertEquals(0L, mailbox.snapshot().completionWatermark());
-            mailbox.complete(1L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 1L);
             assertEquals(3L, mailbox.snapshot().completionWatermark());
             assertEquals(0, mailbox.snapshot().retainedMessages());
             assertEquals(0L, mailbox.snapshot().retainedBytes());
@@ -757,11 +757,11 @@ final class LogicalActorProxyMailboxV1Test {
                     "a frozen dispatch watermark cannot be rolled backwards");
             assertFalse(freeze.drained());
             freeze.rollback();
-            mailbox.complete(2L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 2L);
             assertThrows(IllegalStateException.class,
                     () -> mailbox.requeueProvenUnsent(2L),
                     "a completed delivery must never be replayed");
-            mailbox.complete(1L);
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, 1L);
             assertEquals(0, mailbox.snapshot().retainedMessages());
         }
     }
@@ -800,7 +800,7 @@ final class LogicalActorProxyMailboxV1Test {
                     "rejected close must retain every credit and the active freeze");
             assertNull(mailbox.pollDispatch(), "old-route dispatch must stay frozen");
 
-            mailbox.complete(outstanding.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(mailbox, outstanding.messageSequence());
             assertTrue(freeze.drained());
             assertThrows(IllegalStateException.class, freeze::close,
                     "even after drain, publication still needs an explicit decision");
