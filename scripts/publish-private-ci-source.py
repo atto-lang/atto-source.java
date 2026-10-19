@@ -15,6 +15,8 @@ import re
 import subprocess
 import sys
 
+import private_ci_pinned_admission as pinned
+
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 BRANCH = re.compile(r"^ci/oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}$")
 SHA = re.compile(r"^[a-f0-9]{40}$")
@@ -251,6 +253,12 @@ def publish(repository, source, branch, trusted_root):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
+    # Source and reviewed destination identities must be verified BEFORE
+    # reading any source file or creating even an unreferenced Git object.
+    try:
+        attestation = pinned.verify(repository, trusted_root, gh_api)
+    except pinned.AdmissionDenied as exc:
+        raise Denied("reviewed source and destination identity gate refused") from exc
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
@@ -259,6 +267,10 @@ def publish(repository, source, branch, trusted_root):
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
+    try:
+        pinned.verify_snapshot(trusted_root, source, files, attestation["source_sha"])
+    except pinned.AdmissionDenied as exc:
+        raise Denied("exported bytes do not match the reviewed Git tree") from exc
     base = checked_repo(repository)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
@@ -270,7 +282,13 @@ def publish(repository, source, branch, trusted_root):
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
-        checked_repo(repository)
+        live = checked_repo(repository)
+        if type(live.get("id")) is not int or live["id"] != attestation["destination_id"]:
+            raise Denied("private CI destination numeric identity changed")
+        current_policy = gh_api("repos/" + pinned.SOURCE_REPO + "/git/ref/heads/main")
+        if (not isinstance(current_policy, dict)
+                or current_policy.get("object", {}).get("sha") != attestation["policy_sha"]):
+            raise Denied("reviewed protected policy changed during transfer")
 
     elements = []
     for rel, data, mode in files:
