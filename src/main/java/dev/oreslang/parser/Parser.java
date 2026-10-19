@@ -3585,7 +3585,7 @@ public final class Parser {
         }
         if (isContextualIdentifier("record") && checkNext(LBRACE)) {
             advance(); // contextual record
-            return parseObjectLiteral(Ast.ObjectKind.INFERRED_RECORD, List.of());
+            return parseObjectLiteral(Ast.ObjectKind.RECORD, List.of());
         }
         if (isContextualIdentifier("tuple") && checkNext(LPAREN)) {
             advance();
@@ -3683,11 +3683,13 @@ public final class Parser {
     private Ast.ObjectExpr parseObjectLiteral(
             Ast.ObjectKind kind,
             List<Ast.StructFieldSpec> declaredFields) {
+        boolean plainRecord = kind == Ast.ObjectKind.RECORD;
         boolean inferredStruct = kind == Ast.ObjectKind.INFERRED_STRUCT;
         boolean inferredRecord = kind == Ast.ObjectKind.INFERRED_RECORD;
         boolean explicitStruct = kind == Ast.ObjectKind.EXPLICIT_STRUCT;
-        consume(LBRACE, inferredStruct
-                ? "expected '{' after infer struct"
+        consume(LBRACE, plainRecord
+                ? "expected '{' after record"
+                : inferredStruct ? "expected '{' after infer struct"
                 : inferredRecord ? "expected '{' after infer record"
                 : "expected '{' after explicit struct shape");
         List<Ast.ObjectField> fields = new ArrayList<>();
