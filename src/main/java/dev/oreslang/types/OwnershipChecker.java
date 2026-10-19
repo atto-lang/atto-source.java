@@ -1263,6 +1263,14 @@ public final class OwnershipChecker {
             };
             return new ValueInfo(result, kindOfType(result), null);
         }
+        if (expr instanceof Ast.StaticSelectExpr tracked) {
+            // Reuse ownership admission for modern FutureCase and channel
+            // registrations, including deferred capture and MutexGuard loans.
+            checkStatement(tracked.select(), scope, Ast.TypeRef.simple("void"));
+            Ast.TypeRef pending = new Ast.TypeRef(
+                    "Future", List.of(Ast.TypeRef.simple("void")), false);
+            return new ValueInfo(pending, kindOfType(pending), null);
+        }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
             if (selected.mode() == Ast.WaitMode.BLOCKING) {
                 checkSuspensionBorrows(scope, "select from cases");
@@ -2643,6 +2651,11 @@ public final class OwnershipChecker {
             if (e.callback()) {
                 scanStatements(e.callbackBody(), locals, outer, recursiveBinding, captures);
             }
+        }
+        else if (expr instanceof Ast.StaticSelectExpr e) {
+            // Nested tracked selection captures its case operands and
+            // winning-arm source state from the enclosing lexical activation.
+            scanStatements(List.of(e.select()), locals, outer, recursiveBinding, captures);
         }
         else if (expr instanceof Ast.DynamicSelectExpr e) {
             scanExpr(e.cases(), locals, outer, recursiveBinding, captures, false);
