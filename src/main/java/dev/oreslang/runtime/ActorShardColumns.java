@@ -131,14 +131,22 @@ public final class ActorShardColumns implements AutoCloseable {
         }
     }
 
-    /** Caller receives a detached immutable-by-ownership snapshot copy. */
+    /** Copy into preallocated host storage with no new allocation. */
+    public void copyColumnInto(int field, double[] dest, int offset) {
+        requireOwner();
+        Objects.requireNonNull(dest, "dest");
+        if (field < 0 || field >= fields) throw new IndexOutOfBoundsException("field");
+        if (offset < 0 || offset > dest.length || rows > dest.length - offset)
+            throw new IndexOutOfBoundsException("column destination span");
+        for (int i = 0; i < rows; i++) dest[offset + i] = get(offset(i, field));
+    }
+
+    /** Trusted host copy; detached array lifetime is not budget accounted. */
+    @Deprecated
     public double[] snapshotColumn(int field) {
         requireOwner();
-        if (field < 0 || field >= fields) {
-            throw new IndexOutOfBoundsException("invalid shard field");
-        }
-        double[] snapshot = new double[rows];
-        for (int row = 0; row < rows; row++) snapshot[row] = get(offset(row, field));
-        return snapshot;
+        double[] copy = new double[rows];
+        copyColumnInto(field, copy, 0);
+        return copy;
     }
 }
