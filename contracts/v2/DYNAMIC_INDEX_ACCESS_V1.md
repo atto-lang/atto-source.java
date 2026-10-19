@@ -20,6 +20,14 @@ Every closed-record/class IndexExpr is checked by the frontend and receives a we
 
 **Backend obligation:** Any compiler pass cloning IndexExpr must either propagate the checked access proof or re-run full static checking on the rewritten AST. Failure to propagate must fail closed, not turn into unchecked access. For native lowering, a proof becomes a layout-specific fixed key table/bounds check, not a free reflective map lookup.
 
+## Compile-time constant key specialization
+
+- An immutable `const` string or integer binding initialized by a literal, or an immutable alias of another proven key, may be specialized without evaluating guest code at compile time.
+- Structural/class `object[key]` is certified for precisely the selected visible field when the string key is proven. A runtime mismatch still fails the closed-view key guard; mutable/rebound keys never inherit constant-key privileges.
+- Tuple `tuple[index]` uses a checked positional slot when its integer key is proven and in range. The proof is AST-identity bound, propagated only through compiler-maintained rewrites, and **also checked against the runtime-evaluated index**. This prevents a stale rewrite from selecting a different affine slot.
+- Field-key and tuple-slot proofs are incompatible at any one indexing site. A compiler optimization must preserve exact proof semantics or retypecheck the rewritten expression.
+- This v1 proof store uses synchronized weak identity lookup on indexed reads. A future profiling-guided implementation may cache immutable checked plans per evaluator to reduce hot-path synchronization without changing the fail-closed contract.
+
 ## Ownership and projection integrity
 
 - After type checking, the ownership checker uses the **same checked AST-identity key set** for record/class read projections. A private field or hidden structural member must not influence the selectable type union for an outside caller.
