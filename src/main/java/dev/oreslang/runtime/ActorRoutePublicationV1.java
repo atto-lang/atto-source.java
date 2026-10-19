@@ -23,6 +23,8 @@ import java.util.function.BiConsumer;
  * guest Task lowering. Do not expose it or its transport to guest code.</p>
  */
 final class ActorRoutePublicationV1<R> implements AutoCloseable {
+    private static final int MAX_CHECKPOINT_BYTES = 1024 * 1024;
+
     static final class StateSnapshot {
         private final String schemaSha256;
         private final byte[] bytes;
@@ -31,8 +33,11 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
         StateSnapshot(String schemaSha256, byte[] bytes) {
             if (schemaSha256 == null || !schemaSha256.matches("[0-9a-f]{64}"))
                 throw new IllegalArgumentException("canonical state schema SHA-256 required");
+            Objects.requireNonNull(bytes, "checkpoint bytes");
+            if (bytes.length > MAX_CHECKPOINT_BYTES)
+                throw new IllegalArgumentException("state checkpoint exceeds bounded transport");
             this.schemaSha256 = schemaSha256;
-            this.bytes = Objects.requireNonNull(bytes, "checkpoint bytes").clone();
+            this.bytes = bytes.clone();
             try {
                 this.contentSha256 = HexFormat.of().formatHex(
                         MessageDigest.getInstance("SHA-256").digest(this.bytes));
