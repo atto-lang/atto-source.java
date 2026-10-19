@@ -59,6 +59,19 @@ final class ConcurrencyRaceAnalyzerTest {
     }
 
     @Test
+    void interveningWriterMustNotEraseUnorderedOlderWriter() {
+        var checker = new ConcurrencyRaceAnalyzer();
+        checker.write("a", "counter");
+        checker.write("b", "counter"); // a/b race
+        checker.send("b", "b-to-c");
+        checker.receive("c", "b-to-c");
+        checker.read("c", "counter"); // b->c ordered, but a/c concurrent
+        assertEquals(2, checker.conflictCount());
+        assertEquals("a", checker.findings().get(1).priorParticipant());
+        assertEquals("c", checker.findings().get(1).currentParticipant());
+    }
+
+    @Test
     void incorrectlyReusingMessageTokenFailsClosed() {
         var checker = new ConcurrencyRaceAnalyzer();
         checker.send("actor-a", "message-1");
