@@ -189,6 +189,13 @@ public final class BoundInvocation {
             List<Ast.TypeRef> assertedSourceTypes) {
         Objects.requireNonNull(module, "module");
         Objects.requireNonNull(call, "call");
+        // Expansion and contract adherence can affect module ownership and
+        // visibility. This non-executable binder must not infer either from
+        // an unchecked, possibly synthesized ModuleDecl.
+        if (!module.annotations().isEmpty() || !module.contracts().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "module annotations/contracts require checked lexical expansion");
+        }
         String name;
         if (call.callee() instanceof Ast.NameExpr direct) {
             name = direct.name();
