@@ -3,8 +3,11 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -74,6 +77,47 @@ final class InferredRecordBoundaryTest {
         assertTrue(checked.shortInferredAliases().isEmpty(),
                 "preexisting type declarations are not short aliases");
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
+    void importedTypeNamesCannotBeHijackedByShortOrExplicitInference() {
+        rejected("""
+                import type Person from "./types";
+                fnc read(): string {
+                    const Person person = infer record{name: "Ada"};
+                    return person.name;
+                }
+                """, null);
+        rejected("""
+                import type Person from "./types";
+                fnc read(): string {
+                    const Person person = infer<Person> record{name: "Ada"};
+                    return person.name;
+                }
+                """, "conflicts with an existing type or namespace");
+    }
+
+    @Test
+    void linkedImportedClassesStillPropagateShortAliasProofsToOwnership() {
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("src/options.ores", """
+                pub define class ImportedOptions as
+                  pub val int max_input_bytes;
+                end
+                """);
+        sources.put("src/consumer.ores", """
+                import class ImportedOptions from './options';
+                pub fnc remaining(ImportedOptions options): int {
+                    return options.max_input_bytes;
+                }
+                fnc read(): string {
+                    const LocalRow first = infer record{name: "Ada"};
+                    const LocalRow second = infer struct{name: "Grace"};
+                    return second.name;
+                }
+                """);
+        assertEquals(2, assertDoesNotThrow(
+                () -> new IncrementalCompiler().compile(sources)).units().size());
     }
 
     @Test
