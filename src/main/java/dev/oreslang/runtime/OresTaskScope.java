@@ -295,9 +295,10 @@ public final class OresTaskScope implements AutoCloseable {
         while (!pending.isEmpty()) {
             OresTaskScope scope = pending.removeLast();
             synchronized (scope.gate) {
-                for (OwnershipSlot slot : scope.tasks) {
-                    if (slot.task == null || !slot.task.isQuiescent()) return false;
-                }
+                // Successful physical exit prunes the slot. Any retained slot
+                // is either still executing or has a failed trusted retirement
+                // callback, neither of which is safe code-unload evidence.
+                if (!scope.tasks.isEmpty()) return false;
                 pending.addAll(scope.childScopes);
             }
         }
