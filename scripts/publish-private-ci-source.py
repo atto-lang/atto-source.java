@@ -83,7 +83,7 @@ def require_preflight(repository, root):
         raise Denied("destination policy check unavailable") from exc
     if p.returncode != 0:
         raise Denied("destination not approved by checked-in private policy")
-    checked_repo(repository)
+    return checked_repo(repository)
 
 
 def checked_policy_fingerprint(root, repository):
@@ -349,7 +349,12 @@ def publish(repository, source, branch, trusted_root):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
-    require_preflight(repository, trusted_root)
+    approved_repository = require_preflight(repository, trusted_root)
+    if (not isinstance(approved_repository, dict)
+            or not isinstance(approved_repository.get("id"), int)
+            or isinstance(approved_repository.get("id"), bool)
+            or approved_repository["id"] <= 0):
+        raise Denied("preflight returned no stable destination repository ID")
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
@@ -362,6 +367,8 @@ def publish(repository, source, branch, trusted_root):
     if git_tree_digest(files) != expected_source_tree:
         raise Denied("collected source does not match committed Git tree")
     base = checked_repo(repository)
+    if base["id"] != approved_repository["id"]:
+        raise Denied("destination repository changed after reviewed preflight")
     destination_repo_id = base["id"]
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
