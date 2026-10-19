@@ -245,12 +245,25 @@ public final class OresTaskScope implements AutoCloseable {
                 }
             });
         } catch (RuntimeException | Error observerFailure) {
-            // Even with a broken observer the pre-reserved slot remains
-            // joinable; seal this scope and revoke the producer.
-            synchronized (gate) {
-                cancelled = true;
+            // An admitted frame remains owned by its pre-reserved physical
+            // fence even if the optimization observer cannot be registered.
+            // Merely setting THIS scope's cancelled flag would allow already
+            // existing descendants to admit work after this failure. Reuse
+            // the atomic tree-wide cancellation protocol instead.
+            try {
+                cancel();
+            } catch (RuntimeException | Error cancellationFailure) {
+                if (cancellationFailure != observerFailure)
+                    observerFailure.addSuppressed(cancellationFailure);
             }
-            shell.cancel();
+            try {
+                // Backstop the admitted producer even if cancellation's
+                // allocation-only preflight could not complete.
+                shell.cancel();
+            } catch (RuntimeException | Error revocationFailure) {
+                if (revocationFailure != observerFailure)
+                    observerFailure.addSuppressed(revocationFailure);
+            }
             throw observerFailure;
         }
         if (cancelled) {
