@@ -36,6 +36,40 @@ public final class SendSyncTraits {
         return satisfies(type, Trait.SYNC, nominal);
     }
 
+    /**
+     * Transfer an owned value to an independent task with no scoped lifetime
+     * token. A borrowed type can be Send in Rust, but its *lifetime* must be
+     * proven separately. Until Oreslang has scoped-Task lowering, reject
+     * borrowed values even when nested in a tuple, option, or nominal generic.
+     */
+    public static boolean isOwnedSend(Type type, NominalProof nominal) {
+        return !hasEmbeddedBorrow(type, 0) && isSend(type, nominal);
+    }
+
+    private static boolean hasEmbeddedBorrow(Type type, int depth) {
+        if (depth > 256) return true;
+        int next = depth + 1;
+        if (type instanceof Borrow) return true;
+        if (type instanceof ListType list) return hasEmbeddedBorrow(list.element(), next);
+        if (type instanceof Tuple tuple) {
+            for (Type part : tuple.elements())
+                if (hasEmbeddedBorrow(part, next)) return true;
+        } else if (type instanceof Union union) {
+            for (Type part : union.options())
+                if (hasEmbeddedBorrow(part, next)) return true;
+        } else if (type instanceof Record record) {
+            for (Type field : record.members().values())
+                if (hasEmbeddedBorrow(field, next)) return true;
+        } else if (type instanceof Named named) {
+            for (Type argument : named.arguments())
+                if (hasEmbeddedBorrow(argument, next)) return true;
+        }
+        // A user nominal's hidden fields are independently audited by the
+        // compiler's NominalProof; absence of generic borrow types is not
+        // permission to skip that second check.
+        return false;
+    }
+
     public static boolean satisfies(Type type, Trait trait, NominalProof nominal) {
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(trait, "trait");
