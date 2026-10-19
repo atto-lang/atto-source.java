@@ -2959,6 +2959,19 @@ public final class OwnershipChecker {
             for (Ast.Expr arg : e.arguments()) {
                 scanExpr(arg, locals, outer, recursiveBinding, captures, false);
             }
+        } else if (expr instanceof Ast.StagedCallExpr e) {
+            scanExpr(e.callee(), locals, outer, recursiveBinding, captures, false);
+            for (Ast.CallArgument argument : e.arguments()) {
+                if (argument.value() != null) {
+                    scanExpr(
+                            argument.value(),
+                            locals,
+                            outer,
+                            recursiveBinding,
+                            captures,
+                            false);
+                }
+            }
         } else if (expr instanceof Ast.CallExpr e) {
             scanExpr(e.callee(), locals, outer, recursiveBinding, captures, false);
             for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
