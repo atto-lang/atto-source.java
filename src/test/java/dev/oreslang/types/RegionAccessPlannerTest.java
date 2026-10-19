@@ -43,7 +43,8 @@ final class RegionAccessPlannerTest {
         var stages=RegionAccessPlanner.plan(List.of(readVel,readVel2,writePos,writePos2,readPos));
         assertEquals(3,stages.size());
         assertEquals(List.of(readVel,readVel2,writePos),stages.get(0).parallel());
-        assertEquals(List.of(writePos2,readPos),stages.get(1).parallel());
+        assertEquals(List.of(writePos2),stages.get(1).parallel());
+        assertEquals(List.of(readPos),stages.get(2).parallel());
     }
 
     @Test void differentAllocationsOrColumnsNeverAlias() {
