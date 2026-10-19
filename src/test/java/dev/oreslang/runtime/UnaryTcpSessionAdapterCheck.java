@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -27,6 +29,67 @@ public final class UnaryTcpSessionAdapterCheck {
     }
 
     private record Binding(long sessionId, long generation) { }
+
+    /**
+     * Deterministic slow-reader socket: one fixed request is readable, then
+     * both input and output block until close() wakes them.
+     */
+    private static final class BlockingDuplexSocket extends Socket {
+        private final Object monitor = new Object();
+        private final byte[] inbound;
+        private int inboundIndex;
+        private boolean closed;
+
+        BlockingDuplexSocket(byte[] inbound) {
+            this.inbound = inbound.clone();
+        }
+
+        private final InputStream input = new InputStream() {
+            @Override public int read() throws IOException {
+                synchronized (monitor) {
+                    if (inboundIndex < inbound.length)
+                        return Byte.toUnsignedInt(inbound[inboundIndex++]);
+                    while (!closed) {
+                        try { monitor.wait(); }
+                        catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IOException("fake socket input interrupted", interrupted);
+                        }
+                    }
+                    return -1;
+                }
+            }
+        };
+
+        private final OutputStream output = new OutputStream() {
+            @Override public void write(int value) throws IOException {
+                synchronized (monitor) {
+                    while (!closed) {
+                        try { monitor.wait(); }
+                        catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IOException("fake socket output interrupted", interrupted);
+                        }
+                    }
+                    throw new IOException("fake socket closed during blocked write");
+                }
+            }
+        };
+
+        @Override public InputStream getInputStream() { return input; }
+        @Override public OutputStream getOutputStream() { return output; }
+        @Override public void setSoTimeout(int timeout) { }
+        @Override public boolean isClosed() {
+            synchronized (monitor) { return closed; }
+        }
+        @Override public void close() {
+            synchronized (monitor) {
+                if (closed) return;
+                closed = true;
+                monitor.notifyAll();
+            }
+        }
+    }
 
     private static final class BindingAuthenticator
             implements UnaryTcpSessionAdapter.Authenticator {
@@ -504,6 +567,34 @@ public final class UnaryTcpSessionAdapterCheck {
         }
     }
 
+    private static void terminalWriteDeadlineClosesSlowReader() throws Exception {
+        var request = new UnaryTransportFrame.Envelope(
+                UnaryTransportFrame.Kind.REQUEST, 1, 1, 1, new byte[0]);
+        var socket = new BlockingDuplexSocket(UnaryTransportFrame.encodeTcp(request));
+        UnaryTcpSessionAdapter.Authenticator auth =
+                (ignored, sessionId, generation) ->
+                        new UnaryTcpSessionAdapter.PeerIdentity("peer:slow-reader");
+        UnaryTcpSessionAdapter.Dispatcher dispatcher = inbound -> {
+            TestHandle handle = new TestHandle();
+            handle.reply((byte) 7);
+            return handle;
+        };
+        var bounded = new UnaryTcpSessionAdapter.Limits(
+                1, 1, 8, 1, 8, 1024, 2000, 1000, 50);
+
+        try (var adapter = new UnaryTcpSessionAdapter(bounded, auth, dispatcher);
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> served = pool.submit(() -> adapter.serve(socket));
+            served.get(2, TimeUnit.SECONDS);
+            check(socket.isClosed(),
+                    "terminal write deadline must close a peer that never reads");
+            check(adapter.activeConnections() == 0
+                            && adapter.activeGlobalWorkItems() == 0
+                            && adapter.activeGlobalPayloadBytes() == 0,
+                    "write-deadline close must reclaim connection and response credits");
+        }
+    }
+
     private static void sessionCloseCancelsPending() throws Exception {
         BindingAuthenticator auth = new BindingAuthenticator();
         ManualDispatcher dispatcher = new ManualDispatcher();
@@ -537,6 +628,7 @@ public final class UnaryTcpSessionAdapterCheck {
         globalBudgetAcrossConnections();
         authenticationFailureAndConnectionCapacity();
         completionCancelRaces();
+        terminalWriteDeadlineClosesSlowReader();
         sessionCloseCancelsPending();
         System.out.println("PASS: authenticated unary TCP sessions, budgets, deadlines and 250 completion/cancel races");
     }
