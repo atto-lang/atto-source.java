@@ -124,6 +124,33 @@ final class ActorTransportBoundaryCompatibilityTest {
     }
 
     @Test
+    void actorCallableCompletionsRejectCapabilityBearingReturnTypes() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                actor fnc bad(SharedMutex<int> lock): SharedMutex<int> {
+                  return lock;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                actor fnc bad(SharedMutex<int> lock): Option<SharedMutex<int>> {
+                  return Some(lock);
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  receive(ActorMail<int> mail): void { return; }
+                end
+                actor fnc bad(ActorRef<Worker> ref): ActorRef<Worker> {
+                  return ref;
+                }
+                """)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                actor fnc good(int x): Result<int, String> {
+                  return Ok(x);
+                }
+                """)));
+    }
+
+    @Test
     void channelsAndFuturesNeverGainActorTransportByWrapping() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 actor fnc bad(Option<Channel<int>> value): void { return; }
