@@ -53,6 +53,54 @@ final class LogicalSourceActorProxyBridgeV1Test {
         return assertInstanceOf(Long.class, step.value().value());
     }
 
+    private static final String TEXT_ACTOR = """
+            define actor TextSink as
+              let string last;
+              on_start(): void { self.last = ""; return; }
+              receive(ActorMail<string> mail): void {
+                self.last = mail.value;
+                self.send(self.last);
+                return;
+              }
+            end
+            pub routine main(): void { return; }
+            """;
+
+    @Test
+    void compilerMustProveExactActorMailIntBeforeBindingScalarTransport()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var text = manager.stageActorGeneration(
+                    "non-scalar-receiver.ores", TEXT_ACTOR);
+            var textCompiler = text.linkActorGeneration("TextSink").executor();
+            assertFalse(textCompiler.actorReceivesProxyLong("TextSink"));
+            assertThrows(SecurityException.class,
+                    () -> LogicalSourceActorProxyBridgeV1.spawnSharedAbiBoundLong(
+                            text, "TextSink", WAIT, 4,
+                            SourceActorScalarWireV1.BYTE_LENGTH,
+                            SourceActorScalarWireV1.BYTE_LENGTH * 4L),
+                    "matching self-declared ABI hash cannot authorize a non-int receive");
+            // Binding failed before publishing a proxy or accepting physical
+            // mail. The staged generation remains reusable and retireable.
+            manager.retire(text.id());
+            assertTrue(text.closed());
+
+            var intActor = manager.stageActorGeneration(
+                    "scalar-receiver.ores", V1);
+            assertTrue(intActor.linkActorGeneration("Counter").executor()
+                    .actorReceivesProxyLong("Counter"));
+            try (var bridge = LogicalSourceActorProxyBridgeV1.spawnSharedAbiBoundLong(
+                    intActor, "Counter", WAIT, 2,
+                    SourceActorScalarWireV1.BYTE_LENGTH,
+                    SourceActorScalarWireV1.BYTE_LENGTH * 2L)) {
+                bridge.admitLong(41L);
+                assertTrue(bridge.dispatchOne(WAIT));
+                assertEquals(42L, next(bridge));
+            }
+        }
+    }
+
     @Test
     void compilerAbiBoundScalarMessagesSurviveSourceUpgradeWithQueuedMail()
             throws Exception {
