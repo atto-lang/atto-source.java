@@ -123,6 +123,22 @@ final class OresTestTraceTest {
     }
 
     @Test
+    void rejectOversizedAndInvalidUtf8TraceDuringBoundedRead() throws Exception {
+        Path source = temporary.resolve("bounded-source.ores");
+        Path trace = temporary.resolve("bounded-trace.orestrace");
+        Files.writeString(source, "pub routine main(): void { return; }\\n".replace("\\n", "\n"));
+        var report = new OresTestExploration.Report(21, 4, 3, 0, 0, 99);
+        OresTestTrace.write(trace, source, 7, 3, true, report);
+        byte[] valid = Files.readAllBytes(trace);
+        Files.write(trace, new byte[4097]);
+        assertThrows(IOException.class, () -> OresTestTrace.read(trace, source));
+        Files.write(trace, new byte[] {(byte) 0xC3, (byte) 0x28});
+        assertThrows(IOException.class, () -> OresTestTrace.read(trace, source));
+        Files.write(trace, valid);
+        assertEquals(7L, OresTestTrace.read(trace, source).seed());
+    }
+
+    @Test
     void rejectMalformedAndOutOfBudgetTraceRecords() throws Exception {
         Path source = temporary.resolve("suite.ores");
         Path trace = temporary.resolve("gate.trace");
