@@ -50,6 +50,31 @@ final class ConcurrencySourceFingerprintTest {
     }
 
     @Test
+    void rejectsSymlinkedDirectoryWithoutSourceSuffix() throws Exception {
+        Path module = root.resolve("real-module");
+        Files.createDirectory(module);
+        Files.writeString(module.resolve("library.ores"), "fnc value() { return 1; }\n");
+        Files.writeString(root.resolve("main.ores"), "import library;\n");
+        try {
+            Files.createSymbolicLink(root.resolve("linked-module"), module.getFileName());
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException unsupported) {
+            return;
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> ConcurrencySourceFingerprint.ofWorkspace(root));
+    }
+
+    @Test
+    void excludedGeneratedOutputCannotInvalidateSourceSnapshot() throws Exception {
+        Files.writeString(root.resolve("main.ores"), "fnc main() {}\n");
+        Path generated = Files.createDirectory(root.resolve("target"));
+        Files.writeString(generated.resolve("Main.java"), "class Main {}");
+        String baseline = ConcurrencySourceFingerprint.ofWorkspace(root);
+        Files.writeString(generated.resolve("Main.java"), "class Main { int x; }");
+        assertEquals(baseline, ConcurrencySourceFingerprint.ofWorkspace(root));
+    }
+
+    @Test
     void rejectsEmptyWorkspaceWithoutSourceDeclarations() {
         assertThrows(IllegalArgumentException.class,
                 () -> ConcurrencySourceFingerprint.ofWorkspace(root));
