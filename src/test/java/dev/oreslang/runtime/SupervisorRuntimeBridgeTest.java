@@ -69,48 +69,13 @@ final class SupervisorRuntimeBridgeTest {
             bridge.register(first);
             bridge.register(second);
 
+            // Leave the first terminal notice queued so the second authenticated
+            // failure must take the mandatory parent escalation path.
             first.send("x");
             assertThrows(Exception.class, () -> first.getDone().get(3, TimeUnit.SECONDS));
             assertNotNull(inbox.pollControl());
 
-            // Refill the bounded CONTROL slot with a third failure, then force
-            // the next finalized child down the mandatory escalation path.
-            var third = runtime.<String>spawnShared(() -> (message, context) -> {
-                throw new UnsupportedOperationException("third");
-            });
-            bridge.register(third);
-            third.send("x");
-            assertThrows(Exception.class, () -> third.getDone().get(3, TimeUnit.SECONDS));
-            assertNotNull(inbox.pollControl());
-
-            // Fill once more and leave it full.
-            var fourth = runtime.<String>spawnShared(() -> (message, context) -> {
-                throw new ArithmeticException("fourth");
-            });
-            bridge.register(fourth);
-            fourth.send("x");
-            assertThrows(Exception.class, () -> fourth.getDone().get(3, TimeUnit.SECONDS));
-            assertNotNull(inbox.pollControl());
-
-            // Keep one notice queued, then fail second to overflow.
-            var blocker = runtime.<String>spawnShared(() -> (message, context) -> {
-                throw new SecurityException("blocker");
-            });
-            bridge.register(blocker);
-            blocker.send("x");
-            assertThrows(Exception.class, () -> blocker.getDone().get(3, TimeUnit.SECONDS));
-            assertNotNull(inbox.pollControl());
-
-            // One final queued failure occupies the lane.
-            var queued = runtime.<String>spawnShared(() -> (message, context) -> {
-                throw new RuntimeException("queued");
-            });
-            bridge.register(queued);
-            queued.send("x");
-            assertThrows(Exception.class, () -> queued.getDone().get(3, TimeUnit.SECONDS));
-            assertNotNull(inbox.pollControl());
-
-            // Occupy it and do not drain.
+            // Refill and deliberately keep the CONTROL lane occupied.
             var occupied = runtime.<String>spawnShared(() -> (message, context) -> {
                 throw new RuntimeException("occupied");
             });
