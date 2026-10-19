@@ -719,6 +719,31 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void asyncCarrierCannotBlockOnProxyReadOrWriteMonitors() throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit());
+             AsyncRuntime async = new AsyncRuntime()) {
+            var first = manager.stageActorGeneration("async-guard-v1.ores", V1);
+            try (var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
+                    first, "Counter", WAIT, 2, 8, 16)) {
+                var task = async.submit(() -> {
+                    assertTrue(AsyncRuntime.isAsyncCarrierThread());
+                    assertThrows(SecurityException.class, bridge::address);
+                    assertThrows(SecurityException.class, bridge::snapshot);
+                    assertThrows(SecurityException.class, bridge::publication);
+                    assertThrows(SecurityException.class,
+                            () -> bridge.admitLong(1L));
+                    return 1;
+                });
+                assertEquals(1, task.get(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertFalse(bridge.failSealed());
+                assertEquals(1L, bridge.publication().address().routeEpoch());
+                assertEquals(0, bridge.snapshot().retainedMessages());
+            }
+        }
+    }
+
+    @Test
     void schedulerTerminalCarrierCannotBlockOnProxyEpochOrAdmissionMonitors()
             throws Exception {
         try (HotReloadManager manager = new HotReloadManager(
