@@ -6924,13 +6924,17 @@ public final class OresEvalRootNode extends RootNode {
                     if (args.size() != 3) throw new IllegalArgumentException("Region.new<Motion> arity");
                     int capacity = Math.toIntExact(regionIntegral(args.get(0), "capacity"));
                     int tile = Math.toIntExact(regionIntegral(args.get(1), "tile"));
+                    if (capacity < 1 || capacity > 4096) {
+                        throw new IllegalArgumentException("Region<Motion> V0 allows 1..4096 rows");
+                    }
                     long mask = regionIntegral(args.get(2), "residencyMask");
                     if (mask < 1 || mask > 7) throw new IllegalArgumentException("invalid layout residency mask");
                     var resident = java.util.EnumSet.noneOf(TriLayoutMotionStore.Layout.class);
                     for (var l : TriLayoutMotionStore.Layout.values()) {
                         if ((mask & (1L << l.ordinal())) != 0) resident.add(l);
                     }
-                    return new RegionMotionValue(new TriLayoutMotionStore(capacity, tile, resident));
+                    return new RegionMotionValue(new TriLayoutMotionStore(
+                            capacity, tile, resident, resident.iterator().next(), 1048576L));
                 };
             }
             if (receiver instanceof RegionMotionValue region) {
@@ -9536,7 +9540,11 @@ public final class OresEvalRootNode extends RootNode {
         if (!(value instanceof Number number)) {
             throw new IllegalArgumentException("Region " + label + " requires numeric scalar");
         }
-        return number.doubleValue();
+        double scalar = number.doubleValue();
+        if (!Double.isFinite(scalar)) {
+            throw new IllegalArgumentException("Region<Motion> V0 requires finite scalar fields");
+        }
+        return scalar;
     }
     private static TriLayoutMotionStore.Motion regionMotion(List<Object> args, int first) {
         return new TriLayoutMotionStore.Motion(
