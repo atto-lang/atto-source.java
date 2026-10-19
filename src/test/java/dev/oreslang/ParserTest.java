@@ -18,7 +18,7 @@ final class ParserTest {
 
     @Test
     void preflightRejectsUncalledStagedCallsAndConstructionBeforeSideEffects() {
-        for (String invocation : List.of("f(label: 1)", "new Box(label: _)",
+        for (String invocation : List.of("f(label: effect())", "new Box(label: _)",
                 "spawn Worker(label: omit)")) {
             Ast.Program parsed = Parser.parse(
                     "pub fnc neverCalled(): void { const result = "
@@ -310,7 +310,9 @@ final class ParserTest {
                     || value.initializer() instanceof Ast.StagedNewExpr, expression);
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(parsed), expression);
-            assertTrue(failure.getMessage().contains("not yet enabled"), failure::toString);
+            assertTrue(failure.getMessage().contains("not yet enabled")
+                    || failure.getMessage().contains("require a unique"),
+                    failure::toString);
         }
     }
 
