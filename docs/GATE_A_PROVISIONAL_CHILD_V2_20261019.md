@@ -117,7 +117,7 @@ produce real steps/logs. Zero-step Actions failures are not test runs.
 - `AsyncRuntime.abandonPreparedTask` retires and seals the provisional
   physical fence when scope reservation fails, including when a collection
   inserts an owner slot and then throws. No guest carrier was submitted.
-- `OresTaskOrdinaryRetirementTest` adds five JUnit scenarios for failing
+- `OresTaskOrdinaryRetirementTest` adds six JUnit scenarios for failing
   and silently refused removals, rejection, release faults, and
   insert-then-throw registration. The actual private-source suite is
   still **not executed** on this exact commit.
