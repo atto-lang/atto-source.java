@@ -157,6 +157,29 @@ final class DynamicPropertyAccessBoundaryTest {
     }
 
     @Test
+    void constSelectorAliasesKeepOwnershipPrecision() {
+        accepted("""
+                define class Box as
+                    pub val int payload = 1;
+                end
+
+                fnc record_alias(): int {
+                    const row = record{x: 7, box: new Box()};
+                    const first = "x";
+                    const second = first;
+                    return row[second];
+                }
+
+                fnc tuple_alias(): int {
+                    const pair = tuple(7, new Box());
+                    const first = 0;
+                    const second = first;
+                    return pair[second];
+                }
+                """);
+    }
+
+    @Test
     void capturedNamedConstSelectorKeepsOwnershipPrecision() {
         accepted("""
                 define class Box as
