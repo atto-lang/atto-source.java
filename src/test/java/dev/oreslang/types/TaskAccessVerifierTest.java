@@ -431,6 +431,48 @@ final class TaskAccessVerifierTest {
         }
     }
 
+    @Test void oversizedProvenanceAndProjectionPathsFailBeforeAdmission() {
+        String oversized = "x".repeat(257);
+        assertThrows(IllegalArgumentException.class, () ->
+                new TaskAccessVerifier.Root(oversized, 1, 1, true));
+        assertThrows(IllegalArgumentException.class, () ->
+                new TaskAccessVerifier.Root("ACTOR_PRIVATE", oversized, 1, 1, true));
+        assertThrows(IllegalArgumentException.class, () ->
+                new TaskAccessVerifier.Field(oversized, true));
+        var place = TaskAccessVerifier.Place.whole(WORLD);
+        for (int i = 0; i < 64; i++) {
+            place = place.field("inline", true);
+        }
+        var maxDepth = place;
+        assertEquals(64, maxDepth.projections().size());
+        assertThrows(IllegalArgumentException.class, () ->
+                maxDepth.field("tooDeep", true));
+        assertThrows(IllegalArgumentException.class, () ->
+                maxDepth.range(0, 1, true));
+        assertThrows(IllegalArgumentException.class, () ->
+                new TaskAccessVerifier.Place(WORLD,
+                        java.util.Collections.nCopies(65,
+                                new TaskAccessVerifier.Field("x", true))));
+    }
+
+    @Test void ownerScopedProvenanceCannotBeRetypedAcrossTrustDomains() {
+        var process = TaskAccessVerifier.Place.whole(WORLD);
+        var actor = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-A:epoch-1", 31, 1, true));
+        var untrusted = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("UNTRUSTED", "tenant-7:epoch-1", 31, 1, true));
+        assertTrue(TaskAccessVerifier.mayAlias(process, actor));
+        assertTrue(TaskAccessVerifier.mayAlias(actor, untrusted));
+        assertTrue(TaskAccessVerifier.conflicts(read(actor), read(untrusted)));
+        var ledger = new TaskAccessVerifier();
+        var a = ledger.admit(List.of(read(actor)));
+        assertThrows(IllegalArgumentException.class, () ->
+                ledger.admit(List.of(read(untrusted))));
+        ledger.quiescent(a);
+        assertThrows(IllegalArgumentException.class, () ->
+                ledger.admit(List.of(read(process))));
+    }
+
     @Test void illegalInputsFailClosed() {
         assertThrows(IllegalArgumentException.class,
                 () -> new TaskAccessVerifier.Root("", 1, 1, true));
