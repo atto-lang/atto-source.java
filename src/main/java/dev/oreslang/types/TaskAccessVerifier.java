@@ -16,11 +16,13 @@ import java.util.Objects;
  * before placing a claim here. Only trusted compiler lowering can declare a
  * field or range layout-proven. Unknown aliasing always conflicts.
  *
- * <p>Admission is atomic across a Task's claims. Cancellation does not release
- * them: the emitted TaskScope quiescence barrier must be proven before
+ * <p>Admission is atomic across a Task's claims and ledger operations are
+ * synchronized (this is a compiler analysis helper, not runtime host admission).
+ * Cancellation does not release loans: the emitted TaskScope quiescence barrier
+ * must be proven before
  * calling {@link #quiescent(Ticket)}.
  */
-public final class TaskAccessVerifier {
+final class TaskAccessVerifier {
     public enum Mode { READ, WRITE }
 
     /**
@@ -129,8 +131,16 @@ public final class TaskAccessVerifier {
 
     private record AllocationKey(String domain, long id) { }
 
+    // Bounded compiler analysis: rejecting a huge scope is safer than unbounded
+    // memory use or integer overflow. A future MIR implementation can shard.
+    private static final int MAX_CHILDREN = 4096;
+    private static final int MAX_CLAIMS_PER_CHILD = 1024;
+    private static final int MAX_TRACKED_ALLOCATIONS = 65536;
+
     private final Map<Ticket, Child> live = new LinkedHashMap<>();
     private final Map<AllocationKey, Long> knownGenerations = new HashMap<>();
+    /** Single trusted allocation/trust domain per scope, including READ-only claims. */
+    private String scopeDomain;
     private long nextId = 1;
     private boolean sealed;
 
@@ -183,11 +193,20 @@ public final class TaskAccessVerifier {
      * Conservatively reserves all child borrows, or none. The frontend must
      * verify Send/Sync and task scope lifetime *before* invoking this method.
      */
-    public Ticket admit(List<Claim> requested) {
+    public synchronized Ticket admit(List<Claim> requested) {
         if (sealed) throw new IllegalStateException("TaskScope is sealed");
         List<Claim> claims = List.copyOf(Objects.requireNonNull(requested, "claims"));
+        if (live.size() >= MAX_CHILDREN || claims.size() > MAX_CLAIMS_PER_CHILD) {
+            throw new IllegalStateException("TaskScope access capacity exceeded");
+        }
         Map<AllocationKey, Long> incomingGenerations = new HashMap<>();
+        String requestedDomain = scopeDomain;
         for (Claim claim : claims) {
+            Root root = claim.place().root();
+            if (requestedDomain == null) requestedDomain = root.domain();
+            if (!requestedDomain.equals(root.domain())) {
+                throw new IllegalArgumentException("TaskScope cannot mix allocation/trust domains");
+            }
             Objects.requireNonNull(claim, "claim");
             AllocationKey key = new AllocationKey(
                     claim.place().root().domain(), claim.place().root().allocationId());
@@ -215,8 +234,15 @@ public final class TaskAccessVerifier {
                 }
             }
         }
+        long newAllocations = incomingGenerations.keySet().stream()
+                .filter(key -> !knownGenerations.containsKey(key)).count();
+        if (newAllocations > MAX_TRACKED_ALLOCATIONS - knownGenerations.size()) {
+            throw new IllegalStateException("TaskScope allocation tracking capacity exceeded");
+        }
         if (nextId == Long.MAX_VALUE) throw new IllegalStateException("Task ticket overflow");
         Ticket ticket = new Ticket(nextId++);
+        // Only now commit the scope domain, claims and allocation generations.
+        scopeDomain = requestedDomain;
         live.put(ticket, new Child(claims));
         for (Claim claim : claims) {
             Root root = claim.place().root();
@@ -227,16 +253,20 @@ public final class TaskAccessVerifier {
     }
 
     /** Cancellation is an intent; a still-running Task continues to own loans. */
-    public void requestCancel(Ticket ticket) {
+    public synchronized void requestCancel(Ticket ticket) {
         child(ticket).cancelRequested = true;
     }
 
-    public boolean cancellationRequested(Ticket ticket) {
+    public synchronized boolean cancellationRequested(Ticket ticket) {
         return child(ticket).cancelRequested;
     }
 
-    public boolean parentMayAccess(Claim claim) {
+    public synchronized boolean parentMayAccess(Claim claim) {
         Objects.requireNonNull(claim, "claim");
+        Root root = claim.place().root();
+        if (scopeDomain == null || !scopeDomain.equals(root.domain())) return false;
+        Long current = knownGenerations.get(new AllocationKey(root.domain(), root.allocationId()));
+        if (current == null || current != root.generation()) return false;
         for (Child child : live.values()) {
             for (Claim held : child.claims) {
                 if (conflicts(claim, held)) return false;
@@ -249,7 +279,7 @@ public final class TaskAccessVerifier {
      * Called only after child execution, defers, FFI pins and cleanup are
      * physically quiescent. The ledger itself cannot prove runtime quiescence.
      */
-    public void quiescent(Ticket ticket) {
+    public synchronized void quiescent(Ticket ticket) {
         child(ticket); // validates this exact ticket belongs to this scope
         live.remove(ticket);
     }
@@ -259,11 +289,14 @@ public final class TaskAccessVerifier {
      * only after all child borrows of that allocation are physically drained.
      * Callers must independently prove owner authority and real quiescence.
      */
-    public void structuralBarrier(Root oldRoot, long newGeneration) {
+    public synchronized void structuralBarrier(Root oldRoot, long newGeneration) {
         Objects.requireNonNull(oldRoot, "oldRoot");
         if (sealed) throw new IllegalStateException("TaskScope is sealed");
         if (newGeneration <= oldRoot.generation()) {
             throw new IllegalArgumentException("generation must advance");
+        }
+        if (!oldRoot.domain().equals(scopeDomain)) {
+            throw new IllegalArgumentException("structural barrier outside TaskScope domain");
         }
         AllocationKey key = new AllocationKey(oldRoot.domain(), oldRoot.allocationId());
         Long current = knownGenerations.get(key);
@@ -272,9 +305,9 @@ public final class TaskAccessVerifier {
         }
         for (Child child : live.values()) {
             for (Claim claim : child.claims) {
-                Root other = claim.place().root();
-                if (other.domain().equals(oldRoot.domain())
-                        && other.allocationId() == oldRoot.allocationId()) {
+                // A different numeric allocation ID is NOT enough to prove
+                // disjointness unless both roots have trusted uniqueness proofs.
+                if (mayAlias(Place.whole(oldRoot), claim.place())) {
                     throw new IllegalStateException("cannot change layout during live Task borrow");
                 }
             }
@@ -282,14 +315,14 @@ public final class TaskAccessVerifier {
         knownGenerations.put(key, newGeneration);
     }
 
-    public void finishScope() {
+    public synchronized void finishScope() {
         if (!live.isEmpty()) {
             throw new IllegalStateException("TaskScope cannot finish before child quiescence");
         }
         sealed = true;
     }
 
-    public int activeChildren() { return live.size(); }
+    public synchronized int activeChildren() { return live.size(); }
 
     private Child child(Ticket ticket) {
         Child result = live.get(Objects.requireNonNull(ticket, "ticket"));
