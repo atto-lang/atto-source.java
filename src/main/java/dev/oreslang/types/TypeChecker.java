@@ -8400,6 +8400,8 @@ public final class TypeChecker {
                 }
                 yield new Named(ref.name(), List.of(payload));
             }
+            case "OptionUnwrapError" -> throw new IllegalArgumentException(
+                    "OptionUnwrapError is compiler-internal and cannot be named in source declarations");
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
