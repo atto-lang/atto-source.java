@@ -48,15 +48,23 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
     }
 
     /**
-     * Strict Bytes-style result codec. No host toString/reflection fallback.
+     * Strict Bytes-style result codec. Compact OresBytes is the canonical
+     * runtime representation; integer lists remain accepted for compatibility
+     * with the bootstrap interpreter until source-level Bytes lowering lands.
      */
-    static ResultCodec byteListCodec(int maxBytes) {
+    static ResultCodec bytesCodec(int maxBytes) {
         if (maxBytes < 0 || maxBytes > UnaryTransportFrame.MAX_PAYLOAD_BYTES)
             throw new IllegalArgumentException("invalid unary TCP result byte limit");
         return value -> {
+            if (value instanceof OresBytes bytesValue) {
+                if (bytesValue.size() > maxBytes)
+                    throw new IllegalArgumentException(
+                            "unary TCP result exceeds selected byte limit");
+                return bytesValue.toByteArray();
+            }
             if (!(value instanceof List<?> values))
                 throw new IllegalArgumentException(
-                        "unary TCP result must be a byte list under the selected codec");
+                        "unary TCP result must be OresBytes or a byte list under the selected codec");
             if (values.size() > maxBytes)
                 throw new IllegalArgumentException("unary TCP result exceeds selected byte limit");
             byte[] bytes = new byte[values.size()];
@@ -87,6 +95,10 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
             }
             return bytes;
         };
+    }
+
+    static ResultCodec byteListCodec(int maxBytes) {
+        return bytesCodec(maxBytes);
     }
 
     @Override
