@@ -192,6 +192,27 @@ final class StructuredComputeSyntaxTest {
     }
 
     @Test
+    void namedConstructorMustFailBeforeUnknownClassOrFieldInference() {
+        // Previously the type checker returned resolve(...) for an unknown
+        // class before inspecting arguments. Ownership checking must also
+        // reject independently rather than silently inferring a move-only
+        // object from an unsupported label expression.
+        assertTypeDenied("""
+                pub fnc main(): void {
+                    let candidate = new MissingClass(value: 1);
+                }
+                """, "named value arguments require checked");
+        assertTypeDenied("""
+                define class KnownClass as
+                    pub let int value = 0;
+                end
+                pub fnc main(): void {
+                    let candidate = new KnownClass(value: 1);
+                }
+                """, "named value arguments require checked");
+    }
+
+    @Test
     void rejectsUnsupportedGuestLoweringBeforeNativeOrInterpreterCanRun() {
         assertTypeDenied("""
                 pub fnc target(int x): int { return x; }
