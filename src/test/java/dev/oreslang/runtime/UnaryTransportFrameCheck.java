@@ -60,6 +60,12 @@ public final class UnaryTransportFrameCheck {
         wsBad[0] = 2; invalidWs(wsBad);
         wsBad[0] = 1; wsBad[1] = 99; invalidWs(wsBad);
         wsBad[1] = 1; Arrays.fill(wsBad, 2, 10, (byte) 0); invalidWs(wsBad);
+        byte[] badCancel = UnaryTransportFrame.encodeWebSocketBinary(request);
+        badCancel[1] = 4; invalidWs(badCancel); // CANCEL may not carry the original payload.
+        try { new UnaryTransportFrame.Envelope(UnaryTransportFrame.Kind.REQUEST, 1, 1, 1,
+                    new byte[UnaryTransportFrame.MAX_PAYLOAD_BYTES + 1]);
+              throw new AssertionError("oversized payload accepted"); }
+        catch (IllegalArgumentException expected) { }
         invalidWs(new byte[25]);
         invalidWs(new byte[UnaryTransportFrame.MAX_ENVELOPE_BYTES + 1]);
         try { new UnaryTransportFrame.Envelope(UnaryTransportFrame.Kind.CANCEL, 1, 1, 1, new byte[] { 1 });
