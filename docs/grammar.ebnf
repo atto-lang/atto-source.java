@@ -297,7 +297,12 @@ channel_wait_mode
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ call_argument_list ] ")" ;
 call_argument_list = call_argument { "," call_argument } ;
-call_argument   = [ "..." ] expression ;
+call_argument   = spread_argument | named_value_argument | expression ;
+spread_argument = "..." expression ;
+named_value_argument = IDENT ":" expression ;
+(* Once a named item has appeared, later positional items are rejected except
+   for one final syntactically anonymous fnc/pipe closure. That exception is
+   semantic and must be validated against the unique final callable formal. *)
 member_suffix   = "." member_name ;
 member_name     = IDENT | "stop" | "do" | "done"
                 | "match" | "matches" | "eq" | "neq" | "is" | "when"
@@ -309,7 +314,7 @@ argument_list   = expression { "," expression } ;
 primary         = literal
                 | callable_name
                 | "self"
-                | "new" type_ref "(" [ argument_list ] ")"
+                | "new" type_ref "(" [ call_argument_list ] ")"
                 | lambda
                 | tuple_literal
                 | array_literal
