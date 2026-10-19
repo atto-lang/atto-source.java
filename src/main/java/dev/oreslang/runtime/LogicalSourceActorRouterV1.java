@@ -414,6 +414,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     // finalized AND its generation lease is debited, may clear this fence.
     // Protected by routeLock; diagnostic route observations remain available.
     private boolean retirementQuarantined;
+    // Prepublication transfer rollback may itself fail while the staged
+    // candidate remains physically live. Do not discard the only handle
+    // capable of releasing the old actor's ingress freeze. This supervisor
+    // owner is retained until an explicit host reconciliation succeeds.
+    // routeLock protects the field; closeLock serializes retry against close.
+    private ActorRuntime.SourceActorTransfer pendingRollbackTransfer;
 
     private LogicalSourceActorRouterV1(
             ActorRuntime.ActorKind kind,
@@ -1424,6 +1430,21 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     try {
                         txn.transfer.close();
                     } catch (RuntimeException | Error rollbackFailure) {
+                        // This can fail after the staged candidate was
+                        // admitted but before it physically finalized. The
+                        // transfer's freeze is STILL OWNED and old ingress
+                        // must not resume. Register the exact rollback handle
+                        // before releasing supervisor transaction admission.
+                        synchronized (routeLock) {
+                            if (pendingRollbackTransfer != null
+                                    && pendingRollbackTransfer != txn.transfer) {
+                                throw new IllegalStateException(
+                                        "concurrent actor rollback lost sole freeze owner",
+                                        rollbackFailure);
+                            }
+                            pendingRollbackTransfer = txn.transfer;
+                            retirementQuarantined = true;
+                        }
                         if (cleanupFailure == null) {
                             cleanupFailure = rollbackFailure;
                         } else if (rollbackFailure != cleanupFailure) {
@@ -1616,13 +1637,50 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             }
         }
         if (retirementQuarantined && activeUpgradeTxn == null
-                && retiredRoutes.isEmpty()) {
+                && pendingRollbackTransfer == null && retiredRoutes.isEmpty()) {
             // All old physical actors are finalized and their generation
             // route pins have been successfully debited. This is the only
             // path that reopens the quarantined route.
             retirementQuarantined = false;
         }
         return released;
+    }
+
+    /**
+     * Host supervisor retry for an unpublished candidate whose physical
+     * cleanup failed and left its predecessor ingress frozen. This operation
+     * may block while the staged candidate physically terminates, so never
+     * call it from a guest/actor/scheduler carrier. It never republishes a
+     * candidate or refunds any mailbox credit.
+     *
+     * A failed retry preserves the exact transfer owner and quarantine.
+     * A successful retry releases the old ingress freeze, then permits the
+     * existing retirement ledger to reconcile code-generation pins.
+     */
+    public boolean reconcileFailedUpgradeRollback() {
+        requireBlockingHostSurface("reconcile failed actor upgrade rollback");
+        synchronized (closeLock) {
+            final ActorRuntime.SourceActorTransfer owned;
+            synchronized (routeLock) {
+                owned = pendingRollbackTransfer;
+                if (owned == null) return true;
+                if (activeUpgradeTxn != null) {
+                    throw new IllegalStateException(
+                            "cannot reconcile rollback during an active publication");
+                }
+            }
+            // No route monitor during bounded candidate stop/join. Retained
+            // retirementQuarantined still rejects physical sends and Tasks.
+            owned.close();
+            synchronized (routeLock) {
+                if (pendingRollbackTransfer != owned)
+                    throw new IllegalStateException(
+                            "actor rollback reconciliation owner changed");
+                pendingRollbackTransfer = null;
+                reapRetiredLocked();
+                return !retirementQuarantined;
+            }
+        }
     }
 
     /**
@@ -1705,6 +1763,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             final Route route;
             synchronized (routeLock) {
                 if (!closed) awaitUpgradeLocked();
+                if (pendingRollbackTransfer != null) {
+                    throw new IllegalStateException(
+                            "cannot retire source actor while an unpublished "
+                                    + "candidate owns a failed rollback freeze; "
+                                    + "reconcileFailedUpgradeRollback first");
+                }
                 if (closed && activeRouteLeaseReleased
                         && retiredRoutes.isEmpty()
                         && retiredCandidates.isEmpty()) {
