@@ -7,6 +7,7 @@ import dev.oreslang.types.OptionalCallShapeBinder;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.V3DefaultArgValsPolicy;
+import dev.oreslang.types.V3CallLoweringPreview;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -397,6 +398,88 @@ final class V3DefaultArgValsAdmissionTest {
                 () -> OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(List.of(p)));
         assertThrows(IllegalArgumentException.class,
                 () -> OptionalCallShapeBinder.formalParameterShapes(List.of(p)));
+    }
+
+    @Test
+    void previewPreservesLexicalEffectsAndExplicitOmissionProvenance() {
+        var f = function("""
+                @DefaultArgVals(b: 9)
+                pub fnc f(int a, int b?, bool c): void { return; }
+                """);
+        Ast.Expr first = new Ast.LiteralExpr(true);
+        Ast.Expr second = new Ast.LiteralExpr(5L);
+        List<Ast.CallArgument> items = List.of(
+                Ast.CallArgument.named("c", first),
+                Ast.CallArgument.omit("b"),
+                Ast.CallArgument.named("a", second));
+        var shape = OptionalCallShapeBinder.stagedV3ParameterShapes(
+                f.parameters(), f.annotations());
+        var binder = OptionalCallShapeBinder.bindParsed(shape, items);
+        var preview = V3CallLoweringPreview.plan(
+                f.parameters(), f.annotations(), items, binder);
+        assertSame(first, preview.unevaluatedExpressionsInSourceOrder().get(0));
+        assertSame(second, preview.unevaluatedExpressionsInSourceOrder().get(1));
+        assertEquals(List.of(
+                V3CallLoweringPreview.SlotAction.CHECK_SUPPLIED,
+                V3CallLoweringPreview.SlotAction.DEFAULT_SCALAR,
+                V3CallLoweringPreview.SlotAction.CHECK_SUPPLIED),
+                preview.formalOrderSlots().stream().map(V3CallLoweringPreview.Slot::action).toList());
+        assertEquals(List.of(2, 1, 0),
+                preview.formalOrderSlots().stream()
+                        .map(V3CallLoweringPreview.Slot::originalCallItemIndex).toList());
+        assertEquals(List.of(1, -1, 0),
+                preview.formalOrderSlots().stream()
+                        .map(V3CallLoweringPreview.Slot::evaluatedSourceIndex).toList());
+        assertEquals(DefaultArgumentPolicy.Literal.integer(9),
+                preview.formalOrderSlots().get(1).closedDefault());
+    }
+
+    @Test
+    void previewDistinguishesSuppliedNoneFromDefaultNoneAndImplicitNone() {
+        var f = function("""
+                @DefaultArgVals(a: None)
+                pub fnc f(int? a, string? b?): void { return; }
+                """);
+        List<Ast.CallArgument> noneSupplied = List.of(
+                Ast.CallArgument.named("a", new Ast.NameExpr("None")));
+        var signature = OptionalCallShapeBinder.stagedV3ParameterShapes(
+                f.parameters(), f.annotations());
+        var supplied = V3CallLoweringPreview.plan(
+                f.parameters(), f.annotations(), noneSupplied,
+                OptionalCallShapeBinder.bindParsed(signature, noneSupplied));
+        assertEquals(V3CallLoweringPreview.SlotAction.CHECK_SUPPLIED,
+                supplied.formalOrderSlots().get(0).action());
+        assertEquals(V3CallLoweringPreview.SlotAction.OMITTED_OPTION_NONE,
+                supplied.formalOrderSlots().get(1).action());
+        assertEquals(1, supplied.unevaluatedExpressionsInSourceOrder().size());
+
+        var missing = V3CallLoweringPreview.plan(
+                f.parameters(), f.annotations(), List.of(),
+                OptionalCallShapeBinder.bindParsed(signature, List.of()));
+        assertEquals(V3CallLoweringPreview.SlotAction.DEFAULT_NONE,
+                missing.formalOrderSlots().get(0).action());
+        assertEquals(V3CallLoweringPreview.SlotAction.OMITTED_OPTION_NONE,
+                missing.formalOrderSlots().get(1).action());
+        assertTrue(missing.unevaluatedExpressionsInSourceOrder().isEmpty());
+    }
+
+    @Test
+    void previewRejectsForgedCallPlanBeforeAnyExpressionIsExposed() {
+        var f = function("""
+                @DefaultArgVals(a: 5)
+                pub fnc f(int a?, bool b): void { return; }
+                """);
+        List<Ast.CallArgument> actual = List.of(
+                Ast.CallArgument.named("b", new Ast.LiteralExpr(true)),
+                Ast.CallArgument.omit("a"));
+        var shape = OptionalCallShapeBinder.stagedV3ParameterShapes(
+                f.parameters(), f.annotations());
+        var genuine = OptionalCallShapeBinder.bindParsed(shape, actual);
+        var reordered = new OptionalCallShapeBinder.Plan(
+                List.of(0, -1), -1, List.of(), List.of(1), List.of(0));
+        assertNotEquals(genuine, reordered);
+        assertThrows(IllegalArgumentException.class,
+                () -> V3CallLoweringPreview.plan(f.parameters(), f.annotations(), actual, reordered));
     }
 
 }
