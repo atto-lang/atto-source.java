@@ -282,6 +282,23 @@ class PolicyTest(unittest.TestCase):
                 pub.checked_protected_policy_fingerprint(
                     REPOSITORY)
 
+    def test_carrier_workflow_must_match_reviewed_blob(self):
+        valid = {
+            "type": "file",
+            "sha": pub.EXPECTED_CARRIER_WORKFLOW_BLOB_SHA,
+        }
+        with mock.patch.object(pub, "gh_api", return_value=valid):
+            self.assertEqual(
+                pub.EXPECTED_CARRIER_WORKFLOW_BLOB_SHA,
+                pub.checked_carrier_workflow(REPOSITORY, BASE_COMMIT))
+
+        with mock.patch.object(
+                pub, "gh_api",
+                return_value=dict(valid, sha="f" * 40)):
+            with self.assertRaisesRegex(
+                    pub.Denied, "reviewed workflow blob"):
+                pub.checked_carrier_workflow(REPOSITORY, BASE_COMMIT)
+
     def test_live_repository_identity_and_visibility_are_pinned(self):
         valid = {
             "full_name": REPOSITORY,
@@ -356,6 +373,13 @@ class PublishTest(unittest.TestCase):
             return {"object": {"sha": BASE_COMMIT}}
         if route == f"repos/{REPOSITORY}/git/commits/{BASE_COMMIT}":
             return {"tree": {"sha": BASE_TREE}}
+        if route == (
+                f"repos/{REPOSITORY}/contents/"
+                f"{pub.CARRIER_WORKFLOW_PATH}?ref={BASE_COMMIT}"):
+            return {
+                "type": "file",
+                "sha": pub.EXPECTED_CARRIER_WORKFLOW_BLOB_SHA,
+            }
         if route == f"repos/{REPOSITORY}/git/blobs" and method == "POST":
             return {"sha": self.source_blob}
         if route == f"repos/{REPOSITORY}/git/trees" and method == "POST":
@@ -477,6 +501,34 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(
             [f"repos/{REPOSITORY}/git/blobs"],
             posts)
+
+    def test_unreviewed_carrier_workflow_stops_before_source_collection(self):
+        with (
+            mock.patch.object(pub, "require_preflight"),
+            mock.patch.object(
+                pub, "checked_policy_fingerprint",
+                return_value=(b"reviewed", REPOSITORY_ID)),
+            mock.patch.object(
+                pub, "checked_protected_policy_fingerprint",
+                return_value=(b"reviewed", REPOSITORY_ID)),
+            mock.patch.object(pub, "collect_git_tree") as collect,
+        ):
+            original = self.api
+            def changed_workflow(route, method="GET", payload=None):
+                if route == (
+                        f"repos/{REPOSITORY}/contents/"
+                        f"{pub.CARRIER_WORKFLOW_PATH}?ref={BASE_COMMIT}"):
+                    return {"type": "file", "sha": "f" * 40}
+                return original(route, method, payload)
+
+            with mock.patch.object(
+                    pub, "gh_api", side_effect=changed_workflow):
+                with self.assertRaisesRegex(
+                        pub.Denied, "reviewed workflow blob"):
+                    pub.publish(
+                        REPOSITORY, self.root, SOURCE_COMMIT,
+                        "ci/oreslang-test", self.root)
+            collect.assert_not_called()
 
     def test_policy_drift_stops_before_source_collection(self):
         with (
