@@ -37,6 +37,12 @@ final class ActorCpuAffinityConfig {
         return cpus;
     }
 
+    static int cpuForLane(int[] cpus, long cpuLaneOffset, int lane) {
+        if (cpus.length == 0) return -1;
+        int index = (int) Math.floorMod(cpuLaneOffset + (long) lane, (long) cpus.length);
+        return cpus[index];
+    }
+
     static int budgetCpuCount(int availableLogicalCpus) {
         if (availableLogicalCpus < 1) throw new IllegalArgumentException("available CPUs must be positive");
         int[] hard = configuredCpus();
