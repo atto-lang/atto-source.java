@@ -2,8 +2,6 @@ package dev.oreslang.runtime;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.security.MessageDigest;
-import java.util.HexFormat;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -44,6 +42,12 @@ final class SourceActorScalarWireV1 {
 
     private SourceActorScalarWireV1() { }
 
+    // Binding validates canonical lowercase SHA-256 once. Decode never
+    // creates temporary digests or UUID objects per physical message.
+    private static int hexNibble(char ch) {
+        return ch <= '9' ? ch - '0' : ch - 'a' + 10;
+    }
+
     static byte[] encodeLong(Binding binding, long value) {
         Objects.requireNonNull(binding, "binding");
         ByteBuffer buffer = ByteBuffer.allocate(BYTE_LENGTH).order(ByteOrder.BIG_ENDIAN);
@@ -54,7 +58,12 @@ final class SourceActorScalarWireV1 {
         buffer.putLong(binding.logicalActorId().getMostSignificantBits());
         buffer.putLong(binding.logicalActorId().getLeastSignificantBits());
         buffer.putLong(binding.incarnation());
-        buffer.put(HexFormat.of().parseHex(binding.messageAbiSha256()));
+        String digest = binding.messageAbiSha256();
+        for (int i = 0; i < SHA256_BYTES; ++i) {
+            int j = i * 2;
+            buffer.put((byte) ((hexNibble(digest.charAt(j)) << 4)
+                    | hexNibble(digest.charAt(j + 1))));
+        }
         buffer.putLong(value);
         return buffer.array();
     }
@@ -68,14 +77,22 @@ final class SourceActorScalarWireV1 {
         if (buffer.getInt() != MAGIC || buffer.get() != VERSION
                 || buffer.get() != I64_TAG || buffer.getShort() != 0)
             throw new SecurityException("invalid compiler-bound scalar frame header");
-        UUID actualActorId = new UUID(buffer.getLong(), buffer.getLong());
-        long actualIncarnation = buffer.getLong();
-        byte[] actualDigest = new byte[SHA256_BYTES];
-        buffer.get(actualDigest);
-        if (!actualActorId.equals(binding.logicalActorId())
-                || actualIncarnation != binding.incarnation()
-                || !MessageDigest.isEqual(actualDigest,
-                        HexFormat.of().parseHex(binding.messageAbiSha256())))
+        // Check every fixed header field and all 32 digest bytes, without
+        // short-circuiting on a matching prefix. The transport stays bounded
+        // and untrusted bytes cannot cause per-dispatch digest allocations.
+        long mismatch = buffer.getLong()
+                ^ binding.logicalActorId().getMostSignificantBits();
+        mismatch |= buffer.getLong()
+                ^ binding.logicalActorId().getLeastSignificantBits();
+        mismatch |= buffer.getLong() ^ binding.incarnation();
+        String digest = binding.messageAbiSha256();
+        for (int i = 0; i < SHA256_BYTES; ++i) {
+            int j = i * 2;
+            int expected = (hexNibble(digest.charAt(j)) << 4)
+                    | hexNibble(digest.charAt(j + 1));
+            mismatch |= (buffer.get() & 0xff) ^ expected;
+        }
+        if (mismatch != 0L)
             throw new SecurityException(
                     "foreign logical actor, incarnation or compiler message ABI");
         return buffer.getLong();
