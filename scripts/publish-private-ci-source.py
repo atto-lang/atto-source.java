@@ -297,6 +297,8 @@ def collect_git_tree(root, source_commit):
 def publish(repository, source, source_commit, branch, trusted_root):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
+    if not SHA.fullmatch(source_commit):
+        raise Denied("source commit must be an exact 40-character Git SHA")
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy, approved_repo_id = checked_policy_fingerprint(
