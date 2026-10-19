@@ -95,10 +95,15 @@ public final class V3CallLoweringPreview {
             boolean[] used = new boolean[unevaluatedExpressionsInSourceOrder.size()];
             int[] originalByDenseSource = new int[used.length];
             java.util.Set<Integer> usedRawCallItems = new HashSet<>();
+            java.util.Set<String> usedFormalNames = new HashSet<>();
             for (int i = 0; i < formalOrderSlots.size(); i++) {
                 Slot slot = formalOrderSlots.get(i);
                 if (slot.formalIndex() != i) {
                     throw new IllegalArgumentException("v3 preview slots must remain in formal order");
+                }
+                if (!usedFormalNames.add(slot.formalName())) {
+                    throw new IllegalArgumentException(
+                            "v3 preview repeats a formal argument name");
                 }
                 // Explicit omission items and supplied expressions are distinct
                 // source occurrences. A forged preview must not reuse either.
