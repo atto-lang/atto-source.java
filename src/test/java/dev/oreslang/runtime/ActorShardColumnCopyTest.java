@@ -14,7 +14,7 @@ final class ActorShardColumnCopyTest {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch finished = new CountDownLatch(1);
             AtomicReference<Throwable> failed = new AtomicReference<>();
-            var actor = runtime.spawnSharedTrusted(factory -> (message, turn) -> {
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(factory -> (message, turn) -> {
                 try {
                     ActorShardColumns shard =
                             new ActorShardColumns(ActorShardColumns.Layout.SOA, 3, 2, 1);
