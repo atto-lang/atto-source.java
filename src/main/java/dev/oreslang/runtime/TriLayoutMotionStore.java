@@ -79,7 +79,9 @@ public final class TriLayoutMotionStore implements AutoCloseable {
     public synchronized Handle insert(Motion motion) {
         requireOpen();
         Objects.requireNonNull(motion, "motion");
-        if (size == capacity) throw new IllegalStateException("region capacity exhausted");
+        if (size == capacity || (freeCount == 0 && nextSlot == capacity)) {
+            throw new IllegalStateException("region capacity or generation slots exhausted");
+        }
         requireNextEpoch();
         int slot = freeCount != 0 ? freeSlots[--freeCount] : nextSlot++;
         write(authoritative, size, motion);
