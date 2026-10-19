@@ -165,6 +165,81 @@ final class GenServerCallPortTest {
         }
     }
 
+    @Test void perTargetIndexTracksAllTerminalTransitions() throws Exception {
+        var port = new GenServerCallPort<Integer>(128);
+        var calls = new ArrayList<GenServerCallPort.PendingCall<Integer>>();
+        for (int i = 1; i <= 64; i++) calls.add(port.register(actor(i)));
+        assertEquals(64, port.pendingCount());
+        assertEquals(64, port.pendingTargetCount());
+
+        for (int i = 0; i < 16; i++) {
+            assertTrue(port.reply(calls.get(i).ticket(), actor(i + 1), i));
+        }
+        for (int i = 16; i < 32; i++) {
+            assertTrue(calls.get(i).future().cancel(false));
+        }
+        for (int i = 32; i < 48; i++) {
+            assertTrue(port.timeout(calls.get(i).ticket()));
+        }
+        for (int i = 48; i < 64; i++) {
+            assertEquals(1, port.failActor(actor(i + 1),
+                    new IllegalStateException("actor failed")));
+        }
+        assertEquals(0, port.pendingCount());
+        assertEquals(0, port.pendingTargetCount());
+        assertEquals(0, port.close());
+        assertThrows(IllegalStateException.class, () -> port.register(actor(65)));
+    }
+
+    @Test void capacityRejectionAndActorRestartDoNotLeakTargetBuckets() throws Exception {
+        var port = new GenServerCallPort<Integer>(1);
+        var call = port.register(actor(1));
+        assertThrows(IllegalStateException.class, () -> port.register(actor(2)));
+        assertEquals(1, port.pendingTargetCount());
+        assertEquals(1, port.failActor(actor(1), new IllegalStateException("crash")));
+        assertEquals(0, port.pendingTargetCount());
+        var replacement = port.register(actor(2));
+        assertFalse(port.reply(call.ticket(), actor(1), 7));
+        assertTrue(port.reply(replacement.ticket(), actor(2), 9));
+        assertEquals(9, replacement.future().get());
+        assertEquals(0, port.pendingTargetCount());
+    }
+
+    @Test void closeCancelAndReplyRaceHaveExactlyOneWinner() throws Exception {
+        try (var executor = Executors.newFixedThreadPool(3)) {
+            for (int i = 0; i < 128; i++) {
+                var port = new GenServerCallPort<Integer>(1);
+                var call = port.register(actor(1));
+                CountDownLatch ready = new CountDownLatch(1);
+                AtomicInteger wins = new AtomicInteger();
+                var reply = executor.submit(() -> {
+                    ready.await();
+                    if (port.reply(call.ticket(), actor(1), 1)) wins.incrementAndGet();
+                    return null;
+                });
+                var cancel = executor.submit(() -> {
+                    ready.await();
+                    if (call.future().cancel(false)) wins.incrementAndGet();
+                    return null;
+                });
+                var close = executor.submit(() -> {
+                    ready.await();
+                    if (port.close() == 1) wins.incrementAndGet();
+                    return null;
+                });
+                ready.countDown();
+                reply.get();
+                cancel.get();
+                close.get();
+                assertEquals(1, wins.get());
+                assertTrue(call.future().isDone());
+                assertEquals(0, port.pendingCount());
+                assertEquals(0, port.pendingTargetCount());
+                assertFalse(port.reply(call.ticket(), actor(1), 2));
+            }
+        }
+    }
+
     @Test void replyCancellationRacesHaveExactlyOneWinner() throws Exception {
         for (int i = 0; i < 250; i++) {
             var port = new GenServerCallPort<Integer>(1);
