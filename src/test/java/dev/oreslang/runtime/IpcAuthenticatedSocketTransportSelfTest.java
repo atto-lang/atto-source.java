@@ -12,6 +12,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -341,6 +342,42 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             peer.join(3000);
             check(!peer.isAlive());
             check(peerFailure.get() == null);
+        }
+
+        // Cleanup scheduler rejection quarantines the connection. Only an
+        // explicit supervisor retry may finish physical-close confirmation and
+        // trusted receipt retirement; no automatic reopen or replay occurs.
+        byte[] quarantinePayload = "quarantine adapter".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var quarantineMessage = envelope(1, "adapterQuarantine", 3, 4, quarantinePayload);
+        try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
+             Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
+             Socket peer = server.accept()) {
+            peer.setSoTimeout(3000);
+            var bridge = new IpcReceiptCompletionBridge(2);
+            AtomicInteger schedules = new AtomicInteger();
+            IpcTransportSessionLease.CleanupScheduler scheduler = cleanup -> {
+                if (schedules.incrementAndGet() == 1) {
+                    throw new IllegalStateException("cleanup queue saturated");
+                }
+                cleanup.run(); // deterministic host-supervisor retry fixture
+            };
+            var transport = new IpcAuthenticatedSocketTransport(
+                    client, bridge, quarantineMessage, 89, 1, key, scheduler);
+            var submission = transport.send(quarantineMessage, quarantinePayload);
+            check(!submission.writeAttemptFailed());
+            var decoded = IpcAuthenticatedSocketTransport.decodeDataFrame(
+                    IpcAuthenticatedSocketTransport.readWireFrame(peer.getInputStream()), key);
+            check(decoded.physicalGeneration() == 89);
+            transport.requestClose();
+            check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(!submission.outcome().toCompletableFuture().isDone());
+            transport.retryQuarantinedClose();
+            check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
+            check(submission.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(schedules.get() == 2);
+            check(bridge.invariant());
         }
 
         // Close must actively interrupt a silent peer read; receipt
