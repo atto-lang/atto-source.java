@@ -4385,6 +4385,21 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             ActorCodeExecutor executor,
             String actorTypeName) {
+        return spawnCodeActor(kind, policy, executor, actorTypeName, null);
+    }
+
+    /**
+     * Internal source-supervisor pre-admission ownership handoff. The exact
+     * physical ActorRef is recorded before restoration or registry publication
+     * can fail, so the source generation pin is not dropped when registration
+     * returns no reference. This is NOT a guest-visible spawn API.
+     */
+    ActorRef<Object> spawnCodeActor(
+            ActorKind kind,
+            IsolatePolicy policy,
+            ActorCodeExecutor executor,
+            String actorTypeName,
+            java.util.function.Consumer<ActorRef<Object>> onAllocated) {
         Objects.requireNonNull(executor, "executor");
         if (actorTypeName == null || actorTypeName.isBlank()) {
             throw new IllegalArgumentException(
@@ -4405,7 +4420,8 @@ public final class ActorRuntime implements AutoCloseable {
                 image,
                 executor,
                 actorTypeName,
-                null);
+                null,
+                onAllocated);
     }
 
     private <M> ActorRef<M> spawnInternal(
@@ -4438,6 +4454,20 @@ public final class ActorRuntime implements AutoCloseable {
             ActorCodeExecutor codeExecutor,
             String codeActorType,
             byte[] preloadedSourceSnapshot) {
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory,
+                codeImage, codeExecutor, codeActorType, preloadedSourceSnapshot, null);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory,
+            SharedCodeImageStore.CodeImage codeImage,
+            ActorCodeExecutor codeExecutor,
+            String codeActorType,
+            byte[] preloadedSourceSnapshot,
+            java.util.function.Consumer<ActorRef<Object>> onAllocated) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
@@ -4526,6 +4556,16 @@ public final class ActorRuntime implements AutoCloseable {
                         codeExecutor,
                         codeActorType,
                         parent);
+                // The physical identity is already constructed, but no
+                // physical registry/dispatcher admission has occurred.
+                // Give the trusted source supervisor its pre-reserved
+                // retirement owner before restoration or actors.put can throw.
+                if (onAllocated != null) {
+                    @SuppressWarnings("unchecked")
+                    ActorRef<Object> sourceRef =
+                            (ActorRef<Object>) (ActorRef<?>) ref;
+                    onAllocated.accept(sourceRef);
+                }
                 if (preloadedSourceSnapshot != null) {
                     @SuppressWarnings("unchecked")
                     ActorContext<Object> restoreContext =
@@ -4625,6 +4665,10 @@ public final class ActorRuntime implements AutoCloseable {
                 // injected OOME). One enclosing try used to abandon the
                 // remaining parent/group/cell cleanup on the first error.
                 // Never mask the original registration failure.
+                // A failed removal is not proof of non-admission: if the
+                // exact cell remains registered, its physical owner and actor
+                // slot must stay live until a later runtime stop/reap.
+                boolean absentFromRegistry = cell == null;
                 try {
                     if (cell != null) {
                         try {
@@ -4632,6 +4676,15 @@ public final class ActorRuntime implements AutoCloseable {
                         } catch (RuntimeException | Error cleanupFailure) {
                             if (cleanupFailure != failure)
                                 failure.addSuppressed(cleanupFailure);
+                        }
+                    }
+                    if (cell != null) {
+                        try {
+                            absentFromRegistry = actors.get(cell.ref.id()) != cell;
+                        } catch (RuntimeException | Error observationFailure) {
+                            if (observationFailure != failure)
+                                failure.addSuppressed(observationFailure);
+                            absentFromRegistry = false;
                         }
                     }
                     if (linkedToParent && cell != null) {
@@ -4657,18 +4710,27 @@ public final class ActorRuntime implements AutoCloseable {
                             if (cleanupFailure != failure)
                                 failure.addSuppressed(cleanupFailure);
                         }
-                        try {
-                            cell.abortUnregisteredConstruction();
-                        } catch (RuntimeException | Error cleanupFailure) {
-                            if (cleanupFailure != failure)
-                                failure.addSuppressed(cleanupFailure);
+                        if (absentFromRegistry) {
+                            try {
+                                cell.abortUnregisteredConstruction();
+                                // No dispatcher admission ever occurred. This
+                                // precise pre-registration ref can now prove
+                                // finalization even if its creator never
+                                // received it as a return value.
+                                cell.ref.physicallyFinalized.set(true);
+                                cell.ref.physicalFinalizationLatch.countDown();
+                            } catch (RuntimeException | Error cleanupFailure) {
+                                if (cleanupFailure != failure)
+                                    failure.addSuppressed(cleanupFailure);
+                            }
                         }
                     }
                 } finally {
-                    // The actor never reached the executable scheduling
-                    // boundary. Its reserved count must be refunded even
-                    // if best-effort cleanup throws.
-                    actorCount.decrementAndGet();
+                    // A ghost physical registration is still owned by the
+                    // runtime registry and must retain its actor slot. The
+                    // source supervisor also retains the exact ActorRef/code
+                    // lease until its physical finalization is proven.
+                    if (absentFromRegistry) actorCount.decrementAndGet();
                 }
                 throw failure;
             }
@@ -5920,6 +5982,13 @@ public final class ActorRuntime implements AutoCloseable {
     public ActorRef<Object> spawnCodeActorFromTransfer(
             SourceActorTransfer transfer,
             ActorCodeExecutor candidate) {
+        return spawnCodeActorFromTransfer(transfer, candidate, null);
+    }
+
+    ActorRef<Object> spawnCodeActorFromTransfer(
+            SourceActorTransfer transfer,
+            ActorCodeExecutor candidate,
+            java.util.function.Consumer<ActorRef<Object>> onAllocated) {
         requireSupervisorContext("restore source actor transfer");
         policyCeiling.require(
                 IsolatePolicy.Capability.HOT_CODE_LOAD,
@@ -5974,7 +6043,8 @@ public final class ActorRuntime implements AutoCloseable {
                             candidateImage,
                             candidate,
                             transfer.actorTypeName,
-                            payload);
+                            payload,
+                            onAllocated);
                     transfer.bindStagedCandidateLocked(this, nextCode, restored);
                     return restored;
                 } catch (RuntimeException | Error failure) {
