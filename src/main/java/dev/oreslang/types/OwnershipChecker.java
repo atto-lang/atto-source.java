@@ -1509,6 +1509,8 @@ public final class OwnershipChecker {
         if (call.callee() instanceof Ast.MemberExpr member) {
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
+            ValueInfo stringCall = checkBuiltinStringCall(member, call.arguments(), scope);
+            if (stringCall != null) return stringCall;
             // Native collection mutations are effects on the receiver, not
             // harmless reads. TypeChecker validates method availability/arity.
             // A const/let read-only view must not gain mutation via .add/.set.
@@ -1839,6 +1841,63 @@ public final class OwnershipChecker {
         return stdout.receiver() instanceof Ast.NameExpr stdio
                 && stdio.name().equals("stdio")
                 && scope.lookup("stdio") == null;
+    }
+
+    /**
+     * Ownership-side mirror of TypeChecker's built-in String signatures.
+     *
+     * Keep this deliberately narrow: it exists so copy-safe results such as
+     * split_literal(...): List<String> retain their element ownership type.
+     * Unknown/dynamic member calls remain conservative and move-only.
+     */
+    private ValueInfo checkBuiltinStringCall(
+            Ast.MemberExpr member,
+            List<Ast.Expr> arguments,
+            Scope scope) {
+        Ast.TypeRef receiver = receiverType(member.receiver(), scope);
+        if (receiver == null
+                || !(receiver.name().equals("string") || receiver.name().equals("String"))) {
+            return null;
+        }
+
+        int arity;
+        Ast.TypeRef result;
+        switch (member.member()) {
+            case "replace_literal" -> {
+                arity = 2;
+                result = Ast.TypeRef.simple("String");
+            }
+            case "split_literal" -> {
+                arity = 1;
+                result = new Ast.TypeRef(
+                        "List", List.of(Ast.TypeRef.simple("String")), false);
+            }
+            case "trim" -> {
+                arity = 0;
+                result = Ast.TypeRef.simple("String");
+            }
+            case "is_identifier", "is_route_segment" -> {
+                arity = 0;
+                result = Ast.TypeRef.simple("bool");
+            }
+            case "starts_with", "ends_with", "contains_literal" -> {
+                arity = 1;
+                result = Ast.TypeRef.simple("bool");
+            }
+            default -> {
+                return null;
+            }
+        }
+        if (arguments.size() != arity) {
+            throw error("built-in String." + member.member()
+                    + " expects " + arity + " argument(s), got " + arguments.size());
+        }
+
+        checkExpr(member.receiver(), scope, false);
+        for (Ast.Expr argument : arguments) {
+            checkExpr(argument, scope, false);
+        }
+        return new ValueInfo(result, kindOfType(result), null);
     }
 
     private ValueInfo checkBuiltinSumCall(Ast.MemberExpr member, List<Ast.Expr> arguments, Scope scope) {
