@@ -1899,11 +1899,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.assertEqual(self.route_calls, [])
 
     def test_git_valid_isolated_branch_names_pass_syntax_validation(self):
-        # Don't accidentally exclude ordinary approved isolated refs.
-        # Force a denial at the *next* authorization stage, proving the
-        # local branch syntax was accepted without any Git object writes.
-        for branch in ("ci/oreslang-safe", "ci/oreslang-v1.2",
-                       "ci/oreslang-feature_test-123"):
+        # The immutable namespace carries both independently approved revisions.
+        # Carrier SHA equality is enforced after source-side approval is loaded.
+        for carrier in (A, B, E):
+            branch = "ci/oreslang-" + D + "-" + carrier
             with self.subTest(branch=branch):
                 self.route_calls.clear()
                 with patch.object(pub, "checked_policy_fingerprint",
@@ -2424,9 +2423,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
         self.route_calls.clear()
-        with self.assertRaisesRegex(pub.Denied, "source and carrier-main SHAs"):
-            self.publish(branch="ci/oreslang-" + E + "-" + A)
-        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        with patch.object(pub, "checked_policy_fingerprint",
+                          side_effect=AssertionError("policy read too early")):
+            with self.assertRaisesRegex(pub.Denied, "full approved source commit SHA"):
+                self.publish(branch="ci/oreslang-" + E + "-" + A)
+        self.assertEqual(self.route_calls, [])
 
     def test_carrier_source_approval_missing_denies_before_source_read(self):
         self.carrier_reviewed_snapshot = "# no approvals\n"

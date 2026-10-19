@@ -29,7 +29,7 @@ directory, and a new isolated CI branch:
 ```bash
 scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --source-dir ./verified-source-tree \
-  --branch 'ci/oreslang-<exact 40-hex source commit>' \
+  --branch 'ci/oreslang-<source-commit-SHA>-<reviewed-carrier-main-SHA>' \
   --expected-source-tree '<trusted full 40-hex Git tree SHA>' \
   --expected-source-commit '<the same exact 40-hex source commit SHA>'
 ```
@@ -155,8 +155,11 @@ Its final three non-comment rules must exactly own, in order,
 `/.github/private-oreslang-approved-source-snapshots.txt`,
 `/.github/CODEOWNERS`, and `/.github/workflows/` with `@ORESoftware`.
 The source-bearing branch name is fixed to
-`ci/oreslang-<full-source-commit-SHA>`, so carrier CI can bind branch
-identity to its independently reviewed source tuple.
+`ci/oreslang-<full-source-commit-SHA>-<reviewed-carrier-main-SHA>`.
+The immutable ref therefore names both approved revisions. A later,
+independently reviewed carrier revision can test the same unchanged source
+without deleting or reusing an older immutable ref, and carrier CI can require
+the snapshot commit's sole parent to equal the SHA encoded in the ref.
 The carrier approval row also names the exact repository ruleset ID protecting
 that namespace. The publisher requires an active repository branch ruleset
 with no bypass actors, an exact include of

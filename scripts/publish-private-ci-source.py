@@ -21,7 +21,7 @@ NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 # An approved destination must include its stable numeric GitHub repository ID.
 # This closes name reuse between security review and the first transfer.
 POLICY_ENTRY = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]{0,19})$")
-BRANCH = re.compile(r"^ci/oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}$")
+BRANCH = re.compile(r"^ci/oreslang-([a-f0-9]{40})-([a-f0-9]{40})$")
 SHA = re.compile(r"^[a-f0-9]{40}$")
 MAX_FILES = 1024
 MAX_BYTES = 40 * 1024 * 1024
@@ -1016,15 +1016,15 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     # Git ref-format restrictions are stricter than the character allowlist.
     # Reject impossible refs before reading private source or creating blobs:
     # Git disallows '..', a trailing '.', and the '.lock' suffix.
-    if (not NAME.fullmatch(repository)
-            or not BRANCH.fullmatch(branch)
-            or ".." in branch
-            or branch.endswith((".", ".lock"))):
+    branch_match = BRANCH.fullmatch(branch) if isinstance(branch, str) else None
+    if not NAME.fullmatch(repository) or branch_match is None:
         raise Denied("invalid destination or isolated CI branch name")
     valid_sha(expected_source_tree)
     valid_sha(expected_source_commit)
-    # The exact ref also binds the carrier-main revision, but that revision is
-    # authenticated below. Syntax checks above still fail before source reads.
+    if branch_match.group(1) != expected_source_commit:
+        raise Denied("isolated CI branch must encode the full approved source commit SHA")
+    # The exact ref also binds the carrier-main revision, which is authenticated
+    # below. Malformed refs and source-SHA mismatches fail before policy/source reads.
     # This function previously ran the checkout-local Bash preflight BEFORE
     # authenticating the checkout. A modified PR checkout could execute an
     # attacker-controlled guard even though source export would later deny.
