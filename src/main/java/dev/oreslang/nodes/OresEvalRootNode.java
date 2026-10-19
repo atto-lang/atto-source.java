@@ -566,7 +566,7 @@ public final class OresEvalRootNode extends RootNode {
                         owned == null ? klass : owned.owner();
                 Env initializerEnv =
                         new Env(null, false, fieldOwner, object);
-                initializerEnv.define("self", object, Ast.BindingKind.VAL);
+                initializerEnv.define("self", object, Ast.BindingKind.VAL, fieldOwner);
                 fields.put(
                         field.name(),
                         eval(field.initializer(), initializerEnv));
@@ -868,6 +868,83 @@ public final class OresEvalRootNode extends RootNode {
             return (List<Object>) args;
         }
 
+        private Ast.ClassDecl staticClassView(Ast.TypeRef type) {
+            if (type == null) return null;
+            Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
+            Ast.ClassDecl direct = findClass(concrete.name());
+            if (direct != null) return direct;
+            Ast.TypeAliasDecl alias = findTypeAlias(concrete.name());
+            if (alias != null && alias.genericParameters().isEmpty()) {
+                return staticClassView(alias.target());
+            }
+            return null;
+        }
+
+        private Ast.ClassDecl staticClassView(Ast.Expr expression, Env env) {
+            if (expression instanceof Ast.NameExpr name) {
+                return env == null ? null : env.lookupStaticClassView(name.name());
+            }
+            if (expression instanceof Ast.NewExpr created) {
+                return staticClassView(created.type());
+            }
+            if (expression instanceof Ast.CastExpr cast) {
+                return staticClassView(cast.targetType());
+            }
+            if (expression instanceof Ast.ConditionalExpr conditional) {
+                Ast.ClassDecl left = staticClassView(conditional.whenTrue(), env);
+                Ast.ClassDecl right = staticClassView(conditional.whenFalse(), env);
+                return left != null && left == right ? left : null;
+            }
+            if (expression instanceof Ast.MemberExpr member) {
+                Ast.ClassDecl owner = staticClassView(member.receiver(), env);
+                if (owner == null) return null;
+                OwnedField field = findField(owner, member.member(), new LinkedHashSet<>());
+                if (field == null) return null;
+                if (field.field().type() != null) {
+                    return staticClassView(field.field().type());
+                }
+                return field.field().initializer() == null
+                        ? null
+                        : staticClassView(field.field().initializer(), env);
+            }
+            if (expression instanceof Ast.CallExpr call) {
+                if (call.callee() instanceof Ast.NameExpr name
+                        && (env == null || env.lookup(name.name()) == Env.MISSING)) {
+                    Ast.FunctionDecl fn = findFunction(name.name(), call.arguments().size());
+                    if (fn != null) return staticClassView(fn.returnType());
+                    Ast.ClassDecl staticOwner = findClass(name.name());
+                    if (staticOwner != null) return staticOwner;
+                }
+                if (call.callee() instanceof Ast.MemberExpr member) {
+                    Ast.ClassDecl receiverClass = staticClassView(member.receiver(), env);
+                    if (receiverClass != null) {
+                        Ast.MethodDecl method = findMethod(
+                                receiverClass,
+                                CallableSelector.instance(
+                                        member.member(), call.arguments().size()));
+                        if (method != null) return staticClassView(method.returnType());
+                    }
+                    if (member.receiver() instanceof Ast.NameExpr className) {
+                        Ast.ClassDecl owner = findClass(className.name());
+                        if (owner != null) {
+                            Ast.MethodDecl fn = findStaticFunction(
+                                    owner,
+                                    CallableSelector.staticFunction(
+                                            member.member(), call.arguments().size()));
+                            if (fn != null) return staticClassView(fn.returnType());
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        private void defineBinding(Env env, Ast.BindingStmt binding, Object value) {
+            Ast.ClassDecl view = staticClassView(binding.declaredType());
+            if (view == null) view = staticClassView(binding.initializer(), env);
+            env.define(binding.name(), value, binding.kind(), view);
+        }
+
         private void bindCallableArguments(
                 Env env,
                 List<Ast.Param> parameters,
@@ -887,7 +964,8 @@ public final class OresEvalRootNode extends RootNode {
                 env.define(
                         param.name(),
                         value,
-                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL,
+                        staticClassView(param.type()));
             }
             env.define(
                     "arguments",
@@ -1055,7 +1133,8 @@ public final class OresEvalRootNode extends RootNode {
                             params.define(
                                     "self",
                                     receiver,
-                                    Ast.BindingKind.VAL);
+                                    Ast.BindingKind.VAL,
+                                    declaringClass(method));
                         }
 
                         List<Ast.Param> parameters =
@@ -1971,7 +2050,7 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure));
                                     return;
                                 }
-                                env.define(binding.name(), value, binding.kind());
+                                defineBinding(env, binding, value);
                                 continuation.accept(t, SourceFlow.normal());
                             });
                     return;
@@ -5187,7 +5266,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null, false, declaringClass(method));
-            if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
+            if (!method.isStatic()) {
+                env.define("self", receiver, Ast.BindingKind.VAL, declaringClass(method));
+            }
             bindCallableArguments(env, method.parameters(), args, "method " + method.name());
             try {
                 executeBlock(method.body(), env);
@@ -5292,7 +5373,8 @@ public final class OresEvalRootNode extends RootNode {
                     env.reserve(binding.name(), binding.kind());
                     env.initialize(binding.name(), eval(binding.initializer(), env));
                 } else {
-                    env.define(binding.name(), eval(binding.initializer(), env), binding.kind());
+                    Object value = eval(binding.initializer(), env);
+                    defineBinding(env, binding, value);
                 }
                 return;
             }
@@ -7958,7 +8040,7 @@ public final class OresEvalRootNode extends RootNode {
             // The object is not returned or published until all initializers
             // and constructor-body validation have completed.
             Env constructorEnv = new Env(null, false, klass, object);
-            constructorEnv.define("self", object, Ast.BindingKind.VAL);
+            constructorEnv.define("self", object, Ast.BindingKind.VAL, klass);
             bindCallableArguments(
                     constructorEnv,
                     constructor.parameters(),
@@ -9250,15 +9332,32 @@ public final class OresEvalRootNode extends RootNode {
         }
         private boolean canInitialize(OresObject object) { return constructingObject == object; }
         private void define(String name, Object value, Ast.BindingKind kind) {
-            if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
+            define(name, value, kind, null);
+        }
+        private void define(
+                String name,
+                Object value,
+                Ast.BindingKind kind,
+                Ast.ClassDecl staticClassView) {
+            if (slots.putIfAbsent(name, new Slot(value, kind, staticClassView)) != null) {
+                throw new IllegalArgumentException("duplicate binding " + name);
+            }
         }
         private void reserve(String name, Ast.BindingKind kind) {
-            if (slots.putIfAbsent(name, new Slot(MISSING, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
+            if (slots.putIfAbsent(name, new Slot(MISSING, kind, null)) != null) throw new IllegalArgumentException("duplicate binding " + name);
         }
         private void initialize(String name, Object value) {
             Slot slot = slots.get(name);
             if (slot == null) throw new IllegalArgumentException("unknown binding " + name);
             slot.value = value;
+        }
+        private Slot lookupSlot(String name) {
+            Slot slot = slots.get(name);
+            return slot != null ? slot : parent == null ? null : parent.lookupSlot(name);
+        }
+        private Ast.ClassDecl lookupStaticClassView(String name) {
+            Slot slot = lookupSlot(name);
+            return slot == null ? null : slot.staticClassView;
         }
         private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
         private void assign(String name, Object value) {
@@ -9404,7 +9503,15 @@ public final class OresEvalRootNode extends RootNode {
     private static final class Slot {
         private Object value;
         private final Ast.BindingKind kind;
-        private Slot(Object value, Ast.BindingKind kind) { this.value=value; this.kind=kind; }
+        private final Ast.ClassDecl staticClassView;
+        private Slot(
+                Object value,
+                Ast.BindingKind kind,
+                Ast.ClassDecl staticClassView) {
+            this.value = value;
+            this.kind = kind;
+            this.staticClassView = staticClassView;
+        }
     }
 
     private static final class ReturnSignal extends RuntimeException {
