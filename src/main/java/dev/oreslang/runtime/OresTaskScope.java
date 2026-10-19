@@ -174,7 +174,9 @@ public final class OresTaskScope implements AutoCloseable {
             if (pendingSlot != null) {
                 try {
                     synchronized (gate) {
-                        tasks.remove(pendingSlot);
+                        if (!tasks.remove(pendingSlot))
+                            throw new IllegalStateException(
+                                    "provisional Task owner rollback did not remove reserved slot");
                     }
                 } catch (RuntimeException | Error failure) {
                     bookkeepingFailure = failure;
