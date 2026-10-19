@@ -128,15 +128,22 @@ final class LogicalSourceActorProxyBridgeV1Test {
                 assertTrue(bridge.dispatchOne(WAIT));
                 assertEquals(42L, next(bridge));
                 var old = bridge.publication();
+                assertFalse(old.failSealed());
+                assertTrue(old.authoritativeForDispatch());
                 assertThrows(SecurityException.class,
                         () -> bridge.upgradeTo(incompatible, WAIT),
                         "candidate compiler must prove ActorMail<int> before old ingress freeze");
                 assertTrue(bridge.failSealed(),
                         "invalid upgrade requires supervised reconciliation");
+                var quarantined = bridge.publication();
+                assertTrue(quarantined.failSealed(),
+                        "coherent diagnostic must disclose terminal quarantine");
+                assertFalse(quarantined.authoritativeForDispatch(),
+                        "matching code and route digests are not a healthy certificate");
                 assertEquals(old.address().routeEpoch(),
-                        bridge.publication().address().routeEpoch(),
+                        quarantined.address().routeEpoch(),
                         "denied compiler type cannot publish new route");
-                assertEquals(old.generationId(), bridge.publication().generationId());
+                assertEquals(old.generationId(), quarantined.generationId());
                 assertEquals(0, bridge.snapshot().retainedMessages());
             }
         }
@@ -177,6 +184,8 @@ final class LogicalSourceActorProxyBridgeV1Test {
                 assertEquals(1, bridge.snapshot().queuedMessages());
                 assertTrue(bridge.upgradeTo(second, WAIT));
                 var successorPublication = bridge.publication();
+                assertFalse(successorPublication.failSealed());
+                assertTrue(successorPublication.authoritativeForDispatch());
                 assertEquals(2L, successorPublication.address().routeEpoch());
                 assertEquals(2L, successorPublication.mailbox().routeEpoch());
                 assertEquals(second.id(), successorPublication.generationId());
