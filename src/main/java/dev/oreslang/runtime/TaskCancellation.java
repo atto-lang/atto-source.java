@@ -28,6 +28,10 @@ final class TaskCancellation {
             Collections.newSetFromMap(new IdentityHashMap<>());
     private final Set<Registration> revokers = new LinkedHashSet<>();
     private final Set<Registration> observers = new LinkedHashSet<>();
+    // Links are registered on a separate source authority. Their target
+    // owns the subscription lifetime so source observers cannot retain a
+    // physically completed downstream task indefinitely.
+    private final Set<Subscription> upstreamLinks = new LinkedHashSet<>();
     private TaskCancellation owner;
     // Protected by GRAPH_LOCK: completed tokens must not regain authority.
     private boolean retired;
@@ -71,6 +75,7 @@ final class TaskCancellation {
      */
     void retire() {
         List<Registration> detached = new ArrayList<>();
+        List<Subscription> detachedLinks = new ArrayList<>();
         synchronized (GRAPH_LOCK) {
             if (retired) return;
             // Retiring a parent with live children would orphan structured
@@ -80,6 +85,8 @@ final class TaskCancellation {
                 throw new IllegalStateException("cannot retire authority with live children");
             }
             retired = true;
+            detachedLinks.addAll(upstreamLinks);
+            upstreamLinks.clear();
             if (owner != null) owner.children.remove(this);
             owner = null;
             detached.addAll(revokers);
@@ -99,6 +106,9 @@ final class TaskCancellation {
         // Subscription reference after task completion. Do not invoke hooks.
         // The graph lock cannot be held while detaching registrations.
         for (Registration registration : detached) registration.close();
+        // Close subscriptions outside GRAPH_LOCK: Registration.close()
+        // synchronizes on GRAPH_LOCK to unlink from the source's observers.
+        for (Subscription link : detachedLinks) link.close();
     }
 
     /** Runtime diagnostic for bounded lifetime-tree retention tests. */
@@ -218,7 +228,7 @@ final class TaskCancellation {
     Subscription linkCancellationFrom(TaskCancellation source) {
         Objects.requireNonNull(source, "source");
         if (source == this) throw new IllegalArgumentException("self cancellation link");
-        return source.onCancel(() -> {
+        Subscription link = source.onCancel(() -> {
             String from = Objects.requireNonNullElse(
                     source.cancellationReason(), DEFAULT_REASON);
             String linked = from.startsWith("linked:") ? from : "linked:" + from;
@@ -227,6 +237,16 @@ final class TaskCancellation {
             }
             cancel(linked);
         });
+        boolean discard;
+        synchronized (GRAPH_LOCK) {
+            // Registration can race task completion. A link installed before
+            // retirement is owned by this target; one installed afterward
+            // is immediately closed instead of pinning this target on source.
+            discard = retired;
+            if (!discard) upstreamLinks.add(link);
+        }
+        if (discard) link.close();
+        return link;
     }
 
     private Subscription register(Runnable hook, boolean revoke) {
