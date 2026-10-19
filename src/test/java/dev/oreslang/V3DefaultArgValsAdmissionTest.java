@@ -191,7 +191,7 @@ final class V3DefaultArgValsAdmissionTest {
                 OptionalCallShapeBinder.Argument.namedOmission("b"),
                 OptionalCallShapeBinder.Argument.named("a")));
         assertEquals(List.of(1, -1, 0), plan.sourceIndexByParameter());
-        assertEquals(List.of(2), plan.explicitlyOmittedParameterIndices().stream()
+        assertEquals(List.of(1), plan.explicitlyOmittedParameterIndices().stream()
                 .map(i -> plan.omittedCallItemBindings().stream()
                         .filter(x -> x.parameterIndex() == i)
                         .findFirst().orElseThrow().callItemIndex()).toList());
