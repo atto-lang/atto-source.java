@@ -195,6 +195,31 @@ final class DynamicPropertyAccessBoundaryTest {
     }
 
     @Test
+    void indexedExplicitStructAccessParticipatesInDefiniteInitialization() {
+        accepted("""
+                fnc good(): bool {
+                    val state = struct{score: int, ready: bool}{score: 1};
+                    state["ready"] = true;
+                    return state["ready"];
+                }
+                """);
+        rejected("""
+                fnc bad(string key): void {
+                    val state = struct{score: int, ready: bool}{score: 1};
+                    const value = state[key];
+                    return;
+                }
+                """);
+        rejected("""
+                fnc bad(): void {
+                    val state = struct{score: int, ready: bool}{score: 1};
+                    const value = state["ready"];
+                    return;
+                }
+                """);
+    }
+
+    @Test
     void computedProductBorrowsRemainFailClosedWithoutPathExclusiveLoans() {
         rejected("""
                 fnc bad(string key): void {
