@@ -82,6 +82,33 @@ final class DefaultArgValsStagingTest {
     }
 
     @Test
+    void namedDefaultMetadataCannotReclassifyInlineSelfAsAValueSlot() {
+        Ast.Program program = Parser.parse("""
+                define module m
+                  define class Foo as
+                    @DefaultArgVals(x: 5)
+                    pub foo(self, int x): int { return x; }
+                  end
+                end
+                """);
+        Ast.ClassDecl klass = program.modules().stream()
+                .filter(m -> m.name().equals("m"))
+                .flatMap(m -> m.declarations().stream())
+                .filter(d -> d instanceof Ast.ClassDecl)
+                .map(d -> (Ast.ClassDecl) d).findFirst().orElseThrow();
+        Ast.MethodDecl method = klass.methods().getFirst();
+        assertEquals(1, method.arity());
+        assertEquals("x", method.parameters().getFirst().name());
+        assertNotNull(method.explicitReceiverType());
+        assertEquals("self", method.explicitReceiverType().name());
+        assertEquals("x", method.annotations().getFirst().arguments()
+                .getFirst().namedParameterName());
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertTrue(error.getMessage().contains("@DefaultArgVals"));
+    }
+
+    @Test
     void stagedMetadataCannotSilentlyRunOnMethodsConstructorsOrFields() {
         Ast.Program program = Parser.parse("""
                 define module m
