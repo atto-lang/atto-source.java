@@ -7,6 +7,10 @@ import org.tomlj.TomlParseResult;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -27,8 +31,11 @@ public final class OresProjectConfig {
     public static final String MANIFEST_NAME = ".oreslangc.cfg.toml";
     public static final String ENV_ORESLANG_PATH = "ORESLANG_PATH";
     public static final String SCHEMA_VERSION = "1";
+    private static final int MAX_MANIFEST_BYTES = 1024 * 1024;
 
     private final Path manifestPath;
+    /** Defensive snapshot of the bytes actually parsed for import resolution. */
+    private final byte[] manifestSourceBytes;
     private final Path projectRoot;
     private final String projectName;
     private final String projectVersion;
@@ -39,6 +46,7 @@ public final class OresProjectConfig {
 
     private OresProjectConfig(
             Path manifestPath,
+            byte[] manifestSourceBytes,
             Path projectRoot,
             String projectName,
             String projectVersion,
@@ -47,6 +55,7 @@ public final class OresProjectConfig {
             List<Path> environmentPaths,
             Path mainEntrypoint) {
         this.manifestPath = manifestPath;
+        this.manifestSourceBytes = manifestSourceBytes.clone();
         this.projectRoot = projectRoot;
         this.projectName = projectName;
         this.projectVersion = projectVersion;
@@ -69,6 +78,7 @@ public final class OresProjectConfig {
         Path root = searchFrom.toAbsolutePath().normalize();
         return new OresProjectConfig(
                 null,
+                new byte[0],
                 root,
                 null,
                 null,
@@ -87,7 +97,26 @@ public final class OresProjectConfig {
             throw new IllegalArgumentException("not an Oreslang project manifest: " + absoluteManifest);
         }
 
-        TomlParseResult toml = Toml.parse(absoluteManifest);
+        // Parse the exact bounded byte snapshot that is retained for replay
+        // fingerprints. Reopening the file after parsing could otherwise hash
+        // a different manifest from the one used for import resolution.
+        byte[] manifestBytes;
+        try (java.io.InputStream input = Files.newInputStream(absoluteManifest)) {
+            manifestBytes = input.readNBytes(MAX_MANIFEST_BYTES + 1);
+        }
+        if (manifestBytes.length > MAX_MANIFEST_BYTES) {
+            throw new IOException("Oreslang project manifest exceeds 1 MiB");
+        }
+        final String manifestText;
+        try {
+            manifestText = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(manifestBytes)).toString();
+        } catch (CharacterCodingException invalid) {
+            throw new IOException("project manifest contains invalid UTF-8", invalid);
+        }
+        TomlParseResult toml = Toml.parse(manifestText);
         if (!toml.errors().isEmpty()) {
             throw new IllegalArgumentException(
                     "invalid " + MANIFEST_NAME + ": " + toml.errors().getFirst());
@@ -113,6 +142,7 @@ public final class OresProjectConfig {
 
         return new OresProjectConfig(
                 absoluteManifest,
+                manifestBytes,
                 projectRoot,
                 toml.getString("project.name"),
                 toml.getString("project.version"),
@@ -123,6 +153,8 @@ public final class OresProjectConfig {
     }
 
     public Optional<Path> manifestPath() { return Optional.ofNullable(manifestPath); }
+    /** Immutable bytes parsed into this configuration; never re-read for a hash. */
+    public byte[] manifestSourceBytes() { return manifestSourceBytes.clone(); }
     public Path projectRoot() { return projectRoot; }
     public Optional<String> projectName() { return Optional.ofNullable(projectName); }
     public Optional<String> projectVersion() { return Optional.ofNullable(projectVersion); }
