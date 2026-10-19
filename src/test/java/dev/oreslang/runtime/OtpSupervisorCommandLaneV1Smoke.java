@@ -99,6 +99,27 @@ public final class OtpSupervisorCommandLaneV1Smoke {
         check(lane.snapshot().outstanding() == 0, "invalid input consumed reservation");
     }
 
+    private static void quarantinesUnsettledCommandsOnTermination() {
+        var lane = new OtpSupervisorCommandLaneV1(2);
+        lane.submit(target(1), 7, OtpSupervisorCommandLaneV1.Kind.PREPARE_UPGRADE, DIGEST);
+        lane.submit(target(2), 7, OtpSupervisorCommandLaneV1.Kind.QUIESCE_CHECK, DIGEST);
+        var active = lane.poll().orElseThrow();
+        check(lane.quarantineOnTermination() == 2, "terminal command count");
+        check(lane.quarantineOnTermination() == 0, "double quarantine");
+        check(lane.snapshot().quarantined() == 2, "terminal metric");
+        check(lane.snapshot().acknowledged() == 0, "termination is not ACK");
+        check(lane.snapshot().outstanding() == 0, "terminal target index leak");
+        check(lane.snapshot().queued() == 0 && lane.snapshot().inFlight() == 0,
+                "unsettled terminal command");
+        try { active.ack(); throw new AssertionError("stale command ACK after stop"); }
+        catch (IllegalStateException expected) { }
+        active.close();
+        try {
+            lane.submit(target(3), 8, OtpSupervisorCommandLaneV1.Kind.PREPARE_UPGRADE, DIGEST);
+            throw new AssertionError("terminated lane admitted new work");
+        } catch (IllegalStateException expected) { }
+    }
+
     private static void abortRace() throws Exception {
         try (var pool = Executors.newFixedThreadPool(2)) {
             for (int i = 0; i < 512; i++) {
@@ -132,6 +153,7 @@ public final class OtpSupervisorCommandLaneV1Smoke {
         epochAndAbort();
         invalidInput();
         retryFairnessBetweenActors();
+        quarantinesUnsettledCommandsOnTermination();
         abortRace();
         System.out.println("PASS: lease idempotence/retry/duplicate admission/capacity/epoch fencing");
         System.out.println("PASS: 512 concurrent ack-vs-explicit-abort races");
