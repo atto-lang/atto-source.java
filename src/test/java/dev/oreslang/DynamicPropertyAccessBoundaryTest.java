@@ -125,6 +125,13 @@ final class DynamicPropertyAccessBoundaryTest {
                     return;
                 }
                 """);
+        rejected("""
+                fnc bad(int index): void {
+                    const empty = tuple();
+                    const int value = empty[index];
+                    return;
+                }
+                """);
     }
 
     @Test
