@@ -239,6 +239,61 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void admissionRacingCloseIsEitherRejectedOrRetainedUntilRealDelivery()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("close-race.ores", V1);
+            var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
+                    first, "Counter", WAIT, 2, 8, 16);
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var received = new java.util.concurrent.atomic.AtomicBoolean();
+            var ingressFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var closeFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Thread sender = Thread.ofPlatform().start(() -> {
+                try {
+                    start.await();
+                    bridge.admitLong(41L);
+                    received.set(true);
+                } catch (IllegalStateException closedFirst) {
+                    // The close linearized before admission.
+                } catch (Throwable unexpected) {
+                    ingressFailure.set(unexpected);
+                }
+            });
+            Thread closer = Thread.ofPlatform().start(() -> {
+                try {
+                    start.await();
+                    bridge.close();
+                } catch (IllegalStateException mailOutstanding) {
+                    // The sender admitted before close: it must not be lost.
+                } catch (Throwable unexpected) {
+                    closeFailure.set(unexpected);
+                }
+            });
+            start.countDown();
+            sender.join(10000);
+            closer.join(10000);
+            assertFalse(sender.isAlive() || closer.isAlive());
+            assertNull(ingressFailure.get());
+            assertNull(closeFailure.get());
+            if (received.get()) {
+                assertEquals(1, bridge.snapshot().retainedMessages());
+                assertTrue(bridge.dispatchOne(WAIT));
+                assertEquals(42L, next(bridge));
+                assertEquals(0, bridge.snapshot().retainedMessages());
+            } else {
+                assertEquals(0, bridge.snapshot().retainedMessages());
+            }
+            assertDoesNotThrow(bridge::close);
+            assertDoesNotThrow(bridge::close,
+                    "completed physical close must be idempotent");
+            assertDoesNotThrow(first::close,
+                    "finalized bridge must release its actor generation");
+        }
+    }
+
+    @Test
     void closedBridgeForbidsLateMailboxAdmission()
             throws Exception {
         try (HotReloadManager manager =
@@ -248,6 +303,7 @@ final class LogicalSourceActorProxyBridgeV1Test {
             var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
                     first, "Counter", WAIT, 1, 8, 8);
             bridge.close();
+            assertDoesNotThrow(bridge::close);
             assertThrows(IllegalStateException.class,
                     () -> bridge.admitLong(1L));
             assertThrows(IllegalStateException.class,
