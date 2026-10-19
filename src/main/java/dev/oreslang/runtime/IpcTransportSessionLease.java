@@ -47,6 +47,7 @@ final class IpcTransportSessionLease {
     private final long generation;
     private final int limit;
     private final IpcReceiptCompletionBridge receipts;
+    private final Object physicalOwner;
     private final FrameWriter writer;
     private final PhysicalCloser closer;
     private final CleanupScheduler scheduler;
@@ -65,6 +66,16 @@ final class IpcTransportSessionLease {
                              IpcReceiptCompletionBridge receipts,
                              FrameWriter writer, PhysicalCloser closer,
                              CleanupScheduler scheduler) {
+        this(trustedEpoch, generation, limit, receipts, null,
+                writer, closer, scheduler);
+    }
+
+    IpcTransportSessionLease(IpcReceiptCorrelation.Envelope trustedEpoch,
+                             long generation, int limit,
+                             IpcReceiptCompletionBridge receipts,
+                             Object physicalOwner,
+                             FrameWriter writer, PhysicalCloser closer,
+                             CleanupScheduler scheduler) {
         if (generation <= 0 || limit <= 0 || limit > 65536) {
             throw new IllegalArgumentException("invalid transport session policy");
         }
@@ -72,6 +83,7 @@ final class IpcTransportSessionLease {
         this.generation = generation;
         this.limit = limit;
         this.receipts = Objects.requireNonNull(receipts, "receipts");
+        this.physicalOwner = physicalOwner;
         this.writer = Objects.requireNonNull(writer, "writer");
         this.closer = Objects.requireNonNull(closer, "closer");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
@@ -283,7 +295,11 @@ final class IpcTransportSessionLease {
         synchronized (this) { physicalCloseConfirmed = true; }
         try {
             // Arbitrary dependent user callbacks can run: no session lock held.
-            receipts.transportLost(trustedEpoch);
+            if (physicalOwner == null) {
+                receipts.transportLost(trustedEpoch);
+            } else {
+                receipts.transportLost(physicalOwner, trustedEpoch, generation);
+            }
         } catch (RuntimeException | Error failure) {
             synchronized (this) {
                 closeFailure = failure;
