@@ -2339,8 +2339,8 @@ public final class TypeChecker {
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
             requireAssignable(value, targetType, "assignment to " + where);
             for (Type slot : dynamicFixedSlots) {
-                requireReadonlyCapabilityPreserved(value, slot, "dynamic fixed collection slot assignment");
-                requireAssignable(value, slot, "dynamic fixed collection slot assignment");
+                requireReadonlyCapabilityPreserved(value, slot, "dynamic indexed target assignment");
+                requireAssignable(value, slot, "dynamic indexed target assignment");
             }
             if (assignment.target() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr owner) {
