@@ -220,9 +220,26 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
             // preflight takes the only old-generation and mailbox DATA freezes.
             var preflight = ActorUpgradePreflightV1.prepare(
                     active.taskAdmission(), mailbox, candidateImage);
-            pending = new Stage(active, candidateImage, preflight,
-                    preflight.dispatchWatermark());
-            return pending;
+            try {
+                // Stage/ticket allocation can fail AFTER the independent
+                // generation and mailbox freezes have succeeded. Never
+                // strand a frozen actor without an owned rollback handle.
+                Stage ready = new Stage(active, candidateImage, preflight,
+                        preflight.dispatchWatermark());
+                pending = ready;
+                return ready;
+            } catch (RuntimeException | Error admissionFailure) {
+                try {
+                    preflight.close();
+                } catch (RuntimeException | Error rollbackFailure) {
+                    // An ambiguous rollback is terminal for DATA. Do not
+                    // reopen an unknown old image or hide the primary fault.
+                    poisoned = true;
+                    if (admissionFailure != rollbackFailure)
+                        admissionFailure.addSuppressed(rollbackFailure);
+                }
+                throw admissionFailure;
+            }
         }
     }
 
