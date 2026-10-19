@@ -2255,9 +2255,26 @@ public final class TypeChecker {
                             "module namespace '" + namespace.name()
                                     + "' does not support indexed assignment");
                 }
-                Type receiver = receiverDispatchType(deref(typeOf(indexed.receiver(), env, generics, self)));
-                Type index = typeOf(indexed.index(), env, generics, self);
                 String constantKey = constantStringKey(indexed.index(), env);
+                Type receiverSource;
+                if (indexed.receiver() instanceof Ast.NameExpr receiverName) {
+                    Env.Binding receiverBinding = env.lookup(receiverName.name());
+                    if (receiverBinding != null && receiverBinding.hasUninitializedFields()) {
+                        if (constantKey == null) {
+                            throw new IllegalArgumentException(
+                                    "dynamic indexed assignment cannot target partially initialized explicit struct '"
+                                            + receiverName.name()
+                                            + "'; initialize a statically known missing field first");
+                        }
+                        receiverSource = receiverBinding.type();
+                    } else {
+                        receiverSource = typeOf(indexed.receiver(), env, generics, self);
+                    }
+                } else {
+                    receiverSource = typeOf(indexed.receiver(), env, generics, self);
+                }
+                Type receiver = receiverDispatchType(deref(receiverSource));
+                Type index = typeOf(indexed.index(), env, generics, self);
                 if (receiver instanceof Record record) {
                     requireAssignable(index, Primitive.STRING, "record/struct field key");
                     Map<String, Type> indexableMembers = indexableRecordMembers(record);
