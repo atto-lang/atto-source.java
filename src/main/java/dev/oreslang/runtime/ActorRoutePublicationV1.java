@@ -189,9 +189,11 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
         if (!initial.admissionOpen() || initial.livePins() != 0
                 || initial.epoch() != 1L)
             throw new IllegalStateException("initial Task generation must be unpinned and open");
-        if (initial.placement().actorKind() != ActorUpgradeEpochGate.ActorKind.SHARED)
+        if (initial.placement().actorKind() != ActorUpgradeEpochGate.ActorKind.SHARED
+                || initial.placement().protection()
+                        != ActorUpgradeEpochGate.ProtectionDomain.TRUSTED_HOST)
             throw new SecurityException(
-                    "PRIVATE/UNTRUSTED require independently attested protected workers");
+                    "host coordinator requires trusted SHARED placement; protected workers need attestations");
         var snapshot = mailbox.snapshot();
         if (snapshot.closed() || snapshot.dispatchFrozen()
                 || snapshot.routeEpoch() != 1L || snapshot.highestDispatchedSequence() != 0L
