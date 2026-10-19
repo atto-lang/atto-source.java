@@ -239,6 +239,9 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
      * Do not invoke this blocking wait from an actor carrier.
      */
     boolean requestCloseAndAwait(long timeoutMillis) throws InterruptedException {
+        if (timeoutMillis < 0 || timeoutMillis > 300_000) {
+            throw new IllegalArgumentException("invalid IPC close wait");
+        }
         requestClose();
         if (sessionLease.awaitTerminal(timeoutMillis)) return true;
         var snapshot = sessionLease.snapshot();
@@ -269,6 +272,23 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         } catch (RuntimeException | Error schedulingFailure) {
             sessionLease.quarantineIfUnsettled(schedulingFailure);
         }
+    }
+
+    /**
+     * Explicitly retry only the physical abort of a quarantined generation
+     * while a write is still pinned. This never reopens send admission and
+     * never retires receipts; after the writer drains, the supervisor must
+     * separately invoke retryQuarantinedClose().
+     */
+    void retryQuarantinedAbort() {
+        var snapshot = sessionLease.snapshot();
+        if (snapshot.phase() != IpcTransportSessionLease.Phase.QUARANTINED
+                || snapshot.activeWrites() <= 0) {
+            throw new IllegalStateException(
+                    "transport has no quarantined active write to abort");
+        }
+        abortScheduled.set(false);
+        schedulePhysicalAbort();
     }
 
     /**
