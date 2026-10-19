@@ -54,6 +54,53 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void compiledActorDrainReceiptRejectsForgedEnvelopeStaleEpochAndReplay()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("receipt-v1.ores", V1);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                         first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT);
+                 var proxy = new LogicalActorProxyMailboxV1(2, 8, 16)) {
+                byte[] wire = new byte[Long.BYTES];
+                wire[Long.BYTES - 1] = 41;
+                var admitted = proxy.admit(wire);
+                var dispatched = proxy.pollDispatch();
+                assertSame(admitted, dispatched);
+
+                // The wrong epoch is rejected BEFORE physical send. Credits
+                // remain assigned to this outstanding logical delivery.
+                assertThrows(SecurityException.class,
+                        () -> router.sendAndDrainForProxy(
+                                dispatched, proxy.snapshot().routeEpoch() + 1));
+                assertEquals(1, proxy.snapshot().outstandingMessages());
+
+                var receipt = router.sendAndDrainForProxy(
+                        dispatched, proxy.snapshot().routeEpoch());
+                var forged = new LogicalActorProxyMailboxV1.Envelope(
+                        dispatched.messageSequence(), dispatched.payload());
+                assertThrows(SecurityException.class,
+                        () -> receipt.awaitAndComplete(proxy, forged, WAIT),
+                        "equal bytes and sequence are not a physical receipt");
+                assertEquals(1, proxy.snapshot().retainedMessages());
+                assertEquals(0L, proxy.snapshot().completionWatermark());
+
+                receipt.awaitAndComplete(proxy, dispatched, WAIT);
+                assertEquals(0, proxy.snapshot().retainedMessages());
+                assertEquals(1L, proxy.snapshot().completionWatermark());
+                assertThrows(IllegalStateException.class,
+                        () -> receipt.awaitAndComplete(proxy, dispatched, WAIT),
+                        "a cumulative physical drain cannot refund twice");
+                assertEquals(0, proxy.snapshot().retainedMessages());
+                var output = router.ref().nextOutput(WAIT);
+                assertFalse(output.done());
+                assertEquals(42L, assertInstanceOf(
+                        Long.class, output.value().value()));
+            }
+        }
+    }
+
+    @Test
     void realCompiledSharedActorUpgradeWaitsForSuspendedPinnedTask()
             throws Exception {
         try (HotReloadManager manager =
