@@ -14,7 +14,7 @@ validated release feature until exact-head Java/Graal tests execute.
 | `oreslang test --schedule-fuzz file.ores` | Seeded CriticalGate cancellation/FIFO inputs and actual host-thread cancellation-versus-handoff race attempts | deterministic, recorded **guest** actor/Task scheduling choices |
 | `oreslang test --model-check file.ores` | Exhaustively explore a 21-state two-Task/two-CriticalGate reference model; reject 2-gate cycle formation | systematic bounded exploration of arbitrary Oreslang code |
 | `oreslang test --race file.ores` | Recognized, but returns **2** instead of falsely reporting safety | genuine OresVM guest read/write shadow memory and happens-before clocks (issue #1417) |
-| `oreslang test --replay trace file.ores` | Verify source SHA256 and rerun seed/count of the **bounded CriticalGate-input explorer** | reproduction of arbitrary guest schedule and failure trace (issue #1418) |
+| `oreslang test --replay trace file.ores` | Verify a v2 **source-closure SHA-256** and rerun seed/count of the bounded CriticalGate-input explorer | reproduction of arbitrary guest schedule and failure trace (issue #1418) |
 
 Modifiers `--seed=N`, `--runs=N`, and `--trace-out=path` configure the
 bounded runtime explorer; `--replay=path` is also accepted. When `--fuzz`
@@ -25,15 +25,18 @@ coverage. Native test summaries and fuzz counters have aggregate bounds and
 reject mixed valid/malformed machine-protocol events. The line protocol
 is still guest-authored stdout, not a trusted attestation. `--trace-out`
 will not overwrite an existing file. Source mismatch or malformed trace
-returns nonzero. For record/replay, the CLI checks the entry `.ores`
-file's hash before and after guest execution, and before writing the trace;
-source mutation during these checkpoints fails closed. **This hash currently
-covers only the entry file, not imported Oreslang modules, compiler-bundled
-core modules, project import resolution or mixed Java source dependencies**.
-A complete import-closure digest is a required follow-up before stronger
-whole-program replay guarantees can be made. Record and replay are *not*
-guest scheduling replay, and the report explicitly identifies
-`scope=critical-gate-inputs`.
+returns nonzero. **Trace format v2** supersedes entry-only v1; old v1 traces
+are intentionally rejected instead of being mistaken for full-source replay.
+The digest is derived from the same import-closure resolver as the guest
+loader and includes all reachable raw .ores/.java unit source text, packaged
+`std/*` sources, resolved importer→target mappings, project-manifest bytes,
+and ordered import search roots. The CLI checks this closure before and after
+guest execution and before trace creation. Changes to imported source now
+invalidate replay. The digest is a snapshot, not a filesystem lock: source
+modification and reversal between checkpoints remains an inherent TOCTOU
+limit. It also does **not** capture the compiler binary, external FFI/JVM state,
+nondeterministic OS events, or actual guest scheduler choices. Record/replay
+remains `scope=critical-gate-inputs`, **not** guest scheduling replay.
 
 Modes are combinable when their implementations overlap. For example,
 `--fuzz --deadlock --schedule-fuzz` combines a real native integer-property
