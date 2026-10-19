@@ -172,6 +172,17 @@ final class OptionalCallLiteralStageTest {
                 () -> OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
                         shadowed, call));
 
+        for (Ast.Decl conflicting : List.<Ast.Decl>of(
+                new Ast.ClassDecl("f", false, List.of(), List.of(), List.of()),
+                new Ast.InterfaceDecl("f", List.of(), List.of()),
+                new Ast.TypeAliasDecl("f", List.of(), INT))) {
+            var nameCollision = new Ast.Program(List.of(
+                    new Ast.ModuleDecl(module.name(), List.of(fn, conflicting))));
+            assertThrows(IllegalArgumentException.class,
+                    () -> OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
+                            nameCollision, call));
+        }
+
         var extraModule = new Ast.Program(List.of(module, module));
         assertThrows(IllegalArgumentException.class,
                 () -> OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(
