@@ -233,6 +233,9 @@ public final class TypeChecker {
         // Check local v3 accepted-arity overlaps before denying staged calls.
         // The full inherited/imported ABI collision gate remains pending.
         StagedArityOverlapV3.check(program);
+        // Reject known malformed/overflowing literal defaults early. This
+        // produces no authorization to run unresolved or staged call shapes.
+        StagedDefaultTypeV3.preflight(program);
         // No guest execution or imported symbol publication with unlowered
         // declaration defaults. Stage parser metadata separately from ABI.
         UnloweredDefaultArgValsGuard.reject(program);
