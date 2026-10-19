@@ -242,6 +242,14 @@ public final class BoundInvocation {
                     throw new IllegalArgumentException(
                             "generic, actor, effectful, routine or annotated function target not proved");
                 }
+                // A synthetic module callable can be constructed with a
+                // reserved constructor self receiver even though normal
+                // source parsing would not produce it. Never treat that
+                // receiver binder as a guest-supplied named ABI slot.
+                if (f.parameters().stream().anyMatch(p -> "self".equals(p.name()))) {
+                    throw new IllegalArgumentException(
+                            "module function cannot bind constructor self as a value argument");
+                }
                 candidates.add(f);
                 ordinals.add(i);
                 signatures.add(f.parameters());
