@@ -129,7 +129,7 @@ final class LogicalActorUpgradeCoordinatorV1Test {
             assertEquals(2L,gate.epoch());
             assertEquals(2L,proxy.snapshot().routeEpoch());
             assertEquals(2L,proxy.pollDispatch().messageSequence());
-            proxy.complete(2L);
+            LogicalActorProxyMailboxTestAccess.complete(proxy, 2L);
         }
     }
 
