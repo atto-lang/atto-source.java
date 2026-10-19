@@ -330,6 +330,27 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         var replayDataMessage = envelope(1, "dataReplay", 3, 4, replayDataPayload);
         byte[] capturedData = IpcAuthenticatedSocketTransport.encodeDataFrame(
                 replayDataMessage, replayDataPayload, 82, key);
+        // v2 changed receipt wire codes away from Java enum ordinals.
+        // Even with a valid MAC, a captured v1-version header is rejected
+        // rather than interpreted under the new state-code mapping.
+        byte[] oldVersionData = capturedData.clone();
+        int oldVersionBodyLength = oldVersionData.length - 32;
+        oldVersionData[4] = 1; // magic is four bytes; version follows.
+        Mac oldVersionMac = Mac.getInstance("HmacSHA256");
+        oldVersionMac.init(new SecretKeySpec(key, "HmacSHA256"));
+        byte[] oldVersionTag = oldVersionMac.doFinal(
+                Arrays.copyOf(oldVersionData, oldVersionBodyLength));
+        System.arraycopy(oldVersionTag, 0, oldVersionData,
+                oldVersionBodyLength, oldVersionTag.length);
+        try {
+            IpcAuthenticatedSocketTransport.decodeDataFrame(
+                    oldVersionData, replayDataMessage, 82,
+                    new IpcAuthenticatedSocketTransport.InboundReplayGate(), key);
+            throw new AssertionError("authenticated v1 DATA accepted by v2 transport");
+        } catch (IOException expected) {
+            check(expected.getMessage().contains("invalid IPC frame header"));
+        }
+
         try {
             IpcAuthenticatedSocketTransport.decodeDataFrame(
                     capturedData, replayDataMessage, 83,
