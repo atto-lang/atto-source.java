@@ -6417,10 +6417,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     // Concrete inferred/explicit structs use this mutable owned-map path.
                     // Structural records use ReadonlyRecordValue and never reach it.
-                    if (receiver instanceof MutableStructValue rawRecord) {
-                        @SuppressWarnings("unchecked")
-                        LinkedHashMap<String, Object> record =
-                                (LinkedHashMap<String, Object>) rawRecord;
+                    if (receiver instanceof MutableStructValue record) {
                         if (!record.containsKey(target.member())) {
                             throw new IllegalArgumentException(
                                     "unknown explicit struct field " + target.member());
