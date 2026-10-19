@@ -211,61 +211,58 @@ public final class OresTaskScope implements AutoCloseable {
                         "Task scope cancelled before guest Task turn");
                 return frame.resume(resume);
             }, () -> {
+                // This is the scheduler's physical-exit callback. Release
+                // the trusted generation pin and retire its owned slot
+                // BEFORE publishing quiescence. Generic OresFuture waiters
+                // swallow callback exceptions, so removing the slot from
+                // a getDone()/exitFence listener would conceal a failed
+                // retirement behind a successful physical fence.
                 try {
                     onPhysicalExit.run();
-                    exitFence.completeFromRuntime(null);
                 } catch (RuntimeException | Error releaseFailure) {
                     exitFence.failFromRuntime(releaseFailure);
+                    return;
+                }
+                try {
+                    synchronized (gate) {
+                        if (!tasks.remove(owned))
+                            throw new IllegalStateException(
+                                    "physical Task owner slot missing at retirement");
+                    }
+                    exitFence.completeFromRuntime(null);
+                } catch (RuntimeException | Error bookkeepingFailure) {
+                    exitFence.failFromRuntime(bookkeepingFailure);
                 }
             });
         } catch (RuntimeException | Error rejected) {
-            // The scheduler throws only before registering a TaskRunner.
-            // Keep ownership alive until its generation pin is released.
-            Throwable releaseFailure = releaseUnadmitted(onPhysicalExit, rejected);
-            if (releaseFailure == null) exitFence.completeFromRuntime(null);
-            else exitFence.failFromRuntime(releaseFailure);
-            // Preserve injected owner-set removal failures as suppressed
-            // errors; pin retirement always runs before bookkeeping.
-            if (releaseFailure == null) {
-                synchronized (gate) {
-                    discardUnadmittedSlot(owned, rejected);
+            // A rejected scheduler start has no registered executable turn.
+            // Release its code pin exactly once, then retire owner metadata.
+            // Neither cleanup stage may claim a successful physical fence
+            // until both are complete.
+            Throwable pinFailure = releaseUnadmitted(onPhysicalExit, rejected);
+            Throwable slotFailure = null;
+            if (pinFailure == null) {
+                try {
+                    synchronized (gate) {
+                        if (!tasks.remove(owned))
+                            throw new IllegalStateException(
+                                    "physical Task owner slot missing at rejection");
+                    }
+                } catch (RuntimeException | Error failure) {
+                    slotFailure = failure;
+                    if (failure != rejected) rejected.addSuppressed(failure);
                 }
             }
+            Throwable fenceFailure = pinFailure != null ? pinFailure : slotFailure;
+            if (fenceFailure == null) exitFence.completeFromRuntime(null);
+            else exitFence.failFromRuntime(fenceFailure);
             throw rejected;
         }
 
-        // Publication is a reference assignment and cannot allocate.
+        // Reference publication cannot allocate, and the owner slot was
+        // registered before the scheduler saw the first executable turn.
+        // No completion-listener failure can conceal a retirement error.
         shell.attachCompletion(completion);
-        try {
-            exitFence.whenCompleteRuntime((ignored, failure) -> {
-                if (failure == null) {
-                    synchronized (gate) {
-                        tasks.remove(owned);
-                    }
-                }
-            });
-        } catch (RuntimeException | Error observerFailure) {
-            // An admitted frame remains owned by its pre-reserved physical
-            // fence even if the optimization observer cannot be registered.
-            // Merely setting THIS scope's cancelled flag would allow already
-            // existing descendants to admit work after this failure. Reuse
-            // the atomic tree-wide cancellation protocol instead.
-            try {
-                cancel();
-            } catch (RuntimeException | Error cancellationFailure) {
-                if (cancellationFailure != observerFailure)
-                    observerFailure.addSuppressed(cancellationFailure);
-            }
-            try {
-                // Backstop the admitted producer even if cancellation's
-                // allocation-only preflight could not complete.
-                shell.cancel();
-            } catch (RuntimeException | Error revocationFailure) {
-                if (revocationFailure != observerFailure)
-                    observerFailure.addSuppressed(revocationFailure);
-            }
-            throw observerFailure;
-        }
         if (cancelled) {
             Runnable notification = shell.cancelDeferredNotification();
             if (notification != null) notification.run();
