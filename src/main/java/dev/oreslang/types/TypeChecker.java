@@ -1656,7 +1656,7 @@ public final class TypeChecker {
             // Forward use of a later explicit alias must remain an error.
             for (Ast.Stmt stmt : body) {
                 if (stmt instanceof Ast.BindingStmt binding
-                        && isShortNamedRowInference(binding, env, generics)) {
+                        && isShortNamedAggregateInference(binding, env, generics)) {
                     String name = binding.declaredType().name();
                     shortInferredTypeNames.put(binding, name);
                     inferredTypeNames.add(name);
@@ -1676,7 +1676,7 @@ public final class TypeChecker {
      * Limiting the implicit form to uppercase-starting names prevents a typo
      * in lowercase builtins from silently manufacturing a type.
      */
-    private boolean isShortNamedRowInference(
+    private boolean isShortNamedAggregateInference(
             Ast.BindingStmt binding, Env env, Set<String> generics) {
         if (binding.inferredTypeName() != null || binding.kind() != Ast.BindingKind.CONST
                 || binding.mutableReferent()
@@ -1808,7 +1808,7 @@ public final class TypeChecker {
                 }
                 if (!(actual instanceof Record || actual instanceof Tuple)) {
                     throw new IllegalArgumentException(
-                            "infer<" + name + "> requires an inferred struct or finite tuple");
+                            "infer<" + name + "> requires an inferred struct, inferred record, or finite tuple");
                 }
                 // String literals infer their general field/slot type, not a
                 // value-dependent singleton. Preserve all nested ownership/readonly
@@ -3970,14 +3970,14 @@ public final class TypeChecker {
                 Type exactValueType = typeOf(field.value(), env, generics, self);
                 if (members.putIfAbsent(
                         field.name(),
-                        object.inferredAggregate()
+                        object.inferredFieldTypes()
                                 ? widenCollectionElement(exactValueType)
                                 : exactValueType) != null) {
                     throw new IllegalArgumentException(
                             "duplicate struct field '" + field.name() + "'");
                 }
             }
-            if (object.inferredRecord()) return new Record(members, true, AggregateKind.RECORD);
+            if (object.structuralRecord()) return new Record(members, true, AggregateKind.RECORD);
             if (object.inferredStruct()) return Record.struct(members);
             throw new IllegalArgumentException("unknown anonymous aggregate kind " + object.kind());
         }
