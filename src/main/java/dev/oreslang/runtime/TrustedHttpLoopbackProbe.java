@@ -95,6 +95,15 @@ final class TrustedHttpLoopbackProbe implements AutoCloseable {
         }
     }
 
+    /**
+     * Pure admission fence: safe to invoke under the actor bridge monitor
+     * during termination notification. No HTTP cancellation or network I/O.
+     * Synchronized with getStatus() so any subsequent dispatch is rejected.
+     */
+    synchronized void fenceNewDispatch() {
+        closed = true;
+    }
+
     /** Fences new dispatch and asks the JDK to abort outstanding transport. */
     @Override public synchronized void close() {
         requireHost();
