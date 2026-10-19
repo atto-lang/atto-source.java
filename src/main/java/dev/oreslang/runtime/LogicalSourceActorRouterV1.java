@@ -1052,7 +1052,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             throw new SecurityException(
                     operation
                             + " is a host/supervisor blocking operation; "
-                            + "actor/scheduler/async carriers require nonblocking routing");
+                            + "actor, ActorGroup CONTROL, scheduler and async "
+                            + "carriers cannot use host-only routing");
         }
     }
 
