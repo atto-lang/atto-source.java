@@ -163,6 +163,49 @@ final class DynamicPropertyAccessRuntimeTest {
     }
 
     @Test
+    void parentStaticViewAllowsInheritedDomainOnChildObjects() {
+        String source = """
+                define class Parent as
+                    pub let int id = 1;
+                end
+
+                define class Child extends Parent as
+                    pub let string label = "child";
+                end
+
+                fnc read(Parent value, string key): int {
+                    return value[key];
+                }
+
+                pub fnc main(): void {
+                    const Parent value = new Child();
+                    stdio.println(read(value, "id"));
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(OresLanguage.ID, source, "dynamic-parent-view-runtime.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        assertEquals(
+                "1\n",
+                output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
+
+    @Test
     void inheritedComputedClassFieldsAndOwnerPrivateAccessExecuteAtRuntime() {
         String source = """
                 define class Parent<T> as
