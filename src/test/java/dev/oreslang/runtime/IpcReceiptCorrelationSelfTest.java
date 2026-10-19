@@ -60,11 +60,11 @@ public final class IpcReceiptCorrelationSelfTest {
         check(book.counters().equals(new IpcReceiptCorrelation.Counters(1, 0)));
         book.admit(second);
         check(book.counters().equals(new IpcReceiptCorrelation.Counters(2, 1)));
-        var lost = book.retireTransportLost("sessionA");
+        var lost = book.retireTransportLost(first);
         check(lost.size() == 1 && lost.get(0).envelope().equals(first));
         check(lost.get(0).lastObserved() == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
         check(book.counters().equals(new IpcReceiptCorrelation.Counters(1, 1)));
-        check(book.retireTransportLost("sessionA").isEmpty());
+        check(book.retireTransportLost(first).isEmpty());
         book.commitDispatch(second);
         book.acceptVerified(second, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
         book.acceptVerified(second, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
@@ -105,7 +105,7 @@ public final class IpcReceiptCorrelationSelfTest {
                 "tenant", "sender", "worker", "sessionC", "a".repeat(64),
                 1, 3, 5, 5, 3, 3);
         denies(() -> evolving.admit(restartedActor));
-        check(evolving.retireTransportLost("sessionB").size() == 1);
+        check(evolving.retireTransportLost(upgraded).size() == 1);
         check(evolving.invariant());
 
         var racing = new IpcReceiptCorrelation(1);
@@ -130,7 +130,7 @@ public final class IpcReceiptCorrelationSelfTest {
         for (Thread t : carriers) t.join();
         check(accepted.get() == 1);
         check(racing.counters().equals(new IpcReceiptCorrelation.Counters(1, 0)));
-        check(racing.retireTransportLost("session").size() == 1);
+        check(racing.retireTransportLost(raceMessage).size() == 1);
         check(racing.invariant());
 
         // A trusted local dispatch failure cannot become a peer-authenticated
@@ -184,14 +184,14 @@ public final class IpcReceiptCorrelationSelfTest {
             if (published.get() == 1) {
                 check(gate.counters().equals(new IpcReceiptCorrelation.Counters(1, 1)));
                 denies(() -> gate.rejectBeforeRemote(msg));
-                var failures = gate.retireTransportLost("race");
+                var failures = gate.retireTransportLost(msg);
                 check(failures.size() == 1);
                 check(failures.get(0).lastObserved()
                         == IpcReceiptCorrelation.Stage.DISPATCH_COMMITTED);
             } else {
                 check(gate.counters().equals(new IpcReceiptCorrelation.Counters(0, 0)));
                 denies(() -> gate.commitDispatch(msg));
-                check(gate.retireTransportLost("race").isEmpty());
+                check(gate.retireTransportLost(msg).isEmpty());
             }
             check(gate.counters().equals(new IpcReceiptCorrelation.Counters(0, 0)));
             check(gate.invariant());
@@ -215,7 +215,7 @@ public final class IpcReceiptCorrelationSelfTest {
                         denies(() -> ledger.acceptVerified(
                                 msg, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
                         ledger.commitDispatch(msg);
-                        var uncertain = ledger.retireTransportLost("session");
+                        var uncertain = ledger.retireTransportLost(msg);
                         check(uncertain.size() == 1);
                         check(uncertain.get(0).lastObserved()
                                 == IpcReceiptCorrelation.Stage.DISPATCH_COMMITTED);
