@@ -178,7 +178,15 @@ def gh_api(route, method="GET", payload=None):
         # removed. Use an ephemeral private configuration root for each
         # authenticated request: only explicit noninteractive credentials from
         # the trusted runner environment can authenticate gh.
-        with tempfile.TemporaryDirectory(prefix="ores-ci-gh-") as isolated_home:
+        # /tmp is a system-managed sticky directory on the supported Linux
+        # runner. Never let inherited TMPDIR/TMP/TEMP choose the parent path.
+        temp_parent = "/tmp"
+        metadata = os.stat(temp_parent, follow_symlinks=False)
+        if (not stat.S_ISDIR(metadata.st_mode)
+                or not metadata.st_mode & stat.S_ISVTX
+                or metadata.st_uid not in (0, os.getuid())):
+            raise Denied("trusted system temporary directory is unavailable")
+        with tempfile.TemporaryDirectory(prefix="ores-ci-gh-", dir=temp_parent) as isolated_home:
             env["HOME"] = isolated_home
             env["XDG_CONFIG_HOME"] = isolated_home
             p = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
