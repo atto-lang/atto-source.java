@@ -2,6 +2,12 @@
 
 Status: **proposed contract / implementation not yet enabled**. This is an audit artifact, not a claim that the compiler accepts named value arguments.
 
+The staged next-mode proposal additionally makes a proven
+`Option<T>` formal omittable by default, with `required Option<T>` for an
+explicit-presence contract. See
+[Option formal omission v2](../contracts/v2/OPTION_FORMAL_OMISSION_V2.md).
+This behavior is not yet enabled in guest code.
+
 See [OPTIONAL_NAMED_ARGUMENTS_CONTRACT.md](OPTIONAL_NAMED_ARGUMENTS_CONTRACT.md)
 for proposed non-trailing `T? parameter` slots and constructor omissions.
 The shape binder is a pre-integration utility; guest syntax remains gated.
