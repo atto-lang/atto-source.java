@@ -106,7 +106,22 @@ final class SealedActorMlScalarPublicationTest {
                         return null;
                     });
 
-                    var retry = state.prepareScalarPublication("version", 2, 2,
+                    // TOCTOU: stage the candidate *after* a newer write,
+                    // but bind it to the revision observed before that write.
+                    long observed = state.critical(false, read -> read.revision());
+                    assertEquals(2L, observed);
+                    state.critical(true, write -> {
+                        write.write("weight", 78L);
+                        return null;
+                    });
+                    var delayed = state.prepareScalarPublication("version", 2, observed,
+                            Map.of("version", 3L, "weight", 55L, "optimizer", 2L));
+                    assertThrows(IllegalStateException.class,
+                            () -> state.critical(true,
+                                    write -> write.publishScalars(delayed)));
+                    assertEquals(78L, state.critical(false, read -> read.read("weight")));
+
+                    var retry = state.prepareScalarPublication("version", 2, 3,
                             Map.of("version", 3L, "weight", 3L, "optimizer", 2L));
                     // Different issuer, even if it has same logical ActorId.
                     var other = new SealedActorState(context.self().id(),
