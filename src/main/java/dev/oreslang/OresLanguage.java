@@ -208,7 +208,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         } else if (expr instanceof Ast.NameExpr name) {
             if (parameters.contains(name.name())) return;
         } else if (expr instanceof Ast.BinaryExpr binary) {
-            if (Set.of("+", "-", "*", "<", "<=", ">", ">=", "==", "!=",
+            if (Set.of("+", "-", "*", "%", "<", "<=", ">", ">=", "==", "!=",
                     "&&", "||", "eq", "neq").contains(binary.operator())) {
                 checkExperimentalCheckedI64Expr(binary.left(), parameters, signatures,
                         directCalls, visited, depth + 1);
