@@ -68,8 +68,8 @@ final class CarrierCpuBindingTest {
         CountDownLatch finished = new CountDownLatch(2);
         Runnable run = () -> {
             try {
-                CarrierCpuBinding.ensureBound(7, cpu -> calls.incrementAndGet(), () -> 7, () -> 7, () -> 12L);
-                CarrierCpuBinding.ensureBound(7, cpu -> calls.incrementAndGet(), () -> 7, () -> 7, () -> 13L);
+                CarrierCpuBinding.ensureBound(7, cpu -> calls.incrementAndGet(), () -> 7, () -> 12L);
+                CarrierCpuBinding.ensureBound(7, cpu -> calls.incrementAndGet(), () -> 7, () -> 13L);
             } catch (Throwable e) {
                 failure.compareAndSet(null, e);
             } finally {
@@ -139,5 +139,24 @@ final class CarrierCpuBindingTest {
             CarrierCpuBinding.clearCurrentCarrier();
         }
     }
+
+    @Test void failedCpuObservationRevokesCachedSuccess() {
+        var actual = new AtomicInteger(-1);
+        var binds = new AtomicInteger();
+        try {
+            CarrierCpuBinding.ensureBound(3, cpu -> { binds.incrementAndGet(); actual.set(cpu); },
+                    actual::get, () -> 12L);
+            assertThrows(IllegalStateException.class, () ->
+                    CarrierCpuBinding.ensureBound(3, cpu -> fail("bind should not run"),
+                            () -> { throw new IllegalStateException("failed to inspect current CPU"); },
+                            () -> 13L));
+            CarrierCpuBinding.ensureBound(3, cpu -> { binds.incrementAndGet(); actual.set(cpu); },
+                    actual::get, () -> 14L);
+            assertEquals(2, binds.get());
+        } finally {
+            CarrierCpuBinding.clearCurrentCarrier();
+        }
+    }
+
 
 }

@@ -30,17 +30,19 @@ final class CarrierCpuBinding {
         Objects.requireNonNull(observedCpu, "observedCpu");
         Objects.requireNonNull(clock, "clock");
         long now = clock.getAsLong();
-        Binding previous = CURRENT.get();
-        if (previous != null && previous.cpu() == cpu) {
-            long age = now - previous.checkedAtNanos();
-            if (age >= 0 && age < REBIND_INTERVAL_NANOS
-                    && observedCpu.getAsInt() == cpu) return;
-        }
-        // An OS failure must never mark a CPU as successfully pinned.
-        CURRENT.remove();
         try {
+            Binding previous = CURRENT.get();
+            if (previous != null && previous.cpu() == cpu) {
+                long age = now - previous.checkedAtNanos();
+                if (age >= 0 && age < REBIND_INTERVAL_NANOS
+                        && observedCpu.getAsInt() == cpu) return;
+            }
+            // A failed bind or a failed CPU observation invalidates old evidence.
+            CURRENT.remove();
             nativeBind.accept(cpu);
-            if (observedCpu.getAsInt() != cpu) throw new IllegalStateException("CPU affinity observation mismatch");
+            if (observedCpu.getAsInt() != cpu) {
+                throw new IllegalStateException("CPU affinity observation mismatch");
+            }
             CURRENT.set(new Binding(cpu, now));
         } catch (RuntimeException | Error failure) {
             CURRENT.remove();
