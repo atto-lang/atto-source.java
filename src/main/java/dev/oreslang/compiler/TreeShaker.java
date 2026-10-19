@@ -194,6 +194,12 @@ public final class TreeShaker {
 
         private boolean containsNonInlineableExpression(Ast.Expr expression) {
             if (expression == null) return false;
+            // The constant-call inliner does not provide a typed rewrite
+            // for match/select/channel expression arms. Decline these shapes
+            // rather than assuming their nested indexed reads are harmless.
+            if (expression instanceof Ast.MatchExpr
+                    || expression instanceof Ast.ChannelOpExpr
+                    || expression instanceof Ast.DynamicSelectExpr) return true;
             if (expression instanceof Ast.LambdaExpr) return true;
             if (expression instanceof Ast.TypeTestExpr test) return containsNonInlineableExpression(test.value());
             if (expression instanceof Ast.PatternTestExpr test) return containsNonInlineableExpression(test.value());
@@ -213,11 +219,11 @@ public final class TreeShaker {
                         || containsNonInlineableExpression(conditional.whenFalse());
             }
             if (expression instanceof Ast.RuntimeCallExpr runtime) {
-                return runtime.arguments().stream().anyMatch(this::containsLambda);
+                return runtime.arguments().stream().anyMatch(this::containsNonInlineableExpression);
             }
             if (expression instanceof Ast.CallExpr call) {
                 if (containsNonInlineableExpression(call.callee())) return true;
-                return call.arguments().stream().anyMatch(this::containsLambda);
+                return call.arguments().stream().anyMatch(this::containsNonInlineableExpression);
             }
             if (expression instanceof Ast.MemberExpr member) return containsNonInlineableExpression(member.receiver());
             if (expression instanceof Ast.IndexExpr) {
@@ -228,14 +234,14 @@ public final class TreeShaker {
                 return true;
             }
             if (expression instanceof Ast.NewExpr created) {
-                return created.arguments().stream().anyMatch(this::containsLambda);
+                return created.arguments().stream().anyMatch(this::containsNonInlineableExpression);
             }
             if (expression instanceof Ast.AwaitExpr awaited) return containsNonInlineableExpression(awaited.expression());
             if (expression instanceof Ast.ListExpr list) {
-                return list.elements().stream().anyMatch(this::containsLambda);
+                return list.elements().stream().anyMatch(this::containsNonInlineableExpression);
             }
             if (expression instanceof Ast.TupleExpr tuple) {
-                return tuple.elements().stream().anyMatch(this::containsLambda);
+                return tuple.elements().stream().anyMatch(this::containsNonInlineableExpression);
             }
             if (expression instanceof Ast.ObjectExpr object) {
                 for (Ast.ObjectField field : object.fields()) {
