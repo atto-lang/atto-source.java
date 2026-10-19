@@ -142,6 +142,18 @@ final class InlineSelfReceiverArityTest {
     }
 
     @Test
+    void actorSelfCannotEscapeAsASecondExplicitCallArgument() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub forward(self, Worker other, int value): int { return value; }
+                          pub run(self): int { return self.forward(self, 5); }
+                        end
+                        """)));
+        assertNotNull(error.getMessage());
+    }
+
+    @Test
     void inlineReceiverCallsExecuteWithOnlyUserArguments() throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, """
