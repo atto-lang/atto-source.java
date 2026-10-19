@@ -2240,24 +2240,29 @@ public final class TypeChecker {
                 Type index = typeOf(indexed.index(), env, generics, self);
                 if (receiver instanceof Record record) {
                     requireAssignable(index, Primitive.STRING, "record/struct field key");
+                    Map<String, Type> indexableMembers = indexableRecordMembers(record);
+                    if (record.kind() == AggregateKind.CONTRACT) {
+                        throw new IllegalArgumentException(
+                                "cannot mutate through a structural contract view");
+                    }
                     if (record.readOnly()) {
                         throw new IllegalArgumentException(
                                 "cannot mutate a readonly structural record through indexed access");
                     }
                     if (index instanceof StringLiteral key) {
                         initializedIndexedField = key.value();
-                        targetType = record.members().get(key.value());
+                        targetType = indexableMembers.get(key.value());
                         if (targetType == null) {
                             throw new IllegalArgumentException(
                                     "unknown record/struct field key '" + key.value() + "'");
                         }
                     } else {
-                        if (record.members().isEmpty()) {
+                        if (indexableMembers.isEmpty()) {
                             throw new IllegalArgumentException(
                                     "cannot dynamically assign through an empty record/struct shape");
                         }
-                        targetType = indexedElementUnion(record.members().values());
-                        dynamicFixedSlots = List.copyOf(record.members().values());
+                        targetType = indexedElementUnion(indexableMembers.values());
+                        dynamicFixedSlots = List.copyOf(indexableMembers.values());
                     }
                 } else if (receiver instanceof Named named && findClass(named.name()) != null) {
                     requireAssignable(index, Primitive.STRING, "class field key");
@@ -3737,6 +3742,7 @@ public final class TypeChecker {
                     ? env.lookup(ownerName.name()) : null;
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "record/struct field key");
+                Map<String, Type> indexableMembers = indexableRecordMembers(record);
                 if (indexedOwner != null && indexedOwner.hasUninitializedFields()) {
                     if (index instanceof StringLiteral key) {
                         if (indexedOwner.isUninitialized(key.value())) {
@@ -3753,15 +3759,18 @@ public final class TypeChecker {
                     }
                 }
                 if (index instanceof StringLiteral key) {
-                    Type member = record.members().get(key.value());
+                    Type member = indexableMembers.get(key.value());
                     if (member == null) {
                         throw new IllegalArgumentException(
                                 "unknown record/struct field key '" + key.value() + "'");
                     }
                     return member;
                 }
-                if (record.members().isEmpty()) return Unknown.INSTANCE;
-                return indexedElementUnion(record.members().values());
+                if (indexableMembers.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "structural value has no indexable data fields");
+                }
+                return indexedElementUnion(indexableMembers.values());
             }
             if (receiver instanceof Named named) {
                 Ast.ClassDecl klass = findClass(named.name());
@@ -4515,7 +4524,7 @@ public final class TypeChecker {
                                 ? entry.getValue()
                                 : overlayReadonlyCapabilities(sourceMember, entry.getValue()));
             }
-            if (sourceRecord.kind() != targetRecord.kind()) return expected;
+            if (!aggregateKindsCompatible(sourceRecord.kind(), targetRecord.kind())) return expected;
             return new Record(
                     members,
                     sourceRecord.readOnly() || targetRecord.readOnly(),
@@ -5586,7 +5595,7 @@ public final class TypeChecker {
             Type resolvedTarget,
             Set<String> generics) {
         if (resolvedTarget instanceof Record record) {
-            if (record.kind() != AggregateKind.RECORD) {
+            if (record.kind() == AggregateKind.STRUCT) {
                 throw new IllegalArgumentException(
                         "structural pattern target must be a structural record, interface, or trait; concrete struct shapes require exact type matching");
             }
@@ -5991,7 +6000,7 @@ public final class TypeChecker {
 
     private boolean runtimeRecordShapeCovered(Record source, Record target, int depth) {
         if (depth >= 32) return false;
-        if (source.kind() != target.kind()) return false;
+        if (!aggregateKindsCompatible(source.kind(), target.kind())) return false;
         if (source.kind() == AggregateKind.STRUCT
                 && source.members().size() != target.members().size()) return false;
         for (Map.Entry<String, Type> required : target.members().entrySet()) {
@@ -6100,7 +6109,9 @@ public final class TypeChecker {
             }
             return true;
         }
-        if (a instanceof Record ar && b instanceof Record br) return ar.kind() == br.kind();
+        if (a instanceof Record ar && b instanceof Record br) {
+            return aggregateKindsCompatible(ar.kind(), br.kind());
+        }
         return a.equals(b);
     }
 
@@ -6621,7 +6632,7 @@ public final class TypeChecker {
                     "class " + klass.name());
         }
         stack.remove(klass);
-        Record result = new Record(members);
+        Record result = Record.contract(members);
         classShapeCache.put(klass, result);
         return result;
     }
@@ -6653,7 +6664,7 @@ public final class TypeChecker {
             }
         }
         stack.remove(klass);
-        return new Record(members);
+        return Record.contract(members);
     }
 
     private Record interfaceShape(Ast.InterfaceDecl iface, Set<String> generics, Set<Ast.InterfaceDecl> stack) {
@@ -6691,7 +6702,7 @@ public final class TypeChecker {
             }
         }
         stack.remove(iface);
-        return new Record(members);
+        return Record.contract(members);
     }
 
     private Named inferConstructedClassType(
@@ -8565,8 +8576,33 @@ public final class TypeChecker {
         return false;
     }
 
+    private static boolean aggregateKindsCompatible(
+            AggregateKind left, AggregateKind right) {
+        return left == AggregateKind.STRUCT || right == AggregateKind.STRUCT
+                ? left == right
+                : true;
+    }
+
+    private static boolean methodContractMember(String key) {
+        return key.startsWith("instance$")
+                && key.contains("$arity")
+                && key.contains("$generics");
+    }
+
+    /** Data members visible through [] on an internal structural contract. */
+    private Map<String, Type> indexableRecordMembers(Record record) {
+        if (record.kind() != AggregateKind.CONTRACT) return record.members();
+        LinkedHashMap<String, Type> fields = new LinkedHashMap<>();
+        for (Map.Entry<String, Type> entry : record.members().entrySet()) {
+            if (!methodContractMember(entry.getKey())) {
+                fields.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return java.util.Collections.unmodifiableMap(fields);
+    }
+
     private boolean structuralRecordAssignable(Record actual, Record expected) {
-        if (actual.kind() != expected.kind()) return false;
+        if (!aggregateKindsCompatible(actual.kind(), expected.kind())) return false;
         if (actual.kind() == AggregateKind.STRUCT
                 && actual.members().size() != expected.members().size()) return false;
         for (Map.Entry<String, Type> required : expected.members().entrySet()) {
