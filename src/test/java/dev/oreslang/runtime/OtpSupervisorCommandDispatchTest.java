@@ -92,9 +92,15 @@ final class OtpSupervisorCommandDispatchTest {
                                 String message, ActorRuntime.ActorContext<String> context)
                                 throws Exception {
                             if ("hold".equals(message)) {
-                                child.set(context.runtime().spawnShared(() -> (m, c) -> {
-                                    throw new IllegalStateException("expected child failure");
-                                }));
+                                // Actor-side spawn uses the stateless
+                                // BehaviorFactory overload; trusted Supplier
+                                // construction is restricted to the host.
+                                child.set(context.runtime().<String>spawnShared(
+                                        (ActorRuntime.BehaviorFactory<String>) factoryContext ->
+                                                (m, c) -> {
+                                                    throw new IllegalStateException(
+                                                            "expected child failure");
+                                                }));
                                 parentEntered.countDown();
                                 assertTrue(releaseParent.await(5, TimeUnit.SECONDS));
                             } else {
