@@ -153,7 +153,10 @@ final class OtpSupervisorCommandLaneV1 {
             acknowledged++;
         } else {
             // Retry does not consume a new credit or mint a new command ID.
-            queue.addFirst(slot);
+            // Requeue at the back: a failing upgrade of actor A must not
+            // indefinitely block a healthy actor B's supervisor command.
+            // One outstanding per target preserves each actor's own order.
+            queue.addLast(slot);
             slot.queued = true;
             retried++;
         }
