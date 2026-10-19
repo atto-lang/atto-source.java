@@ -507,20 +507,75 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                       "LD_PRELOAD": "/tmp/fixtures/module.so",
                       "LD_LIBRARY_PATH": "/tmp/fixtures",
                       "DYLD_INSERT_LIBRARIES": "/tmp/fixtures/module.dylib",
-                      "BASH_ENV": "/tmp/fixtures/script"}
+                      "BASH_ENV": "/tmp/fixtures/script",
+                      "HTTPS_PROXY": "http://untrusted-proxy.invalid:8123",
+                      "HTTP_PROXY": "http://untrusted-proxy.invalid:8123",
+                      "ALL_PROXY": "socks5://untrusted-proxy.invalid:8123",
+                      "NO_PROXY": "github.com",
+                      "SSL_CERT_FILE": "/tmp/fixtures/attacker-ca.pem",
+                      "SSL_CERT_DIR": "/tmp/fixtures/attacker-ca",
+                      "GIT_SSL_NO_VERIFY": "1",
+                      "CURL_CA_BUNDLE": "/tmp/fixtures/attacker-ca.pem",
+                      "GH_CONFIG_DIR": "/tmp/fixtures/config",
+                      "GH_DEBUG": "api",
+                      "GH_ENTERPRISE_TOKEN": "untrusted-credential",
+                      "XDG_CONFIG_HOME": "/tmp/fixtures/config",
+                      "HOME": "/tmp/fixtures",
+                      "GH_HOST": "attacker.invalid"}
         with patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"):
-            with patch.dict(pub.os.environ, parameters):
+            with patch.dict(pub.os.environ, parameters, clear=True):
                 with patch.object(pub.subprocess, "run", return_value=Mock(
                         returncode=0, stdout='{"valid":true}')) as called:
                     self.assertTrue(pub.gh_api("repos/trusted/ci")["valid"])
         self.assertEqual(called.call_args.args[0][:2], ["/usr/bin/gh", "api"])
         environment = called.call_args.kwargs["env"]
-        self.assertEqual(environment["PATH"], "/usr/bin:/bin")
-        self.assertEqual(environment["GH_HOST"], "github.com")
-        self.assertEqual(environment["GH_TOKEN"], "fixture-token")
-        for key in ("LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES",
-                    "BASH_ENV"):
-            self.assertNotIn(key, environment)
+        self.assertEqual(environment, {
+            "GH_TOKEN": "fixture-token",
+            "GH_HOST": "github.com",
+            "GH_PROMPT_DISABLED": "1",
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/",
+            "XDG_CONFIG_HOME": "/nonexistent",
+            "LC_ALL": "C.UTF-8",
+        })
+
+    def test_github_api_rejects_missing_or_ambiguous_explicit_auth(self):
+        from unittest.mock import Mock
+        for tokens in ({}, {"GH_TOKEN": ""},
+                       {"GH_TOKEN": "one", "GITHUB_TOKEN": "two"}):
+            with self.subTest(tokens=tuple(tokens)):
+                with patch.object(pub, "trusted_github_cli",
+                                  return_value="/usr/bin/gh"):
+                    with patch.dict(pub.os.environ, tokens, clear=True):
+                        with patch.object(pub.subprocess, "run",
+                                          side_effect=AssertionError(
+                                              "unexpected process launch")):
+                            with self.assertRaisesRegex(
+                                    pub.Denied, "exactly one explicit"):
+                                pub.gh_api("repos/trusted/ci")
+
+    def test_github_api_supports_single_actions_token_without_config(self):
+        from unittest.mock import Mock
+        with patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"):
+            with patch.dict(pub.os.environ, {
+                    "GITHUB_TOKEN": "actions-fixture",
+                    "HTTPS_PROXY": "http://attacker.invalid:8123",
+                    "SSL_CERT_FILE": "/tmp/attacker-ca",
+                    "GH_CONFIG_DIR": "/tmp/untrusted",
+                    "GH_HOST": "attacker.invalid"}, clear=True):
+                with patch.object(pub.subprocess, "run",
+                                  return_value=Mock(
+                                      returncode=0, stdout='{"ok":true}')) as called:
+                    self.assertTrue(pub.gh_api("repos/trusted/ci")["ok"])
+        self.assertEqual(called.call_args.kwargs["env"], {
+            "GITHUB_TOKEN": "actions-fixture",
+            "GH_HOST": "github.com",
+            "GH_PROMPT_DISABLED": "1",
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/",
+            "XDG_CONFIG_HOME": "/nonexistent",
+            "LC_ALL": "C.UTF-8",
+        })
 
     def test_github_api_denies_missing_binary_without_spawning(self):
         with patch.object(pub.os, "lstat", side_effect=FileNotFoundError):
@@ -531,17 +586,19 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_real_github_reviews_list_parser(self):
         with patch.object(pub, 'trusted_github_cli', return_value='/usr/bin/gh'):
-            from unittest.mock import Mock
-            route = (f"repos/{pub.TRUSTED_SOURCE_REPOSITORY}/pulls/1286/"
-                     "reviews?per_page=100")
-            payload = '{"id":9,"state":"APPROVED"}'
-            with patch.object(pub.subprocess, "run", return_value=Mock(
-                    returncode=0, stdout="[" + payload + "]")):
-                self.assertEqual(pub.gh_api(route)["reviews"][0]["id"], 9)
-            with patch.object(pub.subprocess, "run", return_value=Mock(
-                    returncode=0, stdout='{"reviews":[]}')):
-                with self.assertRaisesRegex(pub.Denied, "review response shape"):
-                    pub.gh_api(route)
+            with patch.dict(pub.os.environ, {"GH_TOKEN": "fixture-token"},
+                            clear=True):
+                from unittest.mock import Mock
+                route = (f"repos/{pub.TRUSTED_SOURCE_REPOSITORY}/pulls/1286/"
+                         "reviews?per_page=100")
+                payload = '{"id":9,"state":"APPROVED"}'
+                with patch.object(pub.subprocess, "run", return_value=Mock(
+                        returncode=0, stdout="[" + payload + "]")):
+                    self.assertEqual(pub.gh_api(route)["reviews"][0]["id"], 9)
+                with patch.object(pub.subprocess, "run", return_value=Mock(
+                        returncode=0, stdout='{"reviews":[]}')):
+                    with self.assertRaisesRegex(pub.Denied, "review response shape"):
+                        pub.gh_api(route)
 
     def test_invalid_source_proof_rejected_before_any_source_access(self):
         with patch.object(pub, "collect_source", side_effect=AssertionError(
