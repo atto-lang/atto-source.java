@@ -140,7 +140,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 transport.requestClose();
                 awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
                 check(transport.snapshot().activeWrites() == 0);
-                check(transport.keyMaterialDestroyed());
+                check(transport.keyCloneZeroized());
             } finally {
                 cleanup.shutdownNow();
                 cleanup.awaitTermination(2, TimeUnit.SECONDS);
@@ -171,7 +171,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 check(bridge.counters().equals(new IpcReceiptCorrelation.Counters(0, 0)));
                 transport.requestClose();
                 awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
-                check(transport.keyMaterialDestroyed());
+                check(transport.keyCloneZeroized());
             } finally {
                 cleanup.shutdownNow();
                 cleanup.awaitTermination(2, TimeUnit.SECONDS);
@@ -455,11 +455,11 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(decoded.physicalGeneration() == 89);
             transport.requestClose();
             check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
-            check(!transport.keyMaterialDestroyed());
+            check(!transport.keyCloneZeroized());
             check(!submission.outcome().toCompletableFuture().isDone());
             transport.retryQuarantinedClose();
             check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
-            check(transport.keyMaterialDestroyed());
+            check(transport.keyCloneZeroized());
             check(submission.outcome().toCompletableFuture().join()
                     == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
             check(schedules.get() == 2);
