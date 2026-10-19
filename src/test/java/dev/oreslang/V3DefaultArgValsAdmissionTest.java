@@ -568,4 +568,51 @@ final class V3DefaultArgValsAdmissionTest {
                 List.of(defaulted), List.of()).getFirst().omittable());
     }
 
+    @Test
+    void loweringPreviewRejectsForgedDefaultKindsAndExpressionProvenance() {
+        Ast.TypeRef intType = Ast.TypeRef.simple("int");
+        var intDefault = DefaultArgumentPolicy.Literal.integer(42);
+        var noneDefault = DefaultArgumentPolicy.Literal.none();
+        assertThrows(IllegalArgumentException.class,
+                () -> new V3CallLoweringPreview.Slot(0, "x", intType,
+                        V3CallLoweringPreview.SlotAction.DEFAULT_SOME,
+                        noneDefault, -1, -1, true));
+        assertThrows(IllegalArgumentException.class,
+                () -> new V3CallLoweringPreview.Slot(0, "x", intType,
+                        V3CallLoweringPreview.SlotAction.DEFAULT_SCALAR,
+                        noneDefault, -1, -1, false));
+        assertThrows(IllegalArgumentException.class,
+                () -> new V3CallLoweringPreview.Slot(0, "x", intType,
+                        V3CallLoweringPreview.SlotAction.DEFAULT_SCALAR,
+                        intDefault, -1, -1, true));
+
+        Ast.Expr expression = new Ast.LiteralExpr(42);
+        var supplied = new V3CallLoweringPreview.Slot(0, "x", intType,
+                V3CallLoweringPreview.SlotAction.CHECK_SUPPLIED,
+                null, 0, 0, false);
+        assertEquals(1, new V3CallLoweringPreview.Preview(
+                List.of(expression), List.of(supplied))
+                .unevaluatedExpressionsInSourceOrder().size());
+
+        // A forged preview must never duplicate, reorder or discard a
+        // lexically evaluated expression before the future ABI verifier.
+        assertThrows(IllegalArgumentException.class,
+                () -> new V3CallLoweringPreview.Preview(List.of(expression), List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new V3CallLoweringPreview.Preview(
+                        List.of(expression, expression), List.of(supplied)));
+        var wrongIndex = new V3CallLoweringPreview.Slot(1, "x", intType,
+                V3CallLoweringPreview.SlotAction.CHECK_SUPPLIED,
+                null, 0, 0, false);
+        assertThrows(IllegalArgumentException.class,
+                () -> new V3CallLoweringPreview.Preview(
+                        List.of(expression), List.of(wrongIndex)));
+        var duplicate = new V3CallLoweringPreview.Slot(1, "y", intType,
+                V3CallLoweringPreview.SlotAction.CHECK_SUPPLIED,
+                null, 0, 1, false);
+        assertThrows(IllegalArgumentException.class,
+                () -> new V3CallLoweringPreview.Preview(
+                        List.of(expression), List.of(supplied, duplicate)));
+    }
+
 }
