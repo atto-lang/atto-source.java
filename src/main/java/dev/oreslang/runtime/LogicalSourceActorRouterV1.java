@@ -52,6 +52,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         public UUID id() { return logicalId; }
 
         public LogicalAddress address() {
+            requireBlockingHostSurface("inspect logical actor address");
             synchronized (routeLock) {
                 requireOpenLocked();
                 reapRetiredLocked();
@@ -64,6 +65,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         }
 
         public long incarnation() {
+            requireBlockingHostSurface("inspect logical actor incarnation");
             synchronized (routeLock) {
                 requireOpenLocked();
                 reapRetiredLocked();
@@ -78,6 +80,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
          * instead and must never be conflated with a route change.
          */
         public long routeEpoch() {
+            requireBlockingHostSurface("inspect logical actor route epoch");
             synchronized (routeLock) {
                 requireOpenLocked();
                 reapRetiredLocked();
@@ -306,6 +309,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
      * Two independent public snapshots would not form an atomic observation.
      */
     boolean proxyRouteEpochAlignedForTesting(LogicalActorProxyMailboxV1 mailbox) {
+        requireBlockingHostSurface("inspect logical actor route alignment");
         synchronized (routeLock) {
             return boundProxyMailbox == mailbox
                     && active.routeEpoch == mailbox.snapshot().routeEpoch();
@@ -601,6 +605,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     }
 
     public HotReloadManager.Generation generation() {
+        requireBlockingHostSurface("inspect logical actor generation");
         synchronized (routeLock) {
             requireOpenLocked();
             reapRetiredLocked();
@@ -956,6 +961,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
      * once their runtimes report full actor finalization.
      */
     public int reapRetired() {
+        requireBlockingHostSurface("reap retired source actor generations");
         synchronized (routeLock) {
             return reapRetiredLocked();
         }
@@ -982,6 +988,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
      * Test/diagnostic physical address only. User routing must use LogicalActorRef.
      */
     ActorRuntime.ActorAddress physicalAddressForTesting() {
+        requireBlockingHostSurface("inspect physical source actor address");
         synchronized (routeLock) {
             requireOpenLocked();
             reapRetiredLocked();
@@ -990,6 +997,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     }
 
     ActorRuntime.ActorRef<Object> physicalRefForTesting() {
+        requireBlockingHostSurface("inspect physical source actor reference");
         synchronized (routeLock) {
             requireOpenLocked();
             return active.physical;
