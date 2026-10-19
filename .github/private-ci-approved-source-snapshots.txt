@@ -3,4 +3,4 @@
 # Each approved entry must be security-reviewed on protected source main.
 # Format: <40-hex source commit> <40-hex source root tree> <numeric destination repo ID>
 # Approving a destination alone never approves an arbitrary PR/source revision.
-54c11eb4f853f8d5247e4d08bd9900a4c9c5bc9e a6067fbe69ea7b497d62b814f392604e52afccc2 1323679401
+a48919e2392873c04880c4bf7dc18afd770cfeda 2f7d4e01fdaf7883065283ab2349db39d208920e 1323679401
