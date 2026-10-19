@@ -25,8 +25,15 @@ coverage. Native test summaries and fuzz counters have aggregate bounds and
 reject mixed valid/malformed machine-protocol events. The line protocol
 is still guest-authored stdout, not a trusted attestation. `--trace-out`
 will not overwrite an existing file. Source mismatch or malformed trace
-returns nonzero. Record and replay are *not* guest scheduling replay, and the
-report explicitly identifies `scope=critical-gate-inputs`.
+returns nonzero. For record/replay, the CLI checks the entry `.ores`
+file's hash before and after guest execution, and before writing the trace;
+source mutation during these checkpoints fails closed. **This hash currently
+covers only the entry file, not imported Oreslang modules, compiler-bundled
+core modules, project import resolution or mixed Java source dependencies**.
+A complete import-closure digest is a required follow-up before stronger
+whole-program replay guarantees can be made. Record and replay are *not*
+guest scheduling replay, and the report explicitly identifies
+`scope=critical-gate-inputs`.
 
 Modes are combinable when their implementations overlap. For example,
 `--fuzz --deadlock --schedule-fuzz` combines a real native integer-property
