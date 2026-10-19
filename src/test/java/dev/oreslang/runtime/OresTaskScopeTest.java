@@ -408,4 +408,47 @@ final class OresTaskScopeTest {
         }
     }
 
+
+    @Test
+    void hostTaskAdmissionRacingScopeCloseNeverLosesPhysicalJoin() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime()) {
+            for (int trial = 0; trial < 64; trial++) {
+                OresTaskScope scope = new OresTaskScope(runtime);
+                CountDownLatch begin = new CountDownLatch(1);
+                AtomicReference<OresTask<Integer>> accepted = new AtomicReference<>();
+                AtomicReference<Throwable> submitFailure = new AtomicReference<>();
+                AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+                Thread starter = Thread.ofVirtual().start(() -> {
+                    try {
+                        assertTrue(begin.await(3, TimeUnit.SECONDS));
+                        accepted.set(scope.submit(() -> 43));
+                    } catch (RejectedExecutionException expected) {
+                        // The close winner denies new host Task admissions.
+                    } catch (Throwable failure) {
+                        submitFailure.set(failure);
+                    }
+                });
+                Thread closer = Thread.ofVirtual().start(() -> {
+                    try {
+                        assertTrue(begin.await(3, TimeUnit.SECONDS));
+                        scope.close();
+                    } catch (Throwable failure) {
+                        closeFailure.set(failure);
+                    }
+                });
+                begin.countDown();
+                starter.join(4_000);
+                closer.join(4_000);
+                assertFalse(starter.isAlive(), "host admission stuck on " + trial);
+                assertFalse(closer.isAlive(), "scope close stuck on " + trial);
+                assertNull(submitFailure.get(), "unexpected host rejection on " + trial);
+                assertNull(closeFailure.get(), "unexpected close failure on " + trial);
+                OresTask<Integer> task = accepted.get();
+                if (task != null) {
+                    assertTrue(task.isQuiescent(),
+                            "returned host Task must physically exit before close");
+                }
+            }
+        }
+    }
 }
