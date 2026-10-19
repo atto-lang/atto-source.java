@@ -147,4 +147,80 @@ final class ActorRuntimeSpawnLineageRollbackTest {
             assertTrue(recovery.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+
+    @Test
+    void failedRegistryRemovalAfterMutationStillUnlinksParentAndRefundsSlot()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var observed = new CompletableFuture<Boolean>();
+            var parent = runtime.<Integer>spawnShared(
+                    IsolatePolicy.developer(), () -> (message, context) -> {
+                        try {
+                            context.runtime().<Integer>spawnShared(
+                                    child -> (value, childContext) -> { });
+                            observed.completeExceptionally(
+                                    new AssertionError("faulted child insertion must fail"));
+                        } catch (OutOfMemoryError injected) {
+                            observed.complete(
+                                    "injected after-child registry put".equals(
+                                            injected.getMessage()));
+                        }
+                    });
+            parent.getReady().get(5, TimeUnit.SECONDS);
+            Field actorsField = access(ActorRuntime.class, "actors");
+            @SuppressWarnings("unchecked")
+            Map<Object, Object> original =
+                    (Map<Object, Object>) actorsField.get(runtime);
+            Object parentCell = original.get(parent.id());
+            assertNotNull(parentCell);
+            Field childrenField = access(parentCell.getClass(), "children");
+            @SuppressWarnings("unchecked")
+            Set<Object> children = (Set<Object>) childrenField.get(parentCell);
+            assertTrue(children.isEmpty());
+
+            var enabled = new AtomicBoolean(false);
+            var failedRemoval = new AtomicBoolean(false);
+            var injectedRegistry = new ConcurrentHashMap<Object, Object>() {
+                @Override public Object put(Object key, Object value) {
+                    Object prior = super.put(key, value);
+                    if (enabled.get()) {
+                        throw new OutOfMemoryError(
+                                "injected after-child registry put");
+                    }
+                    return prior;
+                }
+                @Override public boolean remove(Object key, Object value) {
+                    boolean removed = super.remove(key, value);
+                    if (removed && enabled.get()
+                            && failedRemoval.compareAndSet(false, true)) {
+                        throw new OutOfMemoryError(
+                                "injected after-child registry remove");
+                    }
+                    return removed;
+                }
+            };
+            injectedRegistry.putAll(original);
+            enabled.set(true);
+            actorsField.set(runtime, injectedRegistry);
+            try {
+                parent.send(1);
+                assertTrue(observed.get(5, TimeUnit.SECONDS));
+                assertTrue(failedRemoval.get(),
+                        "fixture must exercise a cleanup failure after mutation");
+                assertEquals(1, injectedRegistry.size(),
+                        "failed child registry entry must be removed");
+                assertTrue(children.isEmpty(),
+                        "registry removal error cannot skip parent lineage rollback");
+                AtomicInteger count = (AtomicInteger) access(
+                        ActorRuntime.class, "actorCount").get(runtime);
+                assertEquals(1, count.get(),
+                        "failed child actor slot must be refunded despite cleanup failure");
+            } finally {
+                actorsField.set(runtime, original);
+            }
+            parent.stop();
+            assertTrue(parent.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
