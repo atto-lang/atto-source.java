@@ -315,6 +315,46 @@ Actions jobs still fail before tests; the destination allowlist is empty,
 with protected-main security review issues #1368 and #1409 outstanding.
 No cross-organization source transfer was made.
 
+## Executor-dispatch deadline accounting audit (October 18)
+
+A new negative-control test identified an additional deadline bypass:
+`HttpResponseBodyOpenGate.open()` previously recorded its start clock
+**after** `Executor.execute()` returned. Even with a request's remaining
+budget of 25 ms, an executor that spent 100 ms accepting the task could
+allow the stream to be returned successfully.
+
+The start clock now precedes executor dispatch, so dispatch/queue delay
+consumes the **same** bounded startup budget as the supplier operation.
+The response remains uncommitted on deadline failure. A dedicated regression
+also checks abandonment before a queued task begins, execution rejection,
+a supplier throwing during acquisition, and associated permit cleanup.
+
+**Negative control:** prior `HttpResponseBodyOpenGate.java` blob
+`c39d962e99d6d7735d65f58009d1fe5212d817ea`
+failed `dispatch delay incorrectly reset body-opening deadline`.
+
+**Committed exact-file positive evidence:**
+
+- Patched gate blob: `c37c33a545929465c5dcd94bf44f3e68d9b948d9`
+- New regression blob: `4acd5e12f2c36a4f398cd76af5a6d28d82b4e764`
+- Full standalone runner blob: `e61d402e537b1807234febc64fb6235f2e1adf63`
+
+Three consecutive Java21 executions passed **all eight** standalone
+regression groups with matching Git blobs. An additional JUnit wrapper
+`HttpResponseOpenSchedulingJUnitTest` was added for future Maven runs.
+The JUnit wrapper itself has **not yet run in Maven**.
+
+The gate's executor must be an asynchronously dispatching executor;
+a caller-provided inline executor can itself block before returning from
+`execute()`. Production `NativeHttp` uses a virtual-thread-per-task
+executor. This hardening fixes deadline **accounting** for dispatch delay,
+not forcibly terminating arbitrary blocking host code.
+
+Full compiler/Native Image and guest actor integration remain blocked by
+the source-org CI runner failure (zero test steps). The protected-main
+approval policy still has no authorized cross-org private-source mirror
+destination (#1368, #1409). No private source was exported.
+
 ## Next implementation gates
 
 1. Establish a private, authorized CI runner; the source repository's checked-in
