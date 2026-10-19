@@ -40,9 +40,8 @@ class TrustedSupervisorInboxTest {
         assertNull(inbox.pollControl());
         assertThrows(IllegalArgumentException.class, () -> inbox.revoke(b));
         inbox.revoke(a);
-        var restarted = inbox.bindVerifiedChild(1, 2);
+        assertThrows(IllegalStateException.class, () -> inbox.bindVerifiedChild(1, 2));
         assertEquals(TrustedSupervisorInbox.Admission.REJECTED, inbox.offerUser(a, 99, new byte[]{9}));
-        assertEquals(TrustedSupervisorInbox.Admission.REJECTED, inbox.offerUser(restarted, 1, new byte[]{1})); // fail shut after overflow
         inbox.close();
     }
 
