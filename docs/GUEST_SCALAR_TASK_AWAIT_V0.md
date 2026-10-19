@@ -2,6 +2,8 @@
 
 **2026-10-19 — DRAFT stacked on #1479, #1475, #1466 and #1411.**
 
+**Canonical spelling:** `task { ... }` creates a Task; `await task { ... }` immediately joins it. `nb { ... }` and `nb task { ... }` remain parser-level compatibility aliases and lower to the same AST. Bare nonblocking channel/select `nb` is unaffected.
+
 ## Enabled slice
 
 Only a root `pub fnc main(): void` in the synthetic ROOT_MODULE can contain:
@@ -9,7 +11,7 @@ Only a root `pub fnc main(): void` in the synthetic ROOT_MODULE can contain:
 ```ores
 pub fnc main(): void {
     let int x = 41;
-    let int result = await nb { return x; };
+    let int result = await task { return x; };
     stdio.stdout.write(result);
     return;
 }
@@ -67,7 +69,7 @@ untrusted quota inheritance, supervisor/actor ownership, or LLVM parity.
 1. Exact-source JDK21+ Maven/JUnit and GraalVM guest Task tests, then real
    cancellation/teardown stress on the verified stack. Fix any negative
    compiler regressions and validate the full language suite.
-2. Give ordinary `nb { ... }` a compiler-minted region and parent-scope
+2. Give ordinary `task { ... }` a compiler-minted region and parent-scope
    token, with a typed heap-owned capture frame and owned return ABI.
 3. Allow a first-class `Task<T>` result and `await Task<T>` only once
    scope membership, cancellation and physical-exit cleanup are proved.
