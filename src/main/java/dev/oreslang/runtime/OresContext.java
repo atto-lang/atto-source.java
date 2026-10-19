@@ -32,6 +32,10 @@ public final class OresContext implements AutoCloseable {
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
     private final AsyncRuntime asyncRuntime;
+    /** Context-owned child-Task lifetime; physically joined before VM teardown. */
+    private final OresTaskScope compilerTaskScope;
+    /** At most one physical shutdown; concurrent host callers join it. */
+    private final OresContextTeardown.Once teardownOnce = new OresContextTeardown.Once();
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
     public AsyncNativeIo nativeIo() { return nativeIo; }
@@ -119,6 +123,7 @@ public final class OresContext implements AutoCloseable {
             this.vm = vm;
             this.actors = actors;
             this.asyncRuntime = async;
+            this.compilerTaskScope = new OresTaskScope(async);
             this.garbageCollector = gc;
         } catch (RuntimeException | Error failure) {
             if (async != null) {
@@ -144,6 +149,43 @@ public final class OresContext implements AutoCloseable {
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
+
+    /**
+     * Host/compiler-only launch path for a fully lowered, heap-owned
+     * continuation frame. OresScheduler.Await resumes it asynchronously
+     * without parking a physical actor/root worker.
+     *
+     * Actor child Tasks need mailbox-affine ownership, cancellation and
+     * completion delivery first. Untrusted Tasks need inherited deadline
+     * and fuel accounting. Both deliberately fail closed here instead of
+     * giving guest code a new unrestricted scheduling domain.
+     *
+     * The source compiler currently cannot construct safe Task frames,
+     * so its TaskExpr/TaskLambdaExpr type gate MUST remain in place.
+     */
+    public <T> OresTask<T> startCompilerTaskFrame(OresScheduler.Task<T> frame) {
+        java.util.Objects.requireNonNull(frame, "frame");
+        if (ActorRuntime.inActorExecution()) {
+            throw new IllegalStateException(
+                    "actor-owned Task continuations require mailbox-affine admission and termination fencing");
+        }
+        // A Task launched from an existing scheduler task must belong to the
+        // active parent scope, not to a context-wide root as an accidental
+        // sibling. Until the compiler passes that parent scope explicitly,
+        // reject nested launches: otherwise cancelling the parent could leave
+        // a running orphan child with access to captured parent resources.
+        if (OresScheduler.current() != null) {
+            throw new IllegalStateException(
+                    "nested Task continuation requires structured parent scope admission");
+        }
+        if (isolatePolicy.adversarial()) {
+            throw new SecurityException(
+                    "untrusted Task continuations require inherited wall deadline and fuel budget");
+        }
+        // Structured lifetime is owned by the context, not by a caller-held
+        // Future that might settle before the physical Task frame exits.
+        return compilerTaskScope.startCompilerFrame(vm.rootScheduler(), frame);
+    }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
@@ -429,34 +471,31 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
-        nativeIo.close();
-        http.close();
-        RuntimeException failure = null;
-        try {
-            asyncRuntime.close();
-        } catch (RuntimeException asyncFailure) {
-            failure = asyncFailure;
+        // A guest Task/actor cannot synchronously join teardown. Reject it
+        // before claiming the exactly-once host shutdown gate; otherwise an
+        // invalid guest call could permanently poison context shutdown.
+        if (ActorRuntime.inActorExecution()
+                || AsyncRuntime.isAsyncCarrierThread()
+                || OresScheduler.isSchedulerCarrierThread()
+                || OresScheduler.current() != null) {
+            throw new IllegalStateException(
+                    "OresContext.close cannot block an actor or scheduler task turn");
         }
-        try {
-            actors.close();
-        } catch (RuntimeException actorFailure) {
-            if (failure == null) failure = actorFailure;
-            else failure.addSuppressed(actorFailure);
-        }
-        try {
-            vm.close();
-        } catch (RuntimeException vmFailure) {
-            if (failure == null) failure = vmFailure;
-            else failure.addSuppressed(vmFailure);
-        } finally {
-            synchronized (this) {
-                linkedCodeUnits.clear();
-                linkedImportResolutions.clear();
-                sharedCodeImages.close();
-            }
-            garbageCollector.close();
-            output.flush();
-        }
-        if (failure != null) throw failure;
+        teardownOnce.close(() -> OresContextTeardown.close(
+                compilerTaskScope::close,
+                asyncRuntime::close,
+                nativeIo::close,
+                http::close,
+                actors::close,
+                vm::close,
+                () -> {
+                    synchronized (this) {
+                        sharedCodeImages.close();
+                        linkedCodeUnits.clear();
+                        linkedImportResolutions.clear();
+                    }
+                },
+                garbageCollector::close,
+                output::flush));
     }
 }

@@ -532,7 +532,7 @@ public final class Ast {
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
-            ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
+            ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt, TaskBlockStmt { }
 
     /**
      * Binding rebinding and mutable access to the referent are independent capabilities.
@@ -618,6 +618,11 @@ public final class Ast {
     }
     public record ExprStmt(Expr expression) implements Stmt { }
     public record DeferStmt(Expr expression) implements Stmt { }
+
+    /** Explicit fire-and-continue `do nb { ... }`. No task handle escapes to the caller. */
+    public record TaskBlockStmt(List<Stmt> body) implements Stmt {
+        public TaskBlockStmt { body = List.copyOf(body); }
+    }
 
     public record BlockStmt(List<Stmt> body) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
@@ -868,7 +873,7 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, TaskExpr, AsyncLambdaExpr, TaskLambdaExpr, SuspendsLambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -948,6 +953,67 @@ public final class Ast {
         }
     }
 
+    /**
+     * Compiler-verified static Option depth attached to an AST call by
+     * identity, never by structurally-equal source text. Weak keys prevent
+     * cached type metadata from retaining abandoned compilation units.
+     * Runtime reads fail closed for ASTs that never passed type checking.
+     */
+    public static final class CheckedOptionDepth {
+        private CheckedOptionDepth() { }
+
+        private static final java.lang.ref.ReferenceQueue<CallExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, Integer> DEPTHS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<CallExpr> {
+            private final int hash;
+            private IdentityKey(
+                    CallExpr call, java.lang.ref.ReferenceQueue<CallExpr> queue) {
+                super(call, queue);
+                hash = System.identityHashCode(call);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                CallExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends CallExpr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                DEPTHS.remove(collected);
+            }
+        }
+
+        public static synchronized void record(CallExpr call, int depth) {
+            java.util.Objects.requireNonNull(call, "call");
+            if (depth < 1) throw new IllegalArgumentException("Option depth must be positive");
+            expunge();
+            IdentityKey key = new IdentityKey(call, CLEARED);
+            Integer old = DEPTHS.putIfAbsent(key, depth);
+            if (old != null && old != depth) {
+                throw new IllegalStateException(
+                        "same Option call site received inconsistent checked depths");
+            }
+        }
+
+        public static synchronized int require(CallExpr call) {
+            java.util.Objects.requireNonNull(call, "call");
+            expunge();
+            Integer depth = DEPTHS.get(new IdentityKey(call, null));
+            if (depth == null) {
+                throw new IllegalStateException(
+                        "Option.unwrap_all requires a statically checked call site");
+            }
+            return depth;
+        }
+    }
+
     public record MemberExpr(Expr receiver, String member) implements Expr { }
     public record IndexExpr(Expr receiver, Expr index) implements Expr { }
 
@@ -956,6 +1022,11 @@ public final class Ast {
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
+
+    /** Expression-form `nb { ... }` produces an awaitable Task<T> once lowering is enabled. */
+    public record TaskExpr(List<Stmt> body) implements Expr {
+        public TaskExpr { body = List.copyOf(body); }
+    }
     /** Evaluate one expression into Option<T>; only ordinary guest failures become None. */
     public record TrapExpr(Expr expression) implements Expr { }
 
@@ -1092,6 +1163,36 @@ public final class Ast {
         }
         public boolean inferredStruct() { return kind == ObjectKind.INFERRED_STRUCT; }
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
+    }
+
+    /**
+     * `async |...| -> body`: an async callable returning Future<R>.
+     * Keep the modifier on the AST: `async (... -> nb {...})` must
+     * ultimately return Future<Task<R>>, never silently flatten a Task.
+     * Source execution is currently rejected until async-lambda lowering.
+     */
+    public record AsyncLambdaExpr(LambdaExpr lambda) implements Expr {
+        public AsyncLambdaExpr { java.util.Objects.requireNonNull(lambda, "lambda"); }
+    }
+
+    /**
+     * `async task |...| -> body`: one scheduled Task<R> with a whole
+     * Task-owned body. It is NOT an async Future wrapping an inner Task.
+     * Capture admission and task-frame lowering must precede execution.
+     */
+    public record TaskLambdaExpr(LambdaExpr lambda) implements Expr {
+        public TaskLambdaExpr { java.util.Objects.requireNonNull(lambda, "lambda"); }
+    }
+
+    /**
+     * A suspending callable executes in its CALLER'S current Task: it does
+     * not create a Task<T> or Future<T>. A caller must itself have a
+     * suspension effect (or be the scheduler-owned root main).
+     * This preserves a separate AST boundary until effectful callable types
+     * and continuation lowering exist; never downgrade to a plain LambdaExpr.
+     */
+    public record SuspendsLambdaExpr(LambdaExpr lambda) implements Expr {
+        public SuspendsLambdaExpr { java.util.Objects.requireNonNull(lambda, "lambda"); }
     }
 
     public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {

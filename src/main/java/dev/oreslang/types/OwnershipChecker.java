@@ -383,6 +383,10 @@ public final class OwnershipChecker {
             }
             return;
         }
+        if (stmt instanceof Ast.TaskBlockStmt task) {
+            checkTaskBody(task.body(), scope);
+            return;
+        }
         if (stmt instanceof Ast.BlockStmt block) {
             checkBlock(block.body(), scope, returnType);
             return;
@@ -760,6 +764,7 @@ public final class OwnershipChecker {
         if (scope.visibleStates().stream().anyMatch(state -> !state.moved
                 && !("self".equals(state.debugName) && isActorConfinedBorrow(state) && state.immutableBorrows == 0 && !state.mutableBorrowed)
                 && (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
+                    || containsBorrowType(state.type)
                     || state.immutableBorrows > 0 || state.mutableBorrowed))) {
             throw error("cannot " + operation + " while an ordinary borrow is live; end the lexical borrow before suspension");
         }
@@ -1200,6 +1205,10 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.AwaitExpr awaited) {
             checkSuspensionBorrows(scope, "await");
             ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
+            if (awaitedValue.type.name().equals("Task") && awaitedValue.type.arguments().size() == 1) {
+                Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
+                return new ValueInfo(result, kindOfType(result), null);
+            }
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
@@ -1331,11 +1340,36 @@ public final class OwnershipChecker {
                     : Ast.TypeRef.recordType(members);
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
+        if (expr instanceof Ast.TaskExpr task) return checkTaskBody(task.body(), scope);
+        if (expr instanceof Ast.SuspendsLambdaExpr) {
+            // No callable-effect type, typed continuation re-entry point or
+            // lifetime proof exists yet for a first-class suspends closure.
+            // Never treat it as an ordinary synchronous lambda.
+            throw error("suspends lambda requires typed suspension-effect callable lowering");
+        }
+        if (expr instanceof Ast.TaskLambdaExpr || expr instanceof Ast.AsyncLambdaExpr) {
+            // An indirect/dynamically invoked scheduled lambda has no
+            // verified parameter-to-capture type/ownership metadata yet.
+            // Allow only immediate invocation through checkScheduledLambdaCall;
+            // otherwise a stored lambda followed by f(rt borrow x) could
+            // circumvent spawn-time borrow validation.
+            throw error("scheduled lambda values require typed callable ownership metadata; "
+                    + "invoke async/task lambdas immediately until indirect lowering is implemented");
+        }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        // Scheduled callable invocation must validate captures AND by-value
+        // arguments at the spawn boundary. Treating these as dynamic calls
+        // would silently admit borrowed operands and actor-private aliases.
+        if (call.callee() instanceof Ast.TaskLambdaExpr task) {
+            return checkScheduledLambdaCall(task.lambda(), call.arguments(), scope, true);
+        }
+        if (call.callee() instanceof Ast.AsyncLambdaExpr async) {
+            return checkScheduledLambdaCall(async.lambda(), call.arguments(), scope, false);
+        }
         // A constructor owns an unpublished, incompletely initialized object.
         // Calling any instance method on self can transitively read absent
         // fields, publish the receiver or invoke suspension. No transitive
@@ -1462,7 +1496,6 @@ public final class OwnershipChecker {
         if (call.callee() instanceof Ast.MemberExpr member) {
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
-
             // Native collection mutations are effects on the receiver, not
             // harmless reads. TypeChecker validates method availability/arity.
             // A const/let read-only view must not gain mutation via .add/.set.
@@ -1768,6 +1801,54 @@ public final class OwnershipChecker {
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
     }
 
+    /**
+     * Admission of an immediately invoked scheduled lambda is deliberately
+     * ownership-strict: args are evaluated once, left-to-right, and any
+     * non-Copy argument transfers its exclusive owner before scheduling.
+     * No borrowed, guard-bearing, constructor self, or actor self capability
+     * can survive into the independently scheduled Task/Future activation.
+     *
+     * The result element remains inferred in this phase; TypeChecker owns
+     * the exact generic Task<T>/Future<T> inference and source execution gate.
+     */
+    private ValueInfo checkScheduledLambdaCall(
+            Ast.LambdaExpr lambda, List<Ast.Expr> arguments, Scope scope,
+            boolean task) {
+        if (lambda.parameters().size() != arguments.size()) {
+            throw error("async/Task lambda expected " + lambda.parameters().size()
+                    + " arguments but received " + arguments.size());
+        }
+        rejectBorrowedScheduledParameters(lambda);
+        checkLambda(lambda, scope, null);
+        for (int i = 0; i < arguments.size(); i++) {
+            ValueInfo value = checkExpr(arguments.get(i), scope, true);
+            if (isBorrowValue(value) || containsBorrowType(value.type)) {
+                throw error("async/Task argument " + i
+                        + " cannot be borrowed; move/copy/share an owned value");
+            }
+            if (containsMutexGuardType(value.type)) {
+                throw error("async/Task argument " + i
+                        + " cannot transfer a MutexGuard into scheduled work");
+            }
+        }
+        Ast.TypeRef result = Ast.TypeRef.inferred();
+        // A lambda whose body explicitly returns a Task creates a genuine
+        // nested Task, whether its own scheduling layer is async Future or
+        // async Task. Detect the simple syntactic return here; TypeChecker
+        // must independently resolve exact return types across all paths.
+        boolean returnsTask = lambda.expressionBody() instanceof Ast.TaskExpr
+                || (lambda.blockBody() != null
+                    && lambda.blockBody().size() == 1
+                    && lambda.blockBody().getFirst() instanceof Ast.ReturnStmt returned
+                    && returned.value() instanceof Ast.TaskExpr);
+        if (returnsTask) {
+            result = new Ast.TypeRef("Task", List.of(result), false);
+        }
+        return new ValueInfo(
+                new Ast.TypeRef(task ? "Task" : "Future", List.of(result), false),
+                ValueKind.MOVE_ONLY, null);
+    }
+
     private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Scope scope) {
         if (call.callee() instanceof Ast.NameExpr name) {
             return isBooleanIntrinsicName(name.name())
@@ -1799,19 +1880,108 @@ public final class OwnershipChecker {
         boolean query = member.member().equals("is_some") || member.member().equals("is_none")
                 || member.member().equals("is_ok") || member.member().equals("is_err");
         boolean extracting = member.member().equals("unwrap") || member.member().equals("unwrap_safe")
+                || member.member().equals("unwrap_all") || member.member().equals("flatten")
                 || member.member().equals("expect") || member.member().equals("unwrap_or");
         if (!query && !extracting) return null;
+        // A nested call has no reliably resolved result type in this checker
+        // until TypeChecker supplies its typed IR. Do not inspect it here and
+        // then again in generic method dispatch: that double-checks affine
+        // lambda captures, and can manufacture spurious use-after-move errors.
+        // TypeChecker still verifies the exact flatten receiver/result type.
+        if (member.member().equals("flatten")
+                && member.receiver() instanceof Ast.CallExpr) {
+            return null;
+        }
+        // New nested-only names must not cause a non-Option member receiver
+        // to be ownership-checked twice on the ordinary method-call path.
+        if (member.member().equals("flatten") || member.member().equals("unwrap_all")) {
+            Ast.TypeRef hint = receiverType(member.receiver(), scope);
+            if (hint != null
+                    && !(hint.name().equals("Option") && hint.arguments().size() == 1)
+                    && !(member.member().equals("flatten")
+                            && hint.name().equals("Future")
+                            && hint.arguments().size() == 1)) {
+                return null;
+            }
+        }
 
         ValueInfo receiver = checkExpr(member.receiver(), scope, false);
         Ast.TypeRef receiverType = receiver.type;
+        // Dereferencing an Option/Result borrow must never transfer its affine
+        // payload. The type checker resolves member return types after deref,
+        // so the ownership checker must enforce this independently; otherwise
+        // (&Option<Box>).unwrap() could duplicate the borrowed Box owner.
+        // Read-only queries and extraction from a wholly copyable sum remain
+        // valid, since neither transfers any owned state.
+        if (receiverType != null && receiverType.isBorrow()) {
+            Ast.TypeRef target = receiverType.borrowedTarget();
+            if (member.member().equals("flatten")
+                    && target.name().equals("Future")
+                    && target.arguments().size() == 1) {
+                throw error("Future.flatten cannot consume a borrowed Future");
+            }
+            boolean borrowedSum = (target.name().equals("Option")
+                    && target.arguments().size() == 1)
+                    || (target.name().equals("Result")
+                    && target.arguments().size() == 2);
+            if (borrowedSum && extracting && !isCopyType(target)) {
+                throw error(member.member()
+                        + " cannot consume an affine Option/Result through a borrow");
+            }
+            return null;
+        }
+        // Analyze each receiver exactly once. Previously a Future returned
+        // from a call was checked here and again on the ordinary call path,
+        // potentially consuming affine captures twice during compilation.
+        if (member.member().equals("flatten") && receiverType != null) {
+            Ast.TypeRef concrete = receiverType.isBorrow()
+                    ? receiverType.borrowedTarget() : receiverType;
+            if (concrete.name().equals("Future") && concrete.arguments().size() == 1) {
+                if (receiverType.isBorrow()) {
+                    throw error("Future.flatten cannot consume a borrowed Future");
+                }
+                Ast.TypeRef inner = concrete.arguments().getFirst();
+                if (!inner.name().equals("Future") || inner.arguments().size() != 1) {
+                    throw error("Future.flatten requires Future<Future<T>>");
+                }
+                if (!arguments.isEmpty()) {
+                    throw error("Future.flatten expects no arguments");
+                }
+                if (member.receiver() instanceof Ast.NameExpr name) {
+                    VarState owner = scope.lookup(name.name());
+                    if (owner != null && owner.kind == ValueKind.MOVE_ONLY) {
+                        move(owner, name.name());
+                    }
+                } else if (receiver.kind == ValueKind.MOVE_ONLY
+                        && (member.receiver() instanceof Ast.MemberExpr
+                            || member.receiver() instanceof Ast.IndexExpr)) {
+                    throw error("Future.flatten cannot consume an owned Future projection; "
+                            + "move the Future into a named local first");
+                }
+                return new ValueInfo(inner, kindOfType(inner), null);
+            }
+        }
         if (receiverType == null || receiverType.isBorrow()) return null;
         boolean option = receiverType.name().equals("Option") && receiverType.arguments().size() == 1;
         boolean result = receiverType.name().equals("Result") && receiverType.arguments().size() == 2;
         if (!option && !result) return null;
+        if (member.member().equals("flatten") && !option) return null;
 
         if (query) {
             for (Ast.Expr argument : arguments) checkExpr(argument, scope, true);
             return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+        }
+
+        // An affine sum payload cannot be taken from a projected field/index
+        // until projection-level move tracking is available. A read-only check
+        // of holder.option would otherwise allow repeated extraction.
+        // Copyable Option/Result projections remain safe to observe/extract.
+        if (receiver.kind == ValueKind.MOVE_ONLY
+                && (member.receiver() instanceof Ast.MemberExpr
+                    || member.receiver() instanceof Ast.IndexExpr)) {
+            throw error(member.member()
+                    + " cannot consume an affine Option/Result projection; "
+                    + "move the owned value into a named local first");
         }
 
         if (member.receiver() instanceof Ast.NameExpr receiverName) {
@@ -1823,6 +1993,23 @@ public final class OwnershipChecker {
         if (okType.isBorrow()) {
             throw error(member.member()
                     + " cannot extract a borrow from an owned Option/Result until explicit lifetime parameters are supported");
+        }
+
+        if (member.member().equals("unwrap_all")) {
+            // Every nested Option is consumed by extraction; do not return an
+            // intermediate wrapper or permit a borrowed leaf to escape.
+            while (okType.name().equals("Option") && okType.arguments().size() == 1) {
+                okType = okType.arguments().getFirst();
+            }
+            if (okType.isBorrow()) {
+                throw error("unwrap_all cannot extract a borrow from an owned nested Option");
+            }
+        }
+
+        if (member.member().equals("flatten")) {
+            if (!okType.name().equals("Option") || okType.arguments().size() != 1) {
+                throw error("Option.flatten requires Option<Option<T>>");
+            }
         }
 
         if (member.member().equals("unwrap_or") && containsMutexGuardType(okType)) {
@@ -2280,6 +2467,48 @@ public final class OwnershipChecker {
                 + "'; returned borrows must originate from an incoming borrowed parameter/receiver so they cannot outlive their owner");
     }
 
+    /**
+     * An nb block owns an independently scheduled activation. Analyze it as
+     * an escaping zero-argument closure before Task submission: this moves
+     * affine captures now and rejects borrows, actor self and MutexGuards.
+     */
+    private ValueInfo checkTaskBody(List<Ast.Stmt> body, Scope outer) {
+        if (initializingClass != null) {
+            throw error("Task cannot launch from a partially initialized constructor");
+        }
+        if (mutexCriticalSectionDepth > 0 || outer.hasLiveMutexGuard()) {
+            throw error("Task cannot launch while a MutexGuard/critical section is live");
+        }
+        checkLambda(new Ast.LambdaExpr(List.of(), null, body), outer, null);
+        return new ValueInfo(new Ast.TypeRef(
+                "Task", List.of(Ast.TypeRef.inferred()), false), ValueKind.MOVE_ONLY, null);
+    }
+
+    private static boolean containsBorrowType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsBorrowType(argument)) return true;
+        }
+        return false;
+    }
+
+    private void rejectBorrowedScheduledParameters(Ast.LambdaExpr lambda) {
+        if (initializingClass != null || mutexCriticalSectionDepth > 0) {
+            throw error("async/Task lambda cannot escape constructor or protected critical section");
+        }
+        for (Ast.Param parameter : lambda.parameters()) {
+            if (containsBorrowType(parameter.type())) {
+                throw error("async/Task parameter '" + parameter.name()
+                        + "' must own its data; borrowed arguments cannot outlive the caller");
+            }
+            if (containsMutexGuardType(parameter.type())) {
+                throw error("async/Task parameter '" + parameter.name()
+                        + "' cannot carry a MutexGuard");
+            }
+        }
+    }
+
     private ValueInfo checkLambda(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
         return checkLambda(lambda, outer, recursiveBinding, false);
     }
@@ -2307,7 +2536,8 @@ public final class OwnershipChecker {
             source.debugName = capture.name;
             requireUsable(source, capture.name, capture.write);
 
-            if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW || source.type.isBorrow()) {
+            if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW
+                    || containsBorrowType(source.type)) {
                 if (allowActorSelfCapture
                         && capture.name.equals("self")
                         && isActorConfinedBorrow(source)) {
@@ -2401,6 +2631,10 @@ public final class OwnershipChecker {
                 scanExpr(yielded.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
+            else if (stmt instanceof Ast.TaskBlockStmt s) {
+                // Transitive free captures must be visible to enclosing lambdas.
+                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            }
             else if (stmt instanceof Ast.BlockStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.LoopStmt s) {
@@ -2548,6 +2782,20 @@ public final class OwnershipChecker {
             for (Ast.ObjectField field : e.fields()) {
                 scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
             }
+        }
+        else if (expr instanceof Ast.TaskExpr task) {
+            scanStatements(task.body(), locals, outer, recursiveBinding, captures);
+        }
+        else if (expr instanceof Ast.TaskLambdaExpr taskLambda) {
+            scanExpr(taskLambda.lambda(), locals, outer, recursiveBinding, captures, false);
+        }
+        else if (expr instanceof Ast.AsyncLambdaExpr asyncLambda) {
+            scanExpr(asyncLambda.lambda(), locals, outer, recursiveBinding, captures, false);
+        }
+        else if (expr instanceof Ast.SuspendsLambdaExpr suspendsLambda) {
+            // Transitive free names remain visible across a suspending
+            // nested closure; do not lose a borrow or move when nesting.
+            scanExpr(suspendsLambda.lambda(), locals, outer, recursiveBinding, captures, false);
         }
         else if (expr instanceof Ast.LambdaExpr lambda) {
             // A lexical nested closure can reference values that belong to an
@@ -3300,7 +3548,7 @@ public final class OwnershipChecker {
 
             if (source.kind == ValueKind.IMM_BORROW
                     || source.kind == ValueKind.MUT_BORROW
-                    || source.type.isBorrow()) {
+                    || containsBorrowType(source.type)) {
                 throw error("nb select continuation cannot capture borrowed value '"
                         + capture.name
                         + "'; capture owned data or actor self instead");

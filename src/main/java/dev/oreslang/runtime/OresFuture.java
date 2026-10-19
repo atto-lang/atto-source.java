@@ -470,6 +470,50 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         return settle(new Cancelled(cancelled), this::invokeCancelHook);
     }
 
+    /**
+     * Scope-owned cancellation split into revocation and waiter delivery.
+     *
+     * <p>Callers MUST invoke the returned notification closure exactly once,
+     * even when a sibling cancellation throws. All child cancellation hooks
+     * can therefore run before any arbitrarily blocking host subscriber on
+     * the first child delays the rest of the siblings. This is a runtime-only
+     * coordination method; guest code cannot access either phase.</p>
+     *
+     * @return a single-use delivery closure, or null if cancellation lost.
+     */
+    Runnable cancelDeferredNotification() {
+        if (state.get() != PENDING) return null;
+        BooleanSupplier admission = cancelAdmission;
+        if (admission == null || !admission.getAsBoolean()) return null;
+        Cancelled terminal = new Cancelled(
+                new CancellationException("OresFuture was cancelled"));
+        if (!state.compareAndSet(PENDING, terminal)) return null;
+        cancelAdmission = null;
+        // Revoke this producer now, but keep *subscriber* admission closed
+        // until the owning scope has revoked every sibling. Otherwise a
+        // listener registered between those two phases runs synchronously
+        // as soon as cancelRevocationComplete flips, bypassing the scope's
+        // revoke-all-before-notify guarantee.
+        invokeCancelHook();
+        AtomicBoolean delivered = new AtomicBoolean();
+        return () -> {
+            if (!delivered.compareAndSet(false, true)) return;
+            try {
+                // Late registrations published during the deferred interval
+                // are drained together with pre-existing subscribers.
+                cancelRevocationComplete.set(true);
+                RuntimeWaiterRegistration<T> waiter;
+                while ((waiter = waiters.poll()) != null) {
+                    notifyWaiter(waiter, terminal);
+                }
+            } finally {
+                Runnable drained = onNotificationDrained;
+                onNotificationDrained = null;
+                if (drained != null) drained.run();
+            }
+        };
+    }
+
     @Override
     public boolean isCancelled() {
         return state.get() instanceof Cancelled;
