@@ -1880,12 +1880,21 @@ public final class TypeChecker {
                         "defer cleanup lambda must accept zero parameters");
             }
             Map<Env.Binding, Set<String>> beforeDefer = env.initializationSnapshot();
+            boolean previousRootMain = currentRootMain;
+            Env previousRootMainLocalEnv = currentRootMainLocalEnv;
+            // Deferred cleanup is not the immediate-await source continuation.
+            // In particular, it cannot inherit the entrypoint's scalar Task
+            // admission authority merely because it is nested inside main.
+            currentRootMain = false;
+            currentRootMainLocalEnv = null;
             try {
                 typeOf(defer.expression(), env, generics, self);
             } finally {
                 // Defer executes later; checking its expression now must not
                 // establish definite-initialization facts for following code.
                 env.restoreInitialization(beforeDefer);
+                currentRootMain = previousRootMain;
+                currentRootMainLocalEnv = previousRootMainLocalEnv;
             }
             return;
         }
