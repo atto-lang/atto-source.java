@@ -99,6 +99,12 @@ final class ActorUpgradePreflightV1 implements AutoCloseable {
         }
     }
 
+    /** Hold the old generation lock across validation, route CAS and retirement. */
+    synchronized boolean withPreparedAuthority(java.util.function.BooleanSupplier commit) {
+        requireOpen();
+        return generation.withPreparedAuthority(staged, commit);
+    }
+
     /** Frozen old-route DATA watermark captured under the mailbox lock. */
     synchronized long dispatchWatermark() {
         requireOpen();
