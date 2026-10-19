@@ -429,6 +429,7 @@ def require_protected_carrier_codeowners(repository, carrier_main_sha):
     # CODEOWNERS itself, and all workflows must remain terminally owned.
     expected = ["/" + CARRIER_APPROVAL_PATH + " " + REQUIRED_CODEOWNER,
                 "/.github/CODEOWNERS " + REQUIRED_CODEOWNER,
+                "/scripts/verify-oreslang-private-ci-snapshot.sh " + REQUIRED_CODEOWNER,
                 "/.github/workflows/ " + REQUIRED_CODEOWNER]
     if effective[-len(expected):] != expected:
         raise Denied("private carrier workflows lack terminal security CODEOWNER coverage")
