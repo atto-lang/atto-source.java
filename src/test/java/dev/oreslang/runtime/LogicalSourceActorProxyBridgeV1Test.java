@@ -188,6 +188,76 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void racingExactPhysicalReceiptAwaitersCannotRefundCreditsTwice()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("race-receipt-v1.ores", V1);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                         first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT);
+                 var proxy = new LogicalActorProxyMailboxV1(2, 8, 16)) {
+                router.bindProxyMailboxForSupervisor(proxy);
+                var envelope = proxy.admit(
+                        new byte[] {0, 0, 0, 0, 0, 0, 0, 41});
+                assertSame(envelope, proxy.pollDispatch());
+                var receipt = router.sendAndDrainForProxy(
+                        proxy, envelope, proxy.snapshot().routeEpoch());
+
+                // Let the ACTUAL runtime complete its physical message before
+                // controlling just the host completion observation. Test-only
+                // reflection prevents scheduling jitter from deciding the race.
+                var physicalField = receipt.getClass()
+                        .getDeclaredField("physicalReceipt");
+                physicalField.setAccessible(true);
+                Object physical = physicalField.get(receipt);
+                var terminalField = physical.getClass().getDeclaredField("terminal");
+                terminalField.setAccessible(true);
+                @SuppressWarnings("unchecked")
+                OresFuture<Void> realTerminal =
+                        (OresFuture<Void>) terminalField.get(physical);
+                realTerminal.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                var testTerminal = new OresFuture<Void>(() -> false, () -> { });
+                terminalField.set(physical, testTerminal);
+
+                var gate = new java.util.concurrent.CountDownLatch(1);
+                var success = new java.util.concurrent.atomic.AtomicInteger();
+                var refused = new java.util.concurrent.atomic.AtomicInteger();
+                var unexpected = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                Thread[] contenders = new Thread[16];
+                for (int i = 0; i < contenders.length; ++i) {
+                    contenders[i] = Thread.ofPlatform().start(() -> {
+                        try {
+                            if (!gate.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                                throw new AssertionError("receipt race start timeout");
+                            receipt.awaitAndComplete(envelope, WAIT);
+                            success.incrementAndGet();
+                        } catch (IllegalStateException duplicateClaim) {
+                            refused.incrementAndGet();
+                        } catch (Throwable failure) {
+                            unexpected.compareAndSet(null, failure);
+                        }
+                    });
+                }
+                gate.countDown();
+                testTerminal.completeFromRuntime(null);
+                for (var contender : contenders) {
+                    contender.join(5000);
+                    assertFalse(contender.isAlive(), "receipt contender did not exit");
+                }
+                assertNull(unexpected.get());
+                assertEquals(1, success.get(),
+                        "one physical receipt may settle transport credits once");
+                assertEquals(15, refused.get());
+                assertEquals(0, proxy.snapshot().retainedMessages());
+                assertEquals(1L, proxy.snapshot().completionWatermark());
+                var output = router.ref().nextOutput(WAIT);
+                assertFalse(output.done());
+                assertEquals(42L, assertInstanceOf(Long.class, output.value().value()));
+            }
+        }
+    }
+
+    @Test
     void realCompiledSharedActorUpgradeWaitsForSuspendedPinnedTask()
             throws Exception {
         try (HotReloadManager manager =
