@@ -10,14 +10,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 
 /**
@@ -252,6 +255,8 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
     // Includes pre-authentication sockets, which are not yet Session instances.
     private final Set<Socket> admittedSockets = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final ThreadPoolExecutor cancellationWorkers;
+    private final AtomicLong rejectedCancellationTasks = new AtomicLong();
     private long nextSessionId = 1;
     private long nextGeneration = 1;
 
@@ -260,6 +265,17 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
         this.authenticator = Objects.requireNonNull(authenticator, "authenticator");
         this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
         this.global = new GlobalBudget(limits);
+        // A blocking or non-cooperative actor cancellation callback must never
+        // monopolize the socket thread or the one-thread deadline scheduler.
+        // Fixed daemon workers + a finite queue bound retained cancellation work.
+        cancellationWorkers = new ThreadPoolExecutor(2, 2, 0L,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(Math.min(limits.maxGlobalWorkItems(), 256)),
+                runnable -> {
+                    Thread worker = new Thread(runnable, "ores-unary-tcp-cancel");
+                    worker.setDaemon(true);
+                    return worker;
+                }, new ThreadPoolExecutor.AbortPolicy());
         timers.setRemoveOnCancelPolicy(true);
         timers.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
     }
@@ -327,6 +343,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
     int activeConnections() { return global.connections(); }
     int activeGlobalWorkItems() { return global.workItems(); }
     long activeGlobalPayloadBytes() { return global.payloadBytes(); }
+    long rejectedCancellationTasks() { return rejectedCancellationTasks.get(); }
 
     /**
      * Absolute bound for one authentication handshake or one wire frame.
@@ -729,17 +746,24 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
     }
 
     /**
-     * Cancellation is advisory: a faulty actor/dispatcher cancellation hook may
-     * throw, but it must not prevent terminal credit release, another pending
-     * request's cancellation, or closure of the host-owned socket.
+     * Dispatch cancellation is advisory. Never call an arbitrary actor callback
+     * on the I/O or timer thread. Both running callbacks and queued callbacks
+     * have strict host-owned bounds, even if callbacks ignore interruption.
      */
-    private static void cancelBestEffort(DispatchHandle handle) {
+    private void cancelBestEffort(DispatchHandle handle) {
         if (handle == null) return;
         try {
-            handle.cancel();
-        } catch (Throwable ignored) {
-            // Never let an actor cancellation failure interrupt transport cleanup.
-            // No arbitrary exception text crosses the wire.
+            cancellationWorkers.execute(() -> {
+                try {
+                    handle.cancel();
+                } catch (Throwable ignored) {
+                    // Never let an actor cancellation failure interrupt cleanup.
+                }
+            });
+        } catch (RejectedExecutionException saturated) {
+            // The adapter has reclaimed the request's credits already. The
+            // callback is best effort; retain a visible diagnostic counter.
+            rejectedCancellationTasks.incrementAndGet();
         }
     }
 
@@ -754,6 +778,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
         for (Socket socket : List.copyOf(admittedSockets)) closeQuietly(socket);
         for (Session session : List.copyOf(sessions)) session.close();
         timers.shutdownNow();
+        cancellationWorkers.shutdown();
         io.shutdownNow();
     }
 }
