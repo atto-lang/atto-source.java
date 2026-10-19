@@ -61,6 +61,8 @@ public class TaskHandleTest {
             assertEquals("graceful checkpoint",
                     ((TaskHandle.Cancelled<Integer>) outcome).reason());
             assertTrue(cleaned.get(), "finally must execute before done");
+            assertTrue(handle.result().isCancelled(),
+                    "authenticated checkpoint should cancel the source Future too");
             assertFalse(workAfterCheckpoint.get(), "no work after safepoint");
         }
     }
@@ -616,9 +618,16 @@ public class TaskHandleTest {
     @Test void reusedCheckpointExceptionCannotCancelUnrelatedTask() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskScope scope = scheduler.newTaskScope();
+            java.util.concurrent.atomic.AtomicReference<CancellationException> replayMarker =
+                    new java.util.concurrent.atomic.AtomicReference<>();
             TaskHandle<Integer> original = scope.startTask(resume -> {
                 assertTrue(scope.cancel("original stopping"));
-                OresScheduler.cancellationCheckpoint();
+                try {
+                    OresScheduler.cancellationCheckpoint();
+                } catch (CancellationException marker) {
+                    replayMarker.set(marker);
+                    throw marker;
+                }
                 return OresScheduler.done(1);
             });
             assertInstanceOf(TaskHandle.Cancelled.class, done(original));
@@ -626,14 +635,10 @@ public class TaskHandleTest {
 
             // A host can retain a Throwable and rethrow it in another Task.
             // Its runtime-private type alone is not cancellation authority.
-            final CancellationException captured;
-            try {
-                original.result().get(3, TimeUnit.SECONDS);
-                throw new AssertionError("checkpoint should have failed its result Future");
-            } catch (java.util.concurrent.ExecutionException expected) {
-                captured = assertInstanceOf(
-                        CancellationException.class, expected.getCause());
-            }
+            CancellationException captured = replayMarker.get();
+            assertNotNull(captured, "the checkpoint marker must be captured");
+            assertTrue(original.result().isCancelled(),
+                    "authenticated checkpoint must settle the producer as cancelled");
 
             TaskHandle<Integer> unrelated = scheduler.startTracked(resume -> {
                 throw captured;
