@@ -1,7 +1,14 @@
 package dev.oreslang.runtime;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.LinkOption;
+import java.nio.file.StandardOpenOption;
+import java.util.Set;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -211,7 +218,21 @@ public final class ConcurrencyTestProbe {
         if (Files.size(trace) > 8L * 1024 * 1024) {
             throw new IllegalArgumentException("concurrency replay trace exceeds 8 MiB admission limit");
         }
-        List<String> lines = Files.readAllLines(trace, StandardCharsets.UTF_8);
+        // Bound bytes consumed, not merely the pre-read file size: another
+        // process may append data after Files.size() and before read().
+        byte[] bytes;
+        try (InputStream stream = Channels.newInputStream(Files.newByteChannel(
+                trace, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)))) {
+            bytes = stream.readNBytes(8 * 1024 * 1024 + 1);
+        }
+        if (bytes.length > 8 * 1024 * 1024) {
+            throw new IllegalArgumentException("concurrency replay trace exceeds 8 MiB admission limit");
+        }
+        String decoded = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes)).toString();
+        List<String> lines = decoded.lines().toList();
         if (lines.isEmpty() || lines.size() > MAX_EVENTS + 1) {
             throw new IllegalArgumentException("invalid concurrency trace event count");
         }
