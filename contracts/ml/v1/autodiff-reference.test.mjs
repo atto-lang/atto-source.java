@@ -368,7 +368,7 @@ test('an accumulated overflow rejects optimizer commit without partially updatin
   ]);
   const before=g.parameters();begin(g,2);
   for(let i=0;i<2;i++){
-    fwd(g,i,[0],[-1e308]);
+    fwd(g,i,[1e154],[-1e154]);
     back(g,i);
   }
   assert.throws(()=>g.gradients(),/overflow/);
