@@ -335,6 +335,21 @@ final class LogicalSourceActorRetiredLeaseRecoveryTest {
                             "abandoned candidate must become retirement-eligible");
                     assertEquals(1, pins.getInt(candidateGeneration),
                             "unpublished physical candidate must retain generation pin");
+                    Field rollback = LogicalSourceActorRouterV1.class
+                            .getDeclaredField("pendingRollbackTransfer");
+                    Field quarantine = LogicalSourceActorRouterV1.class
+                            .getDeclaredField("retirementQuarantined");
+                    rollback.setAccessible(true);
+                    quarantine.setAccessible(true);
+                    assertNotNull(rollback.get(router),
+                            "failed physical candidate stop must retain source freeze capability");
+                    assertTrue(quarantine.getBoolean(router));
+                    assertThrows(IllegalStateException.class,
+                            () -> router.ref().send(5L),
+                            "old route must not reopen while staged candidate remains live");
+                    assertThrows(IllegalStateException.class,
+                            router::close,
+                            "old actor close must not release code under a live rolled-back candidate");
 
                     captured.get().run();
 
@@ -353,6 +368,14 @@ final class LogicalSourceActorRetiredLeaseRecoveryTest {
                             "successful reap must forget candidate owner");
                     assertEquals(0, router.reapRetired(),
                             "candidate retirement cannot replay");
+                    assertNotNull(rollback.get(router),
+                            "candidate pin retirement is not proof old freeze was closed");
+                    assertTrue(router.reconcileFailedUpgradeRollback());
+                    assertNull(rollback.get(router));
+                    assertFalse(quarantine.getBoolean(router));
+                    assertEquals(1L, router.ref().routeEpoch());
+                    assertDoesNotThrow(() -> router.ref().send(7L),
+                            "verified candidate retirement reopens original route");
                 } finally {
                     dispatcherField.set(candidateRuntime, originalDispatcher);
                     blackHole.shutdownNow();
