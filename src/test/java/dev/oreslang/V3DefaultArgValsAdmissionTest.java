@@ -678,4 +678,27 @@ final class V3DefaultArgValsAdmissionTest {
                 .formalOrderSlots().size());
     }
 
+    @Test
+    void previewCannotForgeTwoDistinctFormalSlotsWithSameName() {
+        var type = Ast.TypeRef.simple("int");
+        var first = new V3CallLoweringPreview.Slot(
+                0, "x", type, V3CallLoweringPreview.SlotAction.CHECK_SUPPLIED,
+                null, 0, 0, false);
+        var duplicateName = new V3CallLoweringPreview.Slot(
+                1, "x", type, V3CallLoweringPreview.SlotAction.CHECK_SUPPLIED,
+                null, 1, 1, false);
+        var distinctName = new V3CallLoweringPreview.Slot(
+                1, "y", type, V3CallLoweringPreview.SlotAction.CHECK_SUPPLIED,
+                null, 1, 1, false);
+        var expressions = List.<Ast.Expr>of(
+                new Ast.LiteralExpr(10), new Ast.LiteralExpr(20));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new V3CallLoweringPreview.Preview(
+                        expressions, List.of(first, duplicateName)));
+        assertEquals(2, new V3CallLoweringPreview.Preview(
+                expressions, List.of(first, distinctName))
+                .formalOrderSlots().size());
+    }
+
 }
