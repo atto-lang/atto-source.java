@@ -8105,6 +8105,44 @@ public final class ActorRuntime implements AutoCloseable {
         /** Teardown receipt/cancellation observers must settle before
          * external physical finalization can certify code retirement. */
         private boolean terminalSettlementPending;
+        private boolean terminalSettlementActive;
+        private TerminalSettlementBatch terminalSettlementBatch;
+
+        /**
+         * Immutable teardown ownership plus mutable progress indices. This
+         * survives a throwing terminal callback after the ordinary runtime
+         * ledgers have been cleared, so a later supervisor stop can resume
+         * settlement instead of leaving an ownerless permanent fence.
+         */
+        private final class TerminalSettlementBatch {
+            final Throwable drainFailure;
+            final PhysicalMailDisposition receiptDisposition;
+            final List<PhysicalMailReceipt> physicalReceipts;
+            final List<DrainWaiter> drainWaiters;
+            final List<OresFuture<?>> operations;
+            final List<ActorCell<?>> descendants;
+            int physicalReceiptIndex;
+            int drainWaiterIndex;
+            int operationIndex;
+            int descendantIndex;
+
+            TerminalSettlementBatch(
+                    Throwable drainFailure,
+                    PhysicalMailDisposition receiptDisposition,
+                    List<PhysicalMailReceipt> physicalReceipts,
+                    List<DrainWaiter> drainWaiters,
+                    List<OresFuture<?>> operations,
+                    List<ActorCell<?>> descendants) {
+                this.drainFailure = Objects.requireNonNull(drainFailure);
+                this.receiptDisposition =
+                        Objects.requireNonNull(receiptDisposition);
+                this.physicalReceipts =
+                        Objects.requireNonNull(physicalReceipts);
+                this.drainWaiters = Objects.requireNonNull(drainWaiters);
+                this.operations = Objects.requireNonNull(operations);
+                this.descendants = Objects.requireNonNull(descendants);
+            }
+        }
         private volatile ActorTurnWatchdog.Lease watchdogLease;
         private long turnStartedWallNanos;
         private long turnStartedCpuNanos = -1L;
