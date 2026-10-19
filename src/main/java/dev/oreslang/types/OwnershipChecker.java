@@ -37,6 +37,9 @@ public final class OwnershipChecker {
     // Must retain every (module, name, arity) slot. A name-only map loses
     // one overload and can silently skip/misapply its move/borrow effects.
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+    private enum ReturnOwnershipSummary { UNKNOWN, FRESH }
+    private final IdentityHashMap<Ast.FunctionDecl, ReturnOwnershipSummary>
+            returnOwnershipSummaries = new IdentityHashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
@@ -148,6 +151,8 @@ public final class OwnershipChecker {
     }
 
     private void indexFunction(String module, Ast.FunctionDecl fn) {
+        returnOwnershipSummaries.put(
+                fn, summarizeReturnOwnership(fn));
         String qualified = module + "." + fn.name();
         putFunctionSlot(qualified, fn);
         String owner = unqualifiedFunctionOwners.putIfAbsent(fn.name(), module);
@@ -2736,6 +2741,102 @@ public final class OwnershipChecker {
         return false;
     }
 
+    private ReturnOwnershipSummary summarizeReturnOwnership(
+            Ast.FunctionDecl function) {
+        if (function.async() || function.generator()
+                || function.body().size() != 1
+                || !(function.body().getFirst()
+                        instanceof Ast.ReturnStmt returned)
+                || returned.value() == null) {
+            return ReturnOwnershipSummary.UNKNOWN;
+        }
+        return isStaticallyFreshReturn(returned.value())
+                ? ReturnOwnershipSummary.FRESH
+                : ReturnOwnershipSummary.UNKNOWN;
+    }
+
+    /**
+     * Deliberately narrow compiler-minted return ownership summary.
+     *
+     * <p>No names, borrows, calls, projections, runtime ownership operators or
+     * multi-path bodies are accepted. This proves only that the returned
+     * backing value is constructed inside the callee from recursively fresh
+     * constituents. The full ownership checker still validates the function
+     * body independently.</p>
+     */
+    private static boolean isStaticallyFreshReturn(Ast.Expr expression) {
+        if (expression == null) return false;
+        if (expression instanceof Ast.LiteralExpr) return true;
+        if (expression instanceof Ast.CastExpr cast) {
+            return isStaticallyFreshReturn(cast.value());
+        }
+        if (expression instanceof Ast.SpreadExpr spread) {
+            return isStaticallyFreshReturn(spread.expression());
+        }
+        if (expression instanceof Ast.TrapExpr trapped) {
+            return isStaticallyFreshReturn(trapped.expression());
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return isStaticallyFreshReturn(conditional.whenTrue())
+                    && isStaticallyFreshReturn(conditional.whenFalse());
+        }
+        if (expression instanceof Ast.ListExpr list) {
+            for (Ast.Expr item : list.elements()) {
+                if (!isStaticallyFreshReturn(item)) return false;
+            }
+            return true;
+        }
+        if (expression instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr item : tuple.elements()) {
+                if (!isStaticallyFreshReturn(item)) return false;
+            }
+            return true;
+        }
+        if (expression instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) {
+                if (!isStaticallyFreshReturn(field.value())) return false;
+            }
+            return true;
+        }
+        if (expression instanceof Ast.NewExpr created) {
+            for (Ast.Expr argument : created.arguments()) {
+                if (!isStaticallyFreshReturn(argument)) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private boolean hasFreshReturnOwnership(
+            Ast.CallExpr call, Scope scope) {
+        if (call.callee() instanceof Ast.NameExpr name
+                && scope.lookup(name.name()) == null) {
+            Ast.FunctionDecl function = findFunction(
+                    name.name(),
+                    syntacticCallArgumentTypes(
+                            call.arguments(), scope).size());
+            return function != null
+                    && returnOwnershipSummaries.getOrDefault(
+                            function,
+                            ReturnOwnershipSummary.UNKNOWN)
+                    == ReturnOwnershipSummary.FRESH;
+        }
+        if (call.callee() instanceof Ast.MemberExpr qualified
+                && qualified.receiver() instanceof Ast.NameExpr namespace
+                && scope.lookup(namespace.name()) == null) {
+            Ast.FunctionDecl function = findFunction(
+                    namespace.name() + "." + qualified.member(),
+                    syntacticCallArgumentTypes(
+                            call.arguments(), scope).size());
+            return function != null
+                    && returnOwnershipSummaries.getOrDefault(
+                            function,
+                            ReturnOwnershipSummary.UNKNOWN)
+                    == ReturnOwnershipSummary.FRESH;
+        }
+        return false;
+    }
+
     private boolean isProvenTaskOwnedRvalue(
             Ast.Expr expression, Scope scope) {
         if (expression == null) return false;
@@ -2813,13 +2914,12 @@ public final class OwnershipChecker {
             }
             return true;
         }
-        if (expression instanceof Ast.CallExpr) {
-            // Never infer owned return provenance from callee spelling. A guest
-            // function/method can be named Some/Ok/Err/unwrap/flatten/etc.
-            // Until TypeChecker/lowering supplies an exact resolved intrinsic
-            // or callable return-ownership witness, every call result fails
-            // closed for detached Task OWNED_RVALUE minting.
-            return false;
+        if (expression instanceof Ast.CallExpr call) {
+            // Callee spelling is never enough. Only an exact indexed guest
+            // function with a compiler-minted FRESH return summary can admit a
+            // move-only call result. Methods and arbitrary/dynamic callables
+            // remain fail-closed until richer effect summaries exist.
+            return hasFreshReturnOwnership(call, scope);
         }
         return false;
     }
