@@ -49,3 +49,47 @@ Do not admit PRIVATE/UNTRUSTED upgrades under the current SHARED-only
 JUnit tests in `LogicalActorUpgradeCoordinatorV1Test` are written but do
 not prove exact-head execution. No private source should be copied outside
 the source organization without separate security authorization.
+
+## October 19 transactional and physical receipt hardening
+
+The coordinator now serializes `prepare`, `Transaction.drained`,
+`commit`, `rollback`, `close` and quarantine observations under a single
+coordinator monitor. Its former Transaction-local locks did not establish
+happens-before with supervisor preparation or failure observation. A failure
+during drain observation, code publication, abort, mailbox commit, or
+postpublication epoch verification now leaves a quarantined transaction:
+there is no implicit old-route replay or dispatch thaw. Concurrent
+commit-versus-rollback attempts have one winner.
+
+The **actual source-compiled SHARED actor host bridge**, separate from this
+host-only coordinator, now routes its canonical copied 8-byte signed scalar
+wire through `LogicalSourceActorRouterV1.sendAndDrainForProxy(envelope, epoch)`.
+That call checks the expected physical route epoch *before admission*.
+It produces a trusted, one-use `ProxyDrainReceipt` bound to the exact
+`Envelope` Java object and physical `Route` instance. The receipt waits
+outside the route monitor for the in-process physical drain to succeed, then
+takes the route monitor and verifies that the route and proxy epoch remain
+authoritative while completing proxy credit accounting. A foreign envelope,
+stale route, consumed receipt, or failed physical drain cannot refund credits.
+
+This is stronger **local provenance** for the existing single-in-flight host
+scalar proof; it is **not** a cryptographic authentication mechanism or a
+per-message `mail.done()` acknowledgment. The drain is cumulative, so it
+can bind to a single logical message only because the bridge serializes
+physical sends and drain waits. Do not parallelize physical dispatch or expose
+the receipt to guest code until the compiler emits immutable ABI-tagged
+envelopes and ActorRuntime emits trustworthy, per-message completion receipts.
+
+New Java tests cover code-gate close during commit/abort, closed-mailbox
+drain observation, 48 concurrent transaction-resolution races, and a
+source-compiled SHARED actor rejecting wrong-epoch / same-bytes-foreign
+envelope / replayed physical drain receipts. These tests are **committed,
+not claimed to pass** until executed on the exact Git head with JDK25 and
+Graal; zero-step CI job failures are infrastructure non-evidence.
+
+Still required for production: a single supervisor-controlled publication
+authority spanning physical ActorRef routing, mailbox epochs, code image and
+Task/continuation lifetime; compiler-owned immutable typed message generation;
+physical `mail.done()`/terminal receipt authentication with incarnation and
+message-sequence provenance; automated retirement/quarantine reconciliation;
+and target-specific PRIVATE/UNTRUSTED worker isolation.
