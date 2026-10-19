@@ -7,8 +7,11 @@ import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
 import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -26,6 +29,12 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class ExperimentalCheckedI64SharedVectorTest {
     private static final String HEADER = "// oreslang:checked-i64-v1\n";
+    // Independently generated from pinned conformance fixture Git blob
+    // 44224caf6f6c76dedff429a47d51edc926830fdc. Each row contains
+    // id, expression, outcome kind, expected value/category, phase; fields
+    // are UTF-8 with NUL separators and each row ends with LF.
+    private static final String PINNED_MAPPED_MATRIX_SHA256 =
+            "b83276db9e770025291dd09b0837a55cd8fadc2a7f9fff4c2a78a2ea836c3044";
 
     private record Vector(String id, String expression,
             String kind, String expected, String phase) {}
@@ -92,13 +101,30 @@ final class ExperimentalCheckedI64SharedVectorTest {
     }
 
     @Test
-    void manifestIsCompleteAndPhasesAreExplicit() {
+    void manifestIsCompleteAndPhasesAreExplicit() throws Exception {
         assertEquals(38, CASES.size(), "only mapped Oreslang source vectors");
         assertEquals(23, CASES.stream().filter(c -> c.kind().equals("value")).count());
         assertEquals(15, CASES.stream().filter(c -> c.kind().equals("error")).count());
         assertEquals(2, CASES.stream().filter(c -> c.phase().equals("compile")).count());
         assertEquals(13, CASES.stream().filter(c -> c.phase().equals("runtime")).count());
         assertEquals(38, CASES.stream().map(Vector::id).distinct().count());
+
+        // Pin the complete values and source expressions, not just case IDs
+        // and counts. Fail closed if this Java copy drifts from the independently
+        // authored conformance fixture, even when category counts are unchanged.
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        for (Vector row : CASES) {
+            String[] fields = {
+                row.id(), row.expression(), row.kind(), row.expected(), row.phase()
+            };
+            for (int index = 0; index < fields.length; index++) {
+                digest.update(fields[index].getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) (index == fields.length - 1 ? '\\n' : 0));
+            }
+        }
+        assertEquals(PINNED_MAPPED_MATRIX_SHA256,
+                HexFormat.of().formatHex(digest.digest()),
+                "Java guest vectors differ from pinned independent checked-i64-v1 fixture");
     }
 
     @Test
