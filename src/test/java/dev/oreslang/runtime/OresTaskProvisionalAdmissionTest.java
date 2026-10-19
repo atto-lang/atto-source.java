@@ -17,10 +17,16 @@ final class OresTaskProvisionalAdmissionTest {
         var physical = new OresFuture<Void>();
         var provisional = OresTask.<Integer>provisional(physical);
         AtomicInteger notified = new AtomicInteger();
+        AtomicReference<Throwable> callbackViolation = new AtomicReference<>();
         var completion = new OresFuture<Integer>();
         completion.whenCompleteRuntime((value, failure) -> {
-            assertFalse(Thread.holdsLock(provisional),
-                    "completion listeners must not execute under shell monitor");
+            // OresFuture deliberately isolates host waiter failures. An
+            // assertion thrown INSIDE this callback is swallowed, so record
+            // the violation and assert it from the test thread instead.
+            if (Thread.holdsLock(provisional)) {
+                callbackViolation.compareAndSet(null,
+                        new AssertionError("completion listener ran under shell monitor"));
+            }
             notified.incrementAndGet();
         });
 
@@ -30,6 +36,8 @@ final class OresTaskProvisionalAdmissionTest {
         assertTrue(completion.isCancelled(),
                 "cancellation must survive the provisional admission window");
         assertEquals(1, notified.get());
+        assertNull(callbackViolation.get(),
+                String.valueOf(callbackViolation.get()));
         assertNull(provisional.cancelDeferredNotification(),
                 "duplicate cancellation must not deliver subscribers twice");
         assertEquals(1, notified.get());
