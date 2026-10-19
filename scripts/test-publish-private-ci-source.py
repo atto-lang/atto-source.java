@@ -1695,12 +1695,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                      for method, _, _ in self.route_calls))
 
     def test_duplicate_casefolded_destination_approval_is_denied(self):
+        pinned = self.expected_source_tree()
         self.approval.write_text(
             "trusted/ci@424242\nTRUSTED/CI@424242\n")
         with patch.object(pub, "collect_source",
                           side_effect=AssertionError("private source read")):
             with self.assertRaisesRegex(pub.Denied, "duplicates a repository"):
-                self.publish()
+                self.publish(expected_tree=pinned)
         self.assertFalse(any(method == "POST"
                              for method, _, _ in self.route_calls))
 
@@ -1708,13 +1709,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         # A replacement repo can retain the same owner/name but must never
         # authorize an export against the old protected policy.
         self.mock_destination_repo_id = 424243
+        pinned = self.expected_source_tree()
         with patch.object(pub, "require_preflight", wraps=REAL_PREFLIGHT):
             with patch.object(pub, "gh_api", side_effect=self.fake_api):
                 with patch.object(pub, "collect_source",
                                   side_effect=AssertionError("private source read")):
                     with self.assertRaisesRegex(pub.Denied, "differs from reviewed policy"):
                         pub.publish("trusted/ci", self.source, "ci/oreslang-test",
-                                    self.root, self.expected_source_tree(), 1286, A)
+                                    self.root, pinned, 1286, A)
         self.assertFalse(any(method == "POST"
                              for method, _, _ in self.route_calls))
 
