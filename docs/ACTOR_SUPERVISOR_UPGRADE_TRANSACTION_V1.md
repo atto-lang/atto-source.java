@@ -197,3 +197,55 @@ router's post-spawn check. The failed transaction must leave the old route
 authoritative, clear publication authority, retain a candidate owner containing
 the exact physical ActorRef, mark that owner retirement-eligible, and permit
 exactly one later reap after physical finalization.
+
+## Spawn admission rollback after collection mutation — 2026-10-19
+
+A follow-up runtime audit identified a narrow partial-spawn ownership gap in
+`ActorRuntime.spawnInternal`. In both inherited-ActorGroup and ordinary
+parent child-admission paths, the runtime inserted the new child into
+`parent.children`, and only **after** the operation returned set
+`linkedToParent = true`. The rollback handler unlinked child lineage only
+when that marker was true. An adversarial collection failure after a
+successful mutation (for example fault-injected OOME) could therefore leave
+a parent-owned child entry for an actor whose constructor/registry admission
+failed and whose actor slot was being rolled back.
+
+The runtime now arms `linkedToParent = true` **before** the potentially
+throwing `parent.children.add(cell)`, in both managed-group and ordinary
+child paths. Removing a child that was never inserted is harmless, but
+failing to remove one that was inserted and then threw is an orphaned lineage
+reference. Existing rollback still removes the exact registry identity and
+group worker ownership, aborts the never-published cell, and refunds the
+reserved actor slot.
+
+A new production-source JUnit `ActorRuntimeSpawnLineageRollbackTest`
+provides two fault-injection tests:
+1. A real parent actor with a swapped test-only child set that inserts a
+   child then throws OOME. The parent catches the injected exception; the
+   test checks it has no child entry, only the original parent remains in
+   the physical actor registry and actor count, and physical parent shutdown
+   still completes.
+2. A test-only actor registry that inserts a root actor then throws OOME.
+   The runtime must roll back the registered entry, refund the actor slot,
+   and admit/stop a subsequent healthy actor.
+
+These are **committed but unexecuted** product JUnit source tests. The
+separate source-free Java 21 `SpawnAdmissionFaultOracle` compiled with
+`javac --release 21 -Xlint:all -Werror` and passed **201,500 assertions**
+across 25,000 post-mutation root/child failure cases and 500 four-thread
+fault-injection rounds. It models the relevant ownership invariant but
+does not compile/execute the private Oreslang runtime, Graal/JDK25,
+source compiler or Native Image. A future exact-head runner must execute
+the real JUnit fixtures before treating this as production certification.
+
+This fixes a child-lineage publication ordering hazard; it does **not**
+establish that every external dispatcher/ActorRuntime registration which
+throws before returning `ActorRef` has full physical retirement tracking
+under arbitrary task/external-resource failure. That wider partial-spawn
+ownership proof, source-supervisor transaction integration and backend
+retirement validation are still release gates.
+
+The protected source `main` allowlist still has **no approved private
+CI destinations**, and source transfer security issue #962 plus branch
+protection #904 are unresolved. No private source was copied to another
+organization. Keep PR #1367 draft and production hot reload disabled.
