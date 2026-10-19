@@ -6,6 +6,9 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.TaskAdmissionProof;
+import dev.oreslang.types.TaskSemanticAdmission;
+import dev.oreslang.types.TaskTransferProvenance;
 
 /** Trusted compiler front-end API for build systems and isolate admission. */
 public final class OresCompiler {
@@ -20,6 +23,33 @@ public final class OresCompiler {
         program = TypeChecker.checkTypes(program);
         OwnershipChecker.check(program);
         return program;
+    }
+
+    /**
+     * Proof-only detached Task transfer analysis.
+     *
+     * <p>This does not enable or lower Task source. It joins the exact
+     * OwnershipChecker transfer ledger with TypeChecker's canonical resolved
+     * Send/shared-safety gate and carries a mandatory physical TaskScope done
+     * release barrier for future lowering.</p>
+     */
+    public record TaskTransferAnalysis(
+            Ast.Program program,
+            TaskAdmissionProof admissions) { }
+
+    public static TaskTransferAnalysis proveTaskTransfers(
+            Ast.Program program) {
+        Ast.Program prepared =
+                TypeChecker.prepareTaskAdmissionProgram(program);
+        OwnershipChecker.CheckResult ownership =
+                OwnershipChecker.checkWithTaskTransferProvenance(prepared);
+        TaskTransferProvenance transfers = ownership.taskTransfers();
+        TaskSemanticAdmission semantics =
+                TypeChecker.checkTaskTransferProvenance(
+                        prepared, transfers);
+        return new TaskTransferAnalysis(
+                prepared,
+                TaskAdmissionProof.combine(transfers, semantics));
     }
 
     /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */
