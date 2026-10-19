@@ -84,6 +84,19 @@ git restore -- source/main.ores
 chmod +x source/main.ores
 assert_status 67 'executable mode drift rejected' "$expected" source
 chmod -x source/main.ores
+# Git can ignore filesystem executable-mode drift when core.filemode=false.
+# A non-root owner with mode 0654 has no owner-x permission but group-x set;
+# Bash -x may return false, despite Git treating ANY x bit as executable.
+# Attest raw mode bits, not effective access by the current user.
+git config core.filemode false
+chmod 654 source/main.ores
+assert_status 67 'group-only executable bit rejected under core.filemode=false' "$expected" source
+chmod 645 source/main.ores
+assert_status 67 'other-only executable bit rejected under core.filemode=false' "$expected" source
+chmod 641 source/main.ores
+assert_status 67 'mixed permission execute drift rejected' "$expected" source
+chmod 644 source/main.ores
+git config core.filemode true
 assert_status 0 'clean checkout recovers after hidden changes' "$expected" source
 # Hardlinks to the same inode outside the source directory must be denied even
 # when the tracked content and Git mode are unchanged.
