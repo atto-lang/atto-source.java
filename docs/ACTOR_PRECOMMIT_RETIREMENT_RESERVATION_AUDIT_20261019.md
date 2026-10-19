@@ -41,11 +41,17 @@ under OOME.
 
 ## Production regression (committed; NOT EXECUTED)
 
-LogicalSourceActorRetiredLeaseRecoveryTest uses real source-compiled SHARED
-actor generations and injects an old-generation route-pin accounting fault
-after initial spawn. It expects a postcommit release error, then restores the
-counter and requires reapRetired() to release exactly one still-owned old
-generation, retain the newly published route epoch, and reject a replay.
+LogicalSourceActorRetiredLeaseRecoveryTest includes two real-source
+SHARED actor generation failure cases:
+
+1. Inject old-generation route-pin accounting underflow after initial spawn.
+   Expect a postcommit release error, then restore the counter and require
+   reapRetired() to release exactly one still-owned old generation, preserve
+   the published route epoch, and reject a replay.
+2. Inject an OOME into retirement-list add() before committing a candidate
+   route. Require the old route epoch to remain authoritative, no retirement
+   record to be published, and a later upgrade to succeed after repairing the
+   faulted list.
 
 This test has not been executed by source-owned Maven/JDK25/GraalVM CI.
 
