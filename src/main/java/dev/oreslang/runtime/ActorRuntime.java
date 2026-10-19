@@ -487,6 +487,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
+    private final ActorPhysicalTurnGate physicalTurnGate;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final AtomicLong watchdogOverruns = new AtomicLong();
     private final AtomicLong watchdogNoticesDropped = new AtomicLong();
@@ -543,6 +544,12 @@ public final class ActorRuntime implements AutoCloseable {
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
+        int physicalLimit = Integer.getInteger("ores.runtime.actor.max-active-turns", 0);
+        if (physicalLimit < 0) {
+            throw new IllegalArgumentException("ores.runtime.actor.max-active-turns must be >= 0");
+        }
+        this.physicalTurnGate = physicalLimit == 0
+                ? null : new ActorPhysicalTurnGate(physicalLimit, dispatcherConfig.maxActors());
         ExecutorService privatePool = null;
         ExecutorService sharedPool = null;
         ExecutorService untrustedPool;
@@ -6555,6 +6562,7 @@ public final class ActorRuntime implements AutoCloseable {
             snapshot = List.copyOf(actors.values());
         }
         for (ActorCell<?> cell : snapshot) cell.stop();
+        if (firstClose && physicalTurnGate != null) physicalTurnGate.close();
 
         if (firstClose) {
             // Stop executor carriers so queued work is rejected/removed and
@@ -7300,10 +7308,25 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 ExecutorService dispatcher = dispatcherFor(kind);
                 Runnable dispatch = () -> runBatch(dispatchTicket);
-                if (dispatcher instanceof ActorAffinityDispatcher lanes) {
-                    lanes.executeOnLane(dispatchLane, dispatch);
+                java.util.function.Consumer<Runnable> submit = runnable -> {
+                    if (dispatcher instanceof ActorAffinityDispatcher lanes) {
+                        lanes.executeOnLane(dispatchLane, runnable);
+                    } else {
+                        dispatcher.execute(runnable);
+                    }
+                };
+                if (physicalTurnGate != null) {
+                    physicalTurnGate.dispatch(dispatch, submit, failure -> {
+                        synchronized (lifecycleLock) {
+                            if (scheduledDispatchToken == dispatchTicket && !carrierActive) {
+                                scheduledDispatchToken = null;
+                                scheduled.set(false);
+                            }
+                        }
+                        stop();
+                    });
                 } else {
-                    dispatcher.execute(dispatch);
+                    submit.accept(dispatch);
                 }
             } catch (RejectedExecutionException rejected) {
                 synchronized (lifecycleLock) {
