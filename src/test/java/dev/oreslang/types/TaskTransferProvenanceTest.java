@@ -121,27 +121,20 @@ final class TaskTransferProvenanceTest {
     }
 
     @Test
-    void ownedResultOfCompilerKnownMemberCallKeepsOwnedRvalueProof() {
-        Ast.Program program = Parser.parse("""
-            pub fnc main(Option<Array<int>> optional): void {
-                let Task<int> result =
-                    (async task |Array<int> value| -> { return 1; })(
-                        optional.unwrap());
-                return;
-            }
-            """);
-        Ast.BindingStmt binding = (Ast.BindingStmt) main(program).body().get(0);
-        Ast.CallExpr boundary = (Ast.CallExpr) binding.initializer();
-
-        OwnershipChecker.CheckResult checked =
-                OwnershipChecker.checkWithTaskTransferProvenance(program);
-        List<TaskTransferProvenance.Transfer> transfers =
-                checked.taskTransfers().transfersFor(boundary);
-
-        assertEquals(1, transfers.size());
-        assertEquals(
-                TaskTransferProvenance.TransferKind.OWNED_RVALUE,
-                transfers.getFirst().kind());
+    void callResultNeedsResolvedReturnOwnershipWitness() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse("""
+                    pub fnc main(Option<Array<int>> optional): void {
+                        let Task<int> result =
+                            (async task |Array<int> value| -> { return 1; })(
+                                optional.unwrap());
+                        return;
+                    }
+                    """)));
+        assertTrue(
+                failure.getMessage().contains("rvalue provenance"),
+                failure::getMessage);
     }
 
     @Test
