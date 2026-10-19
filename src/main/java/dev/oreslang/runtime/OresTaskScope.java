@@ -65,6 +65,20 @@ public final class OresTaskScope implements AutoCloseable {
     }
 
     /**
+     * An unadmitted frame has no scheduler runner or guest execution to
+     * retire. Carry the original rejection out of the scope's monitor before
+     * invoking a trusted code-image/resource release callback.
+     */
+    private static final class UnadmittedFrame extends RuntimeException {
+        private final Throwable rejection;
+
+        private UnadmittedFrame(Throwable rejection) {
+            super(null, null, false, false);
+            this.rejection = Objects.requireNonNull(rejection, "rejection");
+        }
+    }
+
+    /**
      * Compiler-only continuation entry point. The Task's *result* may settle
      * on cancellation before its guest frame finishes; scope membership is
      * therefore retained until the scheduler's physical quiescence callback.
@@ -96,21 +110,13 @@ public final class OresTaskScope implements AutoCloseable {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(frame, "frame");
         Objects.requireNonNull(onPhysicalExit, "onPhysicalExit");
-        synchronized (gate) {
-            try {
-                ensureAdmitting();
-            } catch (RuntimeException | Error rejectedByScope) {
-                // The caller already acquired the code-generation lease
-                // before calling this method. A cancelled/closed parent
-                // scope rejects without scheduling; it still owns the
-                // responsibility to release that unused lease exactly once.
+        try {
+            synchronized (gate) {
                 try {
-                    onPhysicalExit.run();
-                } catch (RuntimeException | Error releaseFailure) {
-                    rejectedByScope.addSuppressed(releaseFailure);
+                    ensureAdmitting();
+                } catch (RuntimeException | Error rejectedByScope) {
+                    throw new UnadmittedFrame(rejectedByScope);
                 }
-                throw rejectedByScope;
-            }
             OresFuture<Void> exited = new OresFuture<>();
             OresFuture<T> completion;
             try {
@@ -126,18 +132,10 @@ public final class OresTaskScope implements AutoCloseable {
                     }
                 });
             } catch (RuntimeException | Error rejectedBeforeAdmission) {
-                // OresScheduler.start only throws before registering a
-                // TaskRunner (closed scheduler, admission limit or live-set
-                // registration failure). No guest code can be running, so
-                // this owner must retire its already-acquired generation pin.
-                // A post-registration enqueue error instead settles via the
-                // scheduler's onQuiescent callback and cannot enter here.
-                try {
-                    onPhysicalExit.run();
-                } catch (RuntimeException | Error releaseFailure) {
-                    rejectedBeforeAdmission.addSuppressed(releaseFailure);
-                }
-                throw rejectedBeforeAdmission;
+                // OresScheduler.start throws here only before registering
+                // a TaskRunner. A post-registration enqueue failure settles
+                // via onQuiescent and never enters this catch.
+                throw new UnadmittedFrame(rejectedBeforeAdmission);
             }
             OresTask<T> child = new OresTask<>(completion, exited);
             tasks.add(child);
@@ -150,7 +148,27 @@ public final class OresTaskScope implements AutoCloseable {
                     }
                 }
             });
-            return child;
+                return child;
+            }
+        } catch (UnadmittedFrame unadmitted) {
+            // Release the caller's unconsumed generation/resource pin AFTER
+            // the scope monitor is released. Callbacks may acquire other
+            // locks, notify completion listeners or access the same scope.
+            Throwable rejection = unadmitted.rejection;
+            try {
+                onPhysicalExit.run();
+            } catch (RuntimeException | Error releaseFailure) {
+                if (releaseFailure != rejection) {
+                    rejection.addSuppressed(releaseFailure);
+                }
+            }
+            if (rejection instanceof RuntimeException runtimeFailure) {
+                throw runtimeFailure;
+            }
+            if (rejection instanceof Error fatalFailure) {
+                throw fatalFailure;
+            }
+            throw new AssertionError("unsupported Task admission rejection", rejection);
         }
     }
 
