@@ -45,7 +45,9 @@ final class DynamicPropertyAccessRuntimeTest {
                     stdio.println(current[field]);
 
                     val Point point = new Point();
-                    stdio.println(class_set(point, "y", 12));
+                    const classKey = "y";
+                    point[classKey] = 12;
+                    stdio.println(point[classKey]);
                     return;
                 }
                 """;
