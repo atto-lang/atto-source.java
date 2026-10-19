@@ -5026,6 +5026,11 @@ public final class TypeChecker {
      * resolved semantic type is eligible for owned transfer.
      */
     private boolean isThreadSend(Type type) {
+        // One shared budget covers all nominal layout checks triggered by this
+        // top-level Send proof. Otherwise a wide type containing many distinct
+        // nominal nodes could restart a fresh 100k isSharedSafe walk per node
+        // and amplify attacker-controlled compiler work beyond the query cap.
+        int[] nominalSharedSafetyBudget = new int[] {100_000};
         return ThreadSafetyTraits.isOwnedSend(
                 type,
                 new ThreadSafetyTraits.NominalProof() {
@@ -5037,7 +5042,9 @@ public final class TypeChecker {
                                 && isSharedSafe(
                                         nominal,
                                         new LinkedHashSet<>(),
-                                        Map.of());
+                                        Map.of(),
+                                        0,
+                                        nominalSharedSafetyBudget);
                     }
 
                     @Override
