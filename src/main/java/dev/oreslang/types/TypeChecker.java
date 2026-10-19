@@ -1651,9 +1651,12 @@ public final class TypeChecker {
                     env.reserveInferredType(binding.inferredTypeName());
                 }
             }
-            // After reserving explicit aliases, give the short form a new name
-            // only if that name does not already denote a type in this scope.
-            // Forward use of a later explicit alias must remain an error.
+            // Short-form aliases are lexical declarations, so reserve them
+            // in statement order. Pre-reserving every later short alias would
+            // let a future declaration interfere with an earlier nested block
+            // and invert lexical scope. Explicit infer<T> declarations above
+            // remain pre-reserved because their name is stated explicitly and
+            // must reject forward use before initialization.
             for (Ast.Stmt stmt : body) {
                 if (stmt instanceof Ast.BindingStmt binding
                         && isShortNamedAggregateInference(binding, env, generics)) {
@@ -1662,8 +1665,8 @@ public final class TypeChecker {
                     inferredTypeNames.add(name);
                     env.reserveInferredType(name);
                 }
+                checkStatement(stmt, env, generics, expectedReturn, self);
             }
-            for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
         } finally {
             currentTypeScope = previousTypeScope;
         }
