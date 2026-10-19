@@ -21,7 +21,28 @@ public final class InvertedColumnStore implements AutoCloseable {
         public int bytes() { return bytes; }
     }
 
-    public record Handle(long owner, int slot, long generation) { }
+    /**
+     * An opaque, store-issued row capability. Numeric owner/slot/generation
+     * are diagnostic metadata, not sufficient authority to manufacture a
+     * reference to another row. No public constructor or mutator is exposed.
+     */
+    public static final class Handle {
+        private final InvertedColumnStore authority;
+        private final long owner;
+        private final int slot;
+        private final long generation;
+
+        private Handle(InvertedColumnStore authority, long owner, int slot, long generation) {
+            this.authority = authority;
+            this.owner = owner;
+            this.slot = slot;
+            this.generation = generation;
+        }
+
+        public long owner() { return owner; }
+        public int slot() { return slot; }
+        public long generation() { return generation; }
+    }
 
     private static final AtomicLong NEXT_OWNER = new AtomicLong(1);
     private static long nextOwner() {
@@ -142,7 +163,8 @@ public final class InvertedColumnStore implements AutoCloseable {
 
     private int resolve(Handle handle) {
         open();
-        if (handle == null || handle.owner() != owner || handle.slot() < 0
+        if (handle == null || handle.authority != this
+                || handle.owner() != owner || handle.slot() < 0
                 || handle.slot() >= slotCount) {
             throw new IllegalArgumentException("foreign or invalid inverted row handle");
         }
@@ -201,7 +223,7 @@ public final class InvertedColumnStore implements AutoCloseable {
         slotRows[slot] = row;
         live[slot] = true;
         length++;
-        return new Handle(owner, slot, generations[slot]);
+        return new Handle(this, owner, slot, generations[slot]);
     }
 
     /** Unordered O(column-count) erase, preserving surviving logical handles. */
@@ -217,6 +239,14 @@ public final class InvertedColumnStore implements AutoCloseable {
             int displaced = rowSlots[last];
             rowSlots[row] = displaced;
             slotRows[displaced] = row;
+        }
+        // The vacated trailing physical row must not retain values from a
+        // deleted row after a swap. This also clears references to old scalar
+        // payloads before that storage slot can be reused.
+        for (int i = 0; i < kinds.length; i++) {
+            int stride = kinds[i].bytes();
+            int start = last * stride;
+            Arrays.fill(columns[i], start, start + stride, (byte) 0);
         }
         length--;
         int slot = handle.slot();
@@ -338,6 +368,9 @@ public final class InvertedColumnStore implements AutoCloseable {
         if (closed) return;
         closed = true;
         for (int i = 0; i < kinds.length; i++) {
+            // Revoke borrows first (closed=true), then erase remaining scalar
+            // backing memory before releasing the arrays.
+            Arrays.fill(columns[i], (byte) 0);
             columns[i] = new byte[0];
             buffers[i] = ByteBuffer.wrap(columns[i]).order(ByteOrder.LITTLE_ENDIAN);
         }
