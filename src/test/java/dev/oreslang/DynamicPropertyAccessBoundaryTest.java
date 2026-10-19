@@ -134,6 +134,28 @@ final class DynamicPropertyAccessBoundaryTest {
                 """);
     }
 
+
+    @Test
+    void namedConstSelectorsKeepOwnershipPrecisionWithMoveOnlySiblings() {
+        accepted("""
+                define class Box as
+                    pub val int payload = 1;
+                end
+
+                fnc tuple_copy(): int {
+                    const pair = tuple(7, new Box());
+                    const index = 0;
+                    return pair[index];
+                }
+
+                fnc record_copy(): int {
+                    const row = record{x: 7, box: new Box()};
+                    const key = "x";
+                    return row[key];
+                }
+                """);
+    }
+
     @Test
     void classFieldsSupportStringIndexingButMethodsAreNotProperties() {
         accepted("""
