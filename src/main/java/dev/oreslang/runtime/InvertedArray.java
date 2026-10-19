@@ -150,7 +150,7 @@ public final class InvertedArray implements AutoCloseable {
         return values;
     }
 
-    /** Allocates only the returned handle; no per-row object/Map allocation. */
+    /** Stores a row in existing scalar columns; no persistent row object is created. */
     public InvertedColumnStore.Handle push(Map<String, ?> fields) {
         return store.push(checkedValues(fields));
     }
@@ -195,6 +195,28 @@ public final class InvertedArray implements AutoCloseable {
         // Reject foreign, stale or deleted handles before allocating a view.
         store.snapshot(handle);
         return new RowView(handle);
+    }
+
+    /**
+     * Compile-time name resolution target. A guest field site will bind one
+     * accessor once and use its fixed column index thereafter; every access
+     * still validates the opaque row handle and active borrow permissions.
+     */
+    public ColumnAccess bindField(String field) {
+        return new ColumnAccess(schema.index(field));
+    }
+
+    public final class ColumnAccess {
+        private final int column;
+        private ColumnAccess(int column) { this.column = column; }
+        public String name() { return schema.fields().get(column).name(); }
+        public InvertedColumnStore.Kind kind() { return schema.fields().get(column).kind(); }
+        public Object get(InvertedColumnStore.Handle handle) {
+            return store.get(handle, column);
+        }
+        public void set(InvertedColumnStore.Handle handle, Object value) {
+            store.set(handle, column, value);
+        }
     }
 
     public final class RowView {
