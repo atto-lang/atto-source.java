@@ -133,4 +133,44 @@ final class LinkedPublicClassFieldTypesTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new IncrementalCompiler().compile(files));
     }
+
+    @Test
+    void linkedBuildPreservesShortInferredAliasAndExactSelectorOwnershipPrecision() {
+        var files = sources();
+        files.put("src/decoder.ores", """
+                import class ImportedOptions from './options';
+
+                pub fnc read(ImportedOptions options): int {
+                  const Row row = infer record{id: 7, options: options};
+                  const key = "id";
+                  return row[key];
+                }
+                """);
+        assertDoesNotThrow(() -> new IncrementalCompiler().compile(files));
+    }
+
+    @Test
+    void linkedInheritedLayoutsRemainFailClosedWithoutParentClosureMetadata() {
+        var files = new LinkedHashMap<String, String>();
+        files.put("src/model.ores", """
+                define class Parent<T> as
+                  pub val T inherited;
+                end
+
+                pub define class Child<U> extends Parent<U> as
+                  pub val U own;
+                end
+                """);
+        files.put("src/use.ores", """
+                import class Child from './model';
+
+                pub fnc read(Child<int> value): int {
+                  return value["inherited"];
+                }
+                """);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(files));
+    }
+
 }
