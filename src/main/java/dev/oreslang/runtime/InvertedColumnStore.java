@@ -187,7 +187,9 @@ public final class InvertedColumnStore implements AutoCloseable {
         }
         for (int i = 0; i < kinds.length; i++) validateValue(kinds[i], values[i]);
         if (length == Integer.MAX_VALUE) throw new IllegalStateException("row capacity exhausted");
-        if (length == capacity) {
+        // A retired generation-MAX slot is not reusable. Slot metadata can
+        // therefore fill up even when live row count is below row capacity.
+        if (length == capacity || (freeCount == 0 && slotCount == capacity)) {
             int next = capacity == 0 ? 1 : Math.addExact(capacity, Math.max(capacity, 1));
             reserve(next);
         }
