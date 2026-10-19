@@ -317,6 +317,69 @@ chmod +x "$work/broken-index-bin/git"
   assert_status 68 'injected empty directory denied despite hidden untracked listing' "$clean_tree" source
 )
 rmdir source/injected-empty-directory
+# Duplicate stage-0 entries that pass casual nonempty checks must be rejected.
+cat > "$work/broken-index-bin/git" <<'MOCK_DUPLICATE_INDEX'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == ls-files && "$2" == --stage ]]; then
+  "$REAL_GIT" "$@" | python3 -c '
+import sys
+data = sys.stdin.buffer.read()
+records = data.split(b"\0")
+assert len(records) >= 3 and not records[-1]
+sys.stdout.buffer.write(data + records[0] + b"\0")
+'
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+MOCK_DUPLICATE_INDEX
+chmod +x "$work/broken-index-bin/git"
+(
+  export PATH="$work/broken-index-bin:$PATH"
+  assert_status 68 'duplicated stage-0 index entry denied' "$clean_tree" source
+)
+# A corrupted but correctly shaped mode must not be accepted as a match.
+cat > "$work/broken-index-bin/git" <<'MOCK_CORRUPT_MODE'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == ls-files && "$2" == --stage ]]; then
+  "$REAL_GIT" "$@" | python3 -c '
+import sys
+data = sys.stdin.buffer.read()
+assert data.startswith(b"100644 ") or data.startswith(b"100755 ")
+data = (b"100755 " if data.startswith(b"100644 ") else b"100644 ") + data[7:]
+sys.stdout.buffer.write(data)
+'
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+MOCK_CORRUPT_MODE
+chmod +x "$work/broken-index-bin/git"
+(
+  export PATH="$work/broken-index-bin:$PATH"
+  assert_status 68 'wrong staged mode denied even when blob matches' "$clean_tree" source
+)
+# Duplicate committed tree rows are untrustworthy, even with a healthy index.
+cat > "$work/broken-index-bin/git" <<'MOCK_DUPLICATE_TREE'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == ls-tree ]]; then
+  "$REAL_GIT" "$@" | python3 -c '
+import sys
+data = sys.stdin.buffer.read()
+records = data.split(b"\0")
+assert len(records) >= 3 and not records[-1]
+sys.stdout.buffer.write(data + records[0] + b"\0")
+'
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+MOCK_DUPLICATE_TREE
+chmod +x "$work/broken-index-bin/git"
+(
+  export PATH="$work/broken-index-bin:$PATH"
+  assert_status 68 'duplicated committed-tree row denied' "$clean_tree" source
+)
 # Verify ordinary source works after removing the adversarial Git shim.
 assert_status 0 'clean source remains valid after index failure test' "$clean_tree" source
 echo 'SOURCE_TREE_GATE_TESTS_PASS'
