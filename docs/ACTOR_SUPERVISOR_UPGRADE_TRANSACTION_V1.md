@@ -249,3 +249,44 @@ The protected source `main` allowlist still has **no approved private
 CI destinations**, and source transfer security issue #962 plus branch
 protection #904 are unresolved. No private source was copied to another
 organization. Keep PR #1367 draft and production hot reload disabled.
+
+## Independent spawn rollback after collection cleanup faults
+
+The runtime's post-admission failure path previously wrapped physical
+registry removal, parent-child unlinking, managed ActorGroup membership
+removal, and unregistered cell disposal in one exception handler.
+A registry removal that performed its mutation and then threw (including
+fault-injected out-of-memory errors) prevented every subsequent cleanup
+step from executing, even though the reserved actor slot was refunded.
+This could strand parent lineage and group ownership for an actor whose
+spawn did not return a reference.
+
+The post-spawn failure path now runs each teardown operation under an
+independent guarded attempt, preserving the original admission failure and
+continuing remaining cleanup when a prior attempt throws. The existing
+actor-count refund stays in the outer finally. This change intentionally
+does not treat a failed collection operation as proof that its mutation
+completed; a hypothetical removal that throws before removing a live
+registry entry remains an unproven failure mode requiring stronger
+registration ownership/reconciliation.
+
+Real-runtime JUnit regression
+`ActorRuntimeSpawnLineageRollbackTest.failedRegistryRemovalAfterMutationStillUnlinksParentAndRefundsSlot`
+uses a faulted actor registry whose child `put` inserts then throws and
+whose child `remove` deletes then throws. It asserts the original parent
+is still registered, the child lineage is removed and the reserved
+actor count is refunded. The JUnit source has been committed but is
+**not executed by the source repository's JDK25/Graal Maven workflows**.
+
+An independent Java 21 fault model compiled with
+`javac --release 21 -Xlint:all -Werror` and passed
+**300,044 checks**, including 60,000 concurrent fault rounds across
+four workers. The negative control for the previous one-try ordering
+reported seven unsafe injected-fault configurations. This verifies a
+standalone model, **not the Oreslang ActorRuntime implementation**.
+
+The private CI destination policy on source main still has no approved
+cross-organization mirror, security issue #962 remains open, and
+source-owned workflows have failed without job execution steps.
+No private source was transferred or copied to another organization.
+Production hot reload and PR merge remain blocked.
