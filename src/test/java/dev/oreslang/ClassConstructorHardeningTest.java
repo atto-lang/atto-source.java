@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
@@ -332,6 +333,158 @@ final class ClassConstructorHardeningTest {
                 || privateClass.getMessage().contains("export")
                 || (privateClass.getCause() != null
                     && String.valueOf(privateClass.getCause().getMessage()).contains("export")));
+    }
+
+    @Test
+    void genericTypeQualifiedNewExecutesExplicitConstructor() throws Exception {
+        String output = run("""
+                define class Box<T> as
+                  val T value;
+
+                  constructor(T value) {
+                    self.value = value;
+                  }
+
+                  pub get(): T {
+                    return self.value;
+                  }
+                end
+
+                pub routine main(): void {
+                  val Box<int> box = Box<int>.new(value: 42);
+                  stdio.stdout.write(box.get());
+                  return;
+                }
+                """);
+
+        assertEquals("42", output);
+    }
+
+    @Test
+    void genericTypeQualifiedNewEvaluatesSourceOrderThenPermutesConstructorAbi() throws Exception {
+        String output = run("""
+                fnc mark(int value): int {
+                  stdio.stdout.write(value);
+                  return value;
+                }
+
+                define class Pair<T> as
+                  val int first;
+                  val int second;
+
+                  constructor(int first, int second) {
+                    self.first = first;
+                    self.second = second;
+                  }
+
+                  pub number(): int {
+                    return self.first * 10 + self.second;
+                  }
+                end
+
+                pub routine main(): void {
+                  val Pair<int> pair = Pair<int>.new(
+                    second: mark(2),
+                    first: mark(1)
+                  );
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(pair.number());
+                  return;
+                }
+                """);
+
+        assertEquals("21|12", output);
+    }
+
+    @Test
+    void typeQualifiedConstructorRequiresCompilerProofForDirectCapabilityAdmission() {
+        Ast.Program parsed = Parser.parse("""
+                define class Box<T> as
+                  val T value;
+                  constructor(T value) {
+                    self.value = value;
+                  }
+                end
+
+                pub routine main(): void {
+                  val Box<int> box = Box<int>.new(value: 1);
+                  return;
+                }
+                """);
+
+        IllegalStateException unverified = assertThrows(
+                IllegalStateException.class,
+                () -> CapabilityChecker.check(parsed, IsolatePolicy.developer()));
+        assertTrue(unverified.getMessage().contains("compiler-verified"),
+                unverified::toString);
+
+        Ast.Program checked = TypeChecker.checkTypes(parsed);
+        assertDoesNotThrow(
+                () -> CapabilityChecker.check(checked, IsolatePolicy.developer()));
+    }
+
+    @Test
+    void typeQualifiedNewRemainsNarrowAndFailClosedOutsideExplicitConstructorSlice() {
+        IllegalArgumentException wrongMember = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          constructor(T value) { return; }
+                        end
+                        pub routine main(): void {
+                          Box<int>.make(value: 1);
+                          return;
+                        }
+                        """)));
+        assertTrue(wrongMember.getMessage().contains("only supports")
+                        || wrongMember.getMessage().contains(".new"),
+                wrongMember::toString);
+
+        IllegalArgumentException inferredType = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          constructor(T value) { return; }
+                        end
+                        pub routine main(): void {
+                          Box<>.new(value: 1);
+                          return;
+                        }
+                        """)));
+        assertTrue(inferredType.getMessage().contains("explicit type arguments"),
+                inferredType::toString);
+
+        IllegalArgumentException synthesized = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Legacy<T> as
+                          val T value;
+                        end
+                        pub routine main(): void {
+                          Legacy<int>.new(value: 1);
+                          return;
+                        }
+                        """)));
+        assertTrue(synthesized.getMessage().contains("explicit constructor"),
+                synthesized::toString);
+
+        IllegalArgumentException namedNewSyntax = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          val T value;
+                          constructor(T value) {
+                            self.value = value;
+                          }
+                        end
+                        pub routine main(): void {
+                          val Box<int> box = new Box<int>(value: 1);
+                          return;
+                        }
+                        """)));
+        assertTrue(namedNewSyntax.getMessage().contains("named constructor")
+                        || namedNewSyntax.getMessage().contains("not yet enabled"),
+                namedNewSyntax::toString);
     }
 
     @Test
