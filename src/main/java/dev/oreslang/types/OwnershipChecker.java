@@ -857,6 +857,9 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
+            throw error("named/trailing-closure call lowering is not yet enabled");
+        }
         if (expr instanceof Ast.MatchExpr match) {
             ValueInfo subject = checkExpr(match.subject(), scope, false);
             VarState source = match.subject() instanceof Ast.NameExpr name
