@@ -142,6 +142,25 @@ final class ComputedAggregateIndexBoundaryTest {
                 """, "indexing requires");
     }
 
+
+    @Test
+    void finiteTuplesRejectIndexedWritesEvenThroughMutableBindings() {
+        deniedWithMessage("""
+                fnc bad(): void {
+                    val pair = tuple(3, 4);
+                    pair[0] = 8;
+                    return;
+                }
+                """, "tuple indexed assignment");
+        deniedWithMessage("""
+                fnc bad(int index): void {
+                    val pair = tuple(3, 4);
+                    pair[index] = 8;
+                    return;
+                }
+                """, "tuple indexed assignment");
+    }
+
     @Test
     void computedKeysAreReadsNotDynamicFieldCreationOrReadonlyEscape() {
         denied("""
