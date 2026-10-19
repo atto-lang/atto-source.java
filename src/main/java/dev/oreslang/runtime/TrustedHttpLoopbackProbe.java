@@ -104,14 +104,41 @@ final class TrustedHttpLoopbackProbe implements AutoCloseable {
         closed = true;
     }
 
-    /** Fences new dispatch and asks the JDK to abort outstanding transport. */
-    @Override public synchronized void close() {
+    /**
+     * Host-only bounded shutdown barrier. A successful cancellation request
+     * or a completed caller future is not sufficient to return a cleanup
+     * reservation to the allocator. Confirm HttpClient termination and its
+     * outstanding host completion callbacks before reporting success.
+     *
+     * This proves termination at the JDK HTTP client boundary, NOT kernel-
+     * observed socket quiescence. A lower-level socket census is still
+     * required before treating this broker as production-safe.
+     */
+    @Override public void close() {
         requireHost();
-        closed = true; // repeat cancellation for host exchanges not yet settled
+        synchronized (this) {
+            closed = true;
+        }
         for (var host : active) host.cancel(true);
         client.shutdownNow();
-        // Do not release leases here. Each active host completion owns
-        // settlement. Physical transport quiescence is NOT guaranteed here.
+        final boolean terminated;
+        try {
+            terminated = client.awaitTermination(Duration.ofMillis(500));
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(
+                    "HTTP client shutdown interrupted: cleanup reservation retained", interrupted);
+        }
+        if (!terminated || !client.isTerminated() || !active.isEmpty()) {
+            throw new IllegalStateException(
+                    "HTTP client not quiescent: cleanup reservation retained");
+        }
+    }
+
+    /** Host-side assertion only; does not certify kernel socket teardown. */
+    boolean clientTerminatedForHost() {
+        requireHost();
+        return client.isTerminated() && active.isEmpty();
     }
 
     private static void requireHost() {

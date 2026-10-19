@@ -4,6 +4,7 @@ import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
@@ -38,6 +39,10 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
     private static final Semaphore CLEANUP_SLOTS = new Semaphore(MAX_LIVE_BINDINGS);
     private static final ArrayBlockingQueue<TrustedActorLoopbackEgressBridge>
             CLEANUP_QUEUE = new ArrayBlockingQueue<>(MAX_LIVE_BINDINGS);
+    // Preserve failed broker instances and their reserved slots for a later
+    // host-only retry. Never silently lose a failed cleanup and its capacity.
+    private static final Set<TrustedActorLoopbackEgressBridge> CLEANUP_QUARANTINE =
+            ConcurrentHashMap.newKeySet();
     private static final System.Logger LOG =
             System.getLogger(TrustedActorLoopbackEgressBridge.class.getName());
 
@@ -103,8 +108,10 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
         if (HOST_BINDINGS.putIfAbsent(bindingKey, this) != null) {
             try {
                 broker.close();
-            } finally {
                 releaseCleanupSlot();
+            } catch (RuntimeException | Error failure) {
+                enqueueTerminatedCleanup();
+                throw failure;
             }
             throw new IllegalStateException("untrusted actor already has a host egress binding");
         }
@@ -121,8 +128,10 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
             }
             try {
                 broker.close();
-            } finally {
                 releaseCleanupSlot();
+            } catch (RuntimeException | Error cleanupFailure) {
+                enqueueTerminatedCleanup();
+                failure.addSuppressed(cleanupFailure);
             }
             throw failure;
         }
@@ -238,6 +247,7 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
 
     private void releaseCleanupSlot() {
         if (cleanupSlotReleased.compareAndSet(false, true)) {
+            CLEANUP_QUARANTINE.remove(this);
             CLEANUP_SLOTS.release();
         }
     }
@@ -248,10 +258,13 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
         }
         // Guaranteed capacity: at most MAX_LIVE_BINDINGS unresolved instances
         // each reserve one slot and enqueue no more than once.
-        if (!CLEANUP_QUEUE.offer(this)) {
+        if (CLEANUP_QUEUE.offer(this)) {
+            CLEANUP_QUARANTINE.remove(this);
+        } else {
             cleanupQueued.set(false);
+            CLEANUP_QUARANTINE.add(this);
             LOG.log(System.Logger.Level.ERROR,
-                    "reserved host egress cleanup queue unexpectedly full; binding stays revoked");
+                    "reserved host egress cleanup queue unexpectedly full; binding quarantined");
         }
     }
 
@@ -270,9 +283,24 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
                         "host egress cleanup failed, attempt " + attempt, failure);
             }
         }
+        CLEANUP_QUARANTINE.add(this);
         cleanupQueued.set(false);
         LOG.log(System.Logger.Level.ERROR,
-                "host egress cleanup exhausted retries; capacity reserved until host closes");
+                "host egress cleanup exhausted retries; instance quarantined and capacity retained");
+    }
+
+    /** Host-only diagnosis/recovery. Never returns a privileged broker. */
+    static int failedCleanupCountForHost() {
+        requireHost();
+        return CLEANUP_QUARANTINE.size();
+    }
+
+    static void retryFailedCleanupForHost() {
+        requireHost();
+        for (var bridge : CLEANUP_QUARANTINE.toArray(
+                new TrustedActorLoopbackEgressBridge[0])) {
+            bridge.enqueueTerminatedCleanup();
+        }
     }
 
     /** Host-only diagnostic: never exposes binding objects or network handles. */
@@ -310,7 +338,14 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
         }
         // HTTP client cancellation may block. Keep it OUTSIDE the bridge
         // monitor; repeated close still retries unsettled host exchanges.
-        broker.close();
-        releaseCleanupSlot();
+        try {
+            broker.close();
+            releaseCleanupSlot();
+        } catch (RuntimeException | Error failure) {
+            // Explicit host close is allowed to report failure, but must not
+            // drop the only reference to a non-quiescent broker resource.
+            enqueueTerminatedCleanup();
+            throw failure;
+        }
     }
 }
