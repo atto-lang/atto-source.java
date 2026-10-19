@@ -128,9 +128,11 @@ final class SourceActorTypedWireV2Test {
         assertThrows(IllegalArgumentException.class,
                 () -> SourceActorTypedWireV2.encodeLong(
                         bind(ActorRuntime.ProxyWireScalarKind.INT), 1, 69));
+        // Huge caller budgets cannot bypass the absolute 1 MiB frame cap.
         assertThrows(IllegalArgumentException.class,
                 () -> SourceActorTypedWireV2.encodeString(
-                        text, "x", Integer.MAX_VALUE));
+                        text, "x".repeat(SourceActorTypedWireV2.MAX_FRAME_BYTES),
+                        Integer.MAX_VALUE));
         byte[] wrongLength = valid.clone();
         ByteBuffer.wrap(wrongLength).order(ByteOrder.BIG_ENDIAN)
                 .putInt(64, Integer.MAX_VALUE);
