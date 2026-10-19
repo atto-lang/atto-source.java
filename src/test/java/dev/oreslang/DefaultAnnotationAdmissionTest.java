@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.DefaultArgumentPolicy;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.OptionalCallShapeBinder;
 import dev.oreslang.types.TypeChecker;
@@ -48,6 +49,8 @@ final class DefaultAnnotationAdmissionTest {
         assertEquals("Default", formal.annotations().getFirst().name());
         assertEquals(7L, formal.annotations().getFirst()
                 .arguments().getFirst().intLiteralValue());
+        assertEquals(DefaultArgumentPolicy.Literal.integer(7),
+                DefaultArgumentPolicy.stagedLiteralFromAst(formal));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
         assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(program));
     }
@@ -61,6 +64,12 @@ final class DefaultAnnotationAdmissionTest {
         List<Ast.Param> params = function(parsed).parameters();
         assertEquals(-5L, params.get(0).annotations().getFirst()
                 .arguments().getFirst().intLiteralValue());
+        assertEquals(DefaultArgumentPolicy.Literal.integer(-5),
+                DefaultArgumentPolicy.stagedLiteralFromAst(params.get(0)));
+        assertEquals(DefaultArgumentPolicy.Literal.bool(true),
+                DefaultArgumentPolicy.stagedLiteralFromAst(params.get(1)));
+        assertEquals(DefaultArgumentPolicy.Literal.string("abc"),
+                DefaultArgumentPolicy.stagedLiteralFromAst(params.get(2)));
         assertTrue(params.get(1).annotations().getFirst()
                 .arguments().getFirst().boolLiteralValue());
         assertEquals("abc", params.get(2).annotations().getFirst()
@@ -77,7 +86,10 @@ final class DefaultAnnotationAdmissionTest {
         assertTrue(params.get(0).hasDefault());
         assertEquals("None", params.get(0).annotations().getFirst()
                 .arguments().getFirst().name());
+        assertEquals(DefaultArgumentPolicy.Literal.none(),
+                DefaultArgumentPolicy.stagedLiteralFromAst(params.get(0)));
         assertFalse(params.get(1).hasDefault());
+        assertNull(DefaultArgumentPolicy.stagedLiteralFromAst(params.get(1)));
     }
 
     @Test
@@ -138,6 +150,23 @@ final class DefaultAnnotationAdmissionTest {
         assertTrue(failure.getMessage().contains("@Default"));
         assertThrows(IllegalArgumentException.class, () -> new Ast.Param(
                 Ast.TypeRef.simple("int"), "x", false, true, forged.annotations()));
+    }
+
+    @Test
+    void malformedForgedLiteralCannotMasqueradeAsCompilerDefault() {
+        Ast.Param forged = new Ast.Param(
+                Ast.TypeRef.simple("int"), "x", false, false,
+                List.of(new Ast.Annotation("Default",
+                        List.of(Ast.TypeRef.simple("fakeDefault")))));
+        assertThrows(IllegalArgumentException.class,
+                () -> DefaultArgumentPolicy.stagedLiteralFromAst(forged));
+
+        Ast.Param huge = new Ast.Param(
+                Ast.TypeRef.simple("int"), "x", false, false,
+                List.of(new Ast.Annotation("Default",
+                        List.of(Ast.TypeRef.intLiteral("999999999999999999999999")))));
+        assertThrows(IllegalArgumentException.class,
+                () -> DefaultArgumentPolicy.stagedLiteralFromAst(huge));
     }
 
     @Test
