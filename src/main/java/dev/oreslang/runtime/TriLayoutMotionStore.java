@@ -225,14 +225,14 @@ public final class TriLayoutMotionStore implements AutoCloseable {
         if (!Double.isFinite(dt)) throw new IllegalArgumentException("dt must be finite");
         requireResident(layout);
         requireNextEpoch();
-        ensure(layout);
         for (int row = 0; row < size; row++) {
-            double nx = getField(layout, row, 0) + getField(layout, row, 2) * dt;
-            double ny = getField(layout, row, 1) + getField(layout, row, 3) * dt;
+            double nx = getField(authoritative, row, 0) + getField(authoritative, row, 2) * dt;
+            double ny = getField(authoritative, row, 1) + getField(authoritative, row, 3) * dt;
             if (!Double.isFinite(nx) || !Double.isFinite(ny)) {
                 throw new ArithmeticException("integration would produce non-finite positions");
             }
         }
+        ensure(layout);
         for (int row = 0; row < size; row++) {
             setField(layout, row, 0, getField(layout, row, 0) + getField(layout, row, 2) * dt);
             setField(layout, row, 1, getField(layout, row, 1) + getField(layout, row, 3) * dt);
