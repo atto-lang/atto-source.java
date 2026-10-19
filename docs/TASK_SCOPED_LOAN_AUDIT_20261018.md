@@ -1,6 +1,6 @@
 # Scoped Task loan audit — October 18, 2026
 
-**Status:** compiler-analysis helper only. NOT guest Task syntax admission, Java/Graal runtime execution, or LLVM compiler parity. Draft PR #1448 stacks on Send/Sync PR #1439; shared semantics in common-source PR #90.
+**Status:** compiler-analysis helper only. NOT guest Task syntax admission, Java/Graal runtime execution, or LLVM compiler parity. Fresh hardened successor of draft PR #1448, stacked on Send/Sync PR #1439 at commit ceb7382ff3e91ade8319dd763314c4f6028ecdaf; shared semantics in common-source PR #90.
 
 ## Confirmed findings and mitigations
 
@@ -24,7 +24,7 @@
 
 ## Evidence and acceptance
 
-- 26 JUnit regression methods committed; neither Maven/JUnit nor actual GraalVM guest compiler tests were executed in this audit.
+- 37 JUnit regression methods committed; neither Maven/JUnit nor actual GraalVM guest compiler tests were executed in this audit.
 - At the inspected 2026-10-19 03:10 UTC head, Actions fast-ci run 39193409339, concurrency-contract run 39193409592 and ci run 39193409489 all show sampled jobs failing with **zero executed steps**. This is not Java test evidence.
 - Required before merge: JDK Maven exact-head TaskAccessVerifierTest and full relevant checks; positive/negative source compiler diagnostics; TaskScope cancellation vs physical quiescence; native LLVM and TSan/ASan where applicable; correct dependency revision.
 - No private-source cross-organization mirror was created or authorized. Keep this PR DRAFT.
@@ -83,3 +83,37 @@ no private Git tree was exported to another organization.
   [concurrency-contract #39195061990](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39195061990), and
   [ci #39195061823](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39195061823)
   all show **zero executed job steps** and no runner assignment.
+
+## New hardening batch (October 19, 2026)
+
+**Dependency drift fixed by clean stacking.** Original scoped loan PR #1448
+was 44 commits behind its Send/Sync parent (#1439); newer changes included
+fail-closed auto-trait derivation, ECS planner checks, and actor-transport
+regressions. This new branch was created from the updated #1439 head at
+`ceb7382ff3e91ade8319dd763314c4f6028ecdaf` and reapplies only the three
+verifier/test/audit files, avoiding an unsafe pseudo-rebase or force push.
+Recompare with parent if #1439 moves again.
+
+**P1 algorithmic DoS prevented.** The original child/task counts allowed up
+to 4096*1024 simultaneously live claims; admitting a new task could compare
+against all of them (billions of checks). New limits: 8192 live claims and
+2,000,000 maximum potential pairwise comparisons *per admission*. The check
+is computed using 64-bit arithmetic before modifying the ledger. Retiring
+a physically-quiescent child releases exactly its tracked claim capacity;
+a cancellation request does not. New regressions check all-or-none rejection,
+cancel-not-release, and reclamation on retirement.
+
+**P0 type spoofing boundary tightened.** `admitTyped` now requires a
+`PlaceTypeProof` callback from trusted resolved MIR place typing and checks
+every `TypedClaim.type` against that actual referent before asking Send/Sync
+and before reserving any borrows. Missing/mismatched types, including
+the classic falsely annotating a native handle as `int`, reject atomically.
+The original two-argument overload has been removed from this still-draft
+helper. **This callback is not an authenticated proof token**: until actual
+compiler place resolution supplies it, executable source Task borrowing
+remains disabled.
+
+**Evidence.** This branch has 37 committed JUnit tests, including
+the new resource and resolved-place regressions. These are checked in
+but not claimed executed. CI on current exact head must be inspected
+separately. No repository source was mirrored to a separate organization.
