@@ -189,4 +189,101 @@ final class LogicalSourceActorInitialSpawnQuarantineTest {
         }
     }
 
+
+    @Test
+    void realInitialSpawnReadyTimeoutDoesNotOrphanGenerationPin()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var generation = manager.stageActorGeneration(
+                    "timeout-real-initial-spawn.ores", ACTOR);
+            var view = generation.linkActorGeneration("Counter");
+            ActorRuntime runtime = view.runtime();
+            Field dispatcherField =
+                    ActorRuntime.class.getDeclaredField("sharedDispatcher");
+            dispatcherField.setAccessible(true);
+            var original = (java.util.concurrent.ExecutorService)
+                    dispatcherField.get(runtime);
+            var withheld = new java.util.concurrent.ConcurrentLinkedQueue<Runnable>();
+            var blackHole = new java.util.concurrent.AbstractExecutorService() {
+                private volatile boolean shut;
+                @Override public void execute(Runnable command) {
+                    if (shut) throw new java.util.concurrent.RejectedExecutionException();
+                    withheld.add(command);
+                }
+                @Override public void shutdown() { shut = true; }
+                @Override public java.util.List<Runnable> shutdownNow() {
+                    shut = true;
+                    return java.util.List.of();
+                }
+                @Override public boolean isShutdown() { return shut; }
+                @Override public boolean isTerminated() { return shut; }
+                @Override public boolean awaitTermination(
+                        long timeout, java.util.concurrent.TimeUnit unit) {
+                    return shut;
+                }
+            };
+            Field pinsField = HotReloadManager.Generation.class
+                    .getDeclaredField("actorRoutePins");
+            pinsField.setAccessible(true);
+            Field ledgerField = LogicalSourceActorRouterV1.class
+                    .getDeclaredField("failedInitialSpawns");
+            ledgerField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            var ledger = (java.util.List<Object>) ledgerField.get(null);
+            Field lockField = LogicalSourceActorRouterV1.class
+                    .getDeclaredField("failedSpawnLock");
+            lockField.setAccessible(true);
+            Object lock = lockField.get(null);
+
+            dispatcherField.set(runtime, blackHole);
+            try {
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> LogicalSourceActorRouterV1.spawn(
+                                generation, ActorRuntime.ActorKind.SHARED,
+                                "Counter", Duration.ofMillis(100)));
+                assertFalse(withheld.isEmpty(),
+                        "real SHARED source actor dispatch must be withheld");
+                synchronized (lock) {
+                    for (Object owner : ledger) {
+                        Field ownerView = owner.getClass().getDeclaredField("view");
+                        ownerView.setAccessible(true);
+                        if (ownerView.get(owner) != view) continue;
+                        Field eligible =
+                                owner.getClass().getDeclaredField("retryableFailure");
+                        eligible.setAccessible(true);
+                        assertTrue(eligible.getBoolean(owner),
+                                "a failed startup must hand physical cleanup to its reaper");
+                        Field physical = owner.getClass().getDeclaredField("physical");
+                        physical.setAccessible(true);
+                        Object ref = physical.get(owner);
+                        assertNotNull(ref,
+                                "a timeout after runtime admission retains its physical identity");
+                        assertEquals(1, pinsField.getInt(generation),
+                                "unfinished physical actor must keep its executable generation pin");
+                    }
+                }
+            } finally {
+                // Restore the genuine dispatcher BEFORE draining any saved
+                // work; teardown may schedule additional trusted callbacks.
+                dispatcherField.set(runtime, original);
+                blackHole.shutdownNow();
+                Runnable pending;
+                while ((pending = withheld.poll()) != null) pending.run();
+            }
+
+            long deadline = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.SECONDS.toNanos(6);
+            while (pinsField.getInt(generation) != 0
+                    && System.nanoTime() < deadline) {
+                LogicalSourceActorRouterV1.reapFailedInitialSpawns();
+                Thread.sleep(5);
+            }
+            assertEquals(0, pinsField.getInt(generation),
+                    "failed real initial spawn cannot permanently strand code lease");
+            assertEquals(0, LogicalSourceActorRouterV1.reapFailedInitialSpawns(),
+                    "a recovered generation pin cannot be refunded twice");
+        }
+    }
+
 }
