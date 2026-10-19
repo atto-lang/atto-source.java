@@ -26,6 +26,11 @@ final class TaskCancellation {
 
     private final Set<TaskCancellation> children =
             Collections.newSetFromMap(new IdentityHashMap<>());
+    // Separate physical-lifetime edges from revocation edges. Cancellation
+    // detaches revocation edges immediately, but a child still occupies a
+    // parent join slot until its own scheduler-confirmed retirement.
+    private final Set<TaskCancellation> lifetimeChildren =
+            Collections.newSetFromMap(new IdentityHashMap<>());
     private final Set<Registration> revokers = new LinkedHashSet<>();
     private final Set<Registration> observers = new LinkedHashSet<>();
     // Links are registered on a separate source authority. Their target
@@ -33,6 +38,11 @@ final class TaskCancellation {
     // physically completed downstream task indefinitely.
     private final Set<Subscription> upstreamLinks = new LinkedHashSet<>();
     private TaskCancellation owner;
+    private TaskCancellation lifetimeParent;
+    // Set once the owning Task reaches terminal/quiescent publication.
+    // No new child or adoption may race a completed parent join barrier.
+    private boolean childAdmissionSealed;
+    private Runnable childrenDrained;
     // Protected by GRAPH_LOCK: completed tokens must not regain authority.
     private boolean retired;
     private volatile boolean cancelled;
@@ -45,8 +55,12 @@ final class TaskCancellation {
 
     TaskCancellation child() {
         synchronized (GRAPH_LOCK) {
-            if (retired) throw new IllegalStateException("cannot spawn from retired authority");
+            if (retired || childAdmissionSealed) {
+                throw new IllegalStateException("cannot spawn from sealed task authority");
+            }
             TaskCancellation child = new TaskCancellation();
+            child.lifetimeParent = this;
+            lifetimeChildren.add(child);
             if (cancelled) {
                 child.cancellationReason = cancellationReason;
                 child.cancelled = true;
@@ -76,12 +90,13 @@ final class TaskCancellation {
     void retire() {
         List<Registration> detached = new ArrayList<>();
         List<Subscription> detachedLinks = new ArrayList<>();
+        Runnable notifyLifetimeParent;
         synchronized (GRAPH_LOCK) {
             if (retired) return;
             // Retiring a parent with live children would orphan structured
             // cancellation authority: their next owner could no longer
             // request revocation through this parent.
-            if (!children.isEmpty()) {
+            if (!lifetimeChildren.isEmpty()) {
                 throw new IllegalStateException("cannot retire authority with live children");
             }
             retired = true;
@@ -89,6 +104,7 @@ final class TaskCancellation {
             upstreamLinks.clear();
             if (owner != null) owner.children.remove(this);
             owner = null;
+            notifyLifetimeParent = detachLifetimeParentLocked();
             detached.addAll(revokers);
             revokers.clear();
             // Cancellation may have marked this token while a synchronous
@@ -109,6 +125,38 @@ final class TaskCancellation {
         // Close subscriptions outside GRAPH_LOCK: Registration.close()
         // synchronizes on GRAPH_LOCK to unlink from the source's observers.
         for (Subscription link : detachedLinks) link.close();
+        if (notifyLifetimeParent != null) notifyLifetimeParent.run();
+    }
+
+    /**
+     * Close child admission and subscribe to the physical child-lifetime
+     * barrier. Caller invokes onDrained itself if true is returned. If not,
+     * onDrained is invoked once outside GRAPH_LOCK when the final child
+     * retires or transfers to another live owner. Never call guest code here.
+     */
+    boolean sealAndObserveChildQuiescence(Runnable onDrained) {
+        Objects.requireNonNull(onDrained, "onDrained");
+        synchronized (GRAPH_LOCK) {
+            if (retired) return true;
+            if (childAdmissionSealed) {
+                throw new IllegalStateException("child completion observer already registered");
+            }
+            childAdmissionSealed = true;
+            if (lifetimeChildren.isEmpty()) return true;
+            childrenDrained = onDrained;
+            return false;
+        }
+    }
+
+    private Runnable detachLifetimeParentLocked() {
+        TaskCancellation previous = lifetimeParent;
+        lifetimeParent = null;
+        if (previous == null) return null;
+        previous.lifetimeChildren.remove(this);
+        if (!previous.lifetimeChildren.isEmpty()) return null;
+        Runnable ready = previous.childrenDrained;
+        previous.childrenDrained = null;
+        return ready;
     }
 
     /** Runtime diagnostic for bounded lifetime-tree retention tests. */
@@ -132,9 +180,12 @@ final class TaskCancellation {
     /** Atomic reparent, never a detach. Caller must separately prove authority. */
     void adoptInto(TaskCancellation newOwner) {
         Objects.requireNonNull(newOwner, "newOwner");
+        Runnable notifyPreviousOwner = null;
         synchronized (GRAPH_LOCK) {
             if (retired) throw new IllegalStateException("cannot transfer retired task");
-            if (newOwner.retired) throw new IllegalStateException("cannot adopt into retired owner");
+            if (newOwner.retired || newOwner.childAdmissionSealed) {
+                throw new IllegalStateException("cannot adopt into sealed task owner");
+            }
             if (cancelled) throw new IllegalStateException("cannot transfer cancelled task");
             if (newOwner.cancelled) throw new IllegalStateException("cannot adopt into cancelled owner");
             if (owner == null) throw new IllegalStateException("cannot transfer a root authority");
@@ -145,7 +196,11 @@ final class TaskCancellation {
             owner.children.remove(this);
             newOwner.children.add(this);
             owner = newOwner;
+            notifyPreviousOwner = detachLifetimeParentLocked();
+            lifetimeParent = newOwner;
+            newOwner.lifetimeChildren.add(this);
         }
+        if (notifyPreviousOwner != null) notifyPreviousOwner.run();
     }
 
     /**
