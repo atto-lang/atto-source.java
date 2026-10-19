@@ -15,12 +15,19 @@ reviewed immutable ID immediately before export writes.
 The preferred authorization mode is a reviewed policy on protected `main`.
 When branch protection is technically unavailable, the only staged fallback is
 `review-attested-v1`: each export needs two distinct, unedited GitHub issue
-comments from the pinned maintainer and security owner. Both comments must be
-the exact same one-line payload binding the live source PR/head/tree,
-destination name/ID, and the authoritative-main blobs for the policy,
-preflight, destination guard, wrapper, and publisher. Any bound change voids
-the comments. The fallback is not active merely because its code exists on a
-feature branch; it must itself be independently reviewed and merged first.
+comments from the pinned maintainer and security owner. The fallback may be
+considered only when GitHub explicitly reports that both classic branch
+protection and repository rulesets are unavailable because of the current
+private-repository plan; a generic 403/404, disabled setting, or integration
+permission failure is not sufficient evidence and fails closed.
+
+Both comments must be the exact same one-line payload binding the live source
+PR/head/tree, destination name/ID, exact new `ci/oreslang-*` target branch,
+reviewed destination carrier base commit/tree, and the authoritative-main blobs
+for the policy, preflight, destination guard, wrapper, and publisher. Any bound
+change voids the comments. The fallback is not active merely because its code
+exists on a feature branch; it must itself be independently reviewed and merged
+first.
 
 Do **not** accept a destination allowlist or approval payload from arbitrary
 environment variables or unreviewed workflow inputs. The source checkout may
@@ -50,8 +57,11 @@ effective. Before reading potentially sensitive source bytes, the publisher
 runs `preflight-private-ci-mirror.sh`. That preflight verifies the exact clean
 source checkout, live same-repository PR head, fresh authenticated `main`,
 authoritative security-program blobs, applicable approval mode, policy row, and
-destination identity. The checked-in policy must explicitly list
-`owner/repo@numeric-id`.
+destination identity. It also requires the destination default branch, carrier
+base commit, and carrier base tree to equal the reviewed values embedded in the
+authoritative exporter. A carrier workflow/configuration change therefore
+invalidates authorization before private source bytes are read. The checked-in
+policy must explicitly list `owner/repo@numeric-id`.
 
 The publisher then checks the live GitHub repository ID, full name and
 `visibility=private` / `private=true` before sending private bytes, and
@@ -63,8 +73,11 @@ then a **fresh standalone source tree with no `base_tree`**, followed by a
 root tree that replaces the **entire** `private-oreslang-source/` directory
 in the destination's default tree. This removes stale files from previous
 snapshots while preserving unrelated destination workflows and files.
-Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
-branches, including `main`, are never updated.
+Finally, it creates a commit and the **new, approval-bound**
+`ci/oreslang-*` ref. Existing branches, including `main`, are never updated.
+The publisher also rejects a destination default-branch, base-commit, or
+base-tree change after review instead of silently inheriting a changed carrier
+workflow.
 
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
