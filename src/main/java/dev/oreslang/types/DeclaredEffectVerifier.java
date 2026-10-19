@@ -29,6 +29,11 @@ public final class DeclaredEffectVerifier {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl function) {
+                    if (ML_SCALAR_INTRINSICS.contains(function.name())) {
+                        throw new IllegalArgumentException(
+                                "module function '" + function.name()
+                                        + "' is reserved by the sealed actor scalar publication API");
+                    }
                     rejectReservedMlBindings(
                             function.parameters(), function.name());
                     rejectReservedMlBindings(
