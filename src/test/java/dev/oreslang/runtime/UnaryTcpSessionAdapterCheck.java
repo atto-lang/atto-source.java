@@ -620,6 +620,36 @@ public final class UnaryTcpSessionAdapterCheck {
         }
     }
 
+    private static void adapterCloseUnblocksAuthentication() throws Exception {
+        CountDownLatch authenticationEntered = new CountDownLatch(1);
+        AtomicInteger dispatches = new AtomicInteger();
+        UnaryTcpSessionAdapter.Authenticator blockedAuth = (socket, id, generation) -> {
+            authenticationEntered.countDown();
+            // Simulate a peer that never finishes an authenticated handshake.
+            socket.getInputStream().read();
+            throw new IOException("authentication socket closed");
+        };
+        UnaryTcpSessionAdapter.Dispatcher dispatcher = request -> {
+            dispatches.incrementAndGet();
+            return new TestHandle();
+        };
+        BlockingDuplexSocket socket = new BlockingDuplexSocket(new byte[0]);
+        try (var adapter = new UnaryTcpSessionAdapter(
+                        limits(1, 8, 2, 16, 1000), blockedAuth, dispatcher);
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> served = pool.submit(() -> adapter.serve(socket));
+            check(authenticationEntered.await(1, TimeUnit.SECONDS),
+                    "blocked authentication must start");
+            adapter.close();
+            served.get(2, TimeUnit.SECONDS);
+            check(socket.isClosed(), "shutdown closes pre-authentication socket");
+            check(dispatches.get() == 0, "pre-authentication socket never dispatches");
+            check(adapter.activeConnections() == 0
+                            && adapter.activeGlobalWorkItems() == 0,
+                    "shutdown releases pre-authentication connection credit");
+        }
+    }
+
     public static void main(String[] unused) throws Exception {
         echoAndReplayFence();
         wrongBindingRejectedBeforePayloadRead();
@@ -630,6 +660,7 @@ public final class UnaryTcpSessionAdapterCheck {
         completionCancelRaces();
         terminalWriteDeadlineClosesSlowReader();
         sessionCloseCancelsPending();
+        adapterCloseUnblocksAuthentication();
         System.out.println("PASS: authenticated unary TCP sessions, budgets, deadlines and 250 completion/cancel races");
     }
 }
