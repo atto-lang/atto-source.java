@@ -28,9 +28,11 @@ public final class SealedActorState {
 
     private final ActorRuntime.ActorId owner;
     private final LinkedHashMap<String, String> schema;
-    private final LinkedHashMap<String, Object> values;
+    // Swappable as a unit: scalar ML publication never exposes partial field updates.
+    private LinkedHashMap<String, Object> values;
     private Access current;
     private long serial;
+    private long mutationRevision;
     private int retainedStringBytes;
     private int retainedOwnedBytes;
     private int pendingOwnedBytes;
@@ -122,6 +124,68 @@ public final class SealedActorState {
 
     private enum Uninitialized { INSTANCE }
 
+    /**
+     * Runtime-only immutable prepared scalar transaction. Preparing may
+     * allocate and validate, but it does not borrow the guest state root.
+     * Capabilities are issuer-bound and single-use, not serializable wire IDs.
+     */
+    public static final class ScalarPublication {
+        private final SealedActorState issuer;
+        private final String versionField;
+        private final long expectedVersion;
+        private final long revision;
+        private final Map<String, Object> replacements;
+        private boolean consumed;
+
+        private ScalarPublication(SealedActorState issuer, String versionField,
+                                  long expectedVersion, long revision,
+                                  Map<String, Object> replacements) {
+            this.issuer = issuer;
+            this.versionField = versionField;
+            this.expectedVersion = expectedVersion;
+            this.revision = revision;
+            this.replacements = Map.copyOf(replacements);
+        }
+    }
+
+    /**
+     * Prepare detached scalar values outside any live state loan. Production
+     * training must derive them from authenticated gradients; this runtime
+     * method does not attest numerical provenance or actor message senders.
+     */
+    public ScalarPublication prepareScalarPublication(String versionField,
+                                                       long expectedVersion,
+                                                       Map<String, Object> replacements) {
+        requireOwner();
+        if (current != null)
+            throw new IllegalStateException("ML_PREPARE_WITH_LIVE_STATE_LOAN");
+        if (!"int".equals(schema.get(versionField)) || expectedVersion < 0
+                || expectedVersion == Long.MAX_VALUE)
+            throw new IllegalArgumentException("ML_INVALID_VERSION");
+        Objects.requireNonNull(replacements, "scalar replacements");
+        if (replacements.isEmpty() || replacements.size() > schema.size())
+            throw new IllegalArgumentException("ML_INVALID_REPLACEMENTS");
+        var staged = new LinkedHashMap<String, Object>();
+        for (var entry : replacements.entrySet()) {
+            String name = Objects.requireNonNull(entry.getKey(), "scalar name");
+            validateValue(name, entry.getValue());
+            // Owned regions have no general alias-safe scalar publication path.
+            staged.put(name, entry.getValue());
+        }
+        Object proposed = staged.get(versionField);
+        if (!(proposed instanceof Long next)
+                || next.longValue() != expectedVersion + 1)
+            throw new IllegalArgumentException("ML_VERSION_ADVANCE_REQUIRED");
+        return new ScalarPublication(this, versionField, expectedVersion,
+                mutationRevision, staged);
+    }
+
+    private long nextMutationRevision() {
+        if (mutationRevision == Long.MAX_VALUE)
+            throw new IllegalStateException("ML_MUTATION_REVISION_OVERFLOW");
+        return mutationRevision + 1;
+    }
+
     private void requireOwner() {
         if (retired) throw new IllegalStateException("actor state retired");
         if (!owner.equals(ActorRuntime.currentActorId().orElse(null))) {
@@ -205,6 +269,7 @@ public final class SealedActorState {
             if (source.getClass() != OwnedBytes.class || source.issuer() != SealedActorState.this)
                 throw new SecurityException("foreign actor-owned allocation issuer");
             source.check();
+            long revision = nextMutationRevision();
             byte[] moved = source.bytes;
             Object prior = values.get(name);
             int released = prior instanceof OwnedRegion region ? region.bytes.length : 0;
@@ -216,6 +281,7 @@ public final class SealedActorState {
             pendingOwnedBytes -= moved.length;
             retainedOwnedBytes = retainedOwnedBytes - released + moved.length;
             if (prior instanceof OwnedRegion region) region.erase();
+            mutationRevision = revision;
         }
 
         private OwnedRegion ownedRegion(String name) {
@@ -239,7 +305,10 @@ public final class SealedActorState {
             if (unsignedByte < 0 || unsignedByte > 255)
                 throw new IllegalArgumentException("owned byte value must be 0..255");
             byte[] data = ownedRegion(name).bytes;
-            data[Objects.checkIndex(index, data.length)] = (byte) unsignedByte;
+            int checkedIndex = Objects.checkIndex(index, data.length);
+            long revision = nextMutationRevision();
+            data[checkedIndex] = (byte) unsignedByte;
+            mutationRevision = revision;
         }
         public void write(String name, Object value) {
             check();
@@ -251,8 +320,55 @@ public final class SealedActorState {
                     - (retainedStringBytes - previousBytes)) {
                 throw new IllegalArgumentException("actor state string byte budget exceeded");
             }
+            long revision = nextMutationRevision();
             values.put(name, value);
             retainedStringBytes = retainedStringBytes - previousBytes + nextBytes;
+            mutationRevision = revision;
+        }
+
+        /**
+         * All-or-nothing scalar publication within a verified WRITE loan.
+         * Clone/validate before the single map-pointer swap. No callback,
+         * allocation or user code is invoked after that swap.
+         */
+        public boolean publishScalars(ScalarPublication publication) {
+            check();
+            if (!writable)
+                throw new SecurityException("ML_PUBLISH_REQUIRES_CRITICAL_WRITE");
+            if (publication == null || publication.issuer != SealedActorState.this
+                    || publication.consumed)
+                throw new SecurityException("ML_INVALID_PUBLICATION_CAPABILITY");
+            if (mutationRevision != publication.revision)
+                throw new IllegalStateException("ML_STALE_STATE_REVISION");
+            Object version = values.get(publication.versionField);
+            if (!(version instanceof Number previous)
+                    || previous.longValue() != publication.expectedVersion)
+                throw new IllegalStateException("ML_STALE_WEIGHT_VERSION");
+            long revision = nextMutationRevision();
+
+            // The map and all string quota checks are completed before any
+            // guest-visible mutation. Bounds are computed by subtraction
+            // rather than potentially overflowing intermediate additions.
+            int nextStringBytes = retainedStringBytes;
+            LinkedHashMap<String, Object> nextValues = new LinkedHashMap<>(values);
+            for (var entry : publication.replacements.entrySet()) {
+                String name = entry.getKey();
+                Object value = entry.getValue();
+                validateValue(name, value);
+                int oldBytes = stringBytes(nextValues.get(name));
+                int newBytes = stringBytes(value);
+                if (newBytes > MAX_TOTAL_STRING_BYTES - (nextStringBytes - oldBytes))
+                    throw new IllegalArgumentException("ML_STRING_BUDGET_EXHAUSTED");
+                nextStringBytes = nextStringBytes - oldBytes + newBytes;
+                nextValues.put(name, value);
+            }
+            // Single publication point. The following assignments are
+            // primitive/reference writes and cannot fail due to allocation.
+            values = nextValues;
+            retainedStringBytes = nextStringBytes;
+            mutationRevision = revision;
+            publication.consumed = true;
+            return true;
         }
     }
 
