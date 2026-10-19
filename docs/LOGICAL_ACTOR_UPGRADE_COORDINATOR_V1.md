@@ -256,3 +256,28 @@ publication authority. The live SHARED proxy/router transaction has its own
 route-lock publication path; compiler-owned immutable typed messages,
 authenticated per-message terminal receipts, and PRIVATE/UNTRUSTED protected
 worker migration remain required.
+
+## Physical-send replay-proof audit — October 19, 2026
+
+The formerly trusted-only `requeueProvenUnsent(messageSequence)` carried no
+proof token. A host caller could call it **after**
+`beginPhysicalSendAttempt(envelope, routeEpoch)`, erasing the attempt ledger
+and redispatching a message that the real actor may already have accepted.
+The helper name did not make the result independently provable.
+
+V1 now permits that sequence-only requeue **only before any physical send
+attempt**. After reservation, attempts stay charged/outstanding even if a
+caller claims the physical transport refused the send; an ambiguous error is
+quarantined. An actual post-attempt retry would require an authenticated,
+one-use, exact-envelope/actor-incarnation/route-epoch physical
+non-acceptance receipt issued at the acceptance boundary, which is NOT
+implemented. No silent retry or exactly-once effect guarantee is claimed.
+
+Authored regression coverage checks no credit/sequence mutation on rejected
+post-attempt requeue, repeated replay attempts, the freeze/rollback boundary,
+and sequence numbers beyond Java's boxed-Long cache. The preattempt
+requeue path remains allowed with original FIFO/credit accounting.
+
+CI status: code and regression tests are committed but an exact-head Java
+execution result remains required; no cross-organization copy of the private
+tree has been performed because the reviewed destination allowlist is empty.
