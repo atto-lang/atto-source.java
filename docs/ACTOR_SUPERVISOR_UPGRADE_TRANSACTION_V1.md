@@ -173,3 +173,27 @@ This V1 transaction still needs:
 - protected worker/isolate migration;
 - automatic generation leases for every timer/FFI/region/device resource;
 - a backend-neutral transaction contract shared with LLVM/native targets.
+
+
+## Acquired-resource publication rule
+
+Any runtime resource acquired after the transaction begins is written into its
+transaction cleanup owner **before** the next invariant/phase validation that
+can throw. This applies in particular to:
+
+- the `SourceActorTransfer` returned by the old runtime; and
+- the candidate physical `ActorRef` returned by candidate spawn.
+
+The physical ActorRef is also written into the pre-reserved
+`CandidateRetirement` owner before post-spawn validation. Consequently an
+injected/corrupted transaction phase cannot strand an old-ingress freeze or an
+executable candidate outside rollback/quarantine ownership. Validation may
+fail, but cleanup authority has already been published.
+
+`candidatePhysicalIsOwnedBeforePostSpawnInvariantValidation()` injects phase
+corruption synchronously from the candidate dispatcher's admission callback,
+so corruption occurs after physical scheduling admission but before the
+router's post-spawn check. The failed transaction must leave the old route
+authoritative, clear publication authority, retain a candidate owner containing
+the exact physical ActorRef, mark that owner retirement-eligible, and permit
+exactly one later reap after physical finalization.
