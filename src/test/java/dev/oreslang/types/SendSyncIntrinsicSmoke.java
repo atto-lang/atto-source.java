@@ -113,12 +113,18 @@ public final class SendSyncIntrinsicSmoke {
         expect(!supports(mutableRecord, Trait.SYNC, CORE), "mutable Record not Sync");
         for (Trait trait : Trait.values()) {
             expect(supports(immutableTuple, trait, CORE), "tuple " + trait);
-            expect(supports(immutableRecord, trait, CORE), "readonly record " + trait);
+
             expect(supports(new Types.Named("Option", List.of(integer)), trait, CORE),
                     "verified Option " + trait);
             expect(supports(new Types.Named("Result", List.of(integer, integer)),
                     trait, CORE), "verified Result " + trait);
         }
+        expect(supports(immutableRecord, Trait.SEND, CORE),
+                "readonly record remains movable Send");
+        expect(!supports(immutableRecord, Trait.SYNC, CORE),
+                "readonly view alone must never grant Sync");
+        expect(!supports(new Types.Borrow(immutableRecord, false),
+                Trait.SEND, CORE), "shared borrow of nonfrozen view cannot be Send");
         expect(supports(new Types.Named("Channel", List.of(integer)),
                 Trait.SEND, CORE), "verified Channel Send");
         expect(!supports(new Types.Named("Channel", List.of(integer)),
