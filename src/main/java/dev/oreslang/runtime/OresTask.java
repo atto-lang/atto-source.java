@@ -17,7 +17,7 @@ import java.util.Objects;
  * teardown. This class does not grant a detached lifetime.</p>
  */
 public final class OresTask<T> implements Awaitable<T> {
-    private final OresFuture<T> completion;
+    private volatile OresFuture<T> completion;
     private final OresFuture<?> quiescence;
 
     OresTask(OresFuture<T> completion) {
@@ -32,9 +32,36 @@ public final class OresTask<T> implements Awaitable<T> {
         this.quiescence = Objects.requireNonNull(quiescence, "quiescence");
     }
 
+    /**
+     * Pre-admission owner shell. The scope allocates this before scheduler
+     * admission so OOME cannot create an executable Task with no owner record.
+     */
+    OresTask(OresFuture<?> quiescence) {
+        this.completion = null;
+        this.quiescence = Objects.requireNonNull(quiescence, "quiescence");
+    }
+
+    void attachCompletion(OresFuture<T> admitted) {
+        Objects.requireNonNull(admitted, "admitted");
+        if (completion != null)
+            throw new IllegalStateException("Task completion already attached");
+        completion = admitted;
+    }
+
+    OresFuture<?> quiescenceFence() {
+        return quiescence;
+    }
+
+    private OresFuture<T> completion() {
+        OresFuture<T> current = completion;
+        if (current == null)
+            throw new IllegalStateException("Task has not completed scheduler admission");
+        return current;
+    }
+
     @Override
     public OresFuture<T> getAwaited() {
-        return completion;
+        return completion();
     }
 
     /**
@@ -48,24 +75,24 @@ public final class OresTask<T> implements Awaitable<T> {
      * and must never cross trust domains without explicit cancel authority.
      */
     public OresFuture<T> asFuture() {
-        return completion;
+        return completion();
     }
 
     public boolean isDone() {
-        return completion.isDone();
+        return completion().isDone();
     }
 
     public boolean isCancelled() {
-        return completion.isCancelled();
+        return completion().isCancelled();
     }
 
     public boolean cancel() {
-        return completion.cancel(true);
+        return completion().cancel(true);
     }
 
     /** Internal scope path: revoke now, deliver host waiters after siblings. */
     Runnable cancelDeferredNotification() {
-        return completion.cancelDeferredNotification();
+        return completion().cancelDeferredNotification();
     }
 
     /**
