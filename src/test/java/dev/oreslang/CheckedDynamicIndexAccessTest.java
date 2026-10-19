@@ -164,9 +164,9 @@ final class CheckedDynamicIndexAccessTest {
                 """)));
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc safe(string key): string {
-                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
-                  point.ready = true;
-                  return point[key] as string;
+                  const mut point = struct{foo: string, ready: string}{foo: "before"};
+                  point.ready = "after";
+                  return point[key];
                 }
                 """)));
     }
