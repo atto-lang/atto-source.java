@@ -188,8 +188,21 @@ requires the carrier approval row to bind an active repository ruleset that
 makes exactly `refs/heads/ci/oreslang-*` immutable after initial creation:
 no bypass actors, no deletion, and no update (including fetch-and-merge
 updates). It revalidates that exact ruleset before every destination write.
-Carrier CI additionally binds the source-bearing ref to the exact full source
-commit and verifies the nested source tree before compilation.
+Carrier CI additionally binds the source-bearing ref to both the exact full
+source commit and the reviewed carrier-main commit. Production Java verification
+is **not** triggered by a workflow definition read from the source-bearing
+branch. Instead, a `workflow_dispatch` definition on trusted carrier `main`
+checks out its own exact `GITHUB_SHA`, checks out the snapshot by exact commit
+SHA, requires the snapshot's sole parent to equal that trusted-main SHA, runs
+the CODEOWNED `scripts/verify-oreslang-private-ci-snapshot.sh`, and confirms
+through the GitHub API that the named immutable ref still resolves to the same
+snapshot commit before any Maven command executes.
+
+Only that trusted verification step receives `github.token`, solely for the
+read-only ref lookup. The Java build/test jobs receive no explicit
+`GH_TOKEN`/`GITHUB_TOKEN`, disable persisted checkout credentials, re-check
+the exact snapshot commit and source subtree, use an ephemeral Maven repository
+under `runner.temp`, and do not use cross-run Maven caches.
 
 These checks remain **non-authorizing** until an administrator/security owner
 proves the ruleset and protected carrier main are actually enforceable on the
@@ -254,6 +267,11 @@ the normal PR harness run 39315398300 passed; exact approved subtree run
 39315493087 passed; tampered subtree run 39315502068 failed at the expected
 verification step; and post-snapshot update run 39316715981 failed at that
 same gate. These fixtures contain no Oreslang private source.
+The current carrier hardening head `32cd539115355fae2c27a3d70de36a09bca511b8`
+was executed by hosted Actions run 39320753716: all 15 recorded job steps
+succeeded and pytest reported **18 passed in 3.28s**. Those tests execute the
+same CODEOWNED local Git/ledger verifier used by the trusted-main production
+workflow against source-free synthetic repositories.
 
 Carrier PR #15 also adds the deny-by-default carrier approval ledger,
 terminal CODEOWNERS, immutable action pins, and a guard that prevents
