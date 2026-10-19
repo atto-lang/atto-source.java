@@ -5262,10 +5262,11 @@ public final class TypeChecker {
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
         }
-        if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof SelfType
-                || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) {
+        if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof Types.Dyn
+                || type instanceof SelfType || type instanceof Borrow
+                || type instanceof Function || type instanceof ClassNamespace) {
             throw new IllegalArgumentException(
-                    where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
+                    where + " must be a concrete owned/sendable data type; dyn views, borrows, functions, and unresolved types cannot cross an actor boundary");
         }
         if (type instanceof Primitive || type instanceof StringLiteral) return;
         if (type instanceof ListType list) {
@@ -5366,9 +5367,9 @@ public final class TypeChecker {
             int depth,
             int[] budget) {
         if (depth > 256 || --budget[0] < 0) return false;
-        if (type == Unknown.INSTANCE || type instanceof SelfType
-                || type instanceof Borrow || type instanceof Function
-                || type instanceof ClassNamespace) return false;
+        if (type == Unknown.INSTANCE || type instanceof Types.Dyn
+                || type instanceof SelfType || type instanceof Borrow
+                || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
         if (type instanceof StringLiteral || type instanceof BoolLiteral) return true;
         if (type instanceof Generic generic) {
