@@ -10,36 +10,39 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 final class UnaryReplySlot {
     private final UnaryTransportFrame.Transport transport;
+    private final long sessionId;
     private final long generation;
     private final long correlationId;
     private final AtomicBoolean terminal = new AtomicBoolean();
 
-    UnaryReplySlot(UnaryTransportFrame.Transport transport, long generation, long correlationId) {
+    UnaryReplySlot(UnaryTransportFrame.Transport transport, long sessionId, long generation, long correlationId) {
         this.transport = Objects.requireNonNull(transport, "transport");
-        if (generation <= 0 || correlationId <= 0)
-            throw new IllegalArgumentException("generation and correlation ID must be positive");
+        if (sessionId <= 0 || generation <= 0 || correlationId <= 0)
+            throw new IllegalArgumentException("session, generation and correlation ID must be positive");
+        this.sessionId = sessionId;
         this.generation = generation;
         this.correlationId = correlationId;
     }
 
     boolean accept(UnaryTransportFrame.Transport from, UnaryTransportFrame.Envelope envelope) {
         Objects.requireNonNull(envelope, "envelope");
-        authenticate(from, envelope.generation(), envelope.correlationId());
+        authenticate(from, envelope.sessionId(), envelope.generation(), envelope.correlationId());
         if (envelope.kind() != UnaryTransportFrame.Kind.REPLY
                 && envelope.kind() != UnaryTransportFrame.Kind.ERROR)
             throw new IllegalArgumentException("expected a reply or error envelope");
         return terminal.compareAndSet(false, true);
     }
 
-    boolean cancel(UnaryTransportFrame.Transport from, long connectionGeneration, long requestId) {
-        authenticate(from, connectionGeneration, requestId);
+    boolean cancel(UnaryTransportFrame.Transport from, long currentSessionId, long connectionGeneration, long requestId) {
+        authenticate(from, currentSessionId, connectionGeneration, requestId);
         return terminal.compareAndSet(false, true);
     }
 
     boolean isTerminal() { return terminal.get(); }
 
-    private void authenticate(UnaryTransportFrame.Transport from, long currentGeneration, long requestId) {
-        if (from != transport || currentGeneration != generation || requestId != correlationId)
-            throw new SecurityException("wrong transport, connection generation or unary reply correlation");
+    private void authenticate(UnaryTransportFrame.Transport from, long currentSessionId, long currentGeneration, long requestId) {
+        if (from != transport || currentSessionId != sessionId
+                || currentGeneration != generation || requestId != correlationId)
+            throw new SecurityException("wrong transport, session, generation or unary reply correlation");
     }
 }
