@@ -22,22 +22,30 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
 
     private final ActorRuntime runtime;
     private final TrustedSupervisorInbox inbox;
+    private final SupervisorDenseTable table;
     private final ParentEscalation escalation;
     private final Map<ActorRuntime.ActorRef<?>, TrustedSupervisorInbox.ChildBinding> bindings =
             new IdentityHashMap<>();
     private final Map<TrustedSupervisorInbox.ChildBinding, Long> childIdsByBinding =
+            new IdentityHashMap<>();
+    private final Map<TrustedSupervisorInbox.ChildBinding, SupervisorDenseTable.Handle> rowsByBinding =
             new IdentityHashMap<>();
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicLong childIds = new AtomicLong();
     private boolean closed;
     private Throwable poison;
 
+    private static final long CHILD_RUNNING = 1L;
+    private static final long CHILD_FAILED = 2L;
+
     SupervisorRuntimeBridge(
             ActorRuntime runtime,
             TrustedSupervisorInbox inbox,
+            SupervisorDenseTable table,
             ParentEscalation escalation) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
         this.inbox = Objects.requireNonNull(inbox, "inbox");
+        this.table = Objects.requireNonNull(table, "table");
         this.escalation = Objects.requireNonNull(escalation, "escalation");
     }
 
@@ -60,8 +68,22 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         long childId = nextChildId();
         TrustedSupervisorInbox.ChildBinding binding =
                 inbox.bindVerifiedChild(childId, child.generation());
+        final SupervisorDenseTable.Handle row;
+        try {
+            row = table.add(
+                    childId,
+                    CHILD_RUNNING,
+                    0L,
+                    0L,
+                    0L);
+        } catch (RuntimeException | Error failure) {
+            revokeIfLive(binding);
+            throw failure;
+        }
+
         bindings.put(child, binding);
         childIdsByBinding.put(binding, childId);
+        rowsByBinding.put(binding, row);
 
         child.getDone().whenCompleteRuntime((ignored, doneFailure) ->
                 onFinalized(child, binding, doneFailure));
@@ -78,15 +100,24 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         synchronized (this) {
             bindings.remove(child, binding);
             Long knownChildId = childIdsByBinding.remove(binding);
-            if (knownChildId == null) {
+            SupervisorDenseTable.Handle row = rowsByBinding.get(binding);
+            if (knownChildId == null || row == null) {
                 if (closed) return;
-                throw new IllegalStateException("trusted child identity unavailable");
+                throw new IllegalStateException("trusted child identity/metadata unavailable");
             }
 
             if (closed || failure == null) {
                 revokeIfLive(binding);
+                rowsByBinding.remove(binding);
+                eraseRowIfLive(row);
                 return;
             }
+
+            table.set(row, SupervisorDenseTable.Field.STATE, CHILD_FAILED);
+            table.set(
+                    row,
+                    SupervisorDenseTable.Field.LAST_FAILURE_NANOS,
+                    System.nanoTime());
 
             long seq = nextSequence();
             long faultCode = stableFaultCode(failure);
@@ -104,8 +135,10 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
 
             if (result == TrustedSupervisorInbox.Admission.ACCEPTED) {
                 // The queued FailureNotice is detached value data. Retire the
-                // live child authority immediately; no binding leak is required.
+                // live child authority and live metadata immediately.
                 revokeIfLive(binding);
+                rowsByBinding.remove(binding);
+                eraseRowIfLive(row);
             } else if (result == TrustedSupervisorInbox.Admission.REJECTED) {
                 throw new IllegalStateException(
                         "runtime-authenticated finalized child failure was rejected");
@@ -131,6 +164,27 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
                 poison(failure);
                 throw failure;
             }
+            synchronized (this) {
+                SupervisorDenseTable.Handle row = rowsByBinding.remove(
+                        findBindingForChildId(escalationNotice.childId()));
+                if (row != null) eraseRowIfLive(row);
+            }
+        }
+    }
+
+    private synchronized TrustedSupervisorInbox.ChildBinding findBindingForChildId(long childId) {
+        for (Map.Entry<TrustedSupervisorInbox.ChildBinding, Long> entry
+                : childIdsByBinding.entrySet()) {
+            if (entry.getValue() == childId) return entry.getKey();
+        }
+        return null;
+    }
+
+    private void eraseRowIfLive(SupervisorDenseTable.Handle row) {
+        try {
+            table.eraseSwap(row);
+        } catch (IllegalArgumentException ignored) {
+            // Row was already retired by bridge close/finalization.
         }
     }
 
@@ -191,8 +245,11 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         closed = true;
         for (TrustedSupervisorInbox.ChildBinding binding : bindings.values()) {
             revokeIfLive(binding);
+            SupervisorDenseTable.Handle row = rowsByBinding.remove(binding);
+            if (row != null) eraseRowIfLive(row);
         }
         bindings.clear();
         childIdsByBinding.clear();
+        rowsByBinding.clear();
     }
 }
