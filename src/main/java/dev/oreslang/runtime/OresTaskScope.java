@@ -117,37 +117,37 @@ public final class OresTaskScope implements AutoCloseable {
                 } catch (RuntimeException | Error rejectedByScope) {
                     throw new UnadmittedFrame(rejectedByScope);
                 }
-            OresFuture<Void> exited = new OresFuture<>();
-            OresFuture<T> completion;
-            try {
-                completion = scheduler.start(frame, () -> {
-                    // The scheduler has already fenced the guest context/turn.
-                    // A broken host release cannot be treated as a successful
-                    // resource retirement; do not silently swallow its error.
-                    try {
-                        onPhysicalExit.run();
-                        exited.completeFromRuntime(null);
-                    } catch (RuntimeException | Error failure) {
-                        exited.failFromRuntime(failure);
+                OresFuture<Void> exited = new OresFuture<>();
+                OresFuture<T> completion;
+                try {
+                    completion = scheduler.start(frame, () -> {
+                        // The scheduler has already fenced the guest context/turn.
+                        // A broken host release cannot be treated as a successful
+                        // resource retirement; do not silently swallow its error.
+                        try {
+                            onPhysicalExit.run();
+                            exited.completeFromRuntime(null);
+                        } catch (RuntimeException | Error failure) {
+                            exited.failFromRuntime(failure);
+                        }
+                    });
+                } catch (RuntimeException | Error rejectedBeforeAdmission) {
+                    // OresScheduler.start throws here only before registering
+                    // a TaskRunner. A post-registration enqueue failure settles
+                    // via onQuiescent and never enters this catch.
+                    throw new UnadmittedFrame(rejectedBeforeAdmission);
+                }
+                OresTask<T> child = new OresTask<>(completion, exited);
+                tasks.add(child);
+                child.getDone().whenCompleteRuntime((ignored, failure) -> {
+                    // Do not discard an owner record if its trusted image-release
+                    // callback failed. close() must still report the failed fence.
+                    if (failure == null) {
+                        synchronized (gate) {
+                            tasks.remove(child);
+                        }
                     }
                 });
-            } catch (RuntimeException | Error rejectedBeforeAdmission) {
-                // OresScheduler.start throws here only before registering
-                // a TaskRunner. A post-registration enqueue failure settles
-                // via onQuiescent and never enters this catch.
-                throw new UnadmittedFrame(rejectedBeforeAdmission);
-            }
-            OresTask<T> child = new OresTask<>(completion, exited);
-            tasks.add(child);
-            child.getDone().whenCompleteRuntime((ignored, failure) -> {
-                // Do not discard an owner record if its trusted image-release
-                // callback failed. close() must still report the failed fence.
-                if (failure == null) {
-                    synchronized (gate) {
-                        tasks.remove(child);
-                    }
-                }
-            });
                 return child;
             }
         } catch (UnadmittedFrame unadmitted) {
