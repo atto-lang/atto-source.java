@@ -260,3 +260,65 @@ Latest source-org fast-ci #39324842529 / job #118307863719 and
 concurrency-contract #39324842366 / job #118307861781 both completed with
 **zero recorded steps**. They are runner/admission failures, not compiler or
 JUnit results. No exact-source pass is claimed.
+
+
+## Fail-closed owned-rvalue provenance — 2026-10-19
+
+A further audit found that syntactic rvalue shape was being treated as ownership
+evidence. The initial provenance bridge assigned `OWNED_RVALUE` to any
+move-only scheduled argument that was neither a named binding nor a rejected
+field/index projection. That was too broad: an arbitrary function or method
+can return move-only data without any current return-provenance/effect summary
+proving that its backing storage is fresh or exclusively transferred.
+
+The ownership checker now requires an explicit compiler-observable proof before
+minting `OWNED_RVALUE`:
+
+- named values are accepted only when they are Copy or their affine root is
+  actually marked moved with no live borrow;
+- `rt take` is accepted only for a named owner whose completed move is visible
+  in the ownership ledger;
+- fresh `new`, list, tuple and struct/object construction is accepted only
+  when every ownership-bearing constituent independently proves;
+- `Some`/`Ok`/`Err` construction follows the same constituent rule;
+- compiler-known consuming Option/Result extraction such as `unwrap` is
+  accepted only when its named receiver's transfer is visible in the affine
+  ledger;
+- casts/spreads/trap and branch-result wrappers preserve rather than manufacture
+  provenance;
+- arbitrary function/method call results fail closed until callable
+  return-provenance/effect summaries exist;
+- an arbitrary call hidden inside an aggregate cannot launder itself into a
+  fresh ownership proof.
+
+A broader attempt to change ordinary projection semantics was explicitly
+reverted: existing Oreslang behavior intentionally treats ordinary class,
+record and indexed projections as aliasing reads. The hardening belongs at the
+detached Task transfer boundary, not in general expression semantics.
+
+Exact code head: `ff9251ed6bb4daf9145cf527ecd7d1d2fbb82f46`.
+
+Exact blobs:
+- `OwnershipChecker.java`: `ba03781754ba2c3bde4b648b81259499ec1c19b6`
+- `TypeChecker.java`: `1e3e40d96b36f37d6379d382dfafc3d3a565c2fa`
+- `TaskTransferProvenance.java`: `4f9e8a9b346eb2835ea3f05ae55bcda05c983d76`
+- `TaskTransferProvenanceTest.java`: `c77c4249c7a5ffab864be622ed87208a6a7e58b0` (7 tests)
+
+The targeted Task-admission inventory is now **32 committed JUnit methods**:
+13 spawn/preflight + 7 resolved semantic authority + 5 capture analysis +
+7 transfer provenance.
+
+Exact-source CI remains unavailable at this head. Sampled jobs all completed
+without recorded steps, including fast-ci #39326370055 / job #118313176154
+and concurrency-contract #39326369920 / job #118313175357. These runs are
+neither passing nor failing compiler evidence.
+
+A funded private carrier executed an independent **source-free** model of the
+same trust boundary at carrier commit
+`379723831dd0a6bc2fdd0aa9c065da7c56c05d3f`:
+Actions run #39326862908 / job #118314849481 completed successfully with
+**16/16 contract tests passing** and the shell-syntax step passing. The final
+two contracts specifically reject arbitrary rvalue-call ownership and
+projection laundering. This run contains no Oreslang private source and is
+therefore supporting model/runner evidence only, not exact-source compiler,
+JUnit, Maven or GraalVM evidence.
