@@ -98,14 +98,21 @@ deterministic guest scheduler:
   integer generation (up to 4096 samples), with simple integer-only shrinking
   candidates. See `examples/native-fuzz-testing.ores`. The guest property must
   be deterministic/pure for replay and shrinking to be meaningful.
-- `--replay` verifies the sequence of checkpoint kinds and replays recorded
-  *choices*. It fails closed on extra/missing/mismatched checkpoints, but does
-  not promise bit-for-bit physical thread scheduling.
-- `--trace-output=path` writes `ORES_CONCURRENCY_TRACE_V1` (bounded to 100,000
-  events per run); failures save a trace under `.oreslang/failures` by default.
+- `--replay` verifies the recorded checkpoint kinds and choices, and
+  refuses a mismatched seed, test-entry SHA-256, backend mode/platform or probe
+  version. An omitted `--seed` inherits the recorded seed. This is **not**
+  deterministic physical thread scheduling or a full build/import-closure
+  provenance proof; compiler revision and transitive imported modules must
+  also be pinned by CI exact-tree evidence.
+- `--trace-output=path` writes `ORES_CONCURRENCY_TRACE_V2` for CLI runs
+  (seed, entry-file SHA-256, backend identity, probe version), bounded to
+  100,000 events. Failures save a trace under `.oreslang/failures` by default.
+  Older `V1` traces can be inspected by the standalone probe API, but the CLI
+  rejects them for replay because they lack source/backend provenance.
 - A bounded host-only `ConcurrencyRaceAnalyzer` already supports vector-clock
-  read/write conflict checking and happens-before edges for lock release/acquire
-  and uniquely identified actor messages, with regression tests. It requires a
+  read/write conflict checking and happens-before edges for **owner-validated**
+  lock release/acquire and globally single-use actor-message IDs, with
+  adversarial regression tests. It requires a
   **complete trusted stream of memory-access events**; no guest instrumentation
   feeds it yet, so it cannot certify a program as race-free.
 - `--race` and `--model-check` are reserved and intentionally return exit 2
