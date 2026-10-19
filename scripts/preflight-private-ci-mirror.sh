@@ -79,13 +79,19 @@ found=0
 declare -A seen_destinations=()
 while IFS= read -r entry || [[ -n "$entry" ]]; do
   [[ -z "$entry" || "$entry" == \#* ]] && continue
-  # Check all effective policy lines, not only the matching destination.
-  [[ "$entry" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
-    || die "malformed private mirror allowlist line"
-  [[ ! -v seen_destinations["$entry"] ]] \
-    || die "duplicate private mirror allowlist destination"
-  seen_destinations["$entry"]=1
-  if [[ "$entry" == "$DEST_REPO" ]]; then
+  # Canonical rows bind a repository NAME to its immutable numeric GitHub ID.
+  # A name-only approval or mismatched ID must never authorize private export.
+  [[ "$entry" =~ ^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([1-9][0-9]*)$ ]] \
+    || die "malformed private mirror allowlist line (expected owner/repo@numeric-id)"
+  entry_repo="${BASH_REMATCH[1]}"
+  entry_id="${BASH_REMATCH[2]}"
+  # Reject ambiguous duplicate repo names, even if they specify different IDs.
+  [[ ! -v seen_destinations["$entry_repo"] ]] \
+    || die "duplicate private mirror allowlist repository"
+  seen_destinations["$entry_repo"]=1
+  if [[ "$entry_repo" == "$DEST_REPO" ]]; then
+    [[ "$entry_id" == "$DEST_ID" ]] \
+      || die "allowlisted destination repository ID mismatch"
     found=$((found + 1))
   fi
 done <<< "$policy"
