@@ -270,6 +270,7 @@ public final class Parser {
     }
 
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
+        rejectDefaultArgValsNonCallable(annotations, "module");
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
         List<Ast.TypeRef> contracts = match(CONFORMS) ? parseTypeRefList() : List.of();
@@ -879,6 +880,7 @@ public final class Parser {
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
                 consume(RPAREN, "expected ')' after interface parameters");
+                validateStagedV3Defaults(List.of(), params);
                 Ast.TypeRef returns = match(FAT_ARROW, COLON) ? parseTypeRef() : Ast.TypeRef.simple("void");
                 consumeMemberTerminator(terminator, "interface function signature should end with ';'");
                 members.add(new Ast.InterfaceFunctionDecl(memberName, callableStructural.enabled(), memberGenerics, params, returns));
@@ -963,6 +965,7 @@ public final class Parser {
 
     private Ast.FieldDecl parseTypeFirstClassField(
             List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectDefaultArgValsNonCallable(annotations, "field");
         rejectCallableStructuralAnnotation(annotations, "fields");
         boolean isFinal = matchContextualIdentifier("final");
         boolean mutableReferent = match(MUT);
@@ -981,6 +984,7 @@ public final class Parser {
     }
 
     private Ast.FieldDecl parseColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectDefaultArgValsNonCallable(annotations, "field");
         rejectCallableStructuralAnnotation(annotations, "fields");
         String name = consume(IDENT, "expected field name").lexeme();
         consume(COLON, "expected ':' after field name");
@@ -994,6 +998,7 @@ public final class Parser {
 
     /** Actor-state 'final name: Type' is a const/immutable field spelling. */
     private Ast.FieldDecl parseFinalActorField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectDefaultArgValsNonCallable(annotations, "field");
         rejectCallableStructuralAnnotation(annotations, "fields");
         consumeContextualIdentifier("final", "expected 'final' actor field");
         String name = consume(IDENT, "expected field name after 'final'").lexeme();
@@ -1006,6 +1011,7 @@ public final class Parser {
     }
 
     private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectDefaultArgValsNonCallable(annotations, "module binding");
         rejectCallableStructuralAnnotation(annotations, "module bindings");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
@@ -1369,10 +1375,12 @@ public final class Parser {
             Ast.TypeRef type = parseFormalTypeRef();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "lambda-style callable declaration parameters require canonical 'Type name'").lexeme();
+            boolean omittedByName = parseV3FormalNameSuffix();
             if (structural && mutable) {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
-            params.add(new Ast.Param(type, name, structural, mutable, formalAnnotations));
+            params.add(new Ast.Param(type, name, structural, mutable,
+                    formalAnnotations, omittedByName));
         } while (match(COMMA));
         return List.copyOf(params);
     }
@@ -3874,6 +3882,7 @@ public final class Parser {
         consume(LPAREN, "expected '('");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after lambda parameters");
+        validateStagedV3Defaults(List.of(), params);
         consume(ARROW, "expected '->' after lambda parameters");
         return parseLambdaBody(params, nonLexical);
     }
@@ -3899,11 +3908,14 @@ public final class Parser {
                     Ast.TypeRef type = parseFormalTypeRef();
                     boolean mutable = match(MUT);
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
-                    params.add(new Ast.Param(type, name, false, mutable, formalAnnotations));
+                    boolean omittedByName = parseV3FormalNameSuffix();
+                    params.add(new Ast.Param(type, name, false, mutable,
+                            formalAnnotations, omittedByName));
                 }
             } while (match(COMMA));
         }
         consume(PIPE, "expected closing '|' after lambda parameters");
+        validateStagedV3Defaults(List.of(), params);
         consume(ARROW, "lambdas use the slim arrow '->'");
         return parseLambdaBody(params, nonLexical);
     }
@@ -4094,6 +4106,15 @@ public final class Parser {
         if (!annotations.isEmpty()) {
             throw error(previous(), "@" + annotations.getFirst().name() + " on " + target
                     + " would be silently discarded; declaration annotation storage is not implemented");
+        }
+    }
+
+    /** Unlike a generic annotation, defaults cannot annotate fields or modules. */
+    private void rejectDefaultArgValsNonCallable(List<Ast.Annotation> annotations, String target) {
+        for (Ast.Annotation annotation : annotations) {
+            if (annotation.name().equals("DefaultArgVals")) {
+                throw error(previous(), "@DefaultArgVals is callable-only, not valid on " + target);
+            }
         }
     }
 
