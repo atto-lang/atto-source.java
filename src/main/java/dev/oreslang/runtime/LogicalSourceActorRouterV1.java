@@ -88,6 +88,41 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             long routeEpoch,
             ImageReceipts image) { }
 
+    /**
+     * Retry owner for an unpublished candidate. The owner is allocated and
+     * inserted into its bounded supervisor ledger BEFORE any candidate physical
+     * actor exists, so cleanup never has to allocate ownership after a failure.
+     *
+     * <p>The physical ref is filled exactly once after spawn. A null physical
+     * means no executable candidate was admitted and the lease can be released
+     * by the originating upgrade path. Once non-null, the owner stays in this
+     * ledger until physical finalization is proven and lease close succeeds.</p>
+     */
+    private static final class CandidateRetirement {
+        final HotReloadManager.Generation generation;
+        final HotReloadManager.Generation.ActorRouteLease generationLease;
+        final HotReloadManager.ActorGenerationView view;
+        final long incarnation;
+        final long routeEpoch;
+        final ImageReceipts image;
+        ActorRuntime.ActorRef<Object> physical;
+
+        CandidateRetirement(
+                HotReloadManager.Generation generation,
+                HotReloadManager.Generation.ActorRouteLease generationLease,
+                HotReloadManager.ActorGenerationView view,
+                long incarnation,
+                long routeEpoch,
+                ImageReceipts image) {
+            this.generation = Objects.requireNonNull(generation);
+            this.generationLease = Objects.requireNonNull(generationLease);
+            this.view = Objects.requireNonNull(view);
+            this.incarnation = incarnation;
+            this.routeEpoch = routeEpoch;
+            this.image = Objects.requireNonNull(image);
+        }
+    }
+
     public final class LogicalActorRef {
         private LogicalActorRef() { }
 
@@ -201,6 +236,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     private final String actorTypeName;
     private final LogicalActorRef logicalRef = new LogicalActorRef();
     private final ArrayList<Route> retiredRoutes = new ArrayList<>();
+    /**
+     * Unpublished candidate owners. Entries are pre-reserved before physical
+     * spawn so OOME/fault cleanup cannot lose the only retryable generation pin.
+     */
+    private final ArrayList<CandidateRetirement> retiredCandidates =
+            new ArrayList<>();
     private Route active;
     // Bound once by a trusted supervisor. Once bound, the host raw send()
     // path must not bypass the proxy's immutable bounded admission ledger.
@@ -856,6 +897,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 candidateGeneration.pinActorRoute();
 
         Route prior = null;
+        CandidateRetirement candidateRetirement = null;
         boolean pauseOwned = false;
         ActorRuntime.SourceActorTransfer transfer = null;
         ActorRuntime.ActorRef<Object> replacement = null;
@@ -869,9 +911,24 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 requireUpgradeAuthorityLocked(
                         candidateGeneration, proxyMailbox, proxyTicket);
                 reapRetiredLocked();
+                prior = active;
+
+                // Preallocate and register the candidate's retry owner before
+                // any physical actor is spawned. From this point onward no
+                // cleanup path needs to allocate ownership merely to keep the
+                // candidate generation pinned. Failure here is pre-admission:
+                // no candidate physical actor exists yet.
+                candidateRetirement = new CandidateRetirement(
+                        candidateGeneration,
+                        candidateLease,
+                        candidate,
+                        prior.incarnation,
+                        prior.routeEpoch,
+                        candidateImage);
+                retiredCandidates.add(candidateRetirement);
+
                 upgrading = true;
                 pauseOwned = true;
-                prior = active;
             }
 
             var started = prior.view.runtime().tryBeginSourceActorTransfer(
@@ -884,6 +941,14 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             replacement = candidate.runtime().spawnCodeActorFromTransfer(
                     transfer,
                     candidate.executor());
+            synchronized (routeLock) {
+                if (candidateRetirement == null
+                        || candidateRetirement.physical != null) {
+                    throw new IllegalStateException(
+                            "candidate retirement ownership was not uniquely reserved");
+                }
+                candidateRetirement.physical = replacement;
+            }
             replacement.getReady().get(
                     toNanosSaturated(readyTimeout),
                     TimeUnit.NANOSECONDS);
@@ -929,6 +994,10 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     active = next;
                     candidateLeaseTransferred = true;
                     published = true;
+                    if (!retiredCandidates.remove(candidateRetirement)) {
+                        throw new IllegalStateException(
+                                "published candidate lost its pre-reserved retirement owner");
+                    }
                 } finally {
                     if (!published) retiredRoutes.remove(prior);
                 }
@@ -1007,19 +1076,20 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     try {
                         if (!candidate.runtime().physicallyFinalizedForHotUpgrade(
                                 replacement)) {
-                            synchronized (routeLock) {
-                                retiredRoutes.add(new Route(
-                                        candidateGeneration,
-                                        candidateLease,
-                                        candidate,
-                                        replacement,
-                                        prior == null ? 1L : prior.incarnation,
-                                        prior == null ? 1L : prior.routeEpoch,
-                                        candidateImage));
-                            }
-                            // The candidate context must stay pinned until its
-                            // unpublished physical actor actually finalizes.
+                            // Ownership was pre-registered before spawn. Do not
+                            // allocate a Route or grow a ledger in this failure
+                            // path: merely retain the existing owner and pin.
                             candidateLeaseTransferred = true;
+                        } else {
+                            synchronized (routeLock) {
+                                if (candidateRetirement == null
+                                        || !retiredCandidates.remove(
+                                                candidateRetirement)) {
+                                    throw new IllegalStateException(
+                                            "finalized unpublished candidate lost "
+                                                    + "its pre-reserved retirement owner");
+                                }
+                            }
                         }
                     } catch (RuntimeException | Error finalizationProbeFailure) {
                         if (cleanupFailure == null) {
@@ -1028,25 +1098,15 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                             cleanupFailure.addSuppressed(finalizationProbeFailure);
                         }
                         // We cannot prove reclamation. Fail closed by retaining
-                        // the candidate generation rather than closing code
-                        // beneath an unknown physical actor.
+                        // the already-registered candidate owner; no allocation
+                        // or list growth is required after the failure.
                         candidateLeaseTransferred = true;
-                        ActorRuntime.ActorRef<Object> quarantinedCandidate =
-                                replacement;
-                        synchronized (routeLock) {
-                            if (quarantinedCandidate != null
-                                    && retiredRoutes.stream().noneMatch(
-                                            route -> route.physical
-                                                    == quarantinedCandidate)) {
-                                retiredRoutes.add(new Route(
-                                        candidateGeneration,
-                                        candidateLease,
-                                        candidate,
-                                        quarantinedCandidate,
-                                        prior == null ? 1L : prior.incarnation,
-                                        prior == null ? 1L : prior.routeEpoch,
-                                        candidateImage));
-                            }
+                    }
+                } else if (candidateRetirement != null) {
+                    synchronized (routeLock) {
+                        if (!retiredCandidates.remove(candidateRetirement)) {
+                            throw new IllegalStateException(
+                                    "unspawned candidate lost its pre-reserved owner");
                         }
                     }
                 }
@@ -1089,6 +1149,15 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             }
 
             if (!candidateLeaseTransferred) {
+                // No executable candidate may remain owned by the quarantine
+                // ledger when the originating path releases this lease.
+                synchronized (routeLock) {
+                    if (candidateRetirement != null
+                            && retiredCandidates.contains(candidateRetirement)) {
+                        throw new IllegalStateException(
+                                "candidate generation lease still has a retirement owner");
+                    }
+                }
                 try {
                     candidateLease.close();
                 } catch (RuntimeException | Error leaseFailure) {
@@ -1134,6 +1203,17 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 old.generationLease.close();
                 retiredRoutes.remove(i);
                 if (old == active) activeRouteLeaseReleased = true;
+                released++;
+            }
+        }
+        for (int i = retiredCandidates.size() - 1; i >= 0; --i) {
+            CandidateRetirement old = retiredCandidates.get(i);
+            ActorRuntime.ActorRef<Object> physical = old.physical;
+            if (physical != null
+                    && old.view.runtime().physicallyFinalizedForHotUpgrade(
+                            physical)) {
+                old.generationLease.close();
+                retiredCandidates.remove(i);
                 released++;
             }
         }
@@ -1217,7 +1297,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     awaitUpgradeLocked();
                     closed = true;
                     routeLock.notifyAll();
-                } else if (activeRouteLeaseReleased && retiredRoutes.isEmpty()) {
+                } else if (activeRouteLeaseReleased
+                        && retiredRoutes.isEmpty()
+                        && retiredCandidates.isEmpty()) {
                     return;
                 }
                 route = active;
@@ -1249,9 +1331,11 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             }
 
             final ArrayList<Route> oldRoutes;
+            final ArrayList<CandidateRetirement> oldCandidates;
             synchronized (routeLock) {
                 reapRetiredLocked();
                 oldRoutes = new ArrayList<>(retiredRoutes);
+                oldCandidates = new ArrayList<>(retiredCandidates);
             }
             for (Route old : oldRoutes) {
                 try {
@@ -1259,6 +1343,18 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 } catch (InterruptedException interruption) {
                     interrupted = true;
                     break;
+                }
+            }
+            if (!interrupted) {
+                for (CandidateRetirement old : oldCandidates) {
+                    ActorRuntime.ActorRef<Object> physical = old.physical;
+                    if (physical == null) continue;
+                    try {
+                        physical.awaitTermination(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException interruption) {
+                        interrupted = true;
+                        break;
+                    }
                 }
             }
 
@@ -1273,7 +1369,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     retiredRoutes.add(route);
                 }
                 if (interrupted) Thread.currentThread().interrupt();
-                if (!activeTerminated || !retiredRoutes.isEmpty()) {
+                if (!activeTerminated
+                        || !retiredRoutes.isEmpty()
+                        || !retiredCandidates.isEmpty()) {
                     throw new IllegalStateException(
                             "logical actor close did not observe complete physical retirement; "
                                     + "generation lease(s) remain pinned for supervisor retry");
