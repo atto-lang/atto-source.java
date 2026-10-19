@@ -165,9 +165,11 @@ public final class GeneratorRuntime {
         }
 
         private synchronized Step<T> next() {
-            // Failed producer admission must remain observable on every pull.
+            // Explicit close stops iteration; otherwise preserve the
+            // producer's terminal failure across every later pull.
+            if (closed.get()) { awaitProducerExit(); return Step.doneStep(); }
             throwIfBackingFailed();
-            if (done || closed.get()) { awaitProducerExit(); return Step.doneStep(); }
+            if (done) { awaitProducerExit(); return Step.doneStep(); }
             startIfNeeded();
             throwIfBackingFailed();
             putResume();
@@ -182,10 +184,10 @@ public final class GeneratorRuntime {
             done = true;
             awaitProducerExit();
             if (event instanceof FailedEvent<?> failed) {
-                Throwable failure = failed.failure();
-                if (failure instanceof RuntimeException runtimeFailure) throw runtimeFailure;
-                if (failure instanceof Error error) throw error;
-                throw new RuntimeException(failure);
+                // The published failure is an immutable terminal observation,
+                // not a one-shot event to forget after its first consumer.
+                backingFailure = failed.failure();
+                throwIfBackingFailed();
             }
             return Step.doneStep();
         }
