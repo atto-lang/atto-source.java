@@ -263,23 +263,53 @@ def _fetch_jobs_pages(repo, run_id, fetch):
     raise TriageError("job pagination exceeds safe page limit")
 
 
-def inspect(repo, run_id, expected_sha, fetch=get_json):
+def _verify_current_pr_head(pr, expected_sha, pr_number):
+    """Verify the live PR identity; a caller-provided SHA alone may be stale."""
+    if not isinstance(pr, dict) or pr.get("number") != pr_number:
+        raise TriageError("PR identity unavailable or mismatched")
+    head = pr.get("head")
+    if not isinstance(head, dict) or head.get("sha") != expected_sha:
+        raise TriageError("PR current head SHA mismatches requested exact source")
+    if pr.get("state") != "open":
+        raise TriageError("PR is no longer open")
+
+
+def inspect(repo, run_id, expected_sha, fetch=get_json, pr_number=None):
     if not isinstance(repo, str) or not REPO_RE.fullmatch(repo) or not _positive_int(run_id):
         raise TriageError("invalid repository or run ID")
     if not _valid_sha(expected_sha):
         raise TriageError("expected exact-head SHA required")
+    if pr_number is not None and not _positive_int(pr_number):
+        raise TriageError("invalid PR number")
+    pr_path = f"repos/{repo}/pulls/{pr_number}" if pr_number is not None else None
+    if pr_path:
+        _verify_current_pr_head(fetch(pr_path), expected_sha, pr_number)
     run_path = f"repos/{repo}/actions/runs/{run_id}"
     run = fetch(run_path)
     if not isinstance(run, dict) or run.get("id") != run_id or run.get("head_sha") != expected_sha:
         raise TriageError("initial run identity/head SHA mismatched")
+    if not _positive_int(run.get("run_attempt")):
+        raise TriageError("run attempt unavailable or invalid")
     jobs = _fetch_jobs_pages(repo, run_id, fetch)
+    if pr_path:
+        # In strict PR mode, missing provenance is not evidence for this attempt.
+        for job in jobs:
+            if (job.get("run_id") != run_id or
+                    job.get("run_attempt") != run["run_attempt"] or
+                    job.get("head_sha") != expected_sha):
+                raise TriageError("job exact-head/attempt provenance unverified")
     final_run = fetch(run_path)
     # The latest attempt can change while we page through jobs.
     identity_fields = ("id", "head_sha", "run_attempt", "status", "conclusion")
     if not isinstance(final_run, dict) or any(run.get(field) != final_run.get(field) for field in identity_fields):
         raise TriageError("run changed during job inspection")
+    if pr_path:
+        _verify_current_pr_head(fetch(pr_path), expected_sha, pr_number)
     outcome = assess(run, jobs, expected_sha, run_id=run_id)
     return {"repository": repo, "run_id": run_id, "head_sha": expected_sha,
+            "run_attempt": run["run_attempt"], "pr_number": pr_number,
+            "pr_head_verified": bool(pr_path),
+            "job_provenance_verified": bool(pr_path),
             "conclusion": run.get("conclusion"), **outcome}
 
 
@@ -288,9 +318,12 @@ def main(argv=None):
     parser.add_argument("repository")
     parser.add_argument("run_id", type=int)
     parser.add_argument("expected_head_sha")
+    parser.add_argument("--pr", type=int, metavar="NUMBER",
+                        help="verify current PR head and each job's exact run/attempt provenance")
     args = parser.parse_args(argv)
     try:
-        report = inspect(args.repository, args.run_id, args.expected_head_sha)
+        report = inspect(args.repository, args.run_id, args.expected_head_sha,
+                         pr_number=args.pr)
     except TriageError as exc:
         print("CI_TRIAGE_INCONCLUSIVE: " + str(exc), file=sys.stderr)
         return 2
