@@ -1675,9 +1675,15 @@ public final class TypeChecker {
         boolean previousGenerator = currentGenerator;
         boolean previousAsync = currentAsyncCallable;
         boolean previousDiscard = inDiscardingSelectArm;
+        boolean previousRootMain = currentRootMain;
+        Env previousRootLocalEnv = currentRootMainLocalEnv;
         loopDepth = 0;
         currentGenerator = false;
         currentAsyncCallable = false;
+        // Select/deferred/callback arms are a different execution boundary.
+        // They must not mint privileges by inheriting the enclosing main.
+        currentRootMain = false;
+        currentRootMainLocalEnv = null;
         inDiscardingSelectArm = discardReturn;
         try {
             checkBlock(body, parent, generics, expectedReturn, self);
@@ -1686,6 +1692,8 @@ public final class TypeChecker {
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
             inDiscardingSelectArm = previousDiscard;
+            currentRootMain = previousRootMain;
+            currentRootMainLocalEnv = previousRootLocalEnv;
         }
     }
 
