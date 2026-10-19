@@ -4620,24 +4620,54 @@ public final class ActorRuntime implements AutoCloseable {
                 // partial admission. Always refund the reserved actor slot.
                 // Keep the original failure authoritative if teardown itself
                 // fails with an Error (including injected OOME).
+                // Each cleanup action must run even when another action
+                // throws after changing its collection (including an
+                // injected OOME). One enclosing try used to abandon the
+                // remaining parent/group/cell cleanup on the first error.
+                // Never mask the original registration failure.
                 try {
-                    if (cell != null) actors.remove(cell.ref.id(), cell);
-                    if (linkedToParent && cell != null) parent.children.remove(cell);
                     if (cell != null) {
-                        ActorGroupId inheritedId = cell.managedByGroup.get();
-                        ActorGroup inherited = inheritedId == null
-                                ? null : actorGroups.get(inheritedId);
-                        if (inherited != null) {
-                            synchronized (inherited.authorityLock) {
-                                inherited.managedWorkers.remove(cell.ref.id(), cell.ref);
-                            }
+                        try {
+                            actors.remove(cell.ref.id(), cell);
+                        } catch (RuntimeException | Error cleanupFailure) {
+                            if (cleanupFailure != failure)
+                                failure.addSuppressed(cleanupFailure);
                         }
-                        cell.abortUnregisteredConstruction();
                     }
-                } catch (RuntimeException | Error cleanupFailure) {
-                    if (cleanupFailure != failure)
-                        failure.addSuppressed(cleanupFailure);
+                    if (linkedToParent && cell != null) {
+                        try {
+                            parent.children.remove(cell);
+                        } catch (RuntimeException | Error cleanupFailure) {
+                            if (cleanupFailure != failure)
+                                failure.addSuppressed(cleanupFailure);
+                        }
+                    }
+                    if (cell != null) {
+                        try {
+                            ActorGroupId inheritedId = cell.managedByGroup.get();
+                            ActorGroup inherited = inheritedId == null
+                                    ? null : actorGroups.get(inheritedId);
+                            if (inherited != null) {
+                                synchronized (inherited.authorityLock) {
+                                    inherited.managedWorkers.remove(
+                                            cell.ref.id(), cell.ref);
+                                }
+                            }
+                        } catch (RuntimeException | Error cleanupFailure) {
+                            if (cleanupFailure != failure)
+                                failure.addSuppressed(cleanupFailure);
+                        }
+                        try {
+                            cell.abortUnregisteredConstruction();
+                        } catch (RuntimeException | Error cleanupFailure) {
+                            if (cleanupFailure != failure)
+                                failure.addSuppressed(cleanupFailure);
+                        }
+                    }
                 } finally {
+                    // The actor never reached the executable scheduling
+                    // boundary. Its reserved count must be refunded even
+                    // if best-effort cleanup throws.
                     actorCount.decrementAndGet();
                 }
                 throw failure;
