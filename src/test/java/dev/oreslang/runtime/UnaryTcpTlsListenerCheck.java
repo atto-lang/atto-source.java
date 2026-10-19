@@ -20,6 +20,7 @@ public final class UnaryTcpTlsListenerCheck {
         if (!ok) throw new AssertionError(what);
     }
 
+    @SuppressWarnings("try") // Intentional early shutdown before waiting for accept-loop exit.
     public static void main(String[] args) throws Exception {
         if (args.length != 1)
             throw new IllegalArgumentException("expected disposable TLS fixture directory");
