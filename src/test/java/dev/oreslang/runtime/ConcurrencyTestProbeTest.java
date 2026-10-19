@@ -100,6 +100,30 @@ final class ConcurrencyTestProbeTest {
     }
 
     @Test
+    void traceCreationCannotOverwriteEvidenceOrFollowOutputSymlink() throws Exception {
+        Path trace = tmp.resolve("collision.trace");
+        try (var session = ConcurrencyTestProbe.start(41, false, null)) {
+            ConcurrencyTestProbe.checkpoint("task-turn");
+            session.writeTrace(trace);
+            byte[] original = java.nio.file.Files.readAllBytes(trace);
+            assertThrows(java.nio.file.FileAlreadyExistsException.class,
+                    () -> session.writeTrace(trace));
+            assertArrayEquals(original, java.nio.file.Files.readAllBytes(trace));
+            Path alias = tmp.resolve("link.trace");
+            try {
+                java.nio.file.Files.createSymbolicLink(alias, trace.getFileName());
+            } catch (UnsupportedOperationException | java.nio.file.FileSystemException unsupported) {
+                return;
+            }
+            assertThrows(java.nio.file.FileAlreadyExistsException.class,
+                    () -> session.writeTrace(alias));
+            assertArrayEquals(original, java.nio.file.Files.readAllBytes(trace));
+            assertThrows(IllegalArgumentException.class,
+                    () -> ConcurrencyTestProbe.readTraceData(alias));
+        }
+    }
+
+    @Test
     void replayMismatchFailsClosedAndSessionRetires() {
         try (var session = ConcurrencyTestProbe.start(1, true, List.of("future-await|1"))) {
             assertThrows(IllegalStateException.class,
