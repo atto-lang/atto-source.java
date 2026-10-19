@@ -31,6 +31,10 @@ POLICY_PATH = ".github/private-ci-approved-repositories.txt"
 # Immutable Git blob reviewed in this security PR. Protected-main/ruleset
 # introspection is not assumed to be available to the publisher.
 EXPECTED_POLICY_BLOB_SHA = "7f06fd603fb385273ccd6ef47b3c7ec4c6a40604"
+CARRIER_WORKFLOW_PATH = ".github/workflows/private-oreslang-exact-tree.yml"
+# Independently reviewed destination-main workflow. The publisher overlays only
+# PREFIX, so this exact workflow remains part of the carrier commit that runs.
+EXPECTED_CARRIER_WORKFLOW_BLOB_SHA = "468df2947fa8b8db2c4659db601543f1510ef6b9"
 MAX_POLICY_BYTES = 16 * 1024
 
 
@@ -78,6 +82,17 @@ def checked_repo(repository, expected_id):
             or result.get("private") is not True):
         raise Denied("destination identity, repository ID, or private visibility changed")
     return result
+
+
+def checked_carrier_workflow(repository, ref):
+    response = gh_api(
+        f"repos/{repository}/contents/{CARRIER_WORKFLOW_PATH}?ref={ref}")
+    if response.get("type") != "file":
+        raise Denied("reviewed carrier workflow has unexpected shape")
+    workflow_blob = valid_sha(response.get("sha"))
+    if workflow_blob != EXPECTED_CARRIER_WORKFLOW_BLOB_SHA:
+        raise Denied("carrier exact-tree workflow differs from reviewed workflow blob")
+    return workflow_blob
 
 
 def require_preflight(repository, root):
@@ -312,7 +327,10 @@ def publish(repository, source, source_commit, branch, trusted_root):
     checked_source = source.resolve(strict=True)
     if checked_source != trusted:
         raise Denied("source directory must be the trusted checkout root")
-    files, source_tree_sha = collect_git_tree(checked_source, source_commit)
+
+    # Verify the exact carrier code that will execute the mirror before reading
+    # private source bytes. The new carrier commit uses this immutable base tree
+    # and overlays only PREFIX, so source content cannot replace the workflow.
     base = checked_repo(repository, approved_repo_id)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
@@ -321,6 +339,9 @@ def publish(repository, source, source_commit, branch, trusted_root):
     base_sha = valid_sha(base_ref.get("object", {}).get("sha"))
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
+    checked_carrier_workflow(repository, base_sha)
+
+    files, source_tree_sha = collect_git_tree(checked_source, source_commit)
     def authorize_write():
         local_policy, local_repo_id = checked_policy_fingerprint(
             trusted_root, repository)
