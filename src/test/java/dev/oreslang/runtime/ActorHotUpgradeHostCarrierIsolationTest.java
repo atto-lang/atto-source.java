@@ -48,6 +48,40 @@ final class ActorHotUpgradeHostCarrierIsolationTest {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    private static ThreadLocal<Object> mailmanMarker() throws Exception {
+        var field = ActorRuntime.class.getDeclaredField(
+                "CURRENT_ACTOR_GROUP_MAILMAN");
+        field.setAccessible(true);
+        return (ThreadLocal<Object>) field.get(null);
+    }
+
+    @Test
+    void actorGroupControlExecutionNeverInheritsHostUpgradeAuthority()
+            throws Exception {
+        Method proxyHost = LogicalSourceActorProxyBridgeV1.class
+                .getDeclaredMethod("requireHost");
+        Method routerHost = LogicalSourceActorRouterV1.class
+                .getDeclaredMethod("requireBlockingHostSurface", String.class);
+        proxyHost.setAccessible(true);
+        routerHost.setAccessible(true);
+
+        // The runtime's CONTROL flag checks only the existence of its
+        // ThreadLocal. Inject an opaque sentinel rather than constructing
+        // a valid Mailman session or granting guest CONTROL capabilities.
+        ThreadLocal<Object> context = mailmanMarker();
+        Object prior = context.get();
+        try {
+            context.set(new Object());
+            assertFalse(ActorRuntime.inActorExecution());
+            assertTrue(ActorRuntime.inActorGroupMailmanExecution());
+            rejectsBlockingSurfaces(proxyHost, routerHost);
+        } finally {
+            if (prior == null) context.remove();
+            else context.set(prior);
+        }
+    }
+
     @Test
     void carrierCallbacksWithoutActiveTurnCannotEnterBlockingUpgradeControls()
             throws Exception {
