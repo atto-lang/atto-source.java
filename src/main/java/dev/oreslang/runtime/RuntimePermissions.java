@@ -276,6 +276,7 @@ public final class RuntimePermissions {
             String port = value.substring(close + 2);
             return validNetworkPort(port) ? new NetworkScope(host, port) : null;
         }
+        if (value.indexOf('[') >= 0 || value.indexOf(']') >= 0) return null;
 
         int firstColon = value.indexOf(':');
         if (firstColon < 0) return new NetworkScope(value, null);
