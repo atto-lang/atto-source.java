@@ -1838,9 +1838,9 @@ public final class OwnershipChecker {
         // This AST pass can only reject obvious non-candidates. A later resolved
         // ThreadSafetyTraits check must authorize the actual transfer.
         for (Ast.Param parameter : lambda.parameters()) {
-            if (!taskSendSyntaxPreflight.isSend(parameter.type())) {
+            if (!taskSendSyntaxPreflight.mayBeSendAfterResolution(parameter.type())) {
                 throw error("scheduled lambda parameter '" + parameter.name()
-                        + "' requires proven Send");
+                        + "' fails conservative Task Send preflight; resolved ThreadSafetyTraits remains authoritative");
             }
         }
         checkLambda(lambda, scope, null);
@@ -1854,9 +1854,9 @@ public final class OwnershipChecker {
                 throw error("async/Task argument " + i
                         + " cannot transfer a MutexGuard into scheduled work");
             }
-            if (!taskSendSyntaxPreflight.isSend(value.type)) {
+            if (!taskSendSyntaxPreflight.mayBeSendAfterResolution(value.type)) {
                 throw error("scheduled lambda argument " + i
-                        + " requires proven Send for owned transfer");
+                        + " fails conservative Task Send preflight for owned transfer; resolved ThreadSafetyTraits remains authoritative");
             }
         }
         Ast.TypeRef result = Ast.TypeRef.inferred();
@@ -2525,10 +2525,10 @@ public final class OwnershipChecker {
         CaptureSet captures = collectCaptures(lambda, outer, null);
         for (Capture capture : captures.values.values()) {
             Ast.TypeRef type = capture.source.type;
-            if (!taskSendSyntaxPreflight.isSend(type)) {
+            if (!taskSendSyntaxPreflight.mayBeSendAfterResolution(type)) {
                 throw error("scheduled Task capture '" + capture.name
-                        + "' requires proven Send for owned transfer; type is "
-                        + type + " (Task source execution remains disabled)");
+                        + "' fails conservative Task Send preflight for owned transfer; type is "
+                        + type + " (resolved ThreadSafetyTraits remains authoritative; Task source execution remains disabled)");
             }
         }
     }
