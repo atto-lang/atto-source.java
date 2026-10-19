@@ -146,6 +146,17 @@ final class ActorUpgradeEpochGate implements AutoCloseable {
     synchronized boolean frozen() { return candidate != null; }
     synchronized boolean isClosed() { return closed; }
     /** A still-owned, unretired preflight token is required at route CAS. */
+    /** Serialize candidate retirement/teardown with the one logical CAS. */
+    synchronized boolean withPreparedAuthority(
+            Candidate staged, java.util.function.BooleanSupplier commit) {
+        checkCandidate(staged);
+        return Objects.requireNonNull(commit, "publication decision").getAsBoolean();
+    }
+
+    synchronized boolean admissionOpen() {
+        return !closed && candidate == null;
+    }
+
     synchronized boolean ownsPrepared(Candidate staged) {
         return !closed && staged != null && staged.owner == this
                 && staged == candidate && staged.originEpoch == epoch;
