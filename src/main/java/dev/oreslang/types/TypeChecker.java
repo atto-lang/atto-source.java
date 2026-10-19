@@ -5040,24 +5040,209 @@ public final class TypeChecker {
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
     }
 
+    /**
+     * Canonical resolved-type detached-transfer proof. This is intentionally
+     * stricter than the AST deny-only preflight in OwnershipChecker.
+     */
+    private boolean isThreadSend(Type type) {
+        int[] nominalSharedSafetyBudget = new int[] {100_000};
+        return ThreadSafetyTraits.isOwnedSend(type,
+                new ThreadSafetyTraits.NominalProof() {
+                    @Override
+                    public boolean has(
+                            Named nominal,
+                            ThreadSafetyTraits.Trait trait) {
+                        return trait == ThreadSafetyTraits.Trait.SEND
+                                && isSharedSafe(
+                                        nominal,
+                                        new LinkedHashSet<>(),
+                                        Map.of(),
+                                        0,
+                                        nominalSharedSafetyBudget);
+                    }
+
+                    @Override
+                    public boolean trustedIntrinsic(Named named) {
+                        if (!Set.of(
+                                "Option", "Result", "Channel",
+                                "OptionUnwrapError", "IteratorResult")
+                                .contains(named.name())) {
+                            return false;
+                        }
+                        return findClass(named.name()) == null
+                                && findInterface(named.name()) == null
+                                && findTypeAlias(named.name()) == null;
+                    }
+                });
+    }
+
+    /**
+     * A free name crossing the current scheduled boundary is copied into a
+     * compiler-only marker environment after the resolved owned-Send proof.
+     * Subsequent writes during type analysis target this detached alias rather
+     * than mutating definite-initialization state in the enclosing scope.
+     */
+    private Env.Binding materializeScheduledTaskCapture(
+            String name,
+            Env current,
+            Env.Binding resolved) {
+        Env boundary = scheduledTaskCaptureBoundary;
+        if (boundary == null || boundary.parent == null) return resolved;
+
+        boolean reachedBoundary = false;
+        for (Env cursor = current; cursor != null; cursor = cursor.parent) {
+            if (cursor.lookupLocal(name) != null) return resolved;
+            if (cursor == boundary) {
+                reachedBoundary = true;
+                break;
+            }
+        }
+        if (!reachedBoundary) return resolved;
+
+        Env.Binding outer = boundary.parent.lookup(name);
+        if (outer == null || outer != resolved) return resolved;
+        validateAsyncBoundaryType(
+                outer.type(),
+                false,
+                "scheduled Task capture '" + name + "'");
+        boundary.define(name, outer.type(), outer.kind());
+        return boundary.lookupLocal(name);
+    }
+
+    private void validateScheduledTaskBodyTypes(
+            List<Ast.Stmt> body,
+            Env outer,
+            Set<String> generics,
+            Type self,
+            String where) {
+        Map<Env.Binding, Set<String>> outerInitialization =
+                outer.initializationSnapshot();
+        Env previousBoundary = scheduledTaskCaptureBoundary;
+        boolean previousMaySuspend = currentMaySuspend;
+        Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+
+        Env boundary = new Env(
+                outer,
+                outer.descendantsNonLexical(),
+                true);
+        scheduledTaskCaptureBoundary = boundary;
+        currentMaySuspend = true;
+        currentConstructorOwner = null;
+        try {
+            checkCallableBlock(
+                    body,
+                    boundary,
+                    generics,
+                    Unknown.INSTANCE,
+                    self);
+        } catch (IllegalArgumentException failure) {
+            throw new IllegalArgumentException(
+                    where + " semantic Task admission failed: "
+                            + failure.getMessage(),
+                    failure);
+        } finally {
+            outer.restoreInitialization(outerInitialization);
+            scheduledTaskCaptureBoundary = previousBoundary;
+            currentMaySuspend = previousMaySuspend;
+            currentConstructorOwner = previousConstructorOwner;
+        }
+    }
+
+    private void validateScheduledLambdaTypes(
+            Ast.LambdaExpr lambda,
+            Env outer,
+            Set<String> generics,
+            Type self,
+            String where) {
+        Map<Env.Binding, Set<String>> outerInitialization =
+                outer.initializationSnapshot();
+        Env previousBoundary = scheduledTaskCaptureBoundary;
+        boolean previousMaySuspend = currentMaySuspend;
+        boolean previousAsyncCallable = currentAsyncCallable;
+        Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+
+        boolean nonLexical =
+                lambda.nonLexical() || outer.descendantsNonLexical();
+        Env boundary = new Env(
+                nonLexical ? null : outer,
+                nonLexical,
+                true);
+        Env lambdaEnv = new Env(boundary, nonLexical, true);
+        List<Type> parameters = new ArrayList<>(
+                lambda.parameters().size());
+        for (Ast.Param parameter : lambda.parameters()) {
+            Type resolved = resolveParam(parameter, generics, self);
+            validateAsyncBoundaryType(
+                    resolved,
+                    false,
+                    where + " parameter '" + parameter.name() + "'");
+            parameters.add(resolved);
+            lambdaEnv.define(
+                    parameter.name(),
+                    resolved,
+                    parameter.mutable()
+                            ? Ast.BindingKind.LET
+                            : Ast.BindingKind.VAL);
+        }
+        defineImplicitArguments(lambdaEnv, parameters);
+
+        scheduledTaskCaptureBoundary = boundary;
+        currentMaySuspend = true;
+        currentAsyncCallable = false;
+        currentConstructorOwner = null;
+        try {
+            if (lambda.expressionBody() != null) {
+                typeOf(
+                        lambda.expressionBody(),
+                        lambdaEnv,
+                        generics,
+                        self);
+            } else {
+                checkCallableBlock(
+                        lambda.blockBody(),
+                        lambdaEnv,
+                        generics,
+                        Unknown.INSTANCE,
+                        self);
+            }
+        } catch (IllegalArgumentException failure) {
+            throw new IllegalArgumentException(
+                    where + " semantic Task admission failed: "
+                            + failure.getMessage(),
+                    failure);
+        } finally {
+            outer.restoreInitialization(outerInitialization);
+            scheduledTaskCaptureBoundary = previousBoundary;
+            currentMaySuspend = previousMaySuspend;
+            currentAsyncCallable = previousAsyncCallable;
+            currentConstructorOwner = previousConstructorOwner;
+        }
+    }
+
     private void validateAsyncBoundaryType(
             Type type,
             boolean returnPosition,
             String where) {
         if (returnPosition && type == Primitive.VOID) return;
-        // A typed channel handle is an Ores-owned synchronized transport, not
-        // an actor/mailbox capability. Async tasks may receive the handle when
-        // its payload is concrete, owned and task-safe. Actor boundaries retain
-        // their stricter rule and continue to reject Channel<T> entirely.
+        // Channel<T> is a compiler-owned synchronized transport. Its payload
+        // still requires the ordinary resolved shared-safe + owned-Send proof.
         if (type instanceof Named named && named.name().equals("Channel")
                 && named.arguments().size() == 1
-                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                && isSharedSafe(
+                        named.arguments().getFirst(),
+                        new LinkedHashSet<>(),
+                        Map.of())
+                && isThreadSend(type)) {
             return;
         }
         if (type == Primitive.VOID
-                || !isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
+                || !isThreadSend(type)
+                || !isSharedSafe(
+                        type,
+                        new LinkedHashSet<>(),
+                        Map.of())) {
             throw new IllegalArgumentException(
-                    where + " must be concrete owned task-safe data; borrows, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
+                    where + " must be concrete resolved owned-Send task-safe data; borrows, readonly aliases, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
         }
     }
 
@@ -8738,6 +8923,9 @@ public final class TypeChecker {
             if (bindings.putIfAbsent(name, new Binding(type, kind, uninitializedFields)) != null) {
                 throw new IllegalArgumentException("duplicate binding '" + name + "'");
             }
+        }
+        private Binding lookupLocal(String name) {
+            return bindings.get(name);
         }
         private Binding lookup(String name) {
             Binding binding = bindings.get(name);
