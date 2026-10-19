@@ -113,6 +113,37 @@ final class GuestScalarTaskAwaitTest {
     }
 
     @Test
+    void directExportedMainInvocationCannotReuseRootLaunchProof() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                    let int x = 41;
+                    let int result = await task { return x; };
+                    stdio.stdout.write(result);
+                    return;
+                }
+                """;
+        OresCompiler.parseAndTypeCheck(program);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                OresLanguage.ID, program, "root-task-once.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            // First run is the VM-owned main entrypoint, which mints one
+            // root-Task launch proof. A later named export call does not.
+            var executable = context.parse(source);
+            executable.execute();
+            assertTrue(output.toString().contains("41"), output::toString);
+            RuntimeException denied = assertThrows(RuntimeException.class,
+                    () -> executable.execute(
+                            dev.oreslang.nodes.OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
+                            "main"));
+            assertTrue(denied.toString().contains("root main"),
+                    denied::toString);
+        }
+    }
+
+    @Test
     void standaloneAndEscapingTaskHandlesStayRejected() {
         rejects("let Task<int> work = task { return 7; };");
         rejects("do task { return; };");
