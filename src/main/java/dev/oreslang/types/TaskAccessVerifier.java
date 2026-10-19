@@ -29,6 +29,8 @@ import java.util.Objects;
 final class TaskAccessVerifier {
     private static final int MAX_LABEL_CHARS = 256;
     private static final int MAX_PROJECTION_DEPTH = 64;
+    private static final java.util.Set<String> TRUST_DOMAINS = java.util.Set.of(
+            "PROCESS", "ACTOR_SHARED", "ACTOR_PRIVATE", "UNTRUSTED");
     public enum Mode { READ, WRITE }
 
     /**
@@ -41,7 +43,8 @@ final class TaskAccessVerifier {
         public Root {
             if (domain == null || domain.isBlank() || ownerId == null || ownerId.isBlank()
                     || domain.length() > MAX_LABEL_CHARS || ownerId.length() > MAX_LABEL_CHARS
-                    || allocationId <= 0 || generation <= 0) {
+                    || allocationId <= 0 || generation <= 0
+                    || !TRUST_DOMAINS.contains(domain)) {
                 throw new IllegalArgumentException("invalid allocation provenance");
             }
             if (!domain.equals("PROCESS") && ownerId.equals(domain)) {
@@ -131,6 +134,42 @@ final class TaskAccessVerifier {
         }
     }
 
+    private static boolean containsReadonlyRecordCapability(Types.Type root) {
+        record Pending(Types.Type type, int depth) { }
+        java.util.ArrayDeque<Pending> pending = new java.util.ArrayDeque<>();
+        java.util.Set<Types.Type> seen =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        pending.push(new Pending(root, 0));
+        int nodes = 0;
+        while (!pending.isEmpty()) {
+            Pending current = pending.pop();
+            Types.Type type = current.type();
+            if (type == null || current.depth() > 256 || ++nodes > 4096) return true;
+            if (!seen.add(type)) continue;
+            if (type instanceof Types.Record record && record.readOnly()) return true;
+            int next = current.depth() + 1;
+            if (type instanceof Types.Named named) {
+                for (Types.Type arg : named.arguments()) pending.push(new Pending(arg, next));
+            } else if (type instanceof Types.ListType list) {
+                pending.push(new Pending(list.element(), next));
+            } else if (type instanceof Types.Tuple tuple) {
+                for (Types.Type item : tuple.elements()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Record record) {
+                for (Types.Type item : record.members().values()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Union union) {
+                for (Types.Type item : union.options()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Function function) {
+                for (Types.Type item : function.parameters()) pending.push(new Pending(item, next));
+                pending.push(new Pending(function.result(), next));
+            } else if (type instanceof Types.SelfType self) {
+                pending.push(new Pending(self.bound(), next));
+            } else if (type instanceof Types.Not not) {
+                pending.push(new Pending(not.excluded(), next));
+            }
+        }
+        return false;
+    }
+
     private static boolean containsBorrowCapability(Types.Type root) {
         record Pending(Types.Type type, int depth) { }
         java.util.ArrayDeque<Pending> pending = new java.util.ArrayDeque<>();
@@ -182,6 +221,11 @@ final class TaskAccessVerifier {
         List<TypedClaim> typed =
                 List.copyOf(Objects.requireNonNull(requested, "claims"));
         for (TypedClaim claim : typed) {
+            if (claim.claim().mode() == Mode.WRITE
+                    && containsReadonlyRecordCapability(claim.type())) {
+                throw new IllegalArgumentException(
+                        "scoped Task WRITE requires mutable referent authority");
+            }
             ThreadSafetyTraits.Trait needed =
                     claim.claim().mode() == Mode.READ
                             ? ThreadSafetyTraits.Trait.SYNC
@@ -332,13 +376,13 @@ final class TaskAccessVerifier {
         Map<AllocationKey, Long> incomingGenerations = new HashMap<>();
         ScopeKey requestedDomain = scopeDomain;
         for (Claim claim : claims) {
+            Objects.requireNonNull(claim, "claim");
             Root root = claim.place().root();
             ScopeKey claimScope = new ScopeKey(root.domain(), root.ownerId());
             if (requestedDomain == null) requestedDomain = claimScope;
             if (!requestedDomain.equals(claimScope)) {
                 throw new IllegalArgumentException("TaskScope cannot mix allocation owner identities");
             }
-            Objects.requireNonNull(claim, "claim");
             AllocationKey key = new AllocationKey(root.domain(), root.ownerId(), root.allocationId());
             Long incoming = incomingGenerations.putIfAbsent(
                     key, claim.place().root().generation());
