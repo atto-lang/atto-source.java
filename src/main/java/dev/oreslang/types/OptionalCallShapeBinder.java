@@ -497,12 +497,42 @@ public final class OptionalCallShapeBinder {
         return List.copyOf(shapes);
     }
 
+    /**
+     * V3 signature selection is structurally identical once a caller has
+     * explicitly chosen the v3 language mode and validated all declaration
+     * defaults. This is still not runtime/ownership execution authority.
+     */
+    public record StagedV3Signature(
+            List<Ast.Param> parameters, List<Ast.Annotation> annotations) {
+        public StagedV3Signature {
+            parameters = List.copyOf(parameters);
+            annotations = List.copyOf(annotations);
+        }
+    }
+
+    public static Selection selectStagedV3(
+            List<StagedV3Signature> signatures, List<Ast.CallArgument> sourceItems) {
+        Objects.requireNonNull(signatures, "v3 signatures");
+        List<List<Parameter>> candidates = new ArrayList<>();
+        for (StagedV3Signature signature : signatures) {
+            candidates.add(stagedV3ParameterShapes(signature.parameters(), signature.annotations()));
+        }
+        Selection selected = bindUnique(candidates, parsedArgumentShapes(sourceItems));
+        verifyPlanAgainstSource(candidates.get(selected.signatureIndex()),
+                sourceItems, selected.plan());
+        return selected;
+    }
+
     /** The reference shape is an omittable source T, never a required Option<T>. */
     public static List<Parameter> declaredParameterShapes(List<Ast.Param> parameters) {
         Objects.requireNonNull(parameters, "parameters");
         List<Parameter> result = new ArrayList<>(parameters.size());
         for (Ast.Param formal : parameters) {
             Objects.requireNonNull(formal, "formal");
+            if (formal.argumentOmittable()) {
+                throw new IllegalArgumentException(
+                        "legacy binder cannot reinterpret v3 name-suffix argument presence");
+            }
             result.add(formal.optional() ? Parameter.optional(formal.name())
                                          : Parameter.required(formal.name()));
         }
@@ -566,6 +596,10 @@ public final class OptionalCallShapeBinder {
         List<Parameter> result = new ArrayList<>(formals.size());
         for (Ast.Param formal : formals) {
             Objects.requireNonNull(formal, "formal");
+            if (formal.argumentOmittable()) {
+                throw new IllegalArgumentException(
+                        "legacy formal binder cannot reinterpret v3 name-suffix argument presence");
+            }
             if (formal.optional() && (formal.structural() || formal.mutable())) {
                 throw new IllegalArgumentException(
                         "omittable formal cannot be structural or mutable");
