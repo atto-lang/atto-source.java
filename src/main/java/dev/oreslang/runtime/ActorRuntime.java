@@ -7182,10 +7182,13 @@ public final class ActorRuntime implements AutoCloseable {
                     || scheduled.get()
                     || carrierActive
                     || !children.isEmpty()
+                    // All actor terminations dispatch owned-Future and child
+                    // cancellation, even when no tracked TaskScope exists.
+                    // The cascade must finish before any actor done witness.
+                    || !terminationCascadeComplete
+                    || activeTerminationCascades != 0
                     || (actorOwnedTasks != null
-                            && (!terminationCascadeComplete
-                                    || activeTerminationCascades != 0
-                                    || !actorOwnedTasks.getDone().isDone()))) return;
+                            && !actorOwnedTasks.getDone().isDone())) return;
             finalizationClaimed = true;
             Thread.ofVirtual()
                     .name("ores-actor-finalize-" + ref.id())
@@ -7839,12 +7842,13 @@ public final class ActorRuntime implements AutoCloseable {
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
                 ownedTaskScope = actorOwnedTasks;
-                if (ownedTaskScope != null) {
-                    activeTerminationCascades++;
-                    terminationCascadeComplete = false;
-                }
-                // A tracked Task scope prevents finalization until both its
-                // physical join AND this entire termination cascade finish.
+                // Every actor, even one which never spawned a tracked Task,
+                // can own pending Futures or descendant actors. Protect
+                // their cancellation callbacks under the same completion gate.
+                activeTerminationCascades++;
+                terminationCascadeComplete = false;
+                // Finalization waits for the entire cascade and any tracked
+                // Task's physical quiescence.
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
@@ -7873,24 +7877,20 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 cascadeDispatchComplete = true;
             } finally {
-                if (ownedTaskScope != null) {
-                    synchronized (lifecycleLock) {
-                        if (!cascadeDispatchComplete) terminationCascadeFailed = true;
-                        if (activeTerminationCascades <= 0) {
-                            throw new IllegalStateException(
-                                    "actor Task termination cascade accounting underflow");
-                        }
-                        if (--activeTerminationCascades == 0) {
-                            // Do not release actor memory if a fatal host
-                            // callback interrupted the cancellation cascade
-                            // before every pending operation/child was handled.
-                            terminationCascadeComplete = !terminationCascadeFailed;
-                        }
-                        // A TaskScope completion callback could have arrived
-                        // during this cascade; recheck after its last action.
-                        if (stopped.get() && activeTurns == 0) finalizeStopLocked();
-                        lifecycleLock.notifyAll();
+                synchronized (lifecycleLock) {
+                    if (!cascadeDispatchComplete) terminationCascadeFailed = true;
+                    if (activeTerminationCascades <= 0) {
+                        throw new IllegalStateException(
+                                "actor termination cascade accounting underflow");
                     }
+                    if (--activeTerminationCascades == 0) {
+                        // Never release actor memory if a host callback
+                        // interrupted the cancellation cascade before all
+                        // pending operations and descendants were handled.
+                        terminationCascadeComplete = !terminationCascadeFailed;
+                    }
+                    if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                    lifecycleLock.notifyAll();
                 }
             }
         }
