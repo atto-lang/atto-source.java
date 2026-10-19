@@ -5050,11 +5050,17 @@ public final class TypeChecker {
 
         Ast.ClassDecl klass = findClass(named.name());
         if (klass == null) {
-            // Runtime capability types (for example ActorId/ActorRef) are
-            // validated again by transport. Do not silently admit known
-            // mutable/suspending primitives above, but avoid rejecting opaque
-            // capability types solely because they have no source class body.
-            return;
+            // ActorId and ActorKind are compiler-defined scalar metadata with
+            // no guest-owned fields. Unknown nominal classes, host wrappers,
+            // pointers and arbitrary actor routing capabilities cannot acquire
+            // a mailbox transport contract simply by lacking a source class.
+            if (named.arguments().isEmpty()
+                    && (named.name().equals("ActorId") || named.name().equals("ActorKind"))) {
+                return;
+            }
+            throw new IllegalArgumentException(
+                    where + " cannot transport unknown nominal type '" + named.name()
+                            + "'; only compiler-recognized actor metadata and data-only values are supported");
         }
         if (klass.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
