@@ -345,9 +345,54 @@ def git_tree_digest(files):
     return digest(root).hex()
 
 
-def publish(repository, source, branch, trusted_root):
+
+SOURCE_ORIGIN = "ores-truffle-oreslang/oreslang-source.java"
+SOURCE_ORIGIN_ID = 1400792274
+
+
+def checked_trusted_main_checkout(trusted_root):
+    """Caller must execute reviewed policy + publisher from protected main."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=trusted_root, env=env, capture_output=True, text=True,
+            timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Denied("trusted policy checkout cannot be attested") from exc
+    if result.returncode or not SHA.fullmatch(result.stdout.strip()):
+        raise Denied("trusted policy checkout does not have a valid HEAD")
+    source = gh_api("repos/" + SOURCE_ORIGIN)
+    if (source.get("id") != SOURCE_ORIGIN_ID
+            or source.get("full_name") != SOURCE_ORIGIN
+            or source.get("private") is not True
+            or source.get("visibility") != "private"
+            or source.get("default_branch") != "main"):
+        raise Denied("trusted source repository identity changed")
+    trusted_main = gh_api("repos/" + SOURCE_ORIGIN + "/branches/main")
+    if (not isinstance(trusted_main.get("commit"), dict)
+            or trusted_main["commit"].get("sha") != result.stdout.strip()):
+        raise Denied("publisher policy must run from reviewed main HEAD")
+
+
+def committed_snapshot_tree(source_commit):
+    """Look up the immutable actor PR Git tree independently of snapshot bytes."""
+    if not isinstance(source_commit, str) or not SHA.fullmatch(source_commit):
+        raise Denied("exact source commit SHA required for copied actor snapshot")
+    remote = gh_api("repos/" + SOURCE_ORIGIN + "/git/commits/" + source_commit)
+    tree = remote.get("tree")
+    if not isinstance(tree, dict):
+        raise Denied("source commit has no authenticated tree")
+    return valid_sha(tree.get("sha"))
+
+
+def publish(repository, source, branch, trusted_root, source_commit=None):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
+    # CLI snapshot mode runs only from the repository's independently
+    # authenticated protected-main HEAD; it does not execute PR-supplied code.
+    if source_commit is not None:
+        checked_trusted_main_checkout(trusted_root)
     # Approval comes before reading potentially sensitive source files.
     approved_repository = require_preflight(repository, trusted_root)
     if (not isinstance(approved_repository, dict)
@@ -362,7 +407,9 @@ def publish(repository, source, branch, trusted_root):
         checked_source.relative_to(trusted)
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
-    expected_source_tree = committed_source_tree(source, trusted_root)
+    expected_source_tree = (committed_snapshot_tree(source_commit)
+                            if source_commit is not None
+                            else committed_source_tree(source, trusted_root))
     files = collect_source(source, trusted_root)
     if git_tree_digest(files) != expected_source_tree:
         raise Denied("collected source does not match committed Git tree")
@@ -435,11 +482,14 @@ def main(argv=None):
     p.add_argument("repository", help="approved private owner/repo")
     p.add_argument("--source-dir", required=True, type=Path)
     p.add_argument("--branch", required=True)
+    p.add_argument("--source-commit", required=True,
+                   help="immutable commit from the reviewed private Oreslang source repo")
     args = p.parse_args(argv)
     # Policy and code are taken from the same trusted checkout as this script.
     root = Path(__file__).resolve().parent.parent
     try:
-        commit, count = publish(args.repository, args.source_dir, args.branch, root)
+        commit, count = publish(args.repository, args.source_dir, args.branch,
+                                root, source_commit=args.source_commit)
     except Denied as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
         return 1
