@@ -880,6 +880,25 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
+        private Ast.ClassDecl checkedComputedClassView(Ast.Expr receiverExpression) {
+            String checkedClassName = Ast.CheckedClassView.lookup(receiverExpression);
+            if (checkedClassName == null) {
+                throw new IllegalStateException(
+                        "computed class indexing requires type-checked static receiver metadata");
+            }
+            Ast.ClassDecl checked = findClass(checkedClassName);
+            if (checked == null) {
+                throw new IllegalStateException(
+                        "statically checked computed-access class '"
+                                + checkedClassName + "' is unavailable at runtime");
+            }
+            if (checked.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalStateException(
+                        "statically checked computed-access receiver is not an ordinary class");
+            }
+            return checked;
+        }
+
         private Ast.ClassDecl staticClassView(Ast.Expr expression, Env env) {
             String checkedClassName = Ast.CheckedClassView.lookup(expression);
             if (checkedClassName != null) {
@@ -4692,11 +4711,7 @@ public final class OresEvalRootNode extends RootNode {
                             "class field index must be a String");
                 }
 
-                Ast.ClassDecl staticClass = staticClassView(receiverExpression, env);
-                if (staticClass == null || staticClass.actorKind() != Ast.ActorKind.NONE) {
-                    throw new IllegalArgumentException(
-                            "computed class indexing requires a preserved ordinary static class view");
-                }
+                Ast.ClassDecl staticClass = checkedComputedClassView(receiverExpression);
                 OwnedField ownedField = findField(
                         staticClass, key, new LinkedHashSet<>());
                 if (ownedField == null) {
@@ -4803,11 +4818,7 @@ public final class OresEvalRootNode extends RootNode {
                             "class field index must be a String");
                 }
 
-                Ast.ClassDecl staticClass = staticClassView(receiverExpression, env);
-                if (staticClass == null || staticClass.actorKind() != Ast.ActorKind.NONE) {
-                    throw new IllegalArgumentException(
-                            "computed class indexing requires a preserved ordinary static class view");
-                }
+                Ast.ClassDecl staticClass = checkedComputedClassView(receiverExpression);
                 OwnedField targetField = findField(
                         staticClass, fieldName, new LinkedHashSet<>());
                 if (targetField == null) {
