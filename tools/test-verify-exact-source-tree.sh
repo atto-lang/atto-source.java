@@ -437,4 +437,18 @@ MOCK_DUAL_MANIFEST
 )
 # Verify ordinary source works after removing the adversarial Git shim.
 assert_status 0 'clean source remains valid after index failure test' "$clean_tree" source
+# Positive witness for 100755: the new raw-mode comparison must accept a
+# committed executable file. A filesystem downgrade remains invalid even if
+# the Git index is configured to ignore filemode changes.
+chmod 755 source/main.ores
+git add source/main.ores
+git commit -qm committed-executable-mode
+executable_tree="$(git rev-parse 'HEAD:source')"
+assert_status 0 'committed executable file accepted' "$executable_tree" source
+git config core.filemode false
+chmod 644 source/main.ores
+assert_status 67 'committed executable file downgrade rejected' "$executable_tree" source
+chmod 755 source/main.ores
+git config core.filemode true
+assert_status 0 'executable-mode checkout restored' "$executable_tree" source
 echo 'SOURCE_TREE_GATE_TESTS_PASS'
