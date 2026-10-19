@@ -103,6 +103,11 @@ public final class TypeChecker {
         checker.taggedMessages = tagged;
         checker.validateImports(program);
         checker.collect(program);
+        // Validate directly-constructed nominal Err values before rejecting
+        // unfinished executable nominal semantics. This narrow preflight
+        // cannot establish general Result typing, exhaustive matches or
+        // runtime safety; the rejection below must remain in place.
+        NominalResultErrorAudit.verify(program, tagged);
         ActorStateContract.verify(program);
         DeclaredEffectVerifier.verify(program);
         // IMPORTANT: Parser/AST support does not imply nominal Result/enum

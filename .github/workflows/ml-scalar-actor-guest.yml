@@ -9,6 +9,8 @@ on:
       - "tests/adt_ml_staging_source_contract.test.mjs"
       - "tests/adt_ml_parser_bridge_contract.test.mjs"
       - "tests/adt_ml_typechecker_admission_contract.test.mjs"
+      - "tests/adt_ml_nominal_result_error_audit.test.mjs"
+      - "src/test/java/dev/oreslang/NominalResultErrorAuditTest.java"
       - "tests/adt_ml_gate_false_positive.test.mjs"
       - "tests/adt_ml_workflow_gate_contract.test.mjs"
       - "tests/adt_ml_ci_private_admission_contract.test.mjs"
@@ -82,7 +84,7 @@ jobs:
         run: node --test tests/java-ml-guest-junit-guard.test.mjs
       - name: Host-only ADT + actor source-admission regressions
         run: |
-          node --test tests/adt_ml_staging_source_contract.test.mjs tests/adt_ml_parser_bridge_contract.test.mjs tests/adt_ml_typechecker_admission_contract.test.mjs tests/adt_ml_gate_false_positive.test.mjs tests/adt_ml_runtime_entry_admission_contract.test.mjs tests/adt_ml_workflow_gate_contract.test.mjs tests/adt_ml_ci_private_admission_contract.test.mjs tests/adt_ml_integration_source_local_ci_contract.test.mjs
+          node --test tests/adt_ml_staging_source_contract.test.mjs tests/adt_ml_parser_bridge_contract.test.mjs tests/adt_ml_typechecker_admission_contract.test.mjs tests/adt_ml_nominal_result_error_audit.test.mjs tests/adt_ml_gate_false_positive.test.mjs tests/adt_ml_runtime_entry_admission_contract.test.mjs tests/adt_ml_workflow_gate_contract.test.mjs tests/adt_ml_ci_private_admission_contract.test.mjs tests/adt_ml_integration_source_local_ci_contract.test.mjs
       - name: Install pinned GraalVM/JDK 25
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # pinned from source-local security CI
         with:
@@ -96,7 +98,7 @@ jobs:
       - name: Compile all production and test Java sources before integration admission
         run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests test-compile
       - name: Execute parser-positive / runtime-negative admission JUnit
-        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=NominalActorBridgeFailClosedTest test
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=NominalActorBridgeFailClosedTest,NominalResultErrorAuditTest test
       - name: Fail closed on incomplete nominal runtime and TypeChecker integration
         run: node scripts/verify-adt-ml-integration.mjs
       - name: Execute positive nominal ADT GraalVM JUnit only after admitted integration

@@ -57,6 +57,8 @@ jobs:
       - name: Run source-only audit (never a guest result)
         run: |
           node --test tests/adt_ml_staging_source_contract.test.mjs tests/adt_ml_parser_bridge_contract.test.mjs tests/adt_ml_typechecker_admission_contract.test.mjs tests/adt_ml_gate_false_positive.test.mjs tests/adt_ml_runtime_entry_admission_contract.test.mjs tests/adt_ml_workflow_gate_contract.test.mjs tests/adt_ml_ci_private_admission_contract.test.mjs tests/adt_ml_integration_source_local_ci_contract.test.mjs
+      - name: Verify narrow nominal error preflight (host only)
+        run: node --test tests/adt_ml_nominal_result_error_audit.test.mjs
       - name: Install pinned GraalVM JDK25 without shared cache
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
@@ -66,7 +68,7 @@ jobs:
       - name: Compile production and test classes
         run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests test-compile
       - name: Prove negative admission and ordinary-program controls in actual JUnit
-        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=NominalActorBridgeFailClosedTest test
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=NominalActorBridgeFailClosedTest,NominalResultErrorAuditTest test
       - name: Require complete ADT and actor compiler integration before positive guest
         run: node scripts/verify-adt-ml-integration.mjs
       - name: Run positive nominal Result and actor ML guest tests
