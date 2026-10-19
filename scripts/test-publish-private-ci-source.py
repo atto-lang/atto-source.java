@@ -415,6 +415,39 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             outside.rmdir()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_protected_policy_move_aborts_before_next_write(self):
+        original = self.fake_api
+        moved = [False]
+        def change_policy(route, method="GET", payload=None):
+            if (route == "repos/" + pub.pinned.SOURCE_REPO + "/git/ref/heads/main"
+                    and moved[0]):
+                return {"object": {"sha": C}}
+            result = original(route, method, payload)
+            if method == "POST" and route == "repos/trusted/ci/git/blobs":
+                moved[0] = True
+            return result
+        with patch.object(pub, "gh_api", side_effect=change_policy):
+            with self.assertRaisesRegex(pub.Denied, "protected policy changed"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+
+    def test_destination_numeric_id_swap_aborts_before_next_write(self):
+        original = self.fake_api
+        swapped = [False]
+        def change_destination(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if method == "POST" and route == "repos/trusted/ci/git/blobs":
+                swapped[0] = True
+            if method == "GET" and route == "repos/trusted/ci" and swapped[0]:
+                return dict(result, id=780)
+            return result
+        with patch.object(pub, "gh_api", side_effect=change_destination):
+            with self.assertRaisesRegex(pub.Denied, "numeric identity changed"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+
     def test_missing_pinned_admission_denies_before_private_blob_writes(self):
         with patch.object(pub.pinned, "verify", side_effect=pub.pinned.AdmissionDenied("no review")):
             with self.assertRaisesRegex(pub.Denied, "identity gate refused"):
