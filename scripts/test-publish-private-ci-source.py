@@ -106,10 +106,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         ).hexdigest()
 
     def set_carrier_reviewed_snapshot(self, commit=D, tree=None,
-                                          source_repo_id=pub.SOURCE_REPOSITORY_ID):
+                                          source_repo_id=pub.SOURCE_REPOSITORY_ID,
+                                          ruleset_id=777):
         if tree is None:
             tree = self.expected_tree
-        self.carrier_reviewed_snapshot = f"{commit} {tree} {source_repo_id}\n"
+        self.carrier_reviewed_snapshot = (
+            f"{commit} {tree} {source_repo_id} {ruleset_id}\n"
+        )
         raw = self.carrier_reviewed_snapshot.encode("utf-8")
         self.carrier_snapshot_sha = hashlib.sha1(
             b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
@@ -219,6 +222,27 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {"type": "file", "encoding": "base64", "size": len(raw),
                     "sha": self.carrier_snapshot_sha,
                     "content": base64.b64encode(raw).decode("ascii")}
+        if route == "repos/trusted/ci/rulesets/777":
+            return {
+                "id": 777,
+                "name": "immutable Oreslang source refs",
+                "target": "branch",
+                "source_type": "Repository",
+                "source": "trusted/ci",
+                "enforcement": "active",
+                "bypass_actors": [],
+                "conditions": {
+                    "ref_name": {
+                        "include": ["refs/heads/ci/oreslang-*"],
+                        "exclude": [],
+                    }
+                },
+                "rules": [
+                    {"type": "update",
+                     "parameters": {"update_allows_fetch_and_merge": False}},
+                    {"type": "deletion"},
+                ],
+            }
         if route == "repos/trusted/ci/codeowners/errors?ref=main":
             return {"errors": self.carrier_codeowners_errors}
         if route == "repos/trusted/ci/collaborators/ORESoftware/permission":
@@ -2349,6 +2373,46 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
+
+    def test_carrier_source_ruleset_rejects_bypass_or_weak_rules(self):
+        valid = {
+            "id": 777, "target": "branch", "source_type": "Repository",
+            "source": "trusted/ci", "enforcement": "active",
+            "bypass_actors": [],
+            "conditions": {"ref_name": {
+                "include": ["refs/heads/ci/oreslang-*"], "exclude": []}},
+            "rules": [
+                {"type": "update",
+                 "parameters": {"update_allows_fetch_and_merge": False}},
+                {"type": "deletion"},
+            ],
+        }
+        failures = []
+        bad = json.loads(json.dumps(valid))
+        bad["bypass_actors"] = [{"actor_type": "RepositoryRole", "actor_id": 5}]
+        failures.append(bad)
+        bad = json.loads(json.dumps(valid))
+        bad["conditions"]["ref_name"]["include"] = ["~ALL"]
+        failures.append(bad)
+        bad = json.loads(json.dumps(valid))
+        bad["rules"] = [bad["rules"][0]]
+        failures.append(bad)
+        bad = json.loads(json.dumps(valid))
+        bad["rules"][0]["parameters"]["update_allows_fetch_and_merge"] = True
+        failures.append(bad)
+        bad = json.loads(json.dumps(valid))
+        bad["rules"].append({"type": "creation"})
+        failures.append(bad)
+
+        for response in failures:
+            with self.subTest(response=response):
+                with patch.object(pub, "gh_api", return_value=response):
+                    with self.assertRaises(pub.Denied):
+                        pub.require_carrier_source_ruleset("trusted/ci", 777)
+
+    def test_carrier_source_ruleset_exact_contract_accepts(self):
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            self.assertEqual(pub.require_carrier_source_ruleset("trusted/ci", 777), 777)
 
     def test_snapshot_branch_must_encode_full_source_commit(self):
         with self.assertRaisesRegex(pub.Denied, "full approved source commit SHA"):
