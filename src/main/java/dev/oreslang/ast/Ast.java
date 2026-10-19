@@ -1067,6 +1067,141 @@ public final class Ast {
         }
     }
 
+    /**
+     * Immutable compiler proof for one required-arity staged call.
+     *
+     * <p>The source-to-formal and formal-to-source permutations are recorded
+     * separately so every consumer can prove that source evaluation order is
+     * preserved while ABI argument order is reconstructed only after values
+     * have been evaluated into temporaries.</p>
+     */
+    public record NamedCallProof(
+            List<Integer> formalIndexBySourceItem,
+            List<Integer> sourceItemIndexByFormal,
+            List<String> formalNames,
+            int trailingClosureFormalIndex,
+            String targetKind,
+            String targetName) {
+        public NamedCallProof {
+            formalIndexBySourceItem = List.copyOf(formalIndexBySourceItem);
+            sourceItemIndexByFormal = List.copyOf(sourceItemIndexByFormal);
+            formalNames = List.copyOf(formalNames);
+            if (formalIndexBySourceItem.size() != sourceItemIndexByFormal.size()
+                    || formalNames.size() != formalIndexBySourceItem.size()) {
+                throw new IllegalArgumentException(
+                        "named-call proof must have one source item and formal name per formal slot");
+            }
+            if (targetKind == null || targetKind.isBlank()
+                    || targetName == null || targetName.isBlank()) {
+                throw new IllegalArgumentException("named-call proof target identity cannot be blank");
+            }
+            boolean[] seen = new boolean[formalNames.size()];
+            for (int formal : formalIndexBySourceItem) {
+                if (formal < 0 || formal >= seen.length || seen[formal]) {
+                    throw new IllegalArgumentException(
+                            "named-call source-to-formal mapping must be a permutation");
+                }
+                seen[formal] = true;
+            }
+            for (int formal = 0; formal < sourceItemIndexByFormal.size(); formal++) {
+                int source = sourceItemIndexByFormal.get(formal);
+                if (source < 0 || source >= formalIndexBySourceItem.size()
+                        || formalIndexBySourceItem.get(source) != formal) {
+                    throw new IllegalArgumentException(
+                            "named-call inverse mapping does not match source-to-formal permutation");
+                }
+            }
+            if (trailingClosureFormalIndex < -1
+                    || trailingClosureFormalIndex >= formalNames.size()) {
+                throw new IllegalArgumentException(
+                        "named-call trailing-closure formal index is outside the formal range");
+            }
+        }
+
+        public <T> List<T> valuesInFormalOrder(List<T> sourceValues) {
+            if (sourceValues.size() != formalNames.size()) {
+                throw new IllegalArgumentException(
+                        "named-call source-value count does not match checked formal arity");
+            }
+            java.util.ArrayList<T> ordered = new java.util.ArrayList<>(formalNames.size());
+            for (int formal = 0; formal < formalNames.size(); formal++) {
+                ordered.add(sourceValues.get(sourceItemIndexByFormal.get(formal)));
+            }
+            return List.copyOf(ordered);
+        }
+
+        public void requireFormalNames(List<Param> formals, String runtimeTarget) {
+            List<String> actual = formals.stream().map(Param::name).toList();
+            if (!actual.equals(formalNames)) {
+                throw new IllegalStateException(
+                        "checked named-call formal snapshot does not match runtime target "
+                                + runtimeTarget);
+            }
+        }
+    }
+
+    /**
+     * Weak identity metadata attached only by semantic checking. Runtime,
+     * ownership and capability admission fail closed if a staged call reaches
+     * them without this proof.
+     */
+    public static final class CheckedNamedCallPlan {
+        private CheckedNamedCallPlan() { }
+
+        private static final java.lang.ref.ReferenceQueue<StagedCallExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, NamedCallProof> PLANS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<StagedCallExpr> {
+            private final int hash;
+            private IdentityKey(
+                    StagedCallExpr call,
+                    java.lang.ref.ReferenceQueue<StagedCallExpr> queue) {
+                super(call, queue);
+                hash = System.identityHashCode(call);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                StagedCallExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends StagedCallExpr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                PLANS.remove(collected);
+            }
+        }
+
+        public static synchronized void record(
+                StagedCallExpr call, NamedCallProof proof) {
+            java.util.Objects.requireNonNull(call, "call");
+            java.util.Objects.requireNonNull(proof, "proof");
+            expunge();
+            IdentityKey key = new IdentityKey(call, CLEARED);
+            NamedCallProof previous = PLANS.putIfAbsent(key, proof);
+            if (previous != null && !previous.equals(proof)) {
+                throw new IllegalStateException(
+                        "same staged call site received inconsistent named-call proofs");
+            }
+        }
+
+        public static synchronized NamedCallProof require(StagedCallExpr call) {
+            java.util.Objects.requireNonNull(call, "call");
+            expunge();
+            NamedCallProof proof = PLANS.get(new IdentityKey(call, null));
+            if (proof == null) {
+                throw new IllegalStateException(
+                        "staged named call requires a compiler-verified binding proof");
+            }
+            return proof;
+        }
+    }
+
     /** Named constructor/actor arguments are staged; trailing closures are calls only. */
     public record StagedNewExpr(
             TypeRef type, List<CallArgument> arguments, boolean actorSpawn) implements Expr {
