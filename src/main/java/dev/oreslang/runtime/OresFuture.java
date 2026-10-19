@@ -111,6 +111,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     private volatile Runnable onNotificationDrained;
     private final Object notificationDrainLock = new Object();
+    /** Guarded by notificationDrainLock: Java monitors are reentrant, but a
+     * notification release must not recursively release its own owner. */
+    private boolean notificationDrainRunning;
     private volatile boolean notificationDrainReady;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
@@ -724,11 +727,22 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         synchronized (notificationDrainLock) {
             Runnable drained = onNotificationDrained;
             if (drained == null) return true;
-            drained.run();
-            if (onNotificationDrained == drained) {
-                onNotificationDrained = null;
+            // A terminal callback may synchronously re-enter a runtime
+            // settlement/reaper path. The monitor alone does not prevent
+            // recursive entry on the same thread.
+            if (notificationDrainRunning) return false;
+            notificationDrainRunning = true;
+            try {
+                drained.run();
+                if (onNotificationDrained == drained) {
+                    onNotificationDrained = null;
+                }
+                return true;
+            } finally {
+                // A throwing release retains its owner for explicit retry.
+                // Never strand this guard after the callback throws.
+                notificationDrainRunning = false;
             }
-            return true;
         }
     }
 
