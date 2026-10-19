@@ -3910,13 +3910,20 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void requireBlockingHostContext(String operation) {
         if (inActorExecution()
+                || isActorCarrierThread()
                 || inActorGroupMailmanExecution()
-                || OresScheduler.current() != null) {
+                || OresScheduler.current() != null
+                || OresScheduler.isSchedulerCarrierThread()
+                || AsyncRuntime.isAsyncCarrierThread()) {
+            // A terminal/cancellation callback may execute after CURRENT
+            // actor/scheduler state has been cleared, but the native carrier
+            // is still owned by the runtime. Waiting on it can deadlock
+            // completion of the exact actor being joined.
             throw new SecurityException(
                     operation
                             + " is a host/embedder blocking operation; actor, Mailman CONTROL, "
-                            + "and scheduler turns must use nonblocking cancellation plus "
-                            + "Future/Awaitable suspension");
+                            + "scheduler and async carriers must use nonblocking "
+                            + "cancellation plus Future/Awaitable suspension");
         }
     }
 
