@@ -595,4 +595,53 @@ final class LogicalActorProxyMailboxV1Test {
             assertEquals(1L, mailbox.snapshot().routeEpoch());
         }
     }
+
+    @Test
+    void concurrentTicketCleanupCannotReverseSuccessfulPublication() throws Exception {
+        for (int iteration = 0; iteration < 128; iteration++) {
+            try (var mailbox = new LogicalActorProxyMailboxV1(2, 8, 16)) {
+                var ticket = mailbox.freezeDispatchForUpgrade();
+                var start = new CountDownLatch(1);
+                var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                Thread cleanup = new Thread(() -> {
+                    try {
+                        start.await();
+                        try {
+                            ticket.close();
+                        } catch (IllegalStateException expectedWhileActive) {
+                            // Closing an active ticket must refuse to thaw it.
+                        }
+                    } catch (Throwable unexpected) {
+                        failure.compareAndSet(null, unexpected);
+                    }
+                }, "proxy-freeze-cleanup");
+                Thread publish = new Thread(() -> {
+                    try {
+                        start.await();
+                        ticket.commit();
+                    } catch (Throwable unexpected) {
+                        failure.compareAndSet(null, unexpected);
+                    }
+                }, "proxy-freeze-publisher");
+                cleanup.start();
+                publish.start();
+                try {
+                    start.countDown();
+                    cleanup.join(5000);
+                    publish.join(5000);
+                    assertFalse(cleanup.isAlive());
+                    assertFalse(publish.isAlive());
+                    assertNull(failure.get(),
+                            "cleanup racing with explicit commit must never alter publication");
+                    assertEquals(2L, mailbox.snapshot().routeEpoch());
+                    assertFalse(mailbox.snapshot().dispatchFrozen());
+                    ticket.close();
+                } finally {
+                    start.countDown();
+                    cleanup.join(5000);
+                    publish.join(5000);
+                }
+            }
+        }
+    }
 }
