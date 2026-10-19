@@ -124,9 +124,35 @@ public final class SendSyncIntrinsicSmoke {
         expect(!supports(new Types.Named("Channel", List.of(integer)),
                 Trait.SYNC, CORE), "Channel Sync still unproven");
 
+        Type borrow = new Types.Borrow(integer, false);
+        expect(supports(borrow, Trait.SEND, CORE),
+                "Rust-style borrowed Send can be valid with lifetime proof");
+        expect(!ThreadSafetyTraits.isOwnedSend(borrow, CORE),
+                "detached owned Send cannot admit a shared stack borrow");
+        expect(!ThreadSafetyTraits.isOwnedSend(
+                new Types.Borrow(integer, true), CORE),
+                "detached owned Send cannot admit mutable stack borrow");
+        for (Type candidate : List.of(
+                new Types.ListType(borrow),
+                new Types.Tuple(List.of(integer, borrow)),
+                new Types.Record(Map.of("loan", borrow), true),
+                new Types.Union(List.of(integer, borrow)),
+                new Types.Named("Option", List.of(borrow)),
+                new Types.Named("Result", List.of(integer, borrow)),
+                new Types.Function(List.of(borrow), integer))) {
+            expect(!ThreadSafetyTraits.isOwnedSend(candidate, CORE),
+                    "nested owned Send forged borrowed lifetime: " + candidate);
+        }
+        expect(ThreadSafetyTraits.isOwnedSend(mutableList, CORE),
+                "owned mutable List remains Send");
+        expect(ThreadSafetyTraits.isOwnedSend(integer, CORE),
+                "primitive remains owned Send");
+
         Type nested = integer;
         for (int i = 0; i < 400; i++) nested = new Types.ListType(nested);
         expect(!supports(nested, Trait.SEND, CORE), "deep Send must fail closed");
+        expect(!ThreadSafetyTraits.isOwnedSend(nested, CORE),
+                "deep owned Send preflight must fail closed");
         expect(!supports(nested, Trait.SYNC, CORE), "deep Sync must fail closed");
         expect(supports(integer, Trait.SEND, CORE), "post-depth valid query");
         System.out.println("SendSyncIntrinsicSmoke PASS assertions=" + checked);
