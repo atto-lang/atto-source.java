@@ -186,7 +186,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                             accepted.getInputStream());
                     var decoded = IpcAuthenticatedSocketTransport.decodeDataFrame(
                             wire, message, 11,
-                            new IpcAuthenticatedSocketTransport.InboundReplayGate(), key);
+                            new IpcAuthenticatedSocketTransport.InboundReplayGate(), connectionBinding, key);
                     check(decoded.envelope().equals(message));
                     check(decoded.physicalGeneration() == 11);
                     check(Arrays.equals(decoded.payload(), payload));
@@ -194,12 +194,12 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                             accepted.getOutputStream(),
                             IpcAuthenticatedSocketTransport.encodeReceiptFrame(
                                     message, 11,
-                                    IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, key));
+                                    IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, connectionBinding, key));
                     IpcAuthenticatedSocketTransport.writeWireFrame(
                             accepted.getOutputStream(),
                             IpcAuthenticatedSocketTransport.encodeReceiptFrame(
                                     message, 11,
-                                    IpcReceiptCorrelation.Stage.HANDLER_COMMITTED, key));
+                                    IpcReceiptCorrelation.Stage.HANDLER_COMMITTED, connectionBinding, key));
                 } catch (Throwable failure) {
                     peerFailure.compareAndSet(null, failure);
                 }
@@ -299,12 +299,13 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                     var data = IpcAuthenticatedSocketTransport.decodeDataFrame(
                             IpcAuthenticatedSocketTransport.readDataWireFrame(accepted.getInputStream()),
                             maliciousMessage, 73,
-                            new IpcAuthenticatedSocketTransport.InboundReplayGate(), key);
+                            new IpcAuthenticatedSocketTransport.InboundReplayGate(), connectionBinding, key);
                     check(data.envelope().equals(maliciousMessage));
                     byte[] malicious = peerLocalVerdictWithValidMac(
                             maliciousMessage,
                             73,
                             IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN,
+                            connectionBinding,
                             key);
                     IpcAuthenticatedSocketTransport.writeWireFrame(
                             accepted.getOutputStream(), malicious);
@@ -357,7 +358,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                             accepted.getOutputStream(),
                             IpcAuthenticatedSocketTransport.encodeReceiptFrame(
                                     replayMessage, 80,
-                                    IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, key));
+                                    IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, connectionBinding, key));
                     while (accepted.getInputStream().read() != -1) { }
                 } catch (Throwable failure) {
                     peerFailure.compareAndSet(null, failure);
@@ -399,7 +400,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 java.nio.charset.StandardCharsets.UTF_8);
         var replayDataMessage = envelope(1, "dataReplay", 3, 4, replayDataPayload);
         byte[] capturedData = IpcAuthenticatedSocketTransport.encodeDataFrame(
-                replayDataMessage, replayDataPayload, 82, key);
+                replayDataMessage, replayDataPayload, 82, connectionBinding, key);
         // v2 changed receipt wire codes away from Java enum ordinals.
         // Even with a valid MAC, a captured v1-version header is rejected
         // rather than interpreted under the new state-code mapping.
@@ -415,7 +416,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         try {
             IpcAuthenticatedSocketTransport.decodeDataFrame(
                     oldVersionData, replayDataMessage, 82,
-                    new IpcAuthenticatedSocketTransport.InboundReplayGate(), key);
+                    new IpcAuthenticatedSocketTransport.InboundReplayGate(), connectionBinding, key);
             throw new AssertionError("authenticated v1 DATA accepted by v2 transport");
         } catch (IOException expected) {
             check(expected.getMessage().contains("invalid IPC frame header"));
@@ -424,7 +425,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         try {
             IpcAuthenticatedSocketTransport.decodeDataFrame(
                     capturedData, replayDataMessage, 83,
-                    new IpcAuthenticatedSocketTransport.InboundReplayGate(), key);
+                    new IpcAuthenticatedSocketTransport.InboundReplayGate(), connectionBinding, key);
             throw new AssertionError("old physical generation DATA accepted");
         } catch (IOException expected) {
             check(expected.getMessage().contains("transport epoch/generation"));
@@ -433,40 +434,40 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         try {
             IpcAuthenticatedSocketTransport.decodeDataFrame(
                     capturedData, changedDataEpoch, 82,
-                    new IpcAuthenticatedSocketTransport.InboundReplayGate(), key);
+                    new IpcAuthenticatedSocketTransport.InboundReplayGate(), connectionBinding, key);
             throw new AssertionError("old route/grant DATA accepted");
         } catch (IOException expected) {
             check(expected.getMessage().contains("transport epoch/generation"));
         }
         var replayGate = new IpcAuthenticatedSocketTransport.InboundReplayGate();
         var verifiedData = IpcAuthenticatedSocketTransport.decodeDataFrame(
-                capturedData, replayDataMessage, 82, replayGate, key);
+                capturedData, replayDataMessage, 82, replayGate, connectionBinding, key);
         check(Arrays.equals(verifiedData.payload(), replayDataPayload));
         check(verifiedData.physicalGeneration() == 82);
         check(replayGate.lastMessageSequence() == 1);
         check(replayGate.lastFrameSequence() == 1);
         try {
             IpcAuthenticatedSocketTransport.decodeDataFrame(
-                    capturedData, replayDataMessage, 82, replayGate, key);
+                    capturedData, replayDataMessage, 82, replayGate, connectionBinding, key);
             throw new AssertionError("exact authenticated DATA replay accepted");
         } catch (IOException expected) {
             check(expected.getMessage().contains("replayed/reordered"));
         }
         var nextDataMessage = envelope(2, "dataReplay", 3, 4, replayDataPayload);
         byte[] nextData = IpcAuthenticatedSocketTransport.encodeDataFrame(
-                nextDataMessage, replayDataPayload, 82, key);
+                nextDataMessage, replayDataPayload, 82, connectionBinding, key);
         IpcAuthenticatedSocketTransport.decodeDataFrame(
-                nextData, replayDataMessage, 82, replayGate, key);
+                nextData, replayDataMessage, 82, replayGate, connectionBinding, key);
         check(replayGate.lastMessageSequence() == 2);
         check(replayGate.lastFrameSequence() == 2);
         var rolledFrame = new IpcReceiptCorrelation.Envelope(
                 "tenant", "sender", "worker", "dataReplay", digest(replayDataPayload),
                 1, 2, 3, 4, 3, 2);
         byte[] rolledFrameData = IpcAuthenticatedSocketTransport.encodeDataFrame(
-                rolledFrame, replayDataPayload, 82, key);
+                rolledFrame, replayDataPayload, 82, connectionBinding, key);
         try {
             IpcAuthenticatedSocketTransport.decodeDataFrame(
-                    rolledFrameData, replayDataMessage, 82, replayGate, key);
+                    rolledFrameData, replayDataMessage, 82, replayGate, connectionBinding, key);
             throw new AssertionError("rolled-back authenticated frame sequence accepted");
         } catch (IOException expected) {
             check(expected.getMessage().contains("replayed/reordered"));
@@ -497,7 +498,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                     IpcAuthenticatedSocketTransport.readDataWireFrame(accepted.getInputStream());
                     byte[] receipt = IpcAuthenticatedSocketTransport.encodeReceiptFrame(
                             tamperMessage, 74,
-                            IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, key);
+                            IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, connectionBinding, key);
                     receipt[receipt.length - 1] ^= 0x01;
                     IpcAuthenticatedSocketTransport.writeWireFrame(
                             accepted.getOutputStream(), receipt);
@@ -581,7 +582,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             var decoded = IpcAuthenticatedSocketTransport.decodeDataFrame(
                     IpcAuthenticatedSocketTransport.readDataWireFrame(peer.getInputStream()),
                     quarantineMessage, 89,
-                    new IpcAuthenticatedSocketTransport.InboundReplayGate(), key);
+                    new IpcAuthenticatedSocketTransport.InboundReplayGate(), connectionBinding, key);
             check(decoded.physicalGeneration() == 89);
             transport.requestClose();
             check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
