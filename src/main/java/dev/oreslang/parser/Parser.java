@@ -3607,7 +3607,7 @@ public final class Parser {
         if (match(SPAWN)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after actor type");
-            List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+            List<Ast.Expr> args = parseConstructorArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after actor spawn arguments");
             // Keep actor creation semantically distinct from ordinary class construction.
             // RuntimeCallExpr is an internal intrinsic encoding; source syntax is only
@@ -3617,7 +3617,7 @@ public final class Parser {
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after new type");
-            List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+            List<Ast.Expr> args = parseConstructorArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after constructor arguments");
             return new Ast.NewExpr(type, args);
         }
@@ -3856,6 +3856,14 @@ public final class Parser {
                 args.add(spread ? new Ast.SpreadExpr(argument) : argument);
             }
         } while (match(COMMA));
+        return args;
+    }
+
+    private List<Ast.Expr> parseConstructorArgumentsUntil(Token.Type terminator) {
+        List<Ast.Expr> args = parseCallArgumentsUntil(terminator);
+        if (args.stream().anyMatch(arg -> arg instanceof Ast.SpreadExpr)) {
+            throw error(peek(), "constructor/spawn argument spreads are not supported");
+        }
         return args;
     }
 
