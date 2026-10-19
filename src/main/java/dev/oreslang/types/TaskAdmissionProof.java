@@ -45,6 +45,13 @@ public final class TaskAdmissionProof {
             throw new IllegalArgumentException(
                     "Task admission requires sealed compiler proofs");
         }
+        if (ownership.programIdentity() == null
+                || semantic.programIdentity() == null
+                || ownership.programIdentity()
+                        != semantic.programIdentity()) {
+            throw new IllegalArgumentException(
+                    "Task semantic and ownership proofs must come from the exact same program instance");
+        }
         if (ownership.boundaryCount() != semantic.boundaryCount()
                 || ownership.transferCount() != semantic.entryCount()) {
             throw new IllegalArgumentException(
