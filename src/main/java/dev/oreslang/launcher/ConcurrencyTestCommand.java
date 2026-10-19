@@ -199,7 +199,9 @@ final class ConcurrencyTestCommand {
                     System.err.println("oreslang test: missing, malformed or inconsistent native test summary");
                     result = 1;
                 }
-                if (deadlock && detected > 0) {
+                // A cycle observed by the runtime is a failing test run even
+                // without --deadlock; that flag cannot weaken safety checks.
+                if (detected > 0) {
                     System.err.println("ORES_CONCURRENCY|DEADLOCK|count=" + detected);
                     result = 1;
                 }
@@ -231,10 +233,19 @@ final class ConcurrencyTestCommand {
         int seen = 0;
         long total = -1, passed = -1, failed = -1, skipped = -1;
         for (String line : output.lines().toList()) {
-            if (line.startsWith("ORES_TEST|PASS|")) counted[0]++;
-            else if (line.startsWith("ORES_TEST|FAIL|")) counted[1]++;
-            else if (line.startsWith("ORES_TEST|SKIP|")) counted[2]++;
-            else if (line.startsWith("ORES_TEST|SUMMARY|")) {
+            // A native suite must emit case records before the one final
+            // summary. Unknown protocol records cannot be silently ignored.
+            if (line.startsWith("ORES_TEST|") && seen != 0) return false;
+            if (line.startsWith("ORES_TEST|PASS|")) {
+                if (line.length() <= "ORES_TEST|PASS|".length()) return false;
+                counted[0]++;
+            } else if (line.startsWith("ORES_TEST|FAIL|")) {
+                if (line.length() <= "ORES_TEST|FAIL|".length()) return false;
+                counted[1]++;
+            } else if (line.startsWith("ORES_TEST|SKIP|")) {
+                if (line.length() <= "ORES_TEST|SKIP|".length()) return false;
+                counted[2]++;
+            } else if (line.startsWith("ORES_TEST|SUMMARY|")) {
                 var match = summary.matcher(line);
                 if (!match.matches()) return false;
                 if (++seen > 1) return false;
@@ -249,6 +260,8 @@ final class ConcurrencyTestCommand {
                 } catch (NumberFormatException malformed) {
                     return false;
                 }
+            } else if (line.startsWith("ORES_TEST|")) {
+                return false;
             }
         }
         return seen == 1 && counted[0] == passed
