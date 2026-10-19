@@ -162,18 +162,30 @@ public final class DisjointIntRegion implements AutoCloseable {
             this.carrier = carrier;
         }
 
-        private int checkedIndex(int index) {
-            if (!active || Thread.currentThread() != carrier
-                    || (lifecycle.get() & CLOSED) != 0) {
-                throw new IllegalStateException("stale, foreign-carrier or retired loan");
+        /**
+         * A running callback is physically pinned by enter()/exit(). close()
+         * stops new admissions; it MUST NOT revoke a callback halfway through
+         * a multi-element update and publish a partial state as a snapshot.
+         * A loan expires only when its lexical callback has unwound.
+         */
+        private void requireLive() {
+            if (!active || Thread.currentThread() != carrier) {
+                throw new IllegalStateException("stale or foreign-carrier loan");
             }
+        }
+
+        private int checkedIndex(int index) {
+            requireLive();
             if (index < 0 || index >= owner.length()) {
                 throw new IndexOutOfBoundsException(index);
             }
             return owner.from + index;
         }
 
-        public int length() { return owner.length(); }
+        public int length() {
+            requireLive();
+            return owner.length();
+        }
         public int get(int index) { return values[checkedIndex(index)]; }
         public void set(int index, int value) { values[checkedIndex(index)] = value; }
     }
