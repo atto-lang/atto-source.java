@@ -171,6 +171,30 @@ final class DynSendSyncConvergenceTest {
     }
 
     @Test
+    void sourceLevelOptionImpersonationCannotGrantAsyncSend() {
+        String program = """
+                define class Option<T> as end
+                async fnc fake(Option<int> value): int {
+                    return 1;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+    }
+
+    @Test
+    void sourceLevelChannelImpersonationCannotGrantAsyncSend() {
+        String program = """
+                define class Channel<T> as end
+                async fnc fake(Channel<int> value): int {
+                    return 1;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+    }
+
+    @Test
     void unresolvedAndDeepTypesNeverGainSendOrSync() {
         Type nested = new Types.Dyn(new Types.Named("Worker", List.of()));
         for (int i = 0; i < 400; i++) nested = new Types.ListType(nested);
