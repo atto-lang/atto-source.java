@@ -29,6 +29,8 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     // Non-null only for the explicit compiler-ABI-bound scalar transport.
     // Legacy SHARED host-scalar behavior remains a separate compatibility path.
     private final SourceActorScalarWireV1.Binding scalarWireBinding;
+    private final SourceActorTypedWireV2.Binding typedWireBinding;
+    private final int maxMessageBytes;
     private final ActorHotUpgradeTaskOwnerV1 taskOwner;
     private volatile boolean poisoned;
     private volatile boolean closed;
@@ -39,13 +41,17 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     private LogicalSourceActorProxyBridgeV1(
             LogicalSourceActorRouterV1 router,
             LogicalActorProxyMailboxV1 mailbox,
-            boolean compilerAbiScalar) {
+            boolean compilerAbiScalar, boolean typedPrimitive,
+            int maxMessageBytes) {
         this.router = Objects.requireNonNull(router);
         this.mailbox = Objects.requireNonNull(mailbox);
+        this.maxMessageBytes = maxMessageBytes;
         this.taskOwner = new ActorHotUpgradeTaskOwnerV1(router);
-        router.bindProxyMailboxForSupervisor(mailbox, compilerAbiScalar);
+        router.bindProxyMailboxForSupervisor(mailbox, compilerAbiScalar, typedPrimitive);
         this.scalarWireBinding = compilerAbiScalar
                 ? router.scalarWireBindingForProxy(mailbox) : null;
+        this.typedWireBinding = typedPrimitive
+                ? router.typedWireBindingForProxy(mailbox) : null;
     }
 
     public static LogicalSourceActorProxyBridgeV1 spawnShared(
@@ -57,7 +63,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             long maxRetainedBytes)
             throws InterruptedException, ExecutionException, TimeoutException {
         return spawnSharedMode(first, actorTypeName, readyTimeout,
-                maxMessages, maxMessageBytes, maxRetainedBytes, false);
+                maxMessages, maxMessageBytes, maxRetainedBytes, false, false);
     }
 
     /**
@@ -75,7 +81,23 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             long maxRetainedBytes)
             throws InterruptedException, ExecutionException, TimeoutException {
         return spawnSharedMode(first, actorTypeName, readyTimeout,
-                maxMessages, maxMessageBytes, maxRetainedBytes, true);
+                maxMessages, maxMessageBytes, maxRetainedBytes, true, false);
+    }
+
+    /**
+     * Compiler-verified primitive ActorMail<int|bool|string> transport.
+     * ORM2 is host-only SHARED routing, not struct/union encoding or IPC.
+     */
+    public static LogicalSourceActorProxyBridgeV1 spawnSharedTypedPrimitive(
+            HotReloadManager.Generation first,
+            String actorTypeName,
+            Duration readyTimeout,
+            int maxMessages,
+            int maxMessageBytes,
+            long maxRetainedBytes)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        return spawnSharedMode(first, actorTypeName, readyTimeout,
+                maxMessages, maxMessageBytes, maxRetainedBytes, false, true);
     }
 
     private static LogicalSourceActorProxyBridgeV1 spawnSharedMode(
@@ -85,20 +107,25 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             int maxMessages,
             int maxMessageBytes,
             long maxRetainedBytes,
-            boolean compilerAbiScalar)
+            boolean compilerAbiScalar, boolean typedPrimitive)
             throws InterruptedException, ExecutionException, TimeoutException {
         // Capacity validation must precede physical actor spawn.
         if (compilerAbiScalar
                 && maxMessageBytes < SourceActorScalarWireV1.BYTE_LENGTH)
             throw new IllegalArgumentException(
                     "compiler-ABI scalar wire exceeds configured message byte budget");
+        if (typedPrimitive
+                && (maxMessageBytes < SourceActorTypedWireV2.HEADER_BYTES + Long.BYTES
+                    || maxMessageBytes > SourceActorTypedWireV2.MAX_FRAME_BYTES))
+            throw new IllegalArgumentException(
+                    "ORM2 actor mail per-message capacity outside bounded range");
         var mailbox = new LogicalActorProxyMailboxV1(
                 maxMessages, maxMessageBytes, maxRetainedBytes);
         var router = LogicalSourceActorRouterV1.spawn(
                 first, ActorRuntime.ActorKind.SHARED, actorTypeName, readyTimeout);
         try {
             return new LogicalSourceActorProxyBridgeV1(
-                    router, mailbox, compilerAbiScalar);
+                    router, mailbox, compilerAbiScalar, typedPrimitive, maxMessageBytes);
         } catch (RuntimeException | Error failure) {
             try {
                 router.close();
@@ -245,7 +272,10 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                 throw new IllegalStateException(
                         "logical proxy bridge is closed or fail-sealed");
             final byte[] bytes;
-            if (scalarWireBinding != null) {
+            if (typedWireBinding != null) {
+                bytes = SourceActorTypedWireV2.encodeLong(
+                        typedWireBinding, value, maxMessageBytes);
+            } else if (scalarWireBinding != null) {
                 bytes = SourceActorScalarWireV1.encodeLong(
                         scalarWireBinding, value);
             } else {
@@ -256,6 +286,32 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                 }
             }
             return mailbox.admit(bytes);
+        }
+    }
+
+    public LogicalActorProxyMailboxV1.Envelope admitBoolean(boolean value) {
+        requireHost();
+        synchronized (admissionLock) {
+            if (closed || poisoned)
+                throw new IllegalStateException(
+                        "logical proxy bridge is closed or fail-sealed");
+            if (typedWireBinding == null)
+                throw new SecurityException("boolean mail requires ORM2 compiler binding");
+            return mailbox.admit(SourceActorTypedWireV2.encodeBoolean(
+                    typedWireBinding, value, maxMessageBytes));
+        }
+    }
+
+    public LogicalActorProxyMailboxV1.Envelope admitString(String value) {
+        requireHost();
+        synchronized (admissionLock) {
+            if (closed || poisoned)
+                throw new IllegalStateException(
+                        "logical proxy bridge is closed or fail-sealed");
+            if (typedWireBinding == null)
+                throw new SecurityException("string mail requires ORM2 compiler binding");
+            return mailbox.admit(SourceActorTypedWireV2.encodeString(
+                    typedWireBinding, value, maxMessageBytes));
         }
     }
 
