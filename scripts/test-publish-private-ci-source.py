@@ -16,7 +16,7 @@ spec = importlib.util.spec_from_file_location("private_publisher", MODULE)
 pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
-TEST_BRANCH = "ci/oreslang-" + D
+TEST_BRANCH = "ci/oreslang-" + D + "-" + A
 
 
 class DestinationBoundPublisherTests(unittest.TestCase):
@@ -2418,10 +2418,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             self.assertEqual(pub.require_carrier_source_ruleset("trusted/ci", 777), 777)
 
-    def test_snapshot_branch_must_encode_full_source_commit(self):
-        with self.assertRaisesRegex(pub.Denied, "full approved source commit SHA"):
-            self.publish(branch="ci/oreslang-not-the-commit")
-        self.assertEqual(self.route_calls, [])
+    def test_snapshot_branch_must_encode_source_and_carrier_main(self):
+        with self.assertRaisesRegex(pub.Denied, "source and carrier-main SHAs"):
+            self.publish(branch="ci/oreslang-" + D + "-" + E)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+        self.route_calls.clear()
+        with self.assertRaisesRegex(pub.Denied, "source and carrier-main SHAs"):
+            self.publish(branch="ci/oreslang-" + E + "-" + A)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_carrier_source_approval_missing_denies_before_source_read(self):
         self.carrier_reviewed_snapshot = "# no approvals\n"
