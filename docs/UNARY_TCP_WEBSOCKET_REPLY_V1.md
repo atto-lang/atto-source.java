@@ -231,9 +231,16 @@ strict codec compile warning-clean against the inspected ActorRuntime/OresFuture
 surface; full-runtime JUnit coverage is committed but still needs an executing
 Maven CI runner.
 
-**Still not production-complete:** a concrete reviewed authenticator (for
-example mTLS or another approved channel-binding protocol); supervisor-owned
-bind/accept listener integration and endpoint permissions; persistent
+**Still not production-complete:** the branch includes an opt-in
+`UnaryTcpMutualTlsAuthenticator` using TLS 1.3, mandatory client-certificate
+verification, an explicit certificate authorizer and in-channel session binding.
+The JDK-only disposable-cert loopback gate is
+`scripts/test-unary-mtls-loopback.sh`. Production still requires independent
+review of the TLS context/truststore, certificate-authorizer policy, transport
+permissions and certificate rotation/revocation behavior; it must not treat
+a subject DN or a successful handshake alone as application authorization.
+A supervisor-owned bound/accept listener and endpoint permissions remain
+unimplemented; persistent
 source-level `define unary tcp actor` AST/typechecker/lowering rather than the
 current one-shot host bridge; UNTRUSTED source-executor binding; RFC 6455
 upgrade/incremental-fragment WebSocket networking; LLVM parity; and full JDK25
