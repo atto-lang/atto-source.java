@@ -76,6 +76,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "/.github/private-oreslang-approved-source-snapshots.txt @ORESoftware\n"
             "/.github/CODEOWNERS @ORESoftware\n"
             "/scripts/verify-oreslang-private-ci-snapshot.sh @ORESoftware\n"
+            "/scripts/launch-oreslang-private-ci-publisher.py @ORESoftware\n"
             "/.github/workflows/ @ORESoftware\n"
         )
         self.carrier_codeowners_sha = None
@@ -500,6 +501,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         for policy in ("",
                        "/.github/CODEOWNERS @ORESoftware\n",
                        "/.github/workflows/ @ORESoftware\n/.github/CODEOWNERS @ORESoftware\n",
+                       "/.github/private-oreslang-approved-source-snapshots.txt @ORESoftware\n"
+                       "/.github/CODEOWNERS @ORESoftware\n"
+                       "/scripts/verify-oreslang-private-ci-snapshot.sh @ORESoftware\n"
+                       "/.github/workflows/ @ORESoftware\n",
                        "/.github/CODEOWNERS @ORESoftware\n/.github/workflows/ @ORESoftware\n"
                        "* @another-reviewer\n"):
             with self.subTest(policy=policy):
@@ -512,6 +517,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "/.github/private-oreslang-approved-source-snapshots.txt @ORESoftware\n"
             "/.github/CODEOWNERS @ORESoftware\n"
             "/scripts/verify-oreslang-private-ci-snapshot.sh @ORESoftware\n"
+            "/scripts/launch-oreslang-private-ci-publisher.py @ORESoftware\n"
             "/.github/workflows/ @ORESoftware\n"
         )
 
