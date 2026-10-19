@@ -8,8 +8,21 @@ cache entries, and logs.
 
 The policy file `.github/private-ci-approved-repositories.txt` is **empty by
 default**. No cross-repository mirroring is authorized until maintainers and
-security reviewers explicitly add an exact `owner/repo` destination through a
-reviewed, protected-branch change.
+security reviewers explicitly add an exact `owner/repo@numeric-id` destination
+record through a reviewed, protected-branch change. For example,
+`example-org/private-ci@1412142815` is a format illustration **only** and
+must not be treated as a real approval. The exact numeric ID must be the
+independently verified, immutable GitHub repository ID—not a branch SHA,
+owner ID, workflow run ID, or environment-supplied value.
+
+Name-only policy rows fail closed. The data-only publisher and the
+standalone shell diagnostic compare the pinned numeric ID against the live
+GitHub repository metadata; a rename/transfer/reuse or inconsistent ID
+must be rejected before private source collection. A matching ID is
+necessary but **not sufficient**: source/destination protected-main rules,
+CODEOWNER approval, exact source-tree attestation, executable trust roots,
+incident-resumption authorization, ACLs, retention and workflow confinement
+are independent mandatory checks. Current `main` has **no approvals**.
 
 Do **not** accept a CI destination allowlist from environment variables or
 unreviewed workflow inputs: a caller must not be able to grant its own approval.
