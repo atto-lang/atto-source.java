@@ -4951,11 +4951,11 @@ public final class TypeChecker {
         // A class's nominal Send proof is deliberately restricted to the
         // existing transitively owned/data-only class analysis. Source-level
         // unsafe auto-trait overrides are not supported.
-        if (!SendSyncTraits.isSend(type, (nominal, trait) ->
+        if (!SendSyncTraits.isOwnedSend(type, (nominal, trait) ->
                 trait == SendSyncTraits.Trait.SEND
                         && isSharedSafe(nominal, new LinkedHashSet<>(), Map.of()))) {
             throw new IllegalArgumentException(
-                    where + " is not Send across an async Task boundary; "
+                    where + " is not an owned Send value across an async Task boundary; "
                             + "transfer owned data, not thread-affine capabilities, "
                             + "unguarded state aliases, or unresolved types");
         }
