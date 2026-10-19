@@ -134,7 +134,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
     private final int maxMessageBytes;
     private final long maxRetainedBytes;
 
-    private final ArrayDeque<Envelope> queued = new ArrayDeque<>();
+    private final ArrayDeque<Envelope> queued;
     private final Map<Long, Envelope> outstanding = new HashMap<>();
     private final TreeSet<Long> completedBeyondWatermark = new TreeSet<>();
 
@@ -152,6 +152,19 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             int maxMessages,
             int maxMessageBytes,
             long maxRetainedBytes) {
+        this(maxMessages, maxMessageBytes, maxRetainedBytes, new ArrayDeque<>());
+    }
+
+    /**
+     * Package-only failure-injection seam. Production always uses a private
+     * ArrayDeque; the test may fail its insertion before mutation to verify
+     * that sequence and capacity accounting remain exception-atomic.
+     */
+    LogicalActorProxyMailboxV1(
+            int maxMessages,
+            int maxMessageBytes,
+            long maxRetainedBytes,
+            ArrayDeque<Envelope> admissionQueue) {
         if (maxMessages <= 0) {
             throw new IllegalArgumentException("maxMessages must be positive");
         }
@@ -166,6 +179,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
         this.maxMessages = maxMessages;
         this.maxMessageBytes = maxMessageBytes;
         this.maxRetainedBytes = maxRetainedBytes;
+        this.queued = Objects.requireNonNull(admissionQueue, "admissionQueue");
     }
 
     /**
