@@ -4,7 +4,7 @@ Status: **DRAFT / host substrate**, not an authenticated peer transport, actual 
 
 ## Source seam
 
-- `IpcTransportSessionLease` is a package-local, trusted-host-only object for one immutable `session` and monotonic `generation`, with bounded active writes.
+- `IpcTransportSessionLease` is a package-local, trusted-host-only object for one immutable authenticated transport epoch (domain, sender/destination, incarnations, session, route and capability generation) and a monotonic physical `generation`, with bounded active writes.
 - `writeFrame(generation, envelope, synchronousHostWriter)` serializes **session admission + `IpcReceiptCompletionBridge.commitDispatch`** against close intent, before any guest-external physical write; an active write keeps the physical session pinned.
 - The supplied host writer MUST perform and finish the physical attempted write before returning. No async fire-and-forget, guest callback, mixed-generation socket handoff, foreign session, unverified DNS/proxy hop or caller-provided authorization.
 - Once dispatch commits, an unsuccessful or uncertain socket write **cannot** become `REJECTED_BEFORE_REMOTE`. The broker must close/drain or quarantine and only mark `OUTCOME_UNKNOWN` with the local trusted transport authority.
@@ -26,7 +26,7 @@ The Maven/JUnit `IpcReceiptParityTest` includes `trustedPhysicalSessionWriteAndC
 
 New host test vectors: successful verified receipt, denied stale generation, local never-sent denial, failed socket write/uncertain terminal, failed physical close quarantine, explicit retry, deferred close task and denied worker capacity, duplicate/stale cleanup task, 512 pinned close-vs-write cases, 512 close-vs-admit races.
 
-Local independent Java 21 compilation checked an equivalent lease algorithm against a minimal host bridge stub under `javac -Xlint:all -Werror` with **6,168 passing assertions**, including 1,024 real Java thread races. This is **NOT an exact source Java compilation**: the actual source-repo host suite has been committed but source-org Actions provide no executed steps.
+Local independent Java 21 compilation checked a matching transport-epoch lease algorithm against a minimal host bridge stub under `javac -Xlint:all -Werror` with **6,168 passing assertions**, including 1,024 real Java thread races. This is **NOT an exact source Java compilation**: the actual source-repo host suite has been committed but source-org Actions provide no executed steps.
 
 ## Release gates still open
 
@@ -37,3 +37,12 @@ Local independent Java 21 compilation checked an equivalent lease algorithm agai
 5. Independently authorize any cross-organization private-source transport under current security incidents conformance #22/#77 and Java private-CI PR #1217. A funded runner, a PRIVATE repository and matching blob SHAs alone are **not sufficient approval**.
 
 No PR is production-ready until these gates are independently reviewed and executed.
+
+
+## Follow-up close scheduler and epoch hardening
+
+- Physical cleanup is submitted to the injected bounded `CleanupScheduler`, never performed by `requestClose` under the session gate; the host must supply a genuine non-caller-runs worker. A rejected queue reservation quarantines the physical session.
+- A monotonic per-session cleanup attempt fences stale, duplicated and race-delivered cleanup tasks. Only one callback may execute, and retry after a failed cleanup cannot be hijacked by a stale task.
+- A successful explicit quarantine retry clears the prior failure diagnostic only after both physical-close confirmation and trusted-local receipt retirement.
+- The trusted local EOF retirement keys off a full, attested transport epoch, not textual session ID. A recycled name cannot terminate a newer route/grant/incarnation's pending messages.
+- The `Runnable::run` injected executor appearing in deterministic JDK tests is a host-only test fixture; production adapters must supply a bounded, nonparking, never-caller-runs scheduler with audited failure reporting.
