@@ -86,6 +86,15 @@ public final class V3DefaultArgValsPolicy {
                     && !bodyType.inferArguments();
             boolean declaredDefault = defaults.containsKey(param.name());
             var literal = defaults.get(param.name());
+            // A default or caller omission needs a safe value representation.
+            // Checking only bodyType.isBorrow() permits an unverified borrow
+            // through Option<List<borrow T>>, including with default None.
+            if ((declaredDefault || param.argumentOmittable())
+                    && containsNonOwnedOrInferredType(bodyType)) {
+                throw new IllegalArgumentException(
+                        "default/omittable formal '" + param.name()
+                                + "' has nested borrow, inference or legacy optional type");
+            }
             if (param.argumentOmittable() && !option && !declaredDefault) {
                 throw new IllegalArgumentException(
                         "non-Option omittable formal '" + param.name() + "' requires a default");
@@ -122,6 +131,18 @@ public final class V3DefaultArgValsPolicy {
                     param.argumentOmittable() || declaredDefault, option, literal));
         }
         return List.copyOf(formals);
+    }
+
+    /** Stage-only conservative ownership check; not a nominal type proof. */
+    private static boolean containsNonOwnedOrInferredType(Ast.TypeRef type) {
+        if (type.isBorrow() || type.isOmittableFormal()
+                || type.name().equals("$infer$") || type.inferArguments()) {
+            return true;
+        }
+        for (Ast.TypeRef nested : type.arguments()) {
+            if (containsNonOwnedOrInferredType(nested)) return true;
+        }
+        return false;
     }
 
     private static DefaultArgumentPolicy.Literal asClosedLiteral(Ast.TypeRef type) {
