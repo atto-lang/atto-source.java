@@ -1990,6 +1990,11 @@ public final class TypeChecker {
                         "rt " + runtime.operation() + " expects exactly one argument");
             }
             Type operand = typeOf(runtime.arguments().getFirst(), env, generics, self);
+            if (containsMlScalarCapability(operand)) {
+                throw new IllegalArgumentException(
+                        "rt " + runtime.operation()
+                                + " cannot borrow/copy/take/share compiler-issued actor scalar capabilities");
+            }
             return switch (runtime.operation()) {
                 case "borrow" -> new Borrow(operand, false);
                 case "copy", "take", "share" -> operand;
@@ -2032,7 +2037,8 @@ public final class TypeChecker {
                     if (argument instanceof Ast.SpreadExpr spread) {
                         requireSpreadable(typeOf(spread.expression(), env, generics, self), "stdio.stdout.log spread");
                     } else {
-                        typeOf(argument, env, generics, self);
+                        Type value = typeOf(argument, env, generics, self);
+                        rejectMlCapabilityStorage(value, "stdio.stdout.log");
                     }
                 }
                 return Primitive.VOID;
@@ -2044,7 +2050,9 @@ public final class TypeChecker {
                 if (call.arguments().size() != 1 || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
                     throw new IllegalArgumentException("stdio.stdout.logList expects exactly one array/list/tuple argument");
                 }
-                requireSpreadable(typeOf(call.arguments().getFirst(), env, generics, self), "stdio.stdout.logList");
+                Type logged = typeOf(call.arguments().getFirst(), env, generics, self);
+                rejectMlCapabilityStorage(logged, "stdio.stdout.logList");
+                requireSpreadable(logged, "stdio.stdout.logList");
                 return Primitive.VOID;
             }
             if (call.callee() instanceof Ast.NameExpr name
