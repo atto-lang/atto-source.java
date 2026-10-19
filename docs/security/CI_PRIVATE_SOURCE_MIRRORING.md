@@ -87,7 +87,11 @@ The reviewed carrier is immutable Git commit
 `fc49aa44726eac47301ae2d676c4b38954d3cc46`, tree
 `1e9dec690e45df80758547e991d37f6b18872e33`. Authorization binds those Git
 objects directly; movement of destination `main` is not an authorization
-input.
+input. The preflight also resolves
+`.github/workflows/private-oreslang-exact-tree.yml` from that immutable
+carrier commit and requires reviewed blob
+`6f532dfaa5149a023ca1ccd6ed3d8364c6df44e0`; it never trusts a cleanup
+workflow fetched from mutable destination `main`.
 
 The carrier treats the mirrored source and every source-owned build/test
 program as untrusted. For a real private source run it first requires the
@@ -112,7 +116,7 @@ canary bound to both a fixed fake source commit and the fixed synthetic canary
 tree; that fixture also asserts that GitHub/ACTIONS credential variables are
 absent, runner-private paths are hidden, and outbound TCP is unavailable.
 
-Source-free run `39327902459` validates the pinned carrier: exact-tree and
+Source-free run `39328529900` validates the pinned carrier: exact-tree and
 concurrency, JDK 25/GraalVM verification, Native Image AOT/hybrid, and the
 approval-bound branch-cleanup job all completed successfully. The cleanup log
 confirms deletion of exactly the tested branch SHA, and the branch was
