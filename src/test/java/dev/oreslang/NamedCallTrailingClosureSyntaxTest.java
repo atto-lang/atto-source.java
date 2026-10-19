@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.NamedCallBindingPlan;
+import dev.oreslang.types.ReturnCleanupChecker;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
@@ -138,6 +139,22 @@ final class NamedCallTrailingClosureSyntaxTest {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> firstExpression("work(value: 1, value: 2)"));
         assertTrue(failure.getMessage().contains("duplicate"), failure::toString);
+    }
+
+    @Test
+    void cleanupAnalysisRejectsStagedCallBeforeSkippingNestedEffects() {
+        Ast.Program program = Parser.parse("""
+                pub fnc work(int value): int { return value; }
+                pub fnc main(): void {
+                    work(value: 1);
+                    return;
+                }
+                """);
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ReturnCleanupChecker.check(program));
+        assertTrue(failure.getMessage().contains("staged named/trailing-closure"),
+                failure::toString);
     }
 
     @Test
