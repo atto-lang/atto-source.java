@@ -3851,14 +3851,14 @@ public final class OwnershipChecker {
 
     /**
      * Match TypeChecker's exact computed-index proofs without evaluating guest code.
-     * Integer const bindings retain literal precision even with an explicit type;
-     * string singleton precision is retained only for inferred const bindings.
+     * A CONST binding with a direct integer/string literal initializer is a stable
+     * selector even when its declared scalar type is wider than that literal.
      */
     private Object directComputedIndexConstant(Ast.BindingStmt binding) {
         Ast.Expr initializer = binding.initializer();
         if (initializer instanceof Ast.LiteralExpr literal) {
             if (literal.value() instanceof Long value) return value;
-            if (binding.declaredType() == null && literal.value() instanceof String value) return value;
+            if (literal.value() instanceof String value) return value;
         }
         if (initializer instanceof Ast.UnaryExpr unary
                 && unary.operator().equals("-")
