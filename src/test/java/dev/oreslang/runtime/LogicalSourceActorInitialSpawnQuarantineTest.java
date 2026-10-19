@@ -78,6 +78,21 @@ final class LogicalSourceActorInitialSpawnQuarantineTest {
                 assertTrue(router.physicalRefForTesting().isAlive(),
                         "simulated failed-spawn physical actor remains executing");
 
+                // A pre-registered reservation is NOT an aborted spawn. The
+                // reaper must not cancel this actor or refund its image pin
+                // before the startup caller explicitly transfers ownership.
+                LogicalSourceActorRouterV1.reapFailedInitialSpawns();
+                assertTrue(router.physicalRefForTesting().isAlive(),
+                        "pre-handoff reaper cannot cancel a valid startup");
+                assertEquals(2, pinsField.getInt(generation),
+                        "pre-handoff reaper cannot debit an executing image");
+                synchronized (lock) {
+                    assertTrue(ledger.contains(pending));
+                }
+                Field failureHandoff = kind.getDeclaredField("retryableFailure");
+                failureHandoff.setAccessible(true);
+                failureHandoff.setBoolean(pending, true);
+
                 // The returned router owns its own route lease, not the
                 // quarantine lease. Closing the physical actor must not
                 // release the second ownership token prematurely.
