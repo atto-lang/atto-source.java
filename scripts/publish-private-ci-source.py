@@ -36,12 +36,41 @@ def valid_sha(value):
     return value
 
 
+def trusted_github_cli():
+    """Only invoke a root-owned /usr/bin/gh via nonwritable parent directories."""
+    for directory in ("/", "/usr", "/usr/bin"):
+        try:
+            info = os.lstat(directory)
+        except OSError as exc:
+            raise Denied("trusted GitHub CLI path unavailable") from exc
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
+                or info.st_mode & 0o022):
+            raise Denied("trusted GitHub CLI directory is not root-controlled")
+    try:
+        info = os.lstat("/usr/bin/gh")
+    except OSError as exc:
+        raise Denied("trusted GitHub CLI unavailable") from exc
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+            or info.st_mode & 0o022 or not info.st_mode & 0o111):
+        raise Denied("trusted GitHub CLI executable is not root-controlled")
+    return "/usr/bin/gh"
+
+
 def gh_api(route, method="GET", payload=None):
-    argv = ["gh", "api", "--method", method, route,
+    argv = [trusted_github_cli(), "api", "--method", method, route,
             "--header", "Accept: application/vnd.github+json"]
     if payload is not None:
         argv.extend(["--input", "-"])
-    env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
+    credentials = [key for key in ("GH_TOKEN", "GITHUB_TOKEN")
+                   if os.environ.get(key)]
+    if len(credentials) != 1:
+        raise Denied("exactly one explicit GitHub API credential required")
+    env = {
+        credentials[0]: os.environ[credentials[0]],
+        "GH_HOST": "github.com", "GH_PROMPT_DISABLED": "1",
+        "PATH": "/usr/bin:/bin", "HOME": "/",
+        "XDG_CONFIG_HOME": "/nonexistent", "LC_ALL": "C.UTF-8",
+    }
     try:
         p = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
                            capture_output=True, text=True, env=env, timeout=45, check=False)
