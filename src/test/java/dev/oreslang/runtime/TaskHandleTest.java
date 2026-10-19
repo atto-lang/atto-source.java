@@ -73,7 +73,9 @@ public class TaskHandleTest {
             assertTrue(entered.await(3, TimeUnit.SECONDS));
             try {
                 assertTrue(handle.cancel("shutdown"));
-                assertTrue(handle.result().isCancelled());
+                assertTrue(handle.isCancellationRequested());
+                assertFalse(handle.result().isDone(),
+                        "running guest turn gets its cooperative cleanup checkpoint");
                 assertFalse(handle.getDone().isDone());
                 assertThrows(TimeoutException.class,
                         () -> handle.getDone().get(40, TimeUnit.MILLISECONDS));
@@ -87,6 +89,109 @@ public class TaskHandleTest {
             assertInstanceOf(TaskHandle.Cancelled.class, outcome);
             assertEquals("shutdown", ((TaskHandle.Cancelled<Integer>) outcome).reason());
             assertTrue(physicallyExited.get());
+        }
+    }
+
+    @Test void cancellationRequestRunsSynchronousFinallyBeforeTerminalSettlement()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            CountDownLatch inside = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicBoolean cleaned = new AtomicBoolean();
+            TaskHandle<Integer> h = scheduler.startTracked(r -> {
+                try {
+                    inside.countDown();
+                    awaitUninterruptibly(release);
+                    return OresScheduler.done(8);
+                } finally {
+                    cleaned.set(true);
+                }
+            });
+            assertTrue(inside.await(3, TimeUnit.SECONDS));
+            try {
+                assertTrue(h.cancel("graceful stop"));
+                assertFalse(h.result().isDone());
+                assertFalse(h.getDone().isDone());
+                assertFalse(cleaned.get());
+            } finally {
+                release.countDown();
+            }
+            assertInstanceOf(TaskHandle.Cancelled.class, done(h));
+            assertTrue(cleaned.get());
+            assertTrue(h.result().isCancelled());
+        }
+    }
+
+    @Test void cancellationDuringRunningTurnSkipsNextCooperativeResume() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicInteger turns = new AtomicInteger();
+            AtomicBoolean cleaned = new AtomicBoolean();
+            TaskHandle<Integer> h = scheduler.startTracked(resume -> {
+                try {
+                    if (turns.incrementAndGet() == 1) {
+                        entered.countDown();
+                        awaitUninterruptibly(release);
+                        return OresScheduler.cooperate();
+                    }
+                    return OresScheduler.done(100);
+                } finally {
+                    cleaned.set(true);
+                }
+            });
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            try {
+                assertTrue(h.cancel("at cooperate boundary"));
+                assertFalse(h.result().isDone());
+            } finally {
+                release.countDown();
+            }
+            assertInstanceOf(TaskHandle.Cancelled.class, done(h));
+            assertEquals(1, turns.get(),
+                    "cancellation must not re-enter the compiler state machine");
+            assertTrue(cleaned.get());
+        }
+    }
+
+    @Test void cancellationDuringRunningTurnDoesNotMaskGuestException() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            TaskHandle<Integer> h = scheduler.startTracked(r -> {
+                entered.countDown();
+                awaitUninterruptibly(release);
+                throw new IllegalArgumentException("failed before safe boundary");
+            });
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            try {
+                assertTrue(h.cancel("stop requested"));
+                assertFalse(h.result().isDone());
+            } finally {
+                release.countDown();
+            }
+            TaskHandle.TaskOutcome<Integer> outcome = done(h);
+            assertInstanceOf(TaskHandle.Failed.class, outcome);
+            assertInstanceOf(IllegalArgumentException.class,
+                    ((TaskHandle.Failed<Integer>) outcome).failure());
+            assertTrue(h.isCancellationRequested(),
+                    "cancellation intent remains observable despite guest failure");
+        }
+    }
+
+    @Test void awaitBoundaryCancelsPromptlyButLeavesBorrowedProducerAlone()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> borrowed = new OresFuture<>();
+            CountDownLatch entered = new CountDownLatch(1);
+            TaskHandle<Integer> h = scheduler.startTracked(r -> {
+                entered.countDown();
+                return OresScheduler.await(borrowed);
+            });
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertTrue(h.cancel("suspended"));
+            assertInstanceOf(TaskHandle.Cancelled.class, done(h));
+            assertFalse(borrowed.isCancelled());
         }
     }
 
