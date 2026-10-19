@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Host-only receipt parity runner. Does not download source or move code across orgs.
+set -euo pipefail
+root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+: "${JAVAC:=javac}"
+: "${JAVA:=java}"
+tmp="$(mktemp -d)"
+trap 'rm -rf -- "$tmp"' EXIT
+"$JAVAC" -Xlint:all -Werror -d "$tmp" \
+  "$root/src/main/java/dev/oreslang/runtime/IpcReceiptCorrelation.java" \
+  "$root/src/main/java/dev/oreslang/runtime/IpcReceiptCompletionBridge.java" \
+  "$root/src/test/java/dev/oreslang/runtime/IpcReceiptCorrelationSelfTest.java" \
+  "$root/src/test/java/dev/oreslang/runtime/IpcReceiptCompletionBridgeSelfTest.java"
+"$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcReceiptCorrelationSelfTest
+"$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcReceiptCompletionBridgeSelfTest
+printf 'JAVA_RECEIPTS_HOST_ONLY_PASS (not remote IPC or guest compilation)\n'
