@@ -1826,6 +1826,12 @@ public final class TypeChecker {
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
+            if (binding.kind() == Ast.BindingKind.CONST) {
+                Long constantInteger = constantIntegerLiteral(binding.initializer());
+                if (constantInteger != null) {
+                    env.defineConstantInteger(binding.name(), constantInteger);
+                }
+            }
             return;
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
@@ -2310,7 +2316,7 @@ public final class TypeChecker {
                                     "Tuple values are positional immutable products; indexed assignment is not allowed");
                         }
                         // FixedArray/FixedList retain their existing indexed mutation contract.
-                        Long constant = constantTupleIndex(indexed.index());
+                        Long constant = constantTupleIndex(indexed.index(), env);
                         if (tuple.elements().isEmpty() || (constant != null
                                 && (constant < 0 || constant >= tuple.elements().size()))) {
                             throw new IllegalArgumentException("fixed collection index outside arity "
@@ -3772,7 +3778,7 @@ public final class TypeChecker {
             requireAssignable(index, Primitive.INT, "array/list/tuple index");
             if (receiver instanceof ListType list) return list.element();
             if (receiver instanceof Tuple tuple) {
-                Long constant = constantTupleIndex(indexed.index());
+                Long constant = constantTupleIndex(indexed.index(), env);
                 if (constant != null) {
                     if (constant < 0 || constant >= tuple.elements().size()) {
                         throw new IllegalArgumentException(
@@ -6462,8 +6468,8 @@ public final class TypeChecker {
                 .reduce(Types::unionOf).orElse(Unknown.INSTANCE);
     }
 
-    /** Folds trivial signed integer literals without performing guest arithmetic. */
-    private Long constantTupleIndex(Ast.Expr expression) {
+    /** Folds trivial signed integer constants without performing guest arithmetic. */
+    private Long constantIntegerLiteral(Ast.Expr expression) {
         if (expression instanceof Ast.LiteralExpr literal
                 && literal.value() instanceof Long index) return index;
         if (expression instanceof Ast.UnaryExpr unary
@@ -6472,6 +6478,15 @@ public final class TypeChecker {
                 && literal.value() instanceof Long index) {
             if (index == Long.MIN_VALUE) return null;
             return -index;
+        }
+        return null;
+    }
+
+    private Long constantTupleIndex(Ast.Expr expression, Env env) {
+        Long literal = constantIntegerLiteral(expression);
+        if (literal != null) return literal;
+        if (expression instanceof Ast.NameExpr name) {
+            return env.lookupConstantInteger(name.name());
         }
         return null;
     }
@@ -8762,6 +8777,8 @@ public final class TypeChecker {
         private final boolean descendantsNonLexical;
         private final boolean deferredCaptureBoundary;
         private final Map<String, Binding> bindings = new HashMap<>();
+        /** Literal integer constants used only for exact fixed-product index selection. */
+        private final Map<String, Long> constantIntegers = new HashMap<>();
         private final Map<String, Type> inferredTypes = new HashMap<>();
         private final Set<String> reservedInferredNames = new HashSet<>();
         private void reserveInferredType(String name) {
@@ -8817,6 +8834,17 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("duplicate binding '" + name + "'");
             }
         }
+        private void defineConstantInteger(String name, long value) {
+            if (!bindings.containsKey(name)) {
+                throw new IllegalStateException(
+                        "constant integer metadata requires an existing binding '" + name + "'");
+            }
+            constantIntegers.put(name, value);
+        }
+        private Long lookupConstantInteger(String name) {
+            if (bindings.containsKey(name)) return constantIntegers.get(name);
+            return parent == null ? null : parent.lookupConstantInteger(name);
+        }
         private Binding lookup(String name) {
             Binding binding = bindings.get(name);
             if (binding != null) return binding;
@@ -8834,6 +8862,7 @@ public final class TypeChecker {
         private void replace(String name, Type type, Ast.BindingKind kind) {
             if (!bindings.containsKey(name)) throw new IllegalArgumentException("unknown binding '" + name + "'");
             bindings.put(name, new Binding(type, kind, Set.of()));
+            constantIntegers.remove(name);
         }
         private void markInitialized(String name, String field) {
             Binding binding = lookup(name);
