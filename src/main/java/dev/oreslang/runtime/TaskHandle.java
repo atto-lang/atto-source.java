@@ -97,6 +97,9 @@ public final class TaskHandle<T> {
     private final AtomicReference<OresFuture<T>> result = new AtomicReference<>();
     private final AtomicReference<TaskOutcome<T>> settledOutcome = new AtomicReference<>();
     private final AtomicBoolean quiescent = new AtomicBoolean();
+    // Only one thread may seal child admission / subscribe to descendant
+    // retirement. Publishing remains distinct from installing this barrier.
+    private final AtomicBoolean retirementArmed = new AtomicBoolean();
     private final AtomicBoolean published = new AtomicBoolean();
     // Cancellation requests may arrive on arbitrary host threads, including
     // a parent actor stopping while this Task executes guest code. Serialize
@@ -256,15 +259,25 @@ public final class TaskHandle<T> {
     }
 
     private void maybePublish() {
-        TaskOutcome<T> outcome = settledOutcome.get();
-        if (!quiescent.get() || outcome == null) return;
-        if (!published.compareAndSet(false, true)) return;
-        revoker.close();
-        // The scheduler has confirmed physical quiescence and the result
-        // has settled. Unlink the completed task from a long-lived scope
-        // before notifying host subscribers, which can block synchronously.
+        if (!quiescent.get() || settledOutcome.get() == null) return;
+        if (!retirementArmed.compareAndSet(false, true)) return;
+        // A cancelled child leaves the *revocation* graph immediately, but
+        // may still be executing guest code. Close admission atomically with
+        // subscribing to the distinct physical child-lifetime barrier.
+        // This callback never runs while the cancellation graph lock is held.
+        if (cancellation.sealAndObserveChildQuiescence(this::publishAfterChildren)) {
+            publishAfterChildren();
+        }
+    }
+
+    private void publishAfterChildren() {
+        // Never claim done before lifecycle retirement succeeds. The parent
+        // join barrier stays pending until every owned descendant has retired
+        // or been explicitly transferred to another live owner.
         cancellation.retire();
-        done.completeFromRuntime(outcome);
+        revoker.close();
+        if (!published.compareAndSet(false, true)) return;
+        done.completeFromRuntime(settledOutcome.get());
     }
 
     /**
