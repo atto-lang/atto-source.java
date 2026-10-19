@@ -81,6 +81,42 @@ branches, including `main`, are never updated. A later change to destination
 `main` neither grants nor revokes approval for an already reviewed immutable
 carrier.
 
+## Reviewed destination execution containment
+
+The reviewed carrier is immutable Git commit
+`054b65982f0950a4e2f3fb4752e78f585198c2ff`, tree
+`09ccea168b563ee91f9cd7a938ddabb5a33078ec`. Authorization binds those Git
+objects directly; movement of destination `main` is not an authorization
+input.
+
+The carrier treats the mirrored source and every source-owned build/test
+program as untrusted. For a real private source run it first requires the
+mirrored `pom.xml` blob to equal the reviewed source-main POM and rejects an
+unreviewed `.mvn/` control plane. Maven dependencies and the fixed Surefire /
+JUnit Platform provider runtime are prefetched with network access under a
+cleared environment before any source-owned code is compiled or executed.
+
+All subsequent source-owned shell scripts, Maven compilation/tests, GraalVM
+builds, native-image builds, and generated guest executables run in a
+Bubblewrap namespace with outbound networking disabled, PID/UTS/IPC isolation,
+a user namespace with nested user namespaces disabled, all capabilities
+dropped, runner home/runtime locations masked, and a cleared environment. The
+sandbox exposes only the exact source tree plus the isolated Maven repository
+and private temporary storage as writable state. Maven is forced into offline
+mode with an empty settings file.
+
+Private-source command output is redirected to runner-local files and is not
+streamed into Actions logs. Failures from real private source produce only a
+fixed trusted error message. The only detailed-log exception is a source-free
+canary bound to both a fixed fake source commit and the fixed synthetic canary
+tree; that fixture also asserts that GitHub/ACTIONS credential variables are
+absent, runner-private paths are hidden, and outbound TCP is unavailable.
+
+Source-free run `39325168201` validates the pinned carrier: exact-tree and
+concurrency, JDK 25/GraalVM verification, and Native Image AOT/hybrid jobs all
+completed successfully. This proves the carrier and containment harness only;
+it is not evidence that private Oreslang source passed any compiler test.
+
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
 checkout**, and walks the source **through directory file descriptors** to
