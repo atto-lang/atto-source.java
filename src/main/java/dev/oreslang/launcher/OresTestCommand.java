@@ -155,11 +155,23 @@ final class OresTestCommand {
         long tested = 0;
         while (matches.find()) {
             summaries++;
-            int total = Integer.parseInt(matches.group(1));
-            int passed = Integer.parseInt(matches.group(2));
-            int failures = Integer.parseInt(matches.group(3));
-            int skipped = Integer.parseInt(matches.group(4));
-            if (total <= 0 || passed + failures + skipped != total) failed = true;
+            final long total, passed, failures, skipped;
+            try {
+                total = Long.parseLong(matches.group(1));
+                passed = Long.parseLong(matches.group(2));
+                failures = Long.parseLong(matches.group(3));
+                skipped = Long.parseLong(matches.group(4));
+            } catch (NumberFormatException invalid) {
+                return usage("invalid native test summary number");
+            }
+            if (total <= 0 || total > 1_000_000
+                    || passed > total || failures > total || skipped > total
+                    || passed + failures + skipped != total) {
+                return usage("inconsistent native test summary counts");
+            }
+            if (tested > 1_000_000 - total) {
+                return usage("native test summary exceeds aggregate limit");
+            }
             tested += total;
             failed |= failures > 0;
         }
