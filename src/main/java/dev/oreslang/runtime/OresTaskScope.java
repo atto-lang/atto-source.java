@@ -225,7 +225,9 @@ public final class OresTaskScope implements AutoCloseable {
                 }
                 try {
                     synchronized (gate) {
-                        tasks.remove(ownedSlot);
+                        if (!tasks.remove(ownedSlot))
+                            throw new IllegalStateException(
+                                    "physical Task owner slot missing at retirement");
                     }
                     exitFence.completeFromRuntime(null);
                 } catch (RuntimeException | Error bookkeepingFailure) {
@@ -248,7 +250,9 @@ public final class OresTaskScope implements AutoCloseable {
             if (releaseFailure == null) {
                 try {
                     synchronized (gate) {
-                        tasks.remove(ownedSlot);
+                        if (!tasks.remove(ownedSlot))
+                            throw new IllegalStateException(
+                                    "physical Task owner slot missing at retirement");
                     }
                 } catch (RuntimeException | Error failure) {
                     bookkeepingFailure = failure;
