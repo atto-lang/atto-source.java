@@ -42,4 +42,42 @@ final class TaskScopeInvariantTest {
         child.quiesced();
         assertNull(joined.get(2, TimeUnit.SECONDS));
     }
+    @Test
+    void concurrentTerminalAndQuiescenceRetireExactlyOnce() throws Exception {
+        for (int i = 0; i < 64; i++) {
+            TaskScope scope = new TaskScope();
+            TaskScope.Registration child = scope.reserve();
+            OresFuture<Integer> future = new OresFuture<>();
+            child.attach(future);
+            OresFuture<Void> joined = scope.close();
+            java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+            Thread terminal = Thread.ofVirtual().start(() -> {
+                awaitGate(start);
+                future.completeFromRuntime(42);
+            });
+            Thread quiescence = Thread.ofVirtual().start(() -> {
+                awaitGate(start);
+                child.quiesced();
+            });
+            start.countDown();
+            terminal.join();
+            quiescence.join();
+            assertNull(joined.get(2, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class, scope::reserve);
+            child.quiesced();
+            assertFalse(joined.isCancelled());
+        }
+    }
+
+    private static void awaitGate(java.util.concurrent.CountDownLatch latch) {
+        try {
+            if (!latch.await(5, TimeUnit.SECONDS)) {
+                throw new AssertionError("concurrent retirement barrier timed out");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(e);
+        }
+    }
+
 }
