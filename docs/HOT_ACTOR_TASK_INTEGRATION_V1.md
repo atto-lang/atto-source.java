@@ -123,7 +123,7 @@ verified by a trusted worker before `complete` is called. The existing raw
 production caller MUST NOT bypass the coordinator and use them as a second
 source of routing truth.
 
-The nine `ActorRoutePublicationV1Test` cases cover atomic tuple observation,
+The ten `ActorRoutePublicationV1Test` cases cover atomic tuple observation,
 mail+Task drain, rollback/FIFO, schema and physical-route rejection, stale
 stage replay, authority loss, checkpoint immutability, concurrent admission,
 and protected-kind denial. These are **authored tests, not executed JUnit proof**.
