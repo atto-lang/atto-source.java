@@ -38,7 +38,8 @@ final class TaskAccessVerifierTest {
                         .map(claim -> new TaskAccessVerifier.TypedClaim(
                                 claim, Types.Primitive.INT))
                         .toList(),
-                CORE);
+                CORE,
+                place -> Types.Primitive.INT);
     }
 
     private static void release(TaskAccessVerifier.Admission admission) {
@@ -265,15 +266,20 @@ final class TaskAccessVerifierTest {
         var channel = new Types.Named("Channel", List.of(Types.Primitive.INT));
         var syncRead = new TaskAccessVerifier.TypedClaim(read(unique), channel);
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admitScopedTyped(List.of(syncRead), CORE));
+                () -> ledger.admitScopedTyped(
+                        List.of(syncRead), CORE, place -> channel));
         assertEquals(0, ledger.activeChildren());
         var sendWrite = new TaskAccessVerifier.TypedClaim(write(unique), channel);
-        var ticket = ledger.admitScopedTyped(List.of(sendWrite), CORE);
+        var ticket = ledger.admitScopedTyped(
+                List.of(sendWrite), CORE, place -> channel);
         assertEquals(1, ledger.activeChildren());
         release(ticket);
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admitScopedTyped(List.of(new TaskAccessVerifier.TypedClaim(
-                        read(unique), new Types.Generic("T"))), CORE));
+                () -> ledger.admitScopedTyped(
+                        List.of(new TaskAccessVerifier.TypedClaim(
+                                read(unique), new Types.Generic("T"))),
+                        CORE,
+                        place -> new Types.Generic("T")));
         assertEquals(0, ledger.activeChildren());
     }
 
@@ -287,7 +293,8 @@ final class TaskAccessVerifierTest {
                 ledger.admitScopedTyped(
                         List.of(new TaskAccessVerifier.TypedClaim(
                                 write(place), readonly)),
-                        CORE));
+                        CORE,
+                        ignored -> readonly));
 
         assertThrows(IllegalArgumentException.class, () ->
                 new TaskAccessVerifier.TypedClaim(
@@ -312,7 +319,10 @@ final class TaskAccessVerifierTest {
                 new TaskAccessVerifier.TypedClaim(write(pos), Types.Primitive.INT),
                 new TaskAccessVerifier.TypedClaim(read(vel),
                         new Types.Named("OpaqueHostHandle", List.of()))),
-                (name, trait) -> false));
+                (name, trait) -> false,
+                place -> place.equals(pos)
+                        ? Types.Primitive.INT
+                        : new Types.Named("OpaqueHostHandle", List.of())));
         assertEquals(0, ledger.activeChildren());
     }
 
