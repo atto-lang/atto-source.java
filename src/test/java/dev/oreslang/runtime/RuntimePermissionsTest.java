@@ -78,6 +78,15 @@ final class RuntimePermissionsTest {
                 () -> RuntimePermissions.networkEndpoint("[::1", 443));
         assertThrows(IllegalArgumentException.class,
                 () -> RuntimePermissions.networkEndpoint("::1]", 443));
+
+        for (String malformed : java.util.List.of(
+                "[::1", "::1]", "[::1]:", "[::1]:65536",
+                "example.com:", "example.com:-1", "example.com:0443")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> RuntimePermissions.denyAll()
+                            .withAllowed(RuntimePermissions.Permission.NET, malformed),
+                    malformed);
+        }
     }
 
     @Test
