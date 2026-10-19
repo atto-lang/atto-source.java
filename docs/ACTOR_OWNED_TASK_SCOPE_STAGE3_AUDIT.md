@@ -262,3 +262,29 @@ admission needs stress/failure-injection coverage; actual host terminal
 callback dispatch should be tested under large actor teardown storms.
 Stage-1 and Stage-2 cancellation changes continue independently and must
 be kept synchronized before merge.
+
+
+## Termination cascade applies without TaskScope
+
+Follow-up source audit identified a lifecycle hole: previous Stage-3 gating checked
+`activeTerminationCascades` and `terminationCascadeComplete` only when an actor
+had previously created `actorOwnedTasks`. Actors with no tracked Tasks can still
+own pending `OresFuture`s and descendants; synchronous cancellation callbacks
+could be running when actor `done` was incorrectly published.
+
+`finalizeStopLocked()` now requires the termination cascade barrier for EVERY
+actor. `terminateTree()` counts concurrent/reentrant cascades and closes the
+barrier in `finally` unconditionally, while the additional TaskScope quiescence
+check remains conditional on an actual owned scope. An incomplete/fatal
+cancellation cascade still fails closed.
+
+`ActorTaskTerminationCascadeTest` now contains **9 JUnit methods**, including
+an explicit no-TaskScope actor with a deliberately blocked owned-Future
+cancellation callback; this test asserts that `done` and zero-timeout
+`awaitTermination` remain incomplete until the callback is released.
+`ActorOwnedTaskScopeTest` retains 9 methods (18 total Stage-3 JUnit methods).
+These production-source JUnit cases are committed, **not yet executed**.
+
+CI remains unusable at source-org workflow level until runner admission is
+diagnosed; do not infer whether minutes or billing is the actual cause from
+zero-step failures. Cross-org private mirroring remains prohibited by #962.
