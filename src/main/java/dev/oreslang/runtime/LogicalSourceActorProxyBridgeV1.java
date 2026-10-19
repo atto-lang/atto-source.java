@@ -3,7 +3,6 @@ package dev.oreslang.runtime;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
@@ -138,16 +137,13 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             var envelope = mailbox.pollDispatch();
             if (envelope == null) return false;
             try {
-                // The sole encoder of this bridge is admitLong(). A corrupt
-                // envelope must never be sent to the guest.
-                byte[] wire = envelope.payload();
-                if (wire.length != Long.BYTES)
-                    throw new SecurityException("invalid canonical scalar proxy wire length");
-                long value = 0L;
-                for (byte octet : wire) value = (value << Byte.SIZE) | (octet & 255L);
-                OresFuture<Void> receipt = router.sendAndDrainForProxy(value);
-                receipt.get(toNanosSaturated(timeout), TimeUnit.NANOSECONDS);
-                mailbox.complete(envelope.messageSequence());
+                // Only the authoritative physical router may decode and
+                // send these immutable bytes. Its opaque receipt binds the
+                // exact envelope, route epoch and physical actor instance;
+                // only a successful physical drain may refund proxy credits.
+                long routeEpoch = mailbox.snapshot().routeEpoch();
+                var receipt = router.sendAndDrainForProxy(envelope, routeEpoch);
+                receipt.awaitAndComplete(mailbox, envelope, timeout);
                 return true;
             } catch (InterruptedException | ExecutionException | TimeoutException
                     | RuntimeException | Error uncertain) {
@@ -205,14 +201,6 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
         if (ActorRuntime.inActorExecution() || OresScheduler.current() != null) {
             throw new SecurityException(
                     "bounded logical source proxy bridge is a HOST-only API");
-        }
-    }
-
-    private static long toNanosSaturated(Duration timeout) {
-        try {
-            return timeout.toNanos();
-        } catch (ArithmeticException huge) {
-            return Long.MAX_VALUE;
         }
     }
 
