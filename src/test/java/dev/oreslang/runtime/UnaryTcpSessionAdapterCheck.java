@@ -1007,6 +1007,78 @@ public final class UnaryTcpSessionAdapterCheck {
         }
     }
 
+    private static void boundedCancellationSaturationIsObservable() throws Exception {
+        CountDownLatch twoWorkersEntered = new CountDownLatch(2);
+        CountDownLatch releaseCallbacks = new CountDownLatch(1);
+        AtomicInteger dispatches = new AtomicInteger();
+        AtomicInteger cancellationsStarted = new AtomicInteger();
+        UnaryTcpSessionAdapter.Dispatcher dispatcher = request -> {
+            dispatches.incrementAndGet();
+            return new UnaryTcpSessionAdapter.DispatchHandle() {
+                @Override public void whenComplete(
+                        BiConsumer<? super UnaryTcpSessionAdapter.Reply,
+                                   ? super Throwable> completion) { }
+                @Override public boolean cancel() {
+                    cancellationsStarted.incrementAndGet();
+                    twoWorkersEntered.countDown();
+                    try {
+                        releaseCallbacks.await();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return true;
+                }
+            };
+        };
+        try (var adapter = new UnaryTcpSessionAdapter(
+                        limits(1, 8, 1, 8, 1500),
+                        new BindingAuthenticator(), dispatcher);
+             var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> served = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+            try (Socket client = new Socket(
+                    InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                Binding binding = binding(client);
+                for (long id = 1; id <= 2; id++) {
+                    send(client, request(binding, id, new byte[] {1}));
+                    long expected = id;
+                    awaitTrue(() -> dispatches.get() >= expected, 1000,
+                            "saturation request dispatched " + expected);
+                    send(client, cancel(binding, id));
+                    awaitTrue(() -> adapter.activeGlobalWorkItems() == 0,
+                            1000, "saturation request credit released " + expected);
+                }
+                check(twoWorkersEntered.await(1, TimeUnit.SECONDS),
+                        "two cancellation workers must be blocked");
+                for (long id = 3; id <= 4; id++) {
+                    send(client, request(binding, id, new byte[] {1}));
+                    long expected = id;
+                    awaitTrue(() -> dispatches.get() >= expected, 1000,
+                            "queued cancellation request dispatched " + expected);
+                    send(client, cancel(binding, id));
+                    awaitTrue(() -> adapter.activeGlobalWorkItems() == 0,
+                            1000, "queued cancellation request credit reclaimed");
+                }
+                awaitTrue(() -> adapter.rejectedCancellationTasks() == 1,
+                        1000, "over-capacity cancellation rejection must be counted");
+                check(adapter.activeGlobalPayloadBytes() == 0,
+                        "saturation does not retain request payload bytes");
+                check(cancellationsStarted.get() == 2,
+                        "bounded workers must not start queued cancellations before release");
+            } finally {
+                releaseCallbacks.countDown();
+            }
+            served.get(3, TimeUnit.SECONDS);
+            awaitTrue(() -> cancellationsStarted.get() == 3, 1000,
+                    "the queued callback should be attempted when workers recover");
+            check(adapter.activeConnections() == 0,
+                    "cancellation saturation must not strand the TCP connection");
+        }
+    }
+
     public static void main(String[] unused) throws Exception {
         lazyActorPayloadProjection();
         echoAndReplayFence();
@@ -1023,6 +1095,7 @@ public final class UnaryTcpSessionAdapterCheck {
         adapterCloseUnblocksAuthentication();
         throwingCancellationCannotStrandCredits();
         blockingCancellationCannotStallDeadlines();
+        boundedCancellationSaturationIsObservable();
         absoluteReadDeadlinesRejectStalledPeers();
         System.out.println("PASS: authenticated unary TCP sessions, request/response budgets, deadlines and 250 completion/cancel races");
     }
