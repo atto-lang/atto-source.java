@@ -125,6 +125,8 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             }
             if (payload.length > UnaryTransportFrame.MAX_PAYLOAD_BYTES)
                 throw new IllegalArgumentException("unary TCP reply exceeds protocol byte limit");
+            if (kind == UnaryTransportFrame.Kind.ERROR && payload.length != 0)
+                throw new IllegalArgumentException("unary TCP ERROR frames must be bodyless");
             payload = payload.clone();
         }
 
