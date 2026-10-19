@@ -29,6 +29,7 @@ MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
+MAX_CARRIER_RETENTION_DAYS = 7
 # This policy must be approved on the protected source main branch, not merely
 # present in the caller's current PR/worktree.
 SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
@@ -279,6 +280,53 @@ def checked_repo(repository, expected_id=None):
     if result.get("archived") is not False or result.get("disabled") is not False:
         raise Denied("destination is archived, disabled, or its status is unknown")
     return result
+
+
+def require_carrier_actions_posture(repository, expected_id):
+    """Require least-privilege Actions and bounded retention before source reads.
+
+    These repository-admin settings are independent of the carrier Git tree, so
+    a protected workflow alone is insufficient. Any unreadable or permissive
+    setting fails closed.
+    """
+    destination = checked_repo(repository, expected_id=expected_id)
+    if destination.get("allow_forking") is not False:
+        raise Denied("private carrier must disable private repository forking")
+
+    permissions = gh_api(f"repos/{repository}/actions/permissions")
+    if permissions.get("enabled") is not True:
+        raise Denied("private carrier GitHub Actions is disabled or unavailable")
+    allowed = permissions.get("allowed_actions")
+    if allowed == "selected":
+        selected = gh_api(f"repos/{repository}/actions/permissions/selected-actions")
+        if (selected.get("github_owned_allowed") is not True
+                or selected.get("verified_allowed") is not False
+                or selected.get("patterns_allowed") != []):
+            raise Denied("private carrier selected Actions policy is too broad")
+        action_policy = ("selected", True, False, ())
+    elif allowed == "local_only":
+        action_policy = ("local_only",)
+    else:
+        raise Denied("private carrier must not allow all third-party Actions")
+
+    workflow = gh_api(f"repos/{repository}/actions/permissions/workflow")
+    if (workflow.get("default_workflow_permissions") != "read"
+            or workflow.get("can_approve_pull_request_reviews") is not False):
+        raise Denied("private carrier GITHUB_TOKEN permissions are too broad")
+
+    retention = gh_api(
+        f"repos/{repository}/actions/permissions/artifact-and-log-retention")
+    days = retention.get("days")
+    maximum = retention.get("maximum_allowed_days")
+    if (type(days) is not int or not 1 <= days <= MAX_CARRIER_RETENTION_DAYS
+            or type(maximum) is not int or maximum < days):
+        raise Denied("private carrier artifact/log retention exceeds security limit")
+
+    return (
+        destination["id"], action_policy,
+        workflow["default_workflow_permissions"],
+        workflow["can_approve_pull_request_reviews"], days,
+    )
 
 
 def require_preflight(repository, root):
@@ -1083,7 +1131,10 @@ def require_private_ci_api_budget(file_count, estimated_writes=None):
         raise Denied("GitHub core API budget unavailable")
     # Each write revalidates both source and carrier CODEOWNERS plus all
     # immutable approvals. Allow headroom for those extra core API reads.
-    required = 24 * estimated_writes + 160
+    # Actions/retention posture adds up to five authenticated reads to every
+    # per-write admission. Reserve them rather than discovering rate exhaustion
+    # after private Git objects have already been created.
+    required = 30 * estimated_writes + 192
     if remaining < required:
         raise Denied("insufficient GitHub core API budget for safe private CI export")
 
@@ -1130,6 +1181,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
     base = checked_repo(repository, expected_id=approved_destination_id)
+    carrier_actions_posture = require_carrier_actions_posture(
+        repository, approved_destination_id)
     # Never inherit a caller-selected or unreviewed carrier branch: inherited
     # workflow definitions execute with the destination repository's token.
     if base.get("default_branch") != "main":
@@ -1226,6 +1279,9 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
             raise Denied("reviewed carrier revision changed during transfer")
         verify_source_commit(expected_source_commit, expected_source_tree)
         current = checked_repo(repository, expected_id=approved_destination_id)
+        if require_carrier_actions_posture(
+                repository, approved_destination_id) != carrier_actions_posture:
+            raise Denied("private carrier Actions security posture changed during transfer")
         if current.get("default_branch") != "main":
             raise Denied("private carrier default branch changed during transfer")
         carrier_approval = require_carrier_source_approval(
