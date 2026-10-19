@@ -116,6 +116,10 @@ final class OresTestTraceTest {
                 temporary.resolve("bad-count.trace"), source, 17, 8, true, valid));
         assertThrows(IOException.class, () -> OresTestTrace.write(
                 temporary.resolve("bad-mode.trace"), source, 17, 7, false, valid));
+        // A zero-run trace with model checking disabled proves nothing.
+        assertThrows(IOException.class, () -> OresTestTrace.write(
+                temporary.resolve("empty.trace"), source, 17, 0, false,
+                new OresTestExploration.Report(0, 0, 0, 0, 0, 123)));
     }
 
     @Test
