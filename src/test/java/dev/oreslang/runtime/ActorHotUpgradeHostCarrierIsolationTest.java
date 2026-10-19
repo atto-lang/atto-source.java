@@ -130,6 +130,22 @@ final class ActorHotUpgradeHostCarrierIsolationTest {
                     if (previous == null) actorCarrier.remove();
                     else actorCarrier.set(previous);
                 }
+                // ActorGroup Mailman CONTROL has its own execution marker
+                // and is NOT a privileged host thread even without an actor
+                // or scheduler turn. It must not inspect or retire code routes.
+                ThreadLocal<Object> mailman = mailmanMarker();
+                Object previousMailman = mailman.get();
+                try {
+                    mailman.set(new Object());
+                    assertThrows(SecurityException.class, ref::address);
+                    assertThrows(SecurityException.class, router::generation);
+                    assertThrows(SecurityException.class, router::reapRetired);
+                    assertThrows(SecurityException.class,
+                            router::physicalRefForTesting);
+                } finally {
+                    if (previousMailman == null) mailman.remove();
+                    else mailman.set(previousMailman);
+                }
                 assertEquals(expectedId, ref.address().actorId());
                 assertSame(generation, router.generation());
                 assertTrue(router.proxyRouteEpochAlignedForTesting(mailbox));
