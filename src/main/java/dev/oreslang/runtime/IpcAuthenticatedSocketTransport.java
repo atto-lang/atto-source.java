@@ -183,10 +183,10 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         }
 
         synchronized (sendGate) {
-            final IpcTransportSessionLease.AdmittedWrite admitted;
             try {
-                admitted = sessionLease.admitAndCommitFrame(
-                        physicalGeneration, message);
+                var attempt = sessionLease.sendPreparedFrame(
+                        physicalGeneration, message, preparedFrame);
+                return new SendSubmission(attempt.outcome(), attempt.error());
             } catch (IpcTransportSessionLease.PreDispatchRejectedException rejected) {
                 CompletionStage<IpcReceiptCorrelation.Stage> outcome =
                         CompletableFuture.completedFuture(
@@ -194,16 +194,6 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                                 .minimalCompletionStage();
                 return new SendSubmission(outcome, rejected);
             }
-
-            Throwable failure = null;
-            try {
-                sessionLease.writeAdmittedFrame(admitted, preparedFrame);
-            } catch (IOException | RuntimeException sendFailure) {
-                failure = sendFailure;
-            } catch (Error fatalHostFailure) {
-                throw fatalHostFailure;
-            }
-            return new SendSubmission(admitted.outcome(), failure);
         }
     }
 
