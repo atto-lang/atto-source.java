@@ -317,6 +317,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
 
     private static void requireHost() {
         if (ActorRuntime.inActorExecution()
+                || ActorRuntime.isActorCarrierThread()
                 || OresScheduler.current() != null
                 || OresScheduler.isSchedulerCarrierThread()
                 || AsyncRuntime.isAsyncCarrierThread()) {
