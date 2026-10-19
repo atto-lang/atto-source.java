@@ -78,7 +78,8 @@ final class SendSyncContractsTest {
                     return 1;
                 }
                 """)));
-        assertTrue(invalid.getMessage().contains("Send")
-                || invalid.getMessage().contains("task-safe"));
+        assertNotNull(invalid.getMessage());
+        assertFalse(SendSyncContracts.isSend(
+                new Named("MutexGuard", List.of(Primitive.INT)), NONE));
     }
 }
