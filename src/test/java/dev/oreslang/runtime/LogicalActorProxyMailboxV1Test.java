@@ -551,4 +551,48 @@ final class LogicalActorProxyMailboxV1Test {
     private static byte[] bytes(String value) {
         return value.getBytes(StandardCharsets.UTF_8);
     }
+
+    @Test
+    void ambiguousUpgradeCleanupCannotImplicitlyThawDispatch() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(3, 8, 24)) {
+            var before = mailbox.admit(new byte[] {1});
+            var outstanding = mailbox.pollDispatch();
+            assertEquals(before.messageSequence(), outstanding.messageSequence());
+            var freeze = mailbox.freezeDispatchForUpgrade();
+            mailbox.admit(new byte[] {2});
+            var frozen = mailbox.snapshot();
+
+            assertThrows(IllegalStateException.class, freeze::close,
+                    "ordinary cleanup cannot authorize rollback after uncertain publication");
+            assertEquals(frozen, mailbox.snapshot(),
+                    "rejected close must retain every credit and the active freeze");
+            assertNull(mailbox.pollDispatch(), "old-route dispatch must stay frozen");
+
+            mailbox.complete(outstanding.messageSequence());
+            assertTrue(freeze.drained());
+            assertThrows(IllegalStateException.class, freeze::close,
+                    "even after drain, publication still needs an explicit decision");
+            assertTrue(mailbox.snapshot().dispatchFrozen());
+
+            freeze.commit();
+            freeze.close(); // idempotent after a successful explicit decision
+            assertEquals(2L, mailbox.snapshot().routeEpoch());
+            assertEquals(2L, mailbox.pollDispatch().messageSequence());
+        }
+    }
+
+    @Test
+    void explicitFreezeRollbackIsRequiredToRestoreOldDispatch() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(2, 8, 16)) {
+            var first = mailbox.admit(new byte[] {1});
+            var freeze = mailbox.freezeDispatchForUpgrade();
+            assertThrows(IllegalStateException.class, freeze::close);
+            assertNull(mailbox.pollDispatch());
+            freeze.rollback();
+            freeze.close(); // cannot affect any subsequent epoch
+            assertEquals(first.messageSequence(),
+                    mailbox.pollDispatch().messageSequence());
+            assertEquals(1L, mailbox.snapshot().routeEpoch());
+        }
+    }
 }
