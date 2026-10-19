@@ -80,4 +80,15 @@ final class TaskScopeInvariantTest {
         }
     }
 
+    @Test
+    void selfReferentialBarrierFutureCannotBeAttachedAsChild() throws Exception {
+        TaskScope scope = new TaskScope();
+        TaskScope.Registration child = scope.reserve();
+        OresFuture<Void> joined = scope.close();
+        assertThrows(IllegalArgumentException.class, () -> child.attach(joined));
+        assertFalse(joined.isDone());
+        child.failedAdmission(new IllegalStateException("bad child dependency"));
+        assertTrue(joined.isCompletedExceptionally());
+    }
+
 }
