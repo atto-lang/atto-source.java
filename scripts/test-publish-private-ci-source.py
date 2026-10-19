@@ -89,10 +89,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.publisher_checkout.start()
         self.addCleanup(self.publisher_checkout.stop)
 
-    def set_reviewed_snapshot(self, commit=D, tree=None, destination_id=123):
+    def set_reviewed_snapshot(self, commit=D, tree=None, destination_id=123,
+                              carrier_commit=A, carrier_tree=B):
         if tree is None:
             tree = self.expected_tree
-        self.reviewed_snapshot = f"{commit} {tree} {destination_id}\\n".replace("\\n", "\n")
+        self.reviewed_snapshot = (
+            f"{commit} {tree} {destination_id} {carrier_commit} {carrier_tree}\\n"
+            .replace("\\n", "\n")
+        )
         payload = self.reviewed_snapshot.encode("utf-8")
         self.snapshot_sha = hashlib.sha1(
             b"blob " + str(len(payload)).encode("ascii") + b"\0" + payload
@@ -112,8 +116,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         commit={"sha": self.source_main_shas.pop(0)})
         if route == pub.PROTECTED_RULES_ROUTE:
             return {"enforce_admins": {"enabled": True},
-                    "required_status_checks": {"strict": True,
-                                               "contexts": ["preflight-regressions"]},
+                    "required_status_checks": {
+                        "strict": True,
+                        "contexts": ["preflight-regressions"],
+                        "checks": [{"context": "preflight-regressions", "app_id": 15368}]},
+                    "allow_force_pushes": {"enabled": False},
+                    "allow_deletions": {"enabled": False},
                     "required_conversation_resolution": {"enabled": True}}
         if route == pub.PROTECTED_REVIEWS_ROUTE:
             return {"required_approving_review_count": 1,
@@ -169,8 +177,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == "repos/trusted/ci/branches/main/protection":
             valid_checks = self.carrier_status_checks.pop(0)
             return {"enforce_admins": {"enabled": self.carrier_admin_enforced.pop(0)},
-                    "required_status_checks": {"strict": valid_checks,
-                                               "contexts": ["verified-carrier-ci"] if valid_checks else []},
+                    "required_status_checks": {
+                        "strict": valid_checks,
+                        "contexts": ["verified-carrier-ci"] if valid_checks else [],
+                        "checks": ([{"context": "verified-carrier-ci", "app_id": 15368}]
+                                   if valid_checks else [])},
+                    "allow_force_pushes": {"enabled": False},
+                    "allow_deletions": {"enabled": False},
                     "required_conversation_resolution": {
                         "enabled": self.carrier_conversations.pop(0)}}
         if route == "repos/trusted/ci/branches/main/protection/required_pull_request_reviews":
@@ -2273,6 +2286,48 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+
+    def test_branch_rules_reject_unbound_or_mutable_required_checks(self):
+        valid = {
+            "enforce_admins": {"enabled": True},
+            "required_status_checks": {
+                "strict": True, "contexts": ["ci"],
+                "checks": [{"context": "ci", "app_id": 15368}]},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        }
+        self.assertEqual(pub.require_hardened_branch_rules(valid, "test"),
+                         (("ci", 15368),))
+        for mutation in (
+            {"checks": [{"context": "ci", "app_id": None}]},
+            {"checks": [{"context": "other", "app_id": 15368}]},
+        ):
+            broken = json.loads(json.dumps(valid))
+            broken["required_status_checks"].update(mutation)
+            with self.assertRaises(pub.Denied):
+                pub.require_hardened_branch_rules(broken, "test")
+        for key in ("allow_force_pushes", "allow_deletions"):
+            broken = json.loads(json.dumps(valid))
+            broken[key]["enabled"] = True
+            with self.assertRaises(pub.Denied):
+                pub.require_hardened_branch_rules(broken, "test")
+
+    def test_reviewed_snapshot_binds_exact_carrier_main_commit(self):
+        self.set_reviewed_snapshot(carrier_commit=E)
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "carrier main changed"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_reviewed_snapshot_binds_exact_carrier_root_tree(self):
+        self.set_reviewed_snapshot(carrier_tree=E)
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "carrier main tree"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
 
     def test_api_json_rejects_duplicate_repository_id(self):
