@@ -145,6 +145,28 @@ final class InferredRecordBoundaryTest {
     }
 
     @Test
+    void directAstConstructionRejectsDuplicateFieldsBeforeCodegen() {
+        Ast.ObjectField left = new Ast.ObjectField("age", new Ast.LiteralExpr(37));
+        Ast.ObjectField right = new Ast.ObjectField("age", new Ast.LiteralExpr(42));
+        for (Ast.ObjectKind kind : Ast.ObjectKind.values()) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> new Ast.ObjectExpr(java.util.List.of(left, right), kind, java.util.List.of()));
+            assertTrue(error.getMessage().contains("duplicate struct field"), error.getMessage());
+        }
+        Ast.StructFieldSpec declared = new Ast.StructFieldSpec(
+                "age", Ast.TypeRef.simple("int"));
+        assertThrows(IllegalArgumentException.class, () -> new Ast.ObjectExpr(
+                java.util.List.of(left), Ast.ObjectKind.EXPLICIT_STRUCT,
+                java.util.List.of(declared, declared)));
+
+        // A single initializer legitimately provides a declared field's value.
+        assertDoesNotThrow(() -> new Ast.ObjectExpr(
+                java.util.List.of(left), Ast.ObjectKind.EXPLICIT_STRUCT,
+                java.util.List.of(declared)));
+    }
+
+    @Test
     void allClosedFieldEntryPointsRejectMalformedUnicodeAndOversizeNames() {
         String[] invalid = {
             "embedded" + (char) 0 + "nul",
