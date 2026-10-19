@@ -46,6 +46,27 @@ The Java \`SupervisorDenseTable\` intentionally stores five 64-bit numeric metad
 
 A supervisor child row is **metadata only**. No stored actor-private mutable pointers, actor heaps, mailbox internals, continuation stacks or borrowed child state. An \`ActorRef\` or opaque runtime identity is an external handle, not permission to read memory or to restart the actor. Metadata field mutation by untrusted guest source remains forbidden.
 
+## Reusable layout policy: target data structures
+
+The long-term design is a generic `alloc::LayoutStore<T>` plus target-specific indexes and owning arenas, **not** one specialized supervisor table per subsystem. Most **dense fixed-record metadata** structures should admit all three layouts, but their authoritative ordering/indexing structures should retain the algorithms they require.
+
+| Subsystem | AoS | SoA | AoSoA | Separate canonical index / constraint |
+| --- | --- | --- | --- | --- |
+| Supervisor child metadata | yes | yes | yes | child-spec order, failure dense-set, restart window |
+| Actor registry entries | yes | yes | yes | hash index, incarnation and domain fencing |
+| Task metadata / continuation headers | yes | yes | yes | per-worker work-stealing deques; actual stack frames remain separate |
+| Future completion metadata | yes | yes | yes | wake queues and one-shot completion state |
+| Timers and lease metadata | yes | yes | yes | hierarchical timing wheel or heap; deadlines cannot require full scans |
+| Connection descriptors | yes | yes | yes | socket/event readiness poller; buffer ownership separately tracked |
+| ActorGroup membership metadata | yes | yes | yes | sparse-set / CSR membership adjacency and epoch indexes |
+| Mailbox envelope headers | yes | yes | yes | bounded per-actor FIFO ring/segmented queue, no payload reshuffling |
+| Capabilities and revocation epochs | yes | yes | yes | authority in opaque tokens and trusted revocation/epoch registry |
+| Hot code generations and pin counters | yes | yes | yes | generation leases, ABI manifests and safepoint barriers |
+| Actor private mutable state | within owner | within owner | within owner | never implicitly merged across actor heaps |
+
+Do not force a FIFO queue, time wheel, lock-free deque or ordered supervision tree into an archetype store merely for uniformity; represent its **bulk metadata** in the chosen physical layout, and retain the algorithmically necessary queue/index. Columnar layouts do not override atomics, lifetime, transactional versioning or safe synchronization.
+
+Default choices should be proven by measurements (AoS for small per-record operations, SoA for field-heavy scans, AoSoA for chunked SIMD). Changing a layout is an explicit stop-the-world-for-that-region transaction with failed-allocation rollback and active-loan exclusion. Reads/writes on disjoint views require compiler-checked `ExecutionPermit<Region,AccessSet>`; host synchronized reference tests do not prove borrow-safe concurrent guest execution.
 ## Supervisor control-plane design
 
 An Oreslang supervisor is a nominal isolated actor with runtime-minted authority, not an ActorGroup and not an OS process by default. Keep two independent logical inboxes, owned by the trusted runtime:
@@ -84,6 +105,6 @@ For normal messages, enforce layered (child, lineage, supervisor, tenant, route)
 
 ## Test evidence (Oct 19, 2026)
 
-The included two JUnit test classes were run locally on **OpenJDK 21** with an intentionally minimal JUnit-compatible assertion shim and reflection runner: **5/5 test methods passed**. Coverage includes 12,000-row 3x3 layout transitions, 4,000 randomized insert/update/delete/relayout operations, stale and foreign handle rejection, priority-lane independence, credit retention until completion, overflow signaling, restart/revocation fencing and foreign binding rejection. The source files compiled with \`javac\`. This is NOT a Maven/Surefire run, not a real Oreslang guest execution test, not a protected isolate proof, not a cache benchmark and not a native ASan/UBSan result.
+The included two JUnit test classes were run locally on **OpenJDK 21** with an intentionally minimal JUnit-compatible assertion shim and reflection runner: **7/7 test methods passed**. Coverage includes 12,000-row 3x3 layout transitions, 4,000 randomized insert/update/delete/relayout operations, stale and foreign handle rejection, priority-lane independence, credit retention until completion, overflow signaling, restart/revocation fencing and foreign binding rejection. The source files compiled with \`javac\`. This is NOT a Maven/Surefire run, not a real Oreslang guest execution test, not a protected isolate proof, not a cache benchmark and not a native ASan/UBSan result.
 
 Related: Java inverted #1445, LLVM inverted #657, Java issues #1424, #1437, #476, #641 and #1265, security draft #1266.
