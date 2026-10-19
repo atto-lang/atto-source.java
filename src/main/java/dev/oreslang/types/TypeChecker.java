@@ -82,6 +82,8 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    /** Both type-only and value imports occupy names short inference may not redefine. */
+    private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -233,6 +235,7 @@ public final class TypeChecker {
             ImportRules.validate(imported);
             for (String name : ImportRules.exposedBindings(imported)) {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
+                importedNames.add(name);
                 if (localNames.contains(name)) {
                     throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
                 }
@@ -1692,6 +1695,7 @@ public final class TypeChecker {
                         "Ref", "WeakRef", "Map", "OrderedMap", "DynamicStruct").contains(name)
                 || findClass(name) != null || findInterface(name) != null
                 || findTypeAlias(name) != null || modules.containsKey(name)
+                || importedNames.contains(name)
                 || env.hasReservedInferredType(name) || env.lookupInferredType(name) != null
                 || hiddenLinkedAliasNames.contains(name)) {
             return false;
@@ -1796,7 +1800,8 @@ public final class TypeChecker {
                                 "Generator", "AsyncGenerator", "Iterator", "AsyncIterator",
                                 "IteratorResult", "Fnc", "Function").contains(name)
                         || findClass(name) != null || findInterface(name) != null
-                        || findTypeAlias(name) != null || modules.containsKey(name)) {
+                        || findTypeAlias(name) != null || modules.containsKey(name)
+                        || importedNames.contains(name)) {
                     throw new IllegalArgumentException(
                             "inferred type name '" + name + "' conflicts with an existing type or namespace");
                 }
