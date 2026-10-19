@@ -287,6 +287,13 @@ final class TaskAccessVerifier {
         }
         // A stale generation must not be turned into a disjointness proof.
         if (left.generation() != right.generation()) return true;
+        // For the same numeric allocation, a syntactic field/element split
+        // cannot discharge an unknown backing-store alias. Both roots must
+        // have a trusted unique-allocation witness before any projection
+        // may be used to conclude non-aliasing.
+        if (!left.uniqueAllocationProven() || !right.uniqueAllocationProven()) {
+            return true;
+        }
         List<Projection> la = a.projections(), lb = b.projections();
         for (int i = 0; i < Math.min(la.size(), lb.size()); i++) {
             Projection ap = la.get(i), bp = lb.get(i);
