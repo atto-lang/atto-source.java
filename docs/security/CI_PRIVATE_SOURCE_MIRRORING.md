@@ -106,9 +106,10 @@ authorize arbitrary private actor branches or source snapshots. The publisher
 checks this tuple before reading any source, validates its Git blob against
 the served bytes, and rechecks the approved tuple and unchanged policy SHA
 before each write. The destination carrier must independently approve the
-same source commit/tree/source-repository-ID tuple in
+same source commit/tree/source-repository-ID tuple plus the reviewed carrier
+repository ruleset ID in
 `.github/private-oreslang-approved-source-snapshots.txt` on protected carrier
-`main`; that carrier ledger is also revalidated before every Git write. A missing, unmerged, altered, or revoked tuple denies
+`main`; that carrier ledger and ruleset are revalidated before every Git write. A missing, unmerged, altered, or revoked tuple denies
 publication; authorization cannot come from the working PR branch.
 
 The source-snapshot ledger starts **empty**. To grant one approved run,
@@ -149,7 +150,14 @@ Its final three non-comment rules must exactly own, in order,
 `/.github/CODEOWNERS`, and `/.github/workflows/` with `@ORESoftware`.
 The source-bearing branch name is fixed to
 `ci/oreslang-<full-source-commit-SHA>`, so carrier CI can bind branch
-identity to its independently reviewed source tuple. The exporter
+identity to its independently reviewed source tuple.
+The carrier approval row also names the exact repository ruleset ID protecting
+that namespace. The publisher requires an active repository branch ruleset
+with no bypass actors, an exact include of
+`refs/heads/ci/oreslang-*`, no exclusions, a deletion restriction, and an
+update restriction with fetch-and-merge updates disabled. A creation
+restriction is rejected so the reviewed publisher can create the one initial
+snapshot ref; every later update or deletion is denied by the ruleset. The exporter
 verifies the CODEOWNERS file's Git blob digest, checks GitHub's official
 CODEOWNERS diagnostics, and confirms that this security owner has effective
 write/admin permission on the *carrier*, not only the source. Without this
@@ -192,56 +200,48 @@ Before authorizing any private source transfer, the security owner must:
 
 #### CI-ref ruleset admission proof required before publication
 
-GitHub documents a read-only `GET /repos/{owner}/{repo}/rules/branches/{branch}`
-endpoint that reports applicable **active** rules even if the target branch
-does not yet exist. This is useful for checking the prospective
-`ci/oreslang-*` namespace, but its response alone does not establish that
-an actor with bypass privileges cannot later rewrite a source-bearing ref.
+The draft publisher now implements this admission rather than merely
+documenting it. Carrier approval rows use:
 
-A production-grade pre-publication admission gate must independently prove
-all of the following before transferring source bytes:
+`<sourceCommit> <sourceTree> <sourceRepoID> <carrierRulesetID>`
 
-- The rule response is complete, authenticated for the reviewed **numeric**
-  destination repository ID, and covers the precise new branch name. Deny
-  unavailable, malformed, paginated/incomplete or permission-restricted
-  responses; empty active-rule lists are not positive evidence.
-- Active update and deletion restrictions apply to that branch. Inspect the
-  referenced ruleset identities, enforcement and bypass actors using an
-  authorized read path; a missing/hidden bypass list does **not** count as an
-  empty list. A rule barring force pushes alone still allows normal updates.
-- Prove with source-free synthetic refs that unauthorized direct/fast-forward
-  updates, force updates, deletion and bypass attempts fail, while approved
-  immutable-SHA test execution succeeds. Recheck rules before Git writes.
-- Pin the final carrier commit SHA and required check-run head SHA. Require
-  actual assigned runners and completed successful test steps; a passing
-  badge with zero runner steps or a different commit SHA is not proof.
-- Independently audit every eligible workflow and inherited permission/secret.
-  A no-source CI capacity run is not a credential-isolation proof.
+Before reading source bytes, and again before every destination Git-object
+write, the publisher fetches that exact repository ruleset and requires all of
+the following:
 
-This is a **required future publisher implementation and independent security
-test**, not a claim that the current Python publisher already enforces
-CI-namespace rulesets. Source and carrier private-repository rulesets presently
-return HTTP 403 (plan feature unavailable); fail closed rather than making
-either repository public or exporting source first.
+- repository identity and exact positive ruleset ID;
+- `target=branch` and `enforcement=active`;
+- repository-owned source matching the approved carrier;
+- an empty bypass-actor list;
+- exactly `refs/heads/ci/oreslang-*` as the included ref pattern and no
+  exclusions;
+- exactly one effective `update` restriction with
+  `update_allows_fetch_and_merge=false`;
+- exactly one `deletion` restriction;
+- no `creation` restriction, so only the initial reviewed publisher create
+  is possible before the ref becomes immutable.
 
-Source-free hosted regression receipt: private Fiducia draft
-[PR #14](https://github.com/fiducia-cloud-test/java-client-consumer/pull/14),
-[Actions run #39314068026](https://github.com/fiducia-cloud-test/java-client-consumer/actions/runs/39314068026),
-exact head `75f52f2cd55d04cca8b4a0d82e8d62d74e9ceb88`, 47 pytest tests
-passed, all 10 job steps successful on assigned hosted runner `1000007269`.
-Those synthetic tests include wrong-head, zero-step, runner-not-assigned and
-malformed CI-ref SHA denial. They are **not** the checked-in publisher suite,
-actor compiler tests, or authorization to copy source.
+Carrier CI independently requires the source-bearing ref to be exactly one
+snapshot commit above a carrier base that did not already contain
+`private-oreslang-source/`; later commits are rejected before source tests.
 
-Live 2026-10-19 inspection of candidate
-`fiducia-cloud-test/java-client-consumer` found no `.github/CODEOWNERS` on
-`main` (404), no protected `main`, and an existing `live.yml` containing
-`workflow_dispatch`, a conditional GitHub App token step, and a reference to
-`secrets.CROSS_ORG_APP_PRIVATE_KEY`. This does **not** establish that the secret
-is populated or leaked; it is a mandatory execution/credential-isolation review
-item. Carrier [CODEOWNERS PR #12](https://github.com/fiducia-cloud-test/java-client-consumer/pull/12)
-remains a draft proposal. **Do not publish source** until this separate gate
-is verified and independently approved.
+This does **not** make repository settings self-authenticating. Independent
+administrative/security review must still establish the ruleset and protected
+carrier main. Current source and Fiducia private-repository ruleset reads
+return HTTP 403 because the plan feature is unavailable, so the draft
+publisher necessarily fails closed and no source publication is authorized.
+
+Source-free carrier evidence for draft
+[fiducia-cloud-test/java-client-consumer#15](https://github.com/fiducia-cloud-test/java-client-consumer/pull/15):
+the normal PR harness run 39315398300 passed; exact approved subtree run
+39315493087 passed; tampered subtree run 39315502068 failed at the expected
+verification step; and post-snapshot update run 39316715981 failed at that
+same gate. These fixtures contain no Oreslang private source.
+
+Carrier PR #15 also adds the deny-by-default carrier approval ledger,
+terminal CODEOWNERS, immutable action pins, and a guard that prevents
+`ci/oreslang-*` refs from entering the secret-bearing `live.yml` job.
+It remains draft and must not merge while carrier `main.protected=false`.
 
 Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated. Before declaring success,
