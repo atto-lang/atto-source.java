@@ -3490,8 +3490,10 @@ public final class OresEvalRootNode extends RootNode {
                                                 continuation.accept(
                                                         t2,
                                                         indexValue(
+                                                                index,
                                                                 receiver,
-                                                                key),
+                                                                key,
+                                                                env),
                                                         null);
                                             } catch (RuntimeException | Error failure3) {
                                                 continuation.accept(
@@ -4486,16 +4488,17 @@ public final class OresEvalRootNode extends RootNode {
             return Math.toIntExact(((Number) value).longValue());
         }
 
-        private Object indexValue(Object receiver, Object index) {
+        private Object indexValue(
+                Ast.IndexExpr site, Object receiver, Object index, Env env) {
             if (receiver instanceof Map<?, ?> map) {
-                if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
-                    throw new IllegalArgumentException(
-                            "indexed map key must be a String or Symbol");
+                if (!(index instanceof String key)) {
+                    throw new IllegalArgumentException("struct/record index must be a string");
                 }
-                Object key = index;
+                // A record may be a narrowed structural view of a wider backing
+                // map. Check *the compiled view*, not the physical key set.
+                Ast.CheckedIndexKeys.require(site, key);
                 if (!map.containsKey(key)) {
-                    throw new IllegalArgumentException(
-                            "unknown struct/map key " + key);
+                    throw new IllegalArgumentException("unknown struct/record key " + key);
                 }
                 Object value = map.get(key);
                 if (value == UNINITIALIZED_FIELD) {
@@ -4504,11 +4507,22 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
+            if (receiver instanceof OresObject object) {
+                if (!(index instanceof String key)) {
+                    throw new IllegalArgumentException("class field index must be a string");
+                }
+                Ast.CheckedIndexKeys.require(site, key);
+                if (!object.fields.containsKey(key)) {
+                    throw new IllegalArgumentException("unknown class field '" + key + "'");
+                }
+                // Preserve the same private/inherited field and constructor
+                // initialization checks as the ordinary dot-member path.
+                return member(object, key, env);
+            }
             int i = sequenceIndex(index);
             if (receiver instanceof List<?> list) return list.get(i);
             if (receiver instanceof Object[] array) return array[i];
-            throw new IllegalArgumentException(
-                    "value is not indexable");
+            throw new IllegalArgumentException("value is not indexable");
         }
 
         private Object unaryValue(String operator, Object value) {
@@ -6406,7 +6420,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
             if (expr instanceof Ast.IndexExpr indexed) {
-                return indexValue(eval(indexed.receiver(), env), eval(indexed.index(), env));
+                return indexValue(indexed, eval(indexed.receiver(), env), eval(indexed.index(), env), env);
             }
             if (expr instanceof Ast.NewExpr created) {
                 if (created.type().name().equals("Array")
