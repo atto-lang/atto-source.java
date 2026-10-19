@@ -1,6 +1,15 @@
 # Named value arguments and named type metadata: pre-1.0 contract
 
-Status: **proposed contract / implementation not yet enabled**. This is an audit artifact, not a claim that the compiler accepts named value arguments.
+Status (2026-10-19): **Java exact-required static-source slice implemented on the
+stacked named-call lowering branch; broader feature still incomplete**. The
+implemented slice covers statically resolved source functions, module-qualified
+functions, static class functions and instance methods. It evaluates the
+receiver first, then every source argument exactly once in lexical order, and
+only then permutes evaluated values into declaration/ABI order using an
+identity-bound compiler proof. Generic callable inference, imported/dynamic
+callables, function-valued fields, named constructors/actor spawn, optional
+arguments, defaults/rest and LLVM parity remain fail-closed or separately
+staged. This document therefore does not claim full named-argument support.
 
 ## Canonical delimiters and surfaces
 
@@ -131,11 +140,25 @@ The `IDENT ":"` recognition applies **only at the top level of a call argument i
 
 ## Implementation order
 
-1. Add first-class `CallArgument(label?, expression, spread, sourceSpan)` representation, preserving original order, to Java and LLVM frontends; ensure all walkers account for it.
-2. Add one shared semantic named-call binder **per backend** that emits a checked call plan/slot permutation before type/effect/ownership checks and lowering; do not reorder raw AST expressions.
-3. Integrate call plans in Java interpreter/suspendable execution and AOT; cover normal, tail, async, method, static and constructor calls.
-4. Integrate LLVM frontend/native lowering with the identical semantic tests.
-5. Update grammar, language docs and oreslang-format; keep format-only transformations semantics-preserving.
-6. Enable CI parity and negative tests on exact Git trees before treating the feature as supported.
+1. **Java parser/AST — implemented for the staged surface.** First-class
+   `CallArgument` items preserve lexical source order and trailing-closure origin.
+2. **Java required-arity binder/proof — implemented for the static-source slice.**
+   `NamedCallBindingPlan` computes source↔formal permutations without evaluating
+   expressions. Type checking attaches an identity-bound `NamedCallProof` only
+   after the source-ordered argument checks succeed.
+3. **Java ownership/capability/runtime — implemented for required static-source
+   functions and methods.** Ownership processes arguments in lexical source
+   order while keeping invocation loans live; synchronous and resumable runtime
+   paths evaluate into source-order temporaries and permute values only after
+   evaluation. Tree shaking preserves the exact proof-carrying call node and
+   refuses constant specialization through it.
+4. **Still required in Java:** generic named-call inference, imported/dynamic
+   callable labels, function-valued fields, named constructors/actor spawn,
+   optional/default/rest integration, explicit tail-call optimization coverage,
+   and exact-tree JDK/Graal/Native Image execution.
+5. **LLVM parity:** implement the same checked-plan contract in the LLVM
+   frontend/native lowering with identical source-order and negative tests.
+6. **Tooling/parity:** update formatter and remaining documentation, then require
+   exact-tree CI parity before treating the complete feature as supported.
 
 **No runtime named-argument reflection or nominal-type overload matching is required.** This is compile-time sugar with strict contract checking.
