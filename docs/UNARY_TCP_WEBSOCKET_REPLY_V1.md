@@ -1,10 +1,14 @@
 # Unary TCP and WebSocket reply envelope — host foundation v1
 
-**Implementation status (2026-10-19):** Java 21 standalone framing and
-correlation tests execute on the feature branch. This is **not** the Oreslang
-`define unary tcp actor` or `define unary websocket actor` implementation.
-Those declarations remain fail-closed until compiler, listener/session
-integration, backpressure and authorization tests pass.
+**Implementation status (2026-10-19):** Java now has the framing/correlation
+foundation plus a host-owned authenticated TCP session adapter and an
+ActorRuntime one-shot unary dispatch bridge. The session adapter requires an
+explicit authenticator before it reads any unary envelope, enforces bounded
+connection/request/payload admission and deadlines, and keeps terminal writes
+outside actor carriers. This is still **not** executable guest
+`define unary tcp actor` or `define unary websocket actor` syntax. A concrete
+production authenticator/listener binding, compiler lowering and full backend
+validation remain release gates.
 
 ## Semantics: a unary *request*, not a unary connection
 
@@ -62,10 +66,13 @@ remain unique within each active session generation.
 - TCP: exactly 4 bytes of big-endian length (counting **only** the inner
   envelope, not the prefix), followed by the specified envelope. The parser
   supports a caller-supplied 0..1 MiB peer/session payload budget and rejects
-  an over-budget length immediately after the 4-byte prefix, before allocating
-  or reading the payload. A short prefix/payload, oversized or malformed frame
-  is a protocol error/EOF, not an empty request. A connection reader must still
-  impose read deadlines and connection/global capacity limits.
+  an over-budget length immediately after the 4-byte prefix. It can then read
+  only the fixed 26-byte header, allowing session/generation, correlation and
+  count/byte admission to complete **before payload allocation or payload
+  reads**. Rejected but syntactically valid payloads can be drained through a
+  bounded scratch buffer so framing remains synchronized. A short
+  prefix/header/payload, oversized or malformed frame is a protocol error/EOF,
+  not an empty request.
 - WebSocket: the **26-byte envelope + payload** is the content of one
   *complete binary message*. There is no extra length prefix. The envelope
   decoder enforces the same caller-supplied 0..1 MiB peer/session payload
@@ -118,12 +125,30 @@ methods invoke neither guest callbacks nor socket I/O while holding their
 monitor; a future network adapter must handle actual task cancellation,
 reply delivery and timeout scheduling outside this lock.
 
-This is bounded **per-session** admission, not a proof of a bounded global
-listener/session count. The supervisor must additionally limit simultaneous
-connections, total active bytes and actor in-flight work; the reply writer
-must publish terminal outcomes without a second send. A terminal slot only
-means the local runtime selected one outcome, not that bytes were delivered
-to the remote peer.
+The standalone registry remains a per-session/local-request primitive.
+`UnaryTcpSessionAdapter` supplies the separate inbound network ledger: it
+requires a successful `Authenticator.authenticateAndBind(...)` before reading
+the first unary frame, verifies the supervisor-minted session/generation on the
+fixed header before body reads, requires strictly increasing peer REQUEST
+correlation IDs, rejects future/unissued CANCEL IDs, and treats late/duplicate
+CANCEL as already terminal. Envelope IDs are never treated as credentials.
+
+The adapter independently bounds active connections, per-connection request
+count and request payload bytes, global work items and global payload bytes.
+A global work credit is retained when a request becomes a queued terminal
+reply and is released only after that reply is written or dropped, so a slow
+writer cannot create an unbounded post-completion response queue. Read,
+request-execution and terminal-write deadlines are distinct; a write deadline
+closes the whole TCP session because stream state is no longer trustworthy.
+Overload/protocol failures use an empty opaque ERROR and never serialize an
+arbitrary host exception, stack trace or `toString`.
+
+The byte counters are **wire/buffer admission counters**, not a claim that they
+measure every transient JVM object or actor-heap byte. ActorRuntime mailbox/
+heap limits remain an independent layer. The current adapter accepts an
+already-created `Socket`; a production listener must additionally own bind/
+accept permissions, backlog policy, concrete peer authentication and lifecycle
+supervision.
 
 ## Other unary transports — opt-in, not inferred
 
@@ -138,21 +163,40 @@ conversion is allowed without an explicit typed transport codec.
 
 ## Implemented and tested versus still missing
 
-The feature branch adds `UnaryTransportFrame`, `UnaryReplySlot`,
-`UnaryRequestRegistry`, their dedicated standalone test checks, one
-repeatable script and Maven JUnit wrappers.
-Five consecutive exact-blob Java 21 runs passed with `-Xlint:all -Werror`:
-real loopback TCP split/coalesced writes, TCP prefix rejection before payload
-reads for peer-budget violations, WebSocket binary envelope budget checks,
-malicious size/version/type/generation probes, defensive copying,
-wrong-session replay rejection, 5,000 frame-level cancellation/reply races,
-5,000 registry completion/cancellation races, and 5,000 three-way
-close/reply/cancel races with exact count and byte-credit reclamation.
+The feature branch now adds `UnaryTransportFrame`, `UnaryReplySlot`,
+`UnaryRequestRegistry`, `UnaryTcpSessionAdapter` and
+`UnaryTcpActorDispatcher`, dedicated standalone/JUnit checks and a repeatable
+warning-clean Java 21 smoke script.
 
-**Not implemented or validated:** a TCP listener/session actor adapter;
-RFC 6455 upgrade and WebSocket network I/O; transport authentication; global listener/connection admission; guest AST/typechecker
-handling of `unary tcp/websocket`; reply codec/type lowering; producer
-stream backpressure; actor panic/deadline/close cleanup; LLVM parity; or
-full JDK25 Graal Native Image. Existing HTTP PR #1399 is separate and
-must still pass full CI. Never claim these guest declarations executable
-based solely on host-codec tests.
+The current TCP session regression uses real loopback sockets for successful
+dispatch, replay/session fencing, per-connection and cross-connection overload,
+CANCEL propagation, request deadlines, authentication failure, connection
+capacity and session-close cleanup. It also includes a deterministic blocked
+writer/reader socket proving that the terminal-write deadline closes the
+session and reclaims queued response credits. Ten local Java 21 passes of the
+session suite completed across this hardening cycle, including 2,500
+completion-vs-CANCEL races. The fixed-header framing and current session test
+sources used for the final local runs match their committed Git blobs; the
+adapter's locally compiled executable source normalizes to the same
+comment/whitespace-independent code hash as its committed GitHub blob.
+
+`UnaryTcpActorDispatcher` is a host/compiler integration bridge into real
+`ActorRuntime` mailbox execution for PRIVATE/SHARED one-shot unary callables.
+It transports only a frozen data map, propagates transport cancellation to the
+actor, waits for the actor finalization/carrier-leave barrier before publishing
+success, and applies a strict lossless Bytes-style result codec. UNTRUSTED
+transport dispatch remains deliberately rejected until a compiler-owned source
+executor can bind it without a trusted captured host factory. Its source and
+strict codec compile warning-clean against the inspected ActorRuntime/OresFuture
+surface; full-runtime JUnit coverage is committed but still needs an executing
+Maven CI runner.
+
+**Still not production-complete:** a concrete reviewed authenticator (for
+example mTLS or another approved channel-binding protocol); supervisor-owned
+bind/accept listener integration and endpoint permissions; persistent
+source-level `define unary tcp actor` AST/typechecker/lowering rather than the
+current one-shot host bridge; UNTRUSTED source-executor binding; RFC 6455
+upgrade/incremental-fragment WebSocket networking; LLVM parity; and full JDK25
+Maven/Graal Native Image validation. Existing HTTP work is separate and must
+still pass its own full CI. Never claim the guest declarations executable from
+host transport tests alone.
