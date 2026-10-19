@@ -62,7 +62,7 @@ final class SendSyncContractsTest {
         assertFalse(SendSyncContracts.isSend(new Named("UnverifiedHandle", List.of()), NONE));
         assertFalse(SendSyncContracts.isSend(new Named("Option", List.of(new Generic("T"))), NONE));
         assertFalse(SendSyncContracts.isSync(
-                new Record(Map.of("untrusted", new Named("Future", List.of(Primitive.INT)))), NONE));
+                new Types.Record(Map.of("untrusted", new Named("Future", List.of(Primitive.INT)))), NONE));
         assertFalse(SendSyncContracts.isSend(new Named("Result", List.of(Primitive.INT)), NONE));
     }
 
