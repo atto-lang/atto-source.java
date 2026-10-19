@@ -127,6 +127,45 @@ final class ActorPhysicalTurnGateTest {
     }
 
     @Test
+    void executorEnqueuesThenThrowsCannotRunStaleActorOrReleaseNextPermit() throws Exception {
+        ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 3);
+        java.util.concurrent.atomic.AtomicReference<Runnable> late =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AtomicInteger staleRuns = new AtomicInteger();
+        AtomicInteger rejected = new AtomicInteger();
+        gate.dispatch(staleRuns::incrementAndGet, runnable -> {
+            late.set(runnable);
+            throw new RejectedExecutionException("queued but rejected");
+        }, failure -> rejected.incrementAndGet());
+        assertEquals(1, rejected.get());
+        assertEquals(0, staleRuns.get());
+
+        CountDownLatch occupied = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch completed = new CountDownLatch(1);
+        try (var workers = Executors.newSingleThreadExecutor()) {
+            gate.dispatch(() -> {
+                occupied.countDown();
+                try {
+                    assertTrue(release.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    completed.countDown();
+                }
+            }, workers::execute, failure -> fail(failure));
+            assertTrue(occupied.await(5, TimeUnit.SECONDS));
+            late.get().run();
+            assertEquals(0, staleRuns.get());
+            assertEquals(1, gate.peak());
+            assertEquals(0, gate.queued());
+            release.countDown();
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+        }
+        gate.close();
+    }
+
+    @Test
     void actorRuntimeGateSerializesDifferentSchedulerDomains() throws Exception {
         String key = "ores.runtime.actor.max-active-turns";
         String prior = System.getProperty(key);
