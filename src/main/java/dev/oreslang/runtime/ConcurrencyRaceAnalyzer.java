@@ -47,8 +47,10 @@ public final class ConcurrencyRaceAnalyzer {
 
     private static String key(String name) {
         Objects.requireNonNull(name, "identity");
-        if (name.isBlank() || name.length() > 128) {
-            throw new IllegalArgumentException("event identity must contain 1..128 characters");
+        if (name.isBlank() || name.length() > 128
+                || name.codePoints().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException(
+                    "event identity must contain 1..128 non-control characters");
         }
         return name;
     }
