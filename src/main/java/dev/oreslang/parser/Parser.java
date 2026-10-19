@@ -1022,27 +1022,52 @@ public final class Parser {
             throw error(peek(), "static class functions do not have a self receiver");
         }
 
-        // A leading 'self' is always a receiver binder, not a user parameter.
-        // Inline forms: method(self, int x), method(self Foo, int x),
-        // method(mut self, int x), and zero-user-argument equivalents.
-        // Existing split forms: method(self Foo)(int x), method(mut self)(int x).
-        // Keep the receiver out of MethodDecl.parameters and overload arity.
+        // A bare leading 'self' is a receiver binder only when syntax makes
+        // that unambiguous. In particular, `self other` is the established
+        // type-first parameter spelling: a caller-visible parameter named
+        // `other` whose type is the receiver-polymorphic `self` type.
+        //
+        // Inline read receiver:    method(self, int x)
+        // Split typed receiver:    method(self Foo)(int x)
+        // Inline mutable receiver: method(mut self, int x)
+        // Inline typed mutable:    method(mut self Foo, int x)
+        //
+        // Read-only `self Foo, ...` is deliberately NOT an inline typed
+        // receiver because it is lexically indistinguishable from the ordinary
+        // parameter `self Foo`. Keep the receiver out of MethodDecl.parameters
+        // and overload arity only after receiver syntax is proven unambiguous.
+        int parameterStart = current;
         boolean explicitReceiver = false;
         boolean inlineReceiver = false;
         if (mutableReceiver) {
             advance(); // mut
             consume(SELF, "mutable receiver syntax is 'mut self'");
-            Ast.TypeRef target = (check(COMMA) || check(RPAREN))
-                    ? Ast.TypeRef.simple("self") : parseTypeRef();
-            receiverType = Ast.TypeRef.borrowed(target, true);
-            inlineReceiver = check(COMMA) || (check(RPAREN) && !checkNext(LPAREN));
-            explicitReceiver = !inlineReceiver;
-        } else if (match(SELF)) {
-            Ast.TypeRef target = (check(COMMA) || check(RPAREN))
-                    ? Ast.TypeRef.simple("self") : parseTypeRef();
-            receiverType = target;
-            inlineReceiver = check(COMMA) || (check(RPAREN) && !checkNext(LPAREN));
-            explicitReceiver = !inlineReceiver;
+            if (check(COMMA) || (check(RPAREN) && !checkNext(LPAREN))) {
+                receiverType = Ast.TypeRef.borrowed(Ast.TypeRef.simple("self"), true);
+                inlineReceiver = true;
+            } else {
+                Ast.TypeRef target = check(RPAREN)
+                        ? Ast.TypeRef.simple("self") : parseTypeRef();
+                receiverType = Ast.TypeRef.borrowed(target, true);
+                inlineReceiver = check(COMMA);
+                explicitReceiver = !inlineReceiver;
+            }
+        } else if (check(SELF)) {
+            advance();
+            if (check(COMMA) || (check(RPAREN) && !checkNext(LPAREN))) {
+                receiverType = Ast.TypeRef.simple("self");
+                inlineReceiver = true;
+            } else {
+                Ast.TypeRef candidateReceiver = parseTypeRef();
+                if (check(RPAREN) && checkNext(LPAREN)) {
+                    receiverType = candidateReceiver;
+                    explicitReceiver = true;
+                } else {
+                    // Not receiver syntax: rewind so parseParametersUntil sees
+                    // the established `self name` caller-visible parameter.
+                    current = parameterStart;
+                }
+            }
         }
 
         if (explicitReceiver) {
