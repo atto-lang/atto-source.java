@@ -118,6 +118,39 @@ are bitwise deterministic.
   parser, complete type checker, JUnit, actor runtime, GraalVM Native Image or
   the LLVM backend. CI admission is a separate merge gate.
 
+## P0 actor-transport parity follow-up (2026-10-18)
+
+* ActorRef<ConcreteActor> is a **runtime-owned routing capability** whose
+  generation and ActorRuntime ownership are validated by the transport, not an
+  ordinary class value or automatic Send/Sync implementation. The compiler
+  now explicitly admits it only when the target resolves to a declared actor.
+  Nested mailbox payloads (e.g., Option<ActorRef<Worker>>) retain the same
+  capability checks. Unknown nominal types, forged ActorRef targets, and
+  executable host objects remain rejected.
+* SharedMutex<T> has a *narrow capability-aware SHARED mailbox path*. It is
+  permitted only for a shared destination with a concrete shared-safe Send
+  payload. Private/untrusted actors cannot send the capability into a shared
+  destination; the runtime still checks sender/receiver policy, originating
+  runtime ownership and lock payload safety. Do not replace the mailbox path
+  with ordinary data-only ActorRuntime.freeze().
+* Actor-callable **completions** are a different boundary: the runtime's
+  invoke/invokeAsync paths use ActorRuntime.freeze() on return values.
+  ActorRef and SharedMutex (including nested Option, Result, List, Tuple,
+  Record and union instances) are therefore *not* legal result types;
+  capability transfer requires an explicit mailbox. The checker enforces
+  this result-only distinction without removing valid mailbox parameters.
+* Added the focused ActorTransportBoundaryCompatibilityTest alongside
+  existing ActorMailTypeContractTest, ActorCallableKeywordTest and
+  ActorTransportHardeningTest to the concurrency CI matrix. These remain
+  unexecuted until a GitHub runner actually starts.
+* A source-free capacity probe in a distinct private org
+  (`canonical-cloud/canonical-clients`, run `39198466208`) also failed
+  with zero executed steps. The probe contained no private Oreslang code.
+  No cross-org private-source transfer is authorized while security issue
+  #962 remains open and source/destination policy approvals are absent.
+  Neither failure proves tests passed or failed; source and candidate
+  runner admission require separate investigation.
+
 ## Planned actor/ECS design
 
 Actor isolation should remain the outer fault and networking boundary.
