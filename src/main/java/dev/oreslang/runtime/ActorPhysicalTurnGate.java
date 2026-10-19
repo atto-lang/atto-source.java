@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
@@ -64,9 +65,11 @@ final class ActorPhysicalTurnGate {
         // stack growth if thousands of queued dispatches encounter shutdown.
         Pending item = first;
         for (;;) {
+            AtomicBoolean taskStarted = new AtomicBoolean();
             try {
                 Pending accepted = item;
                 item.submit.accept(() -> {
+                    taskStarted.set(true);
                     try {
                         accepted.task.run();
                     } finally {
@@ -75,10 +78,19 @@ final class ActorPhysicalTurnGate {
                 });
                 return;
             } catch (RuntimeException | Error failure) {
+                if (taskStarted.get()) {
+                    // A direct/reentrant executor ran the guest callback and
+                    // its finally already released the physical permit. Do
+                    // NOT treat its exception as executor admission failure.
+                    throw failure;
+                }
                 try {
                     item.reject.accept(failure);
-                } catch (RuntimeException observerFailure) {
-                    failure.addSuppressed(observerFailure);
+                } catch (Throwable observerFailure) {
+                    // Never let a broken lifecycle observer strand the token.
+                    if (observerFailure != failure) {
+                        failure.addSuppressed(observerFailure);
+                    }
                 }
                 synchronized (this) {
                     if (closed || pending.isEmpty()) {
@@ -120,7 +132,7 @@ final class ActorPhysicalTurnGate {
         for (Pending item : rejected) {
             try {
                 item.reject.accept(new RejectedExecutionException("actor turn gate closed"));
-            } catch (RuntimeException ignored) {
+            } catch (Throwable ignored) {
                 // One broken dispatch failure observer cannot retain or
                 // prevent revocation of subsequent queued actor admissions.
             }
