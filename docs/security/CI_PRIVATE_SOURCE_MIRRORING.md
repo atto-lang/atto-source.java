@@ -144,14 +144,12 @@ stale-review dismissal, no reviewer bypass allowances, and explicit denial of
 force pushes and branch deletion.
 Missing/denied GitHub protection responses fail closed **before reading source**.
 The carrier must also have a valid protected-main `.github/CODEOWNERS`.
-Its terminal rules must independently own the carrier source-approval ledger,
-the CODEOWNERS file itself, and all `.github/workflows/` definitions. The
-source-bearing branch name is fixed to `ci/oreslang-<full-source-commit-SHA>`,
-so carrier CI can bind the branch identity to its reviewed source tuple.
-
-The carrier must also have a valid protected-main `.github/CODEOWNERS` whose
-last two non-comment rules are exactly `/.github/CODEOWNERS @ORESoftware`
-and `/.github/workflows/ @ORESoftware`, in that order. The exporter
+Its final three non-comment rules must exactly own, in order,
+`/.github/private-oreslang-approved-source-snapshots.txt`,
+`/.github/CODEOWNERS`, and `/.github/workflows/` with `@ORESoftware`.
+The source-bearing branch name is fixed to
+`ci/oreslang-<full-source-commit-SHA>`, so carrier CI can bind branch
+identity to its independently reviewed source tuple. The exporter
 verifies the CODEOWNERS file's Git blob digest, checks GitHub's official
 CODEOWNERS diagnostics, and confirms that this security owner has effective
 write/admin permission on the *carrier*, not only the source. Without this
