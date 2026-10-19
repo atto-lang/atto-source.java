@@ -355,7 +355,10 @@ public class TaskCancellationTest {
             assertEquals(1, parent.ownedChildCount());
             assertTrue(parent.cancel("shutdown"));
             assertTrue(child.isCancelled());
-            parent.retire(); // Cancellation already cleared child ownership.
+            assertThrows(IllegalStateException.class, parent::retire,
+                    "cancellation alone does not prove child physical retirement");
+            child.retire();
+            parent.retire();
             assertFalse(parent.cancel("too late"));
         }
     }
