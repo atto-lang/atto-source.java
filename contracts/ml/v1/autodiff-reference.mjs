@@ -10,6 +10,7 @@ const MAX_ACTIVATION_SCALARS = 65536;
 const MAX_INFLIGHT_ACTIVATION_SCALARS = 262144;
 const MAX_MICROBATCHES = 4096;
 const MAX_LEDGER_ENTRIES = 4096;
+const MAX_TRACE_RECEIPTS = 32768;
 function record(value, required, optional=[], name='record') {
   if (!value || typeof value!=='object' || Array.isArray(value) ||
       (Object.getPrototypeOf(value)!==Object.prototype &&
@@ -72,6 +73,24 @@ function addTo(map, id, grad) {
 }
 function finite(values, what) {
   if (values.some(x => !Number.isFinite(x))) throw new RangeError(`${what} overflow/nonfinite result`);
+}
+// Stable microbatch-id order avoids nondeterministic f64 accumulation under
+// out-of-order actor delivery. This is a reference oracle, not a fast reducer.
+function aggregateGradients(step) {
+  const acc=new Map();
+  for(const batchId of [...step.gradientsByMicrobatch.keys()].sort((a,b)=>a-b)) {
+    for(const [id,g] of step.gradientsByMicrobatch.get(batchId)) {
+      const old=acc.get(id);
+      const next=old ? {
+        weights:g.weights.map((row,j)=>row.map((v,i)=>old.weights[j][i]+v)),
+        bias:g.bias.map((v,i)=>old.bias[i]+v)
+      } : {weights:g.weights.map(row=>row.slice()),bias:g.bias.slice()};
+      next.weights.forEach(row=>finite(row,id+' accumulated weight gradient'));
+      finite(next.bias,id+' accumulated bias gradient');
+      acc.set(id,next);
+    }
+  }
+  return acc;
 }
 function cloneParams(nodes) {
   const out = {};
@@ -148,12 +167,14 @@ export class ActorAutodiffReference {
     integer(stepId,'stepId');
     integer(expectedMicrobatches,'expectedMicrobatches',1);
     if (expectedMicrobatches > MAX_MICROBATCHES) throw new RangeError('microbatch count too large');
+    const edgeCount=this.#nodes.reduce((n,node)=>n+node.inputs.length,0);
+    if(expectedMicrobatches*edgeCount*2>MAX_TRACE_RECEIPTS) throw new RangeError('TRACE_BUDGET_EXCEEDED');
     if (this.#committedIds.has(JSON.stringify([runId,stepId]))) throw new Error('ALREADY_COMMITTED');
     if (this.#step) throw new Error('training step already active');
     // Never evict replay tokens: refuse new steps once this in-memory ledger is full.
     if(this.#committedIds.size>=this.#maxCommittedSteps) throw new Error('REPLAY_LEDGER_EXHAUSTED');
     this.#step = {runId,stepId,expectedMicrobatches,version:this.#modelVersion,
-      frames:new Map(),completed:new Set(),gradients:new Map(),receipts:[],activeActivationScalars:0};
+      frames:new Map(),completed:new Set(),gradientsByMicrobatch:new Map(),receipts:[],activeActivationScalars:0};
     return {runId,stepId,parameterVersion:this.#modelVersion};
   }
   #match(message) {
@@ -242,22 +263,15 @@ export class ActorAutodiffReference {
         receipts.push({kind:'backward',runId,stepId,from:n.id,to:n.inputs[i],inputSlot:i,microbatchId,parameterVersion:s.version});
       });
     }
-    // Compute all merged gradients without modifying committed state on failure.
-    const merged=new Map(s.gradients);
-    for (const [id,g] of localParamGrad) {
-      const old=merged.get(id);
-      const next=old ? {
-        weights:g.weights.map((row,j)=>row.map((v,i)=>old.weights[j][i]+v)),
-        bias:g.bias.map((v,i)=>old.bias[i]+v)
-      } : g;
-      next.weights.forEach(row=>finite(row,`${id} accumulated weight gradient`));
-      finite(next.bias,`${id} accumulated bias gradient`);
-      merged.set(id,next);
+    // Check individual VJPs before publishing this microbatch's contribution.
+    for(const [id,g] of localParamGrad) {
+      g.weights.forEach(row=>finite(row,id+' weight gradient'));
+      finite(g.bias,id+' bias gradient');
     }
     const dx=gradients.get(RESERVED_INPUT);
     if (!dx) throw new Error('NO_INPUT_GRADIENT');
     finite(dx,'input gradient');
-    s.gradients=merged;
+    s.gradientsByMicrobatch.set(microbatchId,localParamGrad);
     s.frames.delete(microbatchId);
     s.activeActivationScalars-=frame.activationScalars;
     s.completed.add(microbatchId);
@@ -267,7 +281,7 @@ export class ActorAutodiffReference {
   gradients() {
     if (!this.#step) throw new Error('NO_ACTIVE_STEP');
     const out={};
-    for (const [id,g] of this.#step.gradients) out[id]={weights:g.weights.map(row=>row.slice()),bias:g.bias.slice()};
+    for (const [id,g] of aggregateGradients(this.#step)) out[id]={weights:g.weights.map(row=>row.slice()),bias:g.bias.slice()};
     return out;
   }
   trace() {
@@ -282,10 +296,11 @@ export class ActorAutodiffReference {
       throw new RangeError('positive finite learningRate required');
     if(s.frames.size || s.completed.size!==s.expectedMicrobatches) throw new Error('INCOMPLETE_STEP');
     const divisor=s.expectedMicrobatches;
+    const allGradients=aggregateGradients(s);
     // Validate all updated parameters BEFORE mutating any owner.
     const updates=new Map();
     for(const n of this.#nodes) if(n.type==='dense') {
-      const g=s.gradients.get(n.id);
+      const g=allGradients.get(n.id);
       if (!g) throw new Error(`MISSING_GRADIENT ${n.id}`);
       const weights=n.weights.map((row,j)=>row.map((x,i)=>x-learningRate*g.weights[j][i]/divisor));
       const bias=n.bias.map((x,i)=>x-learningRate*g.bias[i]/divisor);
