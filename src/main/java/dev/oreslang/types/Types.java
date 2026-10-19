@@ -187,6 +187,11 @@ public final class Types {
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
+        // Compiler transformations and embedding callers may construct Type
+        // objects directly. Malformed nominal spellings must never become a
+        // positive compatibility proof merely because two malformed records
+        // compare equal, and must not trigger name dereference crashes later.
+        if (hasMalformedNominalName(from) || hasMalformedNominalName(to)) return false;
         // Complements must be checked before permissive Unknown/Generic rules.
         // No compiler pass may turn uncertainty into a negative-type proof.
         if (to instanceof Not negative) {
@@ -265,6 +270,11 @@ public final class Types {
         }
 
         return numericWidening(from, to);
+    }
+
+    private static boolean hasMalformedNominalName(Type type) {
+        return type instanceof Named named
+                && (named.name() == null || named.name().isBlank());
     }
 
     private static boolean numericWidening(Type from, Type to) {
