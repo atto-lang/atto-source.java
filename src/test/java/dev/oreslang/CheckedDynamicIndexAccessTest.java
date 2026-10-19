@@ -255,6 +255,89 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void immutableStringKeyAliasesSelectExactHeterogeneousRecordAndClassFields()
+            throws Exception {
+        String program = """
+                define class Mixed as
+                  pub val int count = 1;
+                  pub val string label = "class-value";
+                end
+                pub routine main(): void {
+                  const record = infer struct{count: 3, label: "record-value"};
+                  const string labelKey = "label";
+                  const string recordResult = record[labelKey];
+                  const keyAlias = labelKey;
+                  const string aliasResult = record[keyAlias];
+                  const item = new Mixed();
+                  const string classResult = item[labelKey];
+                  stdio.stdout.write(recordResult);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(aliasResult);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classResult);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        assertEquals("record-value|record-value|class-value", execute(program));
+    }
+
+    @Test
+    void provenTupleIndexAliasCanReadCopyFieldAlongsideAffineField()
+            throws Exception {
+        String program = """
+                pub routine main(): void {
+                  const values = (17, new Array<int>());
+                  const int selected = 0;
+                  const next = selected;
+                  const int result = values[next];
+                  stdio.stdout.write(result);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        assertEquals("17", execute(program));
+    }
+
+    @Test
+    void mutableStringIndexCannotGainConstantKeyPrivileges() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(string runtimeKey): int {
+                  let string chosen = "x";
+                  chosen = runtimeKey;
+                  const record = infer struct{x: 3, y: "different"};
+                  return record[chosen];
+                }
+                """)));
+    }
+
+    @Test
+    void constantUnknownFieldIsRejectedWithoutFallingBackToRuntimeLookup() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(): int {
+                  const record = infer struct{x: 3};
+                  const string key = "secret";
+                  return record[key];
+                }
+                """)));
+    }
+
+    @Test
+    void positionalProofIsBoundToExactAstIdentityAndPreservedOnClone() {
+        Ast.IndexExpr first = new Ast.IndexExpr(
+                new Ast.NameExpr("tuple"), new Ast.NameExpr("index"));
+        Ast.IndexExpr second = new Ast.IndexExpr(
+                new Ast.NameExpr("tuple"), new Ast.NameExpr("index"));
+        Ast.CheckedIndexKeys.recordTupleSlot(first, 0);
+        assertEquals(0, Ast.CheckedIndexKeys.knownTupleSlot(first));
+        assertEquals(null, Ast.CheckedIndexKeys.knownTupleSlot(second));
+        Ast.CheckedIndexKeys.propagate(first, second);
+        assertEquals(0, Ast.CheckedIndexKeys.knownTupleSlot(second));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.recordTupleSlot(first, 1));
+    }
+
+    @Test
     void tupleIndexedWriteRejectedBeforeExecution() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
