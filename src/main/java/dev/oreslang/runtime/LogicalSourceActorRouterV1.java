@@ -160,6 +160,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     // Bound once by a trusted supervisor. Once bound, the host raw send()
     // path must not bypass the proxy's immutable bounded admission ledger.
     private LogicalActorProxyMailboxV1 boundProxyMailbox;
+    // Only the explicit compiler-ABI-bound scalar bridge may install this.
+    // Null retains the original host i64 compatibility path.
+    private SourceActorScalarWireV1.Binding scalarWireBinding;
     // Remains set even if physical admission throws: its outcome may be
     // ambiguous. A subsequently bound proxy could otherwise refund a raw
     // delivery with a cumulative physical drain.
@@ -253,7 +256,13 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
      * forgery and bypass the frozen migration watermark.
      */
     void bindProxyMailboxForSupervisor(LogicalActorProxyMailboxV1 mailbox) {
+        bindProxyMailboxForSupervisor(mailbox, false);
+    }
+
+    void bindProxyMailboxForSupervisor(
+            LogicalActorProxyMailboxV1 mailbox, boolean compilerAbiScalar) {
         Objects.requireNonNull(mailbox, "mailbox");
+        requireBlockingHostSurface("bind a compiler-ABI actor proxy");
         synchronized (routeLock) {
             requireOpenLocked();
             if (boundProxyMailbox != null)
@@ -267,7 +276,27 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     || snapshot.routeEpoch() != active.routeEpoch)
                 throw new IllegalStateException(
                         "proxy binding requires an empty, open, epoch-aligned mailbox");
+            // Stage and validate the compiler ABI receipt before publishing
+            // mailbox ownership. A failed compiler receipt must leave the
+            // router unbound rather than half-authorize physical sends.
+            SourceActorScalarWireV1.Binding proposed = compilerAbiScalar
+                    ? new SourceActorScalarWireV1.Binding(
+                            logicalId, active.incarnation,
+                            active.view.executor().actorMessageAbiSha256(actorTypeName))
+                    : null;
+            scalarWireBinding = proposed;
             boundProxyMailbox = mailbox;
+        }
+    }
+
+    SourceActorScalarWireV1.Binding scalarWireBindingForProxy(
+            LogicalActorProxyMailboxV1 mailbox) {
+        requireBlockingHostSurface("inspect compiler-ABI proxy binding");
+        synchronized (routeLock) {
+            requireOpenLocked();
+            if (boundProxyMailbox != mailbox || scalarWireBinding == null)
+                throw new SecurityException("no compiler-ABI scalar proxy bound");
+            return scalarWireBinding;
         }
     }
 
@@ -408,9 +437,10 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     }
 
     /**
-     * The only V1 wire format is a canonical big-endian signed 64-bit integer.
-     * Decode copied immutable bytes in the trusted runtime, not in an
-     * arbitrary producer callback, before physical mailbox admission.
+     * Decode a trusted scalar proxy envelope against its bound transport mode.
+     * In compiler-ABI mode the immutable frame also binds the logical actor
+     * UUID/incarnation and compiler-issued message contract digest. Decoding
+     * happens before the physical-send attempt is reserved or delivered.
      */
     ProxyDrainReceipt sendAndDrainForProxy(
             LogicalActorProxyMailboxV1 mailbox,
@@ -419,10 +449,6 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         Objects.requireNonNull(mailbox, "mailbox");
         Objects.requireNonNull(envelope, "envelope");
         byte[] wire = envelope.payload();
-        if (wire.length != Long.BYTES)
-            throw new SecurityException("invalid canonical scalar proxy wire length");
-        long value = 0L;
-        for (byte octet : wire) value = (value << Byte.SIZE) | (octet & 255L);
         synchronized (routeLock) {
             awaitUpgradeLocked();
             requireOpenLocked();
@@ -432,6 +458,22 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 throw new SecurityException("foreign proxy mailbox on physical actor route");
             if (expectedRouteEpoch != current.routeEpoch)
                 throw new SecurityException("stale proxy dispatch route epoch");
+            final long value;
+            if (scalarWireBinding != null) {
+                // An upgrade is only permitted between matching compiler
+                // message ABIs; the old immutable frame stays compatible
+                // with the new route and never captures an old code pointer.
+                value = SourceActorScalarWireV1.decodeLong(
+                        scalarWireBinding, wire);
+            } else {
+                if (wire.length != Long.BYTES)
+                    throw new SecurityException(
+                            "invalid legacy canonical scalar proxy wire length");
+                long decoded = 0L;
+                for (byte octet : wire)
+                    decoded = (decoded << Byte.SIZE) | (octet & 255L);
+                value = decoded;
+            }
             // Physical submission is reserved exactly once under the owning
             // mailbox's lock BEFORE touching the real actor mailbox. A second
             // trusted caller cannot deliver the same logical envelope while
