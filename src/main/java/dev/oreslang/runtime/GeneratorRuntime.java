@@ -105,11 +105,10 @@ public final class GeneratorRuntime {
          * if callers issue more than one pull before an earlier pull completes.
          */
         public OresFuture<Step<T>> nextStep() {
-            // A completed generator must remain terminal even if its
-            // owning scheduler has since shut down. No new task is admitted
-            // for a pull that cannot resume guest code.
-            if (engine.isTerminal()) {
-                engine.awaitProducerExit();
+            // Only a *settled* terminal generator can return an immediate
+            // Future. A terminal event can precede the physical guest exit;
+            // never park the caller (possibly an actor carrier) in this API.
+            if (engine.isTerminalReady()) {
                 // A producer admission denial remains an exceptional async
                 // result across repeated pulls; never launder it into DONE.
                 Throwable rejected = engine.terminalFailure();
@@ -149,6 +148,9 @@ public final class GeneratorRuntime {
         private final AtomicReference<OresFuture<Void>> producerTask = new AtomicReference<>();
         private final Object launchLock = new Object();
         private volatile boolean done;
+        // True only after the producer's actual guest turn has exited and
+        // the terminal observation may be published without any blocking.
+        private volatile boolean terminalReady;
         private volatile Throwable backingFailure;
 
         private Engine(AsyncRuntime runtime, Producer<T> producer) {
@@ -156,8 +158,8 @@ public final class GeneratorRuntime {
             this.producer = Objects.requireNonNull(producer, "producer");
         }
 
-        private boolean isTerminal() {
-            return done || closed.get();
+        private boolean isTerminalReady() {
+            return terminalReady;
         }
 
         private Throwable terminalFailure() {
@@ -167,14 +169,26 @@ public final class GeneratorRuntime {
         private synchronized Step<T> next() {
             // Explicit close stops iteration; otherwise preserve the
             // producer's terminal failure across every later pull.
-            if (closed.get()) { awaitProducerExit(); return Step.doneStep(); }
+            if (closed.get()) {
+                awaitProducerExit();
+                terminalReady = true;
+                return Step.doneStep();
+            }
             throwIfBackingFailed();
-            if (done) { awaitProducerExit(); return Step.doneStep(); }
+            if (done) {
+                awaitProducerExit();
+                terminalReady = true;
+                return Step.doneStep();
+            }
             startIfNeeded();
             throwIfBackingFailed();
             putResume();
             Event<T> event = takeEvent();
-            if (closed.get()) { awaitProducerExit(); return Step.doneStep(); }
+            if (closed.get()) {
+                awaitProducerExit();
+                terminalReady = true;
+                return Step.doneStep();
+            }
             throwIfBackingFailed();
             if (event instanceof YieldEvent<?> yielded) {
                 @SuppressWarnings("unchecked")
@@ -189,6 +203,7 @@ public final class GeneratorRuntime {
                 backingFailure = failed.failure();
                 throwIfBackingFailed();
             }
+            terminalReady = true;
             return Step.doneStep();
         }
 
@@ -243,6 +258,7 @@ public final class GeneratorRuntime {
             if (failure == null) return;
             done = true;
             awaitProducerExit();
+            terminalReady = true;
             if (failure instanceof RuntimeException runtimeFailure) throw runtimeFailure;
             if (failure instanceof Error error) throw error;
             throw new RuntimeException(failure);
@@ -312,6 +328,7 @@ public final class GeneratorRuntime {
                 events.offer(new DoneEvent<>());
             }
             awaitProducerExit();
+            terminalReady = true;
         }
     }
 }
