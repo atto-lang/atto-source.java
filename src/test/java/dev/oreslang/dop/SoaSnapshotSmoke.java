@@ -60,7 +60,7 @@ public final class SoaSnapshotSmoke {
         denied(() -> SoaSnapshot.fromRows(Map.of("x", Integer.class),
                 java.util.Collections.nCopies(SoaSnapshot.MAX_CELLS + 1, Map.of("x", 1))),
                 "capacity bounded");
-        denied(() -> SoaSnapshot.fromRows(Map.of("bad\u0000field", String.class), List.of()),
+        denied(() -> SoaSnapshot.fromRows(Map.of("bad" + (char) 0 + "field", String.class), List.of()),
                 "NUL forbidden");
         expect(SoaSnapshot.fromRows(Map.of("", String.class),
                 List.of(Map.of("", "value"))).column("").equals(List.of("value")),
