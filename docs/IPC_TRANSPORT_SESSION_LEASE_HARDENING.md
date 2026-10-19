@@ -5,10 +5,10 @@ Status: **DRAFT / trusted host substrate plus localhost HMAC-framed socket adapt
 ## Source seam
 
 - `IpcTransportSessionLease` is a package-local, trusted-host-only object for one immutable authenticated transport epoch (domain, sender/destination, incarnations, session, route and capability generation) and a monotonic physical `generation`, with bounded active writes.
-- The synchronous `FrameWriter` is **bound once at lease construction** with the trusted epoch/generation, closer and cleanup scheduler; callers cannot substitute a different physical writer per frame. `writeFrame(generation, envelope, preparedFrame)` accepts only already-prepared frame bytes as data, serializes **session admission + `IpcReceiptCompletionBridge.commitDispatch`** against close intent before any guest-external physical write, and keeps that bound physical session pinned until the write returns.
+- The synchronous `FrameWriter` is **bound once at lease construction** with the trusted epoch/generation, closer and cleanup scheduler; callers cannot substitute a different physical writer per frame. Production owner-bound sends use `sendPreparedFrame(generation, envelope, preparedFrame)`, which atomically validates OPEN/generation/epoch authority, admits the receipt, commits `DISPATCH_COMMITTED`, pins the physical write, executes the bound writer, and releases the pin with no abandonable intermediate token. The older `writeFrame(...)` path remains only for unbound host parity tests and is guarded by the same carrier rule.
 - The supplied host writer MUST perform and finish the physical attempted write before returning. No async fire-and-forget, guest callback, mixed-generation socket handoff, foreign session, unverified DNS/proxy hop or caller-provided authorization.
 - Once dispatch commits, an unsuccessful or uncertain socket write **cannot** become `REJECTED_BEFORE_REMOTE`. The broker must close/drain or quarantine and only mark `OUTCOME_UNKNOWN` with the local trusted transport authority.
-- `requestClose` admits no further writers. If a physical write is pinned, the socket abort is submitted to the bounded non-caller-runs cleanup domain instead of running `Socket.close()` on the requester. `requestCloseAndAwait` bounds supervisor waiting and quarantines unresolved generations; timeout is never evidence of successful close.
+- `requestClose` admits no further writers. If a physical write is pinned, the socket abort is submitted to the bounded non-caller-runs cleanup domain instead of running `Socket.close()` on the requester. `requestCloseAndAwait` bounds supervisor waiting and quarantines unresolved generations; timeout is never evidence of successful close. `RuntimeBlockingGuard` is enforced both at the authenticated socket adapter and inside `sendPreparedFrame`, legacy `writeFrame`, and `awaitTerminal`; the terminal-wait guard runs **before** acquiring the lease monitor so an actor carrier cannot park while entering the wait.
 - `CleanupScheduler` MUST be a bounded, non-caller-runs, host-owned worker queue. The runtime now detects same-thread caller-runs execution and quarantines before physical close; rejected scheduling also quarantines without falsely completing futures. The one `Runnable::run` use in the self-test is an intentional **negative** case proving that fail-closed behavior.
 - Cleanup closure is generation/attempt-fenced and single-flight. Duplicate or stale scheduled cleanup callbacks do not double-close a descriptor or steal a later retry.
 - If physical close fails, the session is `QUARANTINED`: no reuse, no new sends, and no fabricated physical completion. `retryQuarantinedClose` is an explicit host-supervisor action; no automatic spinning. If physical close was confirmed but receipt retirement failed, retry skips the physical close and resumes receipt retirement.
@@ -21,7 +21,7 @@ Status: **DRAFT / trusted host substrate plus localhost HMAC-framed socket adapt
 - `IpcReceiptCompletionBridge.java`
 - `IpcTransportSessionLease.java`
 - `IpcAuthenticatedSocketTransport.java`
-- their four host self-test classes
+- seven host self-test classes (correlation, completion bridge, physical binding, close/admission race, session lease, authenticated socket, and blocking guard)
 
 The Maven/JUnit `IpcReceiptParityTest` includes both the physical-session lease test and the authenticated localhost socket test.
 
@@ -74,8 +74,8 @@ which is the first concrete Java socket integration of the host substrate.
   Remote receipts admit only `REMOTE_ACCEPTED`, `HANDLER_COMMITTED` and
   `HANDLER_FAILED`; even a peer that knows the MAC key cannot assert
   `OUTCOME_UNKNOWN` or `REJECTED_BEFORE_REMOTE`.
-- Every physical DATA write enters `IpcTransportSessionLease.writeFrame`,
-  which commits `DISPATCH_COMMITTED` before the first stream write. A lease
+- Every production physical DATA write enters `IpcTransportSessionLease.sendPreparedFrame`,
+  which atomically admits the correlation and commits `DISPATCH_COMMITTED` before the first stream write. A lease
   rejection before the writer callback completes locally as
   `REJECTED_BEFORE_REMOTE`. Writer failure after commitment is never replay
   authority and eventually retires as `OUTCOME_UNKNOWN`.
@@ -163,17 +163,19 @@ after authoritative retirement.
 ## Current-head adapter hardening (latest audit)
 
 At the latest audit, the current source blobs are:
-- `IpcTransportSessionLease.java`: `6d02bc924c5f1345ee314af9634474c4f34f777b`
-- `IpcAuthenticatedSocketTransport.java`: `b087fd5d4050d58531f8f486a6f8acadb17ae50d`
-- authenticated socket self-test: `f6a60d766532ef0f7cafb8945d6538b706482e20`
+- `IpcTransportSessionLease.java`: `5dbd5be89a14c1a593bc8498a300b083f0fc6fa7`
+- `IpcAuthenticatedSocketTransport.java`: `f769058d156aad580d9ca24d2af103208aea5f92`
+- `RuntimeBlockingGuard.java`: `caebbceb9ef294994c35b6cb6fc0a5c124c8c33a`
+- authenticated socket self-test: `4f1afae4578c48e8f31fa3be6ccd2e5c3649bbf5`
+- session-lease self-test: `4a233a9bffb24c2cdac78e60732c5f33ca11d3f7`
 
 The socket adapter now:
 - binds its physical writer at lease construction and passes only prebuilt authenticated frame bytes per send;
 - finishes deterministic frame encoding before receipt admission;
 - serializes correlation admission + dispatch commitment + TCP publication to prevent accepted frame reordering;
 - fixes TCP physical publication concurrency at exactly one while allowing multiple outstanding receipt lifetimes;
-- uses protocol **version 2** with explicit remote receipt wire codes instead of Java enum ordinals;
-- rejects prior-version frames even when they carry a valid MAC;
+- uses protocol **version 3** with explicit remote receipt wire codes and a mandatory non-zero 128-bit per-connection binding in every authenticated DATA/receipt header;
+- rejects prior-version frames and stale connection bindings even when they carry a valid MAC under a reused key/logical epoch/physical generation;
 - submits active-write socket abort to the bounded cleanup domain, provides bounded close waiting, quarantines deadline misses, and supports separate explicit abort and close-retirement recovery;
 - validates close deadlines before causing any close side effect;
 - destroys a cloned MAC key on constructor stream-acquisition failure and on authoritative final retirement.
