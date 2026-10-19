@@ -34,10 +34,30 @@ final class ActorRuntimePhysicalMailReceiptTest {
             assertEquals(0L, first.acceptedSequence());
             assertEquals(1L, second.acceptedSequence());
             assertNotSame(first.terminal(), second.terminal());
+            assertFalse(first.terminal().cancel(false),
+                    "a host observer may not cancel runtime message completion");
             first.terminal().get(5, TimeUnit.SECONDS);
             second.terminal().get(5, TimeUnit.SECONDS);
             assertEquals(7, sum.get());
             actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void failedActorReceiveCannotForgeSuccessfulPhysicalCompletion()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> {
+                        throw new IllegalStateException("injected receive failure");
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            var receipt = runtime.sendWithPhysicalReceipt(actor, 1);
+            assertSame(actor, receipt.physical());
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> receipt.terminal().get(5, TimeUnit.SECONDS),
+                    "terminal actor failure must fail, not acknowledge delivery");
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
