@@ -526,6 +526,12 @@ public final class SealedActorState {
                 || value instanceof java.math.BigInteger
                 || value instanceof java.math.BigDecimal
                 || value instanceof Boolean || value instanceof Character) return true;
+        // The sole structured loan escape admitted by this runtime milestone
+        // is our private-constructor immutable scalar snapshot. It contains
+        // copied scalar values only and remains authority-bound to this exact
+        // actor state instance. Generic maps/lists/records remain rejected.
+        if (value instanceof ScalarSnapshot snapshot)
+            return snapshot.issuer == this;
         // Avoid arbitrary mutable guest/Java wrappers and every possible
         // deferred object; the source ownership checker must prove complex
         // returned values before this boundary can be broadened.
