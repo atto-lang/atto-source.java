@@ -631,6 +631,21 @@ class CommittedSourceTreeTests(unittest.TestCase):
                 pub.committed_main_file_blobs(self.root, clean_head),
                 expected)
 
+    def test_unprotected_source_main_is_rejected_before_any_write(self):
+        main_sha = self.git("rev-parse", "HEAD")
+        def fake_api(route, method="GET", payload=None):
+            if route == "repos/" + pub.SOURCE_ORIGIN:
+                return dict(id=pub.SOURCE_ORIGIN_ID,
+                            full_name=pub.SOURCE_ORIGIN, private=True,
+                            visibility="private", default_branch="main")
+            if route == "repos/" + pub.SOURCE_ORIGIN + "/branches/main":
+                return {"protected": False, "commit": {"sha": main_sha}}
+            raise AssertionError("unexpected remote read or write " + route)
+        with patch.object(pub, "gh_api", side_effect=fake_api):
+            with self.assertRaisesRegex(pub.Denied, "must be protected"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, source_commit=A)
+
     def test_snapshot_commit_binding_rejects_untrusted_main_or_dirty_bytes(self):
         # Source-free fixture: protect the policy from a PR-controlled checkout
         # and bind snapshot bytes to the immutable source commit Git tree.
@@ -644,7 +659,7 @@ class CommittedSourceTreeTests(unittest.TestCase):
                             full_name=pub.SOURCE_ORIGIN, private=True,
                             visibility="private", default_branch="main")
             if route == "repos/" + pub.SOURCE_ORIGIN + "/branches/main":
-                return {"commit": {"sha": trusted_main}}
+                return {"protected": True, "commit": {"sha": trusted_main}}
             if route == "repos/" + pub.SOURCE_ORIGIN + "/git/commits/" + A:
                 return {"tree": {"sha": self.expected}}
             if route == "repos/trusted/ci":
@@ -689,7 +704,7 @@ class CommittedSourceTreeTests(unittest.TestCase):
 
         calls.clear()
         with patch.object(pub, "gh_api", side_effect=lambda route, **kw:
-                          {"commit": {"sha": B}}
+                          {"protected": True, "commit": {"sha": B}}
                           if route.endswith("/branches/main") else api(route, **kw)):
             with self.assertRaisesRegex(pub.Denied, "reviewed main HEAD"):
                 pub.publish("trusted/ci", self.source,
