@@ -2429,7 +2429,7 @@ public final class Parser {
             if (match(STRUCT)) {
                 initializer = parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
             } else if (matchContextualIdentifier("record")) {
-                // Same readonly row lowering; preserve syntax identity for the formatter.
+                // Compatibility spelling. Canonical anonymous records use record {...}.
                 initializer = parseObjectLiteral(Ast.ObjectKind.INFERRED_RECORD, List.of());
             } else if (matchContextualKeyword("tuple")) {
                 consume(LPAREN, "expected '(' after infer<T> tuple");
@@ -3581,6 +3581,10 @@ public final class Parser {
                 return parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
             }
             consumeContextualIdentifier("record", "expected 'record' after infer");
+            return parseObjectLiteral(Ast.ObjectKind.INFERRED_RECORD, List.of());
+        }
+        if (isContextualIdentifier("record") && checkNext(LBRACE)) {
+            advance(); // contextual record
             return parseObjectLiteral(Ast.ObjectKind.INFERRED_RECORD, List.of());
         }
         if (isContextualIdentifier("tuple") && checkNext(LPAREN)) {
