@@ -22,10 +22,33 @@ readonly AST/runtime semantics, avoiding dynamic maps or reflective keys.
 Computed keys are invalid, and mutable access cannot be recovered through
 aliases, casts, borrowing, or generic substitutions.
 
-The shorter `const Person p = infer record{...}` needs an unambiguous
-distinction between creating a new type alias and initializing an already
-declared `Person`. Do not enable it until parser, typechecker, ownership
-checker, imports, forward references, shadowing, and formatter agree.
+The short `const Person p = infer record{...}` form is enabled in the
+Java static checker only for an absent, uppercase-starting, simple name; a
+known `Person` remains an ordinary declared type. Explicit `infer<Person>`
+still creates a fresh lexical alias and fails on conflicts. This avoids
+silently redefining imported, generic, built-in, or already-inferred names.
+Both syntaxes still need full formatter/AOT and executable conformance.
+
+## Executable host-side AoS/SoA scalar foundation
+
+`dev.oreslang.dop.SoaSnapshot` is a **host Java** immutable snapshot, not
+`SoA<T>` in Oreslang. It requires an explicit closed schema and accepts
+only String, Boolean, Integer, Long, Float, and Double. Nulls, opaque host
+Objects, capabilities, nested structures, and Option payloads are excluded.
+Quoted static field names, including empty strings, are treated as data.
+
+The implementation validates exact row/column keys and every element type,
+checks equal column lengths, and caps fields at 64 and cells at 1,000,000.
+It copies inputs and exposes immutable column/row projections, so callers
+cannot mutate or observe mutations to backing input collections. Failures
+occur before returning a snapshot. Zero-row typed schemas work; empty-schema
+rows preserve their count when created from rows. Creating from an empty
+set of columns is rejected because a row count is not recoverable.
+
+`scripts/check-soa-snapshot.sh` runs the standalone JDK smoke, while
+`SoaSnapshotTest` invokes the same checks through JUnit. The smoke includes
+300 seeded field-order/roundtrip cases. This is intentionally independent
+of actor memory domains, LLVM, guest compiler intrinsics, and FFI.
 
 ## Proposed columnar surface (future, NOT YET EXECUTABLE)
 
