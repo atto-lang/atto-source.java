@@ -17,6 +17,7 @@ class TrustedSupervisorInboxTest {
         assertEquals(2, inbox.outstandingMessages()); // dispatch does not refund
         assertArrayEquals(new byte[]{1, 2, 3}, d.payloadCopy());
         inbox.completeUser(d);
+        assertThrows(IllegalStateException.class, d::payloadCopy);
         assertEquals(1, inbox.outstandingMessages());
         assertEquals(3, inbox.outstandingBytes());
         assertThrows(IllegalArgumentException.class, () -> inbox.completeUser(d));
