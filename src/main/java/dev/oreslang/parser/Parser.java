@@ -3265,6 +3265,10 @@ public final class Parser {
         if (match(TRAP)) return new Ast.TrapExpr(parseUnary());
         if (match(RT)) return parseRuntimeExpression();
 
+        if (check(IDENT) && peek().lexeme().equals("task") && checkNext(LBRACE)) {
+            advance(); // contextual task keyword; ordinary 'task' identifiers still work
+            return new Ast.TaskExpr(parseBlock());
+        }
         if (match(NB)) {
             if (check(LBRACE)) return new Ast.TaskExpr(parseBlock());
             if (match(CB)) {
