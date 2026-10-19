@@ -364,6 +364,41 @@ final class DynamicPropertyAccessBoundaryTest {
     }
 
     @Test
+    void genericInheritedFieldsPreserveComputedAccessSubstitution() {
+        accepted("""
+                define class Parent<T> as
+                    pub val T inherited;
+                end
+
+                define class Child<U> extends Parent<U> as
+                    pub val U own;
+                end
+
+                fnc exact(Child<string> value): string {
+                    return value["inherited"];
+                }
+
+                fnc dynamic(Child<int> value, string key): int {
+                    return value[key];
+                }
+                """);
+
+        rejected("""
+                define class Parent<T> as
+                    pub val T inherited;
+                end
+
+                define class Child<U> extends Parent<U> as
+                    pub val string own = "x";
+                end
+
+                fnc bad(Child<int> value, string key): int {
+                    return value[key];
+                }
+                """);
+    }
+
+    @Test
     void computedClassWritesSupportInitializerInferredFieldTypes() {
         accepted("""
                 define class InferredPoint as
