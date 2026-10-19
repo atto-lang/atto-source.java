@@ -449,6 +449,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
              Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
              Socket peer = server.accept()) {
             client.setSendBufferSize(1024);
+            peer.setReceiveBufferSize(1024);
             ExecutorService cleanup = Executors.newSingleThreadExecutor();
             try {
                 var bridge = new IpcReceiptCompletionBridge(1);
@@ -474,6 +475,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                     Thread.sleep(5);
                 }
                 check(observedPinnedWrite);
+                Thread.sleep(40);
+                check(sender.isAlive());
                 transport.requestClose();
                 sender.join(4000);
                 check(!sender.isAlive());
