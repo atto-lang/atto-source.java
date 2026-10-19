@@ -7649,6 +7649,13 @@ public final class TypeChecker {
                         + "' cannot expose instance field '" + field.name() + "'");
             }
             Ast.InterfaceFunctionDecl method = (Ast.InterfaceFunctionDecl) member;
+            // Structural-only members and structural call parameters do not
+            // currently have a nominal dynamic receiver ABI.
+            if (method.structural() || method.parameters().stream().anyMatch(Ast.Param::structural)) {
+                throw new IllegalArgumentException("dyn interface '" + iface.name()
+                        + "' has structural method contract '" + method.name()
+                        + "' without verified nominal dispatch");
+            }
             if (!method.genericParameters().isEmpty()) {
                 throw new IllegalArgumentException("dyn interface '" + iface.name()
                         + "' has generic method '" + method.name()
