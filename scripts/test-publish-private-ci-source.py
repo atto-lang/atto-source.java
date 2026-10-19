@@ -564,6 +564,71 @@ class CommittedSourceTreeTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "collected source"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
 
+    def test_snapshot_commit_binding_rejects_untrusted_main_or_dirty_bytes(self):
+        # Source-free fixture: protect the policy from a PR-controlled checkout
+        # and bind snapshot bytes to the immutable source commit Git tree.
+        trusted_main = self.git("rev-parse", "HEAD")
+        calls = []
+
+        def api(route, method="GET", payload=None):
+            calls.append((method, route))
+            if route == "repos/" + pub.SOURCE_ORIGIN:
+                return dict(id=pub.SOURCE_ORIGIN_ID,
+                            full_name=pub.SOURCE_ORIGIN, private=True,
+                            visibility="private", default_branch="main")
+            if route == "repos/" + pub.SOURCE_ORIGIN + "/branches/main":
+                return {"commit": {"sha": trusted_main}}
+            if route == "repos/" + pub.SOURCE_ORIGIN + "/git/commits/" + A:
+                return {"tree": {"sha": self.expected}}
+            if route == "repos/trusted/ci":
+                return dict(id=424242, full_name="trusted/ci", private=True,
+                            visibility="private", default_branch="main")
+            if route == "repos/trusted/ci/git/ref/heads/main":
+                return {"object": {"sha": B}}
+            if route == "repos/trusted/ci/git/commits/" + B:
+                return {"tree": {"sha": C}}
+            if route == "repos/trusted/ci/git/blobs":
+                data = base64.b64decode(payload["content"])
+                return {"sha": hashlib.sha1(
+                    b"blob " + str(len(data)).encode("ascii") +
+                    b"\0" + data).hexdigest()}
+            if route == "repos/trusted/ci/git/trees":
+                return {"sha": E if "base_tree" in payload else self.expected}
+            if route == "repos/trusted/ci/git/commits":
+                return {"sha": D}
+            if route == "repos/trusted/ci/git/refs":
+                return {"ref": "refs/heads/ci/oreslang-test"}
+            raise AssertionError("unexpected GitHub route " + route)
+
+        with patch.object(pub, "require_preflight",
+                          return_value={"id": 424242}), \
+             patch.object(pub, "gh_api", side_effect=api):
+            commit, count = pub.publish(
+                "trusted/ci", self.source, "ci/oreslang-test", self.root,
+                source_commit=A)
+            self.assertEqual(commit, D)
+            self.assertEqual(count, 4)
+        self.assertEqual(len([r for m, r in calls
+                              if m == "POST" and r.endswith("/git/refs")]), 1)
+        calls.clear()
+        (self.source / "hello.ores").write_text("tampered since attestation\n")
+        with patch.object(pub, "require_preflight",
+                          return_value={"id": 424242}), \
+             patch.object(pub, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(pub.Denied, "collected source"):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root, source_commit=A)
+        self.assertFalse(any(m == "POST" for m, _ in calls))
+
+        calls.clear()
+        with patch.object(pub, "gh_api", side_effect=lambda route, **kw:
+                          {"commit": {"sha": B}}
+                          if route.endswith("/branches/main") else api(route, **kw)):
+            with self.assertRaisesRegex(pub.Denied, "reviewed main HEAD"):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root, source_commit=A)
+        self.assertFalse(any(m == "POST" for m, _ in calls))
+
     def test_remote_subtree_sha_mismatch_denied_before_ref_creation(self):
         calls = []
         def fake_api(route, method="GET", payload=None):
