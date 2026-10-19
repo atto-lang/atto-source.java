@@ -178,9 +178,11 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             throw new IllegalArgumentException("dispatch deadline must be positive");
         synchronized (dispatchLock) {
             requireUsable();
-            var envelope = mailbox.pollDispatch();
-            if (envelope == null) return false;
             try {
+                // A failed or corrupted dispatch reservation may have changed
+                // mailbox accounting; it must not escape the fail-seal handler.
+                var envelope = mailbox.pollDispatch();
+                if (envelope == null) return false;
                 // Only the authoritative physical router may decode and
                 // send these immutable bytes. Its opaque receipt binds the
                 // exact envelope, route epoch and physical actor instance;
@@ -214,8 +216,10 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             throw new IllegalArgumentException("upgrade deadline must be positive");
         synchronized (dispatchLock) {
             requireUsable();
-            var ticket = mailbox.freezeDispatchForUpgrade();
             try {
+                // Freeze acquisition is part of the supervisor transaction,
+                // not a preflight outside its quarantine boundary.
+                var ticket = mailbox.freezeDispatchForUpgrade();
                 if (!ticket.drained()) {
                     ticket.rollback();
                     return false;
