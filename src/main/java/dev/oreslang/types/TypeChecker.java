@@ -5161,33 +5161,33 @@ public final class TypeChecker {
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
-        return isSharedSafe(type, seen, genericBindings, 0);
+        return isSharedSafe(type, seen, genericBindings, 0, new int[] {100_000});
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen,
-            Map<String, Type> genericBindings, int depth) {
+            Map<String, Type> genericBindings, int depth, int[] budget) {
         // Bound recursive field, sum, collection and parent-graph walks.
         // This protects callers that inspect shared-safety before Send.
-        if (depth > 256) return false;
+        if (depth > 256 || --budget[0] < 0) return false;
         if (type == Unknown.INSTANCE || type instanceof SelfType || type instanceof Borrow
                 || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
         if (type instanceof StringLiteral) return true;
         if (type instanceof Generic generic) {
             Type bound = genericBindings.get(generic.name());
-            return bound != null && bound != type && isSharedSafe(bound, seen, genericBindings, depth + 1);
+            return bound != null && bound != type && isSharedSafe(bound, seen, genericBindings, depth + 1, budget);
         }
-        if (type instanceof ListType list) return isSharedSafe(list.element(), seen, genericBindings, depth + 1);
+        if (type instanceof ListType list) return isSharedSafe(list.element(), seen, genericBindings, depth + 1, budget);
         if (type instanceof Union union) {
-            for (Type option : union.options()) if (!isSharedSafe(option, seen, genericBindings, depth + 1)) return false;
+            for (Type option : union.options()) if (!isSharedSafe(option, seen, genericBindings, depth + 1, budget)) return false;
             return true;
         }
         if (type instanceof Tuple tuple) {
-            for (Type element : tuple.elements()) if (!isSharedSafe(element, seen, genericBindings, depth + 1)) return false;
+            for (Type element : tuple.elements()) if (!isSharedSafe(element, seen, genericBindings, depth + 1, budget)) return false;
             return true;
         }
         if (type instanceof Record record) {
-            for (Type member : record.members().values()) if (!isSharedSafe(member, seen, genericBindings, depth + 1)) return false;
+            for (Type member : record.members().values()) if (!isSharedSafe(member, seen, genericBindings, depth + 1, budget)) return false;
             return true;
         }
         if (!(type instanceof Named named)) return false;
@@ -5197,16 +5197,16 @@ public final class TypeChecker {
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
-            return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings, depth + 1);
+            return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings, depth + 1, budget);
         }
         if (named.name().equals("Result")) {
             return named.arguments().size() == 2
-                    && isSharedSafe(named.arguments().get(0), seen, genericBindings, depth + 1)
-                    && isSharedSafe(named.arguments().get(1), seen, genericBindings, depth + 1);
+                    && isSharedSafe(named.arguments().get(0), seen, genericBindings, depth + 1, budget)
+                    && isSharedSafe(named.arguments().get(1), seen, genericBindings, depth + 1, budget);
         }
 
         for (Type argument : named.arguments()) {
-            if (!isSharedSafe(argument, seen, genericBindings, depth + 1)) return false;
+            if (!isSharedSafe(argument, seen, genericBindings, depth + 1, budget)) return false;
         }
 
         Ast.ClassDecl klass = findClass(named.name());
@@ -5235,7 +5235,7 @@ public final class TypeChecker {
                 Type fieldType = resolveSharedGeneric(
                         resolve(field.type(), classGenerics, nominal),
                         classBindings);
-                if (!isSharedSafe(fieldType, seen, classBindings, depth + 1)) return false;
+                if (!isSharedSafe(fieldType, seen, classBindings, depth + 1, budget)) return false;
             }
 
             // Recurse into each parent after substituting the child's generic
@@ -5243,7 +5243,7 @@ public final class TypeChecker {
             for (Ast.TypeRef parentRef : klass.parents()) {
                 if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
                 Type parentType = resolveSharedGeneric(resolve(parentRef, classGenerics, nominal), classBindings);
-                if (!isSharedSafe(parentType, seen, classBindings, depth + 1)) return false;
+                if (!isSharedSafe(parentType, seen, classBindings, depth + 1, budget)) return false;
             }
 
             return true;
