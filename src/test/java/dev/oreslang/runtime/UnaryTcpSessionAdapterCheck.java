@@ -230,6 +230,34 @@ public final class UnaryTcpSessionAdapterCheck {
         }
     }
 
+    private static void lazyActorPayloadProjection() {
+        byte[] original = new byte[UnaryTransportFrame.MAX_PAYLOAD_BYTES];
+        original[0] = (byte) 255;
+        original[original.length - 1] = (byte) 254;
+        var request = new UnaryTcpSessionAdapter.Request(
+                new UnaryTcpSessionAdapter.PeerIdentity("peer:lazy-bytes"),
+                7, 3, 1, original);
+        original[0] = 0;
+
+        Object payload = request.actorMessage().get("payload");
+        check(payload instanceof java.util.List<?>,
+                "actor payload projection must remain list-compatible");
+        java.util.List<?> values = (java.util.List<?>) payload;
+        check(values.size() == UnaryTransportFrame.MAX_PAYLOAD_BYTES,
+                "lazy payload projection preserves wire length");
+        check(values.get(0).equals(255L)
+                        && values.get(values.size() - 1).equals(254L),
+                "lazy payload projection is unsigned and backed by the request copy");
+        check(values.getClass().getSimpleName().equals("UnsignedByteList"),
+                "actor payload must not eagerly allocate a boxed ArrayList");
+        try {
+            @SuppressWarnings("unchecked")
+            java.util.List<Object> mutable = (java.util.List<Object>) values;
+            mutable.set(0, 1L);
+            throw new AssertionError("lazy actor payload projection was mutable");
+        } catch (UnsupportedOperationException expected) { }
+    }
+
     private static void echoAndReplayFence() throws Exception {
         BindingAuthenticator auth = new BindingAuthenticator();
         AtomicInteger dispatches = new AtomicInteger();
@@ -980,6 +1008,7 @@ public final class UnaryTcpSessionAdapterCheck {
     }
 
     public static void main(String[] unused) throws Exception {
+        lazyActorPayloadProjection();
         echoAndReplayFence();
         wrongBindingRejectedBeforePayloadRead();
         overloadCancelAndRecovery();
