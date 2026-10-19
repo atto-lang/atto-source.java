@@ -1,0 +1,22 @@
+name: Annotated default parameter contract oracle
+
+on:
+  pull_request:
+    paths:
+      - 'contracts/v2/ANNOTATED_PARAMETER_DEFAULTS_V1.md'
+      - 'contracts/v2/check_annotated_defaults.py'
+      - 'contracts/v2/OPTION_FORMAL_OMISSION_V2.md'
+      - '.github/workflows/annotated-default-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate staged annotated defaults
+        run: python3 contracts/v2/check_annotated_defaults.py
