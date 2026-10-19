@@ -135,6 +135,80 @@ final class ActorRuntimePhysicalMailReceiptTest {
         }
     }
 
+    private static Object actorCellForTest(
+            ActorRuntime runtime, ActorRuntime.ActorRef<?> actor)
+            throws Exception {
+        var actorsField = ActorRuntime.class.getDeclaredField("actors");
+        actorsField.setAccessible(true);
+        var actors = (java.util.Map<?, ?>) actorsField.get(runtime);
+        Object cell = actors.get(actor.id());
+        assertNotNull(cell);
+        return cell;
+    }
+
+    @Test
+    void teardownSnapshotOomeCannotPublishDeadActorWithPendingExactReceipt()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> {
+                        entered.countDown();
+                        if (!release.await(5, TimeUnit.SECONDS))
+                            throw new AssertionError("blocked receive not released");
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            var receipt = runtime.sendWithPhysicalReceipt(actor, 7);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            Object cell = actorCellForTest(runtime, actor);
+            var drainsField = cell.getClass().getDeclaredField("pendingDrains");
+            drainsField.setAccessible(true);
+            Object original = drainsField.get(cell);
+
+            var failingSnapshot = new java.util.ArrayList<Object>() {
+                private boolean fail = true;
+
+                private void failOnce() {
+                    if (fail) {
+                        fail = false;
+                        throw new OutOfMemoryError(
+                                "injected teardown snapshot allocation failure");
+                    }
+                }
+
+                @Override public Object[] toArray() {
+                    failOnce();
+                    return super.toArray();
+                }
+
+                @Override public <T> T[] toArray(T[] target) {
+                    failOnce();
+                    return super.toArray(target);
+                }
+            };
+
+            drainsField.set(cell, failingSnapshot);
+            try {
+                assertThrows(OutOfMemoryError.class, actor::stop);
+                assertTrue(actor.isAlive(),
+                        "failed snapshot preparation must not publish stopped=true");
+                assertFalse(receipt.terminal().isDone(),
+                        "exact receipt remains owned while the live receive is pending");
+            } finally {
+                drainsField.set(cell, original);
+                release.countDown();
+            }
+
+            // Because failed teardown published no terminal actor state, the
+            // original receive may finish normally and settle its exact receipt.
+            receipt.terminal().get(5, TimeUnit.SECONDS);
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
     @Test
     void failedActorReceiveCannotForgeSuccessfulPhysicalCompletion()
             throws Exception {
