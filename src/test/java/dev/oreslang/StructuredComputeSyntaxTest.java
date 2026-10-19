@@ -2,6 +2,9 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.compiler.BuildOptions;
+import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
@@ -200,6 +203,24 @@ final class StructuredComputeSyntaxTest {
         assertTypeDenied("""
                 pub fnc main(): int { let x = 1; x += 2; return x; }
                 """, "compound assignment requires single-evaluation");
+    }
+
+    @Test
+    void allTrustedCompilerAdmissionEntrypointsRejectStagedStructuredCalls() {
+        String unsupported = """
+                pub fnc id(int x): int { return x; }
+                pub fnc main(): int { return id(x: 41); }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.analyze(Parser.parse(unsupported)));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(unsupported));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compileForBuild(unsupported, BuildOptions.executable()));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.validateForIsolate(unsupported, IsolatePolicy.developer()));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(COMPUTE));
     }
 
     private static void checkSyntaxRejected(String call, String reason) {
