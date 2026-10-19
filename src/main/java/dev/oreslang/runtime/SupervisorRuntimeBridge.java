@@ -142,8 +142,10 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
                 rowsByBinding.remove(binding);
                 eraseRowIfLive(row);
             } else if (result == TrustedSupervisorInbox.Admission.REJECTED) {
-                throw new IllegalStateException(
+                IllegalStateException rejection = new IllegalStateException(
                         "runtime-authenticated finalized child failure was rejected");
+                poison(rejection);
+                throw rejection;
             }
         }
 
