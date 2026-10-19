@@ -293,26 +293,30 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
      * outstanding/quarantined; any future retry must require a separately
      * authenticated non-acceptance receipt with exact mailbox/epoch identity.
      *
-     * Only the highest dispatched, still outstanding sequence can be restored,
-     * before another dispatch and while no upgrade freeze ticket is active.
+     * Only the exact highest-dispatched Envelope object in the expected route
+     * epoch can be restored, before another dispatch and while no upgrade
+     * freeze ticket is active. A copied envelope or bare sequence is never
+     * rollback authority.
      */
-    void requeueProvenUnsent(long messageSequence) {
+    void requeueProvenUnsent(
+            Envelope envelope, long expectedRouteEpoch) {
+        Objects.requireNonNull(envelope, "envelope");
         synchronized (lock) {
             requireOpenLocked();
             if (dispatchFrozen || activeFreeze != null) {
                 throw new IllegalStateException(
                         "cannot roll back physical dispatch while upgrade is frozen");
             }
-            if (messageSequence != highestDispatchedSequence
-                    || messageSequence <= completionWatermark
-                    || !outstanding.containsKey(messageSequence)) {
-                throw new IllegalStateException(
-                        "physical dispatch rollback requires the latest outstanding sequence");
-            }
-            // Prepare boxed map/set key before any queue mutation. For
-            // sequences outside Long's cache, autoboxing here may allocate.
+            long messageSequence = envelope.messageSequence();
             Long key = Long.valueOf(messageSequence);
-            Envelope envelope = outstanding.get(key);
+            if (expectedRouteEpoch != routeEpoch
+                    || messageSequence != highestDispatchedSequence
+                    || messageSequence <= completionWatermark
+                    || outstanding.get(key) != envelope) {
+                throw new SecurityException(
+                        "physical dispatch rollback requires the exact latest "
+                                + "outstanding envelope in the current route epoch");
+            }
             if (physicalSendAttempted.contains(key)) {
                 throw new IllegalStateException(
                         "cannot requeue a physically attempted message without an "
