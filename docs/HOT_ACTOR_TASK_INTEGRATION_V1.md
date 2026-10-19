@@ -164,3 +164,52 @@ requeued, and an untrusted completion cannot be treated as `mail.done`.
 
 CI requires both host JUnit suites with nonzero, non-skipped XML receipts,
 but the source runner has so far failed before execution. No pass is claimed.
+
+## October 18 publication convergence recommendation and next release gate
+
+**Canonical candidate for the next integration: `ActorRoutePublicationV1`.**
+It owns one immutable `Published<R>` tuple including stable actor identity,
+incarnation, route epoch, code image, immutable checkpoint, physical worker,
+per-generation Task admission gate and old dispatch watermark. Its explicit
+per-generation gate permits bounded retirement of old code independently of
+new actor Task admission. `ActorUpgradeAtomicPublicationV1` remains an
+**alternative host-only test model**, NOT a second actor activation path.
+Do not wire both into the live router; retire/remove the alternative
+when the canonical route is integrated and proven.
+
+The preferred route's frozen-stage allocation now has exception-safe
+rollback: any failure after acquiring the Task/mailbox preflight but before
+assigning its stage must abort old code preparation and restore old DATA
+dispatch. A rollback failure quarantines DATA and suppresses the
+secondary exception onto the primary fault rather than asserting success.
+New JUnit cases cover refused incompatible staging, competing stage
+ownership, retained messages, and subsequent successful retry. Java JUnit
+execution is not yet independently confirmed.
+
+**Missing security proof:** the host-only `complete(long)` operation
+is NOT an authenticated `mail.done` receipt. The live route must not
+expose raw sequences as completion authority. Replace this API at the
+production integration seam with a receipt validated against
+`(logical actor id, incarnation, physical worker identity, route epoch,
+message sequence, accepted transport session)`; one-shot completion
+must be bound to exactly the tracked dispatched envelope and actual
+physical completion. Guest code cannot construct trusted receipts.
+Ambiguous sends cannot be replayed and credits cannot be refunded on
+an unverified acknowledgement.
+
+**Remaining atomicity proof:** replacement physical worker startup,
+checkpoint restore, health verification, and attachment of the exact
+code/Task image must precede the route CAS. Candidate code must not
+execute under CONTROL locks. Post-publication failures must preserve
+the new route epoch and quarantine, not silently resurrect the old
+actor. A source-level `suspends` continuation remains pinned to
+its *old* generation until physical exit; independent `task {}`
+children acquire separate pinned code owners.
+
+Prioritize one end-to-end source-compiled SHARED actor test, running:
+old DATA -> begin upgrade -> outstanding Task/FFI/reader + old message
+drain -> one authenticated publication -> queued DATA through new
+worker -> stale receipt rejection -> resource retirement. Then extend
+the same wire/actor contract to PRIVATE and UNTRUSTED protected workers.
+AOT/PIC replacement is first class; LLVM ORC is optional, never a
+shortcut around isolation or image retirement.
