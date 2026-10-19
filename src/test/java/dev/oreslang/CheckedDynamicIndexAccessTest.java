@@ -166,6 +166,58 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void visibleProofSurvivesOptimizerCloneWithoutWidening() {
+        Ast.IndexExpr site = new Ast.IndexExpr(
+                new Ast.NameExpr("point"), new Ast.NameExpr("field"));
+        Ast.CheckedIndexKeys.record(site, Set.of("x"));
+        Ast.IndexExpr optimized = new Ast.IndexExpr(
+                new Ast.NameExpr("point"), new Ast.NameExpr("field"));
+        Ast.CheckedIndexKeys.propagate(site, optimized);
+        assertDoesNotThrow(() -> Ast.CheckedIndexKeys.require(optimized, "x"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.CheckedIndexKeys.require(optimized, "secret"));
+
+        Ast.IndexExpr tuple = new Ast.IndexExpr(
+                new Ast.NameExpr("values"), new Ast.LiteralExpr(0L));
+        Ast.IndexExpr tupleRewritten = new Ast.IndexExpr(
+                new Ast.NameExpr("values"), new Ast.LiteralExpr(0L));
+        Ast.CheckedIndexKeys.propagate(tuple, tupleRewritten);
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.require(tupleRewritten, "x"));
+    }
+
+    @Test
+    void literalClassFieldAccessChecksVisibilityAndMethodNonReflection() {
+        String declarations = """
+                define class Candidate as
+                  pub val int id = 9;
+                  private val string secret = "hidden";
+                  pub fnc score(): int { return 4; }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(declarations + """
+                fnc ok(): int {
+                  const instance = new Candidate();
+                  return instance["id"];
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(declarations + """
+                fnc bad(): string {
+                  const instance = new Candidate();
+                  return instance["secret"];
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(declarations + """
+                fnc bad(): int {
+                  const instance = new Candidate();
+                  return instance["score"];
+                }
+                """)));
+    }
+
+    @Test
     void heterogeneousDynamicIndexCannotPretendAllSlotsAreInt() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
