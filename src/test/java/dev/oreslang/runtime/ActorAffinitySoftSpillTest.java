@@ -18,6 +18,7 @@ final class ActorAffinitySoftSpillTest {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         CountDownLatch migrated = new CountDownLatch(1);
+        CountDownLatch completedPreferred = new CountDownLatch(2);
         AtomicInteger completedOnPreferred = new AtomicInteger();
         try {
             dispatcher.executeOnLane(0, () -> {
@@ -33,14 +34,22 @@ final class ActorAffinitySoftSpillTest {
             assertTrue(entered.await(5, TimeUnit.SECONDS));
             // Threshold=4/2=2 queued jobs; the first two wait behind the
             // blocked worker, and the third is sent to the idle other lane.
-            dispatcher.executeOnLane(0, completedOnPreferred::incrementAndGet);
-            dispatcher.executeOnLane(0, completedOnPreferred::incrementAndGet);
+            dispatcher.executeOnLane(0, () -> {
+                completedOnPreferred.incrementAndGet();
+                completedPreferred.countDown();
+            });
+            dispatcher.executeOnLane(0, () -> {
+                completedOnPreferred.incrementAndGet();
+                completedPreferred.countDown();
+            });
             dispatcher.executeOnLane(0, migrated::countDown);
             assertTrue(migrated.await(5, TimeUnit.SECONDS),
                     "soft overflow should execute while preferred CPU lane is blocked");
             assertEquals(1, dispatcher.softSpills());
             assertEquals(0, completedOnPreferred.get(),
                     "preferred queue remains serialized behind its active turn");
+            release.countDown();
+            assertTrue(completedPreferred.await(5, TimeUnit.SECONDS));
         } finally {
             release.countDown();
             dispatcher.shutdown();
