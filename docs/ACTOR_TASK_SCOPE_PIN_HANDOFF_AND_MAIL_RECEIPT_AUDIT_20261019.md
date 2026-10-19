@@ -97,3 +97,28 @@ A separately authored source-free oracle in
 
 This is independent model execution only. It is not Maven/JUnit/Graal/native
 execution of this private source tree.
+
+
+### Runtime-close retry boundary
+
+A follow-up audit found that `ActorRuntime.close()` had tied dispatcher
+`shutdownNow()` to the first successful global `closed` CAS. That was not
+retry-safe: if an actor's pre-stop receipt/operation snapshot threw OOME after
+the runtime had become globally closed, the first call exited before dispatcher
+shutdown; a later `close()` observed `firstClose == false` and could skip
+dispatcher shutdown permanently.
+
+The close path now allocates the actor snapshot before publishing global close
+and maintains a separate `dispatcherShutdownLock` / `dispatchersShutdown`
+publication. Every actor must first accept its fail-closed
+`RUNTIME_CLOSED` teardown. Only then are dispatchers stopped. The dispatcher
+shutdown bit is published only after all three dispatcher shutdown calls and
+queued-schedule cancellation complete; a failure before that point remains
+retryable.
+
+`runtimeCloseRetryAfterTeardownOomeStillShutsDispatchersAndReceipts()`
+injects OOME into the first actor teardown attempt, verifies the actor remains
+live and its exact receipt has no terminal class, restores the ledger, retries
+runtime close, and requires that the receipt becomes `RUNTIME_CLOSED` and the
+full close succeeds. This source regression is committed but still awaits
+exact-tree JUnit execution.
