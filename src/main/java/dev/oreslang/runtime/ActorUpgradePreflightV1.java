@@ -67,6 +67,36 @@ final class ActorUpgradePreflightV1 implements AutoCloseable {
         return generation.livePins() == 0 && mailboxTicket.drained();
     }
 
+    /**
+     * The single authoritative CONTROL coordinator is the only caller.
+     * This is intentionally NOT a public publish() API: a new actor route
+     * must already have an immutable validated state/physical descriptor
+     * before this method is entered. The callback is a plain field swap,
+     * never guest code, I/O, or a physical worker startup.
+     *
+     * Lock order: coordinator -> preflight -> generation -> mailbox. This
+     * holds BOTH independent admission locks until the generation image,
+     * authoritative route descriptor, and mailbox epoch are committed.
+     * Old mail completions and lease release cannot race the decision.
+     */
+    synchronized void commitWithAuthoritativeRoute(Runnable publishRoute) {
+        requireOpen();
+        Objects.requireNonNull(publishRoute, "authoritative route publication");
+        synchronized (generation) {
+            if (generation.livePins() != 0)
+                throw new IllegalStateException(
+                        "generation still has live turns, Tasks or external leases");
+            mailboxTicket.commitWithPublication(() -> {
+                if (!generation.publish(staged))
+                    throw new IllegalStateException(
+                            "generation unexpectedly became busy during publication");
+                // Must be a single, allocation-free plain reference assignment.
+                publishRoute.run();
+            });
+            closed = true; // consumed; close() must never roll a commit back
+        }
+    }
+
     private void requireOpen() {
         if (closed) throw new IllegalStateException("upgrade preflight is closed");
     }
