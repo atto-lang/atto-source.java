@@ -25,6 +25,7 @@ final class IpcTransportSessionLease {
     }
 
     static final class PreDispatchRejectedException extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
         PreDispatchRejectedException(String message) { super(message); }
         PreDispatchRejectedException(String message, Throwable cause) { super(message, cause); }
     }
