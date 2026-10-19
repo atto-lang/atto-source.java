@@ -31,11 +31,6 @@ final class DynamicPropertyAccessRuntimeTest {
                     return pair[index];
                 }
 
-                fnc class_set(Point point, string key, int value): int {
-                    point[key] = value;
-                    return point[key];
-                }
-
                 pub fnc main(): void {
                     const Row row = record{x: 3.0, y: 4.0};
                     stdio.println(record_get(row, "y"));
