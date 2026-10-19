@@ -78,6 +78,24 @@ public final class IpcReceiptCorrelationSelfTest {
                 "tenant", "sender", "worker", "session", "A".repeat(64),
                 1, 2, 3, 4, 1, 1));
 
+        // Message and physical frame sequences are independently
+        // monotonic. A peer-visible frame sequence cannot roll back merely
+        // because the logical message sequence advanced.
+        var frameOrder = new IpcReceiptCorrelation(2);
+        var frameOne = env(1, "frame-order");
+        frameOrder.admit(frameOne);
+        frameOrder.rejectBeforeRemote(frameOne);
+        var rolledFrame = new IpcReceiptCorrelation.Envelope(
+                "tenant", "sender", "worker", "frame-order", "a".repeat(64),
+                1, 2, 3, 4, 2, 1);
+        denies(() -> frameOrder.admit(rolledFrame));
+        var frameTwo = new IpcReceiptCorrelation.Envelope(
+                "tenant", "sender", "worker", "frame-order", "a".repeat(64),
+                1, 2, 3, 4, 2, 2);
+        frameOrder.admit(frameTwo);
+        frameOrder.rejectBeforeRemote(frameTwo);
+        check(frameOrder.invariant());
+
         // Verify capacity, recovery after a definitive terminal, and
         // monotonic route/capability generations through a hot-route change.
         var evolving = new IpcReceiptCorrelation(1);
