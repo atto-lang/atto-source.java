@@ -2,6 +2,9 @@ package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 class CarrierTopologyPlanTest {
     @Test void ranksCacheBeforeNumaBeforeRemote() {
@@ -105,6 +108,32 @@ class CarrierTopologyPlanTest {
                 }
             }
         }
+    }
+
+    @Test void malformedOrIncompleteLinuxCacheTopologyFailsSoft(@TempDir Path root)
+            throws Exception {
+        Path cpu = root.resolve("cpu7");
+        Path topo = Files.createDirectories(cpu.resolve("topology"));
+        Path cache = Files.createDirectories(cpu.resolve("cache/index3"));
+        Files.createDirectories(cpu.resolve("node2"));
+        Files.writeString(topo.resolve("physical_package_id"), "4\n");
+        Files.writeString(cache.resolve("level"), "3\n");
+        Files.writeString(cache.resolve("type"), "Unified\n");
+        Files.writeString(cache.resolve("id"), "11\n");
+        assertEquals(new CarrierTopologyPlan.Location(7, 4, 11, 2),
+                CarrierTopologyPlan.discoverAt(7, root));
+
+        Files.writeString(cache.resolve("type"), "Instruction\n");
+        assertEquals(-1, CarrierTopologyPlan.discoverAt(7, root).llcId());
+        Files.writeString(cache.resolve("type"), "Unified\n");
+        Files.writeString(cache.resolve("level"), "2\n");
+        assertEquals(-1, CarrierTopologyPlan.discoverAt(7, root).llcId());
+        Files.delete(cache.resolve("level"));
+        assertEquals(-1, CarrierTopologyPlan.discoverAt(7, root).llcId());
+        Files.writeString(topo.resolve("physical_package_id"), "not an integer");
+        assertEquals(-1, CarrierTopologyPlan.discoverAt(7, root).packageId());
+        assertEquals(CarrierTopologyPlan.Location.UNKNOWN,
+                CarrierTopologyPlan.discoverAt(-1, root));
     }
 
 }
