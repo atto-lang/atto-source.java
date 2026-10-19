@@ -35,6 +35,20 @@ gh_api() {
   GH_HOST=github.com GH_PROMPT_DISABLED=1 command gh api "$@"
 }
 
+require_destination_branch_absent() {
+  local endpoint="repos/$DEST_REPO/git/ref/heads/$destination_branch"
+  local output status=0
+  output="$(GH_HOST=github.com GH_PROMPT_DISABLED=1 command gh api "$endpoint" 2>&1)" \
+    || status="$?"
+  if [[ "$status" -eq 0 ]]; then
+    die "destination branch already exists; each export requires a fresh approval-bound ref"
+  fi
+  # Only an authenticated GitHub Not Found proves ref absence. Permission,
+  # transport, rate-limit, or other API failures must not be treated as absence.
+  [[ "$output" == *"HTTP 404"* ]] \
+    || die "cannot prove destination branch is absent"
+}
+
 require_plan_feature_unavailable() {
   local endpoint="$1"
   local label="$2"
@@ -184,6 +198,7 @@ IFS=$'\t' read -r dest_base_commit dest_base_tree < <(
 ) || die "cannot resolve reviewed destination carrier commit"
 [[ "$dest_base_commit" == "$DEST_BASE_COMMIT" && "$dest_base_tree" == "$DEST_BASE_TREE" ]] \
   || die "destination reviewed carrier commit/tree mismatch"
+require_destination_branch_absent
 
 auth_mode=""
 if [[ "$main_protected" == "true" ]]; then
@@ -289,6 +304,7 @@ IFS=$'\t' read -r final_base_commit final_base_tree < <(
 [[ "$final_base_commit" == "$dest_base_commit" && "$final_base_commit" == "$DEST_BASE_COMMIT" \
     && "$final_base_tree" == "$dest_base_tree" && "$final_base_tree" == "$DEST_BASE_TREE" ]] \
   || die "reviewed destination carrier commit/tree is unavailable or changed"
+require_destination_branch_absent
 
 printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
   "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$destination_branch" \
