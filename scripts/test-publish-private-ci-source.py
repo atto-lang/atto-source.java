@@ -248,6 +248,17 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     {"type": "deletion"},
                 ],
             }
+        if route == ("repos/trusted/ci/rules/branches/"
+                     + TEST_BRANCH.replace("/", "%2F")):
+            return [
+                {"type": "update", "ruleset_id": 777,
+                 "ruleset_source_type": "Repository",
+                 "ruleset_source": "trusted/ci",
+                 "parameters": {"update_allows_fetch_and_merge": False}},
+                {"type": "deletion", "ruleset_id": 777,
+                 "ruleset_source_type": "Repository",
+                 "ruleset_source": "trusted/ci"},
+            ]
         if route == pub.at_ref("repos/trusted/ci/codeowners/errors", A):
             return {"errors": self.carrier_codeowners_errors}
         if route == "repos/trusted/ci/collaborators/ORESoftware/permission":
@@ -2418,6 +2429,80 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_carrier_source_ruleset_exact_contract_accepts(self):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             self.assertEqual(pub.require_carrier_source_ruleset("trusted/ci", 777), 777)
+
+    def test_effective_carrier_rules_require_exact_reviewed_ruleset(self):
+        valid = [
+            {"type": "update", "ruleset_id": 777,
+             "ruleset_source_type": "Repository",
+             "ruleset_source": "trusted/ci",
+             "parameters": {"update_allows_fetch_and_merge": False}},
+            {"type": "deletion", "ruleset_id": 777,
+             "ruleset_source_type": "Repository",
+             "ruleset_source": "trusted/ci"},
+        ]
+        with patch.object(pub, "gh_api", return_value=valid) as api:
+            self.assertEqual(
+                pub.require_effective_carrier_source_rules(
+                    "trusted/ci", TEST_BRANCH, 777), 777)
+            api.assert_called_once_with(
+                "repos/trusted/ci/rules/branches/"
+                + TEST_BRANCH.replace("/", "%2F"), root_type=list)
+
+        failures = []
+        failures.append(valid[:1])
+        wrong_id = json.loads(json.dumps(valid))
+        wrong_id[0]["ruleset_id"] = 778
+        failures.append(wrong_id)
+        wrong_source = json.loads(json.dumps(valid))
+        wrong_source[1]["ruleset_source"] = "other/ci"
+        failures.append(wrong_source)
+        mutable = json.loads(json.dumps(valid))
+        mutable[0]["parameters"]["update_allows_fetch_and_merge"] = True
+        failures.append(mutable)
+        duplicate = json.loads(json.dumps(valid))
+        duplicate.append(json.loads(json.dumps(valid[1])))
+        failures.append(duplicate)
+        for response in failures:
+            with self.subTest(response=response):
+                with patch.object(pub, "gh_api", return_value=response):
+                    with self.assertRaises(pub.Denied):
+                        pub.require_effective_carrier_source_rules(
+                            "trusted/ci", TEST_BRANCH, 777)
+
+    def test_effective_carrier_rules_rechecked_before_every_write(self):
+        original = self.fake_api
+        calls = {"effective": 0}
+        effective_route = (
+            "repos/trusted/ci/rules/branches/"
+            + TEST_BRANCH.replace("/", "%2F"))
+
+        def revoke_effective_rule(route, method="GET", payload=None, root_type=dict):
+            if route == effective_route:
+                calls["effective"] += 1
+                if calls["effective"] >= 2:
+                    self.route_calls.append((method, route, payload))
+                    return [
+                        {"type": "deletion", "ruleset_id": 777,
+                         "ruleset_source_type": "Repository",
+                         "ruleset_source": "trusted/ci"},
+                    ]
+            return original(route, method, payload)
+
+        with patch.object(pub, "gh_api", side_effect=revoke_effective_rule):
+            with self.assertRaisesRegex(pub.Denied, "not effective"):
+                pub.publish("trusted/ci", self.source, TEST_BRANCH,
+                            self.root, self.expected_tree, D)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_api_json_accepts_explicit_top_level_rule_array(self):
+        raw = (
+            '[{"type":"update","ruleset_id":777},'
+            '{"type":"deletion","ruleset_id":777}]')
+        self.assertEqual(
+            pub.strict_github_api_json(raw, root_type=list)[0]["type"],
+            "update")
+        with self.assertRaises(pub.Denied):
+            pub.strict_github_api_json(raw)
 
     def test_snapshot_branch_must_encode_source_and_carrier_main(self):
         with self.assertRaisesRegex(pub.Denied, "source and carrier-main SHAs"):
