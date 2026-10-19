@@ -223,6 +223,59 @@ public final class RecordFrontendSmoke {
                     .anyMatch(stmt -> stmt == proof.getKey());
             check(found, "proof must refer to an actual checked AST binding");
         }
+        // Short tuple syntax must produce the same AST-identity-bound proof
+        // as record/struct aliases; ownership must consume that exact proof.
+        String shortTuple = """
+                fnc get(): string {
+                    const Pair p = tuple(3.0, "second");
+                    const index = 1;
+                    return p[index];
+                }
+                """;
+        TypeChecker.TypeCheckResult checkedTuple =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse(shortTuple));
+        check(checkedTuple.shortInferredAliases().size() == 1,
+                "short tuple alias needs a typechecker-validated proof");
+        OwnershipChecker.check(checkedTuple.program(), checkedTuple.shortInferredAliases());
+        accepted(shortTuple);
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                    const Empty value = tuple();
+                    return;
+                }
+                """)), "empty short tuple alias must match explicit infer<T> tuple admission");
+        Ast.Program forgedEmptyTuple = Parser.parse("""
+                fnc bad(): void {
+                    const Empty value = tuple();
+                    return;
+                }
+                """);
+        Ast.BindingStmt forgedEmptyBinding = forgedEmptyTuple.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .flatMap(fn -> fn.body().stream())
+                .filter(Ast.BindingStmt.class::isInstance)
+                .map(Ast.BindingStmt.class::cast)
+                .findFirst()
+                .orElseThrow();
+        denied(() -> OwnershipChecker.check(
+                forgedEmptyTuple, Map.of(forgedEmptyBinding, "Empty")),
+                "ownership must reject a forged empty-tuple short-alias proof");
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(int index): int {
+                    const Pair p = tuple(3.0, "second");
+                    return p[index];
+                }
+                """)), "heterogeneous dynamic tuple must retain its union");
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(int index): void {
+                    val pair = tuple(1, 2);
+                    pair[index] = 3;
+                    return;
+                }
+                """)), "dynamic ordinary tuple writes are forbidden");
+
         System.out.println("RECORD_FRONTEND_SMOKE_PASS");
     }
 
