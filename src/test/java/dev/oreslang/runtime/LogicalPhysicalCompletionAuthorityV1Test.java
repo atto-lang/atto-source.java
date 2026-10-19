@@ -11,6 +11,17 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class LogicalPhysicalCompletionAuthorityV1Test {
     @Test
+    void productionMailboxHasNoSequenceOnlyCompletionSurface() {
+        for (var method : LogicalActorProxyMailboxV1.class.getDeclaredMethods()) {
+            if (!method.getName().equals("complete")) continue;
+            assertFalse(
+                    method.getParameterCount() == 1
+                            && method.getParameterTypes()[0] == long.class,
+                    "production mailbox must not expose a sequence-only ACK");
+        }
+    }
+
+    @Test
     void noPhysicalSubmissionCannotRefundCredits() {
         try (var mailbox = new LogicalActorProxyMailboxV1(2, 8, 16)) {
             var message = mailbox.admit(new byte[] {42});
