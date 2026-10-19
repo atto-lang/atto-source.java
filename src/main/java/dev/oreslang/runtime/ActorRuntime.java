@@ -8440,6 +8440,10 @@ public final class ActorRuntime implements AutoCloseable {
                 // Actor termination must still complete. Runtime cleanup hooks
                 // are best-effort and retryable by the process collector.
             }
+            // Preserve Group CONTROL and parent termination ordering:
+            // registry removal precedes user terminal Future notifications.
+            // A missing registry entry is NOT physical completion authority.
+            unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
             Throwable terminal = ref.terminationCause.get();
             if (!ref.readyFuture.isDone()) {
@@ -8459,7 +8463,6 @@ public final class ActorRuntime implements AutoCloseable {
             // ActorRef's physical retirement marker false until all of that
             // work is complete. If cleanup throws, fail closed and pin code
             // instead of certifying retirement from an absent registry entry.
-            unregisterActor(this);
             ref.physicallyFinalized.set(true);
             lifecycleLock.notifyAll();
         }
