@@ -1,0 +1,59 @@
+name: DOP tri-layout formal and host-refinement gates
+
+on:
+  pull_request:
+    paths:
+      - 'formal/tri_layout_model.py'
+      - 'formal/test_tri_layout_model.py'
+      - 'formal/TRI_LAYOUT_ECS_VERIFICATION.md'
+      - 'src/main/java/dev/oreslang/runtime/TriLayoutMotionStore.java'
+      - 'src/test/java/dev/oreslang/TriLayoutMotionStoreTest.java'
+      - 'src/test/java/dev/oreslang/TriLayoutMotionFormalRefinementTest.java'
+      - '.github/workflows/tri-layout-formal.yml'
+  push:
+    branches:
+      - 'feature/**'
+      - main
+    paths:
+      - 'formal/tri_layout_model.py'
+      - 'formal/test_tri_layout_model.py'
+      - 'formal/TRI_LAYOUT_ECS_VERIFICATION.md'
+      - 'src/main/java/dev/oreslang/runtime/TriLayoutMotionStore.java'
+      - 'src/test/java/dev/oreslang/TriLayoutMotionStoreTest.java'
+      - 'src/test/java/dev/oreslang/TriLayoutMotionFormalRefinementTest.java'
+      - '.github/workflows/tri-layout-formal.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  bounded-formal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Identify exact evaluated source
+        run: |
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+      - name: Exhaust all seven residency combinations, ECS permits and six broken models
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s formal -p test_tri_layout_model.py -v
+          python3 formal/tri_layout_model.py > /tmp/ores-layout-model-results.json
+          python3 -m json.tool /tmp/ores-layout-model-results.json >/dev/null
+  java-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Execute actual Java host layout reference
+        run: mvn -B -ntp -Dtest=TriLayoutMotionStoreTest,TriLayoutMotionFormalRefinementTest test
