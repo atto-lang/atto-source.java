@@ -29,7 +29,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.route_calls = []
         self.visibility = ["private"] * 100
         self.repo_ids = [424242] * 100
-        self.preflight = patch.object(pub, "require_preflight")
+        self.preflight = patch.object(pub, "require_preflight", return_value={"id": 424242})
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
         # The mock endpoint returns a fixed synthetic Git tree D. Existing
@@ -107,6 +107,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_repository_replacement_between_preflight_and_base_denied(self):
+        self.repo_ids = [313131]
+        with self.assertRaisesRegex(pub.Denied, "changed after reviewed preflight"):
+            self.publish()
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
 
     def test_same_slug_recreated_repository_id_rejected_before_next_blob(self):
         # Same name and private visibility are NOT an immutable identity.
@@ -541,7 +548,7 @@ class CommittedSourceTreeTests(unittest.TestCase):
             return [("hello.ores", b"post-attestation-modification", "100644")
                     if path == "hello.ores" else (path, data, mode)
                     for path, data, mode in output]
-        with patch.object(pub, "require_preflight"), \
+        with patch.object(pub, "require_preflight", return_value={"id": 424242}), \
              patch.object(pub, "collect_source", side_effect=mutate), \
              patch.object(pub, "gh_api", side_effect=AssertionError(
                  "no GitHub writes should occur")):
@@ -567,7 +574,7 @@ class CommittedSourceTreeTests(unittest.TestCase):
                 return {"sha": C}
             raise AssertionError("unexpected API access " + route)
 
-        with patch.object(pub, "require_preflight"), \
+        with patch.object(pub, "require_preflight", return_value={"id": 424242}), \
              patch.object(pub, "gh_api", side_effect=fake_api):
             with self.assertRaisesRegex(pub.Denied, "destination Git tree"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
