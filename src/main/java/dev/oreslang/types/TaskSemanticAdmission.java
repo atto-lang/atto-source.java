@@ -16,7 +16,7 @@ import java.util.Objects;
 public final class TaskSemanticAdmission {
     private static final int MAX_BOUNDARIES = 4_096;
     private static final int MAX_ENTRIES_PER_BOUNDARY = 4_096;
-    private static final int MAX_TOTAL_ENTRIES = 65_536;
+    private static final int MAX_TOTAL_ENTRIES = 4_096;
     private static final int MAX_NAME_CHARS = 256;
 
     public static final class Entry {
