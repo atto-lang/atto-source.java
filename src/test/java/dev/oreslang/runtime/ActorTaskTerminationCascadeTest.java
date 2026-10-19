@@ -200,6 +200,51 @@ final class ActorTaskTerminationCascadeTest {
     }
 
     @Test
+    void noTaskScopeActorStillWaitsForOwnedFutureCancellationCallbacks()
+            throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            OresFuture<Integer> pending = new OresFuture<>();
+            CountDownLatch admitted = new CountDownLatch(1);
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                // Deliberately never create an actor-owned TaskScope.
+                context.runtime().ownCurrentActorFuture(pending);
+                admitted.countDown();
+            });
+            actor.send(1);
+            assertTrue(admitted.await(5, TimeUnit.SECONDS));
+
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            pending.whenCompleteRuntime((value, failure) -> {
+                entered.countDown();
+                awaitUninterruptibly(release);
+            });
+
+            AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+            Thread stopper = new Thread(() -> {
+                try { actor.stop(); }
+                catch (Throwable failure) { stopFailure.set(failure); }
+            });
+            stopper.start();
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS),
+                        "owned-Future cancellation must reach its callback");
+                assertFalse(actor.done().isDone(),
+                        "actor without a TaskScope cannot bypass pending callback teardown");
+                assertFalse(actor.awaitTermination(0, TimeUnit.NANOSECONDS));
+            } finally {
+                release.countDown();
+            }
+            stopper.join(5000);
+            assertFalse(stopper.isAlive());
+            assertNull(stopFailure.get());
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(actor.done().isDone());
+        }
+    }
+
+    @Test
     void actorDoneWaitsForOwnedFutureCancellationCallbacksAfterTaskScopeJoin()
             throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
