@@ -112,6 +112,9 @@ jobs:
           report_path = Path("target/semantics-graal.json")
           junit_path = Path("target/surefire-reports/TEST-dev.oreslang.GraalI64RuntimeCharacterizationTest.xml")
           assert report_path.is_file() and junit_path.is_file(), "required evidence missing"
+          assert not report_path.is_symlink() and not junit_path.is_symlink(), "symlink evidence denied"
+          assert report_path.stat().st_size <= 1024 * 1024, "oversize conformance report"
+          assert junit_path.stat().st_size <= 1024 * 1024, "oversize JUnit report"
           suite = ET.parse(junit_path).getroot()
           assert int(suite.attrib.get("tests", "0")) >= 17, "fewer than 16 numeric + 1 divisor checks"
           for field in ("errors", "failures", "skipped"):
@@ -125,11 +128,15 @@ jobs:
           ids = [item["id"] for item in report["results"]]
           assert len(set(ids)) == 15
           assert all(item["status"] == "pass" for item in report["results"]), "pending/failing case"
-          assert os.popen("git rev-parse 'HEAD^{tree}'").read().strip() == os.environ["APPROVED_TREE"]
+          import subprocess
+          observed_tree = subprocess.check_output(
+              ["git", "-c", "core.fsmonitor=false", "rev-parse", "HEAD^{tree}"],
+              text=True).strip()
+          assert observed_tree == os.environ["APPROVED_TREE"], "source tree changed"
           print("GRAAL_I64_SOURCE_LOCAL_EVIDENCE_PASS; no cross-org source transfer")
           PY
-      - name: Upload bounded private test receipts only
-        if: always()
+      - name: Upload bounded private test receipts only after all evidence gates pass
+        if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: graal-i64-private-${{ github.run_id }}-${{ github.run_attempt }}
