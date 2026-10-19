@@ -163,11 +163,11 @@ final class NativeOtpBehaviorSlicesTest {
             ByteArrayOutputStream err = new ByteArrayOutputStream();
             LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
                     ExecutionProfile.serverJit(), out, err);
-            assertEquals(String.join("\\n", List.of(
+            assertEquals(String.join("\n", List.of(
                     "true", "false", "false", "false", "false",
                     "true", "false", "true", "true", "true",
                     "false", "true", "true", "false")),
-                    out.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""),
+                    out.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                     () -> err.toString(StandardCharsets.UTF_8));
         } finally {
             Files.deleteIfExists(entry);
