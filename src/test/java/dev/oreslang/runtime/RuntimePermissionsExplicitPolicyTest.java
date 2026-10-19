@@ -50,6 +50,22 @@ class RuntimePermissionsExplicitPolicyTest {
         assertFalse(reconstructed.allows(RuntimePermissions.Permission.NET, "127.0.0.1:7778"));
     }
 
+    @Test void ipv6ScopedPermissionRoundTripKeepsPortBoundary() {
+        IsolatePolicy networkPolicy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.NETWORK);
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "[::1]:7777");
+        RuntimePermissions restored = RuntimePermissions.fromApplicationArguments(
+                policy.applicationArguments(), networkPolicy);
+
+        assertTrue(restored.allows(
+                RuntimePermissions.Permission.NET, "[::1]:7777"));
+        assertFalse(restored.allows(
+                RuntimePermissions.Permission.NET, "[::1]:7778"));
+        assertFalse(restored.allows(
+                RuntimePermissions.Permission.NET, "[::2]:7777"));
+    }
+
     @Test void deterministicScopedPermissionRoundTripsNeverWidenGrants() {
         java.util.Random random = new java.util.Random(20261011L);
         for (int index = 0; index < 100; index++) {
