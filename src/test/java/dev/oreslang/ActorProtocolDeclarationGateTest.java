@@ -181,6 +181,28 @@ final class ActorProtocolDeclarationGateTest {
     }
 
     @Test
+    void injectedOrdinaryClassCannotCarryActorTransportMetadata() {
+        Ast.Program parsed = Parser.parse("define class Ordinary as end");
+        Ast.ModuleDecl module = parsed.modules().getFirst();
+        Ast.ClassDecl ordinary = (Ast.ClassDecl) module.declarations().getFirst();
+        Ast.ActorSpecialization invalid = new Ast.ActorSpecialization(
+                Ast.ActorReplyRole.UNARY, Ast.ActorTransport.HTTP,
+                Ast.ActorDirection.INBOUND, true, List.of(), List.of(), List.of());
+        Ast.ClassDecl forged = new Ast.ClassDecl(
+                ordinary.name(), ordinary.visibility(), ordinary.isAbstract(),
+                ordinary.actorKind(), ordinary.genericParameters(), ordinary.parents(),
+                ordinary.interfaces(), ordinary.fields(), ordinary.constructor(),
+                ordinary.methods(), invalid);
+        Ast.ModuleDecl changed = new Ast.ModuleDecl(
+                module.name(), module.annotations(), module.contracts(), List.of(forged));
+        Ast.Program injected = new Ast.Program(
+                parsed.namespace(), parsed.imports(), List.of(changed));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(injected));
+        assertTrue(error.getMessage().contains("cannot carry actor transport specialization"));
+    }
+
+    @Test
     void legacyActorsRemainUnspecializedAndContextualNamesRemainIdentifiers() {
         Ast.ClassDecl klass = actor("define actor Worker as end");
         assertEquals(Ast.ActorSpecialization.defaultSpec(), klass.actorSpecialization());
