@@ -1144,6 +1144,19 @@ public final class Ast {
             java.util.Set<String> visible = KEYS.get(new IdentityKey(original, null));
             Integer fixed = TUPLE_SLOTS.get(new IdentityKey(original, null));
 
+            // A clone of an unchecked source must not acquire the authority
+            // already attached to an unrelated, checked destination site.
+            // In particular, do not treat an existing target proof as evidence
+            // that the original was checked. A no-proof -> no-proof clone
+            // remains legal for ordinary sequence indexing.
+            if (visible == null && fixed == null) {
+                IdentityKey target = new IdentityKey(rewritten, null);
+                if (KEYS.containsKey(target) || TUPLE_SLOTS.containsKey(target)) {
+                    throw new IllegalStateException(
+                            "unchecked indexing rewrite cannot inherit target proof");
+                }
+            }
+
             // The proof is for a statically typed receiver view, not for an
             // arbitrary object with the same key names. A rewrite that changes
             // the receiver expression must obtain a fresh type/ownership check,
