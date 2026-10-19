@@ -2132,9 +2132,12 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
             ActorCell<?> cell = actors.get(id);
-            if (cell == null) return true;
-            cell.awaitFinalized(unit.toNanos(timeout));
-            return cell.finalized();
+            // Registry removal happens before final done-Future publication.
+            // Absence from the actors map, or finalized=true, must not forge
+            // a successful await while terminal callbacks are still pending.
+            if (cell != null) cell.awaitFinalized(unit.toNanos(timeout));
+            else awaitTerminalObservation(doneFuture, unit.toNanos(timeout));
+            return doneFuture.isDone();
         }
 
         public void send(M message) {
@@ -7281,19 +7284,29 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+    /**
+     * Wait for a terminal actor witness, not an earlier deregistration or
+     * finalizer claim. Failure is a completed termination, not a wait failure.
+     * This helper never blocks an actor carrier: callers must have passed
+     * their existing host-only blocking admission checks.
+     */
+    private static void awaitTerminalObservation(
+            OresFuture<Void> terminal, long remainingNanos)
+            throws InterruptedException {
+        if (terminal.isDone() || remainingNanos <= 0L) return;
+        try {
+            terminal.get(remainingNanos, TimeUnit.NANOSECONDS);
+        } catch (java.util.concurrent.ExecutionException
+                 | java.util.concurrent.TimeoutException ignored) {
+            // Failed actor termination is still complete; timeout is observed
+            // by inspecting terminal.isDone() after this call.
+        }
+    }
+
         private void awaitFinalized(long remainingNanos) throws InterruptedException {
-            // An exit hook runs on this finalizer; synchronously stopping the
-            // same actor from that hook cannot wait for itself to finish.
+            // An exit hook executes on the terminal finalizer itself.
             if (Thread.currentThread() == finalizerThread) return;
-            long deadline = System.nanoTime() + Math.max(0L, remainingNanos);
-            synchronized (lifecycleLock) {
-                while (!finalized) {
-                    long remaining = deadline - System.nanoTime();
-                    if (remaining <= 0) return;
-                    long millis = Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remaining));
-                    lifecycleLock.wait(millis);
-                }
-            }
+            awaitTerminalObservation(ref.doneFuture, remainingNanos);
         }
 
         private void cancelQueuedScheduleOnShutdown() {
