@@ -945,6 +945,24 @@ public final class OresEvalRootNode extends RootNode {
             env.define(binding.name(), value, binding.kind(), view);
         }
 
+        private Ast.ClassDecl objectDestructureStaticClassView(
+                Ast.Expr sourceExpression,
+                String memberName,
+                Env env) {
+            Ast.ClassDecl sourceClass = staticClassView(sourceExpression, env);
+            if (sourceClass == null) return null;
+            OwnedField field = findField(
+                    sourceClass, memberName, new LinkedHashSet<>());
+            if (field == null) return null;
+            if (field.field().type() != null) {
+                return staticClassView(field.field().type());
+            }
+            return field.field().initializer() == null
+                    ? null
+                    : staticClassView(field.field().initializer(), env);
+        }
+
+
         private void bindCallableArguments(
                 Env env,
                 List<Ast.Param> parameters,
@@ -2091,13 +2109,22 @@ public final class OresEvalRootNode extends RootNode {
                                         for (Ast.DestructureBinding binding :
                                                 destructure.bindings()) {
                                             if (!binding.isDiscard()) {
+                                                Object bound = destructureMember(
+                                                        value,
+                                                        binding.name(),
+                                                        env);
+                                                Ast.ClassDecl staticView =
+                                                        binding.rest()
+                                                                ? null
+                                                                : objectDestructureStaticClassView(
+                                                                        destructure.initializer(),
+                                                                        binding.name(),
+                                                                        env);
                                                 env.define(
                                                         binding.name(),
-                                                        destructureMember(
-                                                                value,
-                                                                binding.name(),
-                                                                env),
-                                                        binding.kind());
+                                                        bound,
+                                                        binding.kind(),
+                                                        staticView);
                                             }
                                         }
                                     }
@@ -5433,7 +5460,17 @@ public final class OresEvalRootNode extends RootNode {
                         Object bound = binding.rest()
                                 ? destructureRestObject(value, selectedMembers)
                                 : destructureMember(value, binding.name(), env);
-                        env.define(binding.name(), bound, binding.kind());
+                        Ast.ClassDecl staticView = binding.rest()
+                                ? null
+                                : objectDestructureStaticClassView(
+                                        destructure.initializer(),
+                                        binding.name(),
+                                        env);
+                        env.define(
+                                binding.name(),
+                                bound,
+                                binding.kind(),
+                                staticView);
                     }
                 }
                 return;
