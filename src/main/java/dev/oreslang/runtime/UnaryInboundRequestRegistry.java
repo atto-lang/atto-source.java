@@ -48,11 +48,16 @@ final class UnaryInboundRequestRegistry implements AutoCloseable {
             throw new SecurityException("stale, duplicate or non-monotonic unary request ID");
         if (payloadBytes < 0 || payloadBytes > UnaryTransportFrame.MAX_PAYLOAD_BYTES)
             throw new IllegalArgumentException("invalid inbound unary payload size");
+
+        // Once an authenticated, syntactically valid request header is observed,
+        // its correlation ID is consumed even if bounded admission rejects the
+        // body. The transport may already publish a terminal overload ERROR; a
+        // lost ERROR must never make replaying the same ID executable later.
+        highWaterRequestId = requestId;
         if (pending.size() >= requestCapacity) return false;
         if (payloadBytes > byteCapacity - activePayloadBytes) return false;
 
         pending.put(requestId, new Pending(payloadBytes));
-        highWaterRequestId = requestId;
         activePayloadBytes += payloadBytes;
         return true;
     }
