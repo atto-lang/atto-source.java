@@ -50,6 +50,11 @@ jobs:
         run: |
           mvn -B -ntp -DskipTests package
           mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
+      - name: Execute byte-identical common-source v1 scalar through real JVM guest
+        run: |
+          python3 tests/test_native_guest_parity_v1_java.py \
+            --repo-root "$PWD" \
+            --java-probe "$PWD/contracts/v1/java_probe.py"
       - name: Validate Java compiler admission
         run: python3 contracts/v1/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --report target/conformance-graal.json
       - name: Real Java compiler AI smoke (source acceptance, rejection, native guest exit)
