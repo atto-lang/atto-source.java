@@ -102,8 +102,22 @@ final class TaskTransferProvenanceTest {
                     }
                     """)));
         assertTrue(
-                failure.getMessage().contains("move-only projection"),
+                failure.getMessage().contains("field/index projection"),
                 failure::getMessage);
+
+        IllegalArgumentException wrapped = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse("""
+                    pub fnc main(): void {
+                        let nested = arr[arr[1, 2], arr[3, 4]];
+                        let Task<int> result =
+                            (async task |Array<int> value| -> { return 1; })(rt take nested[0]);
+                        return;
+                    }
+                    """)));
+        assertTrue(
+                wrapped.getMessage().contains("field/index projection"),
+                wrapped::getMessage);
     }
 
     @Test
