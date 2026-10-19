@@ -4,3 +4,4 @@
 # Format: exact owner/repo followed by one space and immutable numeric GitHub repository ID.
 # Example (not approved): reviewed-org/private-runner 123456789
 # Name-only entries, extra whitespace, duplicate IDs, and wildcards are forbidden.
+fiducia-cloud-test/java-client-consumer 1323679401
