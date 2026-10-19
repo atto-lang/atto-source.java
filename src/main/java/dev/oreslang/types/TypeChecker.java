@@ -2007,6 +2007,39 @@ public final class TypeChecker {
                     typeMlScalarIntrinsic(call, env, generics, self);
             if (mlScalarIntrinsic != null) return mlScalarIntrinsic;
 
+            if (call.callee() instanceof Ast.MemberExpr stdioCall
+                    && stdioCall.receiver() instanceof Ast.NameExpr stdio
+                    && stdio.name().equals("stdio")
+                    && env.lookup("stdio") == null
+                    && (stdioCall.member().equals("print")
+                            || stdioCall.member().equals("println"))) {
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "stdio." + stdioCall.member() + " expects exactly one value");
+                }
+                Type value = typeOf(call.arguments().getFirst(), env, generics, self);
+                rejectMlCapabilityStorage(value, "stdio." + stdioCall.member());
+                return Primitive.VOID;
+            }
+            if (call.callee() instanceof Ast.MemberExpr stdoutCall
+                    && stdoutCall.receiver() instanceof Ast.MemberExpr stdout
+                    && stdout.receiver() instanceof Ast.NameExpr stdio
+                    && stdio.name().equals("stdio")
+                    && env.lookup("stdio") == null
+                    && stdout.member().equals("stdout")
+                    && (stdoutCall.member().equals("write")
+                            || stdoutCall.member().equals("println"))) {
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "stdio.stdout." + stdoutCall.member()
+                                    + " expects exactly one value");
+                }
+                Type value = typeOf(call.arguments().getFirst(), env, generics, self);
+                rejectMlCapabilityStorage(
+                        value, "stdio.stdout." + stdoutCall.member());
+                return Primitive.VOID;
+            }
+
             if (call.callee() instanceof Ast.MemberExpr intrinsic
                     && intrinsic.member().equals("handle_state")
                     && intrinsic.receiver() instanceof Ast.NameExpr receiverName
