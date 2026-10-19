@@ -68,7 +68,7 @@ public final class TriLayoutMotionStore implements AutoCloseable {
             throw new IllegalArgumentException("capacity must be positive; tile must be power of two in [2,1024]");
         }
         if (budgetBytes < 0) throw new IllegalArgumentException("negative region memory budget");
-        if (layouts == null || layouts.isEmpty() || layouts.contains(null)) {
+        if (layouts == null || layouts.isEmpty() || layouts.stream().anyMatch(Objects::isNull)) {
             throw new IllegalArgumentException("nonempty nonnull layout residency is required");
         }
         this.resident = EnumSet.copyOf(layouts);
@@ -133,7 +133,7 @@ public final class TriLayoutMotionStore implements AutoCloseable {
     }
 
     private static Layout firstLayout(Set<Layout> layouts) {
-        if (layouts == null || layouts.isEmpty() || layouts.contains(null)) {
+        if (layouts == null || layouts.isEmpty() || layouts.stream().anyMatch(Objects::isNull)) {
             throw new IllegalArgumentException("nonempty nonnull layout residency is required");
         }
         return EnumSet.copyOf(layouts).iterator().next();
