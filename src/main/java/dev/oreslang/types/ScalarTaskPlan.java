@@ -22,7 +22,7 @@ public final class ScalarTaskPlan {
                 || !(returned.value() instanceof Ast.LiteralExpr
                     || returned.value() instanceof Ast.NameExpr)) {
             throw new IllegalArgumentException(
-                    "guest scalar nb requires one return of a scalar literal or copied local name");
+                    "guest scalar task requires one return of a scalar literal or copied local name");
         }
         return returned.value();
     }
