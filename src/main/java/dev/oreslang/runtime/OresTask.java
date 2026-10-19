@@ -92,7 +92,12 @@ public final class OresTask<T> implements Awaitable<T> {
 
     /** Internal scope path: revoke now, deliver host waiters after siblings. */
     Runnable cancelDeferredNotification() {
-        return completion().cancelDeferredNotification();
+        // An owner shell is published in the tree BEFORE executor admission.
+        // Atomic subtree cancellation may snapshot it while the scheduler is
+        // still outside the tree lock and no completion Future exists yet.
+        // The admitting thread replays revocation after attaching completion.
+        OresFuture<T> attached = completion;
+        return attached == null ? null : attached.cancelDeferredNotification();
     }
 
     /**
