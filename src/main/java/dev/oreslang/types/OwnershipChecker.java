@@ -59,8 +59,7 @@ public final class OwnershipChecker {
      * ThreadSafetyTraits; this ledger records only successfully checked
      * copy/unique-transfer provenance for the exact scheduled AST boundary.
      */
-    private final TaskTransferProvenance taskTransferProvenance =
-            new TaskTransferProvenance();
+    private final TaskTransferProvenance taskTransferProvenance;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -68,6 +67,9 @@ public final class OwnershipChecker {
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
 
     private OwnershipChecker(Ast.Program program) {
+        taskTransferProvenance =
+                new TaskTransferProvenance(
+                        java.util.Objects.requireNonNull(program, "program"));
         // Array/List have checked unique ownership moves in this syntax pass.
         // This is deny-only preflight, not a semantic Send grant or runtime
         // worker-scheduler/actor authority.
