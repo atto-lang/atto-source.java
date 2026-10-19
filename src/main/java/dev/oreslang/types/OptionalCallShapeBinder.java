@@ -403,7 +403,7 @@ public final class OptionalCallShapeBinder {
                 // Reject all unlowered optional, non-literal or dynamic calls
                 // before executing ANY initializer or guest side effect.
                 throw new IllegalArgumentException(
-                        "staged named/optional calls require checked Option<T> ABI lowering");
+                        "staged named/optional calls are not yet enabled without checked Option<T> ABI lowering");
             }
             // This narrow exception is only syntactic. Type, ownership and
             // runtime phases each independently resolve and recheck the target.
