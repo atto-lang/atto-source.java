@@ -186,8 +186,8 @@ public final class AsyncRuntime implements AutoCloseable {
             // Never claim physical exit when a carrier already entered.
             if (admission.exit.state.compareAndSet(0, 2)) {
                 OresFuture<?> registered = admission.exit.completion;
-                if (registered != null) taskExits.remove(registered, admission.exit);
                 admission.exit.markExited();
+                if (registered != null) taskExits.remove(registered, admission.exit);
             }
             throw failure;
         }
@@ -214,8 +214,8 @@ public final class AsyncRuntime implements AutoCloseable {
             Future<?> carrier = backing.getAndSet(null);
             if (carrier != null) carrier.cancel(true);
             if (exit.state.compareAndSet(0, 2)) {
-                taskExits.remove(exit.completion, exit);
                 exit.markExited();
+                taskExits.remove(exit.completion, exit);
             }
         });
         exit.completion = completion;
@@ -237,21 +237,23 @@ public final class AsyncRuntime implements AutoCloseable {
                     // TurnExecutor has returned, including its context leave.
                     backing.set(null);
                     exit.state.set(2);
-                    taskExits.remove(completion, exit);
                     exit.markExited();
+                    taskExits.remove(completion, exit);
                 }
             });
         } catch (RejectedExecutionException rejected) {
-            taskExits.remove(completion, exit);
             exit.state.set(2);
             exit.markExited();
+            taskExits.remove(completion, exit);
             throw new RejectedExecutionException("async runtime is closed", rejected);
         }
         backing.set(scheduled);
         if (completion.isCancelled()) {
             scheduled.cancel(true);
-            if (exit.state.compareAndSet(0, 2)) exit.markExited();
-            if (exit.state.get() == 2) taskExits.remove(completion, exit);
+            if (exit.state.compareAndSet(0, 2)) {
+                exit.markExited();
+                taskExits.remove(completion, exit);
+            }
         }
 
         // Close may race submission after the initial check.
