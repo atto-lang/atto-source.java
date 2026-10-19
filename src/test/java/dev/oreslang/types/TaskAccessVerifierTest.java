@@ -198,6 +198,24 @@ final class TaskAccessVerifierTest {
                 () -> admit(ledger, List.of(write(otherDomain))));
     }
 
+    @Test void allocationIdentityCannotChangeItsUniquenessProof() {
+        var ledger = new TaskAccessVerifier();
+        var proven = TaskAccessVerifier.Place.whole(WORLD);
+        var admission = admit(ledger, List.of(read(proven)));
+        release(admission);
+
+        var downgraded = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root(
+                        "PROCESS", "PROCESS", 31, 1, false));
+        assertThrows(IllegalStateException.class, () ->
+                ledger.admitScopedTyped(
+                        List.of(new TaskAccessVerifier.TypedClaim(
+                                read(downgraded), Types.Primitive.INT)),
+                        CORE,
+                        ignored -> Types.Primitive.INT));
+        assertEquals(0, ledger.activeChildren());
+    }
+
     @Test void staleGenerationAndBarrierCannotRerouteLiveLoans() {
         var ledger = new TaskAccessVerifier();
         var original = TaskAccessVerifier.Place.whole(WORLD);
