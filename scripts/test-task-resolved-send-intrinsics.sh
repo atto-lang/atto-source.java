@@ -10,7 +10,10 @@ javac --release 21 -Xlint:all -Werror -d "$out" \
   src/main/java/dev/oreslang/types/Types.java \
   src/main/java/dev/oreslang/types/ThreadSafetyTraits.java \
   src/main/java/dev/oreslang/types/TaskCaptureAnalysis.java \
+  src/main/java/dev/oreslang/types/TaskTransferProvenance.java \
   src/test/java/dev/oreslang/types/TaskResolvedSendIntrinsicSmoke.java \
-  src/test/java/dev/oreslang/types/TaskCaptureAnalysisSmoke.java
+  src/test/java/dev/oreslang/types/TaskCaptureAnalysisSmoke.java \
+  src/test/java/dev/oreslang/types/TaskTransferProvenanceSmoke.java
 java -ea -cp "$out" dev.oreslang.types.TaskResolvedSendIntrinsicSmoke
 java -ea -cp "$out" dev.oreslang.types.TaskCaptureAnalysisSmoke
+java -ea -cp "$out" dev.oreslang.types.TaskTransferProvenanceSmoke
