@@ -46,7 +46,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
             return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
-                        private=True, default_branch="main", id=779)
+                        private=True, default_branch="main", id=779,
+                        archived=False, disabled=False)
+        if route == "repos/" + pub.pinned.SOURCE_REPO:
+            return dict(full_name=pub.pinned.SOURCE_REPO,
+                        id=pub.pinned.SOURCE_ID, visibility="private",
+                        private=True, archived=False, disabled=False)
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
@@ -447,6 +452,47 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
         writes = [route for method, route, _ in self.route_calls if method == "POST"]
         self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+
+    def test_unapproved_source_never_executes_legacy_policy_shell(self):
+        with patch.object(pub.pinned, "verify",
+                          side_effect=pub.pinned.AdmissionDenied("source not admitted")):
+            with patch.object(pub, "require_preflight",
+                              side_effect=AssertionError("unsafe shell guard ran")):
+                with self.assertRaisesRegex(pub.Denied, "identity gate refused"):
+                    self.publish()
+        self.assertFalse(self.route_calls)
+
+    def test_source_visibility_flip_aborts_after_first_blob(self):
+        original = self.fake_api
+        flipped = [False]
+        def source_flip(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs" and method == "POST":
+                flipped[0] = True
+            if route == "repos/" + pub.pinned.SOURCE_REPO and flipped[0]:
+                return dict(result, visibility="public", private=False)
+            return result
+        with patch.object(pub, "gh_api", side_effect=source_flip):
+            with self.assertRaisesRegex(pub.Denied, "source identity"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+        self.assertEqual([route for method, route, _ in self.route_calls
+                          if method == "POST"], ["repos/trusted/ci/git/blobs"])
+
+    def test_destination_disabled_aborts_after_first_blob(self):
+        original = self.fake_api
+        disabled = [False]
+        def destination_disable(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs" and method == "POST":
+                disabled[0] = True
+            if route == "repos/trusted/ci" and disabled[0]:
+                return dict(result, disabled=True)
+            return result
+        with patch.object(pub, "gh_api", side_effect=destination_disable):
+            with self.assertRaisesRegex(pub.Denied, "destination identity"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+        self.assertEqual([route for method, route, _ in self.route_calls
+                          if method == "POST"], ["repos/trusted/ci/git/blobs"])
 
     def test_mirror_tree_sha_mismatch_blocks_commit_and_ref(self):
         original = self.fake_api
