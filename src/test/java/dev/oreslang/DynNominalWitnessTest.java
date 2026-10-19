@@ -66,6 +66,18 @@ final class DynNominalWitnessTest {
     }
 
     @Test
+    void runtimeCastCannotForgeDynWitness() {
+        String source = API + """
+                fnc unsafe(Database database): dyn Deployable {
+                    return database as dyn Deployable;
+                }
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("runtime"), error::getMessage);
+    }
+
+    @Test
     void dynCannotEscapeThroughGenericChannelAlias() {
         String source = API + """
                 define type Payload<T> = List<T>;
