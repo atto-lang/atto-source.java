@@ -309,9 +309,12 @@ final class LogicalSourceActorProxyBridgeV1Test {
                     leaf = leaf.childScope();
                 }
                 assertTrue(root.physicallyQuiescent());
+                assertEquals(1, root.retainedChildScopesForTesting());
                 root.close();
                 assertTrue(root.physicallyQuiescent());
                 assertTrue(leaf.physicallyQuiescent());
+                assertEquals(0, root.retainedChildScopesForTesting(),
+                        "fully closed deep trees must not leak strong child refs");
             }
         }
     }
@@ -374,6 +377,9 @@ final class LogicalSourceActorProxyBridgeV1Test {
                         "close return must reconcile owned slot records");
                 assertTrue(child.physicallyQuiescent());
                 assertTrue(grandchild.physicallyQuiescent());
+                assertEquals(0, root.retainedChildScopesForTesting(),
+                        "physically joined children must not remain retained");
+                assertEquals(0, child.retainedChildScopesForTesting());
                 assertThrows(java.util.concurrent.RejectedExecutionException.class,
                         () -> grandchild.start(scheduler,
                                 resume -> OresScheduler.done(3)));
