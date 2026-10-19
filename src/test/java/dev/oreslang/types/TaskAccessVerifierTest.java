@@ -432,7 +432,7 @@ final class TaskAccessVerifierTest {
         var verifier = new TaskAccessVerifier();
         var requested = java.util.Collections.nCopies(
                 1025, read(TaskAccessVerifier.Place.whole(WORLD)));
-        assertThrows(IllegalStateException.class, () -> verifier.admit(requested));
+        assertThrows(IllegalStateException.class, () -> admit(verifier, requested));
         assertEquals(0, verifier.activeChildren());
         var a = admit(verifier, List.of(read(TaskAccessVerifier.Place.whole(WORLD))));
         assertNotNull(a);
