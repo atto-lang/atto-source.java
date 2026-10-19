@@ -4947,6 +4947,18 @@ public final class TypeChecker {
             boolean returnPosition,
             String where) {
         if (returnPosition && type == Primitive.VOID) return;
+        // First prove transferable ownership independently from actor transport.
+        // A class's nominal Send proof is deliberately restricted to the
+        // existing transitively owned/data-only class analysis. Source-level
+        // unsafe auto-trait overrides are not supported.
+        if (!SendSyncTraits.isSend(type, (nominal, trait) ->
+                trait == SendSyncTraits.Trait.SEND
+                        && isSharedSafe(nominal, new LinkedHashSet<>(), Map.of()))) {
+            throw new IllegalArgumentException(
+                    where + " is not Send across an async Task boundary; "
+                            + "transfer owned data, not thread-affine capabilities, "
+                            + "unguarded state aliases, or unresolved types");
+        }
         // A typed channel handle is an Ores-owned synchronized transport, not
         // an actor/mailbox capability. Async tasks may receive the handle when
         // its payload is concrete, owned and task-safe. Actor boundaries retain
