@@ -51,6 +51,13 @@ public final class OwnershipChecker {
      * This preflight does not enable guest Task execution.
      */
     private final SendSyncTraits taskSendSyntaxPreflight;
+    /**
+     * Ownership-only proof ledger. Type-level Send remains exclusively owned by
+     * ThreadSafetyTraits; this ledger records only successfully checked
+     * copy/unique-transfer provenance for the exact scheduled AST boundary.
+     */
+    private final TaskTransferProvenance taskTransferProvenance =
+            new TaskTransferProvenance();
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -66,10 +73,26 @@ public final class OwnershipChecker {
         index(program);
     }
 
+    public record CheckResult(
+            Ast.Program program,
+            TaskTransferProvenance taskTransfers) { }
+
     public static Ast.Program check(Ast.Program program) {
+        return checkWithTaskTransferProvenance(program).program();
+    }
+
+    /**
+     * Full ownership admission plus compiler-minted Task transfer provenance.
+     * The returned ledger is sealed and can only describe boundaries from this
+     * exact checked AST instance. It is not a Send/Sync proof.
+     */
+    public static CheckResult checkWithTaskTransferProvenance(
+            Ast.Program program) {
         OwnershipChecker checker = new OwnershipChecker(program);
         checker.validate(program);
-        return program;
+        return new CheckResult(
+                program,
+                checker.taskTransferProvenance.seal());
     }
 
     /** Reuse only public, explicitly linked class layouts for cross-file loans. */
@@ -398,7 +421,7 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.TaskBlockStmt task) {
-            checkTaskBody(task.body(), scope);
+            checkTaskBody(task, task.body(), scope);
             return;
         }
         if (stmt instanceof Ast.BlockStmt block) {
@@ -1354,7 +1377,9 @@ public final class OwnershipChecker {
                     : Ast.TypeRef.recordType(members);
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
-        if (expr instanceof Ast.TaskExpr task) return checkTaskBody(task.body(), scope);
+        if (expr instanceof Ast.TaskExpr task) {
+            return checkTaskBody(task, task.body(), scope);
+        }
         if (expr instanceof Ast.SuspendsLambdaExpr) {
             // No callable-effect type, typed continuation re-entry point or
             // lifetime proof exists yet for a first-class suspends closure.
@@ -1379,10 +1404,12 @@ public final class OwnershipChecker {
         // arguments at the spawn boundary. Treating these as dynamic calls
         // would silently admit borrowed operands and actor-private aliases.
         if (call.callee() instanceof Ast.TaskLambdaExpr task) {
-            return checkScheduledLambdaCall(task.lambda(), call.arguments(), scope, true);
+            return checkScheduledLambdaCall(
+                    call, task.lambda(), call.arguments(), scope, true);
         }
         if (call.callee() instanceof Ast.AsyncLambdaExpr async) {
-            return checkScheduledLambdaCall(async.lambda(), call.arguments(), scope, false);
+            return checkScheduledLambdaCall(
+                    call, async.lambda(), call.arguments(), scope, false);
         }
         // A constructor owns an unpublished, incompletely initialized object.
         // Calling any instance method on self can transitively read absent
@@ -1826,14 +1853,17 @@ public final class OwnershipChecker {
      * the exact generic Task<T>/Future<T> inference and source execution gate.
      */
     private ValueInfo checkScheduledLambdaCall(
-            Ast.LambdaExpr lambda, List<Ast.Expr> arguments, Scope scope,
+            Ast.CallExpr boundary,
+            Ast.LambdaExpr lambda,
+            List<Ast.Expr> arguments,
+            Scope scope,
             boolean task) {
         if (lambda.parameters().size() != arguments.size()) {
             throw error("async/Task lambda expected " + lambda.parameters().size()
                     + " arguments but received " + arguments.size());
         }
         rejectBorrowedScheduledParameters(lambda);
-        validateScheduledCaptures(lambda, scope);
+        CaptureSet captures = validateScheduledCaptures(lambda, scope);
         // Scheduled lambda parameters also move into a worker-owned activation.
         // This AST pass can only reject obvious non-candidates. A later resolved
         // ThreadSafetyTraits check must authorize the actual transfer.
@@ -1844,8 +1874,11 @@ public final class OwnershipChecker {
             }
         }
         checkLambda(lambda, scope, null);
+        ArrayList<TaskTransferProvenance.Transfer> transfers =
+                scheduledCaptureTransfers(captures);
         for (int i = 0; i < arguments.size(); i++) {
-            ValueInfo value = checkExpr(arguments.get(i), scope, true);
+            Ast.Expr argument = arguments.get(i);
+            ValueInfo value = checkExpr(argument, scope, true);
             if (isBorrowValue(value) || containsBorrowType(value.type)) {
                 throw error("async/Task argument " + i
                         + " cannot be borrowed; move/copy/share an owned value");
@@ -1858,7 +1891,16 @@ public final class OwnershipChecker {
                 throw error("scheduled lambda argument " + i
                         + " fails conservative Task Send preflight for owned transfer; resolved ThreadSafetyTraits remains authoritative");
             }
+            if (value.kind == ValueKind.MOVE_ONLY
+                    && (argument instanceof Ast.MemberExpr
+                        || argument instanceof Ast.IndexExpr)) {
+                throw error("scheduled lambda argument " + i
+                        + " cannot transfer a move-only projection until projection-level move tracking exists; move it into a named local first");
+            }
+            transfers.add(scheduledArgumentTransfer(
+                    i, argument, value, scope));
         }
+        taskTransferProvenance.record(boundary, transfers);
         Ast.TypeRef result = Ast.TypeRef.inferred();
         // A lambda whose body explicitly returns a Task creates a genuine
         // nested Task, whether its own scheduling layer is async Future or
@@ -2500,7 +2542,8 @@ public final class OwnershipChecker {
      * an escaping zero-argument closure before Task submission: this moves
      * affine captures now and rejects borrows, actor self and MutexGuards.
      */
-    private ValueInfo checkTaskBody(List<Ast.Stmt> body, Scope outer) {
+    private ValueInfo checkTaskBody(
+            Object boundary, List<Ast.Stmt> body, Scope outer) {
         if (initializingClass != null) {
             throw error("Task cannot launch from a partially initialized constructor");
         }
@@ -2508,8 +2551,11 @@ public final class OwnershipChecker {
             throw error("Task cannot launch while a MutexGuard/critical section is live");
         }
         Ast.LambdaExpr block = new Ast.LambdaExpr(List.of(), null, body);
-        validateScheduledCaptures(block, outer);
+        CaptureSet captures = validateScheduledCaptures(block, outer);
         checkLambda(block, outer, null);
+        taskTransferProvenance.record(
+                boundary,
+                scheduledCaptureTransfers(captures));
         return new ValueInfo(new Ast.TypeRef(
                 "Task", List.of(Ast.TypeRef.inferred()), false), ValueKind.MOVE_ONLY, null);
     }
@@ -2520,8 +2566,11 @@ public final class OwnershipChecker {
      * resolved ThreadSafetyTraits, lifetime/actor/guard checks, nor mint runtime
      * execution/actor sharing permissions.
      */
-    private void validateScheduledCaptures(Ast.LambdaExpr lambda, Scope outer) {
-        if (lambda.nonLexical() || outer.descendantsNonLexical()) return;
+    private CaptureSet validateScheduledCaptures(
+            Ast.LambdaExpr lambda, Scope outer) {
+        if (lambda.nonLexical() || outer.descendantsNonLexical()) {
+            return new CaptureSet();
+        }
         CaptureSet captures = collectCaptures(lambda, outer, null);
         for (Capture capture : captures.values.values()) {
             Ast.TypeRef type = capture.source.type;
@@ -2531,6 +2580,72 @@ public final class OwnershipChecker {
                         + type + " (resolved ThreadSafetyTraits remains authoritative; Task source execution remains disabled)");
             }
         }
+        return captures;
+    }
+
+    private ArrayList<TaskTransferProvenance.Transfer>
+            scheduledCaptureTransfers(CaptureSet captures) {
+        ArrayList<TaskTransferProvenance.Transfer> transfers =
+                new ArrayList<>(captures.values.size());
+        for (Capture capture : captures.values.values()) {
+            VarState source = capture.source;
+            VarState root = ownershipRoot(source);
+            boolean uniqueMove =
+                    capture.write || source.kind == ValueKind.MOVE_ONLY;
+            TaskTransferProvenance.TransferKind kind;
+            if (uniqueMove) {
+                if (!root.moved
+                        || root.immutableBorrows > 0
+                        || root.mutableBorrowed) {
+                    throw new IllegalStateException(
+                            "Oreslang compiler invariant violated: Task "
+                                    + "transfer proof minted without completed "
+                                    + "exclusive move for '" + capture.name + "'");
+                }
+                kind = TaskTransferProvenance.TransferKind.UNIQUE_MOVE;
+            } else {
+                if (source.kind != ValueKind.COPY
+                        || containsBorrowType(source.type)) {
+                    throw new IllegalStateException(
+                            "Oreslang compiler invariant violated: Task copy "
+                                    + "proof minted for non-copy capture '"
+                                    + capture.name + "'");
+                }
+                kind = TaskTransferProvenance.TransferKind.COPY;
+            }
+            transfers.add(new TaskTransferProvenance.Transfer(
+                    capture.name, source.type, kind));
+        }
+        return transfers;
+    }
+
+    private TaskTransferProvenance.Transfer scheduledArgumentTransfer(
+            int index,
+            Ast.Expr argument,
+            ValueInfo value,
+            Scope scope) {
+        TaskTransferProvenance.TransferKind kind;
+        if (value.kind == ValueKind.COPY) {
+            kind = TaskTransferProvenance.TransferKind.COPY;
+        } else if (argument instanceof Ast.NameExpr name) {
+            VarState state = requireState(scope, name.name());
+            VarState root = ownershipRoot(state);
+            if (!root.moved
+                    || root.immutableBorrows > 0
+                    || root.mutableBorrowed) {
+                throw new IllegalStateException(
+                        "Oreslang compiler invariant violated: scheduled "
+                                + "argument move proof was not exclusive");
+            }
+            kind = TaskTransferProvenance.TransferKind.UNIQUE_MOVE;
+        } else {
+            // checkExpr(..., consuming=true) recursively consumed every owned
+            // constituent. Projected lvalues are rejected above because this
+            // checker cannot yet mark only a field/index place as moved.
+            kind = TaskTransferProvenance.TransferKind.OWNED_RVALUE;
+        }
+        return new TaskTransferProvenance.Transfer(
+                "$arg" + index, value.type, kind);
     }
 
     private static boolean containsBorrowType(Ast.TypeRef type) {
