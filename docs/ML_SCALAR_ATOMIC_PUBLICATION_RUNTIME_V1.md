@@ -13,9 +13,15 @@ training, and not a substitute for authenticated gradient transport.
 - `Access.snapshotScalars(versionField, ...names)` is the only authority for
   scalar optimizer snapshot provenance. It copies immutable scalar inputs and
   binds their exact version plus mutation revision while the originating state
-  loan is live. `prepareScalarPublication(snapshot, immutableReplacements)`
-  runs **outside** a state loan and accepts only a snapshot capability issued by
-  that exact `SealedActorState`; callers can no longer synthesize or pass raw
+  loan is live. Snapshot access remains bound to the owning actor identity but
+  is deliberately independent of which physical carrier currently owns the
+  live state gate, so maxThreads>1 computation can use copied values while
+  another carrier briefly reads/writes state. `prepareScalarPublication(snapshot,
+  immutableReplacements)` likewise runs **outside the calling carrier's** state
+  loan; it may stage beside another carrier because publication revalidates the
+  exact revision/version under exclusive WRITE. It accepts only a snapshot
+  capability issued by that exact `SealedActorState`; callers can no longer
+  synthesize or pass raw
   version/revision integers. A later scalar mutation therefore cannot be
   laundered into an old optimizer candidate by staging after the mutation
   (TOCTOU). Every non-version replacement must also name a scalar whose prior
