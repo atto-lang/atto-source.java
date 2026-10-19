@@ -39,8 +39,18 @@ SHARED freeze admission against a resumable scheduler with:
 - foreign-ActorRuntime actor reference refusal;
 - two independent Tasks with two outstanding generation pins.
 
+`LogicalSourceActorProxyBridgeV1Test.realCompiledSharedActorUpgradeWaitsForSuspendedPinnedTask`
+also exercises a **real source-compiled .ores SHARED actor**: old v1 behavior
+reaches 42, an independently resumable host-only Task frame acquires that
+actor's generation pin, and a source v1→v2 attempt safely refuses while the
+Task is suspended. The old route processes another message to 43. After
+Task physical exit, an upgrade succeeds, retaining the stable logical
+ActorRef and counter state; v2 behavior produces 45. A new trusted-only
+router/proxy hook registers the pin under the exact route lock that guards
+actor migration.
+
 These are JUnit **sources only**, not execution evidence until Maven/JDK25
-tests run on the exact Git head. The tests are intentionally host frames and
+tests run on the exact Git head. The Tasks are intentionally host frames and
 do not claim source-compiled `task {}` exists.
 
 ## Known blocked production gates
