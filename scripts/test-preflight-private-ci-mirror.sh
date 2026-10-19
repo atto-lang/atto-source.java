@@ -114,6 +114,14 @@ case "$endpoint" in
   "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra")
     printf '1412142815\tores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra\ttrue\ttrue\n'
     ;;
+  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/git/ref/heads/ci/oreslang-test")
+    if [[ "${SYNTH_DEST_BRANCH_EXISTS:-false}" == "true" ]]; then
+      printf '{"ref":"refs/heads/ci/oreslang-test"}\n'
+    else
+      printf 'gh: Not Found (HTTP 404)\n' >&2
+      exit 1
+    fi
+    ;;
   "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/git/commits/054b65982f0950a4e2f3fb4752e78f585198c2ff")
     printf '%s\t%s\n' \
       "${SYNTH_DEST_BASE_COMMIT:-054b65982f0950a4e2f3fb4752e78f585198c2ff}" \
@@ -164,6 +172,8 @@ assert_exit 1 run_preflight SYNTH_PROTECTED=false \
 # Correct, distinct, unedited attestations pass only when GitHub explicitly
 # reports both protection mechanisms as unavailable on the current plan.
 assert_exit 0 run_preflight SYNTH_PROTECTED=false \
+  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+assert_exit 1 run_preflight SYNTH_PROTECTED=false SYNTH_DEST_BRANCH_EXISTS=true \
   bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
 
 # Authorization is bound to the exact reviewed destination carrier base.
