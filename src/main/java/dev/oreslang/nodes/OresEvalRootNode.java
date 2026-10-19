@@ -4534,7 +4534,23 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Integer || value instanceof Long)) {
                 throw new IllegalArgumentException("array/list index must be an integer");
             }
-            return Math.toIntExact(((Number) value).longValue());
+            long raw = ((Number) value).longValue();
+            try {
+                return Math.toIntExact(raw);
+            } catch (ArithmeticException overflow) {
+                throw new IllegalArgumentException(
+                        "array/list index outside supported signed 32-bit range: " + raw,
+                        overflow);
+            }
+        }
+
+        private static int checkedSequenceIndex(Object value, int length) {
+            int index = sequenceIndex(value);
+            if (index < 0 || index >= length) {
+                throw new IllegalArgumentException(
+                        "array/list/tuple index " + index + " outside length " + length);
+            }
+            return index;
         }
 
         private Object indexValue(Object receiver, Object index, Env env) {
@@ -4616,9 +4632,12 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
-            int i = sequenceIndex(index);
-            if (receiver instanceof List<?> list) return list.get(i);
-            if (receiver instanceof Object[] array) return array[i];
+            if (receiver instanceof List<?> list) {
+                return list.get(checkedSequenceIndex(index, list.size()));
+            }
+            if (receiver instanceof Object[] array) {
+                return array[checkedSequenceIndex(index, array.length)];
+            }
             throw new IllegalArgumentException(
                     "value is not indexable");
         }
@@ -4674,7 +4693,7 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof List<?> raw) {
                 @SuppressWarnings("unchecked")
                 List<Object> list = (List<Object>) raw;
-                list.set(sequenceIndex(key), value);
+                list.set(checkedSequenceIndex(key, list.size()), value);
                 return value;
             }
             throw new IllegalArgumentException(
@@ -7332,7 +7351,7 @@ public final class OresEvalRootNode extends RootNode {
                     case "get" -> (Invokable) args -> {
                         requireOne(args, "List.get");
                         Object index = args.getFirst();
-                        return rawList.get(sequenceIndex(index));
+                        return rawList.get(checkedSequenceIndex(index, rawList.size()));
                     };
                     case "add" -> (Invokable) args -> {
                         requireOne(args, "List.add");
@@ -7349,7 +7368,7 @@ public final class OresEvalRootNode extends RootNode {
                         Object index = args.getFirst();
                         @SuppressWarnings("unchecked")
                         List<Object> list = (List<Object>) rawList;
-                        list.set(sequenceIndex(index), args.get(1));
+                        list.set(checkedSequenceIndex(index, list.size()), args.get(1));
                         return null;
                     };
                     default -> throw new IllegalArgumentException(
