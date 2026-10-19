@@ -3611,6 +3611,15 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            // Named constructor syntax is not executable until arguments are
+            // matched to checked parameter/field slots. In particular, reject
+            // BEFORE the unresolved-class early return; otherwise a forged
+            // named call could reach the guest interpreter without ABI binding.
+            if (created.arguments().stream().anyMatch(
+                    arg -> arg instanceof Ast.NamedArgumentExpr)) {
+                throw new IllegalArgumentException(
+                        "named value arguments require checked declaration-bound invocation lowering");
+            }
             // Guest Symbols are immutable keys, not fresh reference capabilities.
             // Do not silently reinterpret the historical STABLE constructor.
             if (created.type().name().equals("Symbol") && findClass("Symbol") == null) {
