@@ -101,6 +101,61 @@ public class TaskHandleTest {
         }
     }
 
+    @Test void nestedTrackedTaskHasOwnCancellationDomain() throws Exception {
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "nested-tracked-checkpoint", 1, Runnable::run)) {
+            TaskScope scope = scheduler.newTaskScope();
+            TaskHandle<Integer> outer = scope.startTask(resume -> {
+                assertTrue(scope.cancel("outer cancelled"));
+                assertTrue(OresScheduler.cancellationRequested());
+                TaskHandle<Integer> nested = scheduler.startTracked(inner -> {
+                    assertFalse(OresScheduler.cancellationRequested(),
+                            "independent Task must not inherit ancestor token");
+                    OresScheduler.cancellationCheckpoint();
+                    return OresScheduler.done(15);
+                });
+                assertEquals(new TaskHandle.Success<>(15),
+                        nested.getDone().get(3, TimeUnit.SECONDS));
+                assertTrue(OresScheduler.cancellationRequested(),
+                        "outer cancellation context must be restored");
+                OresScheduler.cancellationCheckpoint();
+                return OresScheduler.done(99);
+            });
+            assertInstanceOf(TaskHandle.Cancelled.class, done(outer));
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void cleanupExceptionOverridesPendingCooperativeCancellation()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            CountDownLatch reached = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            TaskHandle<Integer> h = scheduler.startTracked(resume -> {
+                try {
+                    reached.countDown();
+                    awaitUninterruptibly(release);
+                    OresScheduler.cancellationCheckpoint();
+                    return OresScheduler.done(44);
+                } finally {
+                    throw new IllegalStateException("cleanup failed");
+                }
+            });
+            assertTrue(reached.await(3, TimeUnit.SECONDS));
+            try {
+                assertTrue(h.cancel("graceful"));
+            } finally {
+                release.countDown();
+            }
+            TaskHandle.TaskOutcome<Integer> outcome = done(h);
+            assertInstanceOf(TaskHandle.Failed.class, outcome,
+                    "cleanup exception must not be swallowed by cancellation");
+            assertInstanceOf(IllegalStateException.class,
+                    ((TaskHandle.Failed<Integer>) outcome).failure());
+            assertTrue(h.isCancellationRequested());
+        }
+    }
+
     @Test void checkpointWithoutRequestDoesNotStopTask() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskHandle<Integer> handle = scheduler.startTracked(resume -> {
