@@ -23,6 +23,11 @@ class IpcReceiptParityTest {
     }
 
     @Test
+    void closeAndAdmissionLinearizeWithoutAmbiguousNeverSentWindow() throws Exception {
+        IpcSessionAdmissionCloseRaceSelfTest.main(new String[0]);
+    }
+
+    @Test
     void trustedPhysicalSessionWriteAndCloseDrain() throws Exception {
         IpcTransportSessionLeaseSelfTest.main(new String[0]);
     }
