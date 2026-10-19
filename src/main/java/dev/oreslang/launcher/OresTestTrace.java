@@ -20,7 +20,8 @@ import java.util.HashMap;
 final class OresTestTrace {
     private static final String HEADER = "oreslang-critical-exploration-v1";
     record Data(String sourceHash, long seed, int runs, boolean modelCheck,
-                long states, long rejectedCycles, long stressCases) { }
+                long states, long rejectedCycles, long stressCases,
+                long inputFingerprint) { }
 
     private OresTestTrace() { }
 
@@ -49,7 +50,8 @@ final class OresTestTrace {
                 + "model_check=" + modelCheck + "\n"
                 + "states=" + report.exploredStates() + "\n"
                 + "rejected_cycles=" + report.rejectedCycles() + "\n"
-                + "stress_cases=" + report.stressCases() + "\n";
+                + "stress_cases=" + report.stressCases() + "\n"
+                + "input_fingerprint=" + report.inputFingerprint() + "\n";
         Files.writeString(output, encoded, StandardCharsets.UTF_8,
                 StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
     }
@@ -61,18 +63,19 @@ final class OresTestTrace {
         }
         String content = Files.readString(input, StandardCharsets.UTF_8);
         String[] lines = content.split("\n", -1);
-        if (lines.length != 9 || !HEADER.equals(lines[0]) || !lines[8].isEmpty()) {
+        if (lines.length != 10 || !HEADER.equals(lines[0]) || !lines[9].isEmpty()) {
             throw new IOException("unsupported trace header or malformed field count");
         }
         Map<String,String> entries = new HashMap<>();
-        for (int i = 1; i <= 7; i++) {
+        for (int i = 1; i <= 8; i++) {
             String[] parts = lines[i].split("=", 2);
             if (parts.length != 2 || entries.putIfAbsent(parts[0], parts[1]) != null) {
                 throw new IOException("duplicate/invalid trace field");
             }
         }
         if (!entries.keySet().equals(java.util.Set.of("source_sha256","seed","runs",
-                "model_check","states","rejected_cycles","stress_cases"))) {
+                "model_check","states","rejected_cycles","stress_cases",
+                "input_fingerprint"))) {
             throw new IOException("unknown or missing trace field");
         }
         try {
@@ -90,7 +93,8 @@ final class OresTestTrace {
                     Boolean.parseBoolean(modelFlag),
                     Long.parseLong(entries.get("states")),
                     Long.parseLong(entries.get("rejected_cycles")),
-                    Long.parseLong(entries.get("stress_cases")));
+                    Long.parseLong(entries.get("stress_cases")),
+                    Long.parseLong(entries.get("input_fingerprint")));
         } catch (NumberFormatException bad) {
             throw new IOException("invalid numeric trace field", bad);
         }
@@ -99,7 +103,8 @@ final class OresTestTrace {
     static void verify(Data recorded, OresTestExploration.Report observed) throws IOException {
         if (recorded.states() != observed.exploredStates()
                 || recorded.rejectedCycles() != observed.rejectedCycles()
-                || recorded.stressCases() != observed.stressCases()) {
+                || recorded.stressCases() != observed.stressCases()
+                || recorded.inputFingerprint() != observed.inputFingerprint()) {
             throw new IOException("bounded exploration trace is not reproducible");
         }
     }
