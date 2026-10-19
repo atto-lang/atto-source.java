@@ -276,6 +276,28 @@ final class DynSendSyncConvergenceTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(5)
+    void traitCacheCannotReuseShallowProofPastMaximumNestingDepth() {
+        Types.Type shared = Types.Primitive.INT;
+        for (int i = 0; i < 255; i++) {
+            shared = new Types.ListType(shared);
+        }
+        Types.Type shallower = shared;
+        Types.Type twoPaths = new Types.Tuple(List.of(
+                shallower, new Types.ListType(shallower)));
+
+        assertTrue(ThreadSafetyTraits.has(
+                shallower, Trait.SEND, TRUSTED_CORE));
+        assertFalse(ThreadSafetyTraits.has(
+                twoPaths, Trait.SEND, TRUSTED_CORE),
+                "memoized shallow proof must not bypass MAX_TYPE_DEPTH");
+
+        assertTrue(ThreadSafetyTraits.has(
+                shallower, Trait.SEND, TRUSTED_CORE),
+                "fresh query remains valid after rejected deep path");
+    }
+
+    @Test
     void unresolvedAndDeepTypesNeverGainSendOrSync() {
         Type nested = new Types.Dyn(new Types.Named("Worker", List.of()));
         for (int i = 0; i < 400; i++) nested = new Types.ListType(nested);
