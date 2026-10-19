@@ -74,7 +74,7 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
                 } else if (item instanceof BigInteger bigValue
                         && bigValue.signum() >= 0
                         && bigValue.bitLength() <= 8) {
-                    octet = shortValue.longValue();
+                    octet = bigValue.longValue();
                 } else {
                     throw new IllegalArgumentException(
                             "unary TCP result byte must be an integer in 0..255");
