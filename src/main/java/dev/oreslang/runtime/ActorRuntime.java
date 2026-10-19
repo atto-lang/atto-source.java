@@ -5958,34 +5958,41 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             // No callbacks can observe a half-finalized actor under the
-            // outer lifecycle monitor.
+            // outer lifecycle monitor. Each release is attempted even if an
+            // earlier cleanup step failed; never strand actor-owned memory.
             Throwable cleanupFailure = null;
-            try {
-                if (scheduler != null) scheduler.close();
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
-            } catch (Throwable failure) {
-                cleanupFailure = failure;
+            if (scheduler != null) {
+                try {
+                    scheduler.close();
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (RuntimeException ignored) {
+                    // Preserve existing best-effort scheduler-close policy.
+                }
             }
-
+            cleanupFailure = cleanupStep(cleanupFailure, this::drainMailboxReservations);
+            staticSelectCursors.clear();
+            codeActorState = null;
+            Throwable terminalOutput = ref.terminationCause.get();
+            cleanupFailure = cleanupStep(
+                    cleanupFailure, () -> outputStream.close(terminalOutput));
+            if (memorySlice != null) {
+                cleanupFailure = cleanupStep(cleanupFailure, memorySlice::close);
+            }
             try {
-                drainMailboxReservations();
-                staticSelectCursors.clear();
-                codeActorState = null;
-                Throwable terminalOutput = ref.terminationCause.get();
-                outputStream.close(terminalOutput);
-                if (memorySlice != null) memorySlice.close();
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
                 throw fatal;
-            } catch (Throwable failure) {
-                if (cleanupFailure == null) cleanupFailure = failure;
-                else if (cleanupFailure != failure) cleanupFailure.addSuppressed(failure);
-            } finally {
-                if (cleanupFailure != null) {
-                    ref.terminationCause.compareAndSet(null, cleanupFailure);
-                }
+            } catch (Throwable ignored) {
+                // Exit hooks are best effort and cannot turn a successful
+                // graceful termination into a failure.
+            }
+            if (cleanupFailure != null) {
+                ref.terminationCause.compareAndSet(null, cleanupFailure);
+            }
+            try {
                 unregisterActor(this);
+            } finally {
                 // Only mark finalized AFTER physical cleanup, never while
                 // callbacks or release hooks can still run.
                 synchronized (lifecycleLock) {
@@ -5994,19 +6001,34 @@ public final class ActorRuntime implements AutoCloseable {
                 }
 
                 Throwable terminal = ref.terminationCause.get();
-                if (!ref.readyFuture.isDone()) {
-                    ref.readyFuture.failFromRuntime(
-                            terminal == null
-                                    ? new ActorTerminatedException(ref.id(), kind, null)
-                                    : terminal);
+                try {
+                    if (!ref.readyFuture.isDone()) {
+                        ref.readyFuture.failFromRuntime(
+                                terminal == null
+                                        ? new ActorTerminatedException(ref.id(), kind, null)
+                                        : terminal);
+                    }
+                    if (terminal == null) ref.doneFuture.completeFromRuntime(null);
+                    else ref.doneFuture.failFromRuntime(terminal);
+                } finally {
+                    finalizedFuture.completeFromRuntime(null);
+                    // Parent observation must follow child publication; this may
+                    // trigger a parent's own outside-lock finalization cascade.
+                    if (parent != null) parent.childFinalized(this);
                 }
-                if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-                else ref.doneFuture.failFromRuntime(terminal);
-                finalizedFuture.completeFromRuntime(null);
-                // Parent observation must follow child publication; this may
-                // trigger a parent's own outside-lock finalization cascade.
-                if (parent != null) parent.childFinalized(this);
             }
+        }
+
+        private Throwable cleanupStep(Throwable previous, Runnable cleanup) {
+            try {
+                cleanup.run();
+            } catch (VirtualMachineError | ThreadDeath fatal) {
+                throw fatal;
+            } catch (Throwable failure) {
+                if (previous == null) return failure;
+                if (previous != failure) previous.addSuppressed(failure);
+            }
+            return previous;
         }
 
         private void childFinalized(ActorCell<?> child) {
@@ -6475,6 +6497,13 @@ public final class ActorRuntime implements AutoCloseable {
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
                 drainMailboxReservations();
+            } catch (VirtualMachineError | ThreadDeath fatal) {
+                throw fatal;
+            } catch (Throwable failure) {
+                // Channel close can invoke runtime callbacks. If any callback
+                // fails, preserve the error but still seal the tree and cancel
+                // every pending operation/child instead of stranding shutdown.
+                ref.terminationCause.compareAndSet(null, failure);
             } finally {
                 synchronized (lifecycleLock) {
                     terminationSealed = true;
