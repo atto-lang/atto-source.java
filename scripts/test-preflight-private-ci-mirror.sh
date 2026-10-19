@@ -174,6 +174,14 @@ assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_BASE_TREE=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
   bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
 
+# A previously reviewed carrier pair is stale once authorization is re-pinned.
+# This prevents an old green carrier from being reused after the reviewed
+# execution boundary changes.
+assert_exit 1 run_preflight SYNTH_PROTECTED=false \
+  SYNTH_DEST_BASE_COMMIT=4d1d65445a09eb47f383bd5dc373d36056346056 \
+  SYNTH_DEST_BASE_TREE=825c75a6b4cf84c62510f717290d6c87f4611b9a \
+  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+
 # Merely leaving protection disabled must never activate the fallback when
 # either classic protection or rulesets is actually available.
 assert_exit 1 run_preflight SYNTH_PROTECTED=false SYNTH_BRANCH_PROTECTION_AVAILABLE=true \
