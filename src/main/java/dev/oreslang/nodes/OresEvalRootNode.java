@@ -131,6 +131,18 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
+        // Actor carriers may enter the same evaluator concurrently. The
+        // identity map only retains call nodes already owned by this program.
+        private final Map<Ast.CallExpr, Integer> optionDepthCache =
+                java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+
+        private int checkedOptionDepth(Ast.CallExpr call) {
+            synchronized (optionDepthCache) {
+                return optionDepthCache.computeIfAbsent(
+                        call, Ast.CheckedOptionDepth::require);
+            }
+        }
+
         /** Exact immutable image published by link(); shared by all source actors. */
         private volatile SharedCodeImageStore.CodeImage linkedCodeImage;
         private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
@@ -1480,8 +1492,13 @@ public final class OresEvalRootNode extends RootNode {
                             throw sourceFailure(resume.failure());
                         }
                         Object value = resume.value();
+                        // Future<void> resolves with a null payload. List.of(null)
+                        // throws before the guest callback or typed flatten
+                        // diagnostic can run; keep the single argument slot
+                        // while allowing the value itself to be null.
                         Object mapped = invoke(
-                                invokableInvocation(callback, List.of(value)));
+                                invokableInvocation(callback,
+                                        java.util.Collections.singletonList(value)));
 
                         if (observeSuccess) {
                             if (mapped != null) {
@@ -4488,6 +4505,16 @@ public final class OresEvalRootNode extends RootNode {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
 
+            if (receiver instanceof OptionValue option
+                    && member.member().equals("unwrap_all")) {
+                int depth = checkedOptionDepth(call);
+                return invokableInvocation(
+                        values -> {
+                            requireZero(values, "Option.unwrap_all");
+                            return unwrapOptionAtDepth(option, depth);
+                        }, args);
+            }
+
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
@@ -5939,6 +5966,16 @@ public final class OresEvalRootNode extends RootNode {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
+                if (receiver instanceof OptionValue option
+                        && methodCall.member().equals("unwrap_all")) {
+                    int depth = checkedOptionDepth(call);
+                    return invokableInvocation(
+                            values -> {
+                                requireZero(values, "Option.unwrap_all");
+                                return unwrapOptionAtDepth(option, depth);
+                            }, args);
+                }
+
                 if (receiver instanceof OresObject object) {
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("end")) {
@@ -7168,6 +7205,12 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return chainFuture(future, callback, true, false);
                     };
+                    case "flatten" -> (Invokable) args -> {
+                        requireZero(args, "Future.flatten");
+                        // Use the owned scheduler's continuation path.  In particular,
+                        // a producer callback must never execute guest code inline.
+                        return chainFuture(future, values -> values.getFirst(), true, false);
+                    };
                     case "onSuccess" -> (Invokable) args -> {
                         requireOne(args, "Future.onSuccess");
                         if (!(args.getFirst() instanceof Invokable callback)) {
@@ -7409,6 +7452,23 @@ public final class OresEvalRootNode extends RootNode {
             return new IllegalArgumentException(operation + " failed: " + failure.getMessage(), failure);
         }
 
+        private Object unwrapOptionAtDepth(OptionValue option, int depth) {
+            Object current = option;
+            for (int level = 0; level < depth; level++) {
+                if (!(current instanceof OptionValue layer)) {
+                    throw new IllegalStateException(
+                            "Option.unwrap_all runtime value violates checked nesting depth");
+                }
+                if (!layer.present()) {
+                    throw new OresPanic("called Option::unwrap_all() on a None value");
+                }
+                current = layer.value();
+            }
+            // The checked leaf is returned intact, even when its runtime
+            // representation happens to be another OptionValue.
+            return current;
+        }
+
         private Object optionMember(OptionValue option, String name) {
             return switch (name) {
                 case "is_some" -> (Invokable) args -> { requireZero(args, "Option.is_some"); return option.present(); };
@@ -7417,6 +7477,20 @@ public final class OresEvalRootNode extends RootNode {
                     requireZero(args, "Option.unwrap");
                     if (!option.present()) throw new OresPanic("called Option::unwrap() on a None value");
                     return option.value();
+                };
+                case "unwrap_all" -> (Invokable) args -> {
+                    requireZero(args, "Option.unwrap_all");
+                    throw new IllegalStateException(
+                            "Option.unwrap_all requires a statically checked direct invocation");
+                };
+                case "flatten" -> (Invokable) args -> {
+                    requireZero(args, "Option.flatten");
+                    if (!option.present()) return option;
+                    if (!(option.value() instanceof OptionValue nested)) {
+                        throw new IllegalArgumentException(
+                                "Option.flatten requires an inner Option value");
+                    }
+                    return nested;
                 };
                 case "unwrap_safe" -> (Invokable) args -> {
                     requireZero(args, "Option.unwrap_safe");
